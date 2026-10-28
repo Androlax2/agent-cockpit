@@ -2,6 +2,7 @@
 # the guards, the per-project paths and secrets and the forwards, collected in greywall_options.
 # Not executable: this folder is on PATH. The launcher sets $agent (messages) before sourcing it,
 # and $own_folders: the denyRead entries of greywall.json that are its agent's own data.
+# shellcheck shell=sh
 
 # Greywall's drift prompt defaults to merging bundled grants into our reviewed profiles.
 export GREYWALL_NO_PROMPT=1
@@ -18,6 +19,8 @@ prepare_cockpit_folder() {
     elif [ -d "$2" ]; then
         printf '%s\n' "$2"
     else
+        # Only the leaf is private; ancestor permissions retain their existing policy.
+        # shellcheck disable=SC2174
         mkdir -p -m 700 "$1" || return 1
         mkdir -p "$(dirname "$2")" || return 1
         [ -L "$2" ] || ln -s "$1" "$2" || return 1
@@ -29,12 +32,16 @@ state_root="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}"
 prepare_cockpit_folder "$runtime_root/cockpit-report" "$runtime_root/claude-report" >/dev/null || exit 1
 # The audit log (claude-audit; security audit 2026-10-19, M6): greywall.json hides it from the
 # sandbox, which greywall does only for a folder that exists when the sandbox starts.
+# Only the audit leaf is private, not the shared state ancestors.
+# shellcheck disable=SC2174
 mkdir -p -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/claude-audit"
 # Both spellings stay hidden during the transition, including fresh sandboxes.
 prepare_cockpit_folder "$state_root/cockpit-remote" "$state_root/claude-remote" >/dev/null || exit 1
 # What sessions that ignored their exit showed (cockpit record_stuck_exit): hidden the same way.
 prepare_cockpit_folder "$state_root/cockpit-stuck-exits" "$state_root/claude-stuck-exits" >/dev/null || exit 1
 # Created before the sandbox mounts its denyRead entries, even when no FigCraft has started yet.
+# Preserve the shared config ancestors' permissions.
+# shellcheck disable=SC2174
 mkdir -p -m 700 "$HOME/.config/greywall-agents/figcraft"
 
 # ~/dotfiles, ~/agent-cockpit and ~/vitals are running copies: linked into ~/.local/bin and
@@ -45,10 +52,13 @@ reviewed_repositories="dotfiles agent-cockpit vitals"
 for reviewed in $reviewed_repositories; do
     running_copy=$(cd "$HOME/$reviewed" 2>/dev/null && pwd -P) || continue
     case "$(pwd -P)/" in
-        "$running_copy"/*)
-            echo "$agent launcher: no session in $running_copy, the running copy the host runs." >&2
-            echo "Work in its clone, ~/IdeaProjects/$reviewed." >&2
-            exit 1 ;;
+    "$running_copy"/*)
+        # Every launcher assigns agent before sourcing this helper.
+        # shellcheck disable=SC2154
+        echo "$agent launcher: no session in $running_copy, the running copy the host runs." >&2
+        echo "Work in its clone, ~/IdeaProjects/$reviewed." >&2
+        exit 1
+        ;;
     esac
 done
 
@@ -78,12 +88,13 @@ project_root=$(realpath -e -- "$project_root") || exit 1
 # The saved default-deny policy cannot read external metadata; pointers must never add grants.
 if "$has_git_repository"; then
     for metadata_kind in --absolute-git-dir --git-common-dir; do
-        metadata_path=$(git -C "$project_root" rev-parse --path-format=absolute "$metadata_kind" 2>/dev/null) \
-            && metadata_path=$(realpath -e -- "$metadata_path") \
-            || refuse_git_metadata "cannot resolve $metadata_kind"
+        if ! metadata_path=$(git -C "$project_root" rev-parse --path-format=absolute "$metadata_kind" 2>/dev/null) ||
+            ! metadata_path=$(realpath -e -- "$metadata_path"); then
+            refuse_git_metadata "cannot resolve $metadata_kind"
+        fi
         case "$metadata_path" in
-            "$project_root"/*) ;;
-            *) refuse_git_metadata "$metadata_kind resolves outside the checkout: $metadata_path" ;;
+        "$project_root"/*) ;;
+        *) refuse_git_metadata "$metadata_kind resolves outside the checkout: $metadata_path" ;;
         esac
     done
 fi
@@ -91,8 +102,8 @@ fi
 # GitHub token, same name everywhere.
 clones_dir="${COCKPIT_CLONES:-$HOME/IdeaProjects/.parallel}"
 case "$project_root" in
-    "$clones_dir"/*/*) project_name=$(basename "$(dirname "$project_root")") ;;
-    *) project_name=$(basename "$project_root") ;;
+"$clones_dir"/*/*) project_name=$(basename "$(dirname "$project_root")") ;;
+*) project_name=$(basename "$project_root") ;;
 esac
 greywall_options="--allow-path $CHROME_CONFIG_HOME"
 for cache_name in runs designs; do
@@ -101,6 +112,8 @@ for cache_name in runs designs; do
 done
 # agent-cockpit's make test: one full run at a time across every clone (tools/full-test-lock.py).
 test_lock_dir="$HOME/.cache/cockpit/test-lock"
+# The lock leaf is private; the shared cache ancestors keep their normal permissions.
+# shellcheck disable=SC2174
 mkdir -p -m 700 "$test_lock_dir" || exit 1
 greywall_options="$greywall_options --allow-path $test_lock_dir"
 
@@ -149,7 +162,7 @@ done
 other_projects=$(for folder in "$claude_projects"/*/; do
     [ -d "$folder" ] && [ "${folder%/}" != "$claude_projects/$own_slug" ] && printf '%s\n' "${folder%/}"
 done | awk -v checkouts="$checkout_slugs" -v projects="$(folder_slug "$HOME/IdeaProjects")-" \
-        -v clones="$(folder_slug "$clones_dir")-" '
+    -v clones="$(folder_slug "$clones_dir")-" '
     BEGIN { split(checkouts, owners, "\n") }
     {
         slug = $0
@@ -189,13 +202,13 @@ hidden_env_files=""
 keeps_env_glob=false
 for env_file in "$PWD"/.env.*; do
     [ -e "$env_file" ] || [ -L "$env_file" ] || continue
-    if [ -f "$env_file" ] && [ ! -L "$env_file" ] \
-        && git --literal-pathspecs ls-files --error-unmatch -- "$env_file" >/dev/null 2>&1 \
-        && git --literal-pathspecs diff --quiet HEAD -- "$env_file" >/dev/null 2>&1; then
+    if [ -f "$env_file" ] && [ ! -L "$env_file" ] &&
+        git --literal-pathspecs ls-files --error-unmatch -- "$env_file" >/dev/null 2>&1 &&
+        git --literal-pathspecs diff --quiet HEAD -- "$env_file" >/dev/null 2>&1; then
         continue
     fi
     case "$env_file" in
-        *"
+    *"
 "*) keeps_env_glob=true ;;
     esac
     hidden_env_files="$hidden_env_files$env_file
@@ -203,14 +216,14 @@ for env_file in "$PWD"/.env.*; do
 done
 staged_settings=$(mktemp "$settings.XXXXXX") || exit 1
 if ! jq --arg others "$other_projects" --arg own "${own_folders:-}" \
-        --arg hidden_env "$hidden_env_files" --argjson keeps_env_glob "$keeps_env_glob" \
-        '.filesystem.denyWrite += ($others | split("\n") | map(select(. != "")))
+    --arg hidden_env "$hidden_env_files" --argjson keeps_env_glob "$keeps_env_glob" \
+    '.filesystem.denyWrite += ($others | split("\n") | map(select(. != "")))
          | .filesystem.denyWrite = ((.filesystem.denyWrite + ["~/.config/greywall-agents/figcraft"]) | unique)
          | .filesystem.denyRead -= ($own | split(" ") | map(select(. != "")))
          | .filesystem.denyRead = ((.filesystem.denyRead + ["~/.config/greywall-agents/figcraft"]) | unique)
          | if $keeps_env_glob or (any(.filesystem.denyRead[]; . == ".env.*") | not) then .
            else .filesystem.denyRead = (.filesystem.denyRead - [".env.*"] + ($hidden_env | split("\n") | map(select(. != "")))) end' \
-        "$HOME/.config/greywall/greywall.json" > "$staged_settings"; then
+    "$HOME/.config/greywall/greywall.json" >"$staged_settings"; then
     rm -f "$staged_settings"
     echo "$agent launcher: cannot write $settings from ~/.config/greywall/greywall.json, not starting." >&2
     exit 1
@@ -242,8 +255,9 @@ fi
 for reviewed in $reviewed_repositories; do
     running_copy=$(cd "$HOME/$reviewed" 2>/dev/null && pwd -P) || continue
     case "$project_root" in
-        "$HOME/IdeaProjects/$reviewed"|"$clones_dir/$reviewed"/*)
-            greywall_options="$greywall_options --allow-read-path $running_copy" ;;
+    "$HOME/IdeaProjects/$reviewed" | "$clones_dir/$reviewed"/*)
+        greywall_options="$greywall_options --allow-read-path $running_copy"
+        ;;
     esac
 done
 
@@ -254,9 +268,9 @@ done
 ca_dir="$HOME/.cache/agent-ca"
 mkdir -p "$ca_dir/php"
 staged_bundle=$(mktemp "$ca_dir/bundle.pem.XXXXXX") || exit 1
-cat /etc/ssl/cert.pem "$HOME/.local/share/greyproxy/ca-cert.pem" > "$staged_bundle"
+cat /etc/ssl/cert.pem "$HOME/.local/share/greyproxy/ca-cert.pem" >"$staged_bundle"
 install_staged "$staged_bundle" "$ca_dir/bundle.pem" 644
-printf 'openssl.cafile=%s\ncurl.cainfo=%s\n' "$ca_dir/bundle.pem" "$ca_dir/bundle.pem" > "$ca_dir/php/zz-agent-ca.ini"
+printf 'openssl.cafile=%s\ncurl.cainfo=%s\n' "$ca_dir/bundle.pem" "$ca_dir/bundle.pem" >"$ca_dir/php/zz-agent-ca.ini"
 export GIT_SSL_CAINFO="$ca_dir/bundle.pem"
 export CURL_CA_BUNDLE="$ca_dir/bundle.pem"
 export CARGO_HTTP_CAINFO="$ca_dir/bundle.pem"
@@ -288,7 +302,7 @@ install_staged "$staged_paste" "$shims_dir/wl-paste" 755
 # Only build tools run at the lowest priority; the agent itself keeps its normal one.
 build_runner_copy=$(mktemp "$shims_dir/agent-build.XXXXXX") || exit 1
 if ! cp "$HOME/.local/bin/agent-build" "$build_runner_copy" || ! chmod 755 "$build_runner_copy" ||
-        ! mv "$build_runner_copy" "$shims_dir/agent-build"; then
+    ! mv "$build_runner_copy" "$shims_dir/agent-build"; then
     rm -f "$build_runner_copy"
     echo "$agent launcher: cannot install the build CPU guard, not starting." >&2
     exit 1
@@ -335,17 +349,19 @@ docker_socket="$project_root/.agent-docker.sock"
 docker_socket_mount=
 unset AGENT_DOCKER_CA_BUNDLE
 case "$project_root" in
-    "$clones_dir"/*/*)
-        docker_socket="$clones_dir/$project_name/.agent-docker/docker.sock"
-        docker_socket_mount=$(dirname "$docker_socket") ;;
-    *)
-        if [ "$(pwd -P)" != "$project_root" ]; then docker_socket_mount=$docker_socket; fi ;;
+"$clones_dir"/*/*)
+    docker_socket="$clones_dir/$project_name/.agent-docker/docker.sock"
+    docker_socket_mount=$(dirname "$docker_socket")
+    ;;
+*)
+    if [ "$(pwd -P)" != "$project_root" ]; then docker_socket_mount=$docker_socket; fi
+    ;;
 esac
 if [ -S "$docker_socket" ]; then
     export DOCKER_HOST="unix://$docker_socket"
     docker_build_copy=$(mktemp "$shims_dir/agent-docker-build.XXXXXX") || exit 1
     if ! cp "$HOME/.local/bin/agent-docker-build" "$docker_build_copy" || ! chmod 755 "$docker_build_copy" ||
-            ! mv "$docker_build_copy" "$shims_dir/agent-docker-build"; then
+        ! mv "$docker_build_copy" "$shims_dir/agent-docker-build"; then
         rm -f "$docker_build_copy"
         echo "$agent launcher: cannot install the Docker build trust helper, not starting." >&2
         exit 1
@@ -358,7 +374,7 @@ if [ -S "$docker_socket" ]; then
     container_proxy="http://$project_name-docker:proxy@10.0.2.2:43051"
     mkdir -p "$docker_config"
     printf '{"proxies":{"default":{"httpProxy":"%s","httpsProxy":"%s","noProxy":"localhost,127.0.0.1"}}}\n' \
-        "$container_proxy" "$container_proxy" > "$docker_config/config.json"
+        "$container_proxy" "$container_proxy" >"$docker_config/config.json"
     export DOCKER_CONFIG="$docker_config"
     greywall_options="$greywall_options --allow-path $docker_config"
     if [ -n "$docker_socket_mount" ]; then
@@ -401,7 +417,7 @@ fi
 # new sessions from getting them. Parallel clones share their repository's file.
 forward_file="$HOME/.config/greywall-agents/forward/$project_name"
 if [ -r "$forward_file" ]; then
-    read -r forward_until forward_ports < "$forward_file"
+    read -r forward_until forward_ports <"$forward_file"
     if [ "$(date +%s)" -lt "$forward_until" ]; then
         for port in $forward_ports; do
             reservation="$HOME/.config/greywall-agents/figcraft/ports/$port"
@@ -410,8 +426,8 @@ if [ -r "$forward_file" ]; then
                 exit 1
             fi
             case " $greywall_options " in
-                *" --forward $port "*) ;;  # already forwarded above
-                *) greywall_options="$greywall_options --forward $port" ;;
+            *" --forward $port "*) ;; # already forwarded above
+            *) greywall_options="$greywall_options --forward $port" ;;
             esac
         done
     else

@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Every agent runs in its own launcher (cockpit::agents; tests/agents.rs checks each has one).
-static AGENTS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(cockpit::agents::names);
+static AGENTS: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(cockpit::agents::names);
 
 /// The repositories whose running copy, ~/<name>, the host runs (cockpit's REVIEWED_REPOSITORIES).
 const REVIEWED_REPOSITORIES: [&str; 3] = ["dotfiles", "agent-cockpit", "vitals"];
@@ -17,27 +18,50 @@ const REVIEWED_REPOSITORIES: [&str; 3] = ["dotfiles", "agent-cockpit", "vitals"]
 #[test]
 fn claude_launch_does_not_wait_for_profile_drift_input() {
     let launch = Launch::new();
-    write_executable(&launch.sandbox.home.join(".local/bin/greywall"),
-        "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-unset}\" > \"$HOME/greywall-no-prompt\"\n");
-    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[])
-        .env_remove("GREYWALL_NO_PROMPT").current_dir(&launch.project).output().unwrap();
+    write_executable(
+        &launch.sandbox.home.join(".local/bin/greywall"),
+        "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-unset}\" > \"$HOME/greywall-no-prompt\"\n",
+    );
+    let output = launch
+        .sandbox
+        .command(bin().join("greywall-agents/claude"), &[])
+        .env_remove("GREYWALL_NO_PROMPT")
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(fs::read_to_string(launch.sandbox.home.join("greywall-no-prompt")).unwrap(), "1");
+    assert_eq!(
+        fs::read_to_string(launch.sandbox.home.join("greywall-no-prompt")).unwrap(),
+        "1"
+    );
 }
 
 #[test]
 fn routed_claude_cannot_bypass_the_protected_plan_or_its_failed_billing_check() {
     for arguments in [vec![], vec!["--model", "another-model"]] {
         let launch = Launch::new();
-        let helper = launch.sandbox.home.join(".config/waybar/scripts/native-subscription.py");
+        let helper = launch
+            .sandbox
+            .home
+            .join(".config/waybar/scripts/native-subscription.py");
         fs::remove_file(&helper).unwrap();
         fs::write(helper, "import sys\nsys.exit(7)\n").unwrap();
-        let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[("COCKPIT_SUBSCRIPTION_ROUTE", &"a".repeat(32))])
-            .args(&arguments).current_dir(&launch.project).output().unwrap();
+        let output = launch
+            .sandbox
+            .command(
+                bin().join("greywall-agents/claude"),
+                &[("COCKPIT_SUBSCRIPTION_ROUTE", &"a".repeat(32))],
+            )
+            .args(&arguments)
+            .current_dir(&launch.project)
+            .output()
+            .unwrap();
         assert!(!output.status.success());
         assert!(!launch.sandbox.home.join("claude-arguments").exists());
         assert!(launch.sandbox.calls("greywall").is_empty());
-        if arguments.is_empty() { assert_eq!(output.status.code(), Some(7)); }
+        if arguments.is_empty() {
+            assert_eq!(output.status.code(), Some(7));
+        }
     }
 }
 
@@ -50,10 +74,20 @@ fn no_session_starts_in_a_running_copy() {
             let live = sandbox.home.join(repository).join("src");
             fs::create_dir_all(&live).unwrap();
             sandbox.shim("greywall", "");
-            let output = sandbox.command(bin().join("greywall-agents").join(agent), &[]).current_dir(&live).output().unwrap();
+            // This fixture models a host launch, even when the test runner is sandboxed.
+            let output = sandbox
+                .command(bin().join("greywall-agents").join(agent), &[])
+                .env_remove("GREYWALL_SANDBOX")
+                .current_dir(&live)
+                .output()
+                .unwrap();
             assert_eq!(output.status.code(), Some(1), "{repository} {agent}");
-            assert!(stderr(&output).contains(&format!("{agent} launcher:")) && stderr(&output).contains(&format!("IdeaProjects/{repository}")),
-                    "{}", stderr(&output));
+            assert!(
+                stderr(&output).contains(&format!("{agent} launcher:"))
+                    && stderr(&output).contains(&format!("IdeaProjects/{repository}")),
+                "{}",
+                stderr(&output)
+            );
             assert!(sandbox.calls("greywall").is_empty(), "{repository} {agent}");
         }
     }
@@ -69,40 +103,78 @@ struct Launch {
 impl Launch {
     fn new() -> Launch {
         let mut sandbox = Sandbox::new();
-        for name in ["CLAUDE_CODE_SESSION_ID", "COCKPIT_OPENCODE_MODEL", "GREYWALL_SANDBOX"] {
+        for name in [
+            "CLAUDE_CODE_SESSION_ID",
+            "COCKPIT_OPENCODE_MODEL",
+            "GREYWALL_SANDBOX",
+        ] {
             sandbox.env.insert(name.into(), String::new());
         }
         let project = sandbox.home.join("IdeaProjects/proj-a");
         fs::create_dir_all(&project).unwrap();
-        assert!(Command::new("git").args(["init", "-q"]).arg(&project).status().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .arg(&project)
+                .status()
+                .unwrap()
+                .success()
+        );
         fs::create_dir_all(sandbox.home.join("IdeaProjects/proj-b")).unwrap();
         fs::create_dir_all(sandbox.home.join("dotfiles")).unwrap();
-        for (path, content) in [(".local/share/greyproxy/ca-cert.pem", ""), (".local/share/agent-shims/bin/wl-paste", "#!/bin/sh\n"),
-                                 (".config/greywall/greywall.json", r#"{"filesystem": {"denyWrite": [".git/hooks"], "denyRead": ["~/.ssh/id_*", "~/.local/share/opencode/**", "~/.config/opencode/**", "~/.codex/**"]}}"#)] {
+        for (path, content) in [
+            (".local/share/greyproxy/ca-cert.pem", ""),
+            (".local/share/agent-shims/bin/wl-paste", "#!/bin/sh\n"),
+            (
+                ".config/greywall/greywall.json",
+                r#"{"filesystem": {"denyWrite": [".git/hooks"], "denyRead": ["~/.ssh/id_*", "~/.local/share/opencode/**", "~/.config/opencode/**", "~/.codex/**"]}}"#,
+            ),
+        ] {
             let file = sandbox.home.join(path);
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
         }
-        copy_executable(&bin().join("agent-build"), &sandbox.home.join(".local/bin/agent-build"));
-        copy_executable(&bin().join("agent-docker-build"), &sandbox.home.join(".local/bin/agent-docker-build"));
+        copy_executable(
+            &bin().join("agent-build"),
+            &sandbox.home.join(".local/bin/agent-build"),
+        );
+        copy_executable(
+            &bin().join("agent-docker-build"),
+            &sandbox.home.join(".local/bin/agent-docker-build"),
+        );
         // Logs its arguments, then runs the command after -- when it exists (the fake opencode).
-        write_executable(&sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-}\" > \"$HOME/greywall-no-prompt\"\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
+        write_executable(
+            &sandbox.home.join(".local/bin/greywall"),
+            "#!/bin/sh\nprintf '%s' \"${GREYWALL_NO_PROMPT:-}\" > \"$HOME/greywall-no-prompt\"\nprintf 'greywall %s (api key: %s)\\n' \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" \"${ANTHROPIC_API_KEY:-none}\" >> \"$SHIM_LOG\"\n\
                                                                      while [ \"$1\" != -- ]; do shift; done; shift\n\
-                                                                     if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n");
+                                                                     if [ \"$1\" = env ] || [ -x \"$1\" ]; then exec \"$@\"; fi\n",
+        );
         // Records its arguments and the environment it got, one line each.
-        write_executable(&sandbox.home.join(".opencode/bin/opencode"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/opencode-arguments\"\n\
-                                                                          env > \"$HOME/opencode-environment\"\n");
-        write_executable(&sandbox.home.join(".local/bin/claude"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-arguments\"\n\
-                                                                         env > \"$HOME/claude-environment\"\n");
-        write_executable(&sandbox.home.join(".local/npm/bin/codex"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/codex-arguments\"\n\
-                                                                         env > \"$HOME/codex-environment\"\n");
+        write_executable(
+            &sandbox.home.join(".opencode/bin/opencode"),
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/opencode-arguments\"\n\
+                                                                          env > \"$HOME/opencode-environment\"\n",
+        );
+        write_executable(
+            &sandbox.home.join(".local/bin/claude"),
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-arguments\"\n\
+                                                                         env > \"$HOME/claude-environment\"\n",
+        );
+        write_executable(
+            &sandbox.home.join(".local/npm/bin/codex"),
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/codex-arguments\"\n\
+                                                                         env > \"$HOME/codex-environment\"\n",
+        );
         sandbox.shim("dig", "echo 127.0.0.1");
         sandbox.shim("secret-tool", r#"case "$3" in
   agent-anthropic) [ -n "${SHIM_ANTHROPIC_KEY:-}" ] && echo "$SHIM_ANTHROPIC_KEY" || exit 1 ;;
   agent-opencode-anthropic) [ -n "${SHIM_OPENCODE_KEY:-}" ] && echo "$SHIM_OPENCODE_KEY" || exit 1 ;;
   *) exit 1 ;;
 esac"#);
-        sandbox.shim("pgrep", r#"[ -n "${SHIM_FIGCRAFT_PID:-}" ] && echo "$SHIM_FIGCRAFT_PID""#);
+        sandbox.shim(
+            "pgrep",
+            r#"[ -n "${SHIM_FIGCRAFT_PID:-}" ] && echo "$SHIM_FIGCRAFT_PID""#,
+        );
         Launch { sandbox, project }
     }
 
@@ -112,18 +184,42 @@ esac"#);
 
     /// The greywall call of one launch of `agent` with `arguments`.
     fn run_agent(&self, agent: &str, extra: &[(&str, &str)], arguments: &[&str]) -> String {
-        let output = self.sandbox.command(bin().join("greywall-agents").join(agent), extra).args(arguments).current_dir(&self.project).output().unwrap();
-        assert_eq!(output.status.code(), Some(0), "{agent}: {}", stderr(&output));
-        self.sandbox.calls("greywall").pop().expect("greywall did not start")
+        let output = self
+            .sandbox
+            .command(bin().join("greywall-agents").join(agent), extra)
+            .args(arguments)
+            .current_dir(&self.project)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{agent}: {}",
+            stderr(&output)
+        );
+        self.sandbox
+            .calls("greywall")
+            .pop()
+            .expect("greywall did not start")
     }
 
     /// What the fake opencode recorded: "arguments" or "environment", one line each.
     fn opencode_saw(&self, what: &str) -> Vec<String> {
-        fs::read_to_string(self.sandbox.home.join(format!("opencode-{what}"))).unwrap().lines().map(str::to_string).collect()
+        fs::read_to_string(self.sandbox.home.join(format!("opencode-{what}")))
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
     fn slug(path: &Path) -> String {
-        fs::canonicalize(path).unwrap().display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+        fs::canonicalize(path)
+            .unwrap()
+            .display()
+            .to_string()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect()
     }
 
     fn settings(&self) -> serde_json::Value {
@@ -131,7 +227,11 @@ esac"#);
     }
 
     fn settings_of(&self, agent: &str) -> serde_json::Value {
-        let path = self.sandbox.runtime.join("greywall-agents").join(format!("{}.{agent}.json", Launch::slug(&self.project)));
+        let path = self
+            .sandbox
+            .runtime
+            .join("greywall-agents")
+            .join(format!("{}.{agent}.json", Launch::slug(&self.project)));
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
     }
 }
@@ -142,55 +242,131 @@ fn every_agent_keeps_reviewed_profiles_without_a_drift_merge_prompt() {
         let launch = Launch::new();
         launch.run_agent(agent, &[("GREYWALL_NO_PROMPT", "")], &[]);
         let no_prompt = fs::read_to_string(launch.sandbox.home.join("greywall-no-prompt")).unwrap();
-        assert_eq!(no_prompt, "1", "{agent} must disable greywall's profile merge prompt");
+        assert_eq!(
+            no_prompt, "1",
+            "{agent} must disable greywall's profile merge prompt"
+        );
     }
 }
 
 #[test]
 fn external_git_metadata_is_refused_before_credentials_or_sandbox_start() {
-    for layout in ["gitfile", "relative-gitfile", "symlink", "commondir", "linked-worktree", "broken-gitfile", "environment"] {
+    for layout in [
+        "gitfile",
+        "relative-gitfile",
+        "symlink",
+        "commondir",
+        "linked-worktree",
+        "broken-gitfile",
+        "environment",
+    ] {
         for &agent in AGENTS.iter() {
             let launch = Launch::new();
             let metadata = launch.project.with_file_name("proj-a-metadata");
             match layout {
                 "linked-worktree" => {
-                    assert!(Command::new("git").arg("-C").arg(&launch.project)
-                        .args(["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "fixture"])
-                        .status().unwrap().success());
-                    assert!(Command::new("git").arg("-C").arg(&launch.project)
-                        .args(["worktree", "add", "--detach", "-q"]).arg(&metadata).status().unwrap().success());
+                    assert!(
+                        Command::new("git")
+                            .arg("-C")
+                            .arg(&launch.project)
+                            .args([
+                                "-c",
+                                "user.name=Test",
+                                "-c",
+                                "user.email=test@example.invalid",
+                                "commit",
+                                "--allow-empty",
+                                "-qm",
+                                "fixture"
+                            ])
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                    assert!(
+                        Command::new("git")
+                            .arg("-C")
+                            .arg(&launch.project)
+                            .args(["worktree", "add", "--detach", "-q"])
+                            .arg(&metadata)
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
                 }
                 "broken-gitfile" => {
                     fs::rename(launch.project.join(".git"), &metadata).unwrap();
-                    fs::write(launch.project.join(".git"), "gitdir: ../missing-metadata\n").unwrap();
+                    fs::write(launch.project.join(".git"), "gitdir: ../missing-metadata\n")
+                        .unwrap();
                 }
                 _ => {
                     fs::rename(launch.project.join(".git"), &metadata).unwrap();
                     match layout {
-                        "gitfile" => fs::write(launch.project.join(".git"), format!("gitdir: {}\n", metadata.display())).unwrap(),
-                        "relative-gitfile" => fs::write(launch.project.join(".git"), "gitdir: ../proj-a-metadata\n").unwrap(),
-                        "symlink" => std::os::unix::fs::symlink(&metadata, launch.project.join(".git")).unwrap(),
+                        "gitfile" => fs::write(
+                            launch.project.join(".git"),
+                            format!("gitdir: {}\n", metadata.display()),
+                        )
+                        .unwrap(),
+                        "relative-gitfile" => {
+                            fs::write(launch.project.join(".git"), "gitdir: ../proj-a-metadata\n")
+                                .unwrap()
+                        }
+                        "symlink" => {
+                            std::os::unix::fs::symlink(&metadata, launch.project.join(".git"))
+                                .unwrap()
+                        }
                         "environment" => (),
                         "commondir" => {
                             fs::create_dir(launch.project.join(".git")).unwrap();
-                            fs::copy(metadata.join("HEAD"), launch.project.join(".git/HEAD")).unwrap();
-                            fs::write(launch.project.join(".git/commondir"), "../../proj-a-metadata\n").unwrap();
+                            fs::copy(metadata.join("HEAD"), launch.project.join(".git/HEAD"))
+                                .unwrap();
+                            fs::write(
+                                launch.project.join(".git/commondir"),
+                                "../../proj-a-metadata\n",
+                            )
+                            .unwrap();
                         }
                         _ => unreachable!(),
                     }
                 }
             }
-            let checkout = if layout == "linked-worktree" { &metadata } else { &launch.project };
-            let mut command = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[]);
+            let checkout = if layout == "linked-worktree" {
+                &metadata
+            } else {
+                &launch.project
+            };
+            let mut command = launch
+                .sandbox
+                .command(bin().join("greywall-agents").join(agent), &[]);
             if layout == "environment" {
-                command.env("GIT_DIR", &metadata).env("GIT_WORK_TREE", &launch.project);
+                command
+                    .env("GIT_DIR", &metadata)
+                    .env("GIT_WORK_TREE", &launch.project);
             }
             let output = command.current_dir(checkout).output().unwrap();
-            assert_eq!(output.status.code(), Some(1), "{agent} {layout}: {}", stderr(&output));
-            assert!(stderr(&output).contains("Git metadata") && stderr(&output).contains("--no-local"), "{}", stderr(&output));
-            assert!(launch.sandbox.calls("secret-tool").is_empty(), "{agent} {layout}: credentials looked up");
-            assert!(launch.sandbox.calls("greywall").is_empty(), "{agent} {layout}: sandbox started");
-            assert!(!launch.sandbox.runtime.join("greywall-agents").exists(), "settings written before refusal");
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{agent} {layout}: {}",
+                stderr(&output)
+            );
+            assert!(
+                stderr(&output).contains("Git metadata") && stderr(&output).contains("--no-local"),
+                "{}",
+                stderr(&output)
+            );
+            assert!(
+                launch.sandbox.calls("secret-tool").is_empty(),
+                "{agent} {layout}: credentials looked up"
+            );
+            assert!(
+                launch.sandbox.calls("greywall").is_empty(),
+                "{agent} {layout}: sandbox started"
+            );
+            assert!(
+                !launch.sandbox.runtime.join("greywall-agents").exists(),
+                "settings written before refusal"
+            );
         }
     }
 }
@@ -202,11 +378,24 @@ fn git_metadata_is_checked_again_after_a_pointer_changes() {
         launch.run_agent(agent, &[], &[]);
         let metadata = launch.project.with_file_name("external-metadata");
         fs::rename(launch.project.join(".git"), &metadata).unwrap();
-        fs::write(launch.project.join(".git"), format!("gitdir: {}\n", metadata.display())).unwrap();
+        fs::write(
+            launch.project.join(".git"),
+            format!("gitdir: {}\n", metadata.display()),
+        )
+        .unwrap();
         launch.sandbox.reset_log();
-        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
-            .current_dir(&launch.project).output().unwrap();
-        assert_eq!(output.status.code(), Some(1), "{agent}: {}", stderr(&output));
+        let output = launch
+            .sandbox
+            .command(bin().join("greywall-agents").join(agent), &[])
+            .current_dir(&launch.project)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{agent}: {}",
+            stderr(&output)
+        );
         assert!(launch.sandbox.calls("greywall").is_empty());
         assert!(launch.sandbox.calls("secret-tool").is_empty());
     }
@@ -218,23 +407,57 @@ fn build_tools_run_at_the_lowest_priority_on_every_cpu_without_restricting_the_i
         let launch = Launch::new();
         let available_cpus = unsafe {
             let mut affinity: libc::cpu_set_t = std::mem::zeroed();
-            assert_eq!(libc::sched_getaffinity(0, std::mem::size_of_val(&affinity), &mut affinity), 0);
-            (0..libc::CPU_SETSIZE as usize).filter(|cpu| libc::CPU_ISSET(*cpu, &affinity)).collect::<Vec<_>>()
+            assert_eq!(
+                libc::sched_getaffinity(0, std::mem::size_of_val(&affinity), &mut affinity),
+                0
+            );
+            (0..libc::CPU_SETSIZE as usize)
+                .filter(|cpu| libc::CPU_ISSET(*cpu, &affinity))
+                .collect::<Vec<_>>()
         };
         let scheduling_probe = "{'cpus': sorted(os.sched_getaffinity(0)), 'nice': os.getpriority(os.PRIO_PROCESS, 0), 'idle': os.sched_getscheduler(0) == os.SCHED_IDLE}";
-        let probe = format!("#!/usr/bin/env python3\nimport json, os, subprocess\n\
-                             print(json.dumps({{'agent': {scheduling_probe}, 'build': json.loads(subprocess.check_output(['cargo', 'test'], text=True))}}))\n");
-        let agent_path = match agent { "opencode" => ".opencode/bin/opencode", "codex" => ".local/npm/bin/codex", _ => ".local/bin/claude" };
+        let probe = format!(
+            "#!/usr/bin/env python3\nimport json, os, subprocess\n\
+                             print(json.dumps({{'agent': {scheduling_probe}, 'build': json.loads(subprocess.check_output(['cargo', 'test'], text=True))}}))\n"
+        );
+        let agent_path = match agent {
+            "opencode" => ".opencode/bin/opencode",
+            "codex" => ".local/npm/bin/codex",
+            _ => ".local/bin/claude",
+        };
         write_executable(&launch.sandbox.home.join(agent_path), &probe);
-        launch.sandbox.shim("cargo", &format!("python3 -c \"import json, os; print(json.dumps({scheduling_probe}))\""));
-        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
-            .current_dir(&launch.project).output().unwrap();
+        launch.sandbox.shim(
+            "cargo",
+            &format!("python3 -c \"import json, os; print(json.dumps({scheduling_probe}))\""),
+        );
+        let output = launch
+            .sandbox
+            .command(bin().join("greywall-agents").join(agent), &[])
+            .current_dir(&launch.project)
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{agent}: {}", stderr(&output));
         let observed: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
-        assert_eq!(observed["agent"]["cpus"], serde_json::json!(available_cpus), "{agent}: interactive agent was restricted");
-        assert_eq!(observed["build"]["cpus"], serde_json::json!(available_cpus), "{agent}: build was pinned");
-        assert_eq!(observed["build"]["nice"], serde_json::json!(19), "{agent}: {observed}");
-        assert_eq!(observed["build"]["idle"], serde_json::json!(true), "{agent}: {observed}");
+        assert_eq!(
+            observed["agent"]["cpus"],
+            serde_json::json!(available_cpus),
+            "{agent}: interactive agent was restricted"
+        );
+        assert_eq!(
+            observed["build"]["cpus"],
+            serde_json::json!(available_cpus),
+            "{agent}: build was pinned"
+        );
+        assert_eq!(
+            observed["build"]["nice"],
+            serde_json::json!(19),
+            "{agent}: {observed}"
+        );
+        assert_eq!(
+            observed["build"]["idle"],
+            serde_json::json!(true),
+            "{agent}: {observed}"
+        );
     }
 }
 
@@ -244,8 +467,14 @@ fn team_resume_permit_survives_the_host_launcher_without_entering_arguments_or_s
         let launch = Launch::new();
         let token = "0123456789abcdef0123456789abcdef";
         let call = launch.run_agent(agent, &[("COCKPIT_TEAM_RESUME", token)], &[]);
-        let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
-        assert!(environment.lines().any(|line| line == format!("COCKPIT_TEAM_RESUME={token}")), "{agent}");
+        let environment =
+            fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == format!("COCKPIT_TEAM_RESUME={token}")),
+            "{agent}"
+        );
         assert!(!call.contains(token), "permit must not enter greywall argv");
         assert!(!launch.settings_of(agent).to_string().contains(token));
     }
@@ -254,8 +483,12 @@ fn team_resume_permit_survives_the_host_launcher_without_entering_arguments_or_s
 #[test]
 fn native_codex_refuses_the_live_dotfiles_checkout() {
     let launch = Launch::new();
-    let output = launch.sandbox.command(bin().join("greywall-agents/codex"), &[])
-        .current_dir(launch.sandbox.home.join("dotfiles")).output().unwrap();
+    let output = launch
+        .sandbox
+        .command(bin().join("greywall-agents/codex"), &[])
+        .current_dir(launch.sandbox.home.join("dotfiles"))
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("codex launcher:"));
     assert!(launch.sandbox.calls("greywall").is_empty());
@@ -264,59 +497,118 @@ fn native_codex_refuses_the_live_dotfiles_checkout() {
 #[test]
 fn native_codex_uses_project_guards_without_learning_or_hook_bypass() {
     let launch = Launch::new();
-    let invocation = launch.run_agent("codex", &[], &["--model", "configured-model", "a literal prompt"]);
+    let invocation = launch.run_agent(
+        "codex",
+        &[],
+        &["--model", "configured-model", "a literal prompt"],
+    );
     assert!(invocation.contains("--settings "), "{invocation}");
     assert!(invocation.contains("--profile codex"), "{invocation}");
     assert!(!invocation.contains("--auto-profile"), "{invocation}");
     assert!(!invocation.contains("dangerously"), "{invocation}");
     assert!(invocation.contains("cockpit-answers/"), "{invocation}");
-    assert_eq!(std::fs::read_to_string(launch.sandbox.home.join("codex-arguments")).unwrap(),
-        "--no-daemon\n--model\nconfigured-model\na literal prompt\n");
-    let environment = std::fs::read_to_string(launch.sandbox.home.join("codex-environment")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(launch.sandbox.home.join("codex-arguments")).unwrap(),
+        "--no-daemon\n--model\nconfigured-model\na literal prompt\n"
+    );
+    let environment =
+        std::fs::read_to_string(launch.sandbox.home.join("codex-environment")).unwrap();
     assert!(environment.contains("COCKPIT_AGENT=codex\n"));
     assert!(environment.contains("CLAUDE_ANSWERS_KEY="));
 }
 
 #[test]
 fn native_launchers_replace_inherited_account_claims_with_host_collected_identity() {
-    for agent in ["claude","codex"] {
-        for overridden in [false,true] {
-        let launch = Launch::new();
-        let helper = launch.sandbox.home.join(".config/waybar/scripts/native-subscription.py");
-        fs::remove_file(&helper).unwrap();
-        fs::write(&helper, "import sys\nassert sys.argv[1]=='identity'\nprint('a'*64)\n").unwrap();
-        write_executable(&launch.sandbox.home.join(".local/bin/greywall"), "#!/bin/sh\nprintf '%s' \"$COCKPIT_SUBSCRIPTION_ACCOUNT\" > \"$HOME/execution-account\"\n");
-        let output = launch.sandbox.command(bin().join(format!("greywall-agents/{agent}")), &[("COCKPIT_SUBSCRIPTION_ACCOUNT",&"b".repeat(64))])
-            .args(if overridden { if agent == "claude" {vec!["--settings","{}"]} else {vec!["-c","model_provider=unverified"]} } else {vec![]})
-            .current_dir(&launch.project).output().unwrap();
-        assert!(output.status.success(), "{}", stderr(&output));
-        assert_eq!(fs::read_to_string(launch.sandbox.home.join("execution-account")).unwrap(),if overridden {String::new()} else {"a".repeat(64)});
-    }
+    for agent in ["claude", "codex"] {
+        for overridden in [false, true] {
+            let launch = Launch::new();
+            let helper = launch
+                .sandbox
+                .home
+                .join(".config/waybar/scripts/native-subscription.py");
+            fs::remove_file(&helper).unwrap();
+            fs::write(
+                &helper,
+                "import sys\nassert sys.argv[1]=='identity'\nprint('a'*64)\n",
+            )
+            .unwrap();
+            write_executable(
+                &launch.sandbox.home.join(".local/bin/greywall"),
+                "#!/bin/sh\nprintf '%s' \"$COCKPIT_SUBSCRIPTION_ACCOUNT\" > \"$HOME/execution-account\"\n",
+            );
+            let output = launch
+                .sandbox
+                .command(
+                    bin().join(format!("greywall-agents/{agent}")),
+                    &[("COCKPIT_SUBSCRIPTION_ACCOUNT", &"b".repeat(64))],
+                )
+                .args(if overridden {
+                    if agent == "claude" {
+                        vec!["--settings", "{}"]
+                    } else {
+                        vec!["-c", "model_provider=unverified"]
+                    }
+                } else {
+                    vec![]
+                })
+                .current_dir(&launch.project)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}", stderr(&output));
+            assert_eq!(
+                fs::read_to_string(launch.sandbox.home.join("execution-account")).unwrap(),
+                if overridden {
+                    String::new()
+                } else {
+                    "a".repeat(64)
+                }
+            );
+        }
     }
 }
 
 #[test]
 fn routed_codex_starts_the_private_bridge_inside_its_existing_sandbox() {
     let launch = Launch::new();
-    launch.sandbox.shim("node", "printf '%s\\n' \"$@\" > \"$HOME/bridge-arguments\"");
-    write_executable(&launch.sandbox.home.join(".local/bin/greywall"),
-        "#!/bin/sh\nprintf 'greywall %s\\n' \"$*\" >> \"$SHIM_LOG\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n");
+    launch
+        .sandbox
+        .shim("node", "printf '%s\\n' \"$@\" > \"$HOME/bridge-arguments\"");
+    write_executable(
+        &launch.sandbox.home.join(".local/bin/greywall"),
+        "#!/bin/sh\nprintf 'greywall %s\\n' \"$*\" >> \"$SHIM_LOG\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+    );
     let generation = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let invocation = launch.run_agent("codex", &[("COCKPIT_SUBSCRIPTION_ROUTE",generation)], &[]);
+    let invocation = launch.run_agent("codex", &[("COCKPIT_SUBSCRIPTION_ROUTE", generation)], &[]);
     assert!(invocation.contains("--profile codex"), "{invocation}");
     assert!(invocation.contains("--settings "), "{invocation}");
     assert!(!invocation.contains("dangerously"), "{invocation}");
     let arguments = fs::read_to_string(launch.sandbox.home.join("bridge-arguments")).unwrap();
-    assert_eq!(arguments, format!("{}/agent-cockpit/config/codex/.codex/cockpit-bridge.mjs\n{generation}\n", launch.sandbox.home.display()));
+    assert_eq!(
+        arguments,
+        format!(
+            "{}/agent-cockpit/config/codex/.codex/cockpit-bridge.mjs\n{generation}\n",
+            launch.sandbox.home.display()
+        )
+    );
     assert!(!launch.sandbox.home.join("codex-arguments").exists());
 }
 
 #[test]
 fn routed_codex_rejects_cli_arguments_that_could_override_the_protected_plan() {
     let launch = Launch::new();
-    let output = launch.sandbox.command(bin().join("greywall-agents/codex"),
-        &[("COCKPIT_SUBSCRIPTION_ROUTE","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")])
-        .args(["--model","unverified-model"]).current_dir(&launch.project).output().unwrap();
+    let output = launch
+        .sandbox
+        .command(
+            bin().join("greywall-agents/codex"),
+            &[(
+                "COCKPIT_SUBSCRIPTION_ROUTE",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+        )
+        .args(["--model", "unverified-model"])
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(launch.sandbox.calls("greywall").is_empty());
 }
@@ -328,8 +620,16 @@ fn native_codex_cannot_open_opencodes_state_and_other_agents_cannot_open_codex_s
         launch.run_agent(agent, &[], &[]);
         let settings = launch.settings_of(agent);
         let denied = settings["filesystem"]["denyRead"].as_array().unwrap();
-        assert_eq!(denied.contains(&serde_json::json!("~/.codex/**")), agent != "codex", "{agent}");
-        assert_eq!(denied.contains(&serde_json::json!("~/.local/share/opencode/**")), agent != "opencode", "{agent}");
+        assert_eq!(
+            denied.contains(&serde_json::json!("~/.codex/**")),
+            agent != "codex",
+            "{agent}"
+        );
+        assert_eq!(
+            denied.contains(&serde_json::json!("~/.local/share/opencode/**")),
+            agent != "opencode",
+            "{agent}"
+        );
     }
 }
 
@@ -345,14 +645,29 @@ fn other_projects_folders_are_read_only_for(agent: &str) {
     let launch = Launch::new();
     let started = launch.run_agent(agent, &[], &[]);
     assert!(started.contains("--settings "), "{started}");
-    let denied: Vec<String> = launch.settings_of(agent)["filesystem"]["denyWrite"].as_array().unwrap().iter()
-        .map(|path| path.as_str().unwrap().to_string()).collect();
+    let denied: Vec<String> = launch.settings_of(agent)["filesystem"]["denyWrite"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap().to_string())
+        .collect();
     let projects = launch.sandbox.home.join(".claude/projects");
-    let other = projects.join(Launch::slug(&launch.sandbox.home.join("IdeaProjects/proj-b"))).display().to_string();
-    let own = projects.join(Launch::slug(&launch.project)).display().to_string();
+    let other = projects
+        .join(Launch::slug(
+            &launch.sandbox.home.join("IdeaProjects/proj-b"),
+        ))
+        .display()
+        .to_string();
+    let own = projects
+        .join(Launch::slug(&launch.project))
+        .display()
+        .to_string();
     assert!(denied.contains(&other), "{denied:?}");
     assert!(!denied.contains(&own), "{denied:?}");
-    assert!(denied.contains(&".git/hooks".to_string()), "greywall.json's own rules were lost: {denied:?}");
+    assert!(
+        denied.contains(&".git/hooks".to_string()),
+        "greywall.json's own rules were lost: {denied:?}"
+    );
 }
 
 #[test]
@@ -363,20 +678,48 @@ fn a_gone_checkouts_claude_folder_is_left_out_of_the_read_only_list() {
     let launch = Launch::new();
     let home = &launch.sandbox.home;
     let projects = home.join(".claude/projects");
-    let folder_of = |path: &str| projects.join(Launch::slug(home).to_string() + &path.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>());
-    let gone = [folder_of("/IdeaProjects/gone-project"), folder_of("/IdeaProjects/.parallel/proj-b/gone-clone")];
-    let kept = [folder_of("/IdeaProjects/proj-b"), folder_of("/IdeaProjects/proj-b/apps/web"), folder_of(""), folder_of("/dotfiles")];
+    let folder_of = |path: &str| {
+        projects.join(
+            Launch::slug(home).to_string()
+                + &path
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                    .collect::<String>(),
+        )
+    };
+    let gone = [
+        folder_of("/IdeaProjects/gone-project"),
+        folder_of("/IdeaProjects/.parallel/proj-b/gone-clone"),
+    ];
+    let kept = [
+        folder_of("/IdeaProjects/proj-b"),
+        folder_of("/IdeaProjects/proj-b/apps/web"),
+        folder_of(""),
+        folder_of("/dotfiles"),
+    ];
     for folder in gone.iter().chain(&kept) {
         fs::create_dir_all(folder).unwrap();
     }
     launch.run_agent("opencode", &[], &[]);
-    let denied: Vec<String> = launch.settings_of("opencode")["filesystem"]["denyWrite"].as_array().unwrap().iter()
-        .map(|path| path.as_str().unwrap().to_string()).collect();
+    let denied: Vec<String> = launch.settings_of("opencode")["filesystem"]["denyWrite"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap().to_string())
+        .collect();
     for folder in &gone {
-        assert!(!denied.contains(&folder.display().to_string()), "{} {denied:?}", folder.display());
+        assert!(
+            !denied.contains(&folder.display().to_string()),
+            "{} {denied:?}",
+            folder.display()
+        );
     }
     for folder in &kept {
-        assert!(denied.contains(&folder.display().to_string()), "{} {denied:?}", folder.display());
+        assert!(
+            denied.contains(&folder.display().to_string()),
+            "{} {denied:?}",
+            folder.display()
+        );
     }
 }
 
@@ -385,12 +728,24 @@ fn launches_started_together_never_share_a_temporary_file() {
     // The restore after login starts every session at once; fixed ".new" names made them
     // collide (2026-10-25: "mv: cannot stat …/bundle.pem.new", "cp: … wl-paste.new: File exists").
     let launch = Launch::new();
-    let launches: Vec<_> = (0..12).map(|_| launch.sandbox.command(bin().join("greywall-agents/opencode"), &[])
-        .current_dir(&launch.project).stderr(std::process::Stdio::piped()).spawn().unwrap()).collect();
+    let launches: Vec<_> = (0..12)
+        .map(|_| {
+            launch
+                .sandbox
+                .command(bin().join("greywall-agents/opencode"), &[])
+                .current_dir(&launch.project)
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
     for running in launches {
         let output = running.wait_with_output().unwrap();
         let errors = stderr(&output);
-        assert!(output.status.success() && !errors.contains("mv:") && !errors.contains("cp:"), "{errors}");
+        assert!(
+            output.status.success() && !errors.contains("mv:") && !errors.contains("cp:"),
+            "{errors}"
+        );
     }
 }
 
@@ -400,11 +755,23 @@ fn go_build_cache_stays_in_the_sandbox_instead_of_the_host_home() {
         for inherited_cache in ["", "/host/custom-go-cache"] {
             let launch = Launch::new();
             let started = launch.run_agent(agent, &[("GOCACHE", inherited_cache)], &[]);
-            let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
-            assert!(environment.lines().any(|line| line == "GOCACHE=/tmp/greywall-go-build"),
-                "{agent} did not redirect the Go build cache (inherited {inherited_cache:?})");
-            assert!(!started.contains("--allow-path /tmp/greywall-go-build"), "{started}");
-            assert!(!started.contains("go-build"), "a host cache must not be mounted writable: {started}");
+            let environment =
+                fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment")))
+                    .unwrap();
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "GOCACHE=/tmp/greywall-go-build"),
+                "{agent} did not redirect the Go build cache (inherited {inherited_cache:?})"
+            );
+            assert!(
+                !started.contains("--allow-path /tmp/greywall-go-build"),
+                "{started}"
+            );
+            assert!(
+                !started.contains("go-build"),
+                "a host cache must not be mounted writable: {started}"
+            );
             assert!(!launch.sandbox.home.join(".cache/go-build").exists());
         }
     }
@@ -418,23 +785,56 @@ fn every_sandbox_shares_the_full_test_lock_folder() {
         let launch = Launch::new();
         let started = launch.run_agent(agent, &[], &[]);
         let lock_folder = launch.sandbox.home.join(".cache/cockpit/test-lock");
-        assert!(lock_folder.is_dir(), "{agent} did not create {}", lock_folder.display());
-        assert!(started.contains(&format!("--allow-path {} ", lock_folder.display())), "{agent}: {started}");
+        assert!(
+            lock_folder.is_dir(),
+            "{agent} did not create {}",
+            lock_folder.display()
+        );
+        assert!(
+            started.contains(&format!("--allow-path {} ", lock_folder.display())),
+            "{agent}: {started}"
+        );
     }
 }
 
-const GIT_IDENTITY_VARIABLES: [&str; 4] = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"];
+const GIT_IDENTITY_VARIABLES: [&str; 4] = [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+];
 
 #[test]
 fn the_hosts_git_identity_reaches_every_agent_without_mounting_its_git_config() {
     for &agent in AGENTS.iter() {
         let launch = Launch::new();
-        fs::write(launch.sandbox.home.join(".gitconfig"), "[user]\n\tname = Host Person\n\temail = host@example.invalid\n").unwrap();
-        let started = launch.run_agent(agent, &[("GIT_CONFIG_NOSYSTEM", "1"), ("GIT_AUTHOR_EMAIL", "inherited@example.invalid")], &[]);
-        let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
-        for (name, value) in [("GIT_AUTHOR_NAME", "Host Person"), ("GIT_AUTHOR_EMAIL", "host@example.invalid"),
-                              ("GIT_COMMITTER_NAME", "Host Person"), ("GIT_COMMITTER_EMAIL", "host@example.invalid")] {
-            assert!(environment.lines().any(|line| line == format!("{name}={value}")), "{agent}: {name} is not the host's");
+        fs::write(
+            launch.sandbox.home.join(".gitconfig"),
+            "[user]\n\tname = Host Person\n\temail = host@example.invalid\n",
+        )
+        .unwrap();
+        let started = launch.run_agent(
+            agent,
+            &[
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+                ("GIT_AUTHOR_EMAIL", "inherited@example.invalid"),
+            ],
+            &[],
+        );
+        let environment =
+            fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+        for (name, value) in [
+            ("GIT_AUTHOR_NAME", "Host Person"),
+            ("GIT_AUTHOR_EMAIL", "host@example.invalid"),
+            ("GIT_COMMITTER_NAME", "Host Person"),
+            ("GIT_COMMITTER_EMAIL", "host@example.invalid"),
+        ] {
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == format!("{name}={value}")),
+                "{agent}: {name} is not the host's"
+            );
         }
         assert!(!started.contains(".gitconfig"), "{agent}: {started}");
     }
@@ -444,10 +844,24 @@ fn the_hosts_git_identity_reaches_every_agent_without_mounting_its_git_config() 
 fn without_a_host_git_identity_no_agent_gets_one() {
     for &agent in AGENTS.iter() {
         let launch = Launch::new();
-        launch.run_agent(agent, &[("GIT_CONFIG_NOSYSTEM", "1"), ("GIT_AUTHOR_NAME", "Inherited"), ("GIT_COMMITTER_EMAIL", "inherited@example.invalid")], &[]);
-        let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+        launch.run_agent(
+            agent,
+            &[
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+                ("GIT_AUTHOR_NAME", "Inherited"),
+                ("GIT_COMMITTER_EMAIL", "inherited@example.invalid"),
+            ],
+            &[],
+        );
+        let environment =
+            fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
         for name in GIT_IDENTITY_VARIABLES {
-            assert!(!environment.lines().any(|line| line.starts_with(&format!("{name}="))), "{agent}: {name} was set");
+            assert!(
+                !environment
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{name}="))),
+                "{agent}: {name} was set"
+            );
         }
     }
 }
@@ -458,12 +872,30 @@ fn cargo_registry_cache_stays_in_the_sandbox_instead_of_the_host_home() {
         for inherited_cache in ["", "/host/custom-cargo-home"] {
             let launch = Launch::new();
             let started = launch.run_agent(agent, &[("CARGO_HOME", inherited_cache)], &[]);
-            let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
-            assert!(environment.lines().any(|line| line == "CARGO_HOME=/tmp/greywall-cargo"),
-                "{agent} did not redirect Cargo's writable registry (inherited {inherited_cache:?})");
-            assert!(!started.contains("--allow-path /tmp/greywall-cargo"), "{started}");
-            assert!(!started.contains("--allow-path /host/custom-cargo-home"), "{started}");
-            assert!(!started.contains(&format!("--allow-path {}", launch.sandbox.home.join(".cargo").display())), "{started}");
+            let environment =
+                fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment")))
+                    .unwrap();
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "CARGO_HOME=/tmp/greywall-cargo"),
+                "{agent} did not redirect Cargo's writable registry (inherited {inherited_cache:?})"
+            );
+            assert!(
+                !started.contains("--allow-path /tmp/greywall-cargo"),
+                "{started}"
+            );
+            assert!(
+                !started.contains("--allow-path /host/custom-cargo-home"),
+                "{started}"
+            );
+            assert!(
+                !started.contains(&format!(
+                    "--allow-path {}",
+                    launch.sandbox.home.join(".cargo").display()
+                )),
+                "{started}"
+            );
             assert!(!launch.sandbox.home.join(".cargo/registry").exists());
         }
     }
@@ -474,11 +906,24 @@ fn go_module_cache_stays_in_the_sandbox_instead_of_the_host_gopath() {
     for &agent in AGENTS.iter() {
         for inherited_cache in ["", "/host/custom-go-mod-cache"] {
             let launch = Launch::new();
-            let started = launch.run_agent(agent, &[("GOMODCACHE", inherited_cache), ("GOPATH", "/host/go")], &[]);
-            let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
-            assert!(environment.lines().any(|line| line == "GOMODCACHE=/tmp/greywall-go-mod"),
-                "{agent} did not redirect the Go module cache (inherited {inherited_cache:?})");
-            assert!(!started.contains("--allow-path /tmp/greywall-go-mod"), "{started}");
+            let started = launch.run_agent(
+                agent,
+                &[("GOMODCACHE", inherited_cache), ("GOPATH", "/host/go")],
+                &[],
+            );
+            let environment =
+                fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment")))
+                    .unwrap();
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "GOMODCACHE=/tmp/greywall-go-mod"),
+                "{agent} did not redirect the Go module cache (inherited {inherited_cache:?})"
+            );
+            assert!(
+                !started.contains("--allow-path /tmp/greywall-go-mod"),
+                "{started}"
+            );
             assert!(!started.contains("--allow-path /host/go"), "{started}");
             assert!(!launch.sandbox.home.join("go/pkg").exists());
         }
@@ -491,28 +936,61 @@ fn only_the_projects_own_answers_folder_is_mounted() {
     for &agent in AGENTS.iter() {
         let launch = Launch::new();
         let started = launch.run_agent(agent, &[], &[]);
-        let answers = launch.sandbox.runtime.join("cockpit-answers").join(Launch::slug(&launch.project));
-        assert!(started.contains(&format!("--allow-read-path {} ", answers.display())), "{started}");
-        assert!(answers.join("runs").is_dir() && answers.join("guides").is_dir(), "{agent}");
+        let answers = launch
+            .sandbox
+            .runtime
+            .join("cockpit-answers")
+            .join(Launch::slug(&launch.project));
+        assert!(
+            started.contains(&format!("--allow-read-path {} ", answers.display())),
+            "{started}"
+        );
+        assert!(
+            answers.join("runs").is_dir() && answers.join("guides").is_dir(),
+            "{agent}"
+        );
     }
 }
 
-fn managed_figcraft(launch: &Launch, port: &str, root: &str, additional_roots: &[&str]) -> WaitingProcess {
+fn managed_figcraft(
+    launch: &Launch,
+    port: &str,
+    root: &str,
+    additional_roots: &[&str],
+) -> WaitingProcess {
     let storage = launch.sandbox.home.join(".config/greywall-agents/figcraft");
     fs::create_dir_all(storage.join("ports")).unwrap();
     fs::write(storage.join("ports").join(port), format!("{root}\n")).unwrap();
     let config = storage.join(format!("instances/{port}/config"));
     fs::create_dir_all(&config).unwrap();
-    let mut arguments = vec!["--control", port, "--automation-read-root", root, "--automation-write-root", root];
+    let mut arguments = vec![
+        "--control",
+        port,
+        "--automation-read-root",
+        root,
+        "--automation-write-root",
+        root,
+    ];
     arguments.extend_from_slice(additional_roots);
-    WaitingProcess::with_environment("figcraft", &arguments, &launch.project, &[("XDG_CONFIG_HOME", config.to_str().unwrap())])
+    WaitingProcess::with_environment(
+        "figcraft",
+        &arguments,
+        &launch.project,
+        &[("XDG_CONFIG_HOME", config.to_str().unwrap())],
+    )
 }
 
 #[test]
 fn figcrafts_port_reaches_only_the_project_it_serves() {
     let launch = Launch::new();
-    let root = fs::canonicalize(&launch.project).unwrap().display().to_string();
-    let other = fs::canonicalize(launch.sandbox.home.join("IdeaProjects/proj-b")).unwrap().display().to_string();
+    let root = fs::canonicalize(&launch.project)
+        .unwrap()
+        .display()
+        .to_string();
+    let other = fs::canonicalize(launch.sandbox.home.join("IdeaProjects/proj-b"))
+        .unwrap()
+        .display()
+        .to_string();
     let own = managed_figcraft(&launch, "17979", &root, &[]);
     let foreign = managed_figcraft(&launch, "17980", &other, &[]);
     let process_ids = format!("{}\n{}", foreign.id(), own.id());
@@ -522,19 +1000,28 @@ fn figcrafts_port_reaches_only_the_project_it_serves() {
         assert!(!started.contains("--forward 17980"), "{agent}: {started}");
         assert!(!started.contains("--forward 7979"), "{agent}: {started}");
     }
-    assert!(!launch.run(&[]).contains("--forward 17979"), "forwarded with no FigCraft open");
+    assert!(
+        !launch.run(&[]).contains("--forward 17979"),
+        "forwarded with no FigCraft open"
+    );
 }
 
 #[test]
 fn extra_automation_roots_never_grant_a_figcraft_forward() {
     let launch = Launch::new();
     let root = launch.project.to_str().unwrap();
-    for additional in [vec!["--automation-read-root", "/elsewhere"], vec!["--automation-write-root", "/elsewhere"],
-                       vec!["--automation-write-root", root]] {
+    for additional in [
+        vec!["--automation-read-root", "/elsewhere"],
+        vec!["--automation-write-root", "/elsewhere"],
+        vec!["--automation-write-root", root],
+    ] {
         let open = managed_figcraft(&launch, "17979", root, &additional);
         for &agent in AGENTS.iter() {
             let started = launch.run_agent(agent, &[("SHIM_FIGCRAFT_PID", &open.id())], &[]);
-            assert!(!started.contains("--forward 17979"), "{additional:?}: {started}");
+            assert!(
+                !started.contains("--forward 17979"),
+                "{additional:?}: {started}"
+            );
         }
     }
 }
@@ -545,13 +1032,28 @@ fn a_root_prefix_or_an_unowned_port_never_grants_a_figcraft_forward() {
     let root_prefix = format!("{}-other", launch.project.display());
     let open = managed_figcraft(&launch, "17979", &root_prefix, &[]);
     for &agent in AGENTS.iter() {
-        assert!(!launch.run_agent(agent, &[("SHIM_FIGCRAFT_PID", &open.id())], &[]).contains("--forward 17979"));
+        assert!(
+            !launch
+                .run_agent(agent, &[("SHIM_FIGCRAFT_PID", &open.id())], &[])
+                .contains("--forward 17979")
+        );
     }
     // Even correct process arguments cannot claim a port reserved for another checkout.
     let own = managed_figcraft(&launch, "17980", launch.project.to_str().unwrap(), &[]);
-    fs::write(launch.sandbox.home.join(".config/greywall-agents/figcraft/ports/17980"), &root_prefix).unwrap();
+    fs::write(
+        launch
+            .sandbox
+            .home
+            .join(".config/greywall-agents/figcraft/ports/17980"),
+        &root_prefix,
+    )
+    .unwrap();
     for &agent in AGENTS.iter() {
-        assert!(!launch.run_agent(agent, &[("SHIM_FIGCRAFT_PID", &own.id())], &[]).contains("--forward 17980"));
+        assert!(
+            !launch
+                .run_agent(agent, &[("SHIM_FIGCRAFT_PID", &own.id())], &[])
+                .contains("--forward 17980")
+        );
     }
 }
 
@@ -561,8 +1063,14 @@ fn disconnected_launches_clear_inherited_control_ports() {
     for &agent in AGENTS.iter() {
         let started = launch.run_agent(agent, &[("FIGCRAFT_CONTROL_PORT", "17980")], &[]);
         assert!(!started.contains("--forward 17980"));
-        let environment = fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
-        assert!(!environment.lines().any(|line| line == "FIGCRAFT_CONTROL_PORT=17980"), "{agent} inherited a foreign control port");
+        let environment =
+            fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment"))).unwrap();
+        assert!(
+            !environment
+                .lines()
+                .any(|line| line == "FIGCRAFT_CONTROL_PORT=17980"),
+            "{agent} inherited a foreign control port"
+        );
     }
 }
 
@@ -573,10 +1081,22 @@ fn figcraft_reservations_are_hidden_even_before_the_first_window_starts() {
     let storage = launch.sandbox.home.join(".config/greywall-agents/figcraft");
     assert!(storage.is_dir());
     let settings = launch.settings();
-    assert!(settings["filesystem"]["denyRead"].as_array().unwrap().iter()
-        .any(|entry| entry == "~/.config/greywall-agents/figcraft" || entry == &storage.display().to_string()));
-    assert!(settings["filesystem"]["denyWrite"].as_array().unwrap().iter()
-        .any(|entry| entry == "~/.config/greywall-agents/figcraft" || entry == &storage.display().to_string()));
+    assert!(
+        settings["filesystem"]["denyRead"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == "~/.config/greywall-agents/figcraft"
+                || entry == &storage.display().to_string())
+    );
+    assert!(
+        settings["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == "~/.config/greywall-agents/figcraft"
+                || entry == &storage.display().to_string())
+    );
 }
 
 // Stuck-exit captures hold the screens of other sessions (cockpit record_stuck_exit).
@@ -586,32 +1106,67 @@ fn every_launcher_creates_the_stuck_exit_folder_before_its_sandbox_starts() {
     for &agent in AGENTS.iter() {
         let launch = Launch::new();
         launch.run_agent(agent, &[], &[]);
-        assert!(launch.sandbox.state.join("claude-stuck-exits").is_dir(), "{agent}");
+        assert!(
+            launch.sandbox.state.join("claude-stuck-exits").is_dir(),
+            "{agent}"
+        );
     }
 }
 
 #[test]
 fn the_greywall_profile_hides_stuck_exit_captures() {
-    let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
-    assert!(settings["filesystem"]["denyRead"].as_array().unwrap().iter().any(|entry| entry == "~/.local/state/claude-stuck-exits"));
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        settings["filesystem"]["denyRead"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == "~/.local/state/claude-stuck-exits")
+    );
 }
 
 #[test]
 fn new_sandboxes_can_read_canonical_commands_but_not_either_phone_state_path() {
     let launch = Launch::new();
-    fs::copy(repo().join("config/greywall/.config/greywall/greywall.json"),
-             launch.sandbox.home.join(".config/greywall/greywall.json")).unwrap();
+    fs::copy(
+        repo().join("config/greywall/.config/greywall/greywall.json"),
+        launch.sandbox.home.join(".config/greywall/greywall.json"),
+    )
+    .unwrap();
     launch.run(&[]);
     let settings = launch.settings();
     let readable = settings["filesystem"]["allowRead"].as_array().unwrap();
     let hidden = settings["filesystem"]["denyRead"].as_array().unwrap();
-    for name in ["cockpit-todo", "cockpit-design", "cockpit-needs-input", "cockpit-session-label", "cockpit-session-doing"] {
-        assert!(readable.iter().any(|value| value == &format!("~/agent-cockpit/config/bin/.local/bin/{name}")), "{name}");
+    for name in [
+        "cockpit-todo",
+        "cockpit-design",
+        "cockpit-needs-input",
+        "cockpit-session-label",
+        "cockpit-session-doing",
+    ] {
+        assert!(
+            readable
+                .iter()
+                .any(|value| value == &format!("~/agent-cockpit/config/bin/.local/bin/{name}")),
+            "{name}"
+        );
     }
     for name in ["cockpit-todo", "cockpit-design"] {
-        assert!(readable.iter().any(|value| value == &format!("~/agent-cockpit/apps/target/release/{name}")), "{name}");
+        assert!(
+            readable
+                .iter()
+                .any(|value| value == &format!("~/agent-cockpit/apps/target/release/{name}")),
+            "{name}"
+        );
     }
-    for path in ["~/.local/state/claude-remote", "~/.local/state/cockpit-remote", "~/.local/state/claude-audit"] {
+    for path in [
+        "~/.local/state/claude-remote",
+        "~/.local/state/cockpit-remote",
+        "~/.local/state/claude-audit",
+    ] {
         assert!(hidden.iter().any(|value| value == path), "{path}");
     }
     assert!(launch.sandbox.state.join("cockpit-remote").is_dir());
@@ -624,15 +1179,26 @@ fn claudes_mcp_override_connects_to_the_port_its_launcher_forwards() {
     launch.run(&[("SHIM_FIGCRAFT_PID", &open.id())]);
     let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
     let arguments: Vec<_> = arguments.lines().collect();
-    let index = arguments.iter().position(|argument| *argument == "--mcp-config").expect("no MCP override");
+    let index = arguments
+        .iter()
+        .position(|argument| *argument == "--mcp-config")
+        .expect("no MCP override");
     assert!(!arguments.contains(&"--strict-mcp-config"));
     let config: serde_json::Value = serde_json::from_str(arguments[index + 1]).unwrap();
     let server = &config["mcpServers"]["figcraft-app"];
     launch.sandbox.shim("figcraft-cli", "exit 0");
-    let mut command = launch.sandbox.command(server["command"].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", "17979")]);
-    for argument in server["args"].as_array().unwrap() { command.arg(argument.as_str().unwrap()); }
+    let mut command = launch.sandbox.command(
+        server["command"].as_str().unwrap(),
+        &[("FIGCRAFT_CONTROL_PORT", "17979")],
+    );
+    for argument in server["args"].as_array().unwrap() {
+        command.arg(argument.as_str().unwrap());
+    }
     assert!(command.output().unwrap().status.success());
-    assert_eq!(launch.sandbox.calls("figcraft-cli"), ["figcraft-cli mcp --attach 17979"]);
+    assert_eq!(
+        launch.sandbox.calls("figcraft-cli"),
+        ["figcraft-cli mcp --attach 17979"]
+    );
 }
 
 #[test]
@@ -641,10 +1207,16 @@ fn claude_runs_the_team_watcher_in_the_background_at_session_start_and_turn_end(
     launch.run(&[]);
     let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
     let arguments: Vec<_> = arguments.lines().collect();
-    let index = arguments.iter().position(|argument| *argument == "--settings").expect("no --settings");
+    let index = arguments
+        .iter()
+        .position(|argument| *argument == "--settings")
+        .expect("no --settings");
     let settings: serde_json::Value = serde_json::from_str(arguments[index + 1]).unwrap();
     let watcher = serde_json::json!([{"hooks": [{"type": "command", "command": "cockpit-team watch", "asyncRewake": true, "timeout": 86400}]}]);
-    assert_eq!(settings, serde_json::json!({"hooks": {"SessionStart": watcher, "Stop": watcher}}));
+    assert_eq!(
+        settings,
+        serde_json::json!({"hooks": {"SessionStart": watcher, "Stop": watcher}})
+    );
 }
 
 #[test]
@@ -655,20 +1227,44 @@ fn claude_never_loads_a_development_channel() {
     let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
     assert!(!arguments.contains("channels"), "{arguments}");
     let arguments: Vec<_> = arguments.lines().collect();
-    let index = arguments.iter().position(|argument| *argument == "--mcp-config").unwrap();
+    let index = arguments
+        .iter()
+        .position(|argument| *argument == "--mcp-config")
+        .unwrap();
     let servers: serde_json::Value = serde_json::from_str(arguments[index + 1]).unwrap();
-    assert!(servers["mcpServers"].get("cockpit-team").is_none(), "{servers}");
+    assert!(
+        servers["mcpServers"].get("cockpit-team").is_none(),
+        "{servers}"
+    );
 }
 
 #[test]
 fn claude_configuration_subcommands_run_sandboxed_without_the_session_options() {
     // claude mcp add hung, then failed on "unknown option '--mcp-config'" (todo aa919cfe).
-    for subcommand in [&["mcp", "add", "--scope", "user", "--transport", "http", "figma", "https://mcp.figma.com/mcp"][..],
-                       &["mcp", "list"], &["plugin", "list"], &["auth", "status"], &["doctor"]] {
+    for subcommand in [
+        &[
+            "mcp",
+            "add",
+            "--scope",
+            "user",
+            "--transport",
+            "http",
+            "figma",
+            "https://mcp.figma.com/mcp",
+        ][..],
+        &["mcp", "list"],
+        &["plugin", "list"],
+        &["auth", "status"],
+        &["doctor"],
+    ] {
         let launch = Launch::new();
         launch.run_agent("claude", &[], subcommand);
         let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
-        assert_eq!(arguments.lines().collect::<Vec<_>>(), subcommand, "{subcommand:?}");
+        assert_eq!(
+            arguments.lines().collect::<Vec<_>>(),
+            subcommand,
+            "{subcommand:?}"
+        );
     }
 }
 
@@ -677,7 +1273,10 @@ fn claude_sessions_with_a_prompt_keep_the_session_options() {
     let launch = Launch::new();
     launch.run_agent("claude", &[], &["mcp servers are broken, fix them"]);
     let arguments = fs::read_to_string(launch.sandbox.home.join("claude-arguments")).unwrap();
-    assert!(arguments.lines().any(|argument| argument == "--mcp-config"), "{arguments}");
+    assert!(
+        arguments.lines().any(|argument| argument == "--mcp-config"),
+        "{arguments}"
+    );
 }
 
 #[test]
@@ -689,9 +1288,19 @@ fn generic_port_grants_cannot_forward_another_checkouts_reserved_figcraft_port()
     fs::create_dir_all(&grants).unwrap();
     fs::write(grants.join("proj-a"), "4102444800 17980\n").unwrap();
     for &agent in AGENTS.iter() {
-        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[])
-            .current_dir(&launch.project).output().unwrap();
-        assert_eq!(output.status.code(), Some(1), "{agent}: {}{}", stdout(&output), stderr(&output));
+        let output = launch
+            .sandbox
+            .command(bin().join("greywall-agents").join(agent), &[])
+            .current_dir(&launch.project)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{agent}: {}{}",
+            stdout(&output),
+            stderr(&output)
+        );
         assert!(stderr(&output).contains("reserved"), "{}", stderr(&output));
     }
     assert!(launch.sandbox.calls("greywall").is_empty());
@@ -699,7 +1308,9 @@ fn generic_port_grants_cannot_forward_another_checkouts_reserved_figcraft_port()
 
 fn opencode_inline_config(launch: &Launch) -> serde_json::Value {
     let environment = launch.opencode_saw("environment");
-    let content = environment.iter().find_map(|line| line.strip_prefix("OPENCODE_CONFIG_CONTENT="))
+    let content = environment
+        .iter()
+        .find_map(|line| line.strip_prefix("OPENCODE_CONFIG_CONTENT="))
         .expect("no launcher override for project-local MCP configuration");
     serde_json::from_str(content).unwrap()
 }
@@ -709,16 +1320,36 @@ fn opencodes_mcp_override_uses_only_the_verified_checkout_port() {
     for port in ["17979", "17981"] {
         let launch = Launch::new();
         let open = managed_figcraft(&launch, port, launch.project.to_str().unwrap(), &[]);
-        launch.run_agent("opencode", &[("SHIM_FIGCRAFT_PID", &open.id()), ("FIGCRAFT_CONTROL_PORT", "17980")], &[]);
+        launch.run_agent(
+            "opencode",
+            &[
+                ("SHIM_FIGCRAFT_PID", &open.id()),
+                ("FIGCRAFT_CONTROL_PORT", "17980"),
+            ],
+            &[],
+        );
         let config = opencode_inline_config(&launch);
-        let arguments = config["mcp"]["servers"]["figcraft-app"]["command"].as_array().unwrap();
+        let arguments = config["mcp"]["servers"]["figcraft-app"]["command"]
+            .as_array()
+            .unwrap();
         launch.sandbox.shim("figcraft-cli", "exit 0");
         let environment = launch.opencode_saw("environment");
-        let forwarded = environment.iter().find_map(|line| line.strip_prefix("FIGCRAFT_CONTROL_PORT=")).unwrap();
-        let mut command = launch.sandbox.command(arguments[0].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", forwarded)]);
-        for argument in &arguments[1..] { command.arg(argument.as_str().unwrap()); }
+        let forwarded = environment
+            .iter()
+            .find_map(|line| line.strip_prefix("FIGCRAFT_CONTROL_PORT="))
+            .unwrap();
+        let mut command = launch.sandbox.command(
+            arguments[0].as_str().unwrap(),
+            &[("FIGCRAFT_CONTROL_PORT", forwarded)],
+        );
+        for argument in &arguments[1..] {
+            command.arg(argument.as_str().unwrap());
+        }
         assert!(command.output().unwrap().status.success());
-        assert_eq!(launch.sandbox.calls("figcraft-cli"), [format!("figcraft-cli mcp --attach {port}")]);
+        assert_eq!(
+            launch.sandbox.calls("figcraft-cli"),
+            [format!("figcraft-cli mcp --attach {port}")]
+        );
     }
 }
 
@@ -727,32 +1358,59 @@ fn opencodes_mcp_override_fails_closed_when_figcraft_is_disconnected() {
     let launch = Launch::new();
     launch.run_agent("opencode", &[("FIGCRAFT_CONTROL_PORT", "7979")], &[]);
     let config = opencode_inline_config(&launch);
-    let arguments = config["mcp"]["servers"]["figcraft-app"]["command"].as_array().unwrap();
+    let arguments = config["mcp"]["servers"]["figcraft-app"]["command"]
+        .as_array()
+        .unwrap();
     launch.sandbox.shim("figcraft-cli", "exit 0");
-    let mut command = launch.sandbox.command(arguments[0].as_str().unwrap(), &[("FIGCRAFT_CONTROL_PORT", "")]);
-    for argument in &arguments[1..] { command.arg(argument.as_str().unwrap()); }
+    let mut command = launch.sandbox.command(
+        arguments[0].as_str().unwrap(),
+        &[("FIGCRAFT_CONTROL_PORT", "")],
+    );
+    for argument in &arguments[1..] {
+        command.arg(argument.as_str().unwrap());
+    }
     let output = command.output().unwrap();
     assert!(!output.status.success());
-    assert!(stderr(&output).contains("FigCraft is not connected to this checkout"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("FigCraft is not connected to this checkout"),
+        "{}",
+        stderr(&output)
+    );
     assert!(launch.sandbox.calls("figcraft-cli").is_empty());
 }
 
 #[test]
 fn opencodes_mcp_override_preserves_unrelated_inline_settings() {
-    for servers in [serde_json::json!({"figcraft-app": {"type": "local", "command": ["figcraft-cli", "mcp", "--attach", "7979"]}}),
-                    serde_json::json!({"servers": {"figcraft-app": {"type": "local", "command": ["false"], "disabled": true,
-                        "environment": {"FIGCRAFT_CONTROL_PORT": "7979"}}}})] {
+    for servers in [
+        serde_json::json!({"figcraft-app": {"type": "local", "command": ["figcraft-cli", "mcp", "--attach", "7979"]}}),
+        serde_json::json!({"servers": {"figcraft-app": {"type": "local", "command": ["false"], "disabled": true,
+                        "environment": {"FIGCRAFT_CONTROL_PORT": "7979"}}}}),
+    ] {
         let launch = Launch::new();
         let mut inherited = serde_json::json!({"model": "openai/gpt-5", "mcp": servers});
-        inherited["mcp"]["servers"]["docs"] = serde_json::json!({"type": "remote", "url": "https://mcp.docs.astro.build/mcp"});
-        launch.run_agent("opencode", &[("OPENCODE_CONFIG_CONTENT", &inherited.to_string())], &[]);
+        inherited["mcp"]["servers"]["docs"] =
+            serde_json::json!({"type": "remote", "url": "https://mcp.docs.astro.build/mcp"});
+        launch.run_agent(
+            "opencode",
+            &[("OPENCODE_CONFIG_CONTENT", &inherited.to_string())],
+            &[],
+        );
         let config = opencode_inline_config(&launch);
         assert_eq!(config["model"], inherited["model"]);
-        assert_eq!(config["mcp"]["servers"]["docs"], inherited["mcp"]["servers"]["docs"]);
-        assert!(config["mcp"].get("figcraft-app").is_none(), "legacy entry conflicts with the canonical override");
+        assert_eq!(
+            config["mcp"]["servers"]["docs"],
+            inherited["mcp"]["servers"]["docs"]
+        );
+        assert!(
+            config["mcp"].get("figcraft-app").is_none(),
+            "legacy entry conflicts with the canonical override"
+        );
         let server = &config["mcp"]["servers"]["figcraft-app"];
         assert_ne!(server["disabled"], true);
-        assert!(server.get("environment").is_none(), "an inherited port can override the verified connection");
+        assert!(
+            server.get("environment").is_none(),
+            "an inherited port can override the verified connection"
+        );
         assert_eq!(server["command"][0], "sh");
     }
 }
@@ -761,10 +1419,26 @@ fn opencodes_mcp_override_preserves_unrelated_inline_settings() {
 fn invalid_inline_config_stops_opencode_before_the_sandbox_starts() {
     for content in ["not json", "null", "[]", "{} {}"] {
         let launch = Launch::new();
-        let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[("OPENCODE_CONFIG_CONTENT", content)])
-            .current_dir(&launch.project).output().unwrap();
-        assert_eq!(output.status.code(), Some(1), "{content}: {}", stderr(&output));
-        assert!(stderr(&output).contains("cannot override FigCraft"), "{}", stderr(&output));
+        let output = launch
+            .sandbox
+            .command(
+                bin().join("greywall-agents/opencode"),
+                &[("OPENCODE_CONFIG_CONTENT", content)],
+            )
+            .current_dir(&launch.project)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{content}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("cannot override FigCraft"),
+            "{}",
+            stderr(&output)
+        );
         assert!(launch.sandbox.calls("greywall").is_empty());
     }
 }
@@ -772,19 +1446,39 @@ fn invalid_inline_config_stops_opencode_before_the_sandbox_starts() {
 #[test]
 fn a_credits_session_gets_the_api_key_as_a_placeholder() {
     let launch = Launch::new();
-    let started = launch.run(&[("COCKPIT_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")]);
-    assert!(started.contains("--secret ANTHROPIC_API_KEY") && started.contains("(api key: sk-ant-test)"), "{started}");
+    let started = launch.run(&[
+        ("COCKPIT_CREDITS", "1"),
+        ("SHIM_ANTHROPIC_KEY", "sk-ant-test"),
+    ]);
+    assert!(
+        started.contains("--secret ANTHROPIC_API_KEY")
+            && started.contains("(api key: sk-ant-test)"),
+        "{started}"
+    );
 }
 
 #[test]
 fn each_claude_launch_overwrites_inherited_billing_facts() {
     for (credits, mode) in [("0", "subscription"), ("1", "api")] {
         let launch = Launch::new();
-        launch.run(&[("COCKPIT_CREDITS", credits), ("SHIM_ANTHROPIC_KEY", "sk-ant-test"),
-            ("COCKPIT_BILLING", "wrong"), ("COCKPIT_BILLING_STARTED_AT", "2000-01-01T00:00:00Z")]);
-        let environment = fs::read_to_string(launch.sandbox.home.join("claude-environment")).unwrap();
-        assert!(environment.lines().any(|line| line == format!("COCKPIT_BILLING={mode}")), "launch did not export {mode} billing");
-        let timestamp = environment.lines().find_map(|line| line.strip_prefix("COCKPIT_BILLING_STARTED_AT=")).unwrap();
+        launch.run(&[
+            ("COCKPIT_CREDITS", credits),
+            ("SHIM_ANTHROPIC_KEY", "sk-ant-test"),
+            ("COCKPIT_BILLING", "wrong"),
+            ("COCKPIT_BILLING_STARTED_AT", "2000-01-01T00:00:00Z"),
+        ]);
+        let environment =
+            fs::read_to_string(launch.sandbox.home.join("claude-environment")).unwrap();
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == format!("COCKPIT_BILLING={mode}")),
+            "launch did not export {mode} billing"
+        );
+        let timestamp = environment
+            .lines()
+            .find_map(|line| line.strip_prefix("COCKPIT_BILLING_STARTED_AT="))
+            .unwrap();
         let started = chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
         assert!((chrono::Utc::now().timestamp() - started.timestamp()).abs() < 30);
     }
@@ -793,47 +1487,93 @@ fn each_claude_launch_overwrites_inherited_billing_facts() {
 #[test]
 fn a_credits_session_without_a_key_does_not_start_on_the_subscription() {
     let launch = Launch::new();
-    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[("COCKPIT_CREDITS", "1")]).current_dir(&launch.project).output().unwrap();
+    let output = launch
+        .sandbox
+        .command(
+            bin().join("greywall-agents/claude"),
+            &[("COCKPIT_CREDITS", "1")],
+        )
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("agent-anthropic-key"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("agent-anthropic-key"),
+        "{}",
+        stderr(&output)
+    );
     assert!(launch.sandbox.calls("greywall").is_empty());
 }
 
 #[test]
 fn a_subscription_session_gets_no_api_key_even_from_its_environment() {
     let launch = Launch::new();
-    let started = launch.run(&[("ANTHROPIC_API_KEY", "sk-ant-stray"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")]);
-    assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
+    let started = launch.run(&[
+        ("ANTHROPIC_API_KEY", "sk-ant-stray"),
+        ("SHIM_ANTHROPIC_KEY", "sk-ant-test"),
+    ]);
+    assert!(
+        !started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"),
+        "{started}"
+    );
 }
 
 #[test]
 fn an_opencode_session_never_gets_the_credits_key_nor_a_stray_one() {
     // The credits key is a Claude session's: opencode would bill it unnoticed.
     let launch = Launch::new();
-    let started = launch.run_agent("opencode", &[("ANTHROPIC_API_KEY", "sk-ant-stray"), ("COCKPIT_CREDITS", "1"), ("SHIM_ANTHROPIC_KEY", "sk-ant-test")], &[]);
-    assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
+    let started = launch.run_agent(
+        "opencode",
+        &[
+            ("ANTHROPIC_API_KEY", "sk-ant-stray"),
+            ("COCKPIT_CREDITS", "1"),
+            ("SHIM_ANTHROPIC_KEY", "sk-ant-test"),
+        ],
+        &[],
+    );
+    assert!(
+        !started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"),
+        "{started}"
+    );
 }
 
 #[test]
 fn an_opencode_session_gets_its_own_key_as_a_placeholder() {
     // opencode.db is open to every opencode session: the real key stays with greyproxy.
     let launch = Launch::new();
-    let started = launch.run_agent("opencode", &[("SHIM_OPENCODE_KEY", "sk-ant-opencode"), ("SHIM_ANTHROPIC_KEY", "sk-ant-credits")], &[]);
-    assert!(started.contains("--secret ANTHROPIC_API_KEY") && started.contains("(api key: sk-ant-opencode)"), "{started}");
+    let started = launch.run_agent(
+        "opencode",
+        &[
+            ("SHIM_OPENCODE_KEY", "sk-ant-opencode"),
+            ("SHIM_ANTHROPIC_KEY", "sk-ant-credits"),
+        ],
+        &[],
+    );
+    assert!(
+        started.contains("--secret ANTHROPIC_API_KEY")
+            && started.contains("(api key: sk-ant-opencode)"),
+        "{started}"
+    );
 }
 
 #[test]
 fn a_claude_session_never_gets_opencodes_key() {
     let launch = Launch::new();
     let started = launch.run(&[("SHIM_OPENCODE_KEY", "sk-ant-opencode")]);
-    assert!(!started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"), "{started}");
+    assert!(
+        !started.contains("ANTHROPIC_API_KEY") && started.contains("(api key: none)"),
+        "{started}"
+    );
 }
 
 #[test]
 fn opencode_runs_in_its_own_profile() {
     let launch = Launch::new();
     let started = launch.run_agent("opencode", &[], &[]);
-    assert!(started.contains("--auto-profile --profile opencode "), "{started}");
+    assert!(
+        started.contains("--auto-profile --profile opencode "),
+        "{started}"
+    );
     assert!(!started.contains("--profile claude"), "{started}");
 }
 
@@ -844,20 +1584,27 @@ fn every_agent_gets_one_proxy_identity_named_after_its_agent_and_project() {
     for &agent in AGENTS.iter() {
         let launch = Launch::new();
         let started = launch.run_agent(agent, &[], &[]);
-        assert_eq!(started.matches("--proxy-user ").count(), 1, "{agent}: {started}");
-        assert!(started.contains(&format!("--proxy-user {agent}-proj-a ")), "{agent}: {started}");
+        assert_eq!(
+            started.matches("--proxy-user ").count(),
+            1,
+            "{agent}: {started}"
+        );
+        assert!(
+            started.contains(&format!("--proxy-user {agent}-proj-a ")),
+            "{agent}: {started}"
+        );
     }
 }
 
 #[test]
-fn a_parallel_clone_uses_its_repositorys_proxy_identity() {
+fn a_parallel_clone_uses_its_repository_proxy_identity() {
     let launch = Launch::new();
     let (started, _) = start_claude_in(&launch, "IdeaProjects/.parallel/proj-a/p1");
     assert!(started.contains("--proxy-user claude-proj-a "), "{started}");
 }
 
 #[test]
-fn a_parallel_clone_gets_its_repositorys_port_forwards() {
+fn a_parallel_clone_gets_its_repository_port_forwards() {
     let launch = Launch::new();
     let grants = launch.sandbox.home.join(".config/greywall-agents/forward");
     fs::create_dir_all(&grants).unwrap();
@@ -874,7 +1621,10 @@ fn a_parallel_clone_gets_its_repositorys_port_forwards() {
 fn a_project_name_becomes_a_proxy_identity_of_letters_digits_and_dashes() {
     let launch = Launch::new();
     let (started, _) = start_claude_in(&launch, "IdeaProjects/site.v2+beta");
-    assert!(started.contains("--proxy-user claude-site-v2-beta "), "{started}");
+    assert!(
+        started.contains("--proxy-user claude-site-v2-beta "),
+        "{started}"
+    );
 }
 
 #[test]
@@ -882,19 +1632,48 @@ fn opencode_api_inside_greywall_keeps_the_existing_sandbox_context() {
     let launch = Launch::new();
     let path = format!("/api/session/{OPENCODE_SESSION}/model");
     let model = r#"{"model":{"providerID":"openai","id":"gpt-6.1-sol"}}"#;
-    let arguments = ["api", "--server", "http://127.0.0.1:4096", "post", &path, "--data", model];
+    let arguments = [
+        "api",
+        "--server",
+        "http://127.0.0.1:4096",
+        "post",
+        &path,
+        "--data",
+        model,
+    ];
     let config = r#"{"model":"openai/gpt-6.1-sol"}"#;
-    let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[
-        ("GREYWALL_SANDBOX", "1"), ("XDG_STATE_HOME", "/tmp/opencode-greywall-state"),
-        ("OPENCODE_CONFIG_CONTENT", config), ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION),
-        ("COCKPIT_OPENCODE_MODEL", "invalid-inherited-launch-preference"),
-    ]).args(arguments).current_dir(&launch.project).output().unwrap();
+    let output = launch
+        .sandbox
+        .command(
+            bin().join("greywall-agents/opencode"),
+            &[
+                ("GREYWALL_SANDBOX", "1"),
+                ("XDG_STATE_HOME", "/tmp/opencode-greywall-state"),
+                ("OPENCODE_CONFIG_CONTENT", config),
+                ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION),
+                (
+                    "COCKPIT_OPENCODE_MODEL",
+                    "invalid-inherited-launch-preference",
+                ),
+            ],
+        )
+        .args(arguments)
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(launch.opencode_saw("arguments"), arguments);
     let environment = launch.opencode_saw("environment");
-    for expected in ["GREYWALL_SANDBOX=1", "XDG_STATE_HOME=/tmp/opencode-greywall-state",
-                     &format!("OPENCODE_CONFIG_CONTENT={config}"), &format!("CLAUDE_CODE_SESSION_ID={OPENCODE_SESSION}")] {
-        assert!(environment.iter().any(|line| line == expected), "missing {expected}: {environment:?}");
+    for expected in [
+        "GREYWALL_SANDBOX=1",
+        "XDG_STATE_HOME=/tmp/opencode-greywall-state",
+        &format!("OPENCODE_CONFIG_CONTENT={config}"),
+        &format!("CLAUDE_CODE_SESSION_ID={OPENCODE_SESSION}"),
+    ] {
+        assert!(
+            environment.iter().any(|line| line == expected),
+            "missing {expected}: {environment:?}"
+        );
     }
     assert!(launch.sandbox.calls("greywall").is_empty());
     assert!(launch.sandbox.calls("git-access").is_empty());
@@ -906,10 +1685,20 @@ fn opencode_api_inside_greywall_keeps_the_existing_sandbox_context() {
 #[test]
 fn opencode_inside_greywall_preserves_cli_failures_without_relaunching() {
     let launch = Launch::new();
-    write_executable(&launch.sandbox.home.join(".opencode/bin/opencode"),
-        "#!/bin/sh\necho 'fixture API connection failed' >&2\nexit 7\n");
-    let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[("GREYWALL_SANDBOX", "1")])
-        .args(["api", "get", "/api/info"]).current_dir(&launch.project).output().unwrap();
+    write_executable(
+        &launch.sandbox.home.join(".opencode/bin/opencode"),
+        "#!/bin/sh\necho 'fixture API connection failed' >&2\nexit 7\n",
+    );
+    let output = launch
+        .sandbox
+        .command(
+            bin().join("greywall-agents/opencode"),
+            &[("GREYWALL_SANDBOX", "1")],
+        )
+        .args(["api", "get", "/api/info"])
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(7));
     assert!(stderr(&output).contains("fixture API connection failed"));
     assert!(launch.sandbox.calls("greywall").is_empty());
@@ -924,7 +1713,9 @@ fn opencode_keeps_its_arguments_as_given() {
 }
 
 fn record_opencode_startup(launch: &Launch) {
-    write_executable(&launch.sandbox.home.join(".opencode/bin/opencode"), r#"#!/bin/sh
+    write_executable(
+        &launch.sandbox.home.join(".opencode/bin/opencode"),
+        r#"#!/bin/sh
 if [ "$1" = api ]; then
     printf '%s\n' "$@" > "$HOME/opencode-api-arguments"
     [ "${SHIM_CREATE_FAIL:-}" != 1 ] || { echo 'session creation failed' >&2; exit 7; }
@@ -936,25 +1727,51 @@ env > "$HOME/opencode-environment"
 if [ -f "$HOME/opencode-request" ]; then
     cp "$HOME/opencode-request" "$HOME/opencode-selected-at-startup"
 fi
-"#);
+"#,
+    );
 }
 
 #[test]
 fn opencode_creates_the_selected_session_before_the_interface_checks_its_id() {
     for (reference, expected) in [
-        ("openai/gpt-6.1-sol#medium", serde_json::json!({"providerID":"openai", "id":"gpt-6.1-sol", "variant":"medium"})),
-        ("openrouter/anthropic/claude-sonnet-4.5", serde_json::json!({"providerID":"openrouter", "id":"anthropic/claude-sonnet-4.5"})),
+        (
+            "openai/gpt-6.1-sol#medium",
+            serde_json::json!({"providerID":"openai", "id":"gpt-6.1-sol", "variant":"medium"}),
+        ),
+        (
+            "openrouter/anthropic/claude-sonnet-4.5",
+            serde_json::json!({"providerID":"openrouter", "id":"anthropic/claude-sonnet-4.5"}),
+        ),
     ] {
         let launch = Launch::new();
         record_opencode_startup(&launch);
-        let arguments = ["--standalone", "--session", OPENCODE_SESSION, "--prompt", "a prompt with spaces"];
-        launch.run_agent("opencode", &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("COCKPIT_OPENCODE_MODEL", reference)], &arguments);
+        let arguments = [
+            "--standalone",
+            "--session",
+            OPENCODE_SESSION,
+            "--prompt",
+            "a prompt with spaces",
+        ];
+        launch.run_agent(
+            "opencode",
+            &[
+                ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION),
+                ("COCKPIT_OPENCODE_MODEL", reference),
+            ],
+            &arguments,
+        );
         let selected = fs::read_to_string(launch.sandbox.home.join("opencode-selected-at-startup"))
             .expect("the session must exist before the TUI decides whether to resume it");
         let request: serde_json::Value = serde_json::from_str(&selected).unwrap();
-        assert_eq!(request, serde_json::json!({"id":OPENCODE_SESSION, "model":expected, "location":{"directory":launch.project}}));
+        assert_eq!(
+            request,
+            serde_json::json!({"id":OPENCODE_SESSION, "model":expected, "location":{"directory":launch.project}})
+        );
         let api_arguments = launch.opencode_saw("api-arguments");
-        assert_eq!(&api_arguments[..5], ["api", "--standalone", "post", "/api/session", "--data"]);
+        assert_eq!(
+            &api_arguments[..5],
+            ["api", "--standalone", "post", "/api/session", "--data"]
+        );
         assert_eq!(launch.opencode_saw("arguments"), arguments);
         assert_eq!(launch.sandbox.calls("greywall").len(), 1);
     }
@@ -964,10 +1781,20 @@ fn opencode_creates_the_selected_session_before_the_interface_checks_its_id() {
 fn a_failed_session_creation_never_opens_the_interface_on_another_model() {
     let launch = Launch::new();
     record_opencode_startup(&launch);
-    let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[
-        ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION), ("COCKPIT_OPENCODE_MODEL", "openai/gpt-6.1-sol#medium"),
-        ("SHIM_CREATE_FAIL", "1"),
-    ]).args(["--standalone", "--session", OPENCODE_SESSION]).current_dir(&launch.project).output().unwrap();
+    let output = launch
+        .sandbox
+        .command(
+            bin().join("greywall-agents/opencode"),
+            &[
+                ("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION),
+                ("COCKPIT_OPENCODE_MODEL", "openai/gpt-6.1-sol#medium"),
+                ("SHIM_CREATE_FAIL", "1"),
+            ],
+        )
+        .args(["--standalone", "--session", OPENCODE_SESSION])
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(7));
     assert!(stderr(&output).contains("session creation failed"));
     assert!(!launch.sandbox.home.join("opencode-arguments").exists());
@@ -977,9 +1804,16 @@ fn a_failed_session_creation_never_opens_the_interface_on_another_model() {
 fn resuming_without_a_model_preference_does_not_create_or_change_a_session() {
     let launch = Launch::new();
     record_opencode_startup(&launch);
-    launch.run_agent("opencode", &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION)], &["--standalone", "--session", OPENCODE_SESSION]);
+    launch.run_agent(
+        "opencode",
+        &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION)],
+        &["--standalone", "--session", OPENCODE_SESSION],
+    );
     assert!(!launch.sandbox.home.join("opencode-api-arguments").exists());
-    assert_eq!(launch.opencode_saw("arguments"), ["--standalone", "--session", OPENCODE_SESSION]);
+    assert_eq!(
+        launch.opencode_saw("arguments"),
+        ["--standalone", "--session", OPENCODE_SESSION]
+    );
 }
 
 #[test]
@@ -991,9 +1825,18 @@ fn invalid_startup_preferences_never_reach_opencode() {
         (OPENCODE_SESSION, "openai/gpt-6.1-sol#high#low"),
     ] {
         let launch = Launch::new();
-        let output = launch.sandbox.command(bin().join("greywall-agents/opencode"), &[
-            ("CLAUDE_CODE_SESSION_ID", session), ("COCKPIT_OPENCODE_MODEL", model),
-        ]).current_dir(&launch.project).output().unwrap();
+        let output = launch
+            .sandbox
+            .command(
+                bin().join("greywall-agents/opencode"),
+                &[
+                    ("CLAUDE_CODE_SESSION_ID", session),
+                    ("COCKPIT_OPENCODE_MODEL", model),
+                ],
+            )
+            .current_dir(&launch.project)
+            .output()
+            .unwrap();
         assert_eq!(output.status.code(), Some(1));
         assert!(stderr(&output).contains("invalid managed session or model reference"));
         assert!(launch.sandbox.calls("greywall").is_empty());
@@ -1003,18 +1846,40 @@ fn invalid_startup_preferences_never_reach_opencode() {
 #[test]
 fn opencode_tools_use_the_native_cli_without_starting_another_sandbox() {
     let launch = Launch::new();
-    launch.sandbox.shim("opencode", "echo 'nested host launcher selected' >&2; exit 77");
-    write_executable(&launch.sandbox.home.join(".opencode/bin/opencode"), r#"#!/bin/sh
+    launch.sandbox.shim(
+        "opencode",
+        "echo 'nested host launcher selected' >&2; exit 77",
+    );
+    write_executable(
+        &launch.sandbox.home.join(".opencode/bin/opencode"),
+        r#"#!/bin/sh
 if [ "$1" != api ]; then
     exec opencode api post "/api/session/$CLAUDE_CODE_SESSION_ID/model" --data '{"providerID":"fixture","id":"test-model"}'
 fi
 printf '%s\n' "$@" > "$HOME/opencode-api-arguments"
 env > "$HOME/opencode-api-environment"
-"#);
-    launch.run_agent("opencode", &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION)], &[]);
-    assert_eq!(launch.opencode_saw("api-arguments"), ["api", "post", &format!("/api/session/{OPENCODE_SESSION}/model"),
-        "--data", r#"{"providerID":"fixture","id":"test-model"}"#]);
-    assert!(launch.opencode_saw("api-environment").contains(&"XDG_STATE_HOME=/tmp/opencode-greywall-state".into()));
+"#,
+    );
+    launch.run_agent(
+        "opencode",
+        &[("CLAUDE_CODE_SESSION_ID", OPENCODE_SESSION)],
+        &[],
+    );
+    assert_eq!(
+        launch.opencode_saw("api-arguments"),
+        [
+            "api",
+            "post",
+            &format!("/api/session/{OPENCODE_SESSION}/model"),
+            "--data",
+            r#"{"providerID":"fixture","id":"test-model"}"#
+        ]
+    );
+    assert!(
+        launch
+            .opencode_saw("api-environment")
+            .contains(&"XDG_STATE_HOME=/tmp/opencode-greywall-state".into())
+    );
     assert_eq!(launch.sandbox.calls("greywall").len(), 1);
     assert!(launch.sandbox.calls("opencode").is_empty());
 }
@@ -1026,8 +1891,14 @@ fn opencodes_server_registration_stays_in_the_sandboxs_private_tmp() {
     let launch = Launch::new();
     launch.run_agent("opencode", &[], &[]);
     let environment = launch.opencode_saw("environment");
-    assert!(environment.contains(&"XDG_STATE_HOME=/tmp/opencode-greywall-state".to_string()), "{environment:?}");
-    assert!(environment.contains(&"OPENCODE_DISABLE_AUTOUPDATE=1".to_string()), "{environment:?}");
+    assert!(
+        environment.contains(&"XDG_STATE_HOME=/tmp/opencode-greywall-state".to_string()),
+        "{environment:?}"
+    );
+    assert!(
+        environment.contains(&"OPENCODE_DISABLE_AUTOUPDATE=1".to_string()),
+        "{environment:?}"
+    );
 }
 
 #[test]
@@ -1048,13 +1919,23 @@ fn the_clones_of_a_reviewed_repository_read_its_running_copy_and_no_other() {
         let mut running_copies = Vec::new();
         for name in REVIEWED_REPOSITORIES {
             fs::create_dir_all(launch.sandbox.home.join(name)).unwrap();
-            running_copies.push((name, fs::canonicalize(launch.sandbox.home.join(name)).unwrap()));
+            running_copies.push((
+                name,
+                fs::canonicalize(launch.sandbox.home.join(name)).unwrap(),
+            ));
         }
-        for folder in [format!("IdeaProjects/{repository}"), format!("IdeaProjects/.parallel/{repository}/p1")] {
+        for folder in [
+            format!("IdeaProjects/{repository}"),
+            format!("IdeaProjects/.parallel/{repository}/p1"),
+        ] {
             let (started, _) = start_claude_in(&launch, &folder);
             for (name, live) in &running_copies {
                 let reads = started.contains(&format!("--allow-read-path {} ", live.display()));
-                assert_eq!(reads, *name == repository, "{folder} and ~/{name}: {started}");
+                assert_eq!(
+                    reads,
+                    *name == repository,
+                    "{folder} and ~/{name}: {started}"
+                );
             }
         }
     }
@@ -1064,59 +1945,132 @@ fn the_clones_of_a_reviewed_repository_read_its_running_copy_and_no_other() {
 fn a_parallel_dotfiles_clone_reads_the_live_checkout_and_another_project_does_not() {
     let launch = Launch::new();
     let live = fs::canonicalize(launch.sandbox.home.join("dotfiles")).unwrap();
-    let clone = launch.sandbox.home.join("IdeaProjects/.parallel/dotfiles/p1");
+    let clone = launch
+        .sandbox
+        .home
+        .join("IdeaProjects/.parallel/dotfiles/p1");
     fs::create_dir_all(&clone).unwrap();
-    assert!(Command::new("git").args(["init", "-q"]).arg(&clone).status().unwrap().success());
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .arg(&clone)
+            .status()
+            .unwrap()
+            .success()
+    );
     let read_live = format!("--allow-read-path {} ", live.display());
-    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[]).current_dir(&clone).output().unwrap();
+    let output = launch
+        .sandbox
+        .command(bin().join("greywall-agents/claude"), &[])
+        .current_dir(&clone)
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let started = launch.sandbox.calls("greywall").pop().unwrap();
     assert!(started.contains(&read_live), "{started}");
-    assert!(!launch.run(&[]).contains(&read_live), "proj-a reads the live checkout");
+    assert!(
+        !launch.run(&[]).contains(&read_live),
+        "proj-a reads the live checkout"
+    );
 }
 
 /// The greywall call and the environment claude got, started in `folder` under the test's home.
 fn start_claude_in(launch: &Launch, folder: &str) -> (String, Vec<String>) {
     let project = launch.sandbox.home.join(folder);
     fs::create_dir_all(&project).unwrap();
-    assert!(Command::new("git").args(["init", "-q"]).arg(&project).status().unwrap().success());
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .arg(&project)
+            .status()
+            .unwrap()
+            .success()
+    );
     // Dotfiles sessions started while clones shared a build folder still have it set.
-    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[]).env_remove("CARGO_BUILD_BUILD_DIR")
-        .current_dir(&project).output().unwrap();
-    assert_eq!(output.status.code(), Some(0), "{folder}: {}", stderr(&output));
+    let output = launch
+        .sandbox
+        .command(bin().join("greywall-agents/claude"), &[])
+        .env_remove("CARGO_BUILD_BUILD_DIR")
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{folder}: {}",
+        stderr(&output)
+    );
     let environment = fs::read_to_string(launch.sandbox.home.join("claude-environment")).unwrap();
-    (launch.sandbox.calls("greywall").pop().unwrap(), environment.lines().map(str::to_string).collect())
+    (
+        launch.sandbox.calls("greywall").pop().unwrap(),
+        environment.lines().map(str::to_string).collect(),
+    )
 }
 
 #[test]
 fn every_clone_keeps_its_own_cargo_build_folder() {
     // Cargo names a workspace's own crates the same in every clone, so a shared build folder handed
     // one clone the tests and binaries another clone built, with that clone's paths compiled in.
-    for folder in ["IdeaProjects/dotfiles", "IdeaProjects/.parallel/dotfiles/p1", "IdeaProjects/.parallel/dotfiles/pr-12",
-                   "IdeaProjects/proj-c", "IdeaProjects/.parallel/proj-a/p1"] {
+    for folder in [
+        "IdeaProjects/dotfiles",
+        "IdeaProjects/.parallel/dotfiles/p1",
+        "IdeaProjects/.parallel/dotfiles/pr-12",
+        "IdeaProjects/proj-c",
+        "IdeaProjects/.parallel/proj-a/p1",
+    ] {
         let launch = Launch::new();
         let (started, environment) = start_claude_in(&launch, folder);
-        assert!(!environment.iter().any(|line| line.starts_with("CARGO_BUILD_BUILD_DIR=")), "{folder}: {environment:?}");
-        assert!(!started.contains("dotfiles-cargo-build"), "{folder}: {started}");
+        assert!(
+            !environment
+                .iter()
+                .any(|line| line.starts_with("CARGO_BUILD_BUILD_DIR=")),
+            "{folder}: {environment:?}"
+        );
+        assert!(
+            !started.contains("dotfiles-cargo-build"),
+            "{folder}: {started}"
+        );
     }
 }
 
 #[test]
 fn sessions_can_read_the_stowed_label_helper_without_exposing_the_bin_directory() {
     let launch = Launch::new();
-    fs::copy(repo().join("config/greywall/.config/greywall/greywall.json"),
-             launch.sandbox.home.join(".config/greywall/greywall.json")).unwrap();
+    fs::copy(
+        repo().join("config/greywall/.config/greywall/greywall.json"),
+        launch.sandbox.home.join(".config/greywall/greywall.json"),
+    )
+    .unwrap();
     for &agent in AGENTS.iter() {
         launch.run_agent(agent, &[], &[]);
         let settings = launch.settings_of(agent);
         let readable = settings["filesystem"]["allowRead"].as_array().unwrap();
-        assert!(readable.iter().any(|path| path == "~/agent-cockpit/config/bin/.local/bin/claude-session-label"),
-                "{agent}: the stowed label helper's target is hidden");
-        for directory in ["~/agent-cockpit", "~/agent-cockpit/config/bin", "~/agent-cockpit/config/bin/.local/bin",
-                          "~/dotfiles", "~/dotfiles/config/bin", "~/dotfiles/config/bin/.local/bin"] {
-            assert!(!readable.iter().any(|path| path == directory), "{agent}: exposed {directory}");
+        assert!(
+            readable
+                .iter()
+                .any(|path| path == "~/agent-cockpit/config/bin/.local/bin/claude-session-label"),
+            "{agent}: the stowed label helper's target is hidden"
+        );
+        for directory in [
+            "~/agent-cockpit",
+            "~/agent-cockpit/config/bin",
+            "~/agent-cockpit/config/bin/.local/bin",
+            "~/dotfiles",
+            "~/dotfiles/config/bin",
+            "~/dotfiles/config/bin/.local/bin",
+        ] {
+            assert!(
+                !readable.iter().any(|path| path == directory),
+                "{agent}: exposed {directory}"
+            );
         }
-        assert!(settings["filesystem"]["denyWrite"].as_array().unwrap().iter().any(|path| path == "~/.local/bin"));
+        assert!(
+            settings["filesystem"]["denyWrite"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path == "~/.local/bin")
+        );
     }
 }
 
@@ -1130,14 +2084,26 @@ fn docker_build_trust_is_available_for_project_and_clone_sessions() {
     for folder in ["IdeaProjects/proj-a", "IdeaProjects/.parallel/proj-a/p1"] {
         let launch = Launch::new();
         bind_proj_a_daemon_socket(&launch);
-        let relay = launch.sandbox.home.join("IdeaProjects/.parallel/proj-a/.agent-docker");
+        let relay = launch
+            .sandbox
+            .home
+            .join("IdeaProjects/.parallel/proj-a/.agent-docker");
         fs::create_dir_all(&relay).unwrap();
         std::os::unix::net::UnixListener::bind(relay.join("docker.sock")).unwrap();
         let (_, environment) = start_claude_in(&launch, folder);
         let bundle = launch.sandbox.home.join(".cache/agent-ca/bundle.pem");
-        assert!(environment.contains(&format!("AGENT_DOCKER_CA_BUNDLE={}", bundle.display())), "{folder}: missing build CA bundle");
-        let helper = launch.sandbox.home.join(".cache/agent-shims/bin/agent-docker-build");
-        let output = Command::new(&helper).arg("--help").output().expect("helper installed");
+        assert!(
+            environment.contains(&format!("AGENT_DOCKER_CA_BUNDLE={}", bundle.display())),
+            "{folder}: missing build CA bundle"
+        );
+        let helper = launch
+            .sandbox
+            .home
+            .join(".cache/agent-shims/bin/agent-docker-build");
+        let output = Command::new(&helper)
+            .arg("--help")
+            .output()
+            .expect("helper installed");
         assert!(output.status.success(), "{}", stderr(&output));
         assert!(String::from_utf8_lossy(&output.stdout).contains("compose"));
     }
@@ -1148,68 +2114,128 @@ fn a_missing_docker_build_helper_prevents_a_docker_enabled_launch() {
     let launch = Launch::new();
     bind_proj_a_daemon_socket(&launch);
     fs::remove_file(launch.sandbox.home.join(".local/bin/agent-docker-build")).unwrap();
-    let output = launch.sandbox.command(bin().join("greywall-agents/claude"), &[])
-        .current_dir(&launch.project).output().unwrap();
+    let output = launch
+        .sandbox
+        .command(bin().join("greywall-agents/claude"), &[])
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
     assert!(!output.status.success());
-    assert!(stderr(&output).contains("Docker build trust helper"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("Docker build trust helper"),
+        "{}",
+        stderr(&output)
+    );
     assert!(launch.sandbox.calls("greywall").is_empty());
 }
 
 #[test]
 fn a_session_without_docker_does_not_inherit_build_trust_configuration() {
     let launch = Launch::new();
-    launch.run_agent("opencode", &[("AGENT_DOCKER_CA_BUNDLE", "/other/project/bundle.pem")], &[]);
-    assert!(!launch.opencode_saw("environment").iter().any(|line| line.starts_with("AGENT_DOCKER_CA_BUNDLE=")));
+    launch.run_agent(
+        "opencode",
+        &[("AGENT_DOCKER_CA_BUNDLE", "/other/project/bundle.pem")],
+        &[],
+    );
+    assert!(
+        !launch
+            .opencode_saw("environment")
+            .iter()
+            .any(|line| line.starts_with("AGENT_DOCKER_CA_BUNDLE="))
+    );
 }
 
 #[test]
-fn a_parallel_clone_reaches_its_repositorys_docker_daemon_through_the_clones_socket_folder() {
+fn a_parallel_clone_reaches_its_repository_docker_daemon_through_the_clones_socket_folder() {
     // opusline's parallel-1031 session had no Docker (todo fb4e44cb): the socket was looked for at
     // the clone's root only.
     let launch = Launch::new();
     bind_proj_a_daemon_socket(&launch);
-    let socket_folder = launch.sandbox.home.join("IdeaProjects/.parallel/proj-a/.agent-docker");
+    let socket_folder = launch
+        .sandbox
+        .home
+        .join("IdeaProjects/.parallel/proj-a/.agent-docker");
     fs::create_dir_all(&socket_folder).unwrap();
     let socket_folder = fs::canonicalize(socket_folder).unwrap();
     std::os::unix::net::UnixListener::bind(socket_folder.join("docker.sock")).unwrap();
     let (started, environment) = start_claude_in(&launch, "IdeaProjects/.parallel/proj-a/p1");
-    assert!(environment.contains(&format!("DOCKER_HOST=unix://{}/docker.sock", socket_folder.display())), "{environment:?}");
+    assert!(
+        environment.contains(&format!(
+            "DOCKER_HOST=unix://{}/docker.sock",
+            socket_folder.display()
+        )),
+        "{environment:?}"
+    );
     // The folder, not the socket alone: a socket made again stays the old one in a single-file mount.
-    assert!(started.contains(&format!("--allow-path {} ", socket_folder.display())), "{started}");
-    assert!(!started.contains(&launch.project.display().to_string()), "the clone's sandbox mounts proj-a's checkout: {started}");
+    assert!(
+        started.contains(&format!("--allow-path {} ", socket_folder.display())),
+        "{started}"
+    );
+    assert!(
+        !started.contains(&launch.project.display().to_string()),
+        "the clone's sandbox mounts proj-a's checkout: {started}"
+    );
 }
 
 #[test]
-fn a_parallel_clone_never_gets_its_repositorys_own_socket() {
+fn a_parallel_clone_never_gets_its_repository_socket() {
     // Mounting proj-a's socket alone would go stale on a relay restart; without the clones' socket the
     // session start says Docker is not set up instead.
     let launch = Launch::new();
     bind_proj_a_daemon_socket(&launch);
     let (started, environment) = start_claude_in(&launch, "IdeaProjects/.parallel/proj-a/p1");
-    assert!(!environment.iter().any(|line| line.starts_with("DOCKER_HOST=")), "{environment:?}");
+    assert!(
+        !environment
+            .iter()
+            .any(|line| line.starts_with("DOCKER_HOST=")),
+        "{environment:?}"
+    );
     assert!(!started.contains(".agent-docker"), "{started}");
 }
 
 #[test]
-fn the_repositorys_own_session_keeps_its_daemon_socket_at_the_checkout_root() {
+fn a_repository_session_keeps_its_daemon_socket_at_the_checkout_root() {
     let launch = Launch::new();
     bind_proj_a_daemon_socket(&launch);
     let (_, environment) = start_claude_in(&launch, "IdeaProjects/proj-a");
-    let socket = fs::canonicalize(&launch.project).unwrap().join(".agent-docker.sock");
-    assert!(environment.contains(&format!("DOCKER_HOST=unix://{}", socket.display())), "{environment:?}");
+    let socket = fs::canonicalize(&launch.project)
+        .unwrap()
+        .join(".agent-docker.sock");
+    assert!(
+        environment.contains(&format!("DOCKER_HOST=unix://{}", socket.display())),
+        "{environment:?}"
+    );
 }
 
 #[test]
 fn the_clones_docker_socket_is_where_the_daemon_and_the_launcher_expect_it() {
     let units = repo().join("system/etc/systemd/system");
     let daemon = fs::read_to_string(units.join("agent-docker@.service")).unwrap();
-    assert!(daemon.contains("BindPaths=-/home/theo/IdeaProjects/.parallel/%i\n"), "the daemon cannot see the clones' files: {daemon}");
+    assert!(
+        daemon.contains("BindPaths=-/home/theo/IdeaProjects/.parallel/%i\n"),
+        "the daemon cannot see the clones' files: {daemon}"
+    );
     let relay = fs::read_to_string(units.join("agent-docker-clones-relay@.service")).unwrap();
-    assert!(relay.contains("BindPaths=/home/theo/IdeaProjects/.parallel/%i/.agent-docker\n"), "{relay}");
-    assert!(relay.contains("UNIX-LISTEN:/home/theo/IdeaProjects/.parallel/%i/.agent-docker/docker.sock,"), "{relay}");
+    assert!(
+        relay.contains("BindPaths=/home/theo/IdeaProjects/.parallel/%i/.agent-docker\n"),
+        "{relay}"
+    );
+    assert!(
+        relay.contains(
+            "UNIX-LISTEN:/home/theo/IdeaProjects/.parallel/%i/.agent-docker/docker.sock,"
+        ),
+        "{relay}"
+    );
     let script = fs::read_to_string(repo().join("tools/agent-docker.sh")).unwrap();
-    for expected in ["CLONES_DIR=$PROJECTS_DIR/.parallel", "\"$clones/.agent-docker\"", "\"agent-docker-clones-relay@$name\""] {
-        assert!(script.contains(expected), "tools/agent-docker.sh lost {expected}");
+    for expected in [
+        "CLONES_DIR=$PROJECTS_DIR/.parallel",
+        "\"$clones/.agent-docker\"",
+        "\"agent-docker-clones-relay@$name\"",
+    ] {
+        assert!(
+            script.contains(expected),
+            "tools/agent-docker.sh lost {expected}"
+        );
     }
 }
 
@@ -1224,21 +2250,61 @@ fn a_parallel_clone_is_granted_no_sibling_clone_nor_a_folder_holding_one() {
         let (clone, sibling) = (clones.join("p1"), clones.join("p2"));
         for checkout in [&clone, &sibling] {
             fs::create_dir_all(checkout).unwrap();
-            assert!(Command::new("git").args(["init", "-q"]).arg(checkout).status().unwrap().success());
+            assert!(
+                Command::new("git")
+                    .args(["init", "-q"])
+                    .arg(checkout)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
         }
-        let output = launch.sandbox.command(bin().join("greywall-agents").join(agent), &[]).current_dir(&clone).output().unwrap();
-        assert_eq!(output.status.code(), Some(0), "{agent}: {}", stderr(&output));
+        let output = launch
+            .sandbox
+            .command(bin().join("greywall-agents").join(agent), &[])
+            .current_dir(&clone)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{agent}: {}",
+            stderr(&output)
+        );
         let started = launch.sandbox.calls("greywall").pop().unwrap();
         let words: Vec<&str> = started.split_whitespace().collect();
-        let mut granted: Vec<PathBuf> = words.windows(2).filter(|pair| pair[0] == "--allow-path" || pair[0] == "--allow-read-path").map(|pair| PathBuf::from(pair[1])).collect();
-        let settings_path = words.windows(2).find(|pair| pair[0] == "--settings").map(|pair| pair[1]).expect("no --settings");
-        let settings: serde_json::Value = serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+        let mut granted: Vec<PathBuf> = words
+            .windows(2)
+            .filter(|pair| pair[0] == "--allow-path" || pair[0] == "--allow-read-path")
+            .map(|pair| PathBuf::from(pair[1]))
+            .collect();
+        let settings_path = words
+            .windows(2)
+            .find(|pair| pair[0] == "--settings")
+            .map(|pair| pair[1])
+            .expect("no --settings");
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
         for key in ["allowRead", "allowWrite"] {
-            let paths = settings["filesystem"][key].as_array().map(Vec::as_slice).unwrap_or_default();
-            granted.extend(paths.iter().map(|path| PathBuf::from(path.as_str().unwrap().replacen('~', &home.display().to_string(), 1))));
+            let paths = settings["filesystem"][key]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            granted.extend(paths.iter().map(|path| {
+                PathBuf::from(
+                    path.as_str()
+                        .unwrap()
+                        .replacen('~', &home.display().to_string(), 1),
+                )
+            }));
         }
         for path in &granted {
-            assert!(!sibling.starts_with(path), "{agent} grants {} which holds {}: {started}", path.display(), sibling.display());
+            assert!(
+                !sibling.starts_with(path),
+                "{agent} grants {} which holds {}: {started}",
+                path.display(),
+                sibling.display()
+            );
         }
     }
 }
@@ -1247,34 +2313,87 @@ fn a_parallel_clone_is_granted_no_sibling_clone_nor_a_folder_holding_one() {
 fn sandboxes_mount_the_report_sockets_folder_never_the_socket_alone() {
     // A socket file mounted alone stays the old one in every running sandbox once the socket is made
     // again: on 2026-10-19 a socket restart cut every session off the daemon.
-    let profile: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
-    let readable: Vec<&str> = profile["filesystem"]["allowRead"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
-    assert!(readable.contains(&"/run/user/1000/cockpit-report"), "{readable:?}");
-    assert!(readable.iter().all(|path| !path.ends_with(".sock")), "{readable:?}");
-    let unit = fs::read_to_string(repo().join("config/systemd/.config/systemd/user/osd-report.socket")).unwrap();
-    assert!(unit.contains("ListenStream=%t/cockpit-report/osd-report.sock"), "{unit}");
+    let profile: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap(),
+    )
+    .unwrap();
+    let readable: Vec<&str> = profile["filesystem"]["allowRead"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|path| path.as_str())
+        .collect();
+    assert!(
+        readable.contains(&"/run/user/1000/cockpit-report"),
+        "{readable:?}"
+    );
+    assert!(
+        readable.iter().all(|path| !path.ends_with(".sock")),
+        "{readable:?}"
+    );
+    let unit =
+        fs::read_to_string(repo().join("config/systemd/.config/systemd/user/osd-report.socket"))
+            .unwrap();
+    assert!(
+        unit.contains("ListenStream=%t/cockpit-report/osd-report.sock"),
+        "{unit}"
+    );
 }
 
 #[test]
 fn no_session_can_replace_the_report_socket_every_other_session_connects_to() {
     // A session writing the folder could remove the daemon's socket and listen in its place: it would
     // read every project's reports and requests and answer them (review of 2026-10-21, todo 6ca343ca).
-    let profile: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
-    let writable: Vec<&str> = profile["filesystem"]["allowWrite"].as_array().unwrap().iter().filter_map(|path| path.as_str()).collect();
-    assert!(writable.iter().all(|path| !path.contains("claude-report") && !path.contains("cockpit-report")), "{writable:?}");
+    let profile: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap(),
+    )
+    .unwrap();
+    let writable: Vec<&str> = profile["filesystem"]["allowWrite"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|path| path.as_str())
+        .collect();
+    assert!(
+        writable
+            .iter()
+            .all(|path| !path.contains("claude-report") && !path.contains("cockpit-report")),
+        "{writable:?}"
+    );
 }
 
 #[test]
 fn no_profile_lets_a_session_write_the_cockpit_state_folder() {
     // todo.json, settings and the prompt queue are the cockpit's alone; sessions send changes through
     // the update queue. The rename from claude-sessions (2026-10-21) must not open the new name.
-    let shared: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
-    let profiles = [("greywall.json", shared), ("claude", learned_profile("claude")), ("codex", learned_profile("codex")), ("opencode", learned_profile("opencode"))];
+    let shared: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap(),
+    )
+    .unwrap();
+    let profiles = [
+        ("greywall.json", shared),
+        ("claude", learned_profile("claude")),
+        ("codex", learned_profile("codex")),
+        ("opencode", learned_profile("opencode")),
+    ];
     for (name, profile) in profiles {
-        let writable: Vec<&str> = profile["filesystem"]["allowWrite"].as_array().map(|paths| paths.iter().filter_map(|path| path.as_str()).collect()).unwrap_or_default();
+        let writable: Vec<&str> = profile["filesystem"]["allowWrite"]
+            .as_array()
+            .map(|paths| paths.iter().filter_map(|path| path.as_str()).collect())
+            .unwrap_or_default();
         for path in &writable {
-            let opens_the_state = ["~", "~/.local", "~/.local/state", "~/.local/state/cockpit", "~/.local/state/claude-sessions"]
-                .iter().any(|folder| path.trim_end_matches("/**").trim_end_matches('/') == *folder || path.starts_with("~/.local/state/cockpit/"));
+            let opens_the_state = [
+                "~",
+                "~/.local",
+                "~/.local/state",
+                "~/.local/state/cockpit",
+                "~/.local/state/claude-sessions",
+            ]
+            .iter()
+            .any(|folder| {
+                path.trim_end_matches("/**").trim_end_matches('/') == *folder
+                    || path.starts_with("~/.local/state/cockpit/")
+            });
             assert!(!opens_the_state, "{name} lets sessions write {path}");
         }
     }
@@ -1292,16 +2411,44 @@ fn the_launcher_makes_the_report_sockets_folder_before_the_sandbox() {
 fn an_opencode_session_cannot_write_what_every_other_session_runs_or_reads() {
     // The binary, plugins and config, shared instructions and gh's credentials serve every project:
     // a session writing them would reach the others (the same rule keeps Claude's versions and hooks).
-    let text = fs::read_to_string(repo().join("config/greywall/.config/greywall/learned/opencode.json")).unwrap();
-    let json: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    let text =
+        fs::read_to_string(repo().join("config/greywall/.config/greywall/learned/opencode.json"))
+            .unwrap();
+    let json: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let profile: serde_json::Value = serde_json::from_str(&json).unwrap();
     let paths = |key: &str| -> Vec<String> {
-        profile["filesystem"][key].as_array().unwrap().iter().map(|path| path.as_str().unwrap().to_string()).collect()
+        profile["filesystem"][key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|path| path.as_str().unwrap().to_string())
+            .collect()
     };
     let (writable, read_only) = (paths("allowWrite"), paths("denyWrite"));
-    for shared in ["~/.opencode", "~/.config/opencode", "~/.opencode.json", "~/AGENTS.md", "~/.skills", "~/.agents", "~/.config/gh", "~/.local/bin", ".git/hooks", "~/.claude/hooks"] {
-        assert!(!writable.contains(&shared.to_string()), "{shared} is writable: {writable:?}");
-        assert!(read_only.contains(&shared.to_string()), "{shared} is not in denyWrite: {read_only:?}");
+    for shared in [
+        "~/.opencode",
+        "~/.config/opencode",
+        "~/.opencode.json",
+        "~/AGENTS.md",
+        "~/.skills",
+        "~/.agents",
+        "~/.config/gh",
+        "~/.local/bin",
+        ".git/hooks",
+        "~/.claude/hooks",
+    ] {
+        assert!(
+            !writable.contains(&shared.to_string()),
+            "{shared} is writable: {writable:?}"
+        );
+        assert!(
+            read_only.contains(&shared.to_string()),
+            "{shared} is not in denyWrite: {read_only:?}"
+        );
     }
 }
 
@@ -1310,8 +2457,15 @@ fn opencode_profile() -> serde_json::Value {
 }
 
 fn learned_profile(agent: &str) -> serde_json::Value {
-    let text = fs::read_to_string(repo().join(format!("config/greywall/.config/greywall/learned/{agent}.json"))).unwrap();
-    let json: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    let text = fs::read_to_string(repo().join(format!(
+        "config/greywall/.config/greywall/learned/{agent}.json"
+    )))
+    .unwrap();
+    let json: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
     serde_json::from_str(&json).unwrap()
 }
 
@@ -1323,7 +2477,10 @@ fn no_agent_profile_brings_back_the_env_glob_the_launcher_narrows() {
     // greywall asks at every start.
     for &agent in AGENTS.iter() {
         let denied = denied_reads(&learned_profile(agent));
-        assert!(!denied.contains(&".env.*".to_string()), "{agent}: {denied:?}");
+        assert!(
+            !denied.contains(&".env.*".to_string()),
+            "{agent}: {denied:?}"
+        );
         assert!(denied.contains(&".env".to_string()), "{agent}: {denied:?}");
     }
 }
@@ -1333,8 +2490,17 @@ fn the_saved_claude_env_exception_preserves_reviewed_write_permissions() {
     let profile = learned_profile("claude");
     assert_eq!(profile["preserveEnvGlobException"], true);
     let writable = profile["filesystem"]["allowWrite"].as_array().unwrap();
-    for shared in ["~/.skills", "~/.agents", "~/AGENTS.md", "~/.config/gh", "~/.local/share/gh"] {
-        assert!(!writable.iter().any(|entry| entry == shared), "{shared} became writable");
+    for shared in [
+        "~/.skills",
+        "~/.agents",
+        "~/AGENTS.md",
+        "~/.config/gh",
+        "~/.local/share/gh",
+    ] {
+        assert!(
+            !writable.iter().any(|entry| entry == shared),
+            "{shared} became writable"
+        );
     }
     let denied = denied_reads(&profile);
     assert!(denied.contains(&".env".to_string()));
@@ -1347,10 +2513,25 @@ fn an_opencode_session_reaches_the_hook_its_plugin_reports_through() {
     // hidden ~/.claude: tried on 2026-10-19, "No such file or directory"); the hook keeps its turn
     // files and log in ~/.cache/claude.
     let profile = opencode_profile();
-    let has = |key: &str, path: &str| profile["filesystem"][key].as_array().unwrap().iter().any(|entry| entry == path);
-    assert!(has("allowRead", "~/agent-cockpit/config/claude/.claude/hooks") && has("allowWrite", "~/.cache/claude"));
-    let plugin = fs::read_to_string(repo().join("config/opencode/.config/opencode/plugins/cockpit.ts")).unwrap();
-    assert!(plugin.contains("`${homedir()}/agent-cockpit/config/claude/.claude/hooks/session-state.sh`"), "the plugin runs another hook path");
+    let has = |key: &str, path: &str| {
+        profile["filesystem"][key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == path)
+    };
+    assert!(
+        has("allowRead", "~/agent-cockpit/config/claude/.claude/hooks")
+            && has("allowWrite", "~/.cache/claude")
+    );
+    let plugin =
+        fs::read_to_string(repo().join("config/opencode/.config/opencode/plugins/cockpit.ts"))
+            .unwrap();
+    assert!(
+        plugin
+            .contains("`${homedir()}/agent-cockpit/config/claude/.claude/hooks/session-state.sh`"),
+        "the plugin runs another hook path"
+    );
 }
 
 #[test]
@@ -1359,7 +2540,14 @@ fn opencode_reads_theos_rules_from_its_own_agents_md() {
     // the same file, which its profile can read where it lives.
     // The link itself is dotfiles' (config-tests: opencode_reads_the_same_rules_as_claude).
     let readable = opencode_profile()["filesystem"]["allowRead"].clone();
-    assert!(readable.as_array().unwrap().iter().any(|entry| entry == "~/dotfiles/config/claude/.claude/CLAUDE.md"), "{readable}");
+    assert!(
+        readable
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == "~/dotfiles/config/claude/.claude/CLAUDE.md"),
+        "{readable}"
+    );
 }
 
 #[test]
@@ -1368,21 +2556,42 @@ fn the_opencode_profile_names_no_link_in_the_hidden_claude_folder() {
     // an entry for them looks allowed while it reads nothing (~/.claude/skills is a real folder).
     let readable = opencode_profile()["filesystem"]["allowRead"].clone();
     for link in ["~/.claude/CLAUDE.md", "~/.claude/hooks"] {
-        assert!(!readable.as_array().unwrap().iter().any(|entry| entry == link), "{link}: {readable}");
+        assert!(
+            !readable
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry == link),
+            "{link}: {readable}"
+        );
     }
 }
 
 /// Every path of a profile's filesystem lists, greywall.json first, then each agent's learned profile.
 fn profile_paths() -> Vec<(String, String)> {
-    let base: serde_json::Value = serde_json::from_str(&fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap()).unwrap();
-    let profiles = std::iter::once(("greywall.json".to_string(), base))
-        .chain(AGENTS.iter().map(|agent| (format!("learned/{agent}.json"), learned_profile(agent))));
-    profiles.flat_map(|(name, profile)| {
-        ["allowRead", "allowWrite", "denyRead", "denyWrite"].iter()
-            .flat_map(|key| profile["filesystem"][key].as_array().cloned().unwrap_or_default())
-            .map(|path| (name.clone(), path.as_str().unwrap().to_string()))
-            .collect::<Vec<_>>()
-    }).collect()
+    let base: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo().join("config/greywall/.config/greywall/greywall.json")).unwrap(),
+    )
+    .unwrap();
+    let profiles = std::iter::once(("greywall.json".to_string(), base)).chain(
+        AGENTS
+            .iter()
+            .map(|agent| (format!("learned/{agent}.json"), learned_profile(agent))),
+    );
+    profiles
+        .flat_map(|(name, profile)| {
+            ["allowRead", "allowWrite", "denyRead", "denyWrite"]
+                .iter()
+                .flat_map(|key| {
+                    profile["filesystem"][key]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .map(|path| (name.clone(), path.as_str().unwrap().to_string()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 #[test]
@@ -1391,20 +2600,36 @@ fn profiles_reach_agent_cockpits_files_in_agent_cockpit_not_in_the_dotfiles() {
     // entry left on ~/dotfiles would hide the file the link resolves to.
     for (profile, path) in profile_paths() {
         if let Some(inside) = path.strip_prefix("~/dotfiles/") {
-            assert!(!repo().join(inside).is_file() && !inside.starts_with("apps/"), "{profile}: {path} is agent-cockpit's");
+            assert!(
+                !repo().join(inside).is_file() && !inside.starts_with("apps/"),
+                "{profile}: {path} is agent-cockpit's"
+            );
             if repo().join(inside).is_dir() {
                 let ours = format!("~/agent-cockpit/{inside}");
-                assert!(profile_paths().iter().any(|(other, path)| *other == profile && *path == ours), "{profile}: {path} without {ours}");
+                assert!(
+                    profile_paths()
+                        .iter()
+                        .any(|(other, path)| *other == profile && *path == ours),
+                    "{profile}: {path} without {ours}"
+                );
             }
         }
         if let Some(inside) = path.strip_prefix("~/agent-cockpit/") {
-            assert!(repo().join(inside).exists() || inside.starts_with("apps/target/release/"), "{profile}: {path} is no file of agent-cockpit");
+            assert!(
+                repo().join(inside).exists() || inside.starts_with("apps/target/release/"),
+                "{profile}: {path} is no file of agent-cockpit"
+            );
         }
     }
 }
 
 fn denied_reads(settings: &serde_json::Value) -> Vec<String> {
-    settings["filesystem"]["denyRead"].as_array().unwrap().iter().map(|path| path.as_str().unwrap().to_string()).collect()
+    settings["filesystem"]["denyRead"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap().to_string())
+        .collect()
 }
 
 #[test]
@@ -1416,21 +2641,52 @@ fn opencode_sees_its_own_data_and_claude_does_not() {
     launch.run_agent("claude", &[], &[]);
     let opencode = denied_reads(&launch.settings_of("opencode"));
     let claude = denied_reads(&launch.settings_of("claude"));
-    assert_eq!(opencode, ["~/.codex/**", "~/.config/greywall-agents/figcraft", "~/.ssh/id_*"], "other agents' state, host-only FigCraft storage and every other rule stay hidden");
-    assert!(claude.contains(&"~/.local/share/opencode/**".to_string()) && claude.contains(&"~/.config/opencode/**".to_string()), "{claude:?}");
+    assert_eq!(
+        opencode,
+        [
+            "~/.codex/**",
+            "~/.config/greywall-agents/figcraft",
+            "~/.ssh/id_*"
+        ],
+        "other agents' state, host-only FigCraft storage and every other rule stay hidden"
+    );
+    assert!(
+        claude.contains(&"~/.local/share/opencode/**".to_string())
+            && claude.contains(&"~/.config/opencode/**".to_string()),
+        "{claude:?}"
+    );
 }
 
 /// A launch whose greywall.json hides `.env.*`, in a project holding `files` (name, content);
 /// `committed` of them are committed first.
 fn launch_with_env_files(files: &[(&str, &str)], committed: &[&str]) -> Launch {
     let launch = Launch::new();
-    fs::write(launch.sandbox.home.join(".config/greywall/greywall.json"), r#"{"filesystem": {"denyRead": ["~/.ssh/id_*", ".env.*"]}}"#).unwrap();
+    fs::write(
+        launch.sandbox.home.join(".config/greywall/greywall.json"),
+        r#"{"filesystem": {"denyRead": ["~/.ssh/id_*", ".env.*"]}}"#,
+    )
+    .unwrap();
     for (name, content) in files {
         fs::write(launch.project.join(name), content).unwrap();
     }
     if !committed.is_empty() {
-        let git = |arguments: &[&str]| assert!(Command::new("git").args(["-c", "user.name=test", "-c", "user.email=test@example.com", "-C"])
-            .arg(&launch.project).args(arguments).status().unwrap().success());
+        let git = |arguments: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .args([
+                        "-c",
+                        "user.name=test",
+                        "-c",
+                        "user.email=test@example.com",
+                        "-C"
+                    ])
+                    .arg(&launch.project)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
         git(&[&["add", "--"], committed].concat());
         git(&["commit", "-q", "-m", "templates"]);
     }
@@ -1441,34 +2697,72 @@ fn launch_with_env_files(files: &[(&str, &str)], committed: &[&str]) -> Launch {
 fn a_committed_unchanged_env_template_stays_readable_and_other_env_files_stay_hidden() {
     // opusline's e2e stack could not read its committed .env.production.example (2026-10-21).
     for &agent in AGENTS.iter() {
-        let launch = launch_with_env_files(&[(".env.production.example", "KEY=\n"), (".env.staging.example", "KEY=\n"), (".env.secret", "KEY=s3cret\n")],
-                                           &[".env.production.example", ".env.staging.example"]);
+        let launch = launch_with_env_files(
+            &[
+                (".env.production.example", "KEY=\n"),
+                (".env.staging.example", "KEY=\n"),
+                (".env.secret", "KEY=s3cret\n"),
+            ],
+            &[".env.production.example", ".env.staging.example"],
+        );
         fs::write(launch.project.join(".env.staging.example"), "KEY=s3cret\n").unwrap();
         launch.run_agent(agent, &[], &[]);
         let project = fs::canonicalize(&launch.project).unwrap();
         let denied = denied_reads(&launch.settings_of(agent));
         let path = |name: &str| project.join(name).display().to_string();
-        assert!(!denied.contains(&path(".env.production.example")), "{agent}: {denied:?}");
-        assert!(denied.contains(&path(".env.staging.example")), "{agent}: a modified template must stay hidden: {denied:?}");
-        assert!(denied.contains(&path(".env.secret")), "{agent}: an untracked file must stay hidden: {denied:?}");
-        assert!(!denied.contains(&".env.*".to_string()) && denied.contains(&"~/.ssh/id_*".to_string()), "{agent}: {denied:?}");
+        assert!(
+            !denied.contains(&path(".env.production.example")),
+            "{agent}: {denied:?}"
+        );
+        assert!(
+            denied.contains(&path(".env.staging.example")),
+            "{agent}: a modified template must stay hidden: {denied:?}"
+        );
+        assert!(
+            denied.contains(&path(".env.secret")),
+            "{agent}: an untracked file must stay hidden: {denied:?}"
+        );
+        assert!(
+            !denied.contains(&".env.*".to_string()) && denied.contains(&"~/.ssh/id_*".to_string()),
+            "{agent}: {denied:?}"
+        );
     }
 }
 
 #[test]
 fn an_env_file_staged_but_never_committed_stays_hidden() {
     let launch = launch_with_env_files(&[(".env.new", "KEY=s3cret\n")], &[]);
-    assert!(Command::new("git").arg("-C").arg(&launch.project).args(["add", ".env.new"]).status().unwrap().success());
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&launch.project)
+            .args(["add", ".env.new"])
+            .status()
+            .unwrap()
+            .success()
+    );
     launch.run(&[]);
-    let hidden = fs::canonicalize(&launch.project).unwrap().join(".env.new").display().to_string();
-    assert!(denied_reads(&launch.settings()).contains(&hidden), "{:?}", denied_reads(&launch.settings()));
+    let hidden = fs::canonicalize(&launch.project)
+        .unwrap()
+        .join(".env.new")
+        .display()
+        .to_string();
+    assert!(
+        denied_reads(&launch.settings()).contains(&hidden),
+        "{:?}",
+        denied_reads(&launch.settings())
+    );
 }
 
 #[test]
 fn an_env_file_name_the_list_cannot_carry_keeps_the_glob() {
     let launch = launch_with_env_files(&[(".env.a\nb", "KEY=s3cret\n")], &[]);
     launch.run(&[]);
-    assert!(denied_reads(&launch.settings()).contains(&".env.*".to_string()), "{:?}", denied_reads(&launch.settings()));
+    assert!(
+        denied_reads(&launch.settings()).contains(&".env.*".to_string()),
+        "{:?}",
+        denied_reads(&launch.settings())
+    );
 }
 
 #[test]
