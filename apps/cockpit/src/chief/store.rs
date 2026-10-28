@@ -1025,21 +1025,33 @@ fn escalate_stop(connection: &Connection, epoch: &str, stop: &str, category: Esc
     Ok(json!({"decision":id,"revision":1,"stop":stop,"state":"escalated"}))
 }
 
-/// The todo the Chief may start a session for or give to a session, with its canonical project and
-/// whether Theo queued it himself. Any todo still to do qualifies, queued or not, except one waiting
-/// on others or for the designer; one a session of the Chief's own project filed needs Theo's Q
-/// first, so the Chief cannot start work it gave itself.
-fn chief_startable_todo(todos: &crate::todo::TodoList, chief_project: &str, todo: &str) -> Result<(String, bool), TeamError> {
+/// The host policy that let the Chief dispatch a todo its own project filed without Theo's Q.
+const OWN_TODOS_POLICY: &str = "chief-dispatches-own-todos";
+
+/// Why the Chief may dispatch a todo: what the host records with each request.
+struct StartableTodo { project: String, is_theo_queued: bool, policy: Option<&'static str> }
+
+/// The todo the Chief may start a session for or give to a session. Any todo still to do
+/// qualifies, queued or not, except one waiting on others or for the designer; one a session of
+/// the Chief's own project filed needs Theo's Q first, so the Chief cannot start work it gave
+/// itself, unless Theo turned on the chief-dispatches-own-todos setting. The host reads it on each
+/// request and again before delivering a gift; a fresh-session request already made lapses within
+/// SESSION_START_OPEN_MS.
+fn chief_startable_todo(todos: &crate::todo::TodoList, chief_project: &str, todo: &str) -> Result<StartableTodo, TeamError> {
     let item = todos.items.iter().find(|item| item.id() == todo).ok_or_else(|| TeamError::new(ErrorCode::NotFound, "no todo has this id"))?;
     if item.status() != "todo" || item.is_waiting() || item.is_design() {
         return Err(conflict("the Chief starts sessions only for todos still to do, waiting on nothing and not for the designer"));
     }
     let chief_folder = chief_project.rsplit('/').next().unwrap_or(chief_project);
     let is_theo_queued = todos.is_queued(todo) && item.is_queued_by_theo();
+    let mut policy = None;
     if item.is_filed_from(chief_folder) && !is_theo_queued {
-        return Err(conflict("a todo the Chief filed waits until Theo queues it with Q"));
+        if !crate::settings::chief_dispatches_own_todos().map_err(|error| TeamError::new(ErrorCode::Storage, &error))? {
+            return Err(conflict("a todo the Chief filed waits until Theo queues it with Q, or turns on `cockpit setting chief-dispatches-own-todos on`"));
+        }
+        policy = Some(OWN_TODOS_POLICY);
     }
-    Ok((crate::teams::canonical_project(&item.cwd())?, is_theo_queued))
+    Ok(StartableTodo { project: crate::teams::canonical_project(&item.cwd())?, is_theo_queued, policy })
 }
 
 /// Lapses the requests the queue did not act on in time, then refuses a second one for the todo.
@@ -1065,7 +1077,7 @@ fn chief_target<'a>(live: &'a [WorkerState], chief: &VerifiedSession, session: &
 /// Todos Theo queued himself with Q do not count against `starts_per_hour`: the Q is host-recorded,
 /// so it holds where the Chief's word that Theo asked would not.
 fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList, chief_project: &str, epoch: &str, todo: &str, project: &str, reason: &str, starts_per_hour: i64, now_ms: i64) -> Result<Value, TeamError> {
-    let (canonical, is_theo_queued) = chief_startable_todo(todos, chief_project, todo)?;
+    let StartableTodo { project: canonical, is_theo_queued, policy } = chief_startable_todo(todos, chief_project, todo)?;
     if canonical.rsplit('/').next() != Some(project) { return Err(conflict("the todo belongs to another project")); }
     require_no_waiting_request(connection, &canonical, todo, now_ms)?;
     let recent: i64 = connection.query_row("SELECT count(*) FROM chief_session_starts WHERE created_at>?1 AND theo_queued=0 AND worker IS NULL", [now_ms.saturating_sub(3_600_000)], |row| row.get(0))?;
@@ -1075,15 +1087,15 @@ fn request_session_start(connection: &Connection, todos: &crate::todo::TodoList,
     let id = crate::teams::store::identifier()?;
     connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at,theo_queued) VALUES (?1,?2,?3,?4,?5,'requested',?6,?7)",
         params![id, epoch, canonical, todo, reason, now_ms, is_theo_queued])?;
-    coordination_event(connection, "session_start_requested", &json!({"source":"chief","request":id,"project":canonical,"task_id":todo,"reason":reason,"theo_queued":is_theo_queued}), now_ms)?;
-    Ok(json!({"request": id, "state": "requested", "project": canonical, "todo": todo}))
+    coordination_event(connection, "session_start_requested", &json!({"source":"chief","request":id,"project":canonical,"task_id":todo,"reason":reason,"theo_queued":is_theo_queued,"dispatch_policy":policy}), now_ms)?;
+    Ok(json!({"request": id, "state": "requested", "project": canonical, "todo": todo, "dispatch_policy": policy}))
 }
 
 /// Records the Chief's request to give a todo to a live session of its project. Its native inbox
 /// takes it once the usual queue admission and reservation checks pass; a
 /// gift starts no session, so it does not count against the hourly session starts.
 fn request_todo_gift(connection: &Connection, todos: &crate::todo::TodoList, live: &[WorkerState], chief: &VerifiedSession, epoch: &str, todo: &str, session: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
-    let (canonical, is_theo_queued) = chief_startable_todo(todos, &chief.project, todo)?;
+    let StartableTodo { project: canonical, is_theo_queued, policy } = chief_startable_todo(todos, &chief.project, todo)?;
     let worker = chief_target(live, chief, session)?;
     if worker.session.project != canonical { return Err(conflict("the session works in another project than the todo")); }
     require_no_waiting_request(connection, &canonical, todo, now_ms)?;
@@ -1094,8 +1106,8 @@ fn request_todo_gift(connection: &Connection, todos: &crate::todo::TodoList, liv
     require_task_mapping(connection, &worker.session, &crate::teams::TaskKey {project: canonical.clone(), task_id: todo.into()})?;
     connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at,theo_queued,worker,worker_runtime) VALUES (?1,?2,?3,?4,?5,'requested',?6,?7,?8,?9)",
         params![id, epoch, canonical, todo, reason, now_ms, is_theo_queued, session, worker.session.runtime])?;
-    coordination_event(connection, "todo_gift_requested", &json!({"source":"chief","request":id,"project":canonical,"task_id":todo,"session":session,"reason":reason}), now_ms)?;
-    Ok(json!({"request": id, "state": "requested", "project": canonical, "todo": todo, "session": session}))
+    coordination_event(connection, "todo_gift_requested", &json!({"source":"chief","request":id,"project":canonical,"task_id":todo,"session":session,"reason":reason,"dispatch_policy":policy}), now_ms)?;
+    Ok(json!({"request": id, "state": "requested", "project": canonical, "todo": todo, "session": session, "dispatch_policy": policy}))
 }
 
 /// The open Chief request to start a fresh session for this task, as (request id, reason).
@@ -1153,8 +1165,8 @@ pub fn claim_todo_gift(connection: &mut Connection, recipient: &VerifiedSession,
         transaction.execute("UPDATE chief_session_starts SET state='expired' WHERE id=?1",[request])?;
         transaction.commit()?;return Ok(None);
     }
-    let (project,_)=match chief_startable_todo(&todos,&chief_project,&todo) {
-        Ok(eligible)=>eligible,
+    let project=match chief_startable_todo(&todos,&chief_project,&todo) {
+        Ok(eligible)=>eligible.project,
         Err(error) if matches!(error.code,ErrorCode::NotFound|ErrorCode::Conflict) => {
             transaction.execute("UPDATE chief_session_starts SET state='expired' WHERE id=?1",[request])?;
             transaction.commit()?;return Ok(None);

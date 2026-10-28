@@ -305,7 +305,12 @@ folder name, a reason of at most 300 characters), most urgent first (higher prio
 older). The daemon accepts any todo still to do, queued or not, filed by you or by any session,
 except one that waits on other todos or is for the designer. A todo a session of the Chief's own
 project filed needs your Q first: the Chief cannot start work it gave itself. Such a todo arrives
-already queued, so press Q twice (out, then back in) to approve it. At most one request waits
+already queued, so press Q twice (out, then back in) to approve it. To let the Chief pick and
+dispatch the todos it filed itself, run `cockpit setting chief-dispatches-own-todos on` (off by
+default; `off` takes it back). Each such request still counts against the hourly cap, still skips
+todos that wait or are for the designer, and is audited with `dispatch_policy`
+`chief-dispatches-own-todos`; the setting change itself is audited as `setting.changed`. A
+pending gift is checked again before delivery, so turning it off stops it. At most one request waits
 per todo, so several todos of one project can start together. The Chief may ask 6 times an hour;
 change that with `cockpit setting chief-starts-per-hour <1-60>`. Todos you queued yourself with Q
 do not count against it: the Q is recorded by the host, so a Chief cannot claim it for you. An

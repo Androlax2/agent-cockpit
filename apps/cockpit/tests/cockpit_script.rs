@@ -5510,6 +5510,35 @@ fn chief_starts_per_hour_takes_one_to_sixty_or_empty_for_the_default() {
 }
 
 #[test]
+fn chief_dispatches_own_todos_starts_off_and_takes_only_on_or_off() {
+    let manager = Manager::new();
+    let file = manager.sandbox.state.join("cockpit/settings.json");
+    assert_eq!(stdout(&manager.run(&["setting", "chief-dispatches-own-todos"], &[])).trim(), "chief-dispatches-own-todos:");
+    for value in ["on", "off", ""] {
+        let result = manager.run(&["setting", "chief-dispatches-own-todos", value], &[]);
+        assert!(result.status.success(), "{value:?}: {}", stderr(&result));
+        assert_eq!(stdout(&manager.run(&["setting", "chief-dispatches-own-todos"], &[])).trim(), format!("chief-dispatches-own-todos: {value}").trim());
+    }
+    let saved = fs::read_to_string(&file).unwrap();
+    for value in ["yes", "true", "ON", "1"] {
+        let result = manager.run(&["setting", "chief-dispatches-own-todos", value], &[]);
+        assert!(!result.status.success(), "{value:?}");
+        assert!(stderr(&result).contains("invalid chief-dispatches-own-todos"), "{value:?}: {}", stderr(&result));
+        assert_eq!(fs::read_to_string(&file).unwrap(), saved);
+    }
+}
+
+#[test]
+fn turning_on_chief_dispatches_own_todos_is_audited() {
+    let manager = Manager::new();
+    assert!(manager.run(&["setting", "chief-dispatches-own-todos", "on"], &[]).status.success());
+    let folder = manager.sandbox.state.join("claude-audit");
+    let day = fs::read_dir(&folder).unwrap().flatten().find(|entry| entry.file_name().to_string_lossy().starts_with("audit-")).expect("no audit log").path();
+    let line: serde_json::Value = serde_json::from_str(fs::read_to_string(day).unwrap().lines().last().unwrap()).unwrap();
+    assert_eq!((line["event"].as_str(), line["name"].as_str(), line["value"].as_str()), (Some("setting.changed"), Some("chief-dispatches-own-todos"), Some("on")));
+}
+
+#[test]
 fn idle_sleep_is_a_switch_that_starts_on() {
     let manager = Manager::new();
     assert_eq!(stdout(&manager.run(&["setting", "idle-sleep"], &[])).trim(), "idle-sleep: on");

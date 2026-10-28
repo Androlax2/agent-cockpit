@@ -187,16 +187,17 @@ pub fn request(registry: &mut Registry, peer: u32, request: ChiefAgentAction) ->
     let sessions = live.iter().map(|worker| worker.session.clone()).collect::<Vec<_>>();
     let sender = teams::verified_sender(registry, peer, &sessions)?;
     let reply = store::agent(registry.teams.as_mut().expect("opened above"), &sender, &request, &live, teams::now_ms())?;
+    let dispatch_policy = reply.result.as_ref().ok().and_then(|value| value.get("dispatch_policy")).cloned().unwrap_or_default();
     if let ChiefAgentAction::StartSession { todo, project, reason } = &request {
         let refusal = reply.result.as_ref().err().map(|error| error.message.as_str());
         cockpit::audit::record("daemon", "chief.session_start_requested", if refusal.is_none() { "ok" } else { "refused" },
-            serde_json::json!({"session": sender.session_id, "task_id": todo, "project": project, "reason": reason, "refusal": refusal}));
+            serde_json::json!({"session": sender.session_id, "task_id": todo, "project": project, "reason": reason, "refusal": refusal, "dispatch_policy": dispatch_policy}));
         if refusal.is_none() {
             cockpit::util::log_as("daemon", "INFO", &format!("chief: asked for a fresh session for {todo} in {project}: {reason}"));
         }
     }
     let coordination = match &request {
-        ChiefAgentAction::GiveTodo {todo,session,reason} => Some(("chief.todo_gift_requested",serde_json::json!({"todo":todo,"session":session,"reason":reason}))),
+        ChiefAgentAction::GiveTodo {todo,session,reason} => Some(("chief.todo_gift_requested",serde_json::json!({"todo":todo,"session":session,"reason":reason,"dispatch_policy":dispatch_policy}))),
         ChiefAgentAction::Message {session,text,reason} => Some(("chief.message_requested",serde_json::json!({"session":session,"text_sha256":cockpit::audit::sha256_hex(text.as_bytes()),"reason":reason}))),
         _ => None,
     };

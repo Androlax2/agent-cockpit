@@ -72,6 +72,18 @@ pub fn chief_starts_per_hour() -> Result<i64, String> {
     }
 }
 
+/// The chief-dispatches-own-todos setting, set with `cockpit setting` (not in the S menu): on lets
+/// the Chief start or give todos its own project filed without Theo's Q. Missing or empty is off;
+/// anything but on or off is an error, so a typo never widens what the Chief may start.
+pub fn chief_dispatches_own_todos() -> Result<bool, String> {
+    let value = launch_value("chief-dispatches-own-todos").map_err(|error| format!("chief-dispatches-own-todos: {error}"))?;
+    match value.as_str() {
+        "" | "off" => Ok(false),
+        "on" => Ok(true),
+        _ => Err(format!("invalid chief-dispatches-own-todos {value:?} in settings.json: expected on or off")),
+    }
+}
+
 pub fn launch_agent() -> Result<String, String> {
     let name = launch_value("default-agent")?;
     crate::agents::find(&name).ok_or_else(|| format!("invalid default-agent: {name}"))?;

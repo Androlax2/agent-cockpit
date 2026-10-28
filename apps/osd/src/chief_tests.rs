@@ -2286,6 +2286,121 @@ fn the_chief_can_start_a_session_for_a_todo_its_own_project_filed_once_theo_queu
     assert_eq!(session_start_states(&bench), vec!["started"]);
 }
 
+fn set_chief_dispatches_own_todos(value: &str) {
+    fs::write(cockpit::paths::settings(), json!({"chief-dispatches-own-todos": value}).to_string()).unwrap();
+}
+
+/// The audit lines of today with this event name.
+fn audited(event: &str) -> Vec<serde_json::Value> {
+    let day = cockpit::audit::dir().join(format!("audit-{}.jsonl", chrono::Local::now().format("%Y-%m-%d")));
+    fs::read_to_string(day).unwrap_or_default().lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|line| line["event"] == event).collect()
+}
+
+fn coordination_policies(bench: &Bench, kind: &str) -> Vec<serde_json::Value> {
+    bench.registry.teams.as_ref().unwrap().prepare("SELECT json_extract(body,'$.dispatch_policy') FROM chief_events WHERE kind=?1 ORDER BY seq").unwrap()
+        .query_map([kind], |row| row.get::<_, Option<String>>(0)).unwrap().map(|policy| json!(policy.unwrap())).collect()
+}
+
+#[test]
+fn the_chief_starts_a_session_for_a_todo_it_filed_while_theos_dispatch_policy_is_on() {
+    let mut bench = admitted_chief_bench();
+    set_chief_dispatches_own_todos("on");
+    let todo = project_todo(&bench, "bb919cfe", json!({"source":"session ses_chief","reporter":"project-a","link":"project-a→project-a"}), true);
+    let requested = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    assert_eq!(requested["dispatch_policy"], "chief-dispatches-own-todos");
+    reserve_fresh_session(&mut bench, &todo).unwrap();
+    assert_eq!(session_start_states(&bench), vec!["started"]);
+    assert_eq!(coordination_policies(&bench, "session_start_requested"), vec![json!("chief-dispatches-own-todos")]);
+    let audit = audited("chief.session_start_requested");
+    assert_eq!(audit.last().unwrap()["dispatch_policy"], "chief-dispatches-own-todos", "{audit:?}");
+}
+
+#[test]
+fn work_theo_queued_or_another_project_filed_names_no_dispatch_policy() {
+    for fields in [json!({"source":"session ses_chief","queued_by_theo":true}), json!({"queued_by":"a project-b session (ses_e82b)"})] {
+        let mut bench = admitted_chief_bench();
+        set_chief_dispatches_own_todos("on");
+        let todo = project_todo(&bench, "bb919cfe", fields.clone(), true);
+        assert!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap()["dispatch_policy"].is_null(), "{fields}");
+    }
+}
+
+#[test]
+fn the_chief_still_needs_theos_q_for_its_own_todos_while_the_dispatch_policy_is_off_or_unset() {
+    for value in [None, Some(""), Some("off")] {
+        let mut bench = admitted_chief_bench();
+        if let Some(value) = value { set_chief_dispatches_own_todos(value); }
+        let todo = project_todo(&bench, "bb919cfe", json!({"source":"session ses_chief"}), true);
+        let refusal = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err();
+        assert_eq!(refusal.code, ErrorCode::Conflict, "{value:?}");
+        assert!(refusal.message.contains("chief-dispatches-own-todos on"), "{value:?}: {}", refusal.message);
+        assert!(session_start_states(&bench).is_empty());
+    }
+}
+
+#[test]
+fn an_invalid_dispatch_policy_refuses_the_chiefs_own_todos_and_names_the_setting() {
+    for value in ["yes", "true", "ON", "1"] {
+        let mut bench = admitted_chief_bench();
+        set_chief_dispatches_own_todos(value);
+        let todo = project_todo(&bench, "bb919cfe", json!({"source":"session ses_chief"}), true);
+        let refusal = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err();
+        assert_eq!(refusal.code, ErrorCode::Storage, "{value:?}");
+        assert!(refusal.message.contains("invalid chief-dispatches-own-todos"), "{value:?}: {}", refusal.message);
+        assert!(session_start_states(&bench).is_empty());
+    }
+}
+
+#[test]
+fn the_dispatch_policy_still_counts_the_chiefs_own_todos_against_the_hourly_cap() {
+    let mut bench = admitted_chief_bench();
+    set_chief_dispatches_own_todos("on");
+    earlier_session_starts(&bench, 6, false);
+    let todo = project_todo(&bench, "bb919cfe", json!({"source":"session ses_chief"}), true);
+    assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err().code, ErrorCode::Limit);
+}
+
+#[test]
+fn the_dispatch_policy_never_starts_the_chiefs_own_todos_that_wait_or_are_for_the_designer_or_are_not_to_do() {
+    for fields in [json!({"after":["ee919cfe"]}), json!({"kind":"design"}), json!({"status":"doing"}), json!({"status":"proposed"})] {
+        let mut bench = admitted_chief_bench();
+        set_chief_dispatches_own_todos("on");
+        let mut fields = fields;
+        fields["source"] = json!("session ses_chief");
+        let todo = project_todo(&bench, "bb919cfe", fields.clone(), true);
+        assert_eq!(chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap_err().code, ErrorCode::Conflict, "{fields}");
+        assert!(session_start_states(&bench).is_empty());
+    }
+}
+
+#[test]
+fn the_dispatch_policy_lets_the_chief_give_its_own_todo_to_a_live_session() {
+    let mut bench = admitted_chief_bench();
+    idle_message_worker(&mut bench);
+    set_chief_dispatches_own_todos("on");
+    let todo = project_todo(&bench, "aa919cfe", json!({"source":"session ses_chief"}), true);
+    assert_eq!(chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap()["dispatch_policy"], "chief-dispatches-own-todos");
+    let delivery = crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["kind"], "chief_todo");
+    assert_eq!(cockpit::todo::TodoList::load().status_of(&todo), "doing");
+    assert_eq!(coordination_policies(&bench, "todo_gift_requested"), vec![json!("chief-dispatches-own-todos")]);
+    assert_eq!(audited("chief.todo_gift_requested").last().unwrap()["dispatch_policy"], "chief-dispatches-own-todos");
+}
+
+#[test]
+fn turning_the_dispatch_policy_off_retires_a_gift_of_the_chiefs_own_todo_before_delivery() {
+    let mut bench = admitted_chief_bench();
+    idle_message_worker(&mut bench);
+    set_chief_dispatches_own_todos("on");
+    let todo = project_todo(&bench, "aa919cfe", json!({"source":"session ses_chief"}), true);
+    chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
+    set_chief_dispatches_own_todos("off");
+    assert!(crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap().is_null());
+    assert_eq!(cockpit::todo::TodoList::load().status_of(&todo), "todo");
+    assert_eq!(session_start_states(&bench), vec!["expired"]);
+}
+
 #[test]
 fn the_chief_cannot_start_a_session_for_an_unknown_todo() {
     let mut bench = admitted_chief_bench();
