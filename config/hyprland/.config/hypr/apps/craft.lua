@@ -6,7 +6,9 @@ hl.window_rule({ match = { class = "^(ai\\.storyteller\\.[a-z]+craft)$" }, opaci
 
 -- craft-open starts FigCraft from the cockpit, where a new window would land on the cockpit's
 -- workspace. `hyprctl eval 'FIGCRAFT_OPEN_ON_WORKSPACE(2)'` sends the next FigCraft window that
--- opens within the request's lifetime to workspace 2, without following it there.
+-- opens within the request's lifetime to workspace 2, without following it there. Without a
+-- request, a new FigCraft process's first window goes to workspace 7, which it shares with games;
+-- further windows of an open FigCraft (its dialogs) stay beside it.
 --
 -- Each checkout keeps its own FigCraft process (its own port and file roots), so tabs are
 -- Hyprland's: when workspace 2 already shows one FigCraft (a window or a tab group of them), the
@@ -14,6 +16,7 @@ hl.window_rule({ match = { class = "^(ai\\.storyteller\\.[a-z]+craft)$" }, opaci
 -- there, a locked group or a floating one: it opens beside them, as before.
 local REQUEST_LIFETIME_S = 30
 local FIGCRAFT_CLASS = "ai.storyteller.figcraft"
+local FIGCRAFT_WORKSPACE = 7  -- the same number as FIGCRAFT_WORKSPACE in craft-open
 local workspace_request
 
 local function tab_host(window, workspace)
@@ -63,15 +66,34 @@ function FIGCRAFT_OPEN_ON_WORKSPACE(workspace)
     workspace_request = { workspace = workspace, expires_at = os.time() + REQUEST_LIFETIME_S }
 end
 
-hl.on("window.open", function(window)
-    if window.class ~= FIGCRAFT_CLASS or not workspace_request then
-        return
+local function opened_by_open_figcraft(window)
+    for _, other in ipairs(hl.get_windows()) do
+        if other.class == FIGCRAFT_CLASS and other.address ~= window.address and other.pid == window.pid then
+            return true
+        end
     end
+    return false
+end
+
+local function requested_workspace()
     local request = workspace_request
     workspace_request = nil
-    if os.time() > request.expires_at then
+    if request and os.time() <= request.expires_at then
+        return request.workspace
+    end
+end
+
+hl.on("window.open", function(window)
+    if window.class ~= FIGCRAFT_CLASS then
         return
     end
-    hl.dispatch(hl.dsp.window.move({ window = window, workspace = tostring(request.workspace), follow = false }))
-    join_as_tab(window, request.workspace)
+    local workspace = requested_workspace()
+    if not workspace then
+        if opened_by_open_figcraft(window) then
+            return
+        end
+        workspace = FIGCRAFT_WORKSPACE
+    end
+    hl.dispatch(hl.dsp.window.move({ window = window, workspace = tostring(workspace), follow = false }))
+    join_as_tab(window, workspace)
 end)

@@ -8,7 +8,8 @@ use std::process::{Command, Output};
 
 /// Loads craft.lua, then runs `actions` (Lua), where `open(class)` maps a window, `clock` sets
 /// the seconds os.time() returns, `windows` lists the mapped windows hl.get_windows() returns and
-/// `tile(address, workspace)` adds a FigCraft window there.
+/// `tile(address, workspace)` adds a FigCraft window there. Each window gets a process of its own
+/// unless `open(class, pid)` names one.
 fn place(actions: &str) -> Output {
     let module = repo().join("config/hyprland/.config/hypr/apps/craft.lua");
     let script = format!(r#"
@@ -45,15 +46,19 @@ hl = {{
     end,
 }}
 dofile({module:?})
-local next_address = 0
+local next_address, next_pid = 0, 100
+local function new_pid()
+    next_pid = next_pid + 1
+    return next_pid
+end
 function tile(address, workspace)
-    local window = {{ class = "ai.storyteller.figcraft", address = address, workspace = {{ id = workspace }}, floating = false }}
+    local window = {{ class = "ai.storyteller.figcraft", address = address, workspace = {{ id = workspace }}, floating = false, pid = new_pid() }}
     table.insert(windows, window)
     return window
 end
-function open(class)
+function open(class, pid)
     next_address = next_address + 1
-    local window = {{ class = class, address = "new" .. next_address, workspace = {{ id = 6 }}, floating = false }}
+    local window = {{ class = class, address = "new" .. next_address, workspace = {{ id = 6 }}, floating = false, pid = pid or new_pid() }}
     table.insert(windows, window)
     handlers["window.open"](window)
 end
@@ -78,20 +83,33 @@ fn the_requested_figcraft_window_opens_on_its_workspace_without_following_it() {
 }
 
 #[test]
-fn only_the_next_figcraft_window_is_moved() {
+fn a_request_moves_only_the_next_figcraft_window() {
     let dispatched = moves(r#"FIGCRAFT_OPEN_ON_WORKSPACE(3); open("kitty"); open("ai.storyteller.wordcraft")
 open("ai.storyteller.figcraft"); open("ai.storyteller.figcraft")"#);
-    assert_eq!(dispatched, ["move ai.storyteller.figcraft to 3 follow=false"]);
+    assert_eq!(dispatched, ["move ai.storyteller.figcraft to 3 follow=false", MOVED_TO_7]);
+}
+
+const MOVED_TO_7: &str = "move ai.storyteller.figcraft to 7 follow=false";
+
+#[test]
+fn a_directly_launched_figcraft_opens_on_the_shared_workspace_7() {
+    assert_eq!(moves(r#"open("ai.storyteller.figcraft")"#), [MOVED_TO_7]);
 }
 
 #[test]
-fn a_figcraft_window_without_a_request_stays_where_hyprland_puts_it() {
-    assert!(moves(r#"open("ai.storyteller.figcraft")"#).is_empty());
+fn another_window_of_an_open_figcraft_stays_where_hyprland_puts_it() {
+    assert!(moves(r#"tile("opusline", 3).pid = 41; open("ai.storyteller.figcraft", 41)"#).is_empty());
 }
 
 #[test]
-fn an_expired_request_moves_nothing() {
-    assert!(moves(r#"FIGCRAFT_OPEN_ON_WORKSPACE(3); clock = clock + 31; open("ai.storyteller.figcraft")"#).is_empty());
+fn a_directly_launched_figcraft_joins_the_one_on_workspace_7_as_a_tab() {
+    assert_eq!(moves(r#"tile("opusline", 7); open("ai.storyteller.figcraft")"#),
+        [MOVED_TO_7, "group opusline", "tab new1 with opusline"]);
+}
+
+#[test]
+fn an_expired_request_leaves_the_window_to_the_shared_workspace() {
+    assert_eq!(moves(r#"FIGCRAFT_OPEN_ON_WORKSPACE(3); clock = clock + 31; open("ai.storyteller.figcraft")"#), [MOVED_TO_7]);
 }
 
 #[test]
@@ -145,6 +163,6 @@ opusline.group = {{ current = opusline, locked = true, denied = false, add = fun
 }
 
 #[test]
-fn a_figcraft_opened_without_a_request_joins_no_tab() {
-    assert!(moves(r#"tile("opusline", 3); open("ai.storyteller.figcraft")"#).is_empty());
+fn a_figcraft_opened_without_a_request_joins_no_tab_elsewhere() {
+    assert_eq!(moves(r#"tile("opusline", 3); open("ai.storyteller.figcraft")"#), [MOVED_TO_7]);
 }

@@ -347,11 +347,19 @@ fn a_failed_workspace_routing_starts_no_window() {
 }
 
 #[test]
-fn the_cockpit_workspace_or_a_missing_workspace_is_refused() {
+fn without_a_workspace_a_new_window_opens_on_the_shared_workspace_7() {
+    let craft = Craft::new();
+    let output = craft.run(&["figcraft", "--session", SESSION_A], &[]);
+    assert_eq!(output.status.code(), Some(0), "{}{}", stdout(&output), stderr(&output));
+    assert_eq!(craft.sandbox.calls("hyprctl"), ["hyprctl eval FIGCRAFT_OPEN_ON_WORKSPACE(7)"]);
+    assert!(stdout(&output).contains("on workspace 7"), "{}", stdout(&output));
+}
+
+#[test]
+fn the_cockpit_workspace_or_an_invalid_workspace_is_refused() {
     let craft = Craft::new();
     for arguments in [
-        vec!["figcraft"],
-        vec!["figcraft", "--session", SESSION_A],
+        vec!["figcraft", "--workspace"],
         vec!["figcraft", "--workspace", "6"],
         vec!["figcraft", "--workspace", "0"],
         vec!["figcraft", "--workspace", "2)"],
@@ -551,7 +559,7 @@ fn opening_without_a_session_explains_that_existing_connections_are_unchanged() 
         assert!(output.status.success(), "{}{}", stdout(&output), stderr(&output));
         let message = stdout(&output);
         assert!(message.contains("Existing sessions were not reconnected"), "{message}");
-        assert!(message.contains("craft-open figcraft --workspace <number> --session <session-id>"), "{message}");
+        assert!(message.contains("craft-open figcraft --session <session-id>"), "{message}");
     }
     assert!(!craft.sandbox.state.join("cockpit/restart-when-idle").exists());
 }

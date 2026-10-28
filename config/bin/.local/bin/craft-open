@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# craft-open figcraft --workspace <n> [--session <id>]: FigCraft for the project of the current
+# craft-open figcraft [--workspace <n>] [--session <id>]: FigCraft for the project of the current
 # folder, driven by the session's figcraft-app MCP server, on a port reserved for this checkout.
 # Run outside the sandbox, through ask-to-run, when Theo asks a session to connect to FigCraft.
 #
 # Existing windows are never closed. Each checkout has separate preferences/recovery storage,
 # and its port is never reassigned to another checkout (old sandboxes retain their forwards).
 #
-# --workspace <n>: the workspace Theo picked for a new window. Approving from the cockpit would
-# otherwise open it on the cockpit's workspace (6), which is refused. An already open window stays
-# where it is. On a workspace already showing another checkout's FigCraft, the new window joins it
+# --workspace <n>: the workspace for a new window, 7 (shared with games) by default. Approving from
+# the cockpit would otherwise open it on the cockpit's workspace (6), which is refused. An already
+# open window stays where it is. On a workspace already showing another checkout's FigCraft, the new window joins it
 # as a Hyprland tab (hypr/apps/craft.lua); each tab stays its own confined process.
 #
 # --session <id>: reconnect that session even if its tools are still listed: its sandbox and MCP
@@ -19,6 +19,7 @@ set -euo pipefail
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit"
 WAIT_S=${CRAFT_OPEN_WAIT_S:-15}
 CLAUDE_WORKSPACE=6  # the same number as WORKSPACE in hypr/apps/claude.lua
+FIGCRAFT_WORKSPACE=7  # the same number as FIGCRAFT_WORKSPACE in hypr/apps/craft.lua
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/greywall-agents/figcraft.sh"
 
 # hyprctl finds Hyprland through HYPRLAND_INSTANCE_SIGNATURE. The ask-to-run terminal this runs in
@@ -35,7 +36,7 @@ refresh_hyprland_instance() {
 }
 
 usage() {
-    echo "usage: craft-open figcraft --workspace <number> [--session <session-id>]" >&2
+    echo "usage: craft-open figcraft [--workspace <number>] [--session <session-id>]" >&2
     exit 2
 }
 
@@ -63,7 +64,8 @@ while (( $# >= 2 )); do
     esac
     shift 2
 done
-(( $# == 0 )) && [[ -v workspace ]] || usage
+(( $# == 0 )) || usage
+workspace=${workspace-$FIGCRAFT_WORKSPACE}
 if [[ ! $workspace =~ ^[1-9][0-9]?$ ]]; then
     echo "craft-open: not a workspace number: $workspace" >&2
     exit 2
@@ -244,5 +246,5 @@ if [[ -n $session ]]; then
     echo "The session restarts when its turn ends (its conversation is kept), then carries on."
 else
     echo "Existing sessions were not reconnected: their sandbox forwards and MCP connections are unchanged."
-    echo "To reconnect a cockpit session, run: craft-open figcraft --workspace <number> --session <session-id>"
+    echo "To reconnect a cockpit session, run: craft-open figcraft --session <session-id>"
 fi
