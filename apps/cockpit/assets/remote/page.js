@@ -3,11 +3,16 @@
 "use strict";
 
 const GLYPHS = { "needs-you": "●", waiting: "◐", working: "◌", unknown: "?" };
-const STATE_LABELS = { "needs-you": "Needs you", waiting: "Waiting", working: "Working", unknown: "Unknown" };
+const STATE_LABELS = {
+  "needs-you": "Needs you",
+  waiting: "Waiting",
+  working: "Working",
+  unknown: "Unknown",
+};
 let state = { sessions: [], approvals: [], inputs: [] };
 let isPaired = false;
 let opened = null; // the session shown in detail
-let armed = null;  // the approval whose Run, or the session whose Interrupt, waits for its second tap
+let armed = null; // the approval whose Run, or the session whose Interrupt, waits for its second tap
 let shownScreen = ""; // the screen as last fetched, escapes included
 let approvalsLook = null;
 const pendingPosts = new Set();
@@ -32,7 +37,7 @@ function chiefRecords(kind) {
 }
 
 function chiefCount(session) {
-  return chiefRecords("counts").find(count => count.session_id === session)?.count || 0;
+  return chiefRecords("counts").find((count) => count.session_id === session)?.count || 0;
 }
 
 function chiefScope(project) {
@@ -43,30 +48,44 @@ async function refreshChief() {
   const sequence = ++chiefReadSequence;
   try {
     const fresh = await getJson("/api/chief");
-    if (![fresh.answers, fresh.habits, fresh.escalations].every(Array.isArray)) throw new Error("Chief data unavailable");
+    if (![fresh.answers, fresh.habits, fresh.escalations].every(Array.isArray))
+      throw new Error("Chief data unavailable");
     if (sequence !== chiefReadSequence) return;
-    chiefState = fresh; chiefError = "";
+    chiefState = fresh;
+    chiefError = "";
   } catch (error) {
     if (sequence !== chiefReadSequence) return;
-    chiefState = null; chiefError = `Chief unavailable · ${error.message || error}`;
+    chiefState = null;
+    chiefError = `Chief unavailable · ${error.message || error}`;
   }
 }
 
 function chiefIdentity(record) {
-  const session = state.sessions.find(session => session.session === record.session_id);
-  return chiefState?.session_names?.[record.session_id] || session?.title || session?.project || `ses_…${record.session_id.slice(-6)}`;
+  const session = state.sessions.find((session) => session.session === record.session_id);
+  return (
+    chiefState?.session_names?.[record.session_id] ||
+    session?.title ||
+    session?.project ||
+    `ses_…${record.session_id.slice(-6)}`
+  );
 }
 
 function updateChiefCards(box, records, build) {
   const previous = Array.from(box.children);
-  const wanted = records.map(record => {
+  const wanted = records.map((record) => {
     const look = JSON.stringify(record);
-    const kept = previous.find(node => node.dataset.recordId === record.id && node.dataset.look === look);
+    const kept = previous.find(
+      (node) => node.dataset.recordId === record.id && node.dataset.look === look,
+    );
     if (kept) return kept;
-    const node = build(record); node.dataset.recordId = record.id; node.dataset.look = look;
+    const node = build(record);
+    node.dataset.recordId = record.id;
+    node.dataset.look = look;
     return node;
   });
-  for (const node of previous) { if (!wanted.includes(node)) box.removeChild(node); }
+  for (const node of previous) {
+    if (!wanted.includes(node)) box.removeChild(node);
+  }
   for (const [index, node] of wanted.entries()) {
     if (box.children[index] !== node) box.insertBefore(node, box.children[index] || null);
   }
@@ -79,23 +98,36 @@ function chiefButton(label, action, kind, record, note) {
   button.disabled = chiefSubmitted.has(submission);
   button.onclick = async () => {
     if (button.disabled || chiefSubmitted.has(submission)) return;
-    const current = chiefRecords(kind).find(current => current.id === record.id);
+    const current = chiefRecords(kind).find((current) => current.id === record.id);
     if (!current || JSON.stringify(current) !== expected) {
-      note.textContent = "This changed. Refresh and read it again."; note.dataset.kind = "error"; return;
+      note.textContent = "This changed. Refresh and read it again.";
+      note.dataset.kind = "error";
+      return;
     }
-    if (pendingPosts.has("/api/chief")) { note.textContent = "Another Chief action is still pending."; return; }
-    chiefSubmitted.add(submission); button.disabled = true;
+    if (pendingPosts.has("/api/chief")) {
+      note.textContent = "Another Chief action is still pending.";
+      return;
+    }
+    chiefSubmitted.add(submission);
+    button.disabled = true;
     const request_id = `phone-chief-${Date.now()}-${++chiefRequestSequence}-${Math.random().toString(36).slice(2)}`;
-    const result = await post("/api/chief", { action: { ...action, request_id }, expected: record }, note);
+    const result = await post(
+      "/api/chief",
+      { action: { ...action, request_id }, expected: record },
+      note,
+    );
     if (result.ok && action.action === "delete_habit") chiefUndo = record.id;
     if (result.ok && action.action === "restore_habit") chiefUndo = null;
     if (!result.ok && result.outcome_uncertain === false) {
-      chiefSubmitted.delete(submission); button.disabled = false;
+      chiefSubmitted.delete(submission);
+      button.disabled = false;
       note.textContent = `${result.message} Nothing was sent; correct the input or refresh.`;
     } else if (!result.ok) {
       note.textContent = `${result.message} Refresh and inspect the outcome before another action.`;
     }
-    await refreshChief(); renderSessionChief(); renderChief();
+    await refreshChief();
+    renderSessionChief();
+    renderChief();
   };
   return button;
 }
@@ -104,26 +136,47 @@ function chiefEditor(kind, record) {
   const isCorrection = kind === "answers";
   const key = `${kind}:${record.id}`;
   const box = element("section", "chief-editor");
-  if (isCorrection) box.append(element("p", "task", `To: ${chiefIdentity(record)} · ${chiefScope(record.project)}`));
+  if (isCorrection)
+    box.append(
+      element("p", "task", `To: ${chiefIdentity(record)} · ${chiefScope(record.project)}`),
+    );
   const input = element("textarea", "chief-input");
-  input.value = chiefDrafts.get(key) || ""; input.maxLength = isCorrection ? 2000 : 4000;
+  input.value = chiefDrafts.get(key) || "";
+  input.maxLength = isCorrection ? 2000 : 4000;
   const preview = element("p", "chief-suggestion");
-  const note = element("div", "note"); note.id = `chief-note-${++controlSequence}`;
+  const note = element("div", "note");
+  note.id = `chief-note-${++controlSequence}`;
   input.setAttribute("aria-describedby", note.id);
   box.append(labelControl(isCorrection ? "Your correction" : "Your answer", input), preview);
   const buttons = element("div", "buttons");
   const update = () => {
     chiefDrafts.set(key, input.value);
     const habit = Array.from(input.value.trim().replace(/\s+/g, " "));
-    preview.textContent = isCorrection ? `Becomes a habit (${chiefScope(record.project)}): ${habit.length > 500 ? habit.slice(0, 499).join("") + "…" : habit.join("")}` : "";
-    const action = isCorrection ? { action: "overrule", answer: record.id, correction: input.value }
-      : { action: "answer_decision", decision: record.id, expected_revision: record.revision, answer: input.value };
-    const send = chiefButton(isCorrection ? "Send correction" : "Send answer", action, kind, record, note);
+    preview.textContent = isCorrection
+      ? `Becomes a habit (${chiefScope(record.project)}): ${habit.length > 500 ? habit.slice(0, 499).join("") + "…" : habit.join("")}`
+      : "";
+    const action = isCorrection
+      ? { action: "overrule", answer: record.id, correction: input.value }
+      : {
+          action: "answer_decision",
+          decision: record.id,
+          expected_revision: record.revision,
+          answer: input.value,
+        };
+    const send = chiefButton(
+      isCorrection ? "Send correction" : "Send answer",
+      action,
+      kind,
+      record,
+      note,
+    );
     send.disabled = send.disabled || !input.value.trim();
     buttons.replaceChildren(send);
   };
   input.oninput = update;
-  input.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) event.preventDefault(); };
+  input.onkeydown = (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) event.preventDefault();
+  };
   update();
   const label = isCorrection ? chiefState?.correction_label : chiefState?.answer_label;
   if (label) box.append(element("p", "note", label));
@@ -134,15 +187,28 @@ function chiefEditor(kind, record) {
 function chiefEscalation(record) {
   const section = element("section", "chief-escalation-actions");
   const card = element("article", "card chief-escalation");
-  const category = { security: "Security", scope: "Scope", unsure: "Not sure", uncertain: "Not sure" }[record.category] || record.category;
-  card.append(element("div", "question", `! Chief needs you · ${category}`), element("p", "message-text", `Agent asks: “${record.question}”`),
-    element("p", "task", record.recommendation));
+  const category =
+    { security: "Security", scope: "Scope", unsure: "Not sure", uncertain: "Not sure" }[
+      record.category
+    ] || record.category;
+  card.append(
+    element("div", "question", `! Chief needs you · ${category}`),
+    element("p", "message-text", `Agent asks: “${record.question}”`),
+    element("p", "task", record.recommendation),
+  );
   section.append(card);
   const steps = inboxSteps(record);
   if (steps.length) {
-    card.append(element("p", "chief-suggestion", `◆ Chief suggests: ${steps.map(step => step.text).join(" · ")}`));
+    card.append(
+      element(
+        "p",
+        "chief-suggestion",
+        `◆ Chief suggests: ${steps.map((step) => step.text).join(" · ")}`,
+      ),
+    );
     const start = element("button", "chief-use", "Do this, step by step");
-    start.onclick = () => openInbox(record.id, "step", start); section.append(start);
+    start.onclick = () => openInbox(record.id, "step", start);
+    section.append(start);
   }
   const own = element("button", "chief-own", "Write my own answer");
   own.onclick = () => openInbox(record.id, "write", own);
@@ -155,103 +221,238 @@ let inbox = null; // { decision, revision, stage, done: {id: n}, text, fromLast,
 const inboxDrafts = new Map(); // what Theo typed per question: never dropped because the question changed
 
 function inboxSteps(record) {
-  const clean = value => typeof value === "string" && value.trim() ? value.trim() : null;
-  const given = (Array.isArray(record.steps) ? record.steps : []).filter(step => clean(step?.text))
-    .map(step => ({ text: clean(step.text), help: clean(step.help), message: clean(step.message) || clean(step.text) }));
+  const clean = (value) => (typeof value === "string" && value.trim() ? value.trim() : null);
+  const given = (Array.isArray(record.steps) ? record.steps : [])
+    .filter((step) => clean(step?.text))
+    .map((step) => ({
+      text: clean(step.text),
+      help: clean(step.help),
+      message: clean(step.message) || clean(step.text),
+    }));
   if (given.length) return given;
-  return clean(record.suggested_answer) ? [{ text: clean(record.suggested_answer), help: null, message: clean(record.suggested_answer) }] : [];
+  return clean(record.suggested_answer)
+    ? [
+        {
+          text: clean(record.suggested_answer),
+          help: null,
+          message: clean(record.suggested_answer),
+        },
+      ]
+    : [];
 }
 
 function inboxQuestions() {
   const now = Date.now();
-  return chiefRecords("escalations").filter(record => record.later_until_ms == null || record.later_until_ms <= now)
-    .sort((a, b) => (a.created_at_ms || 0) - (b.created_at_ms || 0) || String(a.id).localeCompare(String(b.id)));
+  return chiefRecords("escalations")
+    .filter((record) => record.later_until_ms == null || record.later_until_ms <= now)
+    .sort(
+      (a, b) =>
+        (a.created_at_ms || 0) - (b.created_at_ms || 0) || String(a.id).localeCompare(String(b.id)),
+    );
 }
 
 function inboxPlace(record) {
   const name = chiefIdentity(record);
   const split = name.lastIndexOf(" · ");
-  return split < 0 ? { project: "", task: name } : { project: name.slice(split + 3), task: name.slice(0, split) };
+  return split < 0
+    ? { project: "", task: name }
+    : { project: name.slice(split + 3), task: name.slice(0, split) };
 }
 
 function inboxAge(created) {
   if (!created) return "asked a while ago";
   const minutes = Math.max(0, Math.floor((Date.now() - created) / 60000));
-  return minutes < 1 ? "asked just now" : minutes < 60 ? `asked ${minutes}m ago` : minutes < 1440 ? `asked ${Math.floor(minutes / 60)}h ago` : `asked ${Math.floor(minutes / 1440)}d ago`;
+  return minutes < 1
+    ? "asked just now"
+    : minutes < 60
+      ? `asked ${minutes}m ago`
+      : minutes < 1440
+        ? `asked ${Math.floor(minutes / 60)}h ago`
+        : `asked ${Math.floor(minutes / 1440)}d ago`;
 }
 
 function inboxShowFirst(notice = "") {
   const first = inboxQuestions()[0];
   const done = inbox?.done || {};
-  inbox = first ? { decision: first.id, revision: first.revision, stage: "question", done, text: "", fromLast: false, sentTo: "", notice, armed: false }
-    : { decision: null, revision: null, stage: "empty", done, text: "", fromLast: false, sentTo: "", notice, armed: false };
+  inbox = first
+    ? {
+        decision: first.id,
+        revision: first.revision,
+        stage: "question",
+        done,
+        text: "",
+        fromLast: false,
+        sentTo: "",
+        notice,
+        armed: false,
+      }
+    : {
+        decision: null,
+        revision: null,
+        stage: "empty",
+        done,
+        text: "",
+        fromLast: false,
+        sentTo: "",
+        notice,
+        armed: false,
+      };
 }
 
 function openInbox(decision = null, stage = "question", opener = null) {
   // An explicit tap opens that question even while it is put off.
-  const record = decision && chiefRecords("escalations").find(question => question.id === decision);
-  if (record) inbox = { decision: record.id, revision: record.revision, stage, done: inbox?.done || {}, text: "", fromLast: false, sentTo: "", notice: "", armed: false };
+  const record =
+    decision && chiefRecords("escalations").find((question) => question.id === decision);
+  if (record)
+    inbox = {
+      decision: record.id,
+      revision: record.revision,
+      stage,
+      done: inbox?.done || {},
+      text: "",
+      fromLast: false,
+      sentTo: "",
+      notice: "",
+      armed: false,
+    };
   else inboxShowFirst();
   openChief("inbox", null, opener);
 }
 
-function inboxCurrent() { return chiefRecords("escalations").find(record => record.id === inbox?.decision); }
+function inboxCurrent() {
+  return chiefRecords("escalations").find((record) => record.id === inbox?.decision);
+}
 
 /// A question that changed or went away sends Theo back to read; nothing old is sent.
 function inboxCheck() {
-  if (inbox?.stage === "empty" && inboxQuestions().length) { inboxShowFirst(); return; }
+  if (inbox?.stage === "empty" && inboxQuestions().length) {
+    inboxShowFirst();
+    return;
+  }
   if (!inbox || ["sent", "empty"].includes(inbox.stage)) return;
   const current = inboxCurrent();
-  if (!current) { delete inbox.done[inbox.decision]; inboxShowFirst("That question was answered or withdrawn elsewhere."); return; }
+  if (!current) {
+    delete inbox.done[inbox.decision];
+    inboxShowFirst("That question was answered or withdrawn elsewhere.");
+    return;
+  }
   if (current.revision !== inbox.revision) {
     delete inbox.done[inbox.decision];
     if (inbox.stage === "write" && inbox.text.trim()) inboxDrafts.set(inbox.decision, inbox.text);
     const kept = inboxDrafts.get(inbox.decision)?.trim();
-    Object.assign(inbox, { revision: current.revision, stage: "question", armed: false,
-      notice: kept ? "The question changed; your draft is kept below." : "This question changed. Read it again." });
+    Object.assign(inbox, {
+      revision: current.revision,
+      stage: "question",
+      armed: false,
+      notice: kept
+        ? "The question changed; your draft is kept below."
+        : "This question changed. Read it again.",
+    });
   }
 }
 
-function inboxGo(changes) { Object.assign(inbox, { notice: "", armed: false }, changes); renderChief(); }
+function inboxGo(changes) {
+  Object.assign(inbox, { notice: "", armed: false }, changes);
+  renderChief();
+}
 
 async function inboxPost(action, record, onSent) {
-  if (pendingPosts.has("/api/chief")) { inboxGo({ notice: "Another Chief action is still pending." }); return; }
+  if (pendingPosts.has("/api/chief")) {
+    inboxGo({ notice: "Another Chief action is still pending." });
+    return;
+  }
   const note = element("div", "note");
   const request_id = `phone-chief-${Date.now()}-${++chiefRequestSequence}-${Math.random().toString(36).slice(2)}`;
-  const result = await post("/api/chief", { action: { ...action, request_id }, expected: record }, note);
-  await refreshChief(); renderSessionChief();
-  if (result.ok) { onSent(); renderChief(); return; }
+  const result = await post(
+    "/api/chief",
+    { action: { ...action, request_id }, expected: record },
+    note,
+  );
+  await refreshChief();
+  renderSessionChief();
+  if (result.ok) {
+    onSent();
+    renderChief();
+    return;
+  }
   // An uncertain outcome may have reached the agent: no second send of this question from here.
-  if (action.action === "answer_decision" && result.outcome_uncertain !== false) inbox.uncertain = inbox.decision;
-  inboxGo({ notice: result.outcome_uncertain === false ? `${result.message} Nothing was sent.` : `${result.message} It may have arrived; refresh and check before anything else.` });
+  if (action.action === "answer_decision" && result.outcome_uncertain !== false)
+    inbox.uncertain = inbox.decision;
+  inboxGo({
+    notice:
+      result.outcome_uncertain === false
+        ? `${result.message} Nothing was sent.`
+        : `${result.message} It may have arrived; refresh and check before anything else.`,
+  });
 }
 
 function inboxSendButton(label, record, answer) {
-  const send = element("button", inbox.armed ? "armed" : "chief-use", inbox.armed ? "Tap again to send" : label);
+  const send = element(
+    "button",
+    inbox.armed ? "armed" : "chief-use",
+    inbox.armed ? "Tap again to send" : label,
+  );
   send.disabled = !answer.trim() || inbox.uncertain === record.id;
   send.onclick = async () => {
     if (send.disabled || inbox.sending) return;
-    if (!inbox.armed) { inbox.armed = true; renderChief(true); return; }
-    inbox.sending = true; inbox.armed = false;
+    if (!inbox.armed) {
+      inbox.armed = true;
+      renderChief(true);
+      return;
+    }
+    inbox.sending = true;
+    inbox.armed = false;
     const to = inboxPlace(record);
     try {
-      await inboxPost({ action: "answer_decision", decision: record.id, expected_revision: inbox.revision, answer }, record,
-        () => { delete inbox.done[record.id]; inboxDrafts.delete(record.id); Object.assign(inbox, { stage: "sent", sentTo: to.project ? `${to.project} › ${to.task}` : to.task, notice: "" }); });
-    } finally { inbox.sending = false; }
+      await inboxPost(
+        {
+          action: "answer_decision",
+          decision: record.id,
+          expected_revision: inbox.revision,
+          answer,
+        },
+        record,
+        () => {
+          delete inbox.done[record.id];
+          inboxDrafts.delete(record.id);
+          Object.assign(inbox, {
+            stage: "sent",
+            sentTo: to.project ? `${to.project} › ${to.task}` : to.task,
+            notice: "",
+          });
+        },
+      );
+    } finally {
+      inbox.sending = false;
+    }
   };
   return send;
 }
 
 function inboxContext(box, record, total, position) {
-  const dots = Array.from({ length: Math.min(total, 8) }, (_, index) => index === position ? "●" : "○").join("");
+  const dots = Array.from({ length: Math.min(total, 8) }, (_, index) =>
+    index === position ? "●" : "○",
+  ).join("");
   const now = Date.now();
-  const later = chiefRecords("escalations").filter(other => other.id !== record.id && other.later_until_ms != null && other.later_until_ms > now).length;
-  box.append(element("div", "question", `! Chief needs you · ${position + 1} of ${total}${later ? ` · ${later} later` : ""}  ${dots}`));
+  const later = chiefRecords("escalations").filter(
+    (other) => other.id !== record.id && other.later_until_ms != null && other.later_until_ms > now,
+  ).length;
+  box.append(
+    element(
+      "div",
+      "question",
+      `! Chief needs you · ${position + 1} of ${total}${later ? ` · ${later} later` : ""}  ${dots}`,
+    ),
+  );
   const place = inboxPlace(record);
   const context = element("p", "project");
-  if (place.project) context.append(element("span", "project-name", place.project), element("span", "task", " › "));
+  if (place.project)
+    context.append(element("span", "project-name", place.project), element("span", "task", " › "));
   context.append(element("span", "", place.task));
-  const category = { not_sure: "Not sure", security: "Security", scope: "Scope" }[record.category] || record.category || "Question";
+  const category =
+    { not_sure: "Not sure", security: "Security", scope: "Scope" }[record.category] ||
+    record.category ||
+    "Question";
   box.append(context, element("p", "task", `${category} · ${inboxAge(record.created_at_ms)}`));
 }
 
@@ -261,21 +462,40 @@ function renderInbox(box) {
   const record = inboxCurrent();
   const open = inboxQuestions();
   // The draft is not part of the look: a refresh while typing keeps the text box and its focus.
-  const look = JSON.stringify([{ ...inbox, text: inbox.stage === "write" ? null : inbox.text, sending: null }, record, open.map(question => question.id), chiefError]);
+  const look = JSON.stringify([
+    { ...inbox, text: inbox.stage === "write" ? null : inbox.text, sending: null },
+    record,
+    open.map((question) => question.id),
+    chiefError,
+  ]);
   if (box.dataset.look === look) return;
   box.dataset.look = look;
-  const back = element("button", "back", "‹ Status"); back.onclick = () => history.back();
+  const back = element("button", "back", "‹ Status");
+  back.onclick = () => history.back();
   const card = element("article", "card chief-inbox");
   box.replaceChildren(back, card);
   if (chiefError) card.append(element("p", "warning", chiefError));
-  if (inbox.notice) { const notice = element("p", "warning", inbox.notice); notice.setAttribute("role", "alert"); card.append(notice); }
+  if (inbox.notice) {
+    const notice = element("p", "warning", inbox.notice);
+    notice.setAttribute("role", "alert");
+    card.append(notice);
+  }
   const done = inbox.done[inbox.decision] || 0;
   const steps = record ? inboxSteps(record) : [];
   if (inbox.stage === "empty") {
     card.append(element("div", "question", "✓ Nothing needs you"));
-    if (chiefState?.today) card.append(element("p", "task", `The Chief answered ${chiefState.today.answered} question${chiefState.today.answered === 1 ? "" : "s"} today.`));
-    const answers = element("button", "chief-own", "What it answered"); answers.onclick = () => openChief("answers");
-    const habits = element("button", "chief-own", "Habits"); habits.onclick = () => openChief("habits");
+    if (chiefState?.today)
+      card.append(
+        element(
+          "p",
+          "task",
+          `The Chief answered ${chiefState.today.answered} question${chiefState.today.answered === 1 ? "" : "s"} today.`,
+        ),
+      );
+    const answers = element("button", "chief-own", "What it answered");
+    answers.onclick = () => openChief("answers");
+    const habits = element("button", "chief-own", "Habits");
+    habits.onclick = () => openChief("habits");
     card.append(answers, habits);
     return;
   }
@@ -284,80 +504,206 @@ function renderInbox(box) {
     const next = open[0];
     if (next) {
       const place = inboxPlace(next);
-      card.append(element("p", "task", `Next · 1 of ${open.length}`), element("p", "project", place.project ? `${place.project} › ${place.task}` : place.task), element("p", "message-text", next.question || ""));
+      card.append(
+        element("p", "task", `Next · 1 of ${open.length}`),
+        element("p", "project", place.project ? `${place.project} › ${place.task}` : place.task),
+        element("p", "message-text", next.question || ""),
+      );
     } else card.append(element("p", "task", "Nothing else needs you."));
-    const go = element("button", "chief-use", next ? "Next question" : "Done"); go.onclick = () => { inboxShowFirst(); renderChief(); };
-    const stop = element("button", "chief-own", "Stop here"); stop.onclick = () => history.back();
-    card.append(go, stop, element("p", "note", "Never jumps by itself. The rest wait here and on their session cards."));
+    const go = element("button", "chief-use", next ? "Next question" : "Done");
+    go.onclick = () => {
+      inboxShowFirst();
+      renderChief();
+    };
+    const stop = element("button", "chief-own", "Stop here");
+    stop.onclick = () => history.back();
+    card.append(
+      go,
+      stop,
+      element("p", "note", "Never jumps by itself. The rest wait here and on their session cards."),
+    );
     return;
   }
-  if (!record) { card.append(element("p", "task", "This question is no longer available.")); return; }
-  const position = open.findIndex(question => question.id === record.id);
-  inboxContext(card, record, position < 0 ? open.length + 1 : open.length, position < 0 ? open.length : position);
+  if (!record) {
+    card.append(element("p", "task", "This question is no longer available."));
+    return;
+  }
+  const position = open.findIndex((question) => question.id === record.id);
+  inboxContext(
+    card,
+    record,
+    position < 0 ? open.length + 1 : open.length,
+    position < 0 ? open.length : position,
+  );
   if (inbox.stage === "question") {
-    card.append(element("p", "chief-heading", "What's going on"), element("p", "message-text", (record.situation || record.recommendation || "").trim()));
+    card.append(
+      element("p", "chief-heading", "What's going on"),
+      element("p", "message-text", (record.situation || record.recommendation || "").trim()),
+    );
     if (steps.length) {
-      card.append(element("p", "chief-suggestion", `◆ Chief suggests · ${steps.length} step${steps.length === 1 ? "" : "s"}`));
+      card.append(
+        element(
+          "p",
+          "chief-suggestion",
+          `◆ Chief suggests · ${steps.length} step${steps.length === 1 ? "" : "s"}`,
+        ),
+      );
       const list = element("ol", "chief-steps");
       for (const step of steps) list.append(element("li", "", step.text));
       card.append(list);
-      const start = element("button", "chief-use", "Do this, step by step"); start.onclick = () => inboxGo({ stage: "step" });
+      const start = element("button", "chief-use", "Do this, step by step");
+      start.onclick = () => inboxGo({ stage: "step" });
       card.append(start);
     }
     const draft = inboxDrafts.get(record.id) || "";
-    if (draft.trim()) card.append(element("p", "chief-heading", "Your draft"), element("p", "message-text chief-current", draft));
-    const own = element("button", "chief-own", "Write my own"); own.onclick = () => inboxGo({ stage: "write", text: draft, fromLast: false });
+    if (draft.trim())
+      card.append(
+        element("p", "chief-heading", "Your draft"),
+        element("p", "message-text chief-current", draft),
+      );
+    const own = element("button", "chief-own", "Write my own");
+    own.onclick = () => inboxGo({ stage: "write", text: draft, fromLast: false });
     const later = element("button", "chief-own", "Later");
-    later.onclick = () => inboxPost({ action: "later_decision", decision: record.id, expected_revision: inbox.revision }, record, () => inboxShowFirst());
+    later.onclick = () =>
+      inboxPost(
+        { action: "later_decision", decision: record.id, expected_revision: inbox.revision },
+        record,
+        () => inboxShowFirst(),
+      );
     const details = element("button", "chief-details", "Full details ›");
-    details.onclick = () => { details.hidden = true; card.append(element("p", "task", `Agent asks: “${record.question}”`), element("p", "task", `Why the Chief escalated: ${record.recommendation || ""}`), element("p", "note", "Chief text is untrusted narrative, not evidence or permission.")); };
-    const pair = element("div", "chief-pair"); pair.append(own, later);
-    card.append(pair, details, element("p", "note", "Written by the Chief: check it before acting."));
+    details.onclick = () => {
+      details.hidden = true;
+      card.append(
+        element("p", "task", `Agent asks: “${record.question}”`),
+        element("p", "task", `Why the Chief escalated: ${record.recommendation || ""}`),
+        element("p", "note", "Chief text is untrusted narrative, not evidence or permission."),
+      );
+    };
+    const pair = element("div", "chief-pair");
+    pair.append(own, later);
+    card.append(
+      pair,
+      details,
+      element("p", "note", "Written by the Chief: check it before acting."),
+    );
     return;
   }
   if (inbox.stage === "step") {
     for (const step of steps.slice(0, done)) card.append(element("p", "task", `✓ ${step.text}`));
     const current = steps[Math.min(done, steps.length - 1)];
-    if (!current) { inboxGo({ stage: "question" }); return; }
+    if (!current) {
+      inboxGo({ stage: "question" });
+      return;
+    }
     const last = done >= steps.length - 1;
     if (last) {
-      card.append(element("p", "chief-heading", `Step ${steps.length} of ${steps.length} · Send to the agent`), element("p", "message-text chief-current", current.message));
-      const edit = element("button", "chief-own", "Edit first"); edit.onclick = () => inboxGo({ stage: "write", text: current.message, fromLast: true });
+      card.append(
+        element(
+          "p",
+          "chief-heading",
+          `Step ${steps.length} of ${steps.length} · Send to the agent`,
+        ),
+        element("p", "message-text chief-current", current.message),
+      );
+      const edit = element("button", "chief-own", "Edit first");
+      edit.onclick = () => inboxGo({ stage: "write", text: current.message, fromLast: true });
       card.append(inboxSendButton("Send", record, current.message), edit);
     } else {
-      card.append(element("p", "chief-heading", `Step ${done + 1} of ${steps.length}`), element("p", "project chief-current", current.text));
+      card.append(
+        element("p", "chief-heading", `Step ${done + 1} of ${steps.length}`),
+        element("p", "project chief-current", current.text),
+      );
       if (current.help) card.append(element("p", "task", current.help));
-      const next = element("button", "chief-use", "Done, next step"); next.onclick = () => { inbox.done[record.id] = done + 1; inboxGo({}); };
+      const next = element("button", "chief-use", "Done, next step");
+      next.onclick = () => {
+        inbox.done[record.id] = done + 1;
+        inboxGo({});
+      };
       card.append(next, element("p", "chief-heading", "Then"));
-      for (const [index, step] of steps.entries()) if (index > done) card.append(element("p", "task", index === steps.length - 1 ? `${index + 1}  Send to the agent: “${step.message}”` : `${index + 1}  ${step.text}`));
+      for (const [index, step] of steps.entries())
+        if (index > done)
+          card.append(
+            element(
+              "p",
+              "task",
+              index === steps.length - 1
+                ? `${index + 1}  Send to the agent: “${step.message}”`
+                : `${index + 1}  ${step.text}`,
+            ),
+          );
     }
-    const back = element("button", "chief-own", "Back to the question"); back.onclick = () => inboxGo({ stage: "question" });
+    const back = element("button", "chief-own", "Back to the question");
+    back.onclick = () => inboxGo({ stage: "question" });
     card.append(back);
     return;
   }
-  const input = element("textarea", "chief-input"); input.maxLength = 4000; input.value = inbox.text;
+  const input = element("textarea", "chief-input");
+  input.maxLength = 4000;
+  input.value = inbox.text;
   const buttons = element("div", "buttons");
   const update = () => buttons.replaceChildren(inboxSendButton("Send", record, input.value));
-  input.oninput = () => { inbox.text = input.value; inbox.armed = false; if (!inbox.fromLast) inboxDrafts.set(record.id, input.value); update(); };
-  input.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) event.preventDefault(); };
+  input.oninput = () => {
+    inbox.text = input.value;
+    inbox.armed = false;
+    if (!inbox.fromLast) inboxDrafts.set(record.id, input.value);
+    update();
+  };
+  input.onkeydown = (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) event.preventDefault();
+  };
   const place = inboxPlace(record);
-  card.append(labelControl("Your answer", input), element("p", "note", `Goes to ${place.project ? `${place.project} › ${place.task}` : place.task}, exactly as written.`));
+  card.append(
+    labelControl("Your answer", input),
+    element(
+      "p",
+      "note",
+      `Goes to ${place.project ? `${place.project} › ${place.task}` : place.task}, exactly as written.`,
+    ),
+  );
   update();
-  const back2 = element("button", "chief-own", "Back"); back2.onclick = () => inboxGo({ stage: inbox.fromLast ? "step" : "question", text: "" });
+  const back2 = element("button", "chief-own", "Back");
+  back2.onclick = () => inboxGo({ stage: inbox.fromLast ? "step" : "question", text: "" });
   card.append(buttons, back2);
 }
 
 function chiefAnswer(record) {
   const card = element("article", "card chief-answer");
   card.append(element("div", "task", `${chiefIdentity(record)} · ${chiefScope(record.project)}`));
-  card.append(element("div", "project", record.question), element("p", "message-text", `${record.source === "theo" ? "You" : "Chief"}: ${record.answer}`));
-  const habits = (record.habits || []).map(habit => habit.text).join(" · ");
-  card.append(element("p", "task", `${record.reason || ""}${habits ? ` · Habit used: ${habits}` : ""}`));
-  card.append(element("p", "task", `${new Date(record.created_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${record.delivery}`));
-  if (record.overrule) card.append(element("p", "task", `Overruled: ${record.overrule.correction} · ${record.overrule.delivery}`));
-  if (record.source === "chief" && !record.overrule && ["received", "uncertain"].includes(record.delivery)) {
+  card.append(
+    element("div", "project", record.question),
+    element("p", "message-text", `${record.source === "theo" ? "You" : "Chief"}: ${record.answer}`),
+  );
+  const habits = (record.habits || []).map((habit) => habit.text).join(" · ");
+  card.append(
+    element("p", "task", `${record.reason || ""}${habits ? ` · Habit used: ${habits}` : ""}`),
+  );
+  card.append(
+    element(
+      "p",
+      "task",
+      `${new Date(record.created_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${record.delivery}`,
+    ),
+  );
+  if (record.overrule)
+    card.append(
+      element(
+        "p",
+        "task",
+        `Overruled: ${record.overrule.correction} · ${record.overrule.delivery}`,
+      ),
+    );
+  if (
+    record.source === "chief" &&
+    !record.overrule &&
+    ["received", "uncertain"].includes(record.delivery)
+  ) {
     const overrule = element("button", "chief-overrule", "Overrule");
-    overrule.onclick = () => { overrule.hidden = true; const editor = chiefEditor("answers", record); card.append(editor); editor.querySelector("textarea").focus(); };
+    overrule.onclick = () => {
+      overrule.hidden = true;
+      const editor = chiefEditor("answers", record);
+      card.append(editor);
+      editor.querySelector("textarea").focus();
+    };
     card.append(overrule);
   }
   return card;
@@ -366,16 +712,22 @@ function chiefAnswer(record) {
 function chiefHabit(record) {
   const card = element("article", "card chief-habit");
   const since = chiefState.habits_seen_ms ?? Date.now() - 86400000;
-  card.append(element("div", "project", `${record.created_at_ms > since ? "NEW · " : ""}${record.text}`), element("div", "task", chiefScope(record.project)));
+  card.append(
+    element("div", "project", `${record.created_at_ms > since ? "NEW · " : ""}${record.text}`),
+    element("div", "task", chiefScope(record.project)),
+  );
   const note = element("div", "note");
-  card.append(chiefButton("Delete", { action: "delete_habit", habit: record.id }, "habits", record, note), note);
+  card.append(
+    chiefButton("Delete", { action: "delete_habit", habit: record.id }, "habits", record, note),
+    note,
+  );
   return card;
 }
 
 function renderSessionChief() {
   const box = document.getElementById("session-chief");
   if (!box || !opened) return;
-  const escalations = chiefRecords("escalations").filter(record => record.session_id === opened);
+  const escalations = chiefRecords("escalations").filter((record) => record.session_id === opened);
   const count = chiefCount(opened);
   const look = JSON.stringify([opened, escalations, count, chiefError]);
   if (box.dataset.look === look) return;
@@ -387,14 +739,20 @@ function renderSessionChief() {
   }
   box.querySelector(".chief-notice").textContent = chiefError;
   updateChiefCards(box.querySelector(".chief-records"), escalations, chiefEscalation);
-  const log = box.querySelector(".chief-log"); log.hidden = count === 0; log.textContent = `Chief ✓${count} · answers`;
+  const log = box.querySelector(".chief-log");
+  log.hidden = count === 0;
+  log.textContent = `Chief ✓${count} · answers`;
 }
 
 function openChief(page, session = null, opener = null) {
   if (!isPaired) return;
   chiefOpener = opener;
   chiefPage = { page, session };
-  history.pushState({ chief: chiefPage }, "", `#chief=${page}${session ? `&session=${encodeURIComponent(session)}` : ""}`);
+  history.pushState(
+    { chief: chiefPage },
+    "",
+    `#chief=${page}${session ? `&session=${encodeURIComponent(session)}` : ""}`,
+  );
   renderChief();
   document.getElementById("chief").querySelector(".back").focus();
 }
@@ -409,33 +767,85 @@ function renderChief() {
     if (background) background.inert = Boolean(chiefPage);
   }
   document.getElementById("refresh-view").disabled = Boolean(chiefPage);
-  if (!chiefPage) { box.dataset.page = ""; return; }
-  if (chiefPage.page === "inbox") { box.dataset.page = "inbox"; renderInbox(box); return; }
+  if (!chiefPage) {
+    box.dataset.page = "";
+    return;
+  }
+  if (chiefPage.page === "inbox") {
+    box.dataset.page = "inbox";
+    renderInbox(box);
+    return;
+  }
   if (box.dataset.page === "inbox") box.dataset.look = "";
-  const records = chiefRecords(chiefPage.page).filter(record => !chiefPage.session || record.session_id === chiefPage.session);
+  const records = chiefRecords(chiefPage.page).filter(
+    (record) => !chiefPage.session || record.session_id === chiefPage.session,
+  );
   const scroll = box.scrollTop;
   const page = JSON.stringify(chiefPage);
   if (box.dataset.page !== page) {
     box.dataset.page = page;
-    const back = element("button", "back", "‹ Back"); back.onclick = () => history.back();
-    const title = element("h2", "chat-heading", chiefPage.page === "habits" ? "Chief habits" : "Chief answers");
-    const error = element("p", "warning chief-error"); error.setAttribute("role", "alert");
-    box.replaceChildren(back, title, element("p", "task chief-context"), error, element("p", "empty chief-empty"),
-      element("div", "chief-records"), element("p", "note chief-cap"), element("div", "chief-undo"));
+    const back = element("button", "back", "‹ Back");
+    back.onclick = () => history.back();
+    const title = element(
+      "h2",
+      "chat-heading",
+      chiefPage.page === "habits" ? "Chief habits" : "Chief answers",
+    );
+    const error = element("p", "warning chief-error");
+    error.setAttribute("role", "alert");
+    box.replaceChildren(
+      back,
+      title,
+      element("p", "task chief-context"),
+      error,
+      element("p", "empty chief-empty"),
+      element("div", "chief-records"),
+      element("p", "note chief-cap"),
+      element("div", "chief-undo"),
+    );
   }
-  const active = records.filter(record => chiefPage.page !== "habits" || record.state === "active");
-  box.querySelector(".chief-context").textContent = chiefPage.session ? chiefIdentity({ session_id: chiefPage.session }) : "";
+  const active = records.filter(
+    (record) => chiefPage.page !== "habits" || record.state === "active",
+  );
+  box.querySelector(".chief-context").textContent = chiefPage.session
+    ? chiefIdentity({ session_id: chiefPage.session })
+    : "";
   box.querySelector(".chief-error").textContent = chiefError;
-  box.querySelector(".chief-empty").textContent = chiefError || active.length ? "" : chiefPage.page === "habits" ? "No habits yet. The Chief learns from your answers and overrules." : "No Chief answers yet.";
-  updateChiefCards(box.querySelector(".chief-records"), active, chiefPage.page === "habits" ? chiefHabit : chiefAnswer);
-  box.querySelector(".chief-cap").textContent = chiefPage.page === "answers" && chiefRecords("answers").length >= 200 ? "Showing the newest 200 answers." : "";
+  box.querySelector(".chief-empty").textContent =
+    chiefError || active.length
+      ? ""
+      : chiefPage.page === "habits"
+        ? "No habits yet. The Chief learns from your answers and overrules."
+        : "No Chief answers yet.";
+  updateChiefCards(
+    box.querySelector(".chief-records"),
+    active,
+    chiefPage.page === "habits" ? chiefHabit : chiefAnswer,
+  );
+  box.querySelector(".chief-cap").textContent =
+    chiefPage.page === "answers" && chiefRecords("answers").length >= 200
+      ? "Showing the newest 200 answers."
+      : "";
   const undo = box.querySelector(".chief-undo");
-  const deleted = chiefRecords("habits").find(habit => habit.id === chiefUndo && habit.state === "deleted");
+  const deleted = chiefRecords("habits").find(
+    (habit) => habit.id === chiefUndo && habit.state === "deleted",
+  );
   const undoLook = JSON.stringify(chiefPage.page === "habits" ? deleted : null);
   if (undo.dataset.look !== undoLook) {
-    undo.dataset.look = undoLook; undo.replaceChildren();
+    undo.dataset.look = undoLook;
+    undo.replaceChildren();
     if (chiefPage.page === "habits" && deleted) {
-      const note = element("div", "note"); undo.append(chiefButton("Undo delete", { action: "restore_habit", habit: deleted.id }, "habits", deleted, note), note);
+      const note = element("div", "note");
+      undo.append(
+        chiefButton(
+          "Undo delete",
+          { action: "restore_habit", habit: deleted.id },
+          "habits",
+          deleted,
+          note,
+        ),
+        note,
+      );
     }
   }
   box.scrollTop = scroll;
@@ -444,7 +854,11 @@ function renderChief() {
 function statusLabel(session) {
   if (session.state === "asleep") return `asleep · ${age(session.since)}`;
   if (session.needs_input) return "Your reply needed";
-  return { "needs-you": "Approval needed", working: "Working", waiting: "Ready", unknown: "Connecting" }[session.state] || "Connecting";
+  return (
+    { "needs-you": "Approval needed", working: "Working", waiting: "Ready", unknown: "Connecting" }[
+      session.state
+    ] || "Connecting"
+  );
 }
 
 function wakeButton(session, note) {
@@ -489,7 +903,9 @@ async function call(method, path, body) {
 function age(since) {
   if (!since) return "";
   const minutes = Math.max(0, Math.round((Date.now() / 1000 - since) / 60));
-  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
+  return minutes < 60
+    ? `${minutes}m`
+    : `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
 }
 
 function renderApprovals() {
@@ -505,11 +921,15 @@ function renderApprovals() {
   if (state.approvals.length === 0 && inputs.length === 0) return;
   box.append(element("h2", "", "Commands needing you"));
   for (const input of inputs) {
-    const previous = previousCards.find(card => card.dataset.input === input.id && card.dataset.prompt === input.prompt);
+    const previous = previousCards.find(
+      (card) => card.dataset.input === input.id && card.dataset.prompt === input.prompt,
+    );
     box.append(previous || inputCard(input));
   }
   for (const approval of state.approvals) {
-    const previous = previousCards.find(card => card.dataset.id === approval.id && card.dataset.command === approval.command);
+    const previous = previousCards.find(
+      (card) => card.dataset.id === approval.id && card.dataset.command === approval.command,
+    );
     box.append(previous || approvalCard(approval));
   }
 }
@@ -534,13 +954,24 @@ function inputCard(input) {
   let isSending = false;
   const submit = async (isYes) => {
     if (isSending) return;
-    isSending = true; yes.disabled = true; no.disabled = true;
+    isSending = true;
+    yes.disabled = true;
+    no.disabled = true;
     const result = await post(`/api/input/${input.id}`, { yes: isYes, prompt: input.prompt }, note);
-    if (!result.ok) { isSending = false; yes.disabled = false; no.disabled = false; }
+    if (!result.ok) {
+      isSending = false;
+      yes.disabled = false;
+      no.disabled = false;
+    }
   };
   no.onclick = () => submit(false);
   yes.onclick = () => {
-    if (armed !== confirmation) { armed = confirmation; yes.textContent = "Tap again for yes"; yes.className = "armed"; return; }
+    if (armed !== confirmation) {
+      armed = confirmation;
+      yes.textContent = "Tap again for yes";
+      yes.className = "armed";
+      return;
+    }
     armed = null;
     return submit(true);
   };
@@ -569,30 +1000,44 @@ function approvalCard(approval) {
   if (approval.why) card.append(element("div", "why", approval.why));
   card.append(element("pre", "command", approval.command));
   card.append(element("div", "task", `In ${approval.cwd || "its project folder"}`));
-  if (approval.is_outside_its_folder) card.append(element("div", "warning", `Outside the session folder: ${approval.started_in}`));
+  if (approval.is_outside_its_folder)
+    card.append(element("div", "warning", `Outside the session folder: ${approval.started_in}`));
   const note = element("div", "note");
   note.setAttribute("role", "status");
   const buttons = element("div", "buttons");
   const decline = element("button", "no", "Decline");
   const confirmation = `${approval.id}:${approval.command}`;
-  const run = element("button", armed === confirmation ? "armed" : "run", armed === confirmation ? "Tap again to run" : "Run");
+  const run = element(
+    "button",
+    armed === confirmation ? "armed" : "run",
+    armed === confirmation ? "Tap again to run" : "Run",
+  );
   let isSending = false;
   const submit = async (isRun) => {
     if (isSending) return;
-    isSending = true; run.disabled = true; decline.disabled = true;
+    isSending = true;
+    run.disabled = true;
+    decline.disabled = true;
     const result = await decide(approval, isRun, note);
-    if (!result.ok) { isSending = false; run.disabled = false; decline.disabled = false; }
-    else note.textContent = isRun ? "Approved. Waiting for command output." : "Declined.";
+    if (!result.ok) {
+      isSending = false;
+      run.disabled = false;
+      decline.disabled = false;
+    } else note.textContent = isRun ? "Approved. Waiting for command output." : "Declined.";
   };
   decline.onclick = () => submit(false);
   run.onclick = () => {
     if (armed !== confirmation) {
-      armed = confirmation; run.textContent = "Tap again to run"; run.className = "armed"; return;
+      armed = confirmation;
+      run.textContent = "Tap again to run";
+      run.className = "armed";
+      return;
     }
     armed = null;
     return submit(true);
   };
-  buttons.append(decline, run); card.append(buttons, note);
+  buttons.append(decline, run);
+  card.append(buttons, note);
   return card;
 }
 
@@ -602,7 +1047,11 @@ function decide(approval, run, note) {
 
 // A session waiting on a reply or a dialog, or with a command asking to run, counts once.
 function sessionsNeedingYou() {
-  const waiting = new Set(state.sessions.filter((session) => groupOf(session) === "needs-you").map((session) => session.session));
+  const waiting = new Set(
+    state.sessions
+      .filter((session) => groupOf(session) === "needs-you")
+      .map((session) => session.session),
+  );
   for (const approval of state.approvals) waiting.add(approval.session || approval.id);
   for (const input of state.inputs || []) waiting.add(input.id);
   for (const escalation of chiefRecords("escalations")) waiting.add(escalation.session_id);
@@ -610,7 +1059,10 @@ function sessionsNeedingYou() {
 }
 
 function updateTabBadges() {
-  for (const [name, count] of [["todo", state.counts?.todo || 0], ["ideas", state.counts?.ideas || 0]]) {
+  for (const [name, count] of [
+    ["todo", state.counts?.todo || 0],
+    ["ideas", state.counts?.ideas || 0],
+  ]) {
     const badge = document.getElementById(`tab-${name}`)?.querySelector(".badge");
     if (!badge) continue;
     badge.textContent = count ? String(count) : "";
@@ -627,7 +1079,8 @@ function updateAttentionBadge() {
   const badge = button.querySelector(".badge");
   badge.textContent = count ? String(count) : "";
   badge.hidden = count === 0;
-  if (count) button.setAttribute("aria-label", `Sessions, ${count} need${count === 1 ? "s" : ""} you`);
+  if (count)
+    button.setAttribute("aria-label", `Sessions, ${count} need${count === 1 ? "s" : ""} you`);
   else button.setAttribute("aria-label", "Sessions");
 }
 
@@ -641,43 +1094,78 @@ function projectColour(project) {
 
 // The exact ask on a card that needs you, and what tapping it does.
 function askOf(session) {
-  const escalation = chiefRecords("escalations").find(record => record.session_id === session.session);
+  const escalation = chiefRecords("escalations").find(
+    (record) => record.session_id === session.session,
+  );
   if (escalation) return { text: `Chief needs you: ${escalation.question}`, verb: "Answer" };
   const approval = state.approvals.find((candidate) => candidate.session === session.session);
   if (approval) return { text: `Approve: ${approval.command}`, verb: "Review" };
   if (session.ask_to_run === "approval") return { text: "Approve a command", verb: "Review" };
-  if (session.ask_to_run === "input") return { text: "A running command needs your input", verb: "Answer" };
+  if (session.ask_to_run === "input")
+    return { text: "A running command needs your input", verb: "Answer" };
   const request = session.detail || session.request;
   if (request) return { text: request, verb: "Answer" };
-  return { text: session.needs_input ? "Answer a question" : "An answer or permission is needed", verb: "Answer" };
+  return {
+    text: session.needs_input ? "Answer a question" : "An answer or permission is needed",
+    verb: "Answer",
+  };
 }
 
 function chiefIsReviewing(session) {
   const now = Math.floor(Date.now() / 1000);
-  return session.chief_reviewing && session.state === "needs-you" && !["approval", "input"].includes(session.ask_to_run)
-    && Number.isSafeInteger(session.chief_question_until) && now >= session.since && now < session.chief_question_until
-    && session.chief_question_until <= session.since + 60;
+  return (
+    session.chief_reviewing &&
+    session.state === "needs-you" &&
+    !["approval", "input"].includes(session.ask_to_run) &&
+    Number.isSafeInteger(session.chief_question_until) &&
+    now >= session.since &&
+    now < session.chief_question_until &&
+    session.chief_question_until <= session.since + 60
+  );
 }
 
 function groupOf(session) {
-  if (chiefRecords("escalations").some(record => record.session_id === session.session)) return "needs-you";
+  if (chiefRecords("escalations").some((record) => record.session_id === session.session))
+    return "needs-you";
   if (state.approvals.some((approval) => approval.session === session.session)) return "needs-you";
-  if (session.chief_reviewing && !chiefIsReviewing(session) && session.state === "needs-you") return "needs-you";
-  return session.group || (session.state === "needs-you" ? "needs-you" : session.state === "working" ? "working" : "quiet");
+  if (session.chief_reviewing && !chiefIsReviewing(session) && session.state === "needs-you")
+    return "needs-you";
+  return (
+    session.group ||
+    (session.state === "needs-you"
+      ? "needs-you"
+      : session.state === "working"
+        ? "working"
+        : "quiet")
+  );
 }
 
 // Line 1 of a card: its sign, what it does now, and how long it has (or "no update 18m").
 function nowLine(session, group) {
   if (session.state === "asleep") return { glyph: "☾", text: "Asleep", age: age(session.since) };
-  if (chiefIsReviewing(session) && group !== "needs-you") return { glyph: "·", text: "Chief is reviewing", age: age(session.since) };
-  if (group === "needs-you") return { glyph: "!", text: session.doing || "Waiting for you", age: age(session.since) };
+  if (chiefIsReviewing(session) && group !== "needs-you")
+    return { glyph: "·", text: "Chief is reviewing", age: age(session.since) };
+  if (group === "needs-you")
+    return { glyph: "!", text: session.doing || "Waiting for you", age: age(session.since) };
   if (group === "working") {
-    const stale = session.stale_for ? `no update ${age(Date.now() / 1000 - session.stale_for)}` : "";
-    if (session.ask_to_run === "running") return { glyph: "▶", text: "Running your approved command", age: age(session.since) };
-    return { glyph: "◐", text: session.doing || "Working", age: stale || age(session.doing_since || session.since), stale: Boolean(stale) };
+    const stale = session.stale_for
+      ? `no update ${age(Date.now() / 1000 - session.stale_for)}`
+      : "";
+    if (session.ask_to_run === "running")
+      return { glyph: "▶", text: "Running your approved command", age: age(session.since) };
+    return {
+      glyph: "◐",
+      text: session.doing || "Working",
+      age: stale || age(session.doing_since || session.since),
+      stale: Boolean(stale),
+    };
   }
   const outcome = session.last_outcome || session.outcome;
-  return { glyph: "✓", text: outcome ? `Finished · ${outcome}` : "Finished", age: age(session.since) };
+  return {
+    glyph: "✓",
+    text: outcome ? `Finished · ${outcome}` : "Finished",
+    age: age(session.since),
+  };
 }
 
 let isQuietShown = false;
@@ -686,13 +1174,18 @@ function sessionCard(session, group) {
   const card = element("button", `card session-card ${group}`);
   const now = nowLine(session, group);
   const row = element("span", "row now");
-  row.append(element("span", `glyph ${group}`, now.glyph), element("span", "doing", now.text), element("span", now.stale ? "state stale" : "state", now.age));
+  row.append(
+    element("span", `glyph ${group}`, now.glyph),
+    element("span", "doing", now.text),
+    element("span", now.stale ? "state stale" : "state", now.age),
+  );
   const why = element("span", "why-line");
   const project = element("span", "card-project", session.project);
   project.style.color = projectColour(session.project);
   why.append(project);
   const task = session.title || session.task;
-  if (task && task !== session.project) why.append(element("span", "separator", " › "), element("span", "card-task", task));
+  if (task && task !== session.project)
+    why.append(element("span", "separator", " › "), element("span", "card-task", task));
   card.append(row, why);
   const answered = chiefCount(session.session);
   if (answered) card.append(element("span", "task", `Chief ✓${answered}`));
@@ -702,7 +1195,10 @@ function sessionCard(session, group) {
     bar.append(element("span", "ask", ask.text), element("span", "ask-verb", `${ask.verb} ›`));
     card.append(bar);
   }
-  if (session.queued) card.append(element("span", "task", `${session.queued} message${session.queued === 1 ? "" : "s"} queued`));
+  if (session.queued)
+    card.append(
+      element("span", "task", `${session.queued} message${session.queued === 1 ? "" : "s"} queued`),
+    );
   card.onclick = () => openSession(session.session);
   return card;
 }
@@ -712,23 +1208,37 @@ function renderList() {
   const heading = element("div", "list-heading");
   heading.append(element("h2", "", "Sessions"));
   box.replaceChildren(heading);
-  if (state.sessions.length === 0) { box.append(element("div", "empty", "No active sessions. Start a new session above to get going.")); return; }
+  if (state.sessions.length === 0) {
+    box.append(
+      element("div", "empty", "No active sessions. Start a new session above to get going."),
+    );
+    return;
+  }
   const groups = { "needs-you": [], working: [], quiet: [] };
   for (const session of state.sessions) groups[groupOf(session)].push(session);
   groups["needs-you"].sort((a, b) => (a.since || 0) - (b.since || 0));
-  if (groups["needs-you"].length) heading.append(element("span", "need-pill", `${groups["needs-you"].length} need you`));
-  for (const [group, title] of [["needs-you", "Needs you"], ["working", "Working"]]) {
+  if (groups["needs-you"].length)
+    heading.append(element("span", "need-pill", `${groups["needs-you"].length} need you`));
+  for (const [group, title] of [
+    ["needs-you", "Needs you"],
+    ["working", "Working"],
+  ]) {
     if (!groups[group].length) continue;
     box.append(element("h3", `group-heading ${group}`, `${title} · ${groups[group].length}`));
     for (const session of groups[group]) box.append(sessionCard(session, group));
   }
   const quiet = groups.quiet;
   if (!quiet.length) return;
-  const kinds = [...new Set(quiet.map((session) => session.state === "asleep" ? "asleep" : "finished"))].join(", ");
+  const kinds = [
+    ...new Set(quiet.map((session) => (session.state === "asleep" ? "asleep" : "finished"))),
+  ].join(", ");
   const fold = element("div", "quiet-row");
   const toggle = element("button", "show-quiet", isQuietShown ? "Hide ‹" : "Show ›");
   toggle.setAttribute("aria-expanded", String(isQuietShown));
-  toggle.onclick = () => { isQuietShown = !isQuietShown; renderList(); };
+  toggle.onclick = () => {
+    isQuietShown = !isQuietShown;
+    renderList();
+  };
   fold.append(element("span", "", `Quiet · ${quiet.length} (${kinds})`), toggle);
   box.append(fold);
   if (!isQuietShown) return;
@@ -742,13 +1252,33 @@ function renderList() {
 }
 
 // The terminal's 16 colours (Tokyo Night, as kitty's), then the 256-colour cube and greys.
-const PALETTE = ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
-                 "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"];
+const PALETTE = [
+  "#15161e",
+  "#f7768e",
+  "#9ece6a",
+  "#e0af68",
+  "#7aa2f7",
+  "#bb9af7",
+  "#7dcfff",
+  "#a9b1d6",
+  "#414868",
+  "#f7768e",
+  "#9ece6a",
+  "#e0af68",
+  "#7aa2f7",
+  "#bb9af7",
+  "#7dcfff",
+  "#c0caf5",
+];
 
 function colour256(index) {
   if (index < 16) return PALETTE[index];
-  if (index >= 232) { const grey = 8 + (index - 232) * 10; return `rgb(${grey},${grey},${grey})`; }
-  const cube = index - 16, step = (value) => (value === 0 ? 0 : 55 + value * 40);
+  if (index >= 232) {
+    const grey = 8 + (index - 232) * 10;
+    return `rgb(${grey},${grey},${grey})`;
+  }
+  const cube = index - 16,
+    step = (value) => (value === 0 ? 0 : 55 + value * 40);
   return `rgb(${step(Math.floor(cube / 36))},${step(Math.floor(cube / 6) % 6)},${step(cube % 6)})`;
 }
 
@@ -757,14 +1287,25 @@ function colour256(index) {
 function applySgr(codes, look) {
   for (let i = 0; i < codes.length; i++) {
     const code = codes[i];
-    if (code === 0) Object.assign(look, { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false, inverse: false });
+    if (code === 0)
+      Object.assign(look, {
+        fg: null,
+        bg: null,
+        bold: false,
+        dim: false,
+        italic: false,
+        underline: false,
+        inverse: false,
+      });
     else if (code === 1) look.bold = true;
     else if (code === 2) look.dim = true;
     else if (code === 3) look.italic = true;
     else if (code === 4) look.underline = true;
     else if (code === 7) look.inverse = true;
-    else if (code === 22) { look.bold = false; look.dim = false; }
-    else if (code === 23) look.italic = false;
+    else if (code === 22) {
+      look.bold = false;
+      look.dim = false;
+    } else if (code === 23) look.italic = false;
     else if (code === 24) look.underline = false;
     else if (code === 27) look.inverse = false;
     else if (code >= 30 && code <= 37) look.fg = PALETTE[code - 30];
@@ -788,11 +1329,17 @@ function colouredNodes(text) {
   const nodes = [];
   const look = {};
   applySgr([0], look);
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR sequences begin with ESC.
   for (const [index, part] of text.split(/\x1b\[([0-9;]*)m/).entries()) {
-    if (index % 2 === 1) { applySgr(part === "" ? [0] : part.split(";").map(Number), look); continue; }
+    if (index % 2 === 1) {
+      applySgr(part === "" ? [0] : part.split(";").map(Number), look);
+      continue;
+    }
     if (part === "") continue;
     const span = element("span", "", part);
-    const [fg, bg] = look.inverse ? [look.bg || "var(--bg)", look.fg || "var(--fg)"] : [look.fg, look.bg];
+    const [fg, bg] = look.inverse
+      ? [look.bg || "var(--bg)", look.fg || "var(--fg)"]
+      : [look.fg, look.bg];
     if (fg) span.style.color = fg;
     if (bg) span.style.backgroundColor = bg;
     if (look.bold) span.style.fontWeight = "700";
@@ -819,12 +1366,14 @@ async function loadScreen() {
     if (!response.ok) throw new Error(text);
     note.textContent = "";
     if (text === shownScreen) return;
-    const isFollowing = screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 24 || shownScreen === "";
+    const isFollowing =
+      screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 24 || shownScreen === "";
     shownScreen = text;
     screen.replaceChildren(...colouredNodes(text));
     if (isFollowing) screen.scrollTop = screen.scrollHeight;
   } catch (error) {
-    if (screen === document.getElementById("screen")) note.textContent = `Failed to update the terminal: ${error.message || error}`;
+    if (screen === document.getElementById("screen"))
+      note.textContent = `Failed to update the terminal: ${error.message || error}`;
   }
 }
 
@@ -842,7 +1391,11 @@ function imageNode(alt, path, source) {
   image.alt = alt || path;
   image.loading = "lazy";
   const caption = element("figcaption", "", alt || path);
-  image.onerror = () => { image.hidden = true; caption.textContent = `Image not shown: ${path}`; caption.className = "image-missing"; };
+  image.onerror = () => {
+    image.hidden = true;
+    caption.textContent = `Image not shown: ${path}`;
+    caption.className = "image-missing";
+  };
   image.onclick = () => figure.classList.toggle("expanded");
   figure.append(image, caption);
   return figure;
@@ -875,7 +1428,8 @@ function messageNodes(text, imageSource) {
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
     if (/^\s*```/.test(line)) {
-      endParagraph(); list = null;
+      endParagraph();
+      list = null;
       const code = [];
       while (++index < lines.length && !/^\s*```/.test(lines[index])) code.push(lines[index]);
       blocks.push(element("pre", "", code.join("\n")));
@@ -885,10 +1439,12 @@ function messageNodes(text, imageSource) {
     const heading = /^#{1,6}\s+(.*)$/.exec(line);
     const item = /^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/.exec(line);
     if (image) {
-      endParagraph(); list = null;
+      endParagraph();
+      list = null;
       blocks.push(imageNode(image[1], image[2], imageSource(images++)));
     } else if (heading) {
-      endParagraph(); list = null;
+      endParagraph();
+      list = null;
       const block = element("p", "message-heading");
       block.append(...inlineNodes(heading[1]));
       blocks.push(block);
@@ -905,7 +1461,8 @@ function messageNodes(text, imageSource) {
       entry.append(...inlineNodes(item[2]));
       list.append(entry);
     } else if (line.trim() === "") {
-      endParagraph(); list = null;
+      endParagraph();
+      list = null;
     } else {
       list = null;
       paragraph.push(line);
@@ -929,41 +1486,71 @@ async function loadConversation() {
     try {
       const response = await call("GET", `/api/conversation/${session}`);
       const history = await response.json();
-      if (request !== conversationRequest || session !== opened || conversation !== document.getElementById("conversation")) return;
-      if (!response.ok) throw new Error(history.message || "Conversation unavailable. Open Terminal details below.");
+      if (
+        request !== conversationRequest ||
+        session !== opened ||
+        conversation !== document.getElementById("conversation")
+      )
+        return;
+      if (!response.ok)
+        throw new Error(
+          history.message || "Conversation unavailable. Open Terminal details below.",
+        );
       const signature = JSON.stringify(history);
       document.getElementById("conversation-error").textContent = "";
       if (signature === shownConversation) return;
       const isFollowing = shownConversation === "" || isNearBottom(conversation);
-      const anchor = isFollowing ? null : Array.from(conversation.children).find(turn => turn.dataset.messageId
-        && turn.getBoundingClientRect().bottom > conversation.getBoundingClientRect().top);
+      const anchor = isFollowing
+        ? null
+        : Array.from(conversation.children).find(
+            (turn) =>
+              turn.dataset.messageId &&
+              turn.getBoundingClientRect().bottom > conversation.getBoundingClientRect().top,
+          );
       const anchorTop = anchor?.getBoundingClientRect().top;
       shownConversation = signature;
-      const turns = history.messages.map(message => {
-        const turn = element("article", `chat-turn ${message.role === "user" ? "from-you" : "from-agent"}`);
+      const turns = history.messages.map((message) => {
+        const turn = element(
+          "article",
+          `chat-turn ${message.role === "user" ? "from-you" : "from-agent"}`,
+        );
         turn.dataset.messageId = message.id;
-        const text = message.role === "user" ? element("div", "message-text", message.text) : element("div", "message-text formatted");
-        const imageSource = index => `/api/image/${encodeURIComponent(session)}/${encodeURIComponent(message.id)}/${index}`;
+        const text =
+          message.role === "user"
+            ? element("div", "message-text", message.text)
+            : element("div", "message-text formatted");
+        const imageSource = (index) =>
+          `/api/image/${encodeURIComponent(session)}/${encodeURIComponent(message.id)}/${index}`;
         if (message.role !== "user") text.append(...messageNodes(message.text, imageSource));
         turn.append(element("div", "speaker", message.role === "user" ? "You" : "Agent"), text);
         return turn;
       });
       if (history.truncated) turns.unshift(element("p", "note", "Showing recent messages."));
-      if (turns.length === 0) turns.push(element("p", "empty", "No messages yet. Start the conversation below."));
+      if (turns.length === 0)
+        turns.push(element("p", "empty", "No messages yet. Start the conversation below."));
       conversation.replaceChildren(...turns);
       const jump = document.getElementById("jump-latest");
-      if (!isFollowing) { jump.textContent = "↓ New messages"; jump.hidden = false; }
+      if (!isFollowing) {
+        jump.textContent = "↓ New messages";
+        jump.hidden = false;
+      }
       if (isFollowing) conversation.scrollTop = conversation.scrollHeight;
       else if (anchor) {
-        const restored = turns.find(turn => turn.dataset.messageId === anchor.dataset.messageId);
+        const restored = turns.find((turn) => turn.dataset.messageId === anchor.dataset.messageId);
         if (restored) conversation.scrollTop += restored.getBoundingClientRect().top - anchorTop;
         else {
           conversation.scrollTop = 0;
-          document.getElementById("conversation-error").textContent = "The message you were reading is outside the recent history window.";
+          document.getElementById("conversation-error").textContent =
+            "The message you were reading is outside the recent history window.";
         }
       }
     } catch (error) {
-      if (request !== conversationRequest || session !== opened || conversation !== document.getElementById("conversation")) return;
+      if (
+        request !== conversationRequest ||
+        session !== opened ||
+        conversation !== document.getElementById("conversation")
+      )
+        return;
       const warning = document.getElementById("conversation-error");
       warning.textContent = `${error.message} Try again, or open Terminal details.`;
     } finally {
@@ -1007,77 +1594,141 @@ function renderDetail() {
   if (!isPaired) return;
   const box = document.getElementById("detail");
   const session = state.sessions.find((s) => s.session === opened);
-  if (!session) { opened = null; box.hidden = true; return; }
+  if (!session) {
+    opened = null;
+    box.hidden = true;
+    return;
+  }
   box.hidden = false;
   const isNewSession = box.dataset.session !== session.session;
   if (isNewSession) {
     box.dataset.session = session.session;
-    shownScreen = ""; shownConversation = "";
+    shownScreen = "";
+    shownConversation = "";
     const header = element("div", "chat-header");
     const back = element("button", "back", "‹ Sessions");
     back.onclick = leaveSession;
-    const heading = element("h2", "chat-heading"); heading.id = "chat-heading";
-    const status = element("div", "chat-status"); status.id = "chat-status"; status.setAttribute("role", "status");
-    const more = element("button", "more", "More"); more.id = "session-more-toggle";
-    more.setAttribute("aria-expanded", "false"); more.setAttribute("aria-controls", "session-more");
+    const heading = element("h2", "chat-heading");
+    heading.id = "chat-heading";
+    const status = element("div", "chat-status");
+    status.id = "chat-status";
+    status.setAttribute("role", "status");
+    const more = element("button", "more", "More");
+    more.id = "session-more-toggle";
+    more.setAttribute("aria-expanded", "false");
+    more.setAttribute("aria-controls", "session-more");
     header.append(back, heading, more, status);
-    const conversation = element("section", "conversation"); conversation.id = "conversation";
-    conversation.setAttribute("aria-label", "Conversation"); conversation.setAttribute("tabindex", "0");
+    const conversation = element("section", "conversation");
+    conversation.id = "conversation";
+    conversation.setAttribute("aria-label", "Conversation");
+    conversation.setAttribute("tabindex", "0");
     conversation.append(element("p", "empty", "Loading conversation…"));
-    const jump = element("button", "jump-latest", "↓ Latest"); jump.id = "jump-latest"; jump.hidden = true;
-    jump.onclick = () => { conversation.scrollTop = conversation.scrollHeight; jump.hidden = true; };
+    const jump = element("button", "jump-latest", "↓ Latest");
+    jump.id = "jump-latest";
+    jump.hidden = true;
+    jump.onclick = () => {
+      conversation.scrollTop = conversation.scrollHeight;
+      jump.hidden = true;
+    };
     conversation.onscroll = () => {
       if (isNearBottom(conversation)) jump.hidden = true;
-      else if (jump.hidden) { jump.textContent = "↓ Latest"; jump.hidden = false; }
+      else if (jump.hidden) {
+        jump.textContent = "↓ Latest";
+        jump.hidden = false;
+      }
     };
     const reading = element("div", "conversation-wrap");
     reading.append(conversation, jump);
-    const error = element("div", "note"); error.id = "conversation-error"; error.setAttribute("role", "status");
-    const actions = element("section", "chat-actions"); actions.id = "chat-actions"; actions.setAttribute("aria-label", "Needs your attention");
+    const error = element("div", "note");
+    error.id = "conversation-error";
+    error.setAttribute("role", "status");
+    const actions = element("section", "chat-actions");
+    actions.id = "chat-actions";
+    actions.setAttribute("aria-label", "Needs your attention");
     const composer = element("form", "composer");
-    const label = element("label", "reply-label", "Your message"); label.setAttribute("for", "chat-reply");
-    const message = element("textarea"); message.id = "chat-reply";
+    const label = element("label", "reply-label", "Your message");
+    label.setAttribute("for", "chat-reply");
+    const message = element("textarea");
+    message.id = "chat-reply";
     message.value = drafts.get(session.session) || "";
-    message.maxLength = 4000; message.rows = 2;
+    message.maxLength = 4000;
+    message.rows = 2;
     message.setAttribute("aria-describedby", "send-note");
-    const fitMessage = () => { message.style.height = "auto"; message.style.height = `${message.scrollHeight + 2}px`; };
-    message.oninput = () => { drafts.set(session.session, message.value); fitMessage(); };
-    const send = element("button", "run", "Send"); send.id = "chat-send"; send.type = "submit";
-    const note = element("div", "note"); note.id = "send-note"; note.setAttribute("role", "status");
+    const fitMessage = () => {
+      message.style.height = "auto";
+      message.style.height = `${message.scrollHeight + 2}px`;
+    };
+    message.oninput = () => {
+      drafts.set(session.session, message.value);
+      fitMessage();
+    };
+    const send = element("button", "run", "Send");
+    send.id = "chat-send";
+    send.type = "submit";
+    const note = element("div", "note");
+    note.id = "send-note";
+    note.setAttribute("role", "status");
     const submit = async (event) => {
       event?.preventDefault();
       if (sendingMessages.has(session.session)) return;
       const submitted = message.value;
-      if (!submitted.trim()) { note.textContent = "Write a message first."; message.focus(); return; }
-      sendingMessages.add(session.session); send.disabled = true; send.textContent = "Sending…";
-      const result = await post(`/api/message/${session.session}`, { text: messageText(submitted) }, note);
+      if (!submitted.trim()) {
+        note.textContent = "Write a message first.";
+        message.focus();
+        return;
+      }
+      sendingMessages.add(session.session);
+      send.disabled = true;
+      send.textContent = "Sending…";
+      const result = await post(
+        `/api/message/${session.session}`,
+        { text: messageText(submitted) },
+        note,
+      );
       sendingMessages.delete(session.session);
       if (result.ok && drafts.get(session.session) === submitted) {
-        drafts.delete(session.session); message.value = ""; fitMessage();
+        drafts.delete(session.session);
+        message.value = "";
+        fitMessage();
         if (opened === session.session) document.getElementById("chat-reply").value = "";
       }
-      if (opened === session.session) { renderDetail(); loadConversation(); }
+      if (opened === session.session) {
+        renderDetail();
+        loadConversation();
+      }
     };
     composer.onsubmit = submit;
     send.onclick = submit;
     composer.append(label, message, send, note);
-    const panel = element("section", "session-more"); panel.id = "session-more"; panel.hidden = true;
+    const panel = element("section", "session-more");
+    panel.id = "session-more";
+    panel.hidden = true;
     panel.setAttribute("aria-label", "Session options");
     more.onclick = () => {
       panel.hidden = !panel.hidden;
       more.textContent = panel.hidden ? "More" : "Close";
       more.setAttribute("aria-expanded", String(!panel.hidden));
     };
-    const controls = element("div"); controls.id = "session-controls";
-    const terminal = element("details", "terminal-details"); terminal.id = "terminal-details";
+    const controls = element("div");
+    controls.id = "session-controls";
+    const terminal = element("details", "terminal-details");
+    terminal.id = "terminal-details";
     terminal.append(element("summary", "", "Terminal details"));
-    const screen = element("pre", "", "Open to load terminal output."); screen.id = "screen";
-    screen.setAttribute("aria-label", "Session terminal output"); screen.tabIndex = 0;
-    const screenNote = element("div", "note"); screenNote.id = "screen-note";
-    const refreshTerminal = element("button", "", "Refresh terminal"); refreshTerminal.onclick = loadScreen;
-    terminal.append(refreshTerminal, screen, screenNote); terminal.ontoggle = () => { if (terminal.open) loadScreen(); };
+    const screen = element("pre", "", "Open to load terminal output.");
+    screen.id = "screen";
+    screen.setAttribute("aria-label", "Session terminal output");
+    screen.tabIndex = 0;
+    const screenNote = element("div", "note");
+    screenNote.id = "screen-note";
+    const refreshTerminal = element("button", "", "Refresh terminal");
+    refreshTerminal.onclick = loadScreen;
+    terminal.append(refreshTerminal, screen, screenNote);
+    terminal.ontoggle = () => {
+      if (terminal.open) loadScreen();
+    };
     panel.append(controls, terminal);
-    const chief = element("section", "session-chief"); chief.id = "session-chief";
+    const chief = element("section", "session-chief");
+    chief.id = "session-chief";
     chief.setAttribute("aria-label", "Chief answers and escalations");
     box.replaceChildren(header, chief, panel, reading, error, actions, composer);
     if (message.value) fitMessage();
@@ -1085,69 +1736,133 @@ function renderDetail() {
   }
   document.getElementById("chat-heading").textContent = session.title || session.project;
   renderSessionChief();
-  document.getElementById("chat-status").textContent = `${session.title ? `${session.project} · ` : ""}${statusLabel(session)}${session.queued ? ` · ${session.queued} queued` : ""}`;
+  document.getElementById("chat-status").textContent =
+    `${session.title ? `${session.project} · ` : ""}${statusLabel(session)}${session.queued ? ` · ${session.queued} queued` : ""}`;
   const send = document.getElementById("chat-send");
   const isDialog = session.state === "needs-you" && !session.needs_input;
-  send.textContent = sendingMessages.has(session.session) ? "Sending…" : session.state === "working" ? "Queue" : "Send";
+  send.textContent = sendingMessages.has(session.session)
+    ? "Sending…"
+    : session.state === "working"
+      ? "Queue"
+      : "Send";
   const canAnswerFormInChat = isDialog && (session.features || []).includes("forms_in_chat");
   send.disabled = sendingMessages.has(session.session) || (isDialog && !canAnswerFormInChat);
-  document.getElementById("chat-reply").placeholder = canAnswerFormInChat ? "Your answers to its questions (dismisses them)"
-    : session.state === "working" ? "Sent after this turn finishes"
-    : session.state === "asleep" ? "Wakes the session and sends this" : "Reply to the agent…";
+  document.getElementById("chat-reply").placeholder = canAnswerFormInChat
+    ? "Your answers to its questions (dismisses them)"
+    : session.state === "working"
+      ? "Sent after this turn finishes"
+      : session.state === "asleep"
+        ? "Wakes the session and sends this"
+        : "Reply to the agent…";
   const actions = document.getElementById("chat-actions");
-  const approvals = state.approvals.filter(approval => approval.session === session.session);
+  const approvals = state.approvals.filter((approval) => approval.session === session.session);
   const isAsleep = session.state === "asleep";
-  const actionLook = JSON.stringify([approvals, isDialog, session.detail, session.request, session.features, isAsleep]);
+  const actionLook = JSON.stringify([
+    approvals,
+    isDialog,
+    session.detail,
+    session.request,
+    session.features,
+    isAsleep,
+  ]);
   if (actions.dataset.look !== actionLook) {
     actions.dataset.look = actionLook;
     actions.replaceChildren(...approvals.map(approvalCard));
     if (isAsleep) {
-      const note = element("div", "note"); note.setAttribute("role", "status");
+      const note = element("div", "note");
+      note.setAttribute("role", "status");
       actions.append(wakeButton(session, note), note);
     }
     if (isDialog) {
       const prompt = element("div", "card approval");
-      prompt.append(element("div", "project", "Permission needed"), element("div", "request", session.detail || session.request || "Answer the dialog before sending a message."));
-      const note = element("div", "note"); note.setAttribute("role", "status");
+      prompt.append(
+        element("div", "project", "Permission needed"),
+        element(
+          "div",
+          "request",
+          session.detail || session.request || "Answer the dialog before sending a message.",
+        ),
+      );
+      const note = element("div", "note");
+      note.setAttribute("role", "status");
       if ((session.features || []).includes("dialogs")) {
         const buttons = element("div", "buttons");
-        for (const [label, yes] of [["No", false], ["Yes", true]]) {
+        for (const [label, yes] of [
+          ["No", false],
+          ["Yes", true],
+        ]) {
           const button = element("button", yes ? "run" : "no", label);
           button.onclick = () => post(`/api/answer/${session.session}`, { yes }, note);
           buttons.append(button);
         }
         prompt.append(buttons);
-        if (canAnswerFormInChat) prompt.append(element("p", "task", "Questions with choices? Read them in Terminal details and send your answers below: sending dismisses them."));
-      } else prompt.append(element("p", "task", "This agent’s permission dialog must be answered on the computer."));
-      prompt.append(note); actions.append(prompt);
+        if (canAnswerFormInChat)
+          prompt.append(
+            element(
+              "p",
+              "task",
+              "Questions with choices? Read them in Terminal details and send your answers below: sending dismisses them.",
+            ),
+          );
+      } else
+        prompt.append(
+          element("p", "task", "This agent’s permission dialog must be answered on the computer."),
+        );
+      prompt.append(note);
+      actions.append(prompt);
     }
   }
   const controls = document.getElementById("session-controls");
-  const controlLook = JSON.stringify([session.state, session.remote_control, session.features, state.push, state.watched, armed]);
+  const controlLook = JSON.stringify([
+    session.state,
+    session.remote_control,
+    session.features,
+    state.push,
+    state.watched,
+    armed,
+  ]);
   if (controls.dataset.look === controlLook) return;
   controls.dataset.look = controlLook;
   controls.replaceChildren();
-  const note = element("div", "note"); note.setAttribute("role", "status");
+  const note = element("div", "note");
+  note.setAttribute("role", "status");
   // What its agent can do (cockpit::agents): the server refuses the rest anyway.
   const can = (feature) => (session.features || []).includes(feature);
   if (session.state === "working" && can("interrupt")) {
     const isArmed = armed === session.session;
-    const interrupt = element("button", isArmed ? "armed" : "no", isArmed ? "Tap again to interrupt" : "Interrupt");
+    const interrupt = element(
+      "button",
+      isArmed ? "armed" : "no",
+      isArmed ? "Tap again to interrupt" : "Interrupt",
+    );
     interrupt.onclick = () => {
-      if (armed !== session.session) { armed = session.session; renderDetail(); loadScreen(); return; }
+      if (armed !== session.session) {
+        armed = session.session;
+        renderDetail();
+        loadScreen();
+        return;
+      }
       armed = null;
       post(`/api/interrupt/${session.session}`, {}, note);
     };
     controls.append(interrupt);
   }
   if (can("remote_control") && session.state !== "asleep") {
-    const remoteControl = element("button", "no", session.remote_control ? "Remote Control: on" : "Remote Control: off");
+    const remoteControl = element(
+      "button",
+      "no",
+      session.remote_control ? "Remote Control: on" : "Remote Control: off",
+    );
     remoteControl.onclick = () => post(`/api/remote-control/${session.session}`, {}, note);
     controls.append(remoteControl);
   }
   if (state.push) {
     const isWatched = (state.watched || []).includes(session.session);
-    const watch = element("button", "no", isWatched ? "Tell me when it finishes: on" : "Tell me when it finishes: off");
+    const watch = element(
+      "button",
+      "no",
+      isWatched ? "Tell me when it finishes: on" : "Tell me when it finishes: off",
+    );
     watch.onclick = () => post(`/api/watch/${session.session}`, { on: !isWatched }, note);
     const watching = element("div", "buttons");
     watching.append(watch);
@@ -1158,31 +1873,38 @@ function renderDetail() {
 
 // ---- This phone: notifications, and pairing the Home Screen app ----
 
-const isHomeScreenApp = window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
+const isHomeScreenApp =
+  window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
 const canPush = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 let phoneLook = null; // what the phone section shows, to redraw it only when that changes
 
 function keyBytes(key) {
-  const text = atob(key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (key.length % 4)) % 4));
+  const text = atob(
+    key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (key.length % 4)) % 4),
+  );
   return Uint8Array.from(text, (character) => character.charCodeAt(0));
 }
 
 async function turnNotificationsOn(note) {
   note.textContent = "…";
-  if (await Notification.requestPermission() !== "granted") {
-    note.textContent = "Notifications are refused for this app: allow them in the phone's settings.";
+  if ((await Notification.requestPermission()) !== "granted") {
+    note.textContent =
+      "Notifications are refused for this app: allow them in the phone's settings.";
     return;
   }
   const registration = await navigator.serviceWorker.register("/sw.js");
   await navigator.serviceWorker.ready;
   const { key } = await (await call("GET", "/api/push/key")).json();
-  const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: keyBytes(key),
+  });
   await post("/api/push/subscribe", subscription.toJSON(), note);
 }
 
 async function turnNotificationsOff(note) {
   const registration = await navigator.serviceWorker.getRegistration();
-  const subscription = registration && await registration.pushManager.getSubscription();
+  const subscription = registration && (await registration.pushManager.getSubscription());
   if (subscription) await subscription.unsubscribe();
   await post("/api/push/unsubscribe", {}, note);
 }
@@ -1197,24 +1919,42 @@ function renderPhone() {
   const card = element("div", "card");
   const buttons = element("div", "buttons");
   if (canPush && (isHomeScreenApp || !/iPhone|iPad/.test(navigator.userAgent))) {
-    card.append(element("div", "task", state.push
-      ? `Notifications are on while the computer is locked: a session that needs you, a command that asks to run, a turn that ends. At the desk, only the sessions you ring.${state.away ? " (Locked now.)" : ""}`
-      : "Notifications are off."));
+    card.append(
+      element(
+        "div",
+        "task",
+        state.push
+          ? `Notifications are on while the computer is locked: a session that needs you, a command that asks to run, a turn that ends. At the desk, only the sessions you ring.${state.away ? " (Locked now.)" : ""}`
+          : "Notifications are off.",
+      ),
+    );
     if (state.push) {
       const test = element("button", "no", "Send a test");
       const off = element("button", "no", "Turn off");
       test.onclick = () => post("/api/push/test", {}, note);
-      off.onclick = () => turnNotificationsOff(note).catch((error) => { note.textContent = String(error); });
+      off.onclick = () =>
+        turnNotificationsOff(note).catch((error) => {
+          note.textContent = String(error);
+        });
       buttons.append(test, off);
     } else {
       const on = element("button", "run", "Turn on notifications");
-      on.onclick = () => turnNotificationsOn(note).catch((error) => { note.textContent = String(error); });
+      on.onclick = () =>
+        turnNotificationsOn(note).catch((error) => {
+          note.textContent = String(error);
+        });
       buttons.append(on);
     }
   } else {
     // iOS gives notifications only to a page added to the Home Screen, and that app has cookies
     // of its own: it pairs with a code this paired page asks for.
-    card.append(element("div", "task", "For notifications: Share → Add to Home Screen, open it from there, and paste the code below in it."));
+    card.append(
+      element(
+        "div",
+        "task",
+        "For notifications: Share → Add to Home Screen, open it from there, and paste the code below in it.",
+      ),
+    );
     const code = element("div", "code");
     const get = element("button", "run", "Get a code for the Home Screen app");
     get.onclick = async () => {
@@ -1222,7 +1962,12 @@ function renderPhone() {
       if (!result.ok) return;
       code.textContent = result.message;
       note.textContent = "One use, within 10 minutes.";
-      await navigator.clipboard?.writeText(result.message).then(() => { note.textContent = "Copied. One use, within 10 minutes."; }).catch(() => {});
+      await navigator.clipboard
+        ?.writeText(result.message)
+        .then(() => {
+          note.textContent = "Copied. One use, within 10 minutes.";
+        })
+        .catch(() => {});
     };
     buttons.append(get);
     card.append(code);
@@ -1233,11 +1978,14 @@ function renderPhone() {
 
 // An unpaired phone (the Home Screen app, first time): where to paste the code.
 function renderPairing(message) {
-  chiefPage = null; chiefOpener = null; chiefState = null;
+  chiefPage = null;
+  chiefOpener = null;
+  chiefState = null;
   ++chiefReadSequence;
   renderChief();
   document.getElementById("chief")?.replaceChildren();
-  for (const id of ["approvals", "list", "detail", "phone", "starter", "work", "tabs"]) document.getElementById(id).hidden = true;
+  for (const id of ["approvals", "list", "detail", "phone", "starter", "work", "tabs"])
+    document.getElementById(id).hidden = true;
   const box = document.getElementById("pairing");
   if (!box.hidden) return;
   box.hidden = false;
@@ -1246,30 +1994,51 @@ function renderPairing(message) {
   input.inputMode = "numeric";
   input.autocomplete = "one-time-code";
   input.autocapitalize = "off";
-  const hint = element("div", "task", "On the computer: S, Pair a phone. Type the 6 digits it shows (or paste a code from Safari).");
+  const hint = element(
+    "div",
+    "task",
+    "On the computer: S, Pair a phone. Type the 6 digits it shows (or paste a code from Safari).",
+  );
   const note = element("div", "note", message);
   const pair = element("button", "run", "Pair");
   pair.onclick = async () => {
     const typed = input.value.replace(/\s/g, "");
     if (/^[0-9]{6}$/.test(typed)) {
       const result = await post("/pair-code", { code: typed }, note);
-      if (result.ok) { window.location.reload(); return; }
+      if (result.ok) {
+        window.location.reload();
+        return;
+      }
       note.textContent = result.message;
       return;
     }
     const code = typed.split("/pair/").pop() || "";
-    if (!/^[0-9a-f]{32}$/.test(code)) { note.textContent = "Type the 6 digits the computer shows."; return; }
+    if (!/^[0-9a-f]{32}$/.test(code)) {
+      note.textContent = "Type the 6 digits the computer shows.";
+      return;
+    }
     window.location.href = `/pair/${code}`;
   };
   const buttons = element("div", "buttons");
   buttons.append(pair);
-  box.replaceChildren(element("h2", "", "Pair this phone"), hint, labelControl("Pairing code", input), buttons, note);
+  box.replaceChildren(
+    element("h2", "", "Pair this phone"),
+    hint,
+    labelControl("Pairing code", input),
+    buttons,
+    note,
+  );
 }
 
 // ---- Tabs: Sessions, Todo, Pull requests, Usage ----
 
 // Pull requests and usage live in Status, as on the column.
-const TABS = [["sessions", "Sessions"], ["todo", "Todo"], ["ideas", "Ideas"], ["status", "Status"]];
+const TABS = [
+  ["sessions", "Sessions"],
+  ["todo", "Todo"],
+  ["ideas", "Ideas"],
+  ["status", "Status"],
+];
 let tab = "sessions";
 let projectChoices = null; // fetched once: the projects a session or an item can go to
 
@@ -1308,23 +2077,26 @@ function projectPicker(choices) {
 function renderTabs() {
   const bar = document.getElementById("tabs");
   document.getElementById("view-title").textContent = TABS.find(([name]) => name === tab)[1];
-  bar.replaceChildren(...TABS.map(([name, label]) => {
-    const button = element("button", name === tab ? "tab active" : "tab", label);
-    button.id = `tab-${name}`;
-    if (name === tab) button.setAttribute("aria-current", "page");
-    if (name !== "status") {
-      const badge = element("span", `badge ${name}`);
-      badge.setAttribute("aria-hidden", "true");
-      button.append(badge);
-    }
-    button.onclick = () => showTab(name);
-    return button;
-  }));
+  bar.replaceChildren(
+    ...TABS.map(([name, label]) => {
+      const button = element("button", name === tab ? "tab active" : "tab", label);
+      button.id = `tab-${name}`;
+      if (name === tab) button.setAttribute("aria-current", "page");
+      if (name !== "status") {
+        const badge = element("span", `badge ${name}`);
+        badge.setAttribute("aria-hidden", "true");
+        button.append(badge);
+      }
+      button.onclick = () => showTab(name);
+      return button;
+    }),
+  );
   updateAttentionBadge();
 }
 
 function showTab(name) {
-  chiefPage = null; renderChief();
+  chiefPage = null;
+  renderChief();
   tab = name;
   opened = null;
   forgetSessionAddress();
@@ -1333,17 +2105,25 @@ function showTab(name) {
   for (const id of ["list", "phone", "starter"]) document.getElementById(id).hidden = !isSessions;
   document.getElementById("detail").hidden = true;
   document.getElementById("work").hidden = isSessions;
-  if (isSessions) { phoneLook = null; render(); return; }
+  if (isSessions) {
+    phoneLook = null;
+    render();
+    return;
+  }
   const box = element("div");
   document.getElementById("work").replaceChildren(box);
   box.setAttribute("aria-busy", "true");
-  box.replaceChildren(element("div", "loading", `Loading ${TABS.find(([key]) => key === name)[1].toLowerCase()}…`));
+  box.replaceChildren(
+    element("div", "loading", `Loading ${TABS.find(([key]) => key === name)[1].toLowerCase()}…`),
+  );
   const views = { todo: renderTodos, ideas: renderIdeas, status: renderStatus };
-  views[name](box).catch((error) => {
-    const retry = element("button", "no", "Retry");
-    retry.onclick = () => showTab(name);
-    box.replaceChildren(element("div", "warning", String(error.message || error)), retry);
-  }).finally(() => box.removeAttribute("aria-busy"));
+  views[name](box)
+    .catch((error) => {
+      const retry = element("button", "no", "Retry");
+      retry.onclick = () => showTab(name);
+      box.replaceChildren(element("div", "warning", String(error.message || error)), retry);
+    })
+    .finally(() => box.removeAttribute("aria-busy"));
 }
 
 // A new session, out of sight on the computer, with its first message.
@@ -1353,7 +2133,9 @@ async function renderStarter() {
     const open = element("button", "no", "+ New session");
     open.onclick = () => {
       box.dataset.open = "yes";
-      renderStarter().catch((error) => box.replaceChildren(element("div", "warning", String(error))));
+      renderStarter().catch((error) =>
+        box.replaceChildren(element("div", "warning", String(error))),
+      );
     };
     box.replaceChildren(open);
     return;
@@ -1371,28 +2153,54 @@ async function renderStarter() {
   const note = element("div", "note");
   const start = element("button", "run", "Start");
   start.onclick = async () => {
-    const result = await post("/api/sessions", { project: picker.value, agent: agent.value, prompt: messageText(prompt.value), clone: inClone.checked }, note);
+    const result = await post(
+      "/api/sessions",
+      {
+        project: picker.value,
+        agent: agent.value,
+        prompt: messageText(prompt.value),
+        clone: inClone.checked,
+      },
+      note,
+    );
     if (result.ok) prompt.value = "";
   };
   const close = element("button", "no", "Close");
-  close.onclick = () => { box.dataset.open = ""; renderStarter(); };
+  close.onclick = () => {
+    box.dataset.open = "";
+    renderStarter();
+  };
   const buttons = element("div", "buttons");
   buttons.append(close, start);
-  box.replaceChildren(element("h2", "", "New session"), labelControl("Project", picker), labelControl("Agent", agent),
-                      labelControl("First message", prompt), label, buttons, note);
+  box.replaceChildren(
+    element("h2", "", "New session"),
+    labelControl("Project", picker),
+    labelControl("Agent", agent),
+    labelControl("First message", prompt),
+    label,
+    buttons,
+    note,
+  );
 }
 
 // What the Todo tab keeps across its reloads: the project shown, the cards opened, the new task
 // being written.
 const KINDS = ["Task", "Feature", "Bug", "Improvement", "Chore", "Research"];
-const todoView = { project: null, openItems: new Set(), isAdding: false, draft: { project: "", kind: "task", text: "", notes: "" } };
+const todoView = {
+  project: null,
+  openItems: new Set(),
+  isAdding: false,
+  draft: { project: "", kind: "task", text: "", notes: "" },
+};
 let armedDone = null; // the item whose Mark done waits for its second tap
 let todoReload = null;
 
 // The column applies the phone's changes within a second or two: the list follows a little later.
 function reloadTodosSoon() {
   clearTimeout(todoReload);
-  todoReload = setTimeout(() => { if (tab === "todo") showTab("todo"); }, 2500);
+  todoReload = setTimeout(() => {
+    if (tab === "todo") showTab("todo");
+  }, 2500);
 }
 
 function priorityMark(priority) {
@@ -1410,11 +2218,15 @@ function projectFilter(todos, redraw) {
     const button = element("button", "chip", `${label} `);
     button.append(element("span", "chip-count", String(count)));
     button.setAttribute("aria-pressed", String(todoView.project === project));
-    button.onclick = () => { todoView.project = project; redraw(); };
+    button.onclick = () => {
+      todoView.project = project;
+      redraw();
+    };
     return button;
   };
   bar.append(chip(null, "All", todos.length));
-  for (const [project, count] of [...counts].sort(([a], [b]) => a.localeCompare(b))) bar.append(chip(project, project, count));
+  for (const [project, count] of [...counts].sort(([a], [b]) => a.localeCompare(b)))
+    bar.append(chip(project, project, count));
   return bar;
 }
 
@@ -1424,7 +2236,9 @@ function todoComposer(choices, redraw) {
     const open = element("button", "no", "+ New task");
     open.onclick = () => {
       todoView.isAdding = true;
-      if (todoView.project) draft.project = choices.find((project) => project.name === todoView.project)?.path || draft.project;
+      if (todoView.project)
+        draft.project =
+          choices.find((project) => project.name === todoView.project)?.path || draft.project;
       redraw();
       document.querySelector("#work .todo-text")?.focus();
     };
@@ -1433,7 +2247,9 @@ function todoComposer(choices, redraw) {
   const picker = projectPicker(choices);
   if (draft.project) picker.value = draft.project;
   draft.project = picker.value;
-  picker.onchange = () => { draft.project = picker.value; };
+  picker.onchange = () => {
+    draft.project = picker.value;
+  };
   const kind = element("select");
   for (const label of KINDS) {
     const option = element("option", "", label);
@@ -1441,33 +2257,54 @@ function todoComposer(choices, redraw) {
     kind.append(option);
   }
   kind.value = draft.kind;
-  kind.onchange = () => { draft.kind = kind.value; };
+  kind.onchange = () => {
+    draft.kind = kind.value;
+  };
   const text = element("input");
   text.placeholder = "A new item";
   text.value = draft.text;
   text.maxLength = 300;
-  text.oninput = () => { draft.text = text.value; };
+  text.oninput = () => {
+    draft.text = text.value;
+  };
   const notes = element("textarea");
   notes.placeholder = "Notes (optional)";
   notes.value = draft.notes;
-  notes.oninput = () => { draft.notes = notes.value; };
+  notes.oninput = () => {
+    draft.notes = notes.value;
+  };
   const note = element("div", "note");
   const add = element("button", "run", "Add");
   const submit = async (event) => {
     event?.preventDefault();
-    if (!text.value.trim()) { note.textContent = "Write the task first."; note.dataset.kind = "error"; text.focus(); return; }
+    if (!text.value.trim()) {
+      note.textContent = "Write the task first.";
+      note.dataset.kind = "error";
+      text.focus();
+      return;
+    }
     add.disabled = true;
-    const result = await post("/api/todos", { project: picker.value, kind: kind.value, text: text.value, notes: notes.value }, note);
+    const result = await post(
+      "/api/todos",
+      { project: picker.value, kind: kind.value, text: text.value, notes: notes.value },
+      note,
+    );
     add.disabled = false;
     if (!result.ok) return;
-    text.value = ""; notes.value = ""; draft.text = ""; draft.notes = "";
+    text.value = "";
+    notes.value = "";
+    draft.text = "";
+    draft.notes = "";
     note.textContent = "Added. It shows in the list in a few seconds.";
     text.focus();
     reloadTodosSoon();
   };
   add.onclick = submit;
   const close = element("button", "no", "Close");
-  close.onclick = () => { todoView.isAdding = false; redraw(); };
+  close.onclick = () => {
+    todoView.isAdding = false;
+    redraw();
+  };
   const buttons = element("div", "buttons");
   buttons.append(close, add);
   const form = element("form", "card composer-card");
@@ -1476,7 +2313,14 @@ function todoComposer(choices, redraw) {
   text.classList.add("todo-text");
   const pickers = element("div", "pair");
   pickers.append(labelControl("Project", picker), labelControl("Kind", kind));
-  form.append(element("h2", "", "New task"), title, pickers, labelControl("Notes (optional)", notes), buttons, note);
+  form.append(
+    element("h2", "", "New task"),
+    title,
+    pickers,
+    labelControl("Notes (optional)", notes),
+    buttons,
+    note,
+  );
   return [form];
 }
 
@@ -1484,13 +2328,30 @@ function todoCard(item, agentChoices, isAllProjects) {
   const card = element("details", `card todo-card ${item.status === "doing" ? "working" : ""}`);
   card.dataset.id = item.id;
   card.open = todoView.openItems.has(item.id);
-  card.ontoggle = () => { if (card.open) todoView.openItems.add(item.id); else todoView.openItems.delete(item.id); };
+  card.ontoggle = () => {
+    if (card.open) todoView.openItems.add(item.id);
+    else todoView.openItems.delete(item.id);
+  };
   const summary = element("summary");
   summary.append(element("span", "todo-title", item.text));
   const meta = element("span", "todo-meta");
   const mark = priorityMark(item.priority);
-  if (mark) meta.append(element("span", item.priority > 2 ? "tag urgent" : "tag", mark === "low" ? "low" : `${mark} priority`));
-  if (item.kind !== "Task") meta.append(element("span", `tag kind-${(item.kind || "unknown").toLowerCase()}`, item.kind || "Unknown kind"));
+  if (mark)
+    meta.append(
+      element(
+        "span",
+        item.priority > 2 ? "tag urgent" : "tag",
+        mark === "low" ? "low" : `${mark} priority`,
+      ),
+    );
+  if (item.kind !== "Task")
+    meta.append(
+      element(
+        "span",
+        `tag kind-${(item.kind || "unknown").toLowerCase()}`,
+        item.kind || "Unknown kind",
+      ),
+    );
   if (isAllProjects) meta.append(element("span", "tag", item.project));
   if (item.is_queued) meta.append(element("span", "tag", "queued"));
   if (item.is_waiting) meta.append(element("span", "tag", "waiting on another item"));
@@ -1502,13 +2363,27 @@ function todoCard(item, agentChoices, isAllProjects) {
   const itemNote = element("div", "note");
   const buttons = element("div", "buttons");
   const isArmed = armedDone === item.id;
-  const done = element("button", isArmed ? "armed" : "no", isArmed ? "Tap again: done" : "Mark done");
+  const done = element(
+    "button",
+    isArmed ? "armed" : "no",
+    isArmed ? "Tap again: done" : "Mark done",
+  );
   done.onclick = async () => {
-    if (armedDone !== item.id) { armedDone = item.id; done.textContent = "Tap again: done"; done.className = "armed"; return; }
+    if (armedDone !== item.id) {
+      armedDone = item.id;
+      done.textContent = "Tap again: done";
+      done.className = "armed";
+      return;
+    }
     armedDone = null;
     done.disabled = true;
     const result = await post(`/api/todos/${item.id}/done`, {}, itemNote);
-    if (!result.ok) { done.disabled = false; done.textContent = "Mark done"; done.className = "no"; return; }
+    if (!result.ok) {
+      done.disabled = false;
+      done.textContent = "Mark done";
+      done.className = "no";
+      return;
+    }
     card.classList.add("finished");
     todoView.openItems.delete(item.id);
     reloadTodosSoon();
@@ -1532,19 +2407,37 @@ function todoCard(item, agentChoices, isAllProjects) {
 }
 
 async function renderTodos(box) {
-  const [todos, choices, agentChoices] = await Promise.all([getJson("/api/todos"), projects(), getJson("/api/agents")]);
-  if (todoView.project && !todos.some((item) => item.project === todoView.project)) todoView.project = null;
+  const [todos, choices, agentChoices] = await Promise.all([
+    getJson("/api/todos"),
+    projects(),
+    getJson("/api/agents"),
+  ]);
+  if (todoView.project && !todos.some((item) => item.project === todoView.project))
+    todoView.project = null;
   const redraw = () => {
-    const shown = todos.filter((item) => todoView.project === null || item.project === todoView.project);
+    const shown = todos.filter(
+      (item) => todoView.project === null || item.project === todoView.project,
+    );
     const inProgress = shown.filter((item) => item.status === "doing");
     const toDo = shown.filter((item) => item.status !== "doing");
-    const nodes = [element("p", "overview", todos.length === 0 ? "Nothing open."
-      : `${toDo.length} to do · ${inProgress.length} in progress${todoView.project ? ` in ${todoView.project}` : ""}`)];
+    const nodes = [
+      element(
+        "p",
+        "overview",
+        todos.length === 0
+          ? "Nothing open."
+          : `${toDo.length} to do · ${inProgress.length} in progress${todoView.project ? ` in ${todoView.project}` : ""}`,
+      ),
+    ];
     if (todos.length > 0) nodes.push(projectFilter(todos, redraw));
     nodes.push(...todoComposer(choices, redraw));
-    if (todos.length === 0) nodes.push(element("div", "empty", "Nothing to do. Add a task, then start it in a session."));
+    if (todos.length === 0)
+      nodes.push(element("div", "empty", "Nothing to do. Add a task, then start it in a session."));
     const isAllProjects = todoView.project === null;
-    for (const [heading, items] of [["In progress", inProgress], ["To do", toDo]]) {
+    for (const [heading, items] of [
+      ["In progress", inProgress],
+      ["To do", toDo],
+    ]) {
       if (items.length === 0) continue;
       nodes.push(element("h2", "", `${heading} · ${items.length}`));
       nodes.push(...items.map((item) => todoCard(item, agentChoices, isAllProjects)));
@@ -1554,12 +2447,25 @@ async function renderTodos(box) {
   redraw();
 }
 
-const CI_LOOK = { failing: ["request", "✗ checks failing"], pending: ["task", "◌ checks running"], passing: ["outcome", "✓ checks pass"] };
+const CI_LOOK = {
+  failing: ["request", "✗ checks failing"],
+  pending: ["task", "◌ checks running"],
+  passing: ["outcome", "✓ checks pass"],
+};
 
 async function renderPulls(box, isRefresh) {
-  const { pulls, error, fetched_at: fetchedAt } = await getJson(isRefresh ? "/api/pulls?refresh=1" : "/api/pulls");
+  const {
+    pulls,
+    error,
+    fetched_at: fetchedAt,
+  } = await getJson(isRefresh ? "/api/pulls?refresh=1" : "/api/pulls");
   const refreshing = element("button", "no", "Refresh");
-  refreshing.onclick = () => { box.replaceChildren(element("div", "empty", "…")); renderPulls(box, true).catch((failure) => box.replaceChildren(element("div", "warning", String(failure)))); };
+  refreshing.onclick = () => {
+    box.replaceChildren(element("div", "empty", "…"));
+    renderPulls(box, true).catch((failure) =>
+      box.replaceChildren(element("div", "warning", String(failure))),
+    );
+  };
   const head = element("div", "buttons");
   head.append(refreshing);
   const nodes = [head];
@@ -1569,12 +2475,19 @@ async function renderPulls(box, isRefresh) {
   for (const pull of pulls) {
     const card = element("div", "card");
     const row = element("div", "row");
-    row.append(element("span", "project", `${pull.repository}#${pull.number}${pull.draft ? " · draft" : ""}`));
+    row.append(
+      element(
+        "span",
+        "project",
+        `${pull.repository}#${pull.number}${pull.draft ? " · draft" : ""}`,
+      ),
+    );
     row.append(element("span", "state", pull.updated));
     card.append(row, element("div", "task", pull.title));
     const [look, label] = CI_LOOK[pull.ci] || [null, null];
     if (label) card.append(element("div", look, label));
-    if (pull.review) card.append(element("div", "task", pull.review.toLowerCase().replace(/_/g, " ")));
+    if (pull.review)
+      card.append(element("div", "task", pull.review.toLowerCase().replace(/_/g, " ")));
     card.append(element("div", "task", `by ${pull.author}`));
     // Only GitHub's own addresses become links.
     if (/^https:\/\/github\.com\//.test(pull.url)) {
@@ -1591,7 +2504,9 @@ async function renderPulls(box, isRefresh) {
 
 function hours(seconds) {
   const minutes = Math.round((seconds || 0) / 60);
-  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
+  return minutes < 60
+    ? `${minutes}m`
+    : `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
 }
 
 async function renderIdeas(box) {
@@ -1606,7 +2521,13 @@ async function renderIdeas(box) {
     project.style.color = projectColour(idea.project);
     card.append(project);
     if (idea.why) card.append(element("div", "notes", idea.why));
-    const meta = [idea.kind, idea.source ? `from ${idea.source}` : "", idea.created ? age(idea.created) : ""].filter(Boolean).join(" · ");
+    const meta = [
+      idea.kind,
+      idea.source ? `from ${idea.source}` : "",
+      idea.created ? age(idea.created) : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
     if (meta) card.append(element("div", "task", meta));
     nodes.push(card);
   }
@@ -1625,18 +2546,39 @@ async function renderStatus(box) {
 
 function renderChiefStatus(chief) {
   if (!chief) return;
-  const look = JSON.stringify([chiefError, chiefState?.status, chiefState?.today, inboxQuestions().map(record => record.id)]);
+  const look = JSON.stringify([
+    chiefError,
+    chiefState?.status,
+    chiefState?.today,
+    inboxQuestions().map((record) => record.id),
+  ]);
   if (chief.dataset.look === look) return;
-  chief.dataset.look = look; chief.replaceChildren();
+  chief.dataset.look = look;
+  chief.replaceChildren();
   chief.append(element("h2", "", "Chief"));
   if (chiefError) chief.append(element("p", "warning", chiefError));
   else {
     const today = chiefState.today;
-    chief.append(element("p", "", `${chiefState.status}${today ? ` · answered ${today.answered} today · ${today.escalated} sent to you` : " · today's counts unavailable"}`));
+    chief.append(
+      element(
+        "p",
+        "",
+        `${chiefState.status}${today ? ` · answered ${today.answered} today · ${today.escalated} sent to you` : " · today's counts unavailable"}`,
+      ),
+    );
     const waiting = inboxQuestions().length;
-    if (waiting) { const needs = element("button", "chief-use", `Needs you · ${waiting}`); needs.onclick = () => openInbox(null, "question", needs); chief.append(needs); }
-    for (const [page, label] of [["answers", "Answer log"], ["habits", "Habits"]]) {
-      const button = element("button", "", label); button.onclick = () => openChief(page, null, button); chief.append(button);
+    if (waiting) {
+      const needs = element("button", "chief-use", `Needs you · ${waiting}`);
+      needs.onclick = () => openInbox(null, "question", needs);
+      chief.append(needs);
+    }
+    for (const [page, label] of [
+      ["answers", "Answer log"],
+      ["habits", "Habits"],
+    ]) {
+      const button = element("button", "", label);
+      button.onclick = () => openChief(page, null, button);
+      chief.append(button);
     }
   }
 }
@@ -1644,17 +2586,23 @@ function renderChiefStatus(chief) {
 async function renderUsage(box) {
   const usage = await getJson("/api/usage");
   const nodes = [element("h2", "", `Plan${usage.plan ? ` · ${usage.plan}` : ""}`)];
-  if (usage.windows.length === 0) nodes.push(element("div", "empty", "No usage known yet: the cockpit checks it every 5 minutes."));
+  if (usage.windows.length === 0)
+    nodes.push(
+      element("div", "empty", "No usage known yet: the cockpit checks it every 5 minutes."),
+    );
   for (const window of usage.windows) {
     const card = element("div", "card");
     const row = element("div", "row");
     row.append(element("span", "project", window.label));
-    row.append(element("span", "state", window.percentage === null ? "?" : `${window.percentage}%`));
+    row.append(
+      element("span", "state", window.percentage === null ? "?" : `${window.percentage}%`),
+    );
     const bar = element("div", "bar");
     const fill = element("div", "fill");
     const used = Math.min(100, Math.max(0, window.percentage || 0));
     fill.style.width = `${used}%`;
-    fill.style.background = used >= 90 ? "var(--red)" : used >= 70 ? "var(--yellow)" : "var(--green)";
+    fill.style.background =
+      used >= 90 ? "var(--red)" : used >= 70 ? "var(--yellow)" : "var(--green)";
     bar.append(fill);
     card.append(row, bar);
     if (window.resets) card.append(element("div", "task", window.resets));
@@ -1664,10 +2612,23 @@ async function renderUsage(box) {
   if (usage.checked_at) nodes.push(element("div", "note", `checked ${age(usage.checked_at)} ago`));
   nodes.push(element("h2", "", "Cost estimate (API prices)"));
   if (usage.cost.error) nodes.push(element("div", "warning", usage.cost.error));
-  else nodes.push(element("div", "card", `today $${usage.cost.today.toFixed(2)} · week $${usage.cost.week.toFixed(2)} · month $${usage.cost.month.toFixed(2)}`));
+  else
+    nodes.push(
+      element(
+        "div",
+        "card",
+        `today $${usage.cost.today.toFixed(2)} · week $${usage.cost.week.toFixed(2)} · month $${usage.cost.month.toFixed(2)}`,
+      ),
+    );
   if (usage.time) {
     nodes.push(element("h2", "", "Time with Claude"));
-    nodes.push(element("div", "card", `today ${hours(usage.time.today)} · week ${hours(usage.time.week)} · month ${hours(usage.time.month)}`));
+    nodes.push(
+      element(
+        "div",
+        "card",
+        `today ${hours(usage.time.today)} · week ${hours(usage.time.week)} · month ${hours(usage.time.month)}`,
+      ),
+    );
   }
   box.replaceChildren(...nodes);
 }
@@ -1679,26 +2640,45 @@ function render() {
     opened = null;
     forgetSessionAddress();
     const detail = document.getElementById("detail");
-    detail.replaceChildren(); detail.dataset.session = "";
+    detail.replaceChildren();
+    detail.dataset.session = "";
     shownScreen = "";
   }
   renderApprovals();
   if (tab !== "sessions") return;
   renderPhone();
   const detail = opened !== null;
-  document.getElementById("view-title").textContent = detail ? state.sessions.find((session) => session.session === opened).project : "Sessions";
+  document.getElementById("view-title").textContent = detail
+    ? state.sessions.find((session) => session.session === opened).project
+    : "Sessions";
   document.getElementById("starter").hidden = detail;
   document.getElementById("list").hidden = detail;
-  if (detail) { renderDetail(); loadScreen(); } else document.getElementById("detail").hidden = true;
+  if (detail) {
+    renderDetail();
+    loadScreen();
+  } else document.getElementById("detail").hidden = true;
   if (!detail) renderList();
 }
 
 // What the detail view's card and buttons depend on, to tell when they need redrawing.
 function detailLook() {
   const session = state.sessions.find((s) => s.session === opened);
-  return session ? JSON.stringify([session.state, session.request, session.detail, session.remote_control, session.task,
-                                   session.needs_input, session.queued, session.features, state.approvals, session.state === "asleep" ? age(session.since) : "",
-                                   (state.watched || []).includes(session.session), state.push]) : "";
+  return session
+    ? JSON.stringify([
+        session.state,
+        session.request,
+        session.detail,
+        session.remote_control,
+        session.task,
+        session.needs_input,
+        session.queued,
+        session.features,
+        state.approvals,
+        session.state === "asleep" ? age(session.since) : "",
+        (state.watched || []).includes(session.session),
+        state.push,
+      ])
+    : "";
 }
 
 async function refresh() {
@@ -1709,7 +2689,11 @@ async function refresh() {
   }
   try {
     const response = await call("GET", "/api/state");
-    if (response.status === 401) { isPaired = false; renderPairing(await response.text()); return; }
+    if (response.status === 401) {
+      isPaired = false;
+      renderPairing(await response.text());
+      return;
+    }
     if (!response.ok) throw new Error(await response.text());
     const before = detailLook();
     state = await response.json();
@@ -1720,14 +2704,17 @@ async function refresh() {
     updateAttentionBadge();
     renderChief();
     renderSessionChief();
-    document.getElementById("updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    document.getElementById("updated").textContent =
+      `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     document.getElementById("updated").dataset.state = "online";
     if (!wasPaired) {
       document.getElementById("pairing").hidden = true;
       document.getElementById("tabs").hidden = false;
       render();
       renderStarter().catch((error) => {
-        document.getElementById("starter").replaceChildren(element("div", "warning", String(error)));
+        document
+          .getElementById("starter")
+          .replaceChildren(element("div", "warning", String(error)));
       });
       return;
     }
@@ -1736,7 +2723,11 @@ async function refresh() {
     if (tab !== "sessions") return;
     renderPhone();
     if (opened === null) renderList();
-    else if (detailLook() !== before) { render(); loadConversation(); loadScreen(); }
+    else if (detailLook() !== before) {
+      render();
+      loadConversation();
+      loadScreen();
+    }
   } catch (error) {
     document.getElementById("updated").textContent = "offline";
     document.getElementById("updated").dataset.state = "offline";
@@ -1749,9 +2740,12 @@ async function refresh() {
 // of leaving the page.
 function openSession(session) {
   if (!session) return;
-  chiefPage = null; chiefOpener = null; renderChief();
+  chiefPage = null;
+  chiefOpener = null;
+  renderChief();
   if (tab !== "sessions") showTab("sessions");
-  if (sessionInAddress() !== session) history.pushState({ isSessionView: true }, "", `#session=${encodeURIComponent(session)}`);
+  if (sessionInAddress() !== session)
+    history.pushState({ isSessionView: true }, "", `#session=${encodeURIComponent(session)}`);
   showSession(session);
 }
 
@@ -1768,17 +2762,23 @@ function closeSession() {
 }
 
 function leaveSession() {
-  if (history.state?.isSessionView) { history.back(); return; }
+  if (history.state?.isSessionView) {
+    history.back();
+    return;
+  }
   forgetSessionAddress();
   closeSession();
 }
 
 function sessionInAddress() {
-  return location.hash.startsWith("#session=") ? decodeURIComponent(location.hash.slice("#session=".length)) : null;
+  return location.hash.startsWith("#session=")
+    ? decodeURIComponent(location.hash.slice("#session=".length))
+    : null;
 }
 
 function forgetSessionAddress() {
-  if (sessionInAddress() !== null) history.replaceState(null, "", location.pathname + location.search);
+  if (sessionInAddress() !== null)
+    history.replaceState(null, "", location.pathname + location.search);
 }
 
 window.addEventListener("popstate", () => {
@@ -1791,8 +2791,11 @@ window.addEventListener("popstate", () => {
   if (session !== null && tab === "sessions") showSession(session);
   else if (session === null && opened !== null) closeSession();
   if (wasChief) {
-    const trigger = [chiefOpener, document.getElementById("detail").querySelector(".chief-log"), document.getElementById(`tab-${tab}`)]
-      .find(button => button && button.getClientRects().length > 0);
+    const trigger = [
+      chiefOpener,
+      document.getElementById("detail").querySelector(".chief-log"),
+      document.getElementById(`tab-${tab}`),
+    ].find((button) => button && button.getClientRects().length > 0);
     trigger?.focus();
   }
 });
@@ -1803,24 +2806,41 @@ if (sessionInAddress() !== null) {
   history.replaceState(null, "", location.pathname + location.search);
   history.pushState({ isSessionView: true }, "", address);
 }
-navigator.serviceWorker?.addEventListener("message", (event) => openSession(event.data && event.data.session));
+navigator.serviceWorker?.addEventListener("message", (event) =>
+  openSession(event.data && event.data.session),
+);
 if (canPush) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 renderTabs();
 document.getElementById("refresh-view").onclick = () => {
   refresh();
-  if (tab === "sessions") { if (opened) { loadConversation(); loadScreen(); } }
-  else showTab(tab);
+  if (tab === "sessions") {
+    if (opened) {
+      loadConversation();
+      loadScreen();
+    }
+  } else showTab(tab);
 };
 refresh();
 setInterval(refresh, 3000);
-setInterval(() => { if (opened) { loadConversation(); loadScreen(); } }, 1500);
+setInterval(() => {
+  if (opened) {
+    loadConversation();
+    loadScreen();
+  }
+}, 1500);
 if (window.visualViewport) {
   // iOS keeps the layout viewport when the keyboard opens and scrolls it instead: the chat follows
   // the visible part, its height and its offset.
   const fitKeyboard = () => {
-    document.documentElement.style.setProperty("--mobile-height", `${window.visualViewport.height}px`);
-    document.documentElement.style.setProperty("--viewport-top", `${window.visualViewport.offsetTop}px`);
+    document.documentElement.style.setProperty(
+      "--mobile-height",
+      `${window.visualViewport.height}px`,
+    );
+    document.documentElement.style.setProperty(
+      "--viewport-top",
+      `${window.visualViewport.offsetTop}px`,
+    );
   };
   window.visualViewport.addEventListener("resize", fitKeyboard);
   window.visualViewport.addEventListener("scroll", fitKeyboard);

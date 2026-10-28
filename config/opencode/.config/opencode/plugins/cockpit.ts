@@ -8,370 +8,496 @@
 // (--standalone), so it lives and ends with the session. The cockpit picks the session's id
 // (--session) and exports it as CLAUDE_CODE_SESSION_ID: the card shows from the start, before
 // opencode makes the session at the first prompt, unless the launcher pre-creates it with defaults.
-import { spawn } from "node:child_process"
-import { createHash, randomUUID } from "node:crypto"
-import { closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { setupSubscriptionRouting } from "../lib/subscription-routing.ts"
+import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { setupSubscriptionRouting } from "../lib/subscription-routing.ts";
 
 // Where ~/.claude/hooks points: inside an opencode sandbox ~/.claude stays hidden, and greywall makes
 // no link there, only the folder the link points to.
-const HOOK = `${homedir()}/agent-cockpit/config/claude/.claude/hooks/session-state.sh`
+const HOOK = `${homedir()}/agent-cockpit/config/claude/.claude/hooks/session-state.sh`;
 
-type HookPayload = { hook_event_name: string } & Record<string, unknown>
-type BillingMode = "api" | "subscription" | "unknown"
+type HookPayload = { hook_event_name: string } & Record<string, unknown>;
+type BillingMode = "api" | "subscription" | "unknown";
 
 export default {
   id: "cockpit",
   setup: async (ctx: any) => {
-    const directory: string = ctx.location?.directory ?? process.cwd()
-    const cockpitSession = process.env.CLAUDE_CODE_SESSION_ID
-    let subscriptionRouting = { handle: async (_event: any) => {}, close: () => {} }
+    const directory: string = ctx.location?.directory ?? process.cwd();
+    const cockpitSession = process.env.CLAUDE_CODE_SESSION_ID;
+    let subscriptionRouting = { handle: async (_event: any) => {}, close: () => {} };
     if (cockpitSession?.startsWith("ses_")) {
       try {
-        subscriptionRouting = await setupSubscriptionRouting(ctx, cockpitSession)
+        subscriptionRouting = await setupSubscriptionRouting(ctx, cockpitSession);
       } catch {
-        console.error("cockpit plugin: subscription fallback disabled because its saved route could not be loaded; preserve it and reconcile")
+        console.error(
+          "cockpit plugin: subscription fallback disabled because its saved route could not be loaded; preserve it and reconcile",
+        );
       }
     }
     // A subagent runs in a session of its own, with a parent: what it asks shows on its root's card.
-    const parentOf = new Map<string, string>()
-    const shells = new Map<string, string>()
-    const started = new Set<string>()
-    const pendingBilling = new Map<string, { providerID: string; modelID: string; billing: BillingMode }>()
+    const parentOf = new Map<string, string>();
+    const shells = new Map<string, string>();
+    const started = new Set<string>();
+    const pendingBilling = new Map<
+      string,
+      { providerID: string; modelID: string; billing: BillingMode }
+    >();
     const recordBilling = (messageID: string, billing: BillingMode) => {
       try {
-        const key = `opencode:${messageID}`
-        if (!/^[A-Za-z0-9:_-]{1,512}$/.test(key)) throw new Error("invalid billing reply key")
-        const directory = `${homedir()}/.cache/claude/billing`
-        mkdirSync(directory, { recursive: true })
-        if (lstatSync(directory).isSymbolicLink()) throw new Error("billing directory must not be a symlink")
-        const payload = JSON.stringify({ key, billing })
-        const destination = `${directory}/${createHash("sha1").update(payload).digest("hex")}.json`
-        const temporary = `${directory}/.${randomUUID()}.tmp`
-        const descriptor = openSync(temporary, "wx", 0o600)
+        const key = `opencode:${messageID}`;
+        if (!/^[A-Za-z0-9:_-]{1,512}$/.test(key)) throw new Error("invalid billing reply key");
+        const directory = `${homedir()}/.cache/claude/billing`;
+        mkdirSync(directory, { recursive: true });
+        if (lstatSync(directory).isSymbolicLink())
+          throw new Error("billing directory must not be a symlink");
+        const payload = JSON.stringify({ key, billing });
+        const destination = `${directory}/${createHash("sha1").update(payload).digest("hex")}.json`;
+        const temporary = `${directory}/.${randomUUID()}.tmp`;
+        const descriptor = openSync(temporary, "wx", 0o600);
         try {
-          writeFileSync(descriptor, payload)
+          writeFileSync(descriptor, payload);
         } finally {
-          closeSync(descriptor)
+          closeSync(descriptor);
         }
         // Persist during this event: a short-lived native run can kill an asynchronous helper at shutdown.
         try {
           try {
-            linkSync(temporary, destination)
+            linkSync(temporary, destination);
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-            const existing = openSync(destination, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+            const existing = openSync(
+              destination,
+              constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+            );
             try {
-              const metadata = fstatSync(existing)
-              if (!metadata.isFile() || metadata.size > 4096 || readFileSync(existing, "utf8") !== payload) throw new Error("billing record conflicts with its filename")
+              const metadata = fstatSync(existing);
+              if (
+                !metadata.isFile() ||
+                metadata.size > 4096 ||
+                readFileSync(existing, "utf8") !== payload
+              )
+                throw new Error("billing record conflicts with its filename");
             } finally {
-              closeSync(existing)
+              closeSync(existing);
             }
           }
         } finally {
-          unlinkSync(temporary)
+          unlinkSync(temporary);
         }
       } catch (error) {
-        console.error("cockpit plugin: billing capture failed; usage remains unknown", error)
+        console.error("cockpit plugin: billing capture failed; usage remains unknown", error);
       }
-    }
+    };
     const rootOf = (sessionID: string): string => {
-      let root = sessionID
-      while (parentOf.has(root)) root = parentOf.get(root)!
-      return root
-    }
+      let root = sessionID;
+      while (parentOf.has(root)) root = parentOf.get(root)!;
+      return root;
+    };
 
     // One report at a time, in the order of the events.
-    let reports = Promise.resolve()
+    let reports = Promise.resolve();
     const send = (sessionID: string, payload: HookPayload) => {
       reports = reports.then(async () => {
         // node's spawn, which Bun has too: the tests run this plugin under node.
-        const hook = spawn("bash", [HOOK], { env: { ...process.env, COCKPIT_AGENT: "opencode" }, stdio: ["pipe", "ignore", "pipe"] })
-        let error = ""
-        hook.stderr.on("data", (chunk) => (error += chunk))
-        hook.stdin.end(JSON.stringify({ ...payload, session_id: sessionID, cwd: directory }))
+        const hook = spawn("bash", [HOOK], {
+          env: { ...process.env, COCKPIT_AGENT: "opencode" },
+          stdio: ["pipe", "ignore", "pipe"],
+        });
+        let error = "";
+        hook.stderr.on("data", (chunk) => (error += chunk));
+        hook.stdin.end(JSON.stringify({ ...payload, session_id: sessionID, cwd: directory }));
         const code = await new Promise<number | null>((resolve) => {
-          hook.on("close", resolve)
+          hook.on("close", resolve);
           hook.on("error", (spawnError) => {
-            error = String(spawnError)
-            resolve(null)
-          })
-        })
-        if (code !== 0) console.error(`cockpit plugin: session-state.sh ${payload.hook_event_name} exited ${code}: ${error}`)
-      })
-    }
+            error = String(spawnError);
+            resolve(null);
+          });
+        });
+        if (code !== 0)
+          console.error(
+            `cockpit plugin: session-state.sh ${payload.hook_event_name} exited ${code}: ${error}`,
+          );
+      });
+    };
 
     // A session resumed or chosen by the cockpit may never send session.created: it starts at the
     // first event seen.
     const report = (sessionID: string, payload: HookPayload) => {
-      const root = rootOf(sessionID)
+      const root = rootOf(sessionID);
       if (!started.has(root)) {
-        started.add(root)
-        if (payload.hook_event_name !== "SessionStart") send(root, { hook_event_name: "SessionStart" })
+        started.add(root);
+        if (payload.hook_event_name !== "SessionStart")
+          send(root, { hook_event_name: "SessionStart" });
       }
-      send(root, payload)
-    }
+      send(root, payload);
+    };
 
-    if (cockpitSession?.startsWith("ses")) report(cockpitSession, { hook_event_name: "SessionStart" })
+    if (cockpitSession?.startsWith("ses"))
+      report(cockpitSession, { hook_event_name: "SessionStart" });
 
-    const isTopLevel = (sessionID: string) => !parentOf.has(sessionID)
+    const isTopLevel = (sessionID: string) => !parentOf.has(sessionID);
     // A subagent's session while it executes: a background one outlives its root's turn.
-    const runningSubagents = new Set<string>()
+    const runningSubagents = new Set<string>();
     const backgroundTasks = (sessionID: string) => [
-      ...[...runningSubagents].filter((child) => rootOf(child) === rootOf(sessionID)).map(() => ({ type: "subagent" })),
-      ...[...shells.values()].filter((owner) => rootOf(owner) === rootOf(sessionID)).map(() => ({ type: "shell" })),
-    ]
-    const reportBackground = (sessionID: string) => report(sessionID, {
-      hook_event_name: "Notification", notification_type: "background_work", message: "",
-      background_tasks: backgroundTasks(sessionID),
-    })
+      ...[...runningSubagents]
+        .filter((child) => rootOf(child) === rootOf(sessionID))
+        .map(() => ({ type: "subagent" })),
+      ...[...shells.values()]
+        .filter((owner) => rootOf(owner) === rootOf(sessionID))
+        .map(() => ({ type: "shell" })),
+    ];
+    const reportBackground = (sessionID: string) =>
+      report(sessionID, {
+        hook_event_name: "Notification",
+        notification_type: "background_work",
+        message: "",
+        background_tasks: backgroundTasks(sessionID),
+      });
     const handle = (event: { type: string; data: any }) => {
-      const { type, data } = event
+      const { type, data } = event;
       switch (type) {
         case "shell.created": {
-          const sessionID = data.info.metadata?.sessionID
+          const sessionID = data.info.metadata?.sessionID;
           if (typeof sessionID === "string" && data.info.status === "running") {
-            shells.set(data.info.id, sessionID)
-            reportBackground(sessionID)
+            shells.set(data.info.id, sessionID);
+            reportBackground(sessionID);
           }
-          break
+          break;
         }
         case "shell.exited":
         case "shell.deleted": {
-          const sessionID = shells.get(data.id)
+          const sessionID = shells.get(data.id);
           if (sessionID) {
-            shells.delete(data.id)
-            reportBackground(sessionID)
+            shells.delete(data.id);
+            reportBackground(sessionID);
           }
-          break
+          break;
         }
         case "session.step.started": {
-          const pending = pendingBilling.get(data.sessionID)
-          pendingBilling.delete(data.sessionID)
+          const pending = pendingBilling.get(data.sessionID);
+          pendingBilling.delete(data.sessionID);
           if (pending && typeof data.assistantMessageID === "string") {
-            const matches = data.model?.providerID === pending.providerID && data.model?.id === pending.modelID
-            recordBilling(data.assistantMessageID, matches ? pending.billing : "unknown")
+            const matches =
+              data.model?.providerID === pending.providerID && data.model?.id === pending.modelID;
+            recordBilling(data.assistantMessageID, matches ? pending.billing : "unknown");
           }
-          break
+          break;
         }
         case "session.created":
-          if (data.parentID) parentOf.set(data.sessionID, data.parentID)
-          else report(data.sessionID, { hook_event_name: "SessionStart" })
-          break
+          if (data.parentID) parentOf.set(data.sessionID, data.parentID);
+          else report(data.sessionID, { hook_event_name: "SessionStart" });
+          break;
         case "session.inbox.enqueued":
           if (data.item?.type === "user" && isTopLevel(data.sessionID)) {
-            report(data.sessionID, { hook_event_name: "UserPromptSubmit", prompt: data.item.payload?.text ?? "" })
+            report(data.sessionID, {
+              hook_event_name: "UserPromptSubmit",
+              prompt: data.item.payload?.text ?? "",
+            });
           }
-          break
+          break;
         case "session.execution.started":
           // Synthetic turns can finish without tools; they still consume an idle period.
-          if (isTopLevel(data.sessionID)) report(data.sessionID, { hook_event_name: "UserPromptSubmit", source: "system" })
+          if (isTopLevel(data.sessionID))
+            report(data.sessionID, { hook_event_name: "UserPromptSubmit", source: "system" });
           else if (!runningSubagents.has(data.sessionID)) {
-            runningSubagents.add(data.sessionID)
-            reportBackground(data.sessionID)
+            runningSubagents.add(data.sessionID);
+            reportBackground(data.sessionID);
           }
-          break
+          break;
         case "session.execution.succeeded":
         case "session.execution.failed":
         case "session.execution.interrupted":
-          pendingBilling.delete(data.sessionID)
-          if (isTopLevel(data.sessionID)) report(data.sessionID, { hook_event_name: "Stop", background_tasks: backgroundTasks(data.sessionID) })
-          else if (runningSubagents.delete(data.sessionID)) reportBackground(data.sessionID)
-          break
+          pendingBilling.delete(data.sessionID);
+          if (isTopLevel(data.sessionID))
+            report(data.sessionID, {
+              hook_event_name: "Stop",
+              background_tasks: backgroundTasks(data.sessionID),
+            });
+          else if (runningSubagents.delete(data.sessionID)) reportBackground(data.sessionID);
+          break;
         case "session.deleted": {
-          pendingBilling.delete(data.sessionID)
-          const root = rootOf(data.sessionID)
-          let removedBackground = false
+          pendingBilling.delete(data.sessionID);
+          const root = rootOf(data.sessionID);
+          let removedBackground = false;
           for (const [id, owner] of shells) {
-            if (owner === data.sessionID || (isTopLevel(data.sessionID) && rootOf(owner) === root)) {
-              shells.delete(id)
-              removedBackground = true
+            if (
+              owner === data.sessionID ||
+              (isTopLevel(data.sessionID) && rootOf(owner) === root)
+            ) {
+              shells.delete(id);
+              removedBackground = true;
             }
           }
           for (const child of runningSubagents) {
-            if (child === data.sessionID || (isTopLevel(data.sessionID) && rootOf(child) === root)) {
-              runningSubagents.delete(child)
-              removedBackground = true
+            if (
+              child === data.sessionID ||
+              (isTopLevel(data.sessionID) && rootOf(child) === root)
+            ) {
+              runningSubagents.delete(child);
+              removedBackground = true;
             }
           }
-          if (isTopLevel(data.sessionID) && started.delete(data.sessionID)) send(data.sessionID, { hook_event_name: "SessionEnd" })
-          else if (removedBackground && started.has(root)) reportBackground(root)
-          break
+          if (isTopLevel(data.sessionID) && started.delete(data.sessionID))
+            send(data.sessionID, { hook_event_name: "SessionEnd" });
+          else if (removedBackground && started.has(root)) reportBackground(root);
+          break;
         }
         case "permission.asked":
           report(data.sessionID, {
             hook_event_name: "Notification",
             notification_type: "permission_prompt",
             message: `opencode needs your permission: ${data.message ?? data.action ?? "a tool"}`,
-          })
-          break
+          });
+          break;
         case "form.created":
-          report(data.form.sessionID, { hook_event_name: "Notification", notification_type: "elicitation_dialog", message: "opencode has a question for you" })
-          break
+          report(data.form.sessionID, {
+            hook_event_name: "Notification",
+            notification_type: "elicitation_dialog",
+            message: "opencode has a question for you",
+          });
+          break;
       }
-    }
+    };
 
     await ctx.tool.hook("execute.after", (input: { tool: string; sessionID: string }) => {
-      report(input.sessionID, { hook_event_name: "PostToolUse", tool_name: input.tool })
-    })
+      report(input.sessionID, { hook_event_name: "PostToolUse", tool_name: input.tool });
+    });
 
     const billingHook = await ctx.session.hook("http.request", (event: any) => {
-      if (event.kind !== "primary") return
-      const provider = event.model.providerID
-      let billing: BillingMode = "unknown"
+      if (event.kind !== "primary") return;
+      const provider = event.model.providerID;
+      let billing: BillingMode = "unknown";
       try {
-        const url = new URL(event.request.url)
-        const hostname = url.hostname
-        const headers: Headers = event.request.headers
+        const url = new URL(event.request.url);
+        const hostname = url.hostname;
+        const headers: Headers = event.request.headers;
         // Current saved credentials can change while this request is in flight; only its assembled route/auth counts.
         if (url.protocol === "https:") {
-          if (provider === "anthropic" && hostname === "api.anthropic.com" && headers.has("x-api-key") && !headers.has("authorization")) billing = "api"
+          if (
+            provider === "anthropic" &&
+            hostname === "api.anthropic.com" &&
+            headers.has("x-api-key") &&
+            !headers.has("authorization")
+          )
+            billing = "api";
           else if (provider === "openai" && headers.has("authorization")) {
-            if (hostname === "api.openai.com") billing = "api"
-            else if (hostname === "chatgpt.com") billing = "subscription"
+            if (hostname === "api.openai.com") billing = "api";
+            else if (hostname === "chatgpt.com") billing = "subscription";
           }
         }
       } catch (error) {
-        console.error("cockpit plugin: billing capture failed; usage remains unknown", error)
+        console.error("cockpit plugin: billing capture failed; usage remains unknown", error);
       }
-      const previous = pendingBilling.get(event.sessionID)
-      if (previous && (previous.providerID !== provider || previous.modelID !== event.model.id || previous.billing !== billing)) billing = "unknown"
-      pendingBilling.set(event.sessionID, { providerID: provider, modelID: event.model.id, billing })
-    })
+      const previous = pendingBilling.get(event.sessionID);
+      if (
+        previous &&
+        (previous.providerID !== provider ||
+          previous.modelID !== event.model.id ||
+          previous.billing !== billing)
+      )
+        billing = "unknown";
+      pendingBilling.set(event.sessionID, {
+        providerID: provider,
+        modelID: event.model.id,
+        billing,
+      });
+    });
 
     // Linked sessions: pull this session's next approved team message and admit it natively,
     // queued behind the current turn. The stable inbox id makes a repeated admission return the
     // original instead of a second turn. Only the cockpit's own root session takes them.
     const runTeam = (args: string[], input?: unknown) =>
       new Promise<string>((resolve, reject) => {
-        const child = spawn("cockpit-team", args, { stdio: ["pipe", "pipe", "pipe"] })
-        let output = ""
-        let error = ""
-        child.stdout.on("data", (chunk) => (output += chunk))
-        child.stderr.on("data", (chunk) => (error += chunk))
-        child.on("error", reject)
-        child.on("close", (code) => (code === 0 ? resolve(output) : reject(new Error(error.trim() || `cockpit-team ${args[0]} exited ${code}`))))
+        const child = spawn("cockpit-team", args, { stdio: ["pipe", "pipe", "pipe"] });
+        let output = "";
+        let error = "";
+        child.stdout.on("data", (chunk) => (output += chunk));
+        child.stderr.on("data", (chunk) => (error += chunk));
+        child.on("error", reject);
+        child.on("close", (code) =>
+          code === 0
+            ? resolve(output)
+            : reject(new Error(error.trim() || `cockpit-team ${args[0]} exited ${code}`)),
+        );
         // A command that exits without reading its input must not crash opencode's server (EPIPE).
         child.stdin.on("error", (stdinError: NodeJS.ErrnoException) => {
-          if (stdinError.code !== "EPIPE") reject(stdinError)
-        })
-        if (input === undefined) child.stdin.end()
-        else child.stdin.end(JSON.stringify(input))
-      })
+          if (stdinError.code !== "EPIPE") reject(stdinError);
+        });
+        if (input === undefined) child.stdin.end();
+        else child.stdin.end(JSON.stringify(input));
+      });
     const receipt = (dispatchID: string, outcome: Record<string, string>) =>
       runTeam(["receipt"], { action: "receipt", dispatch_id: dispatchID, outcome }).catch((error) =>
         console.error("cockpit plugin: team receipt not recorded", error),
-      )
+      );
     // OpenCode's screen shows a synthetic message only as this one line: who wrote and how it starts.
     const teamRow = (envelope: any) => {
-      const plain = (value: unknown) => String(value ?? "?").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim()
+      const plain = (value: unknown) =>
+        String(value ?? "?")
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: Strip terminal controls from the single-line summary.
+          .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
       // Match approval::is_hiding before whitespace normalization and the visible row's length cap.
-      const visible = (value: unknown) => plain(String(value ?? "?").replace(
-        /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u00ad\u034f\u115f\u1160\u200b-\u200f\u2028-\u202e\u2060-\u2069\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\u{e0000}-\u{e007f}]/gu,
-        (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
-      ))
-      const row = envelope?.kind === "chief_answer"
-        ? `${envelope?.source === "theo" ? "Theo's answer" : "Chief answer"}: ${visible(envelope?.text)}`
-        : envelope?.kind === "chief_message"
-        ? `Chief message: ${visible(envelope?.text)}`
-        : envelope?.kind === "chief_todo"
-        ? `Todo from the Chief: ${visible(envelope?.text)}`
-        : envelope?.kind === "chief_correction"
-        ? `Theo's correction: ${visible(envelope?.text)}`
-        : envelope?.kind === "chief_check"
-        ? "Cockpit delivery check: a test message from Theo"
-        : envelope?.scope_kind === "link"
-        ? `Link message from ${visible(envelope?.sender?.session_id)} (${visible(envelope?.sender?.project)}): ${visible(envelope?.body)}`
-        : `Team message from ${plain(envelope?.sender?.role)} (${plain(envelope?.sender?.agent)}): ${plain(envelope?.body)}`
-      return row.length > 160 ? `${row.slice(0, 159)}…` : row
-    }
+      const visible = (value: unknown) =>
+        plain(
+          String(value ?? "?").replace(
+            // biome-ignore lint/suspicious/noControlCharactersInRegex: Render hidden controls visibly before normalizing whitespace.
+            // biome-ignore lint/suspicious/noMisleadingCharacterClass: Each listed invisible code point is independently escaped, matching approval::is_hiding.
+            /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u00ad\u034f\u115f\u1160\u200b-\u200f\u2028-\u202e\u2060-\u2069\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\u{e0000}-\u{e007f}]/gu,
+            (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+          ),
+        );
+      const row =
+        envelope?.kind === "chief_answer"
+          ? `${envelope?.source === "theo" ? "Theo's answer" : "Chief answer"}: ${visible(envelope?.text)}`
+          : envelope?.kind === "chief_message"
+            ? `Chief message: ${visible(envelope?.text)}`
+            : envelope?.kind === "chief_todo"
+              ? `Todo from the Chief: ${visible(envelope?.text)}`
+              : envelope?.kind === "chief_correction"
+                ? `Theo's correction: ${visible(envelope?.text)}`
+                : envelope?.kind === "chief_check"
+                  ? "Cockpit delivery check: a test message from Theo"
+                  : envelope?.scope_kind === "link"
+                    ? `Link message from ${visible(envelope?.sender?.session_id)} (${visible(envelope?.sender?.project)}): ${visible(envelope?.body)}`
+                    : `Team message from ${plain(envelope?.sender?.role)} (${plain(envelope?.sender?.agent)}): ${plain(envelope?.body)}`;
+      return row.length > 160 ? `${row.slice(0, 159)}…` : row;
+    };
     // The Chief's choice for an open single-question form, given through OpenCode's form API. Anything
     // unexpected throws: the reply is then uncertain, never typed or sent as a message instead.
     const replyToForm = async (choice: unknown): Promise<string> => {
-      const form = ctx.session.form
-      if (typeof form?.list !== "function" || typeof form?.reply !== "function") throw new Error("this OpenCode has no form replies")
-      const pending = await form.list({ sessionID: cockpitSession })
-      if (!Array.isArray(pending)) throw new Error("the form list is malformed")
-      const open = pending.filter((item: any) => item?.sessionID === cockpitSession && (item?.state === undefined || item.state?.status === "pending"))
-      if (open.length !== 1 || typeof open[0].id !== "string" || !open[0].id.startsWith("frm_")) throw new Error(`expected one pending form, found ${open.length}`)
-      const fields = Array.isArray(open[0].fields) ? open[0].fields.filter((field: any) => field?.hidden !== true) : []
-      const field = fields[0]
-      if (fields.length !== 1 || !["string", "multiselect"].includes(field?.type) || typeof field.key !== "string"
-        || !Array.isArray(field.options) || field.options.length === 0) throw new Error("the form is not one visible choice")
-      const wanted = String(choice ?? "")
-      const pick = (same: (text: unknown) => boolean) => field.options.filter((option: any) => same(option?.label) || same(option?.value))
-      let matches = pick((text) => text === wanted)
-      if (matches.length === 0) matches = pick((text) => typeof text === "string" && text.trim().toLowerCase() === wanted.trim().toLowerCase())
-      if (matches.length !== 1 || typeof matches[0].value !== "string") throw new Error("the choice matches no single option")
-      const value = matches[0].value
-      await form.reply({ sessionID: cockpitSession, formID: open[0].id, answer: { [field.key]: field.type === "multiselect" ? [value] : value } })
-      return `form:${open[0].id}`
-    }
+      const form = ctx.session.form;
+      if (typeof form?.list !== "function" || typeof form?.reply !== "function")
+        throw new Error("this OpenCode has no form replies");
+      const pending = await form.list({ sessionID: cockpitSession });
+      if (!Array.isArray(pending)) throw new Error("the form list is malformed");
+      const open = pending.filter(
+        (item: any) =>
+          item?.sessionID === cockpitSession &&
+          (item?.state === undefined || item.state?.status === "pending"),
+      );
+      if (open.length !== 1 || typeof open[0].id !== "string" || !open[0].id.startsWith("frm_"))
+        throw new Error(`expected one pending form, found ${open.length}`);
+      const fields = Array.isArray(open[0].fields)
+        ? open[0].fields.filter((field: any) => field?.hidden !== true)
+        : [];
+      const field = fields[0];
+      if (
+        fields.length !== 1 ||
+        !["string", "multiselect"].includes(field?.type) ||
+        typeof field.key !== "string" ||
+        !Array.isArray(field.options) ||
+        field.options.length === 0
+      )
+        throw new Error("the form is not one visible choice");
+      const wanted = String(choice ?? "");
+      const pick = (same: (text: unknown) => boolean) =>
+        field.options.filter((option: any) => same(option?.label) || same(option?.value));
+      let matches = pick((text) => text === wanted);
+      if (matches.length === 0)
+        matches = pick(
+          (text) =>
+            typeof text === "string" && text.trim().toLowerCase() === wanted.trim().toLowerCase(),
+        );
+      if (matches.length !== 1 || typeof matches[0].value !== "string")
+        throw new Error("the choice matches no single option");
+      const value = matches[0].value;
+      await form.reply({
+        sessionID: cockpitSession,
+        formID: open[0].id,
+        answer: { [field.key]: field.type === "multiselect" ? [value] : value },
+      });
+      return `form:${open[0].id}`;
+    };
     const deliverTeamMessage = async () => {
-      const delivery = JSON.parse((await runTeam(["receive"])).trim() || "null")
-      if (!delivery?.dispatch_id) return
+      const delivery = JSON.parse((await runTeam(["receive"])).trim() || "null");
+      if (!delivery?.dispatch_id) return;
       if (delivery.envelope?.kind === "chief_form_reply") {
-        let outcome: Record<string, string>
+        let outcome: Record<string, string>;
         try {
-          outcome = { outcome: "received", native_id: await replyToForm(delivery.envelope.choice) }
+          outcome = { outcome: "received", native_id: await replyToForm(delivery.envelope.choice) };
         } catch (error) {
-          outcome = { outcome: "uncertain", reason: String(error).slice(0, 300) }
+          outcome = { outcome: "uncertain", reason: String(error).slice(0, 300) };
         }
-        await receipt(delivery.dispatch_id, outcome)
-        return
+        await receipt(delivery.dispatch_id, outcome);
+        return;
       }
-      const inboxID = `msg_cockpit${delivery.message_id}`
+      const inboxID = `msg_cockpit${delivery.message_id}`;
       try {
         const admitted = await ctx.session.synthetic({
           sessionID: cockpitSession,
           id: inboxID,
           text: delivery.text,
           description: teamRow(delivery.envelope),
-          metadata: { cockpit_team: { message_id: delivery.message_id, dispatch_id: delivery.dispatch_id } },
+          metadata: {
+            cockpit_team: { message_id: delivery.message_id, dispatch_id: delivery.dispatch_id },
+          },
           delivery: "queue",
           resume: true,
-        })
-        if (admitted?.id !== inboxID) throw new Error("native queued admission did not confirm the expected stable inbox id")
+        });
+        if (admitted?.id !== inboxID)
+          throw new Error("native queued admission did not confirm the expected stable inbox id");
         // The answer replies to the saved question: it must not come back when the answered turn stops.
-        if (delivery.envelope?.kind === "chief_answer") report(cockpitSession!, { hook_event_name: "UserPromptSubmit", source: "chief_answer" })
-        await receipt(delivery.dispatch_id, { outcome: "received", native_id: admitted.id })
+        if (delivery.envelope?.kind === "chief_answer")
+          report(cockpitSession!, { hook_event_name: "UserPromptSubmit", source: "chief_answer" });
+        await receipt(delivery.dispatch_id, { outcome: "received", native_id: admitted.id });
       } catch (error) {
         // The inbox may have taken it before failing: never resend, let Theo reconcile.
-        await receipt(delivery.dispatch_id, { outcome: "uncertain", reason: String(error).slice(0, 300) })
+        await receipt(delivery.dispatch_id, {
+          outcome: "uncertain",
+          reason: String(error).slice(0, 300),
+        });
       }
-    }
-    const teamPoll = Number(process.env.COCKPIT_TEAM_POLL_MS ?? 3000)
-    let teamBusy = false
-    let teamStopped = false
+    };
+    const teamPoll = Number(process.env.COCKPIT_TEAM_POLL_MS ?? 3000);
+    let teamBusy = false;
+    let teamStopped = false;
     const teamTimer = cockpitSession?.startsWith("ses")
       ? setInterval(() => {
-          if (teamBusy || teamStopped) return
-          teamBusy = true
+          if (teamBusy || teamStopped) return;
+          teamBusy = true;
           deliverTeamMessage()
             .catch((error) => {
-              if ((error as NodeJS.ErrnoException)?.code === "ENOENT") teamStopped = true
-              else console.error("cockpit plugin: team delivery unavailable", error)
+              if ((error as NodeJS.ErrnoException)?.code === "ENOENT") teamStopped = true;
+              else console.error("cockpit plugin: team delivery unavailable", error);
             })
-            .finally(() => (teamBusy = false))
+            .finally(() => (teamBusy = false));
         }, teamPoll)
-      : undefined
+      : undefined;
 
     // Not awaited: setup must return for opencode to take prompts.
-    const subscription = new AbortController()
+    const subscription = new AbortController();
     void (async () => {
       for await (const event of ctx.event.subscribe({ signal: subscription.signal })) {
-        handle(event)
-        void subscriptionRouting.handle(event).catch(() => console.error("cockpit plugin: subscription fallback paused; inspect its saved route"))
+        handle(event);
+        void subscriptionRouting
+          .handle(event)
+          .catch(() =>
+            console.error("cockpit plugin: subscription fallback paused; inspect its saved route"),
+          );
       }
     })().catch((error: unknown) => {
-      if (!subscription.signal.aborted) console.error("cockpit plugin: event stream ended", error)
-    })
+      if (!subscription.signal.aborted) console.error("cockpit plugin: event stream ended", error);
+    });
     return async () => {
-      subscription.abort()
-      if (teamTimer) clearInterval(teamTimer)
-      await billingHook.dispose()
-      await subscriptionRouting.close()
-    }
+      subscription.abort();
+      if (teamTimer) clearInterval(teamTimer);
+      await billingHook.dispose();
+      await subscriptionRouting.close();
+    };
   },
-}
+};
