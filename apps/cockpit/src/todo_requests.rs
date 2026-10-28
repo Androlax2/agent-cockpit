@@ -42,6 +42,13 @@ pub fn receipt_path(request: &Map<String, Value>) -> Option<PathBuf> {
     Some(approval::answers_dir(key, "todos").join(format!("{id}.json")))
 }
 
+/// Filing requests one sandbox folder may have retained within a day; the whole host keeps at most
+/// `RETAINED_TOTAL_MAX`. The active Chief's add/propose --project (`chief_epoch`, stamped only by the
+/// daemon after verifying its grant) gets more room so its 100 open cross-project filings fit in one day.
+const RETAINED_PER_FOLDER_MAX: usize = 64;
+const CHIEF_RETAINED_PER_FOLDER_MAX: usize = 128;
+const RETAINED_TOTAL_MAX: usize = 1024;
+
 pub fn hold(request: &mut Map<String, Value>, started_in: &str, key: &str) -> Result<(), String> {
     request.remove("host_approved");
     request.remove("receipt_key");
@@ -82,7 +89,11 @@ pub fn hold(request: &mut Map<String, Value>, started_in: &str, key: &str) -> Re
         total += 1;
         if previous["started_in"] == started_in { own += 1; }
     }
-    if total >= 1024 || own >= 64 { return Err("too many retained todo requests; retry after their one-day retention".into()); }
+    let is_chief_handoff = request.get("chief_epoch").and_then(Value::as_str).is_some_and(|epoch| !epoch.is_empty())
+        && matches!(request.get("action").and_then(Value::as_str), Some("add" | "propose"))
+        && request.get("project").and_then(Value::as_str).is_some();
+    let own_max = if is_chief_handoff { CHIEF_RETAINED_PER_FOLDER_MAX } else { RETAINED_PER_FOLDER_MAX };
+    if total >= RETAINED_TOTAL_MAX || own >= own_max { return Err("too many retained todo requests; retry after their one-day retention".into()); }
     let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| error.to_string())?;
     if let Err(error) = writeln!(file, "{}", json!(request)) {
         let _ = fs::remove_file(&path);

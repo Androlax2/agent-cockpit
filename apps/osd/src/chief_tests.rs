@@ -614,16 +614,16 @@ fn a_restored_chief_needs_its_own_new_admission_and_explicit_host_recovery() {
     assert_ne!(result["epoch"],epoch,"replay returns a receipt, not a new activation");
 }
 
-/// Files 12 adds in project-b through the report socket as `peer`; returns how many were saved
-/// and the reason the first refused one gave in its receipt.
-fn file_handoffs_in_project_b(bench: &mut Bench, peer: u32, forged: serde_json::Value) -> (usize, serde_json::Value) {
+/// Files `count` adds in project-b through the report socket as `peer`; returns how many were saved
+/// and the receipt of the first refused one.
+fn file_handoffs_in_project_b(bench: &mut Bench, peer: u32, count: usize, forged: serde_json::Value) -> (usize, serde_json::Value) {
     fs::create_dir_all(bench.fixture.root.join("home/IdeaProjects/project-b/.git")).unwrap();
     let started_in = bench.world.borrow().sender_directories[&peer].clone();
     let key = crate::registry::answers_key_of(Path::new(&started_in));
     let mut todos = cockpit::todo::TodoList::load();
     let mut saved = 0;
     let mut refusal = serde_json::Value::Null;
-    for number in 0..12 {
+    for number in 0..count {
         let request_id = format!("{number:012x}");
         let mut raw = json!({"action": "add", "project": "project-b", "text": format!("Chief work {number}"), "request_id": request_id});
         raw.as_object_mut().unwrap().extend(forged.as_object().unwrap().clone());
@@ -636,20 +636,36 @@ fn file_handoffs_in_project_b(bench: &mut Bench, peer: u32, forged: serde_json::
 }
 
 #[test]
-fn the_active_chief_may_keep_ten_filings_open_in_another_project() {
+fn the_active_chief_may_keep_a_hundred_filings_open_in_another_project_and_the_next_is_refused_clearly() {
     let mut bench = team_bench();
     enable(&mut bench, SESSION_A);
-    let (saved, refusal) = file_handoffs_in_project_b(&mut bench, 10, json!({}));
-    assert_eq!(saved, 10);
-    assert!(refusal["reason"].as_str().unwrap().ends_with("10 already open"), "{refusal}");
+    let (saved, refusal) = file_handoffs_in_project_b(&mut bench, 10, 101, json!({}));
+    assert_eq!(saved, 100);
+    assert_eq!(refusal["request_id"], format!("{:012x}", 100));
+    assert!(refusal["reason"].as_str().unwrap().ends_with("dropped: 100 already open"), "{refusal}");
     assert_eq!(refusal["can_approve"], true);
+}
+
+#[test]
+fn a_chief_duplicate_filing_reuses_the_open_item_instead_of_counting_against_the_hundred() {
+    let mut bench = team_bench();
+    enable(&mut bench, SESSION_A);
+    fs::create_dir_all(bench.fixture.root.join("home/IdeaProjects/project-b/.git")).unwrap();
+    let mut todos = cockpit::todo::TodoList::load();
+    for number in 0..2 {
+        let raw = json!({"action": "add", "project": "project-b", "text": "Same Chief work", "request_id": format!("{number:012x}")});
+        bench.registry.request_from("todo-update", &raw.to_string(), 10).unwrap();
+        todos.apply_updates();
+    }
+    let open = cockpit::todo::TodoList::load().items.iter().filter(|item| item.text() == "Same Chief work").count();
+    assert_eq!(open, 1);
 }
 
 #[test]
 fn another_session_of_the_chiefs_project_keeps_three_even_naming_the_epoch() {
     let mut bench = team_bench();
     let epoch = enable(&mut bench, SESSION_A)["epoch"].clone();
-    let (saved, refusal) = file_handoffs_in_project_b(&mut bench, 30, json!({"chief_epoch": epoch}));
+    let (saved, refusal) = file_handoffs_in_project_b(&mut bench, 30, 12, json!({"chief_epoch": epoch}));
     assert_eq!(saved, 3);
     assert!(refusal["reason"].as_str().unwrap().ends_with("3 already open"), "{refusal}");
     assert_eq!(refusal["can_approve"], true);
@@ -660,13 +676,13 @@ fn a_paused_chief_keeps_three_filings_open_in_another_project() {
     let mut bench = team_bench();
     let epoch = enable(&mut bench, SESSION_A)["epoch"].as_str().unwrap().to_string();
     crate::teams::host(&mut bench.registry, std::process::id(), HostRequest::Chief { action: ChiefHostAction::Pause { request_id: "pause".into(), expected_epoch: epoch } }).unwrap().result.unwrap();
-    assert_eq!(file_handoffs_in_project_b(&mut bench, 10, json!({})).0, 3);
+    assert_eq!(file_handoffs_in_project_b(&mut bench, 10, 12, json!({})).0, 3);
 }
 
 #[test]
 fn a_session_without_a_chief_store_keeps_three_filings_open_in_another_project() {
     let mut bench = team_bench();
-    assert_eq!(file_handoffs_in_project_b(&mut bench, 10, json!({"chief_epoch": "forged"})).0, 3);
+    assert_eq!(file_handoffs_in_project_b(&mut bench, 10, 12, json!({"chief_epoch": "forged"})).0, 3);
 }
 
 #[test]
@@ -2096,7 +2112,6 @@ fn a_chief_message_waits_for_idle_native_delivery_without_a_team() {
     assert!(reply["text"].as_str().unwrap().contains("It grants no permission"));
     assert!(!reply["text"].as_str().unwrap().contains("authorises edits"));
     let message = reply["message_id"].as_str().unwrap();
-    assert_eq!(bench.notice_title(&format!("chief-message-{message}")).as_deref(),Some("Chief · sending a message to project-a"));
     crate::teams::request(&mut bench.registry,40,AgentAction::Receipt {
         dispatch_id:reply["dispatch_id"].as_str().unwrap().into(),
         outcome:cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{message}")},
@@ -2224,8 +2239,6 @@ fn the_chief_can_start_a_fresh_session_for_a_queued_handed_todo_while_its_projec
     let reserved = reserve_fresh_session(&mut bench, &todo).unwrap();
     assert!(reserved["reservation"].as_str().is_some_and(|token| !token.is_empty()));
     assert_eq!(session_start_states(&bench), vec!["started"]);
-    let notice = format!("chief-session-{}", requested["request"].as_str().unwrap());
-    assert_eq!(bench.notice_title(&notice).as_deref(), Some("Chief · started a session in project-a"));
 }
 
 #[test]
@@ -2532,4 +2545,63 @@ fn a_session_without_the_chief_grant_cannot_start_sessions() {
     let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
     assert_eq!(chief_starts_session(&mut bench, 10, &todo, "project-a").unwrap_err().code, ErrorCode::Unauthorized);
     assert!(session_start_states(&bench).is_empty());
+}
+
+fn todays_audit_events() -> Vec<serde_json::Value> {
+    let day = cockpit::audit::dir().join(format!("audit-{}.jsonl", chrono::Local::now().format("%Y-%m-%d")));
+    fs::read_to_string(day).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+}
+
+#[test]
+fn a_routine_chief_message_raises_no_banner_but_keeps_its_audit_and_delivery_record() {
+    let mut bench = admitted_chief_bench();
+    idle_message_worker(&mut bench);
+    chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
+    let delivery = crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap();
+    let message = delivery["message_id"].as_str().unwrap().to_string();
+    assert!(!bench.raised().iter().any(|id| id.starts_with("chief-message-")), "{:?}", bench.raised());
+    assert!(todays_audit_events().iter().any(|line| line["event"] == "chief.message_submitting" && line["message"] == message.as_str()));
+    let state: String = bench.registry.teams.as_ref().unwrap().query_row("SELECT state FROM chief_inbox WHERE id=?1",[&message],|row|row.get(0)).unwrap();
+    assert_eq!(state, "submitting");
+}
+
+#[test]
+fn a_chief_started_session_raises_no_banner_but_keeps_its_audit_record() {
+    let mut bench = admitted_chief_bench();
+    let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
+    let requested = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
+    reserve_fresh_session(&mut bench, &todo).unwrap();
+    assert!(!bench.raised().iter().any(|id| id.starts_with("chief-session-")), "{:?}", bench.raised());
+    assert!(todays_audit_events().iter().any(|line| line["event"] == "chief.session_started" && line["request"] == requested["request"]));
+}
+
+#[test]
+fn a_chief_decision_still_raises_a_banner_after_routine_coordination() {
+    let mut bench = admitted_chief_bench();
+    idle_message_worker(&mut bench);
+    chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
+    crate::teams::request(&mut bench.registry, 40, AgentAction::Receive).unwrap().result.unwrap();
+    let before = bench.raised().iter().filter(|id| id.starts_with("chief-decision-")).count();
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::Decision {
+        key: "install-dependency".into(), question: "May project-a add a dependency?".into(), recommendation: "Approve it.".into(),
+    }}).unwrap().result.unwrap();
+    bench.registry.tick_queues();
+    let decisions = bench.raised().into_iter().filter(|id| id.starts_with("chief-decision-")).collect::<Vec<_>>();
+    assert_eq!(decisions.len(), before + 1, "{decisions:?}");
+    assert_eq!(bench.notice_title(decisions.last().unwrap()).as_deref(), Some("Chief · host decision needed"));
+}
+
+#[test]
+fn the_active_chiefs_blocked_reports_keep_the_ordinary_daily_request_bound() {
+    let mut bench = team_bench();
+    enable(&mut bench, SESSION_A);
+    let mut todos = cockpit::todo::TodoList::load();
+    for number in 0..64 {
+        let raw = json!({"action": "blocked", "text": format!("Failure {number}"), "why": "Broken", "request_id": format!("{number:012x}")});
+        bench.registry.request_from("todo-update", &raw.to_string(), 10).unwrap();
+        assert_eq!(todos.apply_updates(), 1);
+    }
+    let raw = json!({"action": "blocked", "text": "Overflow", "why": "Broken", "request_id": "abcdef123456"});
+    let error = bench.registry.request_from("todo-update", &raw.to_string(), 10).unwrap_err();
+    assert!(error.contains("too many retained todo requests"), "{error}");
 }

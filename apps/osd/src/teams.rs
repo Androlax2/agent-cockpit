@@ -462,29 +462,23 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     if matches!(kind, "handoff" | "recruit") && result.as_ref().is_ok_and(|reply| reply.result.is_ok()) {
         start_spawns(registry)?;
     }
+    // Routine coordination stays in the log, the audit and the Chief's records: banners are for
+    // what needs Theo (decisions, host faults, approvals).
     if let Ok(reply) = &result && let Ok(delivery) = &reply.result && matches!(delivery["envelope"]["kind"].as_str(),Some("chief_message"|"chief_todo")) {
         let message = &delivery["envelope"];
+        let project = sender.project.rsplit('/').next().unwrap_or(&sender.project);
+        cockpit::util::log_as("daemon","INFO",&format!("chief: sending message {} to {} in {project}",message["message_id"].as_str().unwrap_or(""),sender.session_id));
         cockpit::audit::record("daemon","chief.message_submitting","ok",json!({"message":message["message_id"],"session":sender.session_id,"reason":message["reason"]}));
-        registry.banners.raise_notice(&crate::registry::Notice {
-            id:format!("chief-message-{}",message["message_id"].as_str().unwrap_or("")),
-            title:format!("Chief · sending a message to {}",sender.project.rsplit('/').next().unwrap_or(&sender.project)),
-            message:format!("{}. No permission has been granted.",cockpit::approval::escape_hiding(message["reason"].as_str().unwrap_or("Coordination"),"","")),
-        });
     }
     result
 }
 
-/// Settles the Chief's request once the queue reserved its fresh session, and tells Theo.
+/// Settles the Chief's request once the queue reserved its fresh session; the log and audit keep it.
 fn chief_session_started(registry: &mut Registry, task: &cockpit::teams::TaskKey, request: &str, reason: &str, token: &str) -> Result<(), TeamError> {
     cockpit::chief::store::mark_session_started(registry.teams.as_ref().expect("reserved above"), request, token, now_ms())?;
     let project = task.project.rsplit('/').next().unwrap_or(&task.project);
     cockpit::util::log_as("daemon", "INFO", &format!("chief: fresh session reserved for {} in {project}: {reason}", task.task_id));
     cockpit::audit::record("daemon", "chief.session_started", "ok", json!({"request": request, "task_id": task.task_id, "project": task.project, "reason": reason}));
-    registry.banners.raise_notice(&crate::registry::Notice {
-        id: format!("chief-session-{request}"),
-        title: format!("Chief · started a session in {project}"),
-        message: format!("For todo {}: {}. No permission has been granted.", task.task_id, cockpit::approval::escape_hiding(reason, "", "")),
-    });
     Ok(())
 }
 

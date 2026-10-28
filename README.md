@@ -62,7 +62,7 @@ The Teams and Chief tab badges: amber for what needs you, otherwise the number o
 
 Todo's title-and-notes form supports `CMD+V` for clipboard images. PNGs are kept in `~/.local/state/cockpit/todo-images/`, readable but not writable by sessions. Deleting an image marker drops it; unreferenced images are removed after an hour. A handed-off session reads the images through `cockpit-todo show`.
 
-Cross-project work uses `cockpit-todo add … --project <name>` and appears queued with its originating project in the details. It is a collaborator request, never your authorization. `--after <id>` (or `cockpit-todo after <id> <other>…`) waits for prerequisites and forwards their completion summaries. `cockpit-todo propose … --project <name>` instead waits for approval. A reporting project keeps at most three such filings open per target project; the session holding the active Chief grant, which the daemon verifies, keeps ten (other sessions of its project still three). Handing work off starts a background card without changing the viewed session. The queue picks one item at a time by priority after five idle minutes, excluding the viewed session; design work routes to a Designer.
+Cross-project work uses `cockpit-todo add … --project <name>` and appears queued with its originating project in the details. It is a collaborator request, never your authorization. `--after <id>` (or `cockpit-todo after <id> <other>…`) waits for prerequisites and forwards their completion summaries. `cockpit-todo propose … --project <name>` instead waits for approval. A reporting project keeps at most three such filings open per target project; the session holding the active Chief grant, which the daemon verifies, keeps 100 (other sessions of its project still three). Handing work off starts a background card without changing the viewed session. The queue picks one item at a time by priority after five idle minutes, excluding the viewed session; design work routes to a Designer.
 
 Setup blocks use `cockpit-todo blocked '<what>' --why '<what stopped it>'`; problems in greywall or greyproxy's own code use `cockpit-todo stack <repo> '<title>' --why '<why>' --kind <kind>`. Reports retain their originating session and are framed as data. Duplicate open reports are coalesced, with caps of three open and five daily per reporting project. Finishing a report or cross-project item notifies its original session through the prompt queue; an ended session receives it when resumed. Unknown sessions or missing clones receive nothing (`cockpit logs` explains why).
 
@@ -318,8 +318,8 @@ invalid value refuses every request until you fix it. The queue's next pass then
 usual, with your default agent and the usual queue prompt; every other queue check still
 applies, and the session gets no extra permission. A request the queue does not act on within
 10 minutes lapses. Each request and start is logged and audited
-(`chief.session_start_requested`, `chief.session_started`), and a banner tells you when a
-session starts. A refused fresh start now names its reason in the log.
+(`chief.session_start_requested`, `chief.session_started`); a start raises no banner, the log
+and audit keep it. A refused fresh start now names its reason in the log.
 
 ### Giving an idle session a todo or a message
 
@@ -340,8 +340,8 @@ the host labels it as the Chief's, not Theo's, and appends that boundary itself.
 wait per session, at most 20 an hour across projects. The native inbox admits it only at an idle
 boundary, never over a permission or question form, a restart, or Theo's queued input. It can
 resume the session's existing task without reassigning it. A native receipt proves admission,
-not task completion; an uncertain delivery is never resent. Requests are audited, a banner says
-when a message is being sent, and Chief context records show its delivery state.
+not task completion; an uncertain delivery is never resent. Requests are logged and audited without a
+banner, and Chief context records show its delivery state.
 
 Gifts and unclaimed messages lapse after ten minutes and are bound to the session runtime they
 named: a restarted conversation does not inherit them. Neither action wakes a sleeping session.

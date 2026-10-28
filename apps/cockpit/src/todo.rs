@@ -60,7 +60,7 @@ const DONE_KEPT_DAYS: i64 = 7;
 const ELSEWHERE_OPEN_MAX: usize = 3;
 /// The cap for add/propose --project from the active Chief: the daemon stamps `chief_epoch` only
 /// after verifying the sender holds the active grant, so another session of its project keeps 3.
-const CHIEF_ELSEWHERE_OPEN_MAX: usize = 10;
+const CHIEF_ELSEWHERE_OPEN_MAX: usize = 100;
 /// Updates read per apply: the rest of a flood is dropped, and logged.
 const APPLY_MAX_LINES: usize = 200;
 
