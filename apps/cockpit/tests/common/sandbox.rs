@@ -3,11 +3,11 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -21,7 +21,10 @@ pub const ANSWERS_KEY: &str = "-home-theo-IdeaProjects-proj-a";
 
 /// The dotfiles checkout these tests belong to.
 pub fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
 }
 
 /// config/bin/.local/bin: the wrappers and scripts on Theo's PATH.
@@ -36,7 +39,9 @@ pub fn waybar_scripts() -> PathBuf {
 /// SESSION_STATE_HOOK points the hook tests at another copy, such as the one in .handoff/claude
 /// before it is installed (config/claude is read-only for Claude inside the sandbox).
 pub fn hook() -> PathBuf {
-    std::env::var("SESSION_STATE_HOOK").map(PathBuf::from).unwrap_or_else(|_| repo().join("config/claude/.claude/hooks/session-state.sh"))
+    std::env::var("SESSION_STATE_HOOK")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| repo().join("config/claude/.claude/hooks/session-state.sh"))
 }
 
 /// An executable file with `content`, written by a short-lived `sh`, never by this process: tests
@@ -47,14 +52,37 @@ pub fn write_executable(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();
     }
-    let mut writer = Command::new("sh").args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"]).arg(path).stdin(Stdio::piped()).spawn().unwrap();
-    writer.stdin.take().unwrap().write_all(content.as_bytes()).unwrap();
-    assert!(writer.wait().unwrap().success(), "cannot write {}", path.display());
+    let mut writer = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(content.as_bytes())
+        .unwrap();
+    assert!(
+        writer.wait().unwrap().success(),
+        "cannot write {}",
+        path.display()
+    );
 }
 
 /// A copy of an executable, made by `cp` for the same reason as `write_executable`.
 pub fn copy_executable(from: &Path, to: &Path) {
-    assert!(Command::new("cp").arg(from).arg(to).status().unwrap().success(), "cannot copy {}", from.display());
+    assert!(
+        Command::new("cp")
+            .arg(from)
+            .arg(to)
+            .status()
+            .unwrap()
+            .success(),
+        "cannot copy {}",
+        from.display()
+    );
 }
 
 pub struct Sandbox {
@@ -70,8 +98,14 @@ pub struct Sandbox {
 
 impl Sandbox {
     pub fn new() -> Sandbox {
-        let root = std::env::temp_dir().join(format!("cockpit-test-{}", cockpit::util::token_hex(6)));
-        let (home, runtime, state, shims) = (root.join("home"), root.join("runtime"), root.join("state"), root.join("shims"));
+        let root =
+            std::env::temp_dir().join(format!("cockpit-test-{}", cockpit::util::token_hex(6)));
+        let (home, runtime, state, shims) = (
+            root.join("home"),
+            root.join("runtime"),
+            root.join("state"),
+            root.join("shims"),
+        );
         for path in [&home, &runtime, &state, &shims] {
             fs::create_dir_all(path).unwrap();
         }
@@ -85,15 +119,29 @@ impl Sandbox {
         }
         let local_bin = home.join(".local/bin");
         fs::create_dir_all(&local_bin).unwrap();
-        for name in ["cockpit", "cockpit-sidebar", "osd", "osd-show", "claude-audit"] {
+        for name in [
+            "cockpit",
+            "cockpit-sidebar",
+            "osd",
+            "osd-show",
+            "claude-audit",
+        ] {
             symlink(bin().join(name), local_bin.join(name)).unwrap();
         }
-        let path = format!("{}:{}:{}", shims.display(), local_bin.display(), std::env::var("PATH").unwrap_or_default());
+        let path = format!(
+            "{}:{}:{}",
+            shims.display(),
+            local_bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
         let env = HashMap::from([
             ("HOME".to_string(), home.display().to_string()),
             ("XDG_RUNTIME_DIR".into(), runtime.display().to_string()),
             ("XDG_STATE_HOME".into(), state.display().to_string()),
-            ("XDG_DATA_HOME".into(), home.join(".local/share").display().to_string()),
+            (
+                "XDG_DATA_HOME".into(),
+                home.join(".local/share").display().to_string(),
+            ),
             // Wins over XDG_STATE_HOME in the cockpit's tools, and opencode sessions set it.
             ("COCKPIT_STATE_HOME".into(), state.display().to_string()),
             ("PATH".into(), path),
@@ -103,23 +151,47 @@ impl Sandbox {
             ("CLAUDE_ANSWERS_KEY".into(), ANSWERS_KEY.to_string()),
             ("CLAUDE_AUDIT_JOURNAL".into(), "off".to_string()),
         ]);
-        let sandbox = Sandbox { root, home, runtime, state, shims, log, env };
+        let sandbox = Sandbox {
+            root,
+            home,
+            runtime,
+            state,
+            shims,
+            log,
+            env,
+        };
         // Model an installed cockpit: legacy-path tests exercise the migration aliases too.
-        let migration = Command::new("python3").arg(repo().join("tools/migrate-cockpit-names.py")).arg("--apply")
-            .envs(&sandbox.env).output().unwrap();
-        assert!(migration.status.success(), "{}", String::from_utf8_lossy(&migration.stderr));
+        let migration = Command::new("python3")
+            .arg(repo().join("tools/migrate-cockpit-names.py"))
+            .arg("--apply")
+            .envs(&sandbox.env)
+            .output()
+            .unwrap();
+        assert!(
+            migration.status.success(),
+            "{}",
+            String::from_utf8_lossy(&migration.stderr)
+        );
         sandbox
     }
 
     /// A fake command. `body` is bash; $SHIM_LOG receives one line per call by convention.
     pub fn shim(&self, name: &str, body: &str) {
-        write_executable(&self.shims.join(name), &format!("#!/usr/bin/env bash\necho \"{name} $*\" >> \"$SHIM_LOG\"\n{body}\n"));
+        write_executable(
+            &self.shims.join(name),
+            &format!("#!/usr/bin/env bash\necho \"{name} $*\" >> \"$SHIM_LOG\"\n{body}\n"),
+        );
     }
 
     /// The logged calls of one command, "name arguments" each.
     pub fn calls(&self, name: &str) -> Vec<String> {
         let prefix = format!("{name} ");
-        fs::read_to_string(&self.log).unwrap_or_default().lines().filter(|line| line.starts_with(&prefix)).map(str::to_string).collect()
+        fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.starts_with(&prefix))
+            .map(str::to_string)
+            .collect()
     }
 
     /// For commands the code runs in the background: their log lines arrive a little later.
@@ -143,28 +215,70 @@ impl Sandbox {
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, extra: &[(&str, &str)]) -> Command {
         let mut command = Command::new(program);
         // New launchers export canonical settings; tests must not inherit the caller's paths/key.
-        for name in ["COCKPIT_APPROVAL_ID", "COCKPIT_ANSWERS_KEY", "COCKPIT_ANSWERS_DIR", "COCKPIT_RUNS_DIR", "COCKPIT_REMOTE_DIR", "COCKPIT_REMOTE_ADDRESS",
-                     "COCKPIT_TODO_PATH", "COCKPIT_TODO_UPDATES", "COCKPIT_DESIGNS_DIR", "COCKPIT_DOTFILES_LIVE", "COCKPIT_DOTFILES_WORK",
-                     "COCKPIT_GREYWALL_WORK", "COCKPIT_GREYPROXY_WORK", "COCKPIT_REVIEWS_FIXTURE", "COCKPIT_HEALTH_COCKPIT", "COCKPIT_HEALTH_DOTFILES"] {
+        for name in [
+            "COCKPIT_APPROVAL_ID",
+            "COCKPIT_ANSWERS_KEY",
+            "COCKPIT_ANSWERS_DIR",
+            "COCKPIT_RUNS_DIR",
+            "COCKPIT_REMOTE_DIR",
+            "COCKPIT_REMOTE_ADDRESS",
+            "COCKPIT_TODO_PATH",
+            "COCKPIT_TODO_UPDATES",
+            "COCKPIT_DESIGNS_DIR",
+            "COCKPIT_DOTFILES_LIVE",
+            "COCKPIT_DOTFILES_WORK",
+            "COCKPIT_GREYWALL_WORK",
+            "COCKPIT_GREYPROXY_WORK",
+            "COCKPIT_REVIEWS_FIXTURE",
+            "COCKPIT_HEALTH_COCKPIT",
+            "COCKPIT_HEALTH_DOTFILES",
+        ] {
             command.env_remove(name);
         }
-        command.envs(&self.env).envs(extra.iter().copied()).stdin(Stdio::null());
+        command
+            .envs(&self.env)
+            .envs(extra.iter().copied())
+            .stdin(Stdio::null());
         command
     }
 
     /// Runs `program arguments` to the end, output captured.
-    pub fn run(&self, program: impl AsRef<std::ffi::OsStr>, arguments: &[&str], extra: &[(&str, &str)]) -> Output {
-        self.command(program, extra).args(arguments).output().unwrap()
+    pub fn run(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        arguments: &[&str],
+        extra: &[(&str, &str)],
+    ) -> Output {
+        self.command(program, extra)
+            .args(arguments)
+            .output()
+            .unwrap()
     }
 
     /// Like `run`, with `input` on stdin.
-    pub fn run_with_input(&self, program: impl AsRef<std::ffi::OsStr>, arguments: &[&str], extra: &[(&str, &str)], input: &str) -> Output {
+    pub fn run_with_input(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        arguments: &[&str],
+        extra: &[(&str, &str)],
+        input: &str,
+    ) -> Output {
         use std::io::Write;
-        let mut child = self.command(program, extra).args(arguments).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().unwrap();
+        let mut child = self
+            .command(program, extra)
+            .args(arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         if let Err(error) = child.stdin.take().unwrap().write_all(input.as_bytes()) {
             // Commands can reject a request before consuming stdin; keep their diagnostics.
-            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "cannot write child stdin: {error}");
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe,
+                "cannot write child stdin: {error}"
+            );
         }
         child.wait_with_output().unwrap()
     }
@@ -182,12 +296,21 @@ impl Sandbox {
 
     /// The same, answering `context` as the verified session `session_id`.
     pub fn team_socket_as(&self, session_id: &str, delivery: serde_json::Value) -> TeamRequests {
-        self.team_socket_with_context(serde_json::json!({"session_id": session_id, "members": []}), delivery)
+        self.team_socket_with_context(
+            serde_json::json!({"session_id": session_id, "members": []}),
+            delivery,
+        )
     }
 
-    pub fn team_socket_with_context(&self, context: serde_json::Value, delivery: serde_json::Value) -> TeamRequests {
+    pub fn team_socket_with_context(
+        &self,
+        context: serde_json::Value,
+        delivery: serde_json::Value,
+    ) -> TeamRequests {
         use std::io::{Read, Write};
-        let source = self.root.join(format!("team-{}.sock", cockpit::util::token_hex(4)));
+        let source = self
+            .root
+            .join(format!("team-{}.sock", cockpit::util::token_hex(4)));
         let listener = std::os::unix::net::UnixListener::bind(&source).unwrap();
         let answers = self.runtime.join("cockpit-answers").join(ANSWERS_KEY);
         fs::create_dir_all(&answers).unwrap();
@@ -199,12 +322,22 @@ impl Sandbox {
             for mut stream in listener.incoming().flatten() {
                 let mut text = String::new();
                 let _ = stream.read_to_string(&mut text);
-                let Ok(request) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
-                let result = if request["action"] == "receive" { pending.take().unwrap_or(serde_json::Value::Null) }
-                             else if request["action"] == "context" { context.clone() }
-                             else { serde_json::json!({"status": "recorded"}) };
+                let Ok(request) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    continue;
+                };
+                let result = if request["action"] == "receive" {
+                    pending.take().unwrap_or(serde_json::Value::Null)
+                } else if request["action"] == "context" {
+                    context.clone()
+                } else {
+                    serde_json::json!({"status": "recorded"})
+                };
                 recorded.lock().unwrap().push(request);
-                let _ = stream.write_all(serde_json::json!({"request_id": "x", "result": {"Ok": result}}).to_string().as_bytes());
+                let _ = stream.write_all(
+                    serde_json::json!({"request_id": "x", "result": {"Ok": result}})
+                        .to_string()
+                        .as_bytes(),
+                );
             }
         });
         requests
@@ -212,7 +345,11 @@ impl Sandbox {
 
     /// Theo's answers to this sandbox's project, "runs" or "guides" (cockpit::approval::answers_dir).
     pub fn answers(&self, kind: &str) -> PathBuf {
-        let directory = self.runtime.join("cockpit-answers").join(ANSWERS_KEY).join(kind);
+        let directory = self
+            .runtime
+            .join("cockpit-answers")
+            .join(ANSWERS_KEY)
+            .join(kind);
         fs::create_dir_all(&directory).unwrap();
         directory
     }
@@ -251,16 +388,32 @@ impl WaitingProcess {
         Self::with_environment(name, arguments, directory, &[])
     }
 
-    pub fn with_environment(name: &str, arguments: &[&str], directory: &Path, environment: &[(&str, &str)]) -> Self {
-        let mut child = Command::new("bash").args(["-c", "echo; read -r -t 60", name]).args(arguments)
-            .current_dir(directory).envs(environment.iter().copied()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    pub fn with_environment(
+        name: &str,
+        arguments: &[&str],
+        directory: &Path,
+        environment: &[(&str, &str)],
+    ) -> Self {
+        let mut child = Command::new("bash")
+            .args(["-c", "echo; read -r -t 60", name])
+            .args(arguments)
+            .current_dir(directory)
+            .envs(environment.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         wait_until_exec_finished(&mut child);
         Self(child)
     }
 
-    pub fn id(&self) -> String { self.0.id().to_string() }
+    pub fn id(&self) -> String {
+        self.0.id().to_string()
+    }
 
-    pub fn is_alive(&mut self) -> bool { self.0.try_wait().unwrap().is_none() }
+    pub fn is_alive(&mut self) -> bool {
+        self.0.try_wait().unwrap().is_none()
+    }
 }
 
 /// spawn() returns before the kernel publishes the new /proc/<pid>/cmdline, which then reads
@@ -268,8 +421,14 @@ impl WaitingProcess {
 pub fn wait_until_exec_finished(child: &mut Child) {
     use std::io::Read;
     let mut ready = [0u8];
-    child.stdout.take().expect("child stdout is not piped").read_exact(&mut ready)
-        .unwrap_or_else(|error| panic!("process {} exited before it was ready: {error}", child.id()));
+    child
+        .stdout
+        .take()
+        .expect("child stdout is not piped")
+        .read_exact(&mut ready)
+        .unwrap_or_else(|error| {
+            panic!("process {} exited before it was ready: {error}", child.id())
+        });
 }
 
 impl Drop for WaitingProcess {
@@ -302,11 +461,27 @@ pub struct Listener {
 impl Listener {
     pub fn start(fifo: &Path) -> Listener {
         let path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
-        let reader = Command::new("cat").arg(fifo).stdout(Stdio::piped()).spawn().unwrap();
+        assert_eq!(
+            unsafe { libc::mkfifo(path.as_ptr(), 0o600) },
+            0,
+            "mkfifo {}",
+            fifo.display()
+        );
+        let reader = Command::new("cat")
+            .arg(fifo)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         let writer = fs::OpenOptions::new().write(true).open(fifo).unwrap();
-        let holder = Command::new("sleep").arg("30").stdout(writer).spawn().unwrap();
-        Listener { reader: Some(reader), holder }
+        let holder = Command::new("sleep")
+            .arg("30")
+            .stdout(writer)
+            .spawn()
+            .unwrap();
+        Listener {
+            reader: Some(reader),
+            holder,
+        }
     }
 
     /// Closes the fifo and returns everything written to it.
@@ -346,11 +521,16 @@ impl ReportSocket {
             for mut stream in listener.incoming().flatten() {
                 let mut text = String::new();
                 let _ = stream.read_to_string(&mut text);
-                kept.lock().unwrap().extend(text.lines().map(str::to_string));
+                kept.lock()
+                    .unwrap()
+                    .extend(text.lines().map(str::to_string));
                 let _ = stream.write_all(reply.as_bytes());
             }
         });
-        ReportSocket { path: path.to_path_buf(), lines }
+        ReportSocket {
+            path: path.to_path_buf(),
+            lines,
+        }
     }
 
     /// The lines received so far, waiting up to `timeout` for the first one.

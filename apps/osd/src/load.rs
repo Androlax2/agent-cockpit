@@ -13,7 +13,10 @@ thread_local! {
 }
 
 pub fn record_spawn(program: &str, took: Duration) {
-    let name = std::path::Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or("other");
+    let name = std::path::Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("other");
     SPAWNS.with(|spawns| spawns.borrow_mut().record(name, took));
 }
 
@@ -36,7 +39,8 @@ pub const ALERT_EVERY: Duration = Duration::from_secs(3600);
 
 /// Whether a minute this busy deserves a banner, given when the last one was shown.
 pub fn should_alert(busy_percent: f64, since_last_alert: Option<Duration>) -> bool {
-    busy_percent > BUSY_ALERT_PERCENT && since_last_alert.is_none_or(|elapsed| elapsed >= ALERT_EVERY)
+    busy_percent > BUSY_ALERT_PERCENT
+        && since_last_alert.is_none_or(|elapsed| elapsed >= ALERT_EVERY)
 }
 const KINDS_SHOWN: usize = 6;
 
@@ -58,21 +62,32 @@ impl LoadMeter {
 
     /// The share of `elapsed` spent busy, in percent.
     pub fn busy_percent(&self, elapsed: Duration) -> f64 {
-        if elapsed.is_zero() { return 0.0; }
+        if elapsed.is_zero() {
+            return 0.0;
+        }
         100.0 * self.busy().as_secs_f64() / elapsed.as_secs_f64()
     }
 
     /// One line: total busy time, then the costliest kinds with their counts.
     pub fn summary(&self, elapsed: Duration) -> String {
-        format!("load over {}s: busy {}ms ({:.1}%); {}", elapsed.as_secs(), self.busy().as_millis(),
-                self.busy_percent(elapsed), self.listed())
+        format!(
+            "load over {}s: busy {}ms ({:.1}%); {}",
+            elapsed.as_secs(),
+            self.busy().as_millis(),
+            self.busy_percent(elapsed),
+            self.listed()
+        )
     }
 
     fn listed(&self) -> String {
         let mut kinds: Vec<_> = self.by_kind.iter().collect();
         kinds.sort_by(|left, right| right.1.1.cmp(&left.1.1).then(left.0.cmp(right.0)));
-        kinds.iter().take(KINDS_SHOWN)
-            .map(|(kind, (count, took))| format!("{kind} {count}x {}ms", took.as_millis())).collect::<Vec<_>>().join(", ")
+        kinds
+            .iter()
+            .take(KINDS_SHOWN)
+            .map(|(kind, (count, took))| format!("{kind} {count}x {}ms", took.as_millis()))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub fn clear(&mut self) {
@@ -83,10 +98,22 @@ impl LoadMeter {
 /// The kind of a request: a JSON request's "action" or "request" tag, else a line's first word.
 /// Sandboxes write these requests, so anything but a short snake_case word counts as "other".
 pub fn kind_of(text: &str) -> String {
-    let tagged = serde_json::from_str::<Value>(text).ok()
-        .and_then(|request| ["action", "request"].iter().find_map(|tag| request.get(*tag).and_then(Value::as_str).map(str::to_string)));
+    let tagged = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|request| {
+            ["action", "request"].iter().find_map(|tag| {
+                request
+                    .get(*tag)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        });
     let kind = tagged.unwrap_or_else(|| text.split_whitespace().next().unwrap_or("").to_string());
-    let is_word = !kind.is_empty() && kind.len() <= 32 && kind.bytes().all(|byte| byte.is_ascii_lowercase() || byte == b'_' || byte == b'-');
+    let is_word = !kind.is_empty()
+        && kind.len() <= 32
+        && kind
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_' || byte == b'-');
     if is_word { kind } else { "other".into() }
 }
 
@@ -100,8 +127,10 @@ mod tests {
         meter.record("team:native_telemetry", Duration::from_millis(4));
         meter.record("team:native_telemetry", Duration::from_millis(4));
         meter.record("tick", Duration::from_millis(30));
-        assert_eq!(meter.summary(Duration::from_secs(60)),
-                   "load over 60s: busy 38ms (0.1%); tick 1x 30ms, team:native_telemetry 2x 8ms");
+        assert_eq!(
+            meter.summary(Duration::from_secs(60)),
+            "load over 60s: busy 38ms (0.1%); tick 1x 30ms, team:native_telemetry 2x 8ms"
+        );
     }
 
     #[test]
@@ -115,7 +144,10 @@ mod tests {
     fn a_minute_over_the_alert_share_raises_a_banner_at_most_hourly() {
         assert!(should_alert(30.0, None));
         assert!(!should_alert(20.0, None), "normal load with many agents");
-        assert!(!should_alert(30.0, Some(Duration::from_secs(600))), "shown ten minutes ago");
+        assert!(
+            !should_alert(30.0, Some(Duration::from_secs(600))),
+            "shown ten minutes ago"
+        );
         assert!(should_alert(30.0, Some(ALERT_EVERY)));
     }
 
@@ -130,7 +162,10 @@ mod tests {
 
     #[test]
     fn a_request_kind_comes_from_its_tag_or_first_word() {
-        assert_eq!(kind_of(r#"{"action":"native_telemetry","sequence":1}"#), "native_telemetry");
+        assert_eq!(
+            kind_of(r#"{"action":"native_telemetry","sequence":1}"#),
+            "native_telemetry"
+        );
         assert_eq!(kind_of(r#"{"request":"reserve_task"}"#), "reserve_task");
         assert_eq!(kind_of("session {\"session\":\"x\"}"), "session");
     }

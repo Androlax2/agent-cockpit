@@ -21,7 +21,11 @@ impl Handoff {
         let group = repo.join(".handoff/claude");
         fs::create_dir_all(&group).unwrap();
         fs::write(group.join("hook.sh"), "new\n").unwrap();
-        let handoff = Handoff { sandbox, repo, group };
+        let handoff = Handoff {
+            sandbox,
+            repo,
+            group,
+        };
         handoff.manifest("hook.sh\tconfig/claude/hook.sh\techo ran >> after.log\n");
         handoff.sums();
         handoff
@@ -32,15 +36,31 @@ impl Handoff {
     }
 
     fn sums(&self) {
-        let output = Command::new("sha256sum").arg(self.group.join("hook.sh")).output().unwrap();
-        let digest = stdout(&output).split_whitespace().next().unwrap().to_string();
-        fs::write(self.group.join("SHA256SUMS"), format!("{digest}  hook.sh\n")).unwrap();
+        let output = Command::new("sha256sum")
+            .arg(self.group.join("hook.sh"))
+            .output()
+            .unwrap();
+        let digest = stdout(&output)
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string();
+        fs::write(
+            self.group.join("SHA256SUMS"),
+            format!("{digest}  hook.sh\n"),
+        )
+        .unwrap();
     }
 
     fn install(&self, answer: &str) -> Output {
         let script = repo().join("tools/handoff-install.sh");
         let handoff_repo = self.repo.display().to_string();
-        self.sandbox.run_with_input("bash", &[script.to_str().unwrap()], &[("HANDOFF_REPO", &handoff_repo)], answer)
+        self.sandbox.run_with_input(
+            "bash",
+            &[script.to_str().unwrap()],
+            &[("HANDOFF_REPO", &handoff_repo)],
+            answer,
+        )
     }
 
     fn installed(&self) -> String {
@@ -52,11 +72,20 @@ impl Handoff {
 fn installs_on_yes_runs_the_follow_up_once_and_cleans_up() {
     let handoff = Handoff::new();
     let output = handoff.install("y\n");
-    assert_eq!(output.status.code(), Some(0), "{}{}", stdout(&output), stderr(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
     assert!(stdout(&output).contains("+new"));
     assert!(stdout(&output).contains("then runs: echo ran >> after.log"));
     assert_eq!(handoff.installed(), "new\n");
-    assert_eq!(fs::read_to_string(handoff.repo.join("after.log")).unwrap(), "ran\n");
+    assert_eq!(
+        fs::read_to_string(handoff.repo.join("after.log")).unwrap(),
+        "ran\n"
+    );
     assert!(!handoff.group.exists());
 }
 
@@ -91,7 +120,12 @@ fn a_destination_outside_the_repository_is_refused() {
 #[test]
 fn an_early_child_exit_preserves_its_status_and_output() {
     let sandbox = Sandbox::new();
-    let output = sandbox.run_with_input("bash", &["-c", "printf 'out'; printf 'err' >&2; exit 23"], &[], &"y\n".repeat(1024 * 1024));
+    let output = sandbox.run_with_input(
+        "bash",
+        &["-c", "printf 'out'; printf 'err' >&2; exit 23"],
+        &[],
+        &"y\n".repeat(1024 * 1024),
+    );
     assert_eq!(output.status.code(), Some(23));
     assert_eq!(stdout(&output), "out");
     assert_eq!(stderr(&output), "err");

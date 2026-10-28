@@ -2,12 +2,16 @@
 //! three reports it prints for the manager: usage (the plan's usage, redrawn in the session pane),
 //! costs (the API-price estimate) and digest (the morning digest).
 
-
-use cockpit::app::{self, App, Key, Screen};
 use cockpit::app::refresh::{self, Changes, Schedule, Watcher};
+use cockpit::app::{self, App, Key, Screen};
 use cockpit::{costs, usage, util};
-use crossterm::event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
+use crossterm::event::{
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture,
+};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use crossterm::{cursor, execute};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -22,12 +26,26 @@ struct TerminalScreen {
 
 fn enter() -> io::Result<()> {
     enable_raw_mode()?; // Ctrl-C arrives as a key (same as q) instead of killing the column
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, EnableFocusChange, EnableBracketedPaste, cursor::Hide)
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableFocusChange,
+        EnableBracketedPaste,
+        cursor::Hide
+    )
 }
 
 fn leave() -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), DisableMouseCapture, DisableFocusChange, DisableBracketedPaste, LeaveAlternateScreen, cursor::Show)
+    execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        DisableFocusChange,
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        cursor::Show
+    )
 }
 
 impl Screen for TerminalScreen {
@@ -58,14 +76,24 @@ fn run() -> io::Result<()> {
         default_hook(info);
     }));
     enter()?;
-    let mut screen = TerminalScreen { terminal: Terminal::new(CrosstermBackend::new(io::stdout()))?, last_click: None };
+    let mut screen = TerminalScreen {
+        terminal: Terminal::new(CrosstermBackend::new(io::stdout()))?,
+        last_click: None,
+    };
     let mut app = App::new();
-    let _ = Command::new("cockpit").arg("sweep").stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let _ = Command::new("cockpit")
+        .arg("sweep")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     app.history.refresh();
     let mut watcher = match Watcher::new(refresh::inputs()) {
         Ok(watcher) => Some(watcher),
         Err(error) => {
-            util::log_event("WARN", &format!("sidebar input watch: {error}; using 250 ms polling"));
+            util::log_event(
+                "WARN",
+                &format!("sidebar input watch: {error}; using 250 ms polling"),
+            );
             None
         }
     };
@@ -76,21 +104,32 @@ fn run() -> io::Result<()> {
         let mut changes = match watcher.as_mut().map(Watcher::changes).transpose() {
             Ok(changes) => changes.unwrap_or_default(),
             Err(error) => {
-                util::log_event("WARN", &format!("sidebar input watch: {error}; using 250 ms polling"));
+                util::log_event(
+                    "WARN",
+                    &format!("sidebar input watch: {error}; using 250 ms polling"),
+                );
                 watcher = None;
-                Changes { refresh: true, immediate: true }
+                Changes {
+                    refresh: true,
+                    immediate: true,
+                }
             }
         };
         if repaired_at.elapsed() >= refresh::SAFETY_INTERVAL {
             let replacement = Watcher::new(refresh::inputs());
             match replacement {
                 Ok(replacement) => {
-                    if watcher.is_none() { util::log_event("INFO", "sidebar input watch restored"); }
+                    if watcher.is_none() {
+                        util::log_event("INFO", "sidebar input watch restored");
+                    }
                     watcher = Some(replacement);
                 }
                 Err(error) => {
                     if watcher.is_some() {
-                        util::log_event("WARN", &format!("sidebar input watch: {error}; using 250 ms polling"));
+                        util::log_event(
+                            "WARN",
+                            &format!("sidebar input watch: {error}; using 250 ms polling"),
+                        );
                     }
                     watcher = None;
                 }
@@ -131,7 +170,12 @@ fn run() -> io::Result<()> {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let result = match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    let result = match arguments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         [] => run().map_err(|error| error.to_string()),
         ["usage"] => usage::report_forever(),
         ["costs"] => costs::print_costs().map_err(|error| error.to_string()),

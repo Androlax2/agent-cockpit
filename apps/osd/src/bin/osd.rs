@@ -29,10 +29,13 @@
 //!     osd liveness <session> <pane>     whether the session runs: by id, by pane, or none
 //!     osd owns-pane <session> <pane> <server-pid>   exit 0 only for verified live ownership
 
-use osd::registry::{self, Banner, Banners, NOTICE_ID, Notice, RealSystem, Registry};
 use gtk4::prelude::*;
-use gtk4::{Align, Application, Box as GtkBox, CssProvider, GestureClick, Image, Label, Orientation, Window, gdk, glib, pango};
+use gtk4::{
+    Align, Application, Box as GtkBox, CssProvider, GestureClick, Image, Label, Orientation,
+    Window, gdk, glib, pango,
+};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+use osd::registry::{self, Banner, Banners, NOTICE_ID, Notice, RealSystem, Registry};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
@@ -80,15 +83,25 @@ fn report_load(registry: &Rc<RefCell<Registry>>) {
         meter.clear();
         report
     });
-    let level = if busy_percent > osd::load::BUSY_WARN_PERCENT { "WARN" } else { "INFO" };
-    cockpit::util::log_as("daemon", level, &format!("{summary}; commands run: {}", osd::load::take_spawns()));
+    let level = if busy_percent > osd::load::BUSY_WARN_PERCENT {
+        "WARN"
+    } else {
+        "INFO"
+    };
+    cockpit::util::log_as(
+        "daemon",
+        level,
+        &format!("{summary}; commands run: {}", osd::load::take_spawns()),
+    );
     let since_last_alert = LAST_LOAD_ALERT.with(|last| last.borrow().map(|at| at.elapsed()));
     if osd::load::should_alert(busy_percent, since_last_alert) {
         LAST_LOAD_ALERT.with(|last| *last.borrow_mut() = Some(std::time::Instant::now()));
         registry.borrow_mut().banners.raise_notice(&Notice {
             id: "osd-load".into(),
             title: format!("Cockpit daemon busy {busy_percent:.0}% of the last minute"),
-            message: format!("{summary}. A recent change may have made it poll too much; see the cockpit log."),
+            message: format!(
+                "{summary}. A recent change may have made it poll too much; see the cockpit log."
+            ),
         });
     }
 }
@@ -98,7 +111,11 @@ fn icon_dir() -> PathBuf {
 }
 
 fn layer_window(app: &Application, edge: Edge, margin: i32) -> Window {
-    let window = Window::builder().application(app).resizable(false).decorated(false).build();
+    let window = Window::builder()
+        .application(app)
+        .resizable(false)
+        .decorated(false)
+        .build();
     // No client-side decoration: its shadow margins would inflate the layer surface.
     window.add_css_class("osd-window"); // not "osd": GTK styles that class itself
     window.init_layer_shell();
@@ -130,7 +147,12 @@ fn banner_row(title: &str, message: &str, sticky: bool) -> GtkBox {
     icon.set_pixel_size(BANNER_ICON_SIZE);
     icon.set_valign(Align::Center);
     let label = |text: &str, class: &str| {
-        let label = Label::builder().label(text).xalign(0.0).max_width_chars(BANNER_MAX_CHARS).single_line_mode(true).build();
+        let label = Label::builder()
+            .label(text)
+            .xalign(0.0)
+            .max_width_chars(BANNER_MAX_CHARS)
+            .single_line_mode(true)
+            .build();
         label.set_ellipsize(pango::EllipsizeMode::End);
         label.add_css_class(class);
         label
@@ -160,7 +182,12 @@ impl GtkBanners {
         let window = layer_window(app, Edge::Top, 15);
         let column = GtkBox::new(Orientation::Vertical, BANNER_SPACING);
         window.set_child(Some(&column));
-        GtkBanners(Rc::new(RefCell::new(Stack { window, column, rows: HashMap::new(), timers: HashMap::new() })))
+        GtkBanners(Rc::new(RefCell::new(Stack {
+            window,
+            column,
+            rows: HashMap::new(),
+            timers: HashMap::new(),
+        })))
     }
 
     fn add(&self, key: &str, row: GtkBox, on_click: impl Fn() + 'static) {
@@ -179,14 +206,20 @@ impl Banners for GtkBanners {
     fn raise_banner(&mut self, banner: &Banner) {
         let session = banner.session.clone();
         let this = self.clone();
-        self.add(&session.clone(), banner_row(&banner.title, &banner.message, banner.sticky), move || {
-            // show takes about 60 ms: waited for on a thread of its own, the banner goes at once.
-            let shown = session.clone();
-            std::thread::spawn(move || {
-                let _ = std::process::Command::new("cockpit").args(["show", &shown]).status();
-            });
-            this.remove(&session);
-        });
+        self.add(
+            &session.clone(),
+            banner_row(&banner.title, &banner.message, banner.sticky),
+            move || {
+                // show takes about 60 ms: waited for on a thread of its own, the banner goes at once.
+                let shown = session.clone();
+                std::thread::spawn(move || {
+                    let _ = std::process::Command::new("cockpit")
+                        .args(["show", &shown])
+                        .status();
+                });
+                this.remove(&session);
+            },
+        );
         if !banner.sticky {
             let this = self.clone();
             let key = banner.session.clone();
@@ -194,7 +227,10 @@ impl Banners for GtkBanners {
                 this.0.borrow_mut().timers.remove(&key);
                 this.remove(&key);
             });
-            self.0.borrow_mut().timers.insert(banner.session.clone(), timer);
+            self.0
+                .borrow_mut()
+                .timers
+                .insert(banner.session.clone(), timer);
         }
     }
 
@@ -204,7 +240,11 @@ impl Banners for GtkBanners {
         let key = format!("notice:{}", notice.id);
         let this = self.clone();
         let click_key = key.clone();
-        self.add(&key, banner_row(&notice.title, &notice.message, true), move || this.remove(&click_key));
+        self.add(
+            &key,
+            banner_row(&notice.title, &notice.message, true),
+            move || this.remove(&click_key),
+        );
     }
 
     fn drop_banner(&mut self, key: &str) {
@@ -219,7 +259,9 @@ impl Banners for GtkBanners {
 impl GtkBanners {
     fn remove(&self, key: &str) {
         let mut stack = self.0.borrow_mut();
-        let Some(row) = stack.rows.remove(key) else { return };
+        let Some(row) = stack.rows.remove(key) else {
+            return;
+        };
         if let Some(timer) = stack.timers.remove(key) {
             timer.remove();
         }
@@ -261,7 +303,12 @@ impl Island {
         row.append(&icon);
         row.append(&track);
         window.set_child(Some(&row));
-        Island { window, icon, fill, hide_timer: None }
+        Island {
+            window,
+            icon,
+            fill,
+            hide_timer: None,
+        }
     }
 }
 
@@ -272,7 +319,8 @@ fn show_island(island: &Rc<RefCell<Island>>, kind: &str, icon_file: &str, fracti
     }
     this.fill.add_css_class(kind);
     this.icon.set_from_file(Some(icon_dir().join(icon_file)));
-    this.fill.set_size_request((TRACK_WIDTH as f64 * fraction).round() as i32, 2);
+    this.fill
+        .set_size_request((TRACK_WIDTH as f64 * fraction).round() as i32, 2);
     this.window.present();
     if let Some(timer) = this.hide_timer.take() {
         timer.remove();
@@ -285,14 +333,21 @@ fn show_island(island: &Rc<RefCell<Island>>, kind: &str, icon_file: &str, fracti
     }));
 }
 
-fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Island>>) {
+fn handle(
+    line: &str,
+    from_host: bool,
+    registry: &Rc<RefCell<Registry>>,
+    island: &Rc<RefCell<Island>>,
+) {
     let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
     let rest = rest.trim();
     // Sandboxes send their reports and requests on the report socket, where the kernel names the
     // sender (security audit 2026-10-19, H3); on osd.fifo nothing of theirs is taken any more. The
     // FIFO stays because the health checks look for the daemon holding it.
     if !from_host && !command.is_empty() {
-        eprintln!("osd: {command:?} refused on the sandboxes' FIFO: sandboxes use the report socket");
+        eprintln!(
+            "osd: {command:?} refused on the sandboxes' FIFO: sandboxes use the report socket"
+        );
         return;
     }
     match command {
@@ -309,7 +364,10 @@ fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island:
             Ok(notice) => registry.borrow_mut().banners.raise_notice(&notice),
             Err(error) => eprintln!("osd: bad notice {rest:?}: {error}"),
         },
-        "notice-clear" if NOTICE_ID.is_match(rest) => registry.borrow_mut().banners.drop_banner(&format!("notice:{rest}")),
+        "notice-clear" if NOTICE_ID.is_match(rest) => registry
+            .borrow_mut()
+            .banners
+            .drop_banner(&format!("notice:{rest}")),
         "notice-clear" => {}
         "run-phase" => {
             let parts: Vec<&str> = rest.split_whitespace().collect();
@@ -318,7 +376,11 @@ fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island:
             }
         }
         "volume" | "mute" | "brightness" => {
-            let level = if rest.is_empty() { Some(0) } else { rest.parse::<i32>().ok().map(|level| level.clamp(0, 100)) };
+            let level = if rest.is_empty() {
+                Some(0)
+            } else {
+                rest.parse::<i32>().ok().map(|level| level.clamp(0, 100))
+            };
             let Some(level) = level else {
                 eprintln!("osd: bad level in {line:?}");
                 return;
@@ -335,7 +397,12 @@ fn handle(line: &str, from_host: bool, registry: &Rc<RefCell<Registry>>, island:
 
 /// The FIFO, opened read-write so the daemon never sees EOF when a writer closes.
 /// One command per line from a FIFO; `from_host` says whether it is the one sandboxes cannot open.
-fn listen(path: &std::path::Path, from_host: bool, registry: &Rc<RefCell<Registry>>, island: &Rc<RefCell<Island>>) {
+fn listen(
+    path: &std::path::Path,
+    from_host: bool,
+    registry: &Rc<RefCell<Registry>>,
+    island: &Rc<RefCell<Island>>,
+) {
     let fifo = match osd::fifo::open(path) {
         Ok(fifo) => fifo,
         Err(error) => {
@@ -355,12 +422,24 @@ fn listen(path: &std::path::Path, from_host: bool, registry: &Rc<RefCell<Registr
             buffer.extend_from_slice(&chunk[..count]);
         }
         if buffer.len() > FIFO_LINE_MAX && !buffer.contains(&b'\n') {
-            eprintln!("osd: a line of more than {FIFO_LINE_MAX} bytes on {}, dropped", if from_host { "the host FIFO" } else { "osd.fifo" });
+            eprintln!(
+                "osd: a line of more than {FIFO_LINE_MAX} bytes on {}, dropped",
+                if from_host {
+                    "the host FIFO"
+                } else {
+                    "osd.fifo"
+                }
+            );
             buffer.clear();
         }
         while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=end).collect();
-            handle(String::from_utf8_lossy(&line).trim(), from_host, &registry, &island);
+            handle(
+                String::from_utf8_lossy(&line).trim(),
+                from_host,
+                &registry,
+                &island,
+            );
         }
         glib::ControlFlow::Continue
     });
@@ -370,8 +449,14 @@ fn listen(path: &std::path::Path, from_host: bool, registry: &Rc<RefCell<Registr
 /// sandboxes' bind mount of it stays valid; bound here when started by hand.
 fn report_listener() -> std::io::Result<std::os::unix::net::UnixListener> {
     use std::os::fd::FromRawFd;
-    let ours = std::env::var("LISTEN_PID").ok().and_then(|pid| pid.parse::<u32>().ok()) == Some(std::process::id());
-    let count = std::env::var("LISTEN_FDS").ok().and_then(|count| count.parse::<i32>().ok()).unwrap_or(0);
+    let ours = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|pid| pid.parse::<u32>().ok())
+        == Some(std::process::id());
+    let count = std::env::var("LISTEN_FDS")
+        .ok()
+        .and_then(|count| count.parse::<i32>().ok())
+        .unwrap_or(0);
     if ours && count >= 1 {
         // SAFETY: systemd passes the listening socket as fd 3 (SD_LISTEN_FDS_START).
         return Ok(unsafe { std::os::unix::net::UnixListener::from_raw_fd(3) });
@@ -396,16 +481,23 @@ struct Received {
 /// One line per message: `session <json>` reports, whose focus target comes from the sender's
 /// ancestry, and session, run, guide and todo requests, answered "ok" or "refused: <why>".
 fn handle_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
-    let Received { mut stream, sender, text } = received;
+    let Received {
+        mut stream,
+        sender,
+        text,
+    } = received;
     for line in text.lines() {
         let (kind, rest) = line.split_once(' ').unwrap_or((line, ""));
         match kind {
             "session" => match registry::parse_session(rest) {
-                Ok(report) => { let _ = registry.borrow_mut().report_from(report, sender); }
+                Ok(report) => {
+                    let _ = registry.borrow_mut().report_from(report, sender);
+                }
                 Err(error) => eprintln!("osd: bad session report: {error}"),
             },
             // Explicit requests wait for acceptance; transport success alone says nothing about it.
-            "run-request" | "guide-request" | "todo-update" | "session-request" | "subscription-gate" => {
+            "run-request" | "guide-request" | "todo-update" | "session-request"
+            | "subscription-gate" => {
                 let reply = match registry.borrow_mut().request_from(kind, rest, sender) {
                     Ok(()) => "ok".to_string(),
                     Err(reason) => {
@@ -426,7 +518,13 @@ fn handle_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
 
 fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
     match report_listener() {
-        Ok(listener) => serve(listener, "report", registry, REPORT_MAX_BYTES, handle_connection),
+        Ok(listener) => serve(
+            listener,
+            "report",
+            registry,
+            REPORT_MAX_BYTES,
+            handle_connection,
+        ),
         Err(error) => eprintln!("osd: no report socket: {error}"),
     }
 }
@@ -434,36 +532,71 @@ fn listen_for_reports(registry: &Rc<RefCell<Registry>>) {
 /// One JSON team action per connection, answered with a TeamReply. The sender is the kernel's peer
 /// pid; nothing in the request names who sent it.
 fn handle_team_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
-    let Received { mut stream, sender, text } = received;
+    let Received {
+        mut stream,
+        sender,
+        text,
+    } = received;
     let reply = match serde_json::from_str::<cockpit::teams::AgentAction>(&text) {
         Ok(action) => osd::teams::request(&mut registry.borrow_mut(), sender, action),
-        Err(error) => Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, format!("invalid team action: {error}"))),
+        Err(error) => Err(cockpit::teams::TeamError::new(
+            cockpit::teams::ErrorCode::Invalid,
+            format!("invalid team action: {error}"),
+        )),
     };
-    let reply = reply.unwrap_or_else(|error| cockpit::teams::TeamReply { request_id: String::new(), result: Err(error) });
-    let _ = std::io::Write::write_all(&mut stream, format!("{}\n", serde_json::to_string(&reply).unwrap_or_default()).as_bytes());
+    let reply = reply.unwrap_or_else(|error| cockpit::teams::TeamReply {
+        request_id: String::new(),
+        result: Err(error),
+    });
+    let _ = std::io::Write::write_all(
+        &mut stream,
+        format!("{}\n", serde_json::to_string(&reply).unwrap_or_default()).as_bytes(),
+    );
 }
 
 /// The cockpit's approvals and views: refused for any peer outside the daemon's PID namespace.
 fn handle_team_host_connection(received: Received, registry: &Rc<RefCell<Registry>>) {
     use cockpit::teams::{ErrorCode, HostRequest, TeamError, TeamReply};
-    let Received { mut stream, sender, text } = received;
+    let Received {
+        mut stream,
+        sender,
+        text,
+    } = received;
     let reply = if !osd::teams::host_peer_allowed(&registry::Proc, &sender.to_string()) {
-        Err(TeamError::new(ErrorCode::Unauthorized, "team host controls are for the cockpit outside the sandbox"))
+        Err(TeamError::new(
+            ErrorCode::Unauthorized,
+            "team host controls are for the cockpit outside the sandbox",
+        ))
     } else {
         match serde_json::from_str::<HostRequest>(&text) {
             Ok(request) => osd::teams::host(&mut registry.borrow_mut(), sender, request),
-            Err(error) => Err(TeamError::new(ErrorCode::Invalid, format!("invalid team host request: {error}"))),
+            Err(error) => Err(TeamError::new(
+                ErrorCode::Invalid,
+                format!("invalid team host request: {error}"),
+            )),
         }
     };
-    let reply = reply.unwrap_or_else(|error| TeamReply { request_id: String::new(), result: Err(error) });
-    let _ = std::io::Write::write_all(&mut stream, serde_json::to_string(&reply).unwrap_or_default().as_bytes());
+    let reply = reply.unwrap_or_else(|error| TeamReply {
+        request_id: String::new(),
+        result: Err(error),
+    });
+    let _ = std::io::Write::write_all(
+        &mut stream,
+        serde_json::to_string(&reply).unwrap_or_default().as_bytes(),
+    );
 }
 
 fn listen_for_team_host(registry: &Rc<RefCell<Registry>>) {
     let path = cockpit::paths::team_host_socket();
     let _ = std::fs::remove_file(&path);
     match std::os::unix::net::UnixListener::bind(&path) {
-        Ok(listener) => serve(listener, "host", registry, 65_536, handle_team_host_connection),
+        Ok(listener) => serve(
+            listener,
+            "host",
+            registry,
+            65_536,
+            handle_team_host_connection,
+        ),
         Err(error) => eprintln!("osd: no team host socket, team approvals unavailable: {error}"),
     }
 }
@@ -473,8 +606,14 @@ fn listen_for_team_host(registry: &Rc<RefCell<Registry>>) {
 fn listen_for_teams(registry: &Rc<RefCell<Registry>>) {
     use std::os::unix::fs::DirBuilderExt;
     let path = cockpit::paths::team_agent_socket();
-    let folder = path.parent().expect("the team socket has a folder").to_path_buf();
-    let bound = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder)
+    let folder = path
+        .parent()
+        .expect("the team socket has a folder")
+        .to_path_buf();
+    let bound = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&folder)
         .and_then(|()| match std::fs::remove_file(&path) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
             _ => std::os::unix::net::UnixListener::bind(&path),
@@ -490,13 +629,28 @@ fn listen_for_teams(registry: &Rc<RefCell<Registry>>) {
     let answers = cockpit::paths::runtime_dir().join("claude-answers");
     for project in std::fs::read_dir(&answers).into_iter().flatten().flatten() {
         if let Err(error) = cockpit::teams::client::publish_socket(&path, &project.path()) {
-            eprintln!("osd: team socket not linked into {}: {error}", project.path().display());
+            eprintln!(
+                "osd: team socket not linked into {}: {error}",
+                project.path().display()
+            );
         }
     }
-    serve(listener, "team", registry, cockpit::teams::client::REQUEST_MAX, handle_team_connection);
+    serve(
+        listener,
+        "team",
+        registry,
+        cockpit::teams::client::REQUEST_MAX,
+        handle_team_connection,
+    );
 }
 
-fn serve(listener: std::os::unix::net::UnixListener, label: &'static str, registry: &Rc<RefCell<Registry>>, max_bytes: usize, handler: fn(Received, &Rc<RefCell<Registry>>)) {
+fn serve(
+    listener: std::os::unix::net::UnixListener,
+    label: &'static str,
+    registry: &Rc<RefCell<Registry>>,
+    max_bytes: usize,
+    handler: fn(Received, &Rc<RefCell<Registry>>),
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     let _ = listener.set_nonblocking(true);
@@ -516,13 +670,19 @@ fn serve(listener: std::os::unix::net::UnixListener, label: &'static str, regist
         let finished = finished.clone();
         glib_unix::unix_fd_add_local(raw, glib::IOCondition::IN, move |_, _| {
             while let Ok((stream, _)) = listener.accept() {
-                let Some(sender) = osd::fifo::peer_pid(&stream) else { continue };
+                let Some(sender) = osd::fifo::peer_pid(&stream) else {
+                    continue;
+                };
                 if readers.load(Ordering::SeqCst) >= REPORT_READERS_MAX {
-                    eprintln!("osd: {REPORT_READERS_MAX} report connections already being read, one from pid {sender} dropped");
+                    eprintln!(
+                        "osd: {REPORT_READERS_MAX} report connections already being read, one from pid {sender} dropped"
+                    );
                     continue;
                 }
                 let (finished, readers) = (finished.clone(), readers.clone());
-                let Ok(wake) = wake_writer.try_clone() else { continue };
+                let Ok(wake) = wake_writer.try_clone() else {
+                    continue;
+                };
                 readers.fetch_add(1, Ordering::SeqCst);
                 std::thread::spawn(move || {
                     let reply_end = stream.try_clone();
@@ -531,7 +691,11 @@ fn serve(listener: std::os::unix::net::UnixListener, label: &'static str, regist
                         eprintln!("osd: a report connection from pid {sender} dropped: {reason}");
                     }
                     if let (Ok(text), Ok(stream)) = (message, reply_end) {
-                        finished.lock().unwrap().push(Received { stream, sender, text });
+                        finished.lock().unwrap().push(Received {
+                            stream,
+                            sender,
+                            text,
+                        });
                         let _ = std::io::Write::write_all(&mut &wake, &[1]);
                     }
                     readers.fetch_sub(1, Ordering::SeqCst);
@@ -544,7 +708,10 @@ fn serve(listener: std::os::unix::net::UnixListener, label: &'static str, regist
     let wake_fd = wake_reader.as_raw_fd();
     glib_unix::unix_fd_add_local(wake_fd, glib::IOCondition::IN, move |_, _| {
         let mut drained = [0u8; 256];
-        while (&wake_reader).read(&mut drained).is_ok_and(|count| count > 0) {}
+        while (&wake_reader)
+            .read(&mut drained)
+            .is_ok_and(|count| count > 0)
+        {}
         let ready: Vec<Received> = std::mem::take(&mut *finished.lock().unwrap());
         for received in ready {
             let kind = format!("{label}:{}", osd::load::kind_of(&received.text));
@@ -557,10 +724,17 @@ fn serve(listener: std::os::unix::net::UnixListener, label: &'static str, regist
 fn activate(app: &Application) {
     let provider = CssProvider::new();
     provider.load_from_path(cockpit::paths::home().join(".config/osd/style.css"));
-    gtk4::style_context_add_provider_for_display(&gdk::Display::default().expect("a display"), &provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    gtk4::style_context_add_provider_for_display(
+        &gdk::Display::default().expect("a display"),
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
     let island = Rc::new(RefCell::new(Island::new(app)));
     let banners = GtkBanners::new(app);
-    let registry = Rc::new(RefCell::new(Registry::new(Box::new(RealSystem::new()), Box::new(banners))));
+    let registry = Rc::new(RefCell::new(Registry::new(
+        Box::new(RealSystem::new()),
+        Box::new(banners),
+    )));
     // Held for good: the daemon has no window most of the time.
     std::mem::forget(app.hold());
 
@@ -591,7 +765,12 @@ fn activate(app: &Application) {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match arguments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["classify"] => {
             let mut tail = String::new();
             let _ = std::io::stdin().read_to_string(&mut tail);
@@ -608,15 +787,25 @@ fn main() {
             println!("{verdict}");
         }
         ["owns-pane", session, pane, server] => {
-            std::process::exit(if registry::session_owns_pane_in(&registry::Proc, session, pane, server) { 0 } else { 1 });
+            std::process::exit(
+                if registry::session_owns_pane_in(&registry::Proc, session, pane, server) {
+                    0
+                } else {
+                    1
+                },
+            );
         }
         [] => {
-            let app = Application::builder().application_id("dotfiles.osd").build();
+            let app = Application::builder()
+                .application_id("dotfiles.osd")
+                .build();
             app.connect_activate(activate);
             app.run_with_args::<&str>(&[]);
         }
         _ => {
-            eprintln!("usage: osd [classify < pane-text | liveness <session> <pane> | owns-pane <session> <pane> <server-pid>]");
+            eprintln!(
+                "usage: osd [classify < pane-text | liveness <session> <pane> | owns-pane <session> <pane> <server-pid>]"
+            );
             std::process::exit(2);
         }
     }

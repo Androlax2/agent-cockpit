@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use cockpit::chief::{store, WorkerState};
+use cockpit::chief::{WorkerState, store};
 use cockpit::teams::{TransportOutcome, VerifiedSession};
 use rusqlite::Connection;
 
@@ -97,15 +97,48 @@ pub fn restore_version_12_dispatch_schema(connection: &Connection) {
 }
 
 pub fn session() -> VerifiedSession {
-    VerifiedSession { session_id: "aaaaaaaa-0000-4000-8000-000000000000".into(), agent: "claude".into(),
-        project: "project-a".into(), runtime: "launch-123:pid-456:start-789".into() }
+    VerifiedSession {
+        session_id: "aaaaaaaa-0000-4000-8000-000000000000".into(),
+        agent: "claude".into(),
+        project: "project-a".into(),
+        runtime: "launch-123:pid-456:start-789".into(),
+    }
 }
 
-pub fn admit(connection: &mut Connection, live: &[WorkerState], chief: &VerifiedSession, now_ms: i64) {
-    store::verify_admission(connection,chief,"opencode-queued-v1","Controlled test fixture, not a live support claim",now_ms).unwrap();
-    store::observe(connection,live,now_ms).unwrap();
-    let epoch: String = connection.query_row("SELECT epoch FROM chief_grants WHERE state='active'",[],|row|row.get(0)).unwrap();
-    let dispatch = store::claim(connection,chief,&format!("bootstrap-{epoch}"),now_ms).unwrap().expect("verified native chief bootstrap");
-    assert_eq!(dispatch.envelope["kind"],"chief_wake");
-    store::finish_for(connection,chief,&dispatch.id,&TransportOutcome::Received {native_id:format!("native-{epoch}")},now_ms).unwrap();
+pub fn admit(
+    connection: &mut Connection,
+    live: &[WorkerState],
+    chief: &VerifiedSession,
+    now_ms: i64,
+) {
+    store::verify_admission(
+        connection,
+        chief,
+        "opencode-queued-v1",
+        "Controlled test fixture, not a live support claim",
+        now_ms,
+    )
+    .unwrap();
+    store::observe(connection, live, now_ms).unwrap();
+    let epoch: String = connection
+        .query_row(
+            "SELECT epoch FROM chief_grants WHERE state='active'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let dispatch = store::claim(connection, chief, &format!("bootstrap-{epoch}"), now_ms)
+        .unwrap()
+        .expect("verified native chief bootstrap");
+    assert_eq!(dispatch.envelope["kind"], "chief_wake");
+    store::finish_for(
+        connection,
+        chief,
+        &dispatch.id,
+        &TransportOutcome::Received {
+            native_id: format!("native-{epoch}"),
+        },
+        now_ms,
+    )
+    .unwrap();
 }

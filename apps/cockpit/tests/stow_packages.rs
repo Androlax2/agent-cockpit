@@ -26,13 +26,37 @@ fn every_link_in_a_package_is_relative_and_stays_in_its_package() {
     // every package with it: the systemd .wants links made make install and each after-apply fail.
     let config = repo().join("config");
     let links = links_under(&config);
-    assert!(!links.is_empty(), "no link found under {}", config.display());
+    assert!(
+        !links.is_empty(),
+        "no link found under {}",
+        config.display()
+    );
     for link in links {
         let target = fs::read_link(&link).unwrap();
-        assert!(target.is_relative(), "{} -> {}", link.display(), target.display());
-        let package = config.join(link.strip_prefix(&config).unwrap().components().next().unwrap());
-        let resolved = link.parent().unwrap().join(&target).canonicalize()
+        assert!(
+            target.is_relative(),
+            "{} -> {}",
+            link.display(),
+            target.display()
+        );
+        let package = config.join(
+            link.strip_prefix(&config)
+                .unwrap()
+                .components()
+                .next()
+                .unwrap(),
+        );
+        let resolved = link
+            .parent()
+            .unwrap()
+            .join(&target)
+            .canonicalize()
             .unwrap_or_else(|error| panic!("{} -> {}: {error}", link.display(), target.display()));
-        assert!(resolved.starts_with(package.canonicalize().unwrap()), "{} leaves its package: {}", link.display(), resolved.display());
+        assert!(
+            resolved.starts_with(package.canonicalize().unwrap()),
+            "{} leaves its package: {}",
+            link.display(),
+            resolved.display()
+        );
     }
 }
