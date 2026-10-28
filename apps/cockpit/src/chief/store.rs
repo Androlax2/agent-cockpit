@@ -256,6 +256,10 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
                     AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')")?
                     .query_map([expected_epoch], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
                 for message in queued_answers { cancel_answer(connection, &message)?; }
+                connection.execute(&format!("UPDATE chief_inbox SET state='cancelled',{CHIEF_MESSAGE_CANCELLATION} WHERE chief_epoch=?3 AND state='queued'
+                    AND json_extract(envelope,'$.kind')='chief_message'
+                    AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')"),
+                    params![MESSAGE_CHIEF_DISABLED, now_ms, expected_epoch])?;
                 connection.execute("UPDATE chief_inbox SET state='cancelled' WHERE chief_epoch=?1 AND state='queued'
                     AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')", [expected_epoch])?;
             }
@@ -1207,12 +1211,22 @@ pub fn claim_todo_gift(connection: &mut Connection, recipient: &VerifiedSession,
     Ok(Some(crate::teams::Dispatch {id,message_id,envelope}))
 }
 
+const MESSAGE_EXPIRED: &str = "expired_before_delivery";
+const MESSAGE_RECIPIENT_RESTARTED: &str = "recipient_runtime_changed";
+const MESSAGE_CHIEF_DISABLED: &str = "chief_disabled";
+/// SET clause recording why a Chief message was cancelled (?1 reason, ?2 time), with the recipient's last
+/// daemon-observed blockers, so the Chief can tell a message held past its expiry (gaming, busy…) from a
+/// restart. Diagnostics only: nothing is resent and no readiness gate changes.
+const CHIEF_MESSAGE_CANCELLATION: &str = "envelope=json_set(envelope,'$.cancellation',json_object('reason',?1,'at_ms',?2,
+    'recipient_blocked_by',json((SELECT json_extract(o.observation,'$.blocked_by') FROM chief_observations o WHERE o.session_id=chief_inbox.recipient)),
+    'observed_at_ms',(SELECT json_extract(o.observation,'$.observed_at_ms') FROM chief_observations o WHERE o.session_id=chief_inbox.recipient)))";
+
 /// Records the Chief's message for a live session; its native inbox takes it only when idle.
 /// Bound to the session's current runtime: a restart lapses it.
 fn request_message(connection: &Connection, live: &[WorkerState], chief: &VerifiedSession, epoch: &str, session: &str, text: &str, reason: &str, now_ms: i64) -> Result<Value, TeamError> {
     let worker = chief_target(live, chief, session)?;
-    connection.execute("UPDATE chief_inbox SET state='cancelled' WHERE state='queued' AND json_extract(envelope,'$.kind')='chief_message'
-        AND json_extract(envelope,'$.expires_at')<=?1", [now_ms])?;
+    connection.execute(&format!("UPDATE chief_inbox SET state='cancelled',{CHIEF_MESSAGE_CANCELLATION} WHERE state='queued' AND json_extract(envelope,'$.kind')='chief_message'
+        AND json_extract(envelope,'$.expires_at')<=?3"), params![MESSAGE_EXPIRED, now_ms, now_ms])?;
     let waiting: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?1 AND state IN ('queued','submitting','uncertain')
         AND json_extract(envelope,'$.kind')='chief_message')", [session], |row|row.get(0))?;
     if waiting {return Err(conflict("a Chief message already waits for this session"));}
@@ -1470,8 +1484,9 @@ fn inspected_session(connection: &Connection, todos: &crate::todo::TodoList, liv
     let answers = connection.prepare("SELECT id,stop_id,source,delivery,created_at FROM chief_answers WHERE session_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT 5")?
         .query_map([session],|row|Ok(json!({"answer":row.get::<_,String>(0)?,"stop":row.get::<_,String>(1)?,"source":row.get::<_,String>(2)?,"delivery":row.get::<_,String>(3)?,"created_at_ms":row.get::<_,i64>(4)?})))?
         .collect::<Result<Vec<_>,_>>()?;
-    let messages = connection.prepare("SELECT id,state FROM chief_inbox WHERE recipient=?1 AND json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 5")?
-        .query_map([session],|row|Ok(json!({"message":row.get::<_,String>(0)?,"state":row.get::<_,String>(1)?})))?
+    let messages = connection.prepare(&format!("SELECT {CHIEF_MESSAGE_COLUMNS} FROM chief_inbox WHERE recipient=?1 AND json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 5"))?
+        .query_map([session],chief_message_record)?
+        .map(|record|record.map(|record|json!({"message":record["id"],"state":record["state"],"cancellation":record["cancellation"]})))
         .collect::<Result<Vec<_>,_>>()?;
     let gifts = connection.prepare("SELECT id,task_id,state FROM chief_session_starts WHERE worker=?1 ORDER BY rowid DESC LIMIT 5")?
         .query_map([session],|row|Ok(json!({"request":row.get::<_,String>(0)?,"todo":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?})))?
@@ -1510,8 +1525,10 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
         let Some((message_id, identity, epoch, chief_epoch, envelope)) = candidate else { transaction.commit()?; return Ok(None) };
         let identity = serde_json::from_str::<VerifiedSession>(&identity)?;
         let mut envelope = serde_json::from_str::<Value>(&envelope)?;
+        let mut cancellation = None;
         let validation = if envelope["kind"]=="chief_message" {
             if identity != *recipient || envelope["expires_at"].as_i64().is_none_or(|deadline|deadline<=now_ms) {
+                cancellation = Some(if identity != *recipient {MESSAGE_RECIPIENT_RESTARTED} else {MESSAGE_EXPIRED});
                 InboxValidation::Obsolete
             } else {
                 let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active')",[&chief_epoch],|row|row.get(0))?;
@@ -1553,8 +1570,12 @@ pub fn claim(connection: &mut Connection, recipient: &VerifiedSession, idle_turn
         };
         match validation {
             InboxValidation::Obsolete => {
-                let cancelled = transaction.execute("UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued'
-                    AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')", [&message_id])?;
+                let unattempted = "AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')";
+                let cancelled = match cancellation {
+                    Some(reason) => transaction.execute(&format!("UPDATE chief_inbox SET state='cancelled',{CHIEF_MESSAGE_CANCELLATION} WHERE id=?3 AND state='queued' {unattempted}"),
+                        params![reason, now_ms, &message_id])?,
+                    None => transaction.execute(&format!("UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued' {unattempted}"), [&message_id])?,
+                };
                 if cancelled > 0 { continue; }
                 transaction.commit()?;
                 return Ok(None);
@@ -2213,9 +2234,14 @@ fn decision_context_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "answer_id":row.get::<_,Option<String>>(4)?,"answer_delivery":row.get::<_,Option<String>>(5)?}))
 }
 
-/// Columns: id, recipient, state.
+const CHIEF_MESSAGE_COLUMNS: &str = "id,recipient,state,json_extract(envelope,'$.cancellation')";
+
+/// Columns: CHIEF_MESSAGE_COLUMNS. `cancellation` is null unless the host recorded why it was cancelled.
 fn chief_message_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
-    Ok(json!({"kind":"chief_message","source":"protected_delivery_ledger","id":row.get::<_,String>(0)?,"session":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?}))
+    let cancellation = row.get::<_,Option<String>>(3)?.map(|encoded|serde_json::from_str::<Value>(&encoded))
+        .transpose().map_err(|error|rusqlite::Error::FromSqlConversionFailure(3,rusqlite::types::Type::Text,Box::new(error)))?;
+    Ok(json!({"kind":"chief_message","source":"protected_delivery_ledger","id":row.get::<_,String>(0)?,"session":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?,
+        "cancellation":cancellation}))
 }
 
 /// The current snapshot records an event names, so Context can read on past it instead of rebuilding a
@@ -2243,7 +2269,7 @@ fn event_snapshot_records(connection: &Connection, kind: &str, body: &str) -> Re
         "chief_message_requested" | "chief_message_received" => {
             let Some(message) = identifiers[if kind=="chief_message_requested" {"request"} else {"message"}].as_str() else { return Ok(None) };
             // A todo gift's delivery has no message record of its own: the snapshot shows it in the dispatch ledger.
-            let Some(record) = connection.query_row("SELECT id,recipient,state FROM chief_inbox WHERE id=?1 AND json_extract(envelope,'$.kind')='chief_message'",
+            let Some(record) = connection.query_row(&format!("SELECT {CHIEF_MESSAGE_COLUMNS} FROM chief_inbox WHERE id=?1 AND json_extract(envelope,'$.kind')='chief_message'"),
                 [message],chief_message_record).optional()? else { return Ok(None) };
             vec![record]
         },
@@ -2294,8 +2320,8 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
             records.push(record);
         }
     }
-    records.extend(connection.prepare("SELECT id,recipient,state FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message'
-        AND (state IN ('queued','submitting','uncertain','failed') OR rowid IN (SELECT rowid FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid")?
+    records.extend(connection.prepare(&format!("SELECT {CHIEF_MESSAGE_COLUMNS} FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message'
+        AND (state IN ('queued','submitting','uncertain','failed') OR rowid IN (SELECT rowid FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid"))?
         .query_map([],chief_message_record)?
         .collect::<Result<Vec<_>,_>>()?);
     records.extend(connection.prepare("SELECT id,task_id,worker,state FROM chief_session_starts WHERE worker IS NOT NULL

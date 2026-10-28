@@ -2353,6 +2353,66 @@ fn a_chief_message_left_unclaimed_for_ten_minutes_is_cancelled() {
     assert!(crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap().is_null());
 }
 
+fn chief_message_ledger(bench: &Bench) -> (String, serde_json::Value) {
+    bench.registry.teams.as_ref().unwrap().query_row("SELECT state,json_extract(envelope,'$.cancellation') FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message'",[],
+        |row|Ok((row.get(0)?,row.get::<_,Option<String>>(1)?.map_or(serde_json::Value::Null,|encoded|serde_json::from_str(&encoded).unwrap())))).unwrap()
+}
+
+#[test]
+fn a_chief_message_held_by_gaming_past_its_expiry_records_why_it_was_cancelled() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+    bench.registry.chief_focus=Some((String::new(),false,true,crate::teams::now_ms()));
+    assert!(crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap().is_null());
+    assert_eq!(chief_message_ledger(&bench),("queued".into(),serde_json::Value::Null),"gaming still defers delivery");
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_inbox SET envelope=json_set(envelope,'$.expires_at',0) WHERE json_extract(envelope,'$.kind')='chief_message'",[]).unwrap();
+    assert!(crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap().is_null());
+    let (state,cancellation)=chief_message_ledger(&bench);
+    assert_eq!(state,"cancelled");
+    assert_eq!(cancellation["reason"],"expired_before_delivery");
+    assert!(cancellation["recipient_blocked_by"].as_array().unwrap().contains(&json!("gaming")),"{cancellation}");
+    assert_eq!(bench.registry.teams.as_ref().unwrap().query_row("SELECT count(*) FROM chief_delivery_attempts WHERE kind='chief_message'",[],|row|row.get::<_,i64>(0)).unwrap(),0,
+        "the cancelled message was never submitted and is not resent");
+}
+
+#[test]
+fn the_chief_reads_why_its_message_was_cancelled_in_context() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+    bench.registry.teams.as_ref().unwrap().execute("UPDATE chief_inbox SET envelope=json_set(envelope,'$.expires_at',0) WHERE json_extract(envelope,'$.kind')='chief_message'",[]).unwrap();
+    crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+    let page=context(&mut bench,20).unwrap().result.unwrap();
+    let message=page["records"].as_array().unwrap().iter().find(|record|record["kind"]=="chief_message").unwrap_or_else(||panic!("no message record: {page}"));
+    assert_eq!((message["state"].as_str(),message["cancellation"]["reason"].as_str()),(Some("cancelled"),Some("expired_before_delivery")));
+}
+
+#[test]
+fn a_cancelled_chief_message_names_a_recipient_restart_or_a_disabled_chief() {
+    for (cause,reason) in [("restart","recipient_runtime_changed"),("disable","chief_disabled")] {
+        let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+        chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+        if cause=="restart" {
+            bench.registry.sessions.get_mut(MESSAGE_WORKER).unwrap().runtime="runtime-new".into();
+            bench.world.borrow_mut().sender_runtimes.insert(40,"runtime-new".into());
+            assert!(crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap().is_null());
+        } else {
+            let epoch: String=bench.registry.teams.as_ref().unwrap().query_row("SELECT epoch FROM chief_grants WHERE state='active'",[],|row|row.get(0)).unwrap();
+            crate::teams::host(&mut bench.registry,std::process::id(),HostRequest::Chief {action:ChiefHostAction::Disable {request_id:"disable".into(),expected_epoch:epoch}}).unwrap().result.unwrap();
+        }
+        let (state,cancellation)=chief_message_ledger(&bench);
+        assert_eq!((state.as_str(),cancellation["reason"].as_str()),("cancelled",Some(reason)),"{cause}");
+    }
+}
+
+#[test]
+fn a_delivered_chief_message_carries_no_cancellation() {
+    let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
+    chief_messages(&mut bench,MESSAGE_WORKER).unwrap();
+    let delivery=crate::teams::request(&mut bench.registry,40,AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["cancellation"],serde_json::Value::Null);
+    assert_eq!(chief_message_ledger(&bench),("submitting".into(),serde_json::Value::Null));
+}
+
 #[test]
 fn a_todo_gift_still_waits_for_theos_q_for_chief_filed_work() {
     let mut bench=admitted_chief_bench();idle_message_worker(&mut bench);
