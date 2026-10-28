@@ -112,7 +112,7 @@ impl App {
         }
         // The root list is the 5 Chief tab now: going back to it goes back to the tab.
         if self.chief_view.as_ref().is_some_and(ChiefView::at_root) {
-            self.chief_view = None;
+            self.chief_check_answers = self.chief_view.take().expect("checked above").check_answers;
             self.refresh_chief_status();
             self.build_chief_tab();
         }

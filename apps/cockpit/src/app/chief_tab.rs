@@ -79,6 +79,7 @@ pub(super) fn help() -> Vec<(&'static str, &'static str)> {
          ("l", "the answer log: every answer, overrule one with o"), ("h", "the habits it learned from you"),
          ("j k", "move across what needs you and today's feed"),
          ("y x i", "on an undelivered message: it arrived, stop safely, details"),
+         ("t a d", "a restarted Chief: send its new session a test message, then say whether it arrived"),
          ("⏎", "on an escalation: answer it; on an answer: open that session"),
          ("o", "on an answer: overrule it"), ("◆ ◇", "the Chief on · off, on its card"),
          ("● ○", "the tab's badge: a Chief grant on · none or paused; ? when the team host does not answer")]
@@ -110,6 +111,7 @@ impl App {
         };
         let mut view = ChiefView::new(snapshot.clone());
         view.habits_seen_ms = self.chief_habits_seen_ms;
+        view.check_answers = self.chief_check_answers.clone();
         let mut lines = self.chief_state_lines(&view, &snapshot);
         let mut rows = Vec::new();
         let open = open_decisions(&snapshot);
@@ -189,6 +191,7 @@ impl App {
             Some(chief) => {
                 lines.push(Line::new(vec![segment(0, format!("◇ Chief · {status}"), style(FG))]));
                 lines.push(Line::new(vec![segment(0, format!("Runs as {}", view.session_name(chief["session"]["session_id"].as_str())), dim(FG_DARK))]));
+                lines.extend(view.recovery_lines().into_iter().map(|line| Line::new(vec![segment(0, line, style(YELLOW))])));
                 let control = if !is_live(chief) { "disable" } else if chief["state"] == "paused" { "resume" } else { "pause" };
                 keys.push(("c", control.into()));
             },
@@ -273,6 +276,7 @@ impl App {
             Ok(snapshot) => {
                 let mut view = ChiefView::new(snapshot);
                 view.habits_seen_ms = crate::chief::habits_seen_ms();
+                view.check_answers = self.chief_check_answers.clone();
                 self.chief_view = Some(view);
             },
             Err(error) => {
@@ -289,6 +293,10 @@ impl App {
         let selected = self.chief_tab_rows.get(self.panels[CHIEF_PANEL].selected).cloned();
         match (&key, selected) {
             (Key::Char('c' | 'p' | 'r' | 'l' | 'h'), _) => {
+                self.open_chief_for_tab();
+                self.handle_chief_key(key);
+            },
+            (Key::Char('t' | 'a' | 'd'), _) if self.chief_status.as_ref().is_ok_and(|snapshot| ChiefView::new(snapshot.clone()).recovery_check_takes(&key)) => {
                 self.open_chief_for_tab();
                 self.handle_chief_key(key);
             },

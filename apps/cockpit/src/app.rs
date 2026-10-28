@@ -923,6 +923,8 @@ pub struct App {
     chief_status: Result<Value, String>,
     /// When Theo last saw his habits, read with chief_status: the 5 Chief tab's "habits (N new)".
     chief_habits_seen_ms: Option<i64>,
+    /// Theo's answers to a restarted Chief's test message, which the tab's short-lived views share.
+    chief_check_answers: crate::chief::view::CheckAnswers,
     /// Team requests, escalations and uncertain deliveries waiting for Theo; session -> "team role · task".
     team_attention: usize,
     team_roles: HashMap<String, String>,
@@ -1074,7 +1076,7 @@ impl App {
             disk_usage: util::fullest_disk, disk: None, disk_checked: 0.0, restore_checked: 0.0, start_files: Vec::new(),
             width: DEFAULT_COLUMN_WIDTH, sessions: Vec::new(), running_sessions: Vec::new(), windows: Vec::new(), quota_rows: Vec::new(), review_rows: Vec::new(), todo_entries: Vec::new(), idea_entries: Vec::new(),
             session_task_titles: HashMap::new(), session_branches: HashMap::new(),
-            session_queued: HashMap::new(), chief_answers: HashMap::new(), chief_status: Err("Not read yet".into()), chief_habits_seen_ms: None, session_roots: HashMap::new(),
+            session_queued: HashMap::new(), chief_answers: HashMap::new(), chief_status: Err("Not read yet".into()), chief_habits_seen_ms: None, chief_check_answers: Default::default(), session_roots: HashMap::new(),
             todo_scope: String::new(), shown_session: String::new(), todo_tab: TODO_TAB_OPEN, todo_tabs: HashMap::new(), todo_categories: HashMap::new(), saved_todo_scope: None, todo_jump: None, todo_counts: [0; 5], prompts_sent: HashMap::new(), subscription_held: HashSet::new(), subscription_directories: HashSet::new(), subscription_error: None, craft_roots: HashMap::new(), hit_lines: HashMap::new(), hit_actions: HashMap::new(),
             subscription_polled_at: None, subscription_waiting_shown: HashMap::new(),
             gathered: None, pending: Vec::new(), plan: String::new(), craft_checked: 0.0, running_copies_unpushed: HashMap::new(), running_copies_checked: 0.0, todo_recovery_pending,

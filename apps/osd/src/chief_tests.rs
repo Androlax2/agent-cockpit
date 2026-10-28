@@ -616,6 +616,31 @@ fn a_restored_chief_needs_its_own_new_admission_and_explicit_host_recovery() {
     assert_ne!(result["epoch"],epoch,"replay returns a receipt, not a new activation");
 }
 
+#[test]
+fn a_restarted_chiefs_new_runtime_is_verified_by_theos_test_message_and_then_recovers() {
+    let mut bench=team_bench();
+    let epoch=enable(&mut bench,OPENCODE_SESSION)["epoch"].as_str().unwrap().to_string();
+    bench.world.borrow_mut().sender_runtimes.insert(20,"new-boot:20:100".into());
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().runtime="new-boot:20:100".into();
+    bench.registry.teams=None;
+    let replacement=verified(&mut bench,OPENCODE_SESSION);
+    crate::chief::tick(&mut bench.registry,crate::teams::now_ms()).unwrap();
+    let shown=crate::chief::snapshot(&mut bench.registry,0,50,None).unwrap()["recovery_check"].clone();
+    assert_eq!(shown["check_session"],json!(replacement));
+    send_check(&mut bench,"recovery-check",&epoch).unwrap();
+    let delivery=crate::teams::request(&mut bench.registry,20,AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(delivery["envelope"]["kind"],"chief_check");
+    crate::teams::request(&mut bench.registry,20,AgentAction::Receipt {
+        dispatch_id:delivery["dispatch_id"].as_str().unwrap().into(),
+        outcome:cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{}",delivery["message_id"].as_str().unwrap())},
+    }).unwrap().result.unwrap();
+    assert_eq!(crate::chief::snapshot(&mut bench.registry,0,50,None).unwrap()["recovery_check"]["check"]["state"],"received");
+    assert!(crate::chief::host(&mut bench.registry,&recovery_action(&epoch,&replacement)).unwrap().result.is_err(),"a received check is not Theo's confirmation");
+    crate::teams::host(&mut bench.registry,std::process::id(),HostRequest::VerifyChiefAdmission {session:replacement.clone(),adapter:"opencode-queued-v1".into(),evidence:"Theo saw the delivery check arrive".into()}).unwrap().result.unwrap();
+    crate::chief::host(&mut bench.registry,&recovery_action(&epoch,&replacement)).unwrap().result.unwrap();
+    assert!(context(&mut bench,20).unwrap().result.is_ok());
+}
+
 /// Files `count` adds in project-b through the report socket as `peer`; returns how many were saved
 /// and the receipt of the first refused one.
 fn file_handoffs_in_project_b(bench: &mut Bench, peer: u32, count: usize, forged: serde_json::Value) -> (usize, serde_json::Value) {

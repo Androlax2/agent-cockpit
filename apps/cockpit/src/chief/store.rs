@@ -74,6 +74,41 @@ fn check_target(connection: &Connection, live: &[WorkerState]) -> Result<Option<
     Ok(Some((attempt.to_string(), worker.session.clone())))
 }
 
+/// The one retained grant whose recorded runtime is gone, and the one live new runtime of the same
+/// conversation, agent and project: the only target of Theo's recovery delivery check. Neither the
+/// check nor its confirmation grants anything; `Recover` stays a separate host approval.
+fn recovery_target(connection: &Connection, live: &[WorkerState]) -> Result<Option<(String, VerifiedSession)>, TeamError> {
+    let grants = connection.prepare("SELECT epoch,session_id,agent,project,runtime FROM chief_grants WHERE state IN ('active','paused')")?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, VerifiedSession { session_id:row.get(1)?, agent:row.get(2)?, project:row.get(3)?, runtime:row.get(4)? })))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let [(epoch, retained)] = grants.as_slice() else { return Ok(None) };
+    if retained.agent != "opencode" || exact_live(retained, live) { return Ok(None); }
+    let replacements = live.iter().filter(|worker| worker.session.session_id == retained.session_id && worker.session.agent == retained.agent
+        && worker.session.project == retained.project && worker.session.runtime != retained.runtime).collect::<Vec<_>>();
+    let [replacement] = replacements.as_slice() else { return Ok(None) };
+    if is_product_worker(connection, &retained.session_id)? { return Ok(None); }
+    Ok(Some((epoch.clone(), replacement.session.clone())))
+}
+
+/// When this exact runtime's admission was last verified, if within the five minutes `Recover` accepts.
+fn fresh_admission(connection: &Connection, session: &VerifiedSession, now_ms: i64) -> Result<Option<i64>, TeamError> {
+    Ok(connection.query_row("SELECT max(verified_at) FROM chief_admission_verifications WHERE identity=?1 AND adapter='opencode-queued-v1' AND verified_at<=?2 AND verified_at>=?3",
+        params![serde_json::to_string(session)?, now_ms, now_ms.saturating_sub(300_000)], |row| row.get(0))?)
+}
+
+/// What the Chief view shows of the recovery check: the target, its fresh verification and the latest
+/// test message sent since the last verification of that runtime.
+fn recovery_check(connection: &Connection, live: &[WorkerState], now_ms: i64) -> Result<Value, TeamError> {
+    let Some((epoch, session)) = recovery_target(connection, live)? else { return Ok(Value::Null) };
+    let identity = serde_json::to_string(&session)?;
+    let check: Option<String> = connection.query_row("SELECT json_object('id',id,'state',state,'session',json(recipient_identity)) FROM chief_inbox
+        WHERE json_extract(envelope,'$.kind')='chief_check' AND chief_epoch=?1 AND recipient_identity=?2
+        AND next_at>coalesce((SELECT max(verified_at) FROM chief_admission_verifications WHERE identity=?2 AND adapter='opencode-queued-v1'),-1)
+        ORDER BY rowid DESC LIMIT 1", params![epoch, identity], |row| row.get(0)).optional()?;
+    Ok(json!({"id":epoch,"check_session":session,"verified_at_ms":fresh_admission(connection, &session, now_ms)?,
+        "check":check.map(|check|serde_json::from_str::<Value>(&check)).transpose()?}))
+}
+
 fn exact_live(session: &VerifiedSession, live: &[WorkerState]) -> bool {
     live.iter().any(|worker| worker.session == *session)
 }
@@ -174,8 +209,16 @@ fn host_action(connection: &Connection, action: &ChiefHostAction, live: &[Worker
             Ok(startup(connection)?.expect("settled Chief startup"))
         },
         ChiefHostAction::SendCheck { attempt, .. } => {
-            let Some((attempt, session)) = check_target(connection, live)?.filter(|(current, _)| current == attempt) else {
-                return Err(TeamError::new(ErrorCode::Unavailable, "this Chief startup has no live session waiting for a delivery check"));
+            let startup_target = check_target(connection, live)?.filter(|(current, _)| current == attempt);
+            let target = match startup_target {
+                Some(target) => Some(target),
+                None => match recovery_target(connection, live)?.filter(|(epoch, _)| epoch == attempt) {
+                    Some((epoch, session)) if fresh_admission(connection, &session, now_ms)?.is_none() => Some((epoch, session)),
+                    _ => None,
+                },
+            };
+            let Some((attempt, session)) = target else {
+                return Err(TeamError::new(ErrorCode::Unavailable, "this Chief has no live session waiting for a delivery check"));
             };
             let pending: Option<String> = connection.query_row("SELECT id FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_check'
                 AND chief_epoch=?1 AND state IN ('queued','submitting')", [&attempt], |row| row.get(0)).optional()?;
@@ -1605,7 +1648,10 @@ pub fn claim_check(connection: &mut Connection, recipient: &VerifiedSession, idl
         [&recipient.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
     let Some((message_id, identity, envelope)) = candidate else { transaction.commit()?; return Ok(None) };
     let envelope: Value = serde_json::from_str(&envelope)?;
-    let is_current: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_startup WHERE id=?1 AND state='checking')", [envelope["attempt"].as_str()], |row| row.get(0))?;
+    // A recovery check names the retained grant, and only a new runtime of its own conversation takes it.
+    let is_current: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_startup WHERE id=?1 AND state='checking')
+        OR EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state IN ('active','paused') AND session_id=?2 AND agent=?3 AND project=?4 AND runtime<>?5)",
+        params![envelope["attempt"].as_str(), recipient.session_id, recipient.agent, recipient.project, recipient.runtime], |row| row.get(0))?;
     if serde_json::from_str::<VerifiedSession>(&identity)? != *recipient || !is_current {
         transaction.execute("UPDATE chief_inbox SET state='cancelled' WHERE id=?1", [&message_id])?;
         transaction.commit()?;
@@ -2438,6 +2484,7 @@ pub fn snapshot_page(connection: &Connection, live: &[WorkerState], after: i64, 
     }
     let mut result = snapshot(connection,live,after,limit)?;
     result["generation"] = json!(current);
+    result["recovery_check"] = recovery_check(connection, live, now_ms)?;
     let now = chrono::DateTime::from_timestamp_millis(now_ms)
         .ok_or_else(|| super::invalid("invalid Chief snapshot time"))?.with_timezone(&chrono::Local);
     // Local days may cross a DST change, so a fixed 24-hour lookback is not midnight.

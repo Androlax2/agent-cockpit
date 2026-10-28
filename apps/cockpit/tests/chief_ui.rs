@@ -1898,3 +1898,60 @@ fn the_chief_badge_is_the_grant_on_every_tab_even_when_its_session_is_unavailabl
     let text = rendered(&mut app, 120, 45);
     assert!(text.contains(" 5  Chief  ● ") && text.contains("Unavailable"), "{text}");
 }
+
+fn restarted_session() -> Value {
+    let mut session=worker()["session"].clone(); session["runtime"]=json!("new-boot-runtime"); session
+}
+fn restarted_chief(check: Value, verified_at_ms: Value) -> Host {
+    let host=Host::new(vec![chief("active",false)]);
+    host.snapshot.lock().unwrap()["recovery_check"]=json!({"id":"grant-epoch-1","check_session":restarted_session(),"verified_at_ms":verified_at_ms,"check":check});
+    host
+}
+
+#[test]
+fn a_restarted_chief_offers_a_test_message_to_its_new_runtime() {
+    let host=restarted_chief(Value::Null,Value::Null);
+    let (mut app,mut screen)=host.open();
+    let shown=rendered(&mut app,120,40);
+    assert!(shown.contains("Chief restarted in a new session") && shown.contains("[t] Send test message"),"{shown}");
+    app.handle(Key::Char('t'),&mut screen);
+    let mutations=host.mutations();
+    assert_eq!(mutations.len(),1);
+    assert_eq!(mutations[0]["action"]["action"],"send_check");
+    assert_eq!(mutations[0]["action"]["attempt"],"grant-epoch-1");
+    assert!(verifications(&host).is_empty());
+}
+
+#[test]
+fn a_restarted_chiefs_received_test_message_is_verified_only_by_theos_y() {
+    let received=json!({"id":"check-1","state":"received","session":restarted_session()});
+    {
+        let host=restarted_chief(received.clone(),Value::Null);
+        let (mut app,mut screen)=host.open();
+        let shown=rendered(&mut app,120,40);
+        assert!(shown.contains("did it appear?") && shown.contains("[a] It arrived") && shown.contains("[d] Didn't arrive"),"{shown}");
+        app.handle(Key::Char('y'),&mut screen);
+        assert!(verifications(&host).is_empty(),"y on the tab answers undelivered messages, never the test message");
+        app.handle(Key::Char('a'),&mut screen);
+        let recorded=verifications(&host);
+        assert_eq!(recorded.len(),1);
+        assert_eq!(recorded[0]["session"],restarted_session(),"the new runtime, never the retained one");
+        assert!(recorded[0]["evidence"].as_str().unwrap().contains("check-1"));
+    }
+    let declined=restarted_chief(received,Value::Null);
+    let (mut app,mut screen)=declined.open();
+    app.handle(Key::Char('d'),&mut screen);
+    assert!(verifications(&declined).is_empty());
+    let shown=rendered(&mut app,120,40);
+    assert!(shown.contains("Not verified. You can send another test message."),"{shown}");
+}
+
+#[test]
+fn a_verified_restarted_chief_names_the_recovery_step_and_sends_no_more_checks() {
+    let host=restarted_chief(Value::Null,json!(1));
+    let (mut app,mut screen)=host.open();
+    let shown=rendered(&mut app,160,40);
+    assert!(shown.contains("cockpit-team recovery-review ses_3f2a9c0b1ffeQkTz8mWn4rJd2L"),"{shown}");
+    app.handle(Key::Char('t'),&mut screen);
+    assert!(host.mutations().is_empty() && verifications(&host).is_empty());
+}
