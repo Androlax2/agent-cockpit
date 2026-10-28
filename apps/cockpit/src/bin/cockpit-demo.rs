@@ -1,7 +1,9 @@
 //! A made-up Agent Cockpit for the README screenshots (tools/capture-claude.sh).
 //!
+//! ```text
 //!     cockpit-demo build <root>   everything the column reads, invented, under <root>
 //!     cockpit-demo session        a still picture of a session for the demo's session pane
+//! ```
 //!
 //! build writes home/ (statusline facts, history, plan name, parallel clones), run/ (the session
 //! snapshot, plan usage, the viewed session), state/ (todo list), repos/ (git checkouts with their
@@ -32,22 +34,68 @@ struct DemoSession {
 }
 
 const SESSIONS: [DemoSession; 4] = [
-    DemoSession { id: "11111111-1111-4111-8111-111111111111", project: "acme-shop", checkout: "repos/acme-shop", branch: "feat/checkout-vat",
-                  repository: "acme/shop", state: "working", task: "Checkout totals with VAT per country", idle_minutes: 2, started_minutes: 95,
-                  model: "Opus 5.5", effort: "high", context: 41 },
-    DemoSession { id: "22222222-2222-4222-8222-222222222222", project: "acme-shop", checkout: "home/IdeaProjects/.parallel/acme-shop/parallel-0412",
-                  branch: "fix/cart-rounding", repository: "acme/shop", state: "needs-you", task: "Cart rounding on discounted items", idle_minutes: 0,
-                  started_minutes: 40, model: "Opus 5.5", effort: "high", context: 18 },
-    DemoSession { id: "33333333-3333-4333-8333-333333333333", project: "notes-api", checkout: "repos/notes-api", branch: "main",
-                  repository: "acme/notes-api", state: "waiting", task: "Paginate the search endpoint", idle_minutes: 6, started_minutes: 70,
-                  model: "Sonnet 5.5", effort: "medium", context: 63 },
-    DemoSession { id: "44444444-4444-4444-8444-444444444444", project: "homelab", checkout: "repos/homelab", branch: "monitoring",
-                  repository: "acme/homelab", state: "waiting", task: "Grafana dashboard for the NAS disks", idle_minutes: 25, started_minutes: 180,
-                  model: "Opus 5.5", effort: "xhigh", context: 92 },
+    DemoSession {
+        id: "11111111-1111-4111-8111-111111111111",
+        project: "acme-shop",
+        checkout: "repos/acme-shop",
+        branch: "feat/checkout-vat",
+        repository: "acme/shop",
+        state: "working",
+        task: "Checkout totals with VAT per country",
+        idle_minutes: 2,
+        started_minutes: 95,
+        model: "Opus 5.5",
+        effort: "high",
+        context: 41,
+    },
+    DemoSession {
+        id: "22222222-2222-4222-8222-222222222222",
+        project: "acme-shop",
+        checkout: "home/IdeaProjects/.parallel/acme-shop/parallel-0412",
+        branch: "fix/cart-rounding",
+        repository: "acme/shop",
+        state: "needs-you",
+        task: "Cart rounding on discounted items",
+        idle_minutes: 0,
+        started_minutes: 40,
+        model: "Opus 5.5",
+        effort: "high",
+        context: 18,
+    },
+    DemoSession {
+        id: "33333333-3333-4333-8333-333333333333",
+        project: "notes-api",
+        checkout: "repos/notes-api",
+        branch: "main",
+        repository: "acme/notes-api",
+        state: "waiting",
+        task: "Paginate the search endpoint",
+        idle_minutes: 6,
+        started_minutes: 70,
+        model: "Sonnet 5.5",
+        effort: "medium",
+        context: 63,
+    },
+    DemoSession {
+        id: "44444444-4444-4444-8444-444444444444",
+        project: "homelab",
+        checkout: "repos/homelab",
+        branch: "monitoring",
+        repository: "acme/homelab",
+        state: "waiting",
+        task: "Grafana dashboard for the NAS disks",
+        idle_minutes: 25,
+        started_minutes: 180,
+        model: "Opus 5.5",
+        effort: "xhigh",
+        context: 92,
+    },
 ];
 
 fn iso(seconds_from_now: i64) -> String {
-    (Utc::now() + Span::seconds(seconds_from_now)).format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    (Utc::now() + Span::seconds(seconds_from_now))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
 }
 
 fn write(path: &Path, content: &str) -> Result<(), String> {
@@ -59,19 +107,34 @@ fn write(path: &Path, content: &str) -> Result<(), String> {
 
 fn write_executable(path: &Path, content: &str) -> Result<(), String> {
     write(path, content)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(|error| format!("{}: {error}", path.display()))
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn git(arguments: &[&str]) -> Result<(), String> {
-    let status = Command::new("git").args(arguments).status().map_err(|error| format!("git: {error}"))?;
-    if status.success() { Ok(()) } else { Err(format!("git {} failed", arguments.join(" "))) }
+    let status = Command::new("git")
+        .args(arguments)
+        .status()
+        .map_err(|error| format!("git: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("git {} failed", arguments.join(" ")))
+    }
 }
 
 fn checkout(path: &Path, branch: &str, repository: &str) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let path = path.to_string_lossy();
     git(&["init", "-q", "-b", branch, &path])?;
-    git(&["-C", &path, "remote", "add", "origin", &format!("https://github.com/{repository}.git")])
+    git(&[
+        "-C",
+        &path,
+        "remote",
+        "add",
+        "origin",
+        &format!("https://github.com/{repository}.git"),
+    ])
 }
 
 fn session_rows(root: &Path, now: i64) -> Result<Vec<Value>, String> {
@@ -90,8 +153,11 @@ fn session_rows(root: &Path, now: i64) -> Result<Vec<Value>, String> {
             row["outcome"] = json!("Finished · search pages by 50 with a cursor; 14 tests pass");
         }
         rows.push(row);
-        write(&home.join(format!(".cache/claude/statusline-{}.json", session.id)),
-              &json!({"model": session.model, "effort": session.effort, "context": session.context}).to_string())?;
+        write(
+            &home.join(format!(".cache/claude/statusline-{}.json", session.id)),
+            &json!({"model": session.model, "effort": session.effort, "context": session.context})
+                .to_string(),
+        )?;
     }
     Ok(rows)
 }
@@ -100,14 +166,24 @@ fn build(root: &Path) -> Result<(), String> {
     let (home, run, state) = (root.join("home"), root.join("run"), root.join("state"));
     let now = Utc::now().timestamp();
     let viewed = SESSIONS[0].id;
-    write(&run.join("cockpit.json"), &json!({"sessions": session_rows(root, now)?}).to_string())?;
+    write(
+        &run.join("cockpit.json"),
+        &json!({"sessions": session_rows(root, now)?}).to_string(),
+    )?;
     write(&run.join("cockpit.current"), &format!("{viewed}\n"))?;
-    write(&run.join("claude-usage.json"), &json!({
+    write(
+        &run.join("claude-usage.json"),
+        &json!({
         "five_hour": {"utilization": 34, "resets_at": iso(2 * 3600 + 40 * 60)},
         "seven_day": {"utilization": 58, "resets_at": iso(3 * 86400)},
-        "seven_day_opus": {"utilization": 41, "resets_at": iso(3 * 86400)}}).to_string())?;
+        "seven_day_opus": {"utilization": 41, "resets_at": iso(3 * 86400)}})
+        .to_string(),
+    )?;
     // The plan's name only: no token of any kind.
-    write(&home.join(".claude/.credentials.json"), &json!({"claudeAiOauth": {"subscriptionType": "max"}}).to_string())?;
+    write(
+        &home.join(".claude/.credentials.json"),
+        &json!({"claudeAiOauth": {"subscriptionType": "max"}}).to_string(),
+    )?;
     let history: String = [("repos/acme-shop", 20, "Move the invoice PDF to the new template"),
                            ("repos/notes-api", 30, "Rate limit the public API per token"),
                            ("repos/homelab", 50, "Back up the Postgres volumes to the NAS nightly")]
@@ -143,17 +219,29 @@ fn build(root: &Path) -> Result<(), String> {
     write(&root.join("gh-pulls.json"), &pulls.to_string())?;
     write(&root.join("gh-issues.json"), &issues.to_string())?;
     let root_text = root.display();
-    write_executable(&root.join("bin/gh"), &format!(r#"#!/bin/sh
+    write_executable(
+        &root.join("bin/gh"),
+        &format!(
+            r#"#!/bin/sh
 # The demo's GitHub: only acme/shop has pull requests and issues.
 case "$*" in
   "pr list --repo acme/shop"*) cat {root_text}/gh-pulls.json ;;
   "issue list --repo acme/shop"*) cat {root_text}/gh-issues.json ;;
   *) echo "[]" ;;
 esac
-"#))?;
-    write_executable(&root.join("bin/cockpit"), "#!/bin/sh\n# The demo has no real sessions to act on.\nexit 0\n")?;
-    write(&root.join("status.json"), &json!({"status": {"indicator": "none", "description": "All Systems Operational"},
-                                             "components": [], "incidents": []}).to_string())
+"#
+        ),
+    )?;
+    write_executable(
+        &root.join("bin/cockpit"),
+        "#!/bin/sh\n# The demo has no real sessions to act on.\nexit 0\n",
+    )?;
+    write(
+        &root.join("status.json"),
+        &json!({"status": {"indicator": "none", "description": "All Systems Operational"},
+                                             "components": [], "incidents": []})
+        .to_string(),
+    )
 }
 
 const BOLD: &str = "\x1b[1m";
@@ -165,7 +253,8 @@ const ORANGE: &str = "\x1b[38;5;173m";
 const GREY: &str = "\x1b[90m";
 
 fn conversation() -> String {
-    format!(r#"
+    format!(
+        r#"
 {GREY}>{RESET} Add VAT to the checkout total, per the customer's country. Rates are in config/vat.json.
 
 {WHITE}●{RESET} I'll read how the total is computed, then add the VAT step and its tests.
@@ -190,7 +279,8 @@ fn conversation() -> String {
   - The product page still shows net prices: that is the next todo item.
 
 {ORANGE}✻{RESET} {ORANGE}Writing the pull request description…{RESET} {GREY}(38s · ↓ 1.2k tokens){RESET}
-"#)
+"#
+    )
 }
 
 /// Draws the conversation once, then waits for the screenshot.
@@ -199,7 +289,11 @@ fn session() -> ! {
     let columns = cockpit::approval::terminal_size().0;
     let rule = format!("{GREY}{}{RESET}", "─".repeat(columns));
     let mut screen = std::io::stdout();
-    let _ = write!(screen, "\x1b[2J\x1b[H{}\n{rule}\n{GREY}>{RESET} \n{rule}\n  {GREY}⏵⏵ auto mode on (shift+tab to cycle){RESET}", conversation());
+    let _ = write!(
+        screen,
+        "\x1b[2J\x1b[H{}\n{rule}\n{GREY}>{RESET} \n{rule}\n  {GREY}⏵⏵ auto mode on (shift+tab to cycle){RESET}",
+        conversation()
+    );
     let _ = screen.flush();
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
@@ -208,7 +302,12 @@ fn session() -> ! {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match arguments
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["build", root] => {
             let root = std::path::absolute(root).unwrap_or_else(|_| root.into());
             if let Err(error) = build(&root) {

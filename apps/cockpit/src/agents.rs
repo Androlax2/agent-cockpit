@@ -1,10 +1,10 @@
 //! The agents a session can run (Claude Code, opencode): one row each, read by the column, the
 //! phone page and the daemon. cockpit has the same agents as files
-//! (config/bin/.local/bin/cockpit-agents/<name>.sh), and a test keeps both lists equal.
+//! (`config/bin/.local/bin/cockpit-agents/<name>.sh`), and a test keeps both lists equal.
 //! Adding a CLI takes three pieces:
 //! - a row here
 //! - a file there
-//! - a bridge that sends its states as session-state.sh payloads with COCKPIT_AGENT=<name>
+//! - a bridge that sends its states as session-state.sh payloads with `COCKPIT_AGENT=<name>`
 //!   (Claude's hooks, opencode's plugin)
 
 use regex::Regex;
@@ -96,11 +96,29 @@ pub static AGENTS: [Agent; 3] = [
         tmux_prefix: "claude-retry-",
         id_pattern: r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
         process: None,
-        features: &[Feature::Effort, Feature::Billing, Feature::Compact, Feature::RemoteControl, Feature::Dialogs,
-                    Feature::Interrupt, Feature::ScreenStates, Feature::Sleep],
+        features: &[
+            Feature::Effort,
+            Feature::Billing,
+            Feature::Compact,
+            Feature::RemoteControl,
+            Feature::Dialogs,
+            Feature::Interrupt,
+            Feature::ScreenStates,
+            Feature::Sleep,
+        ],
         interrupt_keys: &["Escape"],
-        start_files: &["CLAUDE.md", "settings", "plugins", "ADHD mode", "session hook", "sandbox", "greywall", "sandbox profile",
-                       "launcher", "shared launcher"],
+        start_files: &[
+            "CLAUDE.md",
+            "settings",
+            "plugins",
+            "ADHD mode",
+            "session hook",
+            "sandbox",
+            "greywall",
+            "sandbox profile",
+            "launcher",
+            "shared launcher",
+        ],
     },
     Agent {
         name: "opencode",
@@ -111,10 +129,24 @@ pub static AGENTS: [Agent; 3] = [
         process: Some("opencode"),
         // Escape twice stops its turn (the first only says "esc again to interrupt"). Its permission
         // prompt is not Claude's yes/no menu: remote::answer_opencode answers it.
-        features: &[Feature::Interrupt, Feature::Variants, Feature::Sleep, Feature::Dialogs, Feature::FormsInChat],
+        features: &[
+            Feature::Interrupt,
+            Feature::Variants,
+            Feature::Sleep,
+            Feature::Dialogs,
+            Feature::FormsInChat,
+        ],
         interrupt_keys: &["Escape", "Escape"],
-        start_files: &["CLAUDE.md", "sandbox", "greywall", "shared launcher", "opencode config", "opencode plugin", "opencode profile",
-                       "opencode launcher"],
+        start_files: &[
+            "CLAUDE.md",
+            "sandbox",
+            "greywall",
+            "shared launcher",
+            "opencode config",
+            "opencode plugin",
+            "opencode profile",
+            "opencode launcher",
+        ],
     },
     Agent {
         name: "codex",
@@ -125,12 +157,25 @@ pub static AGENTS: [Agent; 3] = [
         process: Some("codex"),
         features: &[],
         interrupt_keys: &[],
-        start_files: &["CLAUDE.md", "ADHD mode", "sandbox", "greywall", "shared launcher", "codex hooks", "codex profile", "codex launcher"],
+        start_files: &[
+            "CLAUDE.md",
+            "ADHD mode",
+            "sandbox",
+            "greywall",
+            "shared launcher",
+            "codex hooks",
+            "codex profile",
+            "codex launcher",
+        ],
     },
 ];
 
-static ID_PATTERNS: LazyLock<Vec<Regex>> =
-    LazyLock::new(|| AGENTS.iter().map(|agent| Regex::new(agent.id_pattern).expect("an agent's id pattern")).collect());
+static ID_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    AGENTS
+        .iter()
+        .map(|agent| Regex::new(agent.id_pattern).expect("an agent's id pattern"))
+        .collect()
+});
 
 pub fn names() -> Vec<&'static str> {
     AGENTS.iter().map(|agent| agent.name).collect()
@@ -152,13 +197,18 @@ pub fn is_session_id(id: &str) -> bool {
 
 /// The agent whose reported ids `id` matches.
 pub fn of_session_id(id: &str) -> Option<&'static Agent> {
-    AGENTS.iter().zip(ID_PATTERNS.iter()).find(|(_, pattern)| pattern.is_match(id)).map(|(agent, _)| agent)
+    AGENTS
+        .iter()
+        .zip(ID_PATTERNS.iter())
+        .find(|(_, pattern)| pattern.is_match(id))
+        .map(|(agent, _)| agent)
 }
 
 /// A tool's conversation identity; native Codex supplies its thread separately.
 pub fn current_session_id() -> Result<String, String> {
     if std::env::var("COCKPIT_AGENT").as_deref() == Ok("codex") {
-        let native = std::env::var("CODEX_THREAD_ID").map_err(|_| "native Codex tool has no CODEX_THREAD_ID")?;
+        let native = std::env::var("CODEX_THREAD_ID")
+            .map_err(|_| "native Codex tool has no CODEX_THREAD_ID")?;
         return crate::codex::cockpit_id(&native);
     }
     Ok(std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default())
@@ -166,5 +216,8 @@ pub fn current_session_id() -> Result<String, String> {
 
 /// The agent of a tmux session not reported yet, by the longest prefix of its name.
 pub fn of_tmux_session(name: &str) -> Option<&'static Agent> {
-    AGENTS.iter().filter(|agent| name.starts_with(agent.tmux_prefix)).max_by_key(|agent| agent.tmux_prefix.len())
+    AGENTS
+        .iter()
+        .filter(|agent| name.starts_with(agent.tmux_prefix))
+        .max_by_key(|agent| agent.tmux_prefix.len())
 }

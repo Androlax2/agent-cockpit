@@ -18,12 +18,21 @@ fn answers(sandbox: &Sandbox) -> PathBuf {
 }
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 fn files_with_extension(directory: &Path, extension: &str) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(directory) else { return Vec::new() };
-    entries.flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|found| found == extension)).collect()
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|found| found == extension))
+        .collect()
 }
 
 struct AskToRun {
@@ -41,25 +50,52 @@ impl AskToRun {
     fn answering(reply: &str) -> AskToRun {
         let sandbox = Sandbox::new();
         let runs = sandbox.root.join("runs");
-        let daemon = Some(ReportSocket::start(&sandbox.runtime.join("claude-report/osd-report.sock"), reply));
-        AskToRun { sandbox, runs, daemon }
+        let daemon = Some(ReportSocket::start(
+            &sandbox.runtime.join("claude-report/osd-report.sock"),
+            reply,
+        ));
+        AskToRun {
+            sandbox,
+            runs,
+            daemon,
+        }
     }
 
     fn ask(&self, arguments: &[&str], wait: &str) -> Child {
         let runs = self.runs.display().to_string();
-        self.sandbox.command(env!("CARGO_BIN_EXE_ask-to-run"), &[("CLAUDE_RUNS_DIR", &runs), ("ASK_TO_RUN_WAIT_S", wait)])
-            .args(arguments).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+        self.sandbox
+            .command(
+                env!("CARGO_BIN_EXE_ask-to-run"),
+                &[("CLAUDE_RUNS_DIR", &runs), ("ASK_TO_RUN_WAIT_S", wait)],
+            )
+            .args(arguments)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
     }
 
     /// The request the daemon received, whole, on its report socket.
     fn request(&self) -> Value {
-        let lines = self.daemon.as_ref().unwrap().received(Duration::from_secs(3));
+        let lines = self
+            .daemon
+            .as_ref()
+            .unwrap()
+            .received(Duration::from_secs(3));
         let line = lines.first().expect("no request filed");
-        serde_json::from_str(line.strip_prefix("run-request ").unwrap_or_else(|| panic!("not a run request: {line}"))).unwrap()
+        serde_json::from_str(
+            line.strip_prefix("run-request ")
+                .unwrap_or_else(|| panic!("not a run request: {line}")),
+        )
+        .unwrap()
     }
 
     fn answer(&self, request: &Value, result: Value) {
-        fs::write(answers(&self.sandbox).join(format!("{}.result", request["id"].as_str().unwrap())), result.to_string()).unwrap();
+        fs::write(
+            answers(&self.sandbox).join(format!("{}.result", request["id"].as_str().unwrap())),
+            result.to_string(),
+        )
+        .unwrap();
     }
 }
 
@@ -67,11 +103,33 @@ impl AskToRun {
 fn a_request_is_filed_announced_and_answered_with_the_output() {
     let fixture = AskToRun::new();
     let root = fixture.sandbox.root.display().to_string();
-    let asking = fixture.ask(&["--cwd", &root, "--why", "The kernel version, to pick the right headers.", "uname -r"], "5");
+    let asking = fixture.ask(
+        &[
+            "--cwd",
+            &root,
+            "--why",
+            "The kernel version, to pick the right headers.",
+            "uname -r",
+        ],
+        "5",
+    );
     let request = fixture.request();
-    assert_eq!((request["command"].as_str(), request["cwd"].as_str(), request["why"].as_str()),
-               (Some("uname -r"), Some(root.as_str()), Some("The kernel version, to pick the right headers.")));
-    fixture.answer(&request, json!({"status": "ran", "exit": 3, "output": "\x1b=6.17.1\x1b[31m-arch\x1b[0m\r\n\x1b>"}));
+    assert_eq!(
+        (
+            request["command"].as_str(),
+            request["cwd"].as_str(),
+            request["why"].as_str()
+        ),
+        (
+            Some("uname -r"),
+            Some(root.as_str()),
+            Some("The kernel version, to pick the right headers.")
+        )
+    );
+    fixture.answer(
+        &request,
+        json!({"status": "ran", "exit": 3, "output": "\x1b=6.17.1\x1b[31m-arch\x1b[0m\r\n\x1b>"}),
+    );
     let output = finish(asking, TIMEOUT);
     assert_eq!(output.status.code(), Some(3));
     let shown = stdout(&output);
@@ -96,17 +154,30 @@ fn a_request_the_daemon_refuses_says_why() {
     let fixture = AskToRun::answering("refused: its answers folder is not x");
     let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stdout(&output).contains("refused the request: its answers folder is not x"), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("refused the request: its answers folder is not x"),
+        "{}",
+        stdout(&output)
+    );
 }
 
 #[test]
 fn a_chain_that_failed_names_the_step_it_stopped_at() {
     let fixture = AskToRun::new();
-    let asking = fixture.ask(&["--why", "Build then test.", "make cockpit; and make test"], "5");
+    let asking = fixture.ask(
+        &["--why", "Build then test.", "make cockpit; and make test"],
+        "5",
+    );
     let request = fixture.request();
-    fixture.answer(&request, json!({"status": "ran", "exit": 2, "output": "error", "failed_step": "make test"}));
+    fixture.answer(
+        &request,
+        json!({"status": "ran", "exit": 2, "output": "error", "failed_step": "make test"}),
+    );
     let shown = stdout(&finish(asking, TIMEOUT));
-    assert!(shown.contains("[exit 2 · stopped at: make test]"), "{shown}");
+    assert!(
+        shown.contains("[exit 2 · stopped at: make test]"),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -117,21 +188,40 @@ fn a_long_output_shows_its_end_and_where_the_rest_is() {
     let output: String = (1..=500).map(|line| format!("line {line}\n")).collect();
     fixture.answer(&request, json!({"status": "ran", "exit": 0, "output": output, "output_file": "/answers/runs/x.output"}));
     let shown = stdout(&finish(asking, TIMEOUT));
-    assert!(shown.contains("[first 380 of 500 lines left out; the whole output is in /answers/runs/x.output]"), "{shown}");
-    assert!(shown.contains("line 500") && !shown.contains("line 380\n"), "{shown}");
+    assert!(
+        shown.contains(
+            "[first 380 of 500 lines left out; the whole output is in /answers/runs/x.output]"
+        ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("line 500") && !shown.contains("line 380\n"),
+        "{shown}"
+    );
 }
 
 #[test]
 fn a_lost_result_reports_an_unknown_outcome_without_suggesting_a_retry() {
     let fixture = AskToRun::new();
-    fs::write(answers(&fixture.sandbox).join("0123456789ab.result"), json!({"status":"result_lost"}).to_string()).unwrap();
+    fs::write(
+        answers(&fixture.sandbox).join("0123456789ab.result"),
+        json!({"status":"result_lost"}).to_string(),
+    )
+    .unwrap();
     let output = finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT);
     let shown = stdout(&output);
     assert_eq!(output.status.code(), Some(1));
     assert!(shown.contains("command outcome unknown"), "{shown}");
     assert!(shown.contains("Do not retry automatically"), "{shown}");
     assert!(!shown.contains("ask-to-run --wait"), "{shown}");
-    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(10)).is_empty());
+    assert!(
+        fixture
+            .daemon
+            .as_ref()
+            .unwrap()
+            .received(Duration::from_millis(10))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -164,14 +254,29 @@ fn a_timeout_distinguishes_the_hosts_last_reported_phase() {
         ("done", "finished; waiting for the final result"),
     ] {
         let fixture = AskToRun::new();
-        fs::write(answers(&fixture.sandbox).join("0123456789ab.phase"), json!({"phase": phase}).to_string()).unwrap();
+        fs::write(
+            answers(&fixture.sandbox).join("0123456789ab.phase"),
+            json!({"phase": phase}).to_string(),
+        )
+        .unwrap();
         let output = finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT);
         let shown = stdout(&output);
         assert_eq!(output.status.code(), Some(124), "{phase}: {shown}");
         assert!(shown.contains(expected), "{phase}: {shown}");
         assert!(!shown.contains("No answer"), "{phase}: {shown}");
-        assert!(shown.contains("ask-to-run --wait 0123456789ab"), "{phase}: {shown}");
-        assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(10)).is_empty(), "a duplicate request was filed");
+        assert!(
+            shown.contains("ask-to-run --wait 0123456789ab"),
+            "{phase}: {shown}"
+        );
+        assert!(
+            fixture
+                .daemon
+                .as_ref()
+                .unwrap()
+                .received(Duration::from_millis(10))
+                .is_empty(),
+            "a duplicate request was filed"
+        );
     }
 }
 
@@ -179,7 +284,11 @@ fn a_timeout_distinguishes_the_hosts_last_reported_phase() {
 fn a_phase_in_the_shared_writable_folder_cannot_claim_approval() {
     let fixture = AskToRun::new();
     fs::create_dir_all(&fixture.runs).unwrap();
-    fs::write(fixture.runs.join("0123456789ab.phase"), json!({"phase": "running"}).to_string()).unwrap();
+    fs::write(
+        fixture.runs.join("0123456789ab.phase"),
+        json!({"phase": "running"}).to_string(),
+    )
+    .unwrap();
     let output = finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT);
     let shown = stdout(&output);
     assert!(shown.contains("host status unavailable"), "{shown}");
@@ -191,9 +300,19 @@ fn a_phase_in_the_shared_writable_folder_cannot_claim_approval() {
 fn unreadable_or_unrecognized_phase_data_does_not_imply_no_approval() {
     for content in ["broken json", r#"{"phase":"invented"}"#] {
         let fixture = AskToRun::new();
-        fs::write(answers(&fixture.sandbox).join("0123456789ab.phase"), content).unwrap();
-        let shown = stdout(&finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT));
-        assert!(shown.contains("host status unavailable"), "{content}: {shown}");
+        fs::write(
+            answers(&fixture.sandbox).join("0123456789ab.phase"),
+            content,
+        )
+        .unwrap();
+        let shown = stdout(&finish(
+            fixture.ask(&["--wait", "0123456789ab"], "0"),
+            TIMEOUT,
+        ));
+        assert!(
+            shown.contains("host status unavailable"),
+            "{content}: {shown}"
+        );
         assert!(!shown.contains("No answer"), "{content}: {shown}");
     }
 }
@@ -202,11 +321,23 @@ fn unreadable_or_unrecognized_phase_data_does_not_imply_no_approval() {
 fn the_final_result_takes_precedence_over_a_running_phase() {
     let fixture = AskToRun::new();
     let folder = answers(&fixture.sandbox);
-    fs::write(folder.join("0123456789ab.phase"), json!({"phase": "running"}).to_string()).unwrap();
-    fs::write(folder.join("0123456789ab.result"), json!({"status": "ran", "exit": 7, "output": "finished output"}).to_string()).unwrap();
+    fs::write(
+        folder.join("0123456789ab.phase"),
+        json!({"phase": "running"}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        folder.join("0123456789ab.result"),
+        json!({"status": "ran", "exit": 7, "output": "finished output"}).to_string(),
+    )
+    .unwrap();
     let output = finish(fixture.ask(&["--wait", "0123456789ab"], "0"), TIMEOUT);
     assert_eq!(output.status.code(), Some(7));
-    assert!(stdout(&output).contains("finished output"), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("finished output"),
+        "{}",
+        stdout(&output)
+    );
     assert!(!stdout(&output).contains("last reported running"));
 }
 
@@ -215,7 +346,9 @@ fn while_waiting_it_keeps_a_heartbeat_for_the_daemon() {
     let fixture = AskToRun::new();
     let asking = fixture.ask(&["--why", "x", "true"], "5");
     let request = fixture.request();
-    let heartbeat = fixture.runs.join(format!("{}.waiting", request["id"].as_str().unwrap()));
+    let heartbeat = fixture
+        .runs
+        .join(format!("{}.waiting", request["id"].as_str().unwrap()));
     assert!(heartbeat.exists(), "no heartbeat");
     fixture.answer(&request, json!({"status": "declined"}));
     finish(asking, TIMEOUT);
@@ -226,7 +359,11 @@ fn while_waiting_it_keeps_a_heartbeat_for_the_daemon() {
 fn waiting_on_a_dropped_request_says_to_ask_again() {
     let fixture = AskToRun::new();
     fs::create_dir_all(&fixture.runs).unwrap();
-    fs::write(answers(&fixture.sandbox).join("0123456789ab.result"), json!({"status": "abandoned"}).to_string()).unwrap();
+    fs::write(
+        answers(&fixture.sandbox).join("0123456789ab.result"),
+        json!({"status": "abandoned"}).to_string(),
+    )
+    .unwrap();
     let output = finish(fixture.ask(&["--wait", "0123456789ab"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(124));
     assert!(stdout(&output).contains("dropped"), "{}", stdout(&output));
@@ -238,7 +375,10 @@ fn without_a_daemon_it_says_to_fall_back() {
     fixture.daemon = None;
     let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert_eq!(files_with_extension(&fixture.runs, "waiting"), Vec::<PathBuf>::new());
+    assert_eq!(
+        files_with_extension(&fixture.runs, "waiting"),
+        Vec::<PathBuf>::new()
+    );
 }
 
 #[test]
@@ -247,8 +387,20 @@ fn a_command_without_why_is_refused_before_anything_is_filed() {
     let root = fixture.sandbox.root.display().to_string();
     let output = finish(fixture.ask(&["--cwd", &root, "uname -r"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(2));
-    assert!(stderr(&output).contains("--why is required"), "{}", stderr(&output));
-    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
+    assert!(
+        stderr(&output).contains("--why is required"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        fixture
+            .daemon
+            .as_ref()
+            .unwrap()
+            .received(Duration::from_millis(200))
+            .is_empty(),
+        "a request was filed"
+    );
 }
 
 #[test]
@@ -288,17 +440,28 @@ impl Approve {
         let held = sandbox.runtime.join("cockpit-requests");
         fs::create_dir_all(&held).unwrap();
         // script -qfec "<command>" <log>: record what would run, then exit with SHIM_EXIT.
-        sandbox.shim("script", r#"printf "ran: %s\n" "$2" > "$3"; exit "${SHIM_EXIT:-0}""#);
+        sandbox.shim(
+            "script",
+            r#"printf "ran: %s\n" "$2" > "$3"; exit "${SHIM_EXIT:-0}""#,
+        );
         sandbox.shim("cockpit", "");
         let editor = sandbox.shims.join("edit-command");
         write_executable(&editor, "#!/bin/sh\necho 'echo edited' > \"$1\"\n");
-        Approve { sandbox, held, editor }
+        Approve {
+            sandbox,
+            held,
+            editor,
+        }
     }
 
     fn file(&self, command: &str, age: i64, request_id: &str, why: &str) -> String {
         let request = json!({"id": request_id, "command": command, "why": why, "cwd": self.sandbox.root, "started_in": self.sandbox.root,
                              "project": "proj-a", "answers": ANSWERS_KEY, "requested_at": now() - age});
-        fs::write(self.held.join(format!("{request_id}.request")), request.to_string()).unwrap();
+        fs::write(
+            self.held.join(format!("{request_id}.request")),
+            request.to_string(),
+        )
+        .unwrap();
         request_id.to_string()
     }
 
@@ -308,11 +471,24 @@ impl Approve {
 
     /// Runs claude-run-approve with `keys` on stdin; `before_answer` runs half a second in, before
     /// any key arrives. Returns what it showed.
-    fn approve_with(&self, request_id: &str, keys: &str, before_answer: impl FnOnce(), extra: &[(&str, &str)]) -> String {
+    fn approve_with(
+        &self,
+        request_id: &str,
+        keys: &str,
+        before_answer: impl FnOnce(),
+        extra: &[(&str, &str)],
+    ) -> String {
         let editor = self.editor.display().to_string();
-        let mut process = self.sandbox.command(bin().join("claude-run-approve"), &[("EDITOR", &editor)])
-            .envs(extra.iter().copied()).arg(request_id)
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut process = self
+            .sandbox
+            .command(bin().join("claude-run-approve"), &[("EDITOR", &editor)])
+            .envs(extra.iter().copied())
+            .arg(request_id)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         before_answer();
         let mut input = process.stdin.take().unwrap();
         let _ = input.write_all(keys.as_bytes()); // it may exit before reading every key
@@ -326,7 +502,8 @@ impl Approve {
 
     fn result(&self, request_id: &str) -> Option<Value> {
         let path = answers(&self.sandbox).join(format!("{request_id}.result"));
-        path.exists().then(|| serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap())
+        path.exists()
+            .then(|| serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap())
     }
 }
 
@@ -340,8 +517,14 @@ fn yes_runs_the_command_read_at_start_even_if_the_file_changes() {
     };
     fixture.approve_with(&request_id, "y\n\n\n", swap_command, &[("SHIM_EXIT", "2")]);
     let result = fixture.result(&request_id).unwrap();
-    assert_eq!((result["status"].as_str(), result["exit"].as_i64()), (Some("ran"), Some(2)));
-    assert!(result["output"].as_str().unwrap().contains("-c 'echo hi'"), "{result}");
+    assert_eq!(
+        (result["status"].as_str(), result["exit"].as_i64()),
+        (Some("ran"), Some(2))
+    );
+    assert!(
+        result["output"].as_str().unwrap().contains("-c 'echo hi'"),
+        "{result}"
+    );
     assert_eq!(result.get("edited_command"), Some(&Value::Null));
 }
 
@@ -350,7 +533,10 @@ fn enter_alone_declines() {
     let fixture = Approve::new();
     let request_id = fixture.file_default();
     fixture.approve(&request_id, "\n\n");
-    assert_eq!(fixture.result(&request_id), Some(json!({"status": "declined"})));
+    assert_eq!(
+        fixture.result(&request_id),
+        Some(json!({"status": "declined"}))
+    );
 }
 
 #[test]
@@ -360,7 +546,13 @@ fn an_edited_command_runs_and_is_reported() {
     fixture.approve(&request_id, "e\ny\n\n\n");
     let result = fixture.result(&request_id).unwrap();
     assert_eq!(result["edited_command"], "echo edited");
-    assert!(result["output"].as_str().unwrap().contains("-c 'echo edited'"), "{result}");
+    assert!(
+        result["output"]
+            .as_str()
+            .unwrap()
+            .contains("-c 'echo edited'"),
+        "{result}"
+    );
 }
 
 #[test]
@@ -371,27 +563,46 @@ fn the_output_always_goes_back_without_a_question() {
     let result = fixture.result(&request_id).unwrap();
     assert_eq!(result["status"], "ran");
     assert!(!shown.contains("Send the output"), "{shown}");
-    assert!(result["output"].as_str().unwrap().contains("ran: "), "{result}");
+    assert!(
+        result["output"].as_str().unwrap().contains("ran: "),
+        "{result}"
+    );
 }
 
 /// The HYPRLAND_INSTANCE_SIGNATURE an approved command sees, when the approval terminal starts
 /// with `signature` (None: unset) and Hyprland runs as live_instance.
 fn hyprland_signature_an_approved_command_sees(signature: Option<&str>) -> String {
     let fixture = Approve::new();
-    fixture.sandbox.shim("script", r#"printf "signature: %s\n" "${HYPRLAND_INSTANCE_SIGNATURE-unset}" > "$3""#);
+    fixture.sandbox.shim(
+        "script",
+        r#"printf "signature: %s\n" "${HYPRLAND_INSTANCE_SIGNATURE-unset}" > "$3""#,
+    );
     let live = fixture.sandbox.runtime.join("hypr/live_instance");
     fs::create_dir_all(&live).unwrap();
     fs::write(live.join(".socket.sock"), "").unwrap();
     let request_id = fixture.file_default();
-    let mut approval = fixture.sandbox.command(bin().join("claude-run-approve"), &[]);
+    let mut approval = fixture
+        .sandbox
+        .command(bin().join("claude-run-approve"), &[]);
     approval.env_remove("HYPRLAND_INSTANCE_SIGNATURE");
     if let Some(signature) = signature {
         approval.env("HYPRLAND_INSTANCE_SIGNATURE", signature);
     }
-    let mut process = approval.arg(&request_id).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut process = approval
+        .arg(&request_id)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let _ = process.stdin.take().unwrap().write_all(b"y\n");
     let shown = finish(process, Duration::from_secs(10));
-    fixture.result(&request_id).unwrap_or_else(|| panic!("no result: {}{}", stdout(&shown), stderr(&shown)))["output"].as_str().unwrap().to_string()
+    fixture
+        .result(&request_id)
+        .unwrap_or_else(|| panic!("no result: {}{}", stdout(&shown), stderr(&shown)))["output"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 #[test]
@@ -401,7 +612,8 @@ fn an_approved_command_reaches_hyprland_when_the_approval_terminal_has_no_signat
 }
 
 #[test]
-fn an_approved_command_reaches_the_running_hyprland_when_the_approval_terminal_has_a_past_ones_signature() {
+fn an_approved_command_reaches_the_running_hyprland_when_the_approval_terminal_has_a_past_ones_signature()
+ {
     let output = hyprland_signature_an_approved_command_sees(Some("gone_instance"));
     assert!(output.contains("signature: live_instance"), "{output}");
 }
@@ -409,10 +621,16 @@ fn an_approved_command_reaches_the_running_hyprland_when_the_approval_terminal_h
 #[test]
 fn approved_commands_inherit_the_approval_id() {
     let fixture = Approve::new();
-    fixture.sandbox.shim("script", r#"printf 'approval id: %s\n' "${COCKPIT_APPROVAL_ID:-missing}" > "$3""#);
+    fixture.sandbox.shim(
+        "script",
+        r#"printf 'approval id: %s\n' "${COCKPIT_APPROVAL_ID:-missing}" > "$3""#,
+    );
     let request_id = fixture.file_default();
     fixture.approve(&request_id, "y\n");
-    assert_eq!(fixture.result(&request_id).unwrap()["output"], format!("approval id: {request_id}"));
+    assert_eq!(
+        fixture.result(&request_id).unwrap()["output"],
+        format!("approval id: {request_id}")
+    );
 }
 
 #[test]
@@ -434,7 +652,12 @@ fn pairing_credentials_are_redacted_from_approval_results() {
 fn secrets_in_the_output_are_redacted_before_they_go_back() {
     let fixture = Approve::new();
     // The fake `script` prints what it ran: a command that echoes a token stands for one that prints it.
-    let request_id = fixture.file("echo ghp_0123456789abcdefghijABCDEFGHIJ012345", 0, "0123456789ab", "x");
+    let request_id = fixture.file(
+        "echo ghp_0123456789abcdefghijABCDEFGHIJ012345",
+        0,
+        "0123456789ab",
+        "x",
+    );
     let shown = fixture.approve(&request_id, "y\n");
     let result = fixture.result(&request_id).unwrap();
     let output = result["output"].as_str().unwrap();
@@ -447,22 +670,38 @@ fn secrets_in_the_output_are_redacted_before_they_go_back() {
 #[test]
 fn hidden_characters_are_shown_escaped_and_flagged() {
     let fixture = Approve::new();
-    let request_id = fixture.file("ls\x1b[2K\r; rm -rf ~ \u{202e}", 0, "0123456789ab", "Says hi.");
+    let request_id = fixture.file(
+        "ls\x1b[2K\r; rm -rf ~ \u{202e}",
+        0,
+        "0123456789ab",
+        "Says hi.",
+    );
     let shown = fixture.approve(&request_id, "\n\n");
     assert!(!shown.contains("\x1b[2K"), "{shown:?}");
     assert!(shown.contains("\\u001b"), "{shown}");
     assert!(shown.contains("\\u202e"), "{shown}");
     assert!(shown.contains("hidden characters"), "{shown}");
-    assert_eq!(fixture.result(&request_id), Some(json!({"status": "declined"})));
+    assert_eq!(
+        fixture.result(&request_id),
+        Some(json!({"status": "declined"}))
+    );
 }
 
 #[test]
 fn claudes_explanation_shows_under_the_command_escaped() {
     let fixture = Approve::new();
-    let request_id = fixture.file("echo hi", 0, "0123456789ab", "Restarts the OSD daemon\x1b[2K so it loads the guide code.");
+    let request_id = fixture.file(
+        "echo hi",
+        0,
+        "0123456789ab",
+        "Restarts the OSD daemon\x1b[2K so it loads the guide code.",
+    );
     let shown = fixture.approve(&request_id, "\n\n");
     assert!(shown.contains("Why, in Claude's words"), "{shown}");
-    assert!(shown.contains("Restarts the OSD daemon\\u001b[2K so it loads the guide code."), "{shown}");
+    assert!(
+        shown.contains("Restarts the OSD daemon\\u001b[2K so it loads the guide code."),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -483,14 +722,26 @@ fn the_project_shown_is_the_one_the_daemon_found() {
 fn a_command_outside_the_sessions_folder_is_flagged() {
     // Security audit H3: a request for another project's folder must not look like the session's own.
     let fixture = Approve::new();
-    for (cwd, is_flagged) in [(fixture.sandbox.root.join("apps"), false), (std::env::temp_dir(), true)] {
+    for (cwd, is_flagged) in [
+        (fixture.sandbox.root.join("apps"), false),
+        (std::env::temp_dir(), true),
+    ] {
         fs::create_dir_all(&cwd).unwrap();
         let request = json!({"id": "0123456789ab", "command": "make", "why": "x", "cwd": cwd, "started_in": fixture.sandbox.root,
                              "project": "proj-a", "answers": ANSWERS_KEY, "requested_at": now()});
-        fs::write(fixture.held.join("0123456789ab.request"), request.to_string()).unwrap();
+        fs::write(
+            fixture.held.join("0123456789ab.request"),
+            request.to_string(),
+        )
+        .unwrap();
         let _ = fs::remove_file(answers(&fixture.sandbox).join("0123456789ab.result"));
         let shown = fixture.approve("0123456789ab", "\n");
-        assert_eq!(shown.contains("outside the folder the session works in"), is_flagged, "{}: {shown}", cwd.display());
+        assert_eq!(
+            shown.contains("outside the folder the session works in"),
+            is_flagged,
+            "{}: {shown}",
+            cwd.display()
+        );
     }
 }
 
@@ -503,8 +754,11 @@ fn it_tells_the_daemon_when_it_needs_theo() {
     fixture.approve(&request_id, "y\n\n");
     std::thread::sleep(Duration::from_millis(200));
     let received = listener.received();
-    let phases: Vec<&str> = received.lines().filter(|line| line.starts_with("run-phase"))
-        .map(|line| line.split_whitespace().last().unwrap()).collect();
+    let phases: Vec<&str> = received
+        .lines()
+        .filter(|line| line.starts_with("run-phase"))
+        .map(|line| line.split_whitespace().last().unwrap())
+        .collect();
     assert_eq!(phases, ["asking", "running", "done"]);
 }
 
@@ -513,7 +767,10 @@ fn the_approval_terminal_publishes_phases_where_its_project_can_read_them() {
     let fixture = Approve::new();
     let request_id = fixture.file_default();
     let phase = answers(&fixture.sandbox).join(format!("{request_id}.phase"));
-    fixture.sandbox.shim("script", r#"cat "$SHIM_PHASE_PATH" > "$HOME/phase-at-run"; printf 'ran\n' > "$3""#);
+    fixture.sandbox.shim(
+        "script",
+        r#"cat "$SHIM_PHASE_PATH" > "$HOME/phase-at-run"; printf 'ran\n' > "$3""#,
+    );
     let asking = std::cell::RefCell::new(None::<Value>);
     let before_answer = || {
         let deadline = std::time::Instant::now() + TIMEOUT;
@@ -525,9 +782,20 @@ fn the_approval_terminal_publishes_phases_where_its_project_can_read_them() {
             std::thread::sleep(Duration::from_millis(10));
         }
     };
-    fixture.approve_with(&request_id, "y\n\n", before_answer, &[("SHIM_PHASE_PATH", phase.to_str().unwrap())]);
-    assert_eq!(asking.into_inner().unwrap_or(Value::Null)["phase"], "asking");
-    let during: Value = serde_json::from_str(&fs::read_to_string(fixture.sandbox.home.join("phase-at-run")).unwrap()).unwrap();
+    fixture.approve_with(
+        &request_id,
+        "y\n\n",
+        before_answer,
+        &[("SHIM_PHASE_PATH", phase.to_str().unwrap())],
+    );
+    assert_eq!(
+        asking.into_inner().unwrap_or(Value::Null)["phase"],
+        "asking"
+    );
+    let during: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.sandbox.home.join("phase-at-run")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(during["phase"], "running");
     let after: Value = serde_json::from_str(&fs::read_to_string(&phase).unwrap()).unwrap();
     assert_eq!(after["phase"], "done");
@@ -542,7 +810,11 @@ fn stale_and_answered_requests_are_refused() {
     assert!(shown.contains("older than 15 minutes"), "{shown}");
     assert_eq!(fixture.result(&stale), None);
     let answered = fixture.file("echo hi", 0, "ba9876543210", "Says hi.");
-    fs::write(answers(&fixture.sandbox).join(format!("{answered}.result")), r#"{"status": "declined"}"#).unwrap();
+    fs::write(
+        answers(&fixture.sandbox).join(format!("{answered}.result")),
+        r#"{"status": "declined"}"#,
+    )
+    .unwrap();
     let shown = fixture.approve(&answered, "y\n\n");
     assert!(shown.contains("already answered"), "{shown}");
 }
@@ -555,7 +827,11 @@ fn a_link_planted_at_the_old_temporary_name_writes_nothing_through_it() {
     let request_id = fixture.file_default();
     let victim = fixture.sandbox.root.join("victim");
     fs::write(&victim, "precious\n").unwrap();
-    std::os::unix::fs::symlink(&victim, answers(&fixture.sandbox).join(format!("{request_id}.result.tmp"))).unwrap();
+    std::os::unix::fs::symlink(
+        &victim,
+        answers(&fixture.sandbox).join(format!("{request_id}.result.tmp")),
+    )
+    .unwrap();
     fixture.approve(&request_id, "\n");
     assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
     assert_eq!(fixture.result(&request_id).unwrap()["status"], "declined");
@@ -566,7 +842,11 @@ fn a_dangling_link_at_the_result_is_replaced_not_followed() {
     let fixture = Approve::new();
     let request_id = fixture.file_default();
     let victim = fixture.sandbox.root.join("created-by-the-link");
-    std::os::unix::fs::symlink(&victim, answers(&fixture.sandbox).join(format!("{request_id}.result"))).unwrap();
+    std::os::unix::fs::symlink(
+        &victim,
+        answers(&fixture.sandbox).join(format!("{request_id}.result")),
+    )
+    .unwrap();
     fixture.approve(&request_id, "\n");
     assert!(!victim.exists(), "the link's target was written");
 }
@@ -578,7 +858,11 @@ fn a_folder_name_with_escape_codes_is_shown_escaped() {
     fs::create_dir(&folder).unwrap();
     let request = json!({"id": "0123456789ab", "command": "true", "why": "x", "cwd": folder, "started_in": fixture.sandbox.root,
                          "project": "p", "answers": ANSWERS_KEY, "requested_at": now()});
-    fs::write(fixture.held.join("0123456789ab.request"), request.to_string()).unwrap();
+    fs::write(
+        fixture.held.join("0123456789ab.request"),
+        request.to_string(),
+    )
+    .unwrap();
     let shown = fixture.approve("0123456789ab", "\n");
     assert!(!shown.contains("\x1b[8m"), "{shown:?}");
     assert!(shown.contains("\\u001b"), "{shown:?}");
@@ -592,35 +876,69 @@ fn a_result_planted_in_the_shared_runs_folder_is_ignored() {
     let request_id = fixture.file_default();
     let shared_runs = fixture.sandbox.root.join("runs");
     fs::create_dir_all(&shared_runs).unwrap();
-    fs::write(shared_runs.join(format!("{request_id}.result")), json!({"status": "ran", "exit": 0, "output": "forged"}).to_string()).unwrap();
+    fs::write(
+        shared_runs.join(format!("{request_id}.result")),
+        json!({"status": "ran", "exit": 0, "output": "forged"}).to_string(),
+    )
+    .unwrap();
     let shown = fixture.approve(&request_id, "\n");
-    assert!(shown.contains("Run it?"), "the approval was skipped: {shown}");
-    assert_eq!(fixture.result(&request_id), Some(json!({"status": "declined"})));
+    assert!(
+        shown.contains("Run it?"),
+        "the approval was skipped: {shown}"
+    );
+    assert_eq!(
+        fixture.result(&request_id),
+        Some(json!({"status": "declined"}))
+    );
 }
 
 #[test]
 fn a_terminal_session_waits_for_approval_and_returns_the_answer() {
     for (answer, expected_exit, expected_output) in [
         (json!({"status": "declined"}), 125, "Theo declined"),
-        (json!({"status": "ran", "exit": 3, "output": "approved output"}), 3, "approved output"),
+        (
+            json!({"status": "ran", "exit": 3, "output": "approved output"}),
+            3,
+            "approved output",
+        ),
     ] {
         let mut fixture = AskToRun::new();
-        fixture.sandbox.env.insert("COCKPIT_TERMINAL".into(), "1".into());
-        let mut asking = fixture.ask(&["--why", "Check the terminal session approval path.", "echo approved output"], "5");
+        fixture
+            .sandbox
+            .env
+            .insert("COCKPIT_TERMINAL".into(), "1".into());
+        let mut asking = fixture.ask(
+            &[
+                "--why",
+                "Check the terminal session approval path.",
+                "echo approved output",
+            ],
+            "5",
+        );
         let request = fixture.request();
         assert_eq!(request["answers"], ANSWERS_KEY);
-        assert!(asking.try_wait().unwrap().is_none(), "returned before Theo answered");
+        assert!(
+            asking.try_wait().unwrap().is_none(),
+            "returned before Theo answered"
+        );
         fixture.answer(&request, answer);
         let output = finish(asking, TIMEOUT);
         assert_eq!(output.status.code(), Some(expected_exit));
-        assert!(stdout(&output).contains(expected_output), "{}", stdout(&output));
+        assert!(
+            stdout(&output).contains(expected_output),
+            "{}",
+            stdout(&output)
+        );
     }
 }
 
 #[test]
 fn a_terminal_session_can_check_approval_availability() {
     let mut fixture = AskToRun::new();
-    fixture.sandbox.env.insert("COCKPIT_TERMINAL".into(), "1".into());
+    fixture
+        .sandbox
+        .env
+        .insert("COCKPIT_TERMINAL".into(), "1".into());
     let output = finish(fixture.ask(&["--check"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
 }
@@ -628,12 +946,30 @@ fn a_terminal_session_can_check_approval_availability() {
 #[test]
 fn a_terminal_session_without_its_projects_answers_folder_still_falls_back() {
     let mut fixture = AskToRun::new();
-    fixture.sandbox.env.insert("COCKPIT_TERMINAL".into(), "1".into());
-    fixture.sandbox.env.insert("CLAUDE_ANSWERS_KEY".into(), String::new());
+    fixture
+        .sandbox
+        .env
+        .insert("COCKPIT_TERMINAL".into(), "1".into());
+    fixture
+        .sandbox
+        .env
+        .insert("CLAUDE_ANSWERS_KEY".into(), String::new());
     let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert!(stdout(&output).contains("no COCKPIT_ANSWERS_KEY"), "{}", stdout(&output));
-    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
+    assert!(
+        stdout(&output).contains("no COCKPIT_ANSWERS_KEY"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        fixture
+            .daemon
+            .as_ref()
+            .unwrap()
+            .received(Duration::from_millis(200))
+            .is_empty(),
+        "a request was filed"
+    );
 }
 
 #[test]
@@ -641,11 +977,35 @@ fn a_session_the_launcher_gave_no_answers_folder_falls_back() {
     // Security audit M3: answers go to the asking project's own folder, or nowhere.
     let fixture = AskToRun::new();
     let runs = fixture.runs.display().to_string();
-    let output = finish(fixture.sandbox.command(bin().join("ask-to-run"), &[("CLAUDE_RUNS_DIR", &runs), ("CLAUDE_ANSWERS_KEY", "")])
-        .args(["--why", "x", "true"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap(), TIMEOUT);
+    let output = finish(
+        fixture
+            .sandbox
+            .command(
+                bin().join("ask-to-run"),
+                &[("CLAUDE_RUNS_DIR", &runs), ("CLAUDE_ANSWERS_KEY", "")],
+            )
+            .args(["--why", "x", "true"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+        TIMEOUT,
+    );
     assert_eq!(output.status.code(), Some(126));
-    assert!(stdout(&output).contains("restart it"), "{}", stdout(&output));
-    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
+    assert!(
+        stdout(&output).contains("restart it"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(
+        fixture
+            .daemon
+            .as_ref()
+            .unwrap()
+            .received(Duration::from_millis(200))
+            .is_empty(),
+        "a request was filed"
+    );
 }
 
 #[test]
@@ -654,16 +1014,41 @@ fn a_request_names_its_projects_answers_folder() {
     let mut asking = fixture.ask(&["--why", "Says hi.", "echo hi"], "1");
     let request = fixture.request();
     let _ = asking.kill();
+    asking.wait().unwrap();
     assert_eq!(request["answers"].as_str(), Some(ANSWERS_KEY));
 }
 
 #[test]
 fn ask_to_run_rejects_the_removed_evidence_option() {
     let fixture = AskToRun::new();
-    let output = finish(fixture.ask(&["--evidence", r#"{"assignment":"a","gate":"tests"}"#, "--why", "Runs the tests.", "true"], "1"), TIMEOUT);
+    let output = finish(
+        fixture.ask(
+            &[
+                "--evidence",
+                r#"{"assignment":"a","gate":"tests"}"#,
+                "--why",
+                "Runs the tests.",
+                "true",
+            ],
+            "1",
+        ),
+        TIMEOUT,
+    );
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "a request was filed");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("usage:"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        fixture
+            .daemon
+            .as_ref()
+            .unwrap()
+            .received(Duration::from_millis(200))
+            .is_empty(),
+        "a request was filed"
+    );
 }
 
 #[test]
@@ -673,9 +1058,16 @@ fn a_request_naming_no_answers_folder_or_a_path_is_refused() {
         let request_id = "0123456789ab";
         let request = json!({"id": request_id, "command": "echo hi", "why": "Says hi.", "cwd": fixture.sandbox.root, "answers": answers,
                              "requested_at": now()});
-        fs::write(fixture.held.join(format!("{request_id}.request")), request.to_string()).unwrap();
+        fs::write(
+            fixture.held.join(format!("{request_id}.request")),
+            request.to_string(),
+        )
+        .unwrap();
         let shown = fixture.approve(request_id, "y\n");
-        assert!(shown.contains("names no answers folder"), "{answers}: {shown}");
+        assert!(
+            shown.contains("names no answers folder"),
+            "{answers}: {shown}"
+        );
     }
 }
 
@@ -699,19 +1091,29 @@ fn check_names_a_missing_socket_and_says_to_restart_the_session() {
     fixture.daemon = None;
     let (code, shown) = check(&fixture.sandbox);
     assert_eq!(code, Some(126));
-    assert!(shown.contains("has no report socket") && shown.contains("restart this session"), "{shown}");
+    assert!(
+        shown.contains("has no report socket") && shown.contains("restart this session"),
+        "{shown}"
+    );
 }
 
 #[test]
 fn check_names_a_socket_nobody_listens_on_and_the_command_that_brings_it_back() {
     let mut fixture = AskToRun::new();
     fixture.daemon = None;
-    let socket = fixture.sandbox.runtime.join("claude-report/osd-report.sock");
+    let socket = fixture
+        .sandbox
+        .runtime
+        .join("claude-report/osd-report.sock");
     fs::create_dir_all(socket.parent().unwrap()).unwrap();
     drop(std::os::unix::net::UnixListener::bind(&socket).unwrap()); // the file stays, nobody listens
     let (code, shown) = check(&fixture.sandbox);
     assert_eq!(code, Some(126));
-    assert!(shown.contains("nothing listens") && shown.contains("systemctl --user restart osd-report.socket osd.service"), "{shown}");
+    assert!(
+        shown.contains("nothing listens")
+            && shown.contains("systemctl --user restart osd-report.socket osd.service"),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -719,5 +1121,9 @@ fn a_daemon_that_never_answers_points_at_an_old_build() {
     let fixture = AskToRun::answering("");
     let output = finish(fixture.ask(&["--why", "x", "true"], "5"), TIMEOUT);
     assert_eq!(output.status.code(), Some(126));
-    assert!(stdout(&output).contains("cockpit reload"), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("cockpit reload"),
+        "{}",
+        stdout(&output)
+    );
 }

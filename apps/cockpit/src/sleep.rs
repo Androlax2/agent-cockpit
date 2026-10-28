@@ -2,7 +2,7 @@
 //! paths::asleep_dir, named by the session id), and the conversation resumes on demand.
 
 use crate::agents::Feature;
-use crate::sessions::{self, Session, Facts};
+use crate::sessions::{self, Facts, Session};
 use crate::{paths, settings, util};
 use serde_json::Value;
 use std::fmt;
@@ -35,26 +35,55 @@ impl Asleep {
     /// change (sessions::changed_since_start).
     pub fn card(&self) -> Session {
         Session {
-            session: self.session.clone(), state: "waiting".into(), project: self.project.clone(), cwd: self.cwd.clone(),
-            task: self.title.clone(), since: self.idle_since, started: self.started, agent: self.agent.clone(), asleep: Some(self.slept_at),
-            facts: Facts { remote: self.remote, ..Facts::default() }, ..Session::default()
+            session: self.session.clone(),
+            state: "waiting".into(),
+            project: self.project.clone(),
+            cwd: self.cwd.clone(),
+            task: self.title.clone(),
+            since: self.idle_since,
+            started: self.started,
+            agent: self.agent.clone(),
+            asleep: Some(self.slept_at),
+            facts: Facts {
+                remote: self.remote,
+                ..Facts::default()
+            },
+            ..Session::default()
         }
     }
 
     /// The session id is the note's file name, so a note cannot name a file outside its folder.
     fn from_note(session: String, note: &Value) -> Option<Asleep> {
-        if let Some(permit) = note.get("team_resume") {
-            if permit.as_str().is_none_or(str::is_empty) || note.get("session")?.as_str()? != session
-                || note.get("slept_at")?.as_i64().is_none() {
-                return None;
-            }
+        if let Some(permit) = note.get("team_resume")
+            && (permit.as_str().is_none_or(str::is_empty)
+                || note.get("session")?.as_str()? != session
+                || note.get("slept_at")?.as_i64().is_none())
+        {
+            return None;
         }
-        let text = |key: &str| note.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-        let seconds = |key: &str| note.get(key).and_then(Value::as_f64).map(|seconds| seconds as i64);
+        let text = |key: &str| {
+            note.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let seconds = |key: &str| {
+            note.get(key)
+                .and_then(Value::as_f64)
+                .map(|seconds| seconds as i64)
+        };
         Some(Asleep {
-            session, agent: note.get("agent").and_then(Value::as_str).unwrap_or(crate::agents::DEFAULT).into(),
-            project: text("project"), cwd: text("cwd"), title: text("title"),
-            idle_since: seconds("idle_since")?, slept_at: seconds("slept_at")?,
+            session,
+            agent: note
+                .get("agent")
+                .and_then(Value::as_str)
+                .unwrap_or(crate::agents::DEFAULT)
+                .into(),
+            project: text("project"),
+            cwd: text("cwd"),
+            title: text("title"),
+            idle_since: seconds("idle_since")?,
+            slept_at: seconds("slept_at")?,
             remote: note.get("remote").and_then(Value::as_bool).unwrap_or(false),
             started: seconds("started"),
         })
@@ -62,19 +91,26 @@ impl Asleep {
 }
 
 fn notes_in(dir: &Path) -> Vec<Asleep> {
-    let Ok(entries) = fs::read_dir(dir) else { return vec![] };
-    entries.flatten().filter_map(|entry| {
-        let session = entry.file_name().to_str()?.to_string();
-        let note = fs::symlink_metadata(entry.path()).ok().filter(|metadata| metadata.is_file())
-            .and_then(|_| util::read_json(&entry.path()))
-            .and_then(|note| Asleep::from_note(session.clone(), &note));
-        if note.is_none() {
-            // Missing notes revoke pending handoffs even while host IPC is unavailable.
-            let _ = fs::remove_file(entry.path());
-            util::log_event("WARN", &format!("unreadable sleep note {session}"));
-        }
-        note
-    }).collect()
+    let Ok(entries) = fs::read_dir(dir) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let session = entry.file_name().to_str()?.to_string();
+            let note = fs::symlink_metadata(entry.path())
+                .ok()
+                .filter(|metadata| metadata.is_file())
+                .and_then(|_| util::read_json(&entry.path()))
+                .and_then(|note| Asleep::from_note(session.clone(), &note));
+            if note.is_none() {
+                // Missing notes revoke pending handoffs even while host IPC is unavailable.
+                let _ = fs::remove_file(entry.path());
+                util::log_event("WARN", &format!("unreadable sleep note {session}"));
+            }
+            note
+        })
+        .collect()
 }
 
 pub fn asleep() -> Vec<Asleep> {
@@ -86,16 +122,27 @@ pub fn forget(session: &str) {
 }
 
 fn forget_in(dir: &Path, session: &str) {
-    if session.is_empty() || !session.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) { return; }
+    if session.is_empty()
+        || !session
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return;
+    }
     let path = dir.join(session);
     // A process report is not an acknowledgement of committed team binding. The wake waiter
     // owns that cleanup; expiry and explicit exit can still revoke by deleting the note.
-    if util::read_json(&path).is_some_and(|note| note.get("team_resume").is_some()) { return; }
+    if util::read_json(&path).is_some_and(|note| note.get("team_resume").is_some()) {
+        return;
+    }
     let _ = fs::remove_file(path);
 }
 
 fn expire_in(dir: &Path, now: i64) -> Vec<Asleep> {
-    let expired: Vec<_> = notes_in(dir).into_iter().filter(|note| now - note.slept_at >= EXPIRY_S).collect();
+    let expired: Vec<_> = notes_in(dir)
+        .into_iter()
+        .filter(|note| now - note.slept_at >= EXPIRY_S)
+        .collect();
     for note in &expired {
         let _ = fs::remove_file(dir.join(&note.session));
     }
@@ -110,15 +157,25 @@ fn minutes_from(setting: Result<String, String>) -> i64 {
     let text = match setting {
         Ok(text) => text,
         Err(error) => {
-            util::log_event("WARN", &format!("idle-sleep-after: {error}; using {DEFAULT_AFTER_MIN} minutes"));
+            util::log_event(
+                "WARN",
+                &format!("idle-sleep-after: {error}; using {DEFAULT_AFTER_MIN} minutes"),
+            );
             return DEFAULT_AFTER_MIN;
         }
     };
-    if text.trim().is_empty() { return DEFAULT_AFTER_MIN; }
+    if text.trim().is_empty() {
+        return DEFAULT_AFTER_MIN;
+    }
     match text.trim().parse::<i64>() {
         Ok(minutes) if minutes >= MIN_AFTER_MIN => minutes,
         _ => {
-            util::log_event("WARN", &format!("idle-sleep-after {text:?} is not a number of minutes from {MIN_AFTER_MIN}; using {DEFAULT_AFTER_MIN}"));
+            util::log_event(
+                "WARN",
+                &format!(
+                    "idle-sleep-after {text:?} is not a number of minutes from {MIN_AFTER_MIN}; using {DEFAULT_AFTER_MIN}"
+                ),
+            );
             DEFAULT_AFTER_MIN
         }
     }
@@ -138,8 +195,17 @@ pub struct SleepContext {
 
 #[derive(Debug, PartialEq)]
 pub enum SleepBlock {
-    Disabled, Asleep, Restarting, External, Terminal, Unsupported, Viewed, NotReady, Busy,
-    PendingMessage, Idle { remaining: i64 },
+    Disabled,
+    Asleep,
+    Restarting,
+    External,
+    Terminal,
+    Unsupported,
+    Viewed,
+    NotReady,
+    Busy,
+    PendingMessage,
+    Idle { remaining: i64 },
 }
 
 impl fmt::Display for SleepBlock {
@@ -160,20 +226,49 @@ impl fmt::Display for SleepBlock {
     }
 }
 
-pub fn block(session: &Session, context: &SleepContext, busy: bool, has_pending_message: bool) -> Option<SleepBlock> {
-    if !context.enabled { return Some(SleepBlock::Disabled); }
-    if session.asleep.is_some() { return Some(SleepBlock::Asleep); }
-    if session.restarting { return Some(SleepBlock::Restarting); }
-    if session.is_external() { return Some(SleepBlock::External); }
-    if session.terminal { return Some(SleepBlock::Terminal); }
-    if !session.agent().can(Feature::Sleep) { return Some(SleepBlock::Unsupported); }
-    if session.session == context.viewed { return Some(SleepBlock::Viewed); }
+pub fn block(
+    session: &Session,
+    context: &SleepContext,
+    busy: bool,
+    has_pending_message: bool,
+) -> Option<SleepBlock> {
+    if !context.enabled {
+        return Some(SleepBlock::Disabled);
+    }
+    if session.asleep.is_some() {
+        return Some(SleepBlock::Asleep);
+    }
+    if session.restarting {
+        return Some(SleepBlock::Restarting);
+    }
+    if session.is_external() {
+        return Some(SleepBlock::External);
+    }
+    if session.terminal {
+        return Some(SleepBlock::Terminal);
+    }
+    if !session.agent().can(Feature::Sleep) {
+        return Some(SleepBlock::Unsupported);
+    }
+    if session.session == context.viewed {
+        return Some(SleepBlock::Viewed);
+    }
     // activity_label ignores needs_input, which also keeps a session awake.
-    if sessions::activity_label(session) != "Ready" || session.needs_input { return Some(SleepBlock::NotReady); }
-    if busy { return Some(SleepBlock::Busy); }
-    if has_pending_message { return Some(SleepBlock::PendingMessage); }
+    if sessions::activity_label(session) != "Ready" || session.needs_input {
+        return Some(SleepBlock::NotReady);
+    }
+    if busy {
+        return Some(SleepBlock::Busy);
+    }
+    if has_pending_message {
+        return Some(SleepBlock::PendingMessage);
+    }
     let idle = context.now.saturating_sub(session.since);
-    if idle < context.after_s { return Some(SleepBlock::Idle { remaining: context.after_s - idle }); }
+    if idle < context.after_s {
+        return Some(SleepBlock::Idle {
+            remaining: context.after_s - idle,
+        });
+    }
     None
 }
 
@@ -188,23 +283,33 @@ mod tests {
     const HOUR_S: i64 = 3600;
 
     fn context() -> SleepContext {
-        SleepContext { now: NOW, enabled: true, after_s: HOUR_S, viewed: String::new() }
+        SleepContext {
+            now: NOW,
+            enabled: true,
+            after_s: HOUR_S,
+            viewed: String::new(),
+        }
     }
 
     fn idle_session() -> Session {
         Session {
-            session: "aaaaaaaa-0000-4000-8000-000000000000".into(), state: "waiting".into(), agent: "claude".into(),
-            tmux_pane: "%1".into(), since: NOW - HOUR_S, ..Session::default()
+            session: "aaaaaaaa-0000-4000-8000-000000000000".into(),
+            state: "waiting".into(),
+            agent: "claude".into(),
+            tmux_pane: "%1".into(),
+            since: NOW - HOUR_S,
+            ..Session::default()
         }
     }
 
     fn scratch_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sleep-test-{name}-{}", crate::util::token_hex(6)));
+        let dir =
+            std::env::temp_dir().join(format!("sleep-test-{name}-{}", crate::util::token_hex(6)));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn write_note(dir: &PathBuf, session: &str, slept_at: i64) {
+    fn write_note(dir: &std::path::Path, session: &str, slept_at: i64) {
         let note = serde_json::json!({
             "agent": "opencode", "project": "vitals", "cwd": "/home/theo/vitals", "title": "Fix the chart",
             "idle_since": slept_at - HOUR_S, "slept_at": slept_at, "remote": true, "started": slept_at - 5 * HOUR_S,
@@ -219,7 +324,10 @@ mod tests {
 
     #[test]
     fn block_lets_a_pinned_session_sleep() {
-        let pinned = Session { pinned: true, ..idle_session() };
+        let pinned = Session {
+            pinned: true,
+            ..idle_session()
+        };
         assert_eq!(block(&pinned, &context(), false, false), None);
     }
 
@@ -227,24 +335,82 @@ mod tests {
     fn block_reasons() {
         type Change = fn(&mut Session, &mut SleepContext, &mut bool, &mut bool);
         let cases: [(&str, Change, SleepBlock); 13] = [
-            ("disabled", |_, context, _, _| context.enabled = false, SleepBlock::Disabled),
-            ("asleep", |session, _, _, _| session.asleep = Some(NOW), SleepBlock::Asleep),
-            ("restarting", |session, _, _, _| session.restarting = true, SleepBlock::Restarting),
-            ("external", |session, _, _, _| session.tmux_pane.clear(), SleepBlock::External),
-            ("terminal", |session, _, _, _| session.terminal = true, SleepBlock::Terminal),
-            ("codex", |session, _, _, _| session.agent = "codex".into(), SleepBlock::Unsupported),
-            ("viewed", |session, context, _, _| context.viewed = session.session.clone(), SleepBlock::Viewed),
-            ("working", |session, _, _, _| session.state = "working".into(), SleepBlock::NotReady),
-            ("needs input", |session, _, _, _| session.needs_input = true, SleepBlock::NotReady),
-            ("awaiting approval", |session, _, _, _| session.ask_to_run = "approval".into(), SleepBlock::NotReady),
+            (
+                "disabled",
+                |_, context, _, _| context.enabled = false,
+                SleepBlock::Disabled,
+            ),
+            (
+                "asleep",
+                |session, _, _, _| session.asleep = Some(NOW),
+                SleepBlock::Asleep,
+            ),
+            (
+                "restarting",
+                |session, _, _, _| session.restarting = true,
+                SleepBlock::Restarting,
+            ),
+            (
+                "external",
+                |session, _, _, _| session.tmux_pane.clear(),
+                SleepBlock::External,
+            ),
+            (
+                "terminal",
+                |session, _, _, _| session.terminal = true,
+                SleepBlock::Terminal,
+            ),
+            (
+                "codex",
+                |session, _, _, _| session.agent = "codex".into(),
+                SleepBlock::Unsupported,
+            ),
+            (
+                "viewed",
+                |session, context, _, _| context.viewed = session.session.clone(),
+                SleepBlock::Viewed,
+            ),
+            (
+                "working",
+                |session, _, _, _| session.state = "working".into(),
+                SleepBlock::NotReady,
+            ),
+            (
+                "needs input",
+                |session, _, _, _| session.needs_input = true,
+                SleepBlock::NotReady,
+            ),
+            (
+                "awaiting approval",
+                |session, _, _, _| session.ask_to_run = "approval".into(),
+                SleepBlock::NotReady,
+            ),
             ("busy", |_, _, busy, _| *busy = true, SleepBlock::Busy),
-            ("pending message", |_, _, _, has_pending_message| *has_pending_message = true, SleepBlock::PendingMessage),
-            ("idle one second short", |session, _, _, _| session.since = NOW - HOUR_S + 1, SleepBlock::Idle { remaining: 1 }),
+            (
+                "pending message",
+                |_, _, _, has_pending_message| *has_pending_message = true,
+                SleepBlock::PendingMessage,
+            ),
+            (
+                "idle one second short",
+                |session, _, _, _| session.since = NOW - HOUR_S + 1,
+                SleepBlock::Idle { remaining: 1 },
+            ),
         ];
         for (name, change, expected) in cases {
-            let (mut session, mut context, mut busy, mut has_pending_message) = (idle_session(), context(), false, false);
-            change(&mut session, &mut context, &mut busy, &mut has_pending_message);
-            assert_eq!(block(&session, &context, busy, has_pending_message), Some(expected), "{name}");
+            let (mut session, mut context, mut busy, mut has_pending_message) =
+                (idle_session(), context(), false, false);
+            change(
+                &mut session,
+                &mut context,
+                &mut busy,
+                &mut has_pending_message,
+            );
+            assert_eq!(
+                block(&session, &context, busy, has_pending_message),
+                Some(expected),
+                "{name}"
+            );
         }
     }
 
@@ -279,9 +445,19 @@ mod tests {
         let card = notes_in(&dir).pop().unwrap().card();
         assert!(!format!("{card:?}").contains("private-permit"));
         forget_in(&dir, "teammate");
-        assert!(path.exists(), "a new process report alone does not acknowledge team binding");
-        assert!(expire_in(&dir, NOW + EXPIRY_S).iter().any(|note| note.session == "teammate"));
-        assert!(!path.exists(), "expiry still revokes permission by deleting the note");
+        assert!(
+            path.exists(),
+            "a new process report alone does not acknowledge team binding"
+        );
+        assert!(
+            expire_in(&dir, NOW + EXPIRY_S)
+                .iter()
+                .any(|note| note.session == "teammate")
+        );
+        assert!(
+            !path.exists(),
+            "expiry still revokes permission by deleting the note"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -305,7 +481,10 @@ mod tests {
         write_note(&dir, "readable", NOW);
         fs::write(dir.join("garbled"), "{not json").unwrap();
         fs::write(dir.join("incomplete"), r#"{"agent": "claude"}"#).unwrap();
-        let sessions: Vec<_> = notes_in(&dir).into_iter().map(|note| note.session).collect();
+        let sessions: Vec<_> = notes_in(&dir)
+            .into_iter()
+            .map(|note| note.session)
+            .collect();
         assert_eq!(sessions, ["readable"]);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -316,7 +495,13 @@ mod tests {
         write_note(&dir, "a-week-old", NOW - EXPIRY_S);
         write_note(&dir, "almost-a-week-old", NOW - EXPIRY_S + 3600);
         let expired = expire_in(&dir, NOW);
-        assert_eq!(expired.iter().map(|note| note.session.as_str()).collect::<Vec<_>>(), ["a-week-old"]);
+        assert_eq!(
+            expired
+                .iter()
+                .map(|note| note.session.as_str())
+                .collect::<Vec<_>>(),
+            ["a-week-old"]
+        );
         assert!(!dir.join("a-week-old").exists());
         assert!(dir.join("almost-a-week-old").exists());
         fs::remove_dir_all(dir).unwrap();
@@ -324,8 +509,14 @@ mod tests {
 
     #[test]
     fn after_minutes_defaults_and_floors() {
-        for (setting, expected) in [(Ok(String::new()), 60), (Ok("45".into()), 45), (Ok("30".into()), 30), (Ok("10".into()), 60),
-                                    (Ok("abc".into()), 60), (Err("invalid settings".into()), 60)] {
+        for (setting, expected) in [
+            (Ok(String::new()), 60),
+            (Ok("45".into()), 45),
+            (Ok("30".into()), 30),
+            (Ok("10".into()), 60),
+            (Ok("abc".into()), 60),
+            (Err("invalid settings".into()), 60),
+        ] {
             assert_eq!(minutes_from(setting.clone()), expected, "{setting:?}");
         }
     }

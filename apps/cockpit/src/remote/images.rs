@@ -14,8 +14,12 @@ use std::sync::LazyLock;
 
 const IMAGE_MAX: u64 = 10 * 1024 * 1024;
 
+/// A reply's image path and either its content type/bytes or a read error.
+pub type ReplyImage = (String, Result<(&'static str, Vec<u8>), String>);
+
 /// The page's own grammar (page.js imageLine): the whole line is the image.
-static IMAGE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*!\[([^\]\n]*)\]\(([^)\s]+)\)\s*$").unwrap());
+static IMAGE_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*!\[([^\]\n]*)\]\(([^)\s]+)\)\s*$").unwrap());
 static FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*```").unwrap());
 
 /// The paths of a reply's image lines, in order, outside fenced code (as the page counts them).
@@ -33,25 +37,46 @@ pub fn image_paths(message: &str) -> Vec<String> {
 }
 
 /// The `index`th image of reply `message_id` in session `id`: its content type and bytes.
-pub fn shared_image(id: &str, message_id: &str, index: usize) -> Result<(&'static str, Vec<u8>), String> {
+pub fn shared_image(
+    id: &str,
+    message_id: &str,
+    index: usize,
+) -> Result<(&'static str, Vec<u8>), String> {
     let history = conversation(id)?;
-    let reply = history["messages"].as_array().into_iter().flatten()
+    let reply = history["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
         .find(|message| message["id"] == message_id && message["role"] == "assistant")
         .ok_or("no such reply in the recent conversation")?;
-    let path = image_paths(reply["text"].as_str().unwrap_or("")).into_iter().nth(index).ok_or("this reply shows no such image")?;
+    let path = image_paths(reply["text"].as_str().unwrap_or(""))
+        .into_iter()
+        .nth(index)
+        .ok_or("this reply shows no such image")?;
     let row = session_row(id).ok_or("no such session")?;
     read_inside(Path::new(&text(&row, "cwd")), &path)
 }
 
 /// The images session `id`'s latest reply names (its assistant messages since the last question),
 /// each read from `folder` under the phone's rules: its path, then its type and bytes or why not.
-pub fn latest_reply_images(id: &str, folder: &str) -> Result<Vec<(String, Result<(&'static str, Vec<u8>), String>)>, String> {
+pub fn latest_reply_images(id: &str, folder: &str) -> Result<Vec<ReplyImage>, String> {
     let history = conversation(id)?;
     let messages = history["messages"].as_array().cloned().unwrap_or_default();
-    let reply: Vec<&Value> = messages.iter().rev().skip_while(|message| message["role"] != "assistant")
-        .take_while(|message| message["role"] == "assistant").collect();
-    Ok(reply.into_iter().rev().flat_map(|message| image_paths(message["text"].as_str().unwrap_or("")))
-        .map(|path| { let image = read_inside(Path::new(folder), &path); (path, image) }).collect())
+    let reply: Vec<&Value> = messages
+        .iter()
+        .rev()
+        .skip_while(|message| message["role"] != "assistant")
+        .take_while(|message| message["role"] == "assistant")
+        .collect();
+    Ok(reply
+        .into_iter()
+        .rev()
+        .flat_map(|message| image_paths(message["text"].as_str().unwrap_or("")))
+        .map(|path| {
+            let image = read_inside(Path::new(folder), &path);
+            (path, image)
+        })
+        .collect())
 }
 
 /// `path` (relative to `folder`, or absolute) when it resolves inside `folder` and is an image.
@@ -59,26 +84,45 @@ fn read_inside(folder: &Path, path: &str) -> Result<(&'static str, Vec<u8>), Str
     if !folder.is_absolute() {
         return Err("this session has no folder".into());
     }
-    let root = folder.canonicalize().map_err(|_| "the session's folder is unavailable")?;
-    let target = root.join(path).canonicalize().map_err(|_| format!("{path} does not exist"))?;
+    let root = folder
+        .canonicalize()
+        .map_err(|_| "the session's folder is unavailable")?;
+    let target = root
+        .join(path)
+        .canonicalize()
+        .map_err(|_| format!("{path} does not exist"))?;
     if !target.starts_with(&root) {
         return Err(format!("{path} is outside the session's folder"));
     }
-    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&target).map_err(|_| format!("{path} could not be read"))?;
-    let metadata = file.metadata().map_err(|_| format!("{path} could not be read"))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&target)
+        .map_err(|_| format!("{path} could not be read"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| format!("{path} could not be read"))?;
     if !metadata.is_file() {
         return Err(format!("{path} is not a regular file"));
     }
     if metadata.len() > IMAGE_MAX {
-        return Err(format!("{path} is larger than {} MB", IMAGE_MAX / 1_048_576));
+        return Err(format!(
+            "{path} is larger than {} MB",
+            IMAGE_MAX / 1_048_576
+        ));
     }
     let mut bytes = Vec::new();
-    file.take(IMAGE_MAX + 1).read_to_end(&mut bytes).map_err(|_| format!("{path} could not be read"))?;
+    file.take(IMAGE_MAX + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| format!("{path} could not be read"))?;
     if bytes.len() as u64 > IMAGE_MAX {
-        return Err(format!("{path} is larger than {} MB", IMAGE_MAX / 1_048_576));
+        return Err(format!(
+            "{path} is larger than {} MB",
+            IMAGE_MAX / 1_048_576
+        ));
     }
-    let content_type = image_type(&bytes).ok_or_else(|| format!("{path} is not a PNG, JPEG, GIF or WebP image"))?;
+    let content_type = image_type(&bytes)
+        .ok_or_else(|| format!("{path} is not a PNG, JPEG, GIF or WebP image"))?;
     Ok((content_type, bytes))
 }
 

@@ -1,7 +1,7 @@
 //! Peer-authenticated agent actions and a separate, host-socket-only chief control mode.
 
-use cockpit::teams::{AgentAction, client};
 use cockpit::approval::escape_hiding;
+use cockpit::teams::{AgentAction, client};
 use std::io::{self, Read};
 
 const HELP: &str = r#"cockpit-team context            your task, your role and your teammates' session ids
@@ -44,36 +44,76 @@ change scope, recruit teammates or hand off work. Ask Theo directly for authoriz
 "#;
 
 fn action(name: &str) -> Result<AgentAction, String> {
-    if name == "context" { return Ok(AgentAction::Context); }
-    if name == "receive" { return Ok(AgentAction::Receive); }
-    if !matches!(name, "chief" | "native-telemetry" | "propose" | "send" | "receipt" | "assess" | "handoff" | "recruit" | "link-propose" | "link-send" | "link-assess") {
-        return Err(format!("{name:?} is not an agent action; use context, propose, recruit, send, assess, handoff, receive, receipt, link-propose, link-send or link-assess"));
+    if name == "context" {
+        return Ok(AgentAction::Context);
+    }
+    if name == "receive" {
+        return Ok(AgentAction::Receive);
+    }
+    if !matches!(
+        name,
+        "chief"
+            | "native-telemetry"
+            | "propose"
+            | "send"
+            | "receipt"
+            | "assess"
+            | "handoff"
+            | "recruit"
+            | "link-propose"
+            | "link-send"
+            | "link-assess"
+    ) {
+        return Err(format!(
+            "{name:?} is not an agent action; use context, propose, recruit, send, assess, handoff, receive, receipt, link-propose, link-send or link-assess"
+        ));
     }
     let mut input = Vec::new();
-    io::stdin().take(client::REQUEST_MAX as u64 + 1).read_to_end(&mut input).map_err(|error| error.to_string())?;
-    if input.len() > client::REQUEST_MAX { return Err("team request exceeds 32 KiB".into()); }
-    let action: AgentAction = serde_json::from_slice(&input).map_err(|error| format!("invalid team action JSON: {error}"))?;
+    io::stdin()
+        .take(client::REQUEST_MAX as u64 + 1)
+        .read_to_end(&mut input)
+        .map_err(|error| error.to_string())?;
+    if input.len() > client::REQUEST_MAX {
+        return Err("team request exceeds 32 KiB".into());
+    }
+    let action: AgentAction = serde_json::from_slice(&input)
+        .map_err(|error| format!("invalid team action JSON: {error}"))?;
     let actual = match &action {
-        AgentAction::Context => "context", AgentAction::Propose { .. } => "propose", AgentAction::Send { .. } => "send",
-        AgentAction::Receive => "receive", AgentAction::Receipt { .. } => "receipt", AgentAction::Assess { .. } => "assess",
-        AgentAction::Handoff { .. } => "handoff", AgentAction::Recruit { .. } => "recruit",
+        AgentAction::Context => "context",
+        AgentAction::Propose { .. } => "propose",
+        AgentAction::Send { .. } => "send",
+        AgentAction::Receive => "receive",
+        AgentAction::Receipt { .. } => "receipt",
+        AgentAction::Assess { .. } => "assess",
+        AgentAction::Handoff { .. } => "handoff",
+        AgentAction::Recruit { .. } => "recruit",
         AgentAction::Chief { .. } => "chief",
         AgentAction::NativeTelemetry { .. } => "native-telemetry",
-        AgentAction::LinkPropose { .. } => "link-propose", AgentAction::LinkSend { .. } => "link-send", AgentAction::LinkAssess { .. } => "link-assess",
+        AgentAction::LinkPropose { .. } => "link-propose",
+        AgentAction::LinkSend { .. } => "link-send",
+        AgentAction::LinkAssess { .. } => "link-assess",
     };
-    if name != actual { return Err("command and JSON action do not match".into()); }
+    if name != actual {
+        return Err("command and JSON action do not match".into());
+    }
     Ok(action)
 }
 
 fn is_claude_session_id(text: &str) -> bool {
-    text.len() == 36 && text.bytes().enumerate().all(|(index, byte)| match index {
-        8 | 13 | 18 | 23 => byte == b'-',
-        _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
-    })
+    text.len() == 36
+        && text.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
 }
 
 fn poll_interval() -> std::time::Duration {
-    std::time::Duration::from_millis(std::env::var("COCKPIT_TEAM_POLL_MS").ok().and_then(|value| value.parse().ok()).unwrap_or(3000))
+    std::time::Duration::from_millis(
+        std::env::var("COCKPIT_TEAM_POLL_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(3000),
+    )
 }
 
 fn sleep_request(arguments: &[String]) -> Result<cockpit::teams::HostRequest, String> {
@@ -82,17 +122,32 @@ fn sleep_request(arguments: &[String]) -> Result<cockpit::teams::HostRequest, St
         return Err("sleep commands need one valid session id; tokens belong in stdin JSON".into());
     }
     let session_id = arguments[1].clone();
-    if arguments[0] == "sleep-prepare" { return Ok(HostRequest::PrepareSleep { session_id }); }
-    if arguments[0] == "restart-prepare" { return Ok(HostRequest::PrepareRestart { session_id }); }
+    if arguments[0] == "sleep-prepare" {
+        return Ok(HostRequest::PrepareSleep { session_id });
+    }
+    if arguments[0] == "restart-prepare" {
+        return Ok(HostRequest::PrepareRestart { session_id });
+    }
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
-    struct Token { token: String }
+    struct Token {
+        token: String,
+    }
     let mut input = Vec::new();
-    io::stdin().take(client::REQUEST_MAX as u64 + 1).read_to_end(&mut input).map_err(|_| "cannot read sleep token JSON")?;
-    if input.len() > client::REQUEST_MAX { return Err("team request exceeds 32 KiB".into()); }
+    io::stdin()
+        .take(client::REQUEST_MAX as u64 + 1)
+        .read_to_end(&mut input)
+        .map_err(|_| "cannot read sleep token JSON")?;
+    if input.len() > client::REQUEST_MAX {
+        return Err("team request exceeds 32 KiB".into());
+    }
     let payload: Token = serde_json::from_slice(&input).map_err(|_| "invalid sleep token JSON")?;
     let token = payload.token;
-    if token.len() != 32 || !token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+    if token.len() != 32
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err("invalid sleep token".into());
     }
     Ok(match arguments[0].as_str() {
@@ -104,37 +159,86 @@ fn sleep_request(arguments: &[String]) -> Result<cockpit::teams::HostRequest, St
     })
 }
 
-fn recovery_review(session_id: &str) -> Result<cockpit::teams::HostRequest, cockpit::teams::TeamError> {
-    use cockpit::{chief::{ChiefHostAction, ADMISSION_ADAPTER}, teams::{ErrorCode, HostRequest, TeamError, VerifiedSession}};
-    let unavailable=|message|TeamError::new(ErrorCode::Unavailable,message);
-    if cockpit::agents::of_session_id(session_id).map(|agent|agent.name)!=Some("opencode") {
-        return Err(unavailable("Chief recovery requires an OpenCode conversation id"));
+fn recovery_review(
+    session_id: &str,
+) -> Result<cockpit::teams::HostRequest, cockpit::teams::TeamError> {
+    use cockpit::{
+        chief::{ADMISSION_ADAPTER, ChiefHostAction},
+        teams::{ErrorCode, HostRequest, TeamError, VerifiedSession},
+    };
+    let unavailable = |message| TeamError::new(ErrorCode::Unavailable, message);
+    if cockpit::agents::of_session_id(session_id).map(|agent| agent.name) != Some("opencode") {
+        return Err(unavailable(
+            "Chief recovery requires an OpenCode conversation id",
+        ));
     }
-    let snapshot=cockpit::chief::host_snapshot()?;
-    let records=snapshot["records"].as_array().ok_or_else(||unavailable("Chief host records are missing"))?;
-    let chiefs=records.iter().filter(|record|record["kind"]=="chief" && matches!(record["state"].as_str(),Some("active"|"paused"))).collect::<Vec<_>>();
-    let workers=records.iter().filter(|record|record["kind"]=="worker" && record["session"]["session_id"]==session_id).collect::<Vec<_>>();
-    let ([chief],[worker])=(chiefs.as_slice(),workers.as_slice()) else { return Err(unavailable("recovery needs exactly one retained Chief grant and one live replacement")); };
-    let previous:VerifiedSession=serde_json::from_value(chief["session"].clone())?;
-    let session:VerifiedSession=serde_json::from_value(worker["session"].clone())?;
-    if previous.session_id!=session_id || previous.agent!=session.agent || previous.project!=session.project || previous.runtime==session.runtime {
-        return Err(unavailable("recovery must name a new runtime of the same Chief conversation, agent and project"));
+    let snapshot = cockpit::chief::host_snapshot()?;
+    let records = snapshot["records"]
+        .as_array()
+        .ok_or_else(|| unavailable("Chief host records are missing"))?;
+    let chiefs = records
+        .iter()
+        .filter(|record| {
+            record["kind"] == "chief"
+                && matches!(record["state"].as_str(), Some("active" | "paused"))
+        })
+        .collect::<Vec<_>>();
+    let workers = records
+        .iter()
+        .filter(|record| {
+            record["kind"] == "worker" && record["session"]["session_id"] == session_id
+        })
+        .collect::<Vec<_>>();
+    let ([chief], [worker]) = (chiefs.as_slice(), workers.as_slice()) else {
+        return Err(unavailable(
+            "recovery needs exactly one retained Chief grant and one live replacement",
+        ));
+    };
+    let previous: VerifiedSession = serde_json::from_value(chief["session"].clone())?;
+    let session: VerifiedSession = serde_json::from_value(worker["session"].clone())?;
+    if previous.session_id != session_id
+        || previous.agent != session.agent
+        || previous.project != session.project
+        || previous.runtime == session.runtime
+    {
+        return Err(unavailable(
+            "recovery must name a new runtime of the same Chief conversation, agent and project",
+        ));
     }
-    let now=chrono::Utc::now().timestamp_millis();
-    if !worker["observed_at_ms"].as_i64().is_some_and(|observed|observed<=now && now.saturating_sub(observed)<=30_000) {
-        return Err(unavailable("the replacement Chief runtime needs a fresh host observation"));
+    let now = chrono::Utc::now().timestamp_millis();
+    if !worker["observed_at_ms"]
+        .as_i64()
+        .is_some_and(|observed| observed <= now && now.saturating_sub(observed) <= 30_000)
+    {
+        return Err(unavailable(
+            "the replacement Chief runtime needs a fresh host observation",
+        ));
     }
-    if !records.iter().any(|record|record["kind"]=="admission" && record["session"]==worker["session"] && record["adapter"]==ADMISSION_ADAPTER
-        && record["verified_at_ms"].as_i64().is_some_and(|verified|verified<=now && now.saturating_sub(verified)<=300_000)) {
-        return Err(unavailable("first perform and record this exact runtime's host native draft/queue verification; recovery requires evidence from the last five minutes"));
+    if !records.iter().any(|record| {
+        record["kind"] == "admission"
+            && record["session"] == worker["session"]
+            && record["adapter"] == ADMISSION_ADAPTER
+            && record["verified_at_ms"]
+                .as_i64()
+                .is_some_and(|verified| verified <= now && now.saturating_sub(verified) <= 300_000)
+    }) {
+        return Err(unavailable(
+            "first perform and record this exact runtime's host native draft/queue verification; recovery requires evidence from the last five minutes",
+        ));
     }
-    let action=ChiefHostAction::Recover {
-        request_id:format!("chief-recovery-{}",cockpit::util::token_hex(12)),
-        expected_epoch:chief["epoch"].as_str().ok_or_else(||unavailable("retained Chief epoch is missing"))?.into(),
-        expected_revision:chief["revision"].as_i64().ok_or_else(||unavailable("retained Chief revision is missing"))?,session,
+    let action = ChiefHostAction::Recover {
+        request_id: format!("chief-recovery-{}", cockpit::util::token_hex(12)),
+        expected_epoch: chief["epoch"]
+            .as_str()
+            .ok_or_else(|| unavailable("retained Chief epoch is missing"))?
+            .into(),
+        expected_revision: chief["revision"]
+            .as_i64()
+            .ok_or_else(|| unavailable("retained Chief revision is missing"))?,
+        session,
     };
     action.validate()?;
-    Ok(HostRequest::Chief {action})
+    Ok(HostRequest::Chief { action })
 }
 
 /// Claude's background hook (asyncRewake, at SessionStart and Stop): waits for this session's next
@@ -145,16 +249,25 @@ fn watch() -> i32 {
     use cockpit::teams::{AgentAction, TransportOutcome};
     let mut payload = String::new();
     let _ = io::stdin().take(65_536).read_to_string(&mut payload);
-    let session = serde_json::from_str::<serde_json::Value>(&payload).ok()
-        .and_then(|payload| payload["session_id"].as_str().map(str::to_string)).unwrap_or_default();
+    let session = serde_json::from_str::<serde_json::Value>(&payload)
+        .ok()
+        .and_then(|payload| payload["session_id"].as_str().map(str::to_string))
+        .unwrap_or_default();
     if !is_claude_session_id(&session) {
         eprintln!("cockpit-team watch: the hook payload has no Claude session id");
         return 1;
     }
-    let Some(home) = std::env::var_os("HOME") else { return 1 };
-    let marker = std::path::Path::new(&home).join(".cache/claude").join(format!("team-watch-{session}.pid"));
+    let Some(home) = std::env::var_os("HOME") else {
+        return 1;
+    };
+    let marker = std::path::Path::new(&home)
+        .join(".cache/claude")
+        .join(format!("team-watch-{session}.pid"));
     let own = std::process::id().to_string();
-    if std::fs::create_dir_all(marker.parent().unwrap_or(&marker)).and_then(|_| std::fs::write(&marker, &own)).is_err() {
+    if std::fs::create_dir_all(marker.parent().unwrap_or(&marker))
+        .and_then(|_| std::fs::write(&marker, &own))
+        .is_err()
+    {
         eprintln!("cockpit-team watch: cannot write {}", marker.display());
         return 1;
     }
@@ -163,31 +276,46 @@ fn watch() -> i32 {
     while is_current() && std::time::Instant::now() < deadline {
         // Only the launch's own current session takes: not a nested `claude -p` sharing the launch,
         // nor this session once /clear has given the launch a new one.
-        let is_confirmed = match client::request(&AgentAction::Context).and_then(|reply| reply.result) {
-            Ok(context) if context["session_id"] == session.as_str() => true,
-            Ok(_) => return 0,
-            Err(_) => false,
-        };
-        if is_confirmed {
-            if let Ok(delivery) = client::request(&AgentAction::Receive).and_then(|reply| reply.result) {
-                if let Some(dispatch_id) = delivery.get("dispatch_id").and_then(serde_json::Value::as_str) {
-                    let text = format!("{}\n", delivery["text"].as_str().unwrap_or_default());
-                    let mut stderr = io::stderr();
-                    let output = io::Write::write_all(&mut stderr, text.as_bytes()).and_then(|_| io::Write::flush(&mut stderr));
-                    if let Err(error) = output {
-                        let receipt = AgentAction::Receipt { dispatch_id:dispatch_id.into(),
-                            outcome:TransportOutcome::Uncertain { reason:format!("native wake output failed: {error}") } };
-                        if let Err(error) = client::request(&receipt).and_then(|reply| reply.result) {
-                            cockpit::util::log_event("WARN", &format!("native wake uncertain receipt not recorded: {error}"));
-                        }
-                        return 1;
-                    }
-                    let receipt = AgentAction::Receipt { dispatch_id: dispatch_id.into(),
-                        outcome: TransportOutcome::Received { native_id: format!("claude-wake:{dispatch_id}") } };
-                    let _ = client::request(&receipt);
-                    return 2;
+        let is_confirmed =
+            match client::request(&AgentAction::Context).and_then(|reply| reply.result) {
+                Ok(context) if context["session_id"] == session.as_str() => true,
+                Ok(_) => return 0,
+                Err(_) => false,
+            };
+        if is_confirmed
+            && let Ok(delivery) =
+                client::request(&AgentAction::Receive).and_then(|reply| reply.result)
+            && let Some(dispatch_id) = delivery
+                .get("dispatch_id")
+                .and_then(serde_json::Value::as_str)
+        {
+            let text = format!("{}\n", delivery["text"].as_str().unwrap_or_default());
+            let mut stderr = io::stderr();
+            let output = io::Write::write_all(&mut stderr, text.as_bytes())
+                .and_then(|_| io::Write::flush(&mut stderr));
+            if let Err(error) = output {
+                let receipt = AgentAction::Receipt {
+                    dispatch_id: dispatch_id.into(),
+                    outcome: TransportOutcome::Uncertain {
+                        reason: format!("native wake output failed: {error}"),
+                    },
+                };
+                if let Err(error) = client::request(&receipt).and_then(|reply| reply.result) {
+                    cockpit::util::log_event(
+                        "WARN",
+                        &format!("native wake uncertain receipt not recorded: {error}"),
+                    );
                 }
+                return 1;
             }
+            let receipt = AgentAction::Receipt {
+                dispatch_id: dispatch_id.into(),
+                outcome: TransportOutcome::Received {
+                    native_id: format!("claude-wake:{dispatch_id}"),
+                },
+            };
+            let _ = client::request(&receipt);
+            return 2;
         }
         std::thread::sleep(poll_interval());
     }
@@ -196,26 +324,57 @@ fn watch() -> i32 {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if arguments.first().is_some_and(|verb|verb=="recovery-review") {
-        let result=if arguments.len()==2 {recovery_review(&arguments[1])}
-            else {Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid,"usage: cockpit-team recovery-review <session-id>"))};
-        match result.and_then(|request|serde_json::to_string_pretty(&request).map_err(Into::into)) {
-            Ok(review)=>println!("{review}"),
-            Err(error)=>{eprintln!("cockpit-team: {}",escape_hiding(&error.to_string(),"",""));std::process::exit(1);},
+    if arguments
+        .first()
+        .is_some_and(|verb| verb == "recovery-review")
+    {
+        let result = if arguments.len() == 2 {
+            recovery_review(&arguments[1])
+        } else {
+            Err(cockpit::teams::TeamError::new(
+                cockpit::teams::ErrorCode::Invalid,
+                "usage: cockpit-team recovery-review <session-id>",
+            ))
+        };
+        match result.and_then(|request| serde_json::to_string_pretty(&request).map_err(Into::into))
+        {
+            Ok(review) => println!("{review}"),
+            Err(error) => {
+                eprintln!(
+                    "cockpit-team: {}",
+                    escape_hiding(&error.to_string(), "", "")
+                );
+                std::process::exit(1);
+            }
         }
         return;
     }
-    if arguments.first().is_some_and(|verb| verb.starts_with("sleep-") || verb == "restart-prepare") {
-        let request = sleep_request(&arguments).unwrap_or_else(|error| { eprintln!("cockpit-team: {error}"); std::process::exit(2) });
+    if arguments
+        .first()
+        .is_some_and(|verb| verb.starts_with("sleep-") || verb == "restart-prepare")
+    {
+        let request = sleep_request(&arguments).unwrap_or_else(|error| {
+            eprintln!("cockpit-team: {error}");
+            std::process::exit(2)
+        });
         match client::host_request(&request).and_then(|reply| reply.result) {
             Ok(result) => println!("{result}"),
-            Err(error) => { eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", "")); std::process::exit(1); },
+            Err(error) => {
+                eprintln!(
+                    "cockpit-team: {}",
+                    escape_hiding(&error.to_string(), "", "")
+                );
+                std::process::exit(1);
+            }
         }
         return;
     }
     if arguments == ["prepare"] {
         if let Err(error) = client::prepare() {
-            eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", ""));
+            eprintln!(
+                "cockpit-team: {}",
+                escape_hiding(&error.to_string(), "", "")
+            );
             std::process::exit(1);
         }
         return;
@@ -234,32 +393,85 @@ fn main() {
     if arguments[0] == "chief-host" {
         let result = (|| {
             let mut input = Vec::new();
-            io::stdin().take(client::REQUEST_MAX as u64 + 1).read_to_end(&mut input)?;
-            if input.len() > client::REQUEST_MAX { return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Limit, "chief host request exceeds 32 KiB")); }
-            let request: cockpit::teams::HostRequest = serde_json::from_slice(&input)?;
-            if !matches!(request, cockpit::teams::HostRequest::Chief { .. } | cockpit::teams::HostRequest::ChiefSnapshot { .. } | cockpit::teams::HostRequest::ChiefAudit { .. }
-                | cockpit::teams::HostRequest::VerifyChiefAdmission { .. } | cockpit::teams::HostRequest::ChiefNativeObservation { .. }
-                | cockpit::teams::HostRequest::ChiefFocus { .. }) {
-                return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Invalid, "chief-host requires a chief host request"));
+            io::stdin()
+                .take(client::REQUEST_MAX as u64 + 1)
+                .read_to_end(&mut input)?;
+            if input.len() > client::REQUEST_MAX {
+                return Err(cockpit::teams::TeamError::new(
+                    cockpit::teams::ErrorCode::Limit,
+                    "chief host request exceeds 32 KiB",
+                ));
             }
-            if matches!(&request,cockpit::teams::HostRequest::Chief {action:cockpit::chief::ChiefHostAction::ReconcileDelivery {..}
-                | cockpit::chief::ChiefHostAction::ReconcileLaunch {..} | cockpit::chief::ChiefHostAction::SettleStartup {..} | cockpit::chief::ChiefHostAction::Recover {..}}) {
-                use std::io::{BufRead,Write};
-                let recovery=matches!(&request,cockpit::teams::HostRequest::Chief {action:cockpit::chief::ChiefHostAction::Recover {..}});
-                let heading=if recovery {"Host confirmation of exact Chief recovery"} else {"Host confirmation of exact stopped-target evidence"};
-                eprintln!("{heading}:\n{}",escape_hiding(&serde_json::to_string_pretty(&request)?,"",""));
-                let mut terminal = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty")?;
-                terminal.write_all(if recovery {b"Confirm exactly this Chief recovery? [y/N] "} else {b"Confirm exactly this host reconciliation? [y/N] "})?;
+            let request: cockpit::teams::HostRequest = serde_json::from_slice(&input)?;
+            if !matches!(
+                request,
+                cockpit::teams::HostRequest::Chief { .. }
+                    | cockpit::teams::HostRequest::ChiefSnapshot { .. }
+                    | cockpit::teams::HostRequest::ChiefAudit { .. }
+                    | cockpit::teams::HostRequest::VerifyChiefAdmission { .. }
+                    | cockpit::teams::HostRequest::ChiefNativeObservation { .. }
+                    | cockpit::teams::HostRequest::ChiefFocus { .. }
+            ) {
+                return Err(cockpit::teams::TeamError::new(
+                    cockpit::teams::ErrorCode::Invalid,
+                    "chief-host requires a chief host request",
+                ));
+            }
+            if matches!(
+                &request,
+                cockpit::teams::HostRequest::Chief {
+                    action: cockpit::chief::ChiefHostAction::ReconcileDelivery { .. }
+                        | cockpit::chief::ChiefHostAction::ReconcileLaunch { .. }
+                        | cockpit::chief::ChiefHostAction::SettleStartup { .. }
+                        | cockpit::chief::ChiefHostAction::Recover { .. }
+                }
+            ) {
+                use std::io::{BufRead, Write};
+                let recovery = matches!(
+                    &request,
+                    cockpit::teams::HostRequest::Chief {
+                        action: cockpit::chief::ChiefHostAction::Recover { .. }
+                    }
+                );
+                let heading = if recovery {
+                    "Host confirmation of exact Chief recovery"
+                } else {
+                    "Host confirmation of exact stopped-target evidence"
+                };
+                eprintln!(
+                    "{heading}:\n{}",
+                    escape_hiding(&serde_json::to_string_pretty(&request)?, "", "")
+                );
+                let mut terminal = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/tty")?;
+                terminal.write_all(if recovery {
+                    b"Confirm exactly this Chief recovery? [y/N] "
+                } else {
+                    b"Confirm exactly this host reconciliation? [y/N] "
+                })?;
                 terminal.flush()?;
                 let mut answer = String::new();
                 std::io::BufReader::new(terminal).read_line(&mut answer)?;
-                if !matches!(answer.trim(),"y"|"Y") { return Err(cockpit::teams::TeamError::new(cockpit::teams::ErrorCode::Unauthorized,"host declined confirmation")); }
+                if !matches!(answer.trim(), "y" | "Y") {
+                    return Err(cockpit::teams::TeamError::new(
+                        cockpit::teams::ErrorCode::Unauthorized,
+                        "host declined confirmation",
+                    ));
+                }
             }
             client::host_request(&request)?.result
         })();
         match result {
             Ok(result) => println!("{result}"),
-            Err(error) => { eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", "")); std::process::exit(1); },
+            Err(error) => {
+                eprintln!(
+                    "cockpit-team: {}",
+                    escape_hiding(&error.to_string(), "", "")
+                );
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -270,7 +482,10 @@ fn main() {
     match client::request(&action).and_then(|reply| reply.result) {
         Ok(result) => println!("{result}"),
         Err(error) => {
-            eprintln!("cockpit-team: {}", escape_hiding(&error.to_string(), "", ""));
+            eprintln!(
+                "cockpit-team: {}",
+                escape_hiding(&error.to_string(), "", "")
+            );
             std::process::exit(1);
         }
     }
