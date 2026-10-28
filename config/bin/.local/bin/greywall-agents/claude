@@ -33,6 +33,8 @@ if [ "${COCKPIT_CREDITS:-}" = 1 ]; then
     greywall_options="$greywall_options --secret ANTHROPIC_API_KEY"
 fi
 
+# The MCP child shell expands its verified port at execution time.
+# shellcheck disable=SC2016
 figcraft_mcp_config='{"mcpServers":{"figcraft-app":{"command":"sh","args":["-c","exec figcraft-cli mcp --attach \"${FIGCRAFT_CONTROL_PORT:?FigCraft is not connected to this checkout}\""]}}}'
 
 # Linked sessions: a background hook that wakes an idle session with its next approved team message
@@ -45,6 +47,8 @@ COCKPIT_BILLING=subscription
 COCKPIT_BILLING_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 export COCKPIT_BILLING COCKPIT_BILLING_STARTED_AT
 if [ -n "${COCKPIT_SUBSCRIPTION_ROUTE:-}" ]; then
+    # The hook's shell reads the route from its own environment.
+    # shellcheck disable=SC2016
     gate='{"hooks":[{"type":"command","command":"cockpit-subscription await-gate \"$COCKPIT_SUBSCRIPTION_ROUTE\"","timeout":35}]}'
     team_settings="{\"hooks\":{\"SessionStart\":[$gate,{\"hooks\":[{\"type\":\"command\",\"command\":\"cockpit-team watch\",\"asyncRewake\":true,\"timeout\":86400}]}],\"Stop\":$team_watch}}"
     # The host verifies the execution account immediately before entering the existing sandbox.
@@ -61,15 +65,16 @@ if [ "${COCKPIT_CREDITS:-}" != 1 ]; then
     COCKPIT_SUBSCRIPTION_ACCOUNT=$(python3 "$HOME/.config/waybar/scripts/native-subscription.py" identity claude 2>/dev/null) || COCKPIT_SUBSCRIPTION_ACCOUNT=
 fi
 for argument in "$@"; do
-    case "$argument" in --settings|--settings=*|--setting-sources|--setting-sources=*) COCKPIT_SUBSCRIPTION_ACCOUNT= ;; esac
+    case "$argument" in --settings | --settings=* | --setting-sources | --setting-sources=*) COCKPIT_SUBSCRIPTION_ACCOUNT= ;; esac
 done
 export COCKPIT_SUBSCRIPTION_ACCOUNT
 # Claude's configuration subcommands (claude mcp add, claude plugin list...) reject the session's
 # options ("unknown option '--mcp-config'"): they run in the same sandbox without them.
 case "${1:-}" in
-    mcp|plugin|plugins|auth|doctor|auto-mode)
-        # shellcheck disable=SC2086
-        exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" ;;
+mcp | plugin | plugins | auth | doctor | auto-mode)
+    # shellcheck disable=SC2086
+    exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@"
+    ;;
 esac
 # shellcheck disable=SC2086
 exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config" --settings "$team_settings"

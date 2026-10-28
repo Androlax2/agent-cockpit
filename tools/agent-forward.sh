@@ -10,12 +10,24 @@ usage="usage: agent-forward.sh <project folder in ~/IdeaProjects> <days> <port>.
 project=${1:?$usage}
 days=${2:?$usage}
 shift 2
-(( $# > 0 )) || { echo "$usage" >&2; exit 2; }
+(($# > 0)) || {
+    echo "$usage" >&2
+    exit 2
+}
 
-[[ $project =~ ^[A-Za-z0-9._-]+$ && $project != .* ]] || { echo "not a project folder name: $project" >&2; exit 2; }
-[[ $days =~ ^[0-9]+$ ]] && (( days >= 1 && days <= 90 )) || { echo "days must be between 1 and 90: $days" >&2; exit 2; }
+[[ $project =~ ^[A-Za-z0-9._-]+$ && $project != .* ]] || {
+    echo "not a project folder name: $project" >&2
+    exit 2
+}
+if ! [[ $days =~ ^[0-9]+$ ]] || ! ((days >= 1 && days <= 90)); then
+    echo "days must be between 1 and 90: $days" >&2
+    exit 2
+fi
 for port in "$@"; do
-    [[ $port =~ ^[0-9]+$ ]] && (( port >= 1024 && port <= 65535 )) || { echo "not a port between 1024 and 65535: $port" >&2; exit 2; }
+    if ! [[ $port =~ ^[0-9]+$ ]] || ! ((port >= 1024 && port <= 65535)); then
+        echo "not a port between 1024 and 65535: $port" >&2
+        exit 2
+    fi
 done
 
 forward_dir=${AGENT_FORWARD_DIR:-$HOME/.config/greywall-agents/forward}
@@ -24,7 +36,7 @@ mkdir -p "$forward_dir"
 if [[ -r $forward_file ]]; then
     echo "replacing: $(cat "$forward_file")"
 fi
-expiry=$(( $(date +%s) + days * 86400 ))
-printf '%s %s\n' "$expiry" "$*" > "$forward_file.new"
+expiry=$(($(date +%s) + days * 86400))
+printf '%s %s\n' "$expiry" "$*" >"$forward_file.new"
 mv "$forward_file.new" "$forward_file"
 echo "$project sandboxes get localhost:${*// /, localhost:} until $(date -d "@$expiry" '+%Y-%m-%d %H:%M'); restart its sessions to apply."

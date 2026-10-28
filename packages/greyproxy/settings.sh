@@ -19,14 +19,20 @@ tracking() {
     curl -sSf --max-time 5 "${headers[@]}" "$api/settings" | python3 -c 'import json, sys; print(str(json.load(sys.stdin)["conversations"]["enabled"]).lower())'
 }
 
-state=$(tracking) || { echo "greyproxy-settings: cannot read $api/settings; is greyproxy running? Conversation tracking may still be on." >&2; exit 1; }
+state=$(tracking) || {
+    echo "greyproxy-settings: cannot read $api/settings; is greyproxy running? Conversation tracking may still be on." >&2
+    exit 1
+}
 if [[ $state == false ]]; then
     echo "greyproxy conversation tracking is off"
     exit 0
 fi
 curl -sSf --max-time 5 "${headers[@]}" -X PUT -H 'Content-Type: application/json' \
-    -d '{"conversations":{"enabled":false}}' "$api/settings" > /dev/null \
-    || { echo "greyproxy-settings: greyproxy refused to turn conversation tracking off" >&2; exit 1; }
+    -d '{"conversations":{"enabled":false}}' "$api/settings" >/dev/null ||
+    {
+        echo "greyproxy-settings: greyproxy refused to turn conversation tracking off" >&2
+        exit 1
+    }
 state=$(tracking) || state=unknown
 if [[ $state != false ]]; then
     echo "greyproxy-settings: conversation tracking is still $state after turning it off" >&2

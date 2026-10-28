@@ -14,6 +14,8 @@ codex_launch() { # directory native-arguments...
     require_plain_directory "$directory" || return
     name="claude-retry-codex-$(date +%s%N)"
     size=$(detached_size)
+    # The child shell owns argv, exit status and working directory expansion.
+    # shellcheck disable=SC2016
     tmux new-session -d -s "$name" -x "${size% *}" -y "${size#* }" -c "$directory" \
         env -u CLAUDE_CODE_SESSION_ID COCKPIT_INSIDE=1 COCKPIT_AGENT=codex COCKPIT_TEAM_SPAWN="${launch_team_spawn:-}" \
         COCKPIT_SUBSCRIPTION_ROUTE="${launch_subscription_route:-}" \
@@ -24,7 +26,10 @@ codex_launch() { # directory native-arguments...
 
 codex_native_thread() { # cockpit-id
     local id=$1 native digest
-    agent_codex_is_session_id "$id" || { echo "cockpit: invalid native Codex cockpit id" >&2; return 1; }
+    agent_codex_is_session_id "$id" || {
+        echo "cockpit: invalid native Codex cockpit id" >&2
+        return 1
+    }
     native=$(session_field "$id" native_thread 2>/dev/null || true)
     if [[ -z $native && -f $RECENT_SESSIONS ]]; then
         native=$(jq -er --arg id "$id" '.[$id].native_thread // empty' "$RECENT_SESSIONS") || return 1
@@ -69,7 +74,10 @@ agent_codex_restore() { # directory cockpit-id
 
 agent_codex_restart() { # cockpit-id directory effort detached
     local native target
-    [[ -z ${3:-} ]] || { echo "cockpit: native Codex effort changes are not supported" >&2; return 1; }
+    [[ -z ${3:-} ]] || {
+        echo "cockpit: native Codex effort changes are not supported" >&2
+        return 1
+    }
     native=$(codex_native_thread "$1") || return
     exit_session "$1" || return
     if [[ ${4:-} == detached ]]; then
@@ -82,7 +90,10 @@ agent_codex_restart() { # cockpit-id directory effort detached
 }
 
 agent_codex_exit() { # managed-tmux-session pane cockpit-id
-    [[ $1 =~ ^claude-retry-codex-[0-9]+$ ]] || { echo "cockpit: refusing an unmanaged Codex terminal" >&2; return 1; }
+    [[ $1 =~ ^claude-retry-codex-[0-9]+$ ]] || {
+        echo "cockpit: refusing an unmanaged Codex terminal" >&2
+        return 1
+    }
     tmux kill-session -t "=$1"
 }
 

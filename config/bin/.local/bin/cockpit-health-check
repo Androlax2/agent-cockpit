@@ -17,18 +17,18 @@ REPORTS_KEPT_DAYS=60
 mkdir -p "$REPORT_DIR"
 report="$REPORT_DIR/health-$(date +%F).txt"
 problems=()
-section() { printf '\n== %s\n' "$1" >> "$report"; }
+section() { printf '\n== %s\n' "$1" >>"$report"; }
 
-printf 'Weekly health check, %s\n' "$(date)" > "$report"
+printf 'Weekly health check, %s\n' "$(date)" >"$report"
 
 section "cockpit doctor"
-if ! cockpit doctor >> "$report" 2>&1; then
+if ! cockpit doctor >>"$report" 2>&1; then
     problems+=("doctor: $(tail -1 "$report")")
 fi
 
 for repository in "$COCKPIT_REPOSITORY" "$DOTFILES"; do
     section "make test ($repository)"
-    if ! make -C "$repository" test >> "$report" 2>&1; then
+    if ! make -C "$repository" test >>"$report" 2>&1; then
         problems+=("$(basename "$repository") tests failing")
     fi
 done
@@ -41,29 +41,32 @@ if [[ -z $finished ]]; then
     # successful one ("Finished restic-backup.service …"; a failed run says "Failed to start").
     finished=$(journalctl --user -u restic-backup.service -o short-iso --no-pager -g '^Finished ' 2>/dev/null | tail -1 | awk '{ print $1 }')
 fi
-printf 'result %s, last run %s\n' "${result:-unknown}" "${finished:-never}" >> "$report"
+printf 'result %s, last run %s\n' "${result:-unknown}" "${finished:-never}" >>"$report"
 if [[ $result != success ]]; then
     problems+=("backup: ${result:-unknown}")
-elif [[ -z $finished ]] || (( $(date +%s) - $(date -d "$finished" +%s 2>/dev/null || echo 0) > BACKUP_MAX_AGE_S )); then
+elif [[ -z $finished ]] || (($(date +%s) - $(date -d "$finished" +%s 2>/dev/null || echo 0) > BACKUP_MAX_AGE_S)); then
     problems+=("backup older than two days")
 fi
 
 section "disks"
-df -h --output=pcent,avail,target / "$HOME" >> "$report" 2>&1
+df -h --output=pcent,avail,target / "$HOME" >>"$report" 2>&1
 while read -r percent target; do
-    (( ${percent%\%} >= DISK_FULL_AT )) && problems+=("$target at $percent")
+    ((${percent%\%} >= DISK_FULL_AT)) && problems+=("$target at $percent")
 done < <(df --output=pcent,target / "$HOME" 2>/dev/null | tail -n +2 | sort -u)
 
 section "make check (drift, for reading)"
-timeout 600 make -C "$DOTFILES" check >> "$report" 2>&1
+timeout 600 make -C "$DOTFILES" check >>"$report" 2>&1
 
 find "$REPORT_DIR" -maxdepth 1 -name 'health-*.txt' -mtime +"$REPORTS_KEPT_DAYS" -delete 2>/dev/null
 
-if (( ${#problems[@]} == 0 )); then
+if ((${#problems[@]} == 0)); then
     cockpit log health INFO "weekly check: all good ($report)" 2>/dev/null
     exit 0
 fi
-summary=$(IFS='; '; printf '%s' "${problems[*]}")
+summary=$(
+    IFS='; '
+    printf '%s' "${problems[*]}"
+)
 cockpit log health ERROR "weekly check: ${#problems[@]} problem(s): $summary ($report)" 2>/dev/null
 if [[ -p $FIFO ]]; then
     jq -cn --arg title "Weekly check: ${#problems[@]} problem(s)" --arg message "${summary:0:180}" \

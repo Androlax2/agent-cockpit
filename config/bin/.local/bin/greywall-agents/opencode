@@ -2,6 +2,8 @@
 # Keep this launcher separate from the binary replaced by vendor updates.
 agent=opencode
 # Its database, credentials and config, which greywall.json hides from every other sandbox.
+# Greywall matches these literal policy patterns, including the tilde.
+# shellcheck disable=SC2088
 own_folders="~/.local/share/opencode/** ~/.config/opencode/**"
 # Sessions do not update opencode, for the reason the claude launcher gives for Claude Code.
 export OPENCODE_DISABLE_AUTOUPDATE=1
@@ -14,6 +16,8 @@ greywall_options="--auto-profile --profile opencode $greywall_options"
 
 # Inline config outranks project files, including an old --attach 7979 command. Replace the
 # whole server so an inherited environment cannot redirect the verified checkout connection.
+# The MCP child shell expands its verified port at execution time.
+# shellcheck disable=SC2016
 figcraft_server='{"type":"local","command":["sh","-c","exec figcraft-cli mcp --attach \"${FIGCRAFT_CONTROL_PORT:?FigCraft is not connected to this checkout}\""]}'
 opencode_config=${OPENCODE_CONFIG_CONTENT:-'{}'}
 if ! OPENCODE_CONFIG_CONTENT=$(printf '%s\n' "$opencode_config" | jq -cse --argjson server "$figcraft_server" '
@@ -30,7 +34,7 @@ export OPENCODE_CONFIG_CONTENT
 session_request=""
 if [ -n "${COCKPIT_OPENCODE_MODEL:-}" ]; then
     if ! session_request=$(jq -nce --arg reference "$COCKPIT_OPENCODE_MODEL" \
-            --arg session "${CLAUDE_CODE_SESSION_ID:-}" --arg directory "$PWD" '
+        --arg session "${CLAUDE_CODE_SESSION_ID:-}" --arg directory "$PWD" '
         ($session | test("^ses_[0-9A-Za-z]{12,40}$")) as $valid_session
         | if $valid_session then
             ($reference | capture("^(?<providerID>[^/#\\s]+)/(?<id>[^#\\s]+)(?:#(?<variant>[^/#\\s]+))?$")
@@ -59,7 +63,8 @@ fi
 # cockpit's (claude-todo list and show) on the real one, which the sandbox already reads.
 # greywall_options is split on spaces on purpose: every path in it is under $HOME or
 # $XDG_RUNTIME_DIR, which have none.
-# shellcheck disable=SC2086
+# The inline script expands only inside the sandbox's child shell.
+# shellcheck disable=SC2086,SC2016
 exec "$HOME/.local/bin/greywall" $greywall_options -- \
     env XDG_STATE_HOME=/tmp/opencode-greywall-state COCKPIT_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}" \
     sh -c '
