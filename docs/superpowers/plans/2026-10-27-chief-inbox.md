@@ -46,6 +46,7 @@
 **Files:** `apps/cockpit/src/chief.rs`, `apps/cockpit/src/chief/store.rs`, `apps/cockpit/src/teams/store.rs`, `apps/cockpit/src/teams/links.rs` (version guard), `apps/cockpit/src/remote.rs`, tests `apps/cockpit/tests/chief_protocol.rs`, `apps/cockpit/tests/chief_store.rs`, `apps/cockpit/tests/claude_remote.rs`.
 
 **Interfaces:**
+
 - Produces: `ChiefHostAction::LaterDecision { request_id: String, decision: String, expected_revision: i64 }`; decision records gain `later_until_ms` (null when not deferred) in the host snapshot and in the phone projection `chief_display_record`.
 - Constant: `CHIEF_LATER_MS: i64 = 20 * 60 * 1000`.
 
@@ -59,6 +60,7 @@
 **Files:** `apps/cockpit/src/chief/inbox.rs` (new: stages, steps and rendering lines; pure), `apps/cockpit/src/chief/view.rs` (frame wiring, entry), `apps/cockpit/src/app/chief_ui.rs` (effects, drawing), `apps/cockpit/tests/chief_ui.rs`.
 
 **Interfaces:**
+
 - Consumes: Task 1 `LaterDecision`, `later_until_ms`.
 - `inbox::steps(decision: &Value) -> Vec<String>`: the record's `steps[].text` when present (last = message), else `[suggested_answer]`, else empty.
 - `inbox::situation(decision: &Value) -> String`: `situation` when present, else `recommendation`.

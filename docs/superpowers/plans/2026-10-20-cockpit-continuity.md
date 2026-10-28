@@ -66,6 +66,7 @@ Prefix new tests with `continuity_` (or put model tests in `continuity::tests`) 
 **Files:** Modify the hook, `registry.rs`, `sessions.rs`, `apps/desktop/src/tests.rs`, and `tests/session_state_hook.rs`; update affected OpenCode protocol expectations if needed.
 
 **Interfaces:**
+
 - Add `TurnResult { id: String, completed_at: i64, outcome: String, repository: String, branch: String }` in `sessions.rs` with serde support and bounded validation.
 - Add `Session.repository: String`, `Session.branch: String`, `Session.last_result: Option<TurnResult>`; corresponding daemon Entry fields and optional Report `repository`, `branch`, `turn_id`, `turn_complete`.
 - Reports carry `turn_id` as 32 lowercase hexadecimal characters and `turn_complete: true` only on Stop. `last_result.completed_at` is host-observed Unix seconds, independent of activity `since`.
@@ -94,6 +95,7 @@ Prefix new tests with `continuity_` (or put model tests in `continuity::tests`) 
 **Files:** Create `continuity.rs` and `app/continuity_ui.rs`; modify `lib.rs`, `paths.rs`, `app.rs`, `tests.rs` and README.
 
 **Interfaces:**
+
 - Add `paths::continuity() -> PathBuf`, returning `state_dir()/continuity.json`.
 - Add `Continuity::load(path: &Path) -> Result<Continuity, String>` and `Continuity::note(&self, session: &str) -> Option<&str>`.
 - Add `Continuity::set_note(&mut self, session: &Session, note: Option<&str>) -> Result<bool, String>`: validate and persist before replacing memory; return whether state changed.
@@ -125,6 +127,7 @@ Prefix new tests with `continuity_` (or put model tests in `continuity::tests`) 
 **Files:** Modify `continuity.rs`, `app.rs`, `app/continuity_ui.rs`, `tests.rs`, README.
 
 **Interfaces:**
+
 - Add `UpdateKind::{Result, Question}` and `Update { session: String, identity: String, kind: UpdateKind, observed_at: i64, text: String }`.
 - Add `Continuity::observe_sessions(&mut self, sessions: &[Session], now: i64) -> Result<bool, String>`, `Continuity::updates(&self) -> Vec<Update>`, and `Continuity::reviewed(&mut self, session: &str, identities: &[String]) -> Result<bool, String>`.
 - Add `App::open_updates(&mut self, screen: &mut dyn Screen) -> String`. Pick a specific update using existing fzf/Screen facilities; display its full captured text in the existing scrollable details view, then offer explicit reviewed/open-live-session actions. Acknowledgement uses the displayed identities, not whatever happened to become latest while the detail view was open.
@@ -141,6 +144,7 @@ Prefix new tests with `continuity_` (or put model tests in `continuity::tests`) 
 **Files:** Create `queue.rs`; modify `lib.rs`, `app.rs`, `app/continuity_ui.rs`, `tests.rs`, README.
 
 **Interfaces:**
+
 - Add `QueueContext { now: i64, enabled: bool, gaming: bool, viewed: String, workspace_active: bool }` and `QueueBlock::{Disabled, Gaming, External, Terminal, MissingDirectory, Unknown, Working, NeedsInput, CommandRunning, Busy, PendingMessage, Viewed, Idle { remaining: i64 }}`.
 - Add `queue::block(session: &Session, context: &QueueContext, busy: bool, has_pending_message: bool) -> Option<QueueBlock>` and `queue::candidates(session: &Session, todos: &TodoList, issues: &[Issue]) -> Vec<Entry>`.
 - Use the existing queue minimum `300` seconds and check interval `30` seconds; name them once for dispatch and explanation. Preserve `todo::queue_order` and design-role routing.
@@ -157,6 +161,7 @@ Prefix new tests with `continuity_` (or put model tests in `continuity::tests`) 
 **Files:** Modify `continuity.rs`, `app.rs`, `app/continuity_ui.rs`, `todo.rs`, `reviews.rs`, `tests.rs`, affected todo command tests and README.
 
 **Interfaces:**
+
 - Add `Review.head_branch: String`, `Review.head_oid: String` and preserve `headRefName`; request `headRefOid` in the existing fetch. Add `Reviews::cached(&self) -> Vec<Review>` returning deduplicated cached rows across scopes with fetch availability represented explicitly; never start a fetch from render.
 - Add `TaskSnapshot { key: String, repository: String, title: String, notes: String, status: String }` and `TaskAssignment { task: String, session: String, assigned_at: i64, branch: String, repository: String, baseline_result: Option<String> }`.
 - Add `Continuity::assign(&mut self, task: &TaskSnapshot, session: &Session, now: i64) -> Result<bool, String>` and `Continuity::observe_tasks(&mut self, todos: &TodoList, sessions: &[Session], reviews: &[Review], now: i64) -> Result<bool, String>`.
@@ -180,6 +185,7 @@ Prefix new tests with `continuity_` (or put model tests in `continuity::tests`) 
 **Files:** Modify `continuity.rs`, `app.rs`, `app/continuity_ui.rs`, `tests.rs`, README.
 
 **Interfaces:**
+
 - Add `DeferralTarget::{Question { session: String, fingerprint: String }, PullRequest { repository: String, number: i64, head_oid: String, decision: String }}` and `Deferral { target: DeferralTarget, expires_at: i64 }`.
 - Add `Continuity::defer(&mut self, target: &DeferralTarget, now: i64) -> Result<bool, String>`, `Continuity::bring_back(&mut self, target: &DeferralTarget) -> Result<bool, String>`, and `Continuity::is_deferred(&self, target: &DeferralTarget, now: i64) -> bool`.
 - Add `App::attention_indices(&self, now: i64) -> Vec<usize>` for the `n` action and `f` filter; consume full live-session observations and the same fingerprint validation, not copied per-call predicates.

@@ -406,8 +406,7 @@ host lists the newest 200 answers; the count reads `200+` when there may be olde
 
 Press `o` on a Chief answer that was sent (or whose delivery is not sure) to overrule it. You type
 one line of up to 2,000 characters, then a frozen review shows the exact message the agent will
-receive: "Correction from Theo to an earlier Chief answer ("<the first 200 characters of that
-answer>"): <your correction>" followed by the daemon-added label, and under it
+receive: `Correction from Theo to an earlier Chief answer ("<the first 200 characters of that answer>"): <your correction>` followed by the daemon-added label, and under it
 `Adds a habit: <your correction> · <project | everywhere>`: the exact habit it stores (your words on
 one line, cut to 500 characters with `…`). Enter, then `y`, sends it; if the
 answer changed meanwhile the review is invalidated. Each answer can be overruled once, so a
@@ -531,7 +530,6 @@ Polling reuses a successful runtime cache for four minutes. Missing CLI, sign-in
 | [`config/bin/.local/bin`](config/bin/.local/bin) | `ask-to-run`, `claude-run-approve`, `ask-to-guide`, `claude-guide`, `claude-todo`, `claude-design`: wrappers of the Rust builds |
 | [`config/systemd/.config/systemd/user`](config/systemd/.config/systemd/user) | `osd`, `cockpit`, the health check, the version link |
 | [`apps/cockpit/tests`](apps/cockpit/tests), [`apps/osd/src/tests.rs`](apps/osd/src/tests.rs) | `make test`: the scripts, hooks and programs through fake commands on PATH, and the daemon's registry |
-
 
 ## Install
 

@@ -36,6 +36,7 @@
 This is one feature, not a new orchestration framework. Ship it disabled by default until all tasks pass. Tasks 1–6 implement the backend and integration; Task 7 is a **blocking UI design handoff**, not permission to improvise a screen. After its design is approved, append concrete frame references and UI tests before implementing its controls. No partial backend work should be presented as the finished chief.
 
 Observed existing code:
+
 - `apps/osd/src/teams.rs` authenticates peers via verified runtime and supplies protected host controls.
 - `apps/cockpit/src/teams/store.rs` owns schema version 2 and durable team deliveries.
 - `apps/cockpit/src/app.rs::dispatch_queue` sends via `cockpit say`; `start_sessions_for_handed_work` can start a session. Both must yield while chief scheduling owns the queue.
@@ -55,7 +56,7 @@ For V1, automatically usable test evidence is an explicitly approved host-run re
 Existing names below were inspected; **new** files/types/actions below are proposed implementation interfaces, not claims they already exist.
 
 | Files | Responsibility |
-|---|---|
+| --- | --- |
 | New `apps/cockpit/src/chief.rs`, `chief/store.rs`, `chief/evidence.rs`; modify `src/lib.rs` | Typed requests; grants, briefs, claims, event/decision records; evidence gating |
 | Modify `apps/cockpit/src/teams.rs`, `teams/store.rs`, `bin/cockpit-team.rs` | Nested chief actions; schema migration; shared receive/receipt transport and CLI |
 | New `apps/osd/src/chief.rs`; modify `src/lib.rs`, `teams.rs`, `registry.rs`, `bin/osd.rs` | Peer-verified global access, authoritative readiness, event intake and recovery |
@@ -78,6 +79,7 @@ Define the following new typed contract in `chief.rs` (all wire structs deny unk
 Wire additions: `AgentAction::Chief { request: ChiefAgentAction }`, `HostRequest::Chief { action: ChiefHostAction }`, and `HostRequest::ChiefSnapshot { after: i64, limit: usize }`. Use existing receive and receipt actions for delivery. Add `AgentAction::QaResult` for structured role-bound results; do not parse a `Findings` message for pass/fail.
 
 Core **new** store signatures (responses use bounded JSON like the existing team store):
+
 ```rust
 pub fn migrate(connection: &mut rusqlite::Connection) -> Result<(), TeamError>;
 pub fn host(connection: &mut rusqlite::Connection, action: &ChiefHostAction,
@@ -92,6 +94,7 @@ pub fn finish_for(connection: &mut rusqlite::Connection, recipient: &VerifiedSes
 pub fn record_evidence(connection: &mut rusqlite::Connection, evidence: &Evidence,
     now_ms: i64) -> Result<(), TeamError>;
 ```
+
 `record_evidence` is a Rust API reached only after source validation, not an exposed arbitrary agent action. Use explicit enum matches, transactions and existing hashing; no generic workflow engine.
 
 ### Task 1: Protected protocol and schema
@@ -101,10 +104,12 @@ pub fn record_evidence(connection: &mut rusqlite::Connection, evidence: &Evidenc
 **Interfaces:** produce the typed contract and `migrate` above. Extend the existing store's migration to version 3 in one transaction; reject future versions and preserve version-2 data. New tables are prefixed `chief_`: grants, worker bindings, work revisions, assignments, events, decisions, evidence, and delivery attempts. Store immutable approval hashes, verified runtime/epochs, submission fingerprints, cursor sequences and action receipts. Unique partial indexes enforce one active chief, one open claim per work identity (across revisions), one open assignment per worker, and one in-flight delivery per recipient across chief traffic.
 
 - [ ] Write protocol tests, including this exact rejection assertion; fixture builders create valid requests using the contract, not placeholder runtime strings in production.
+
   ```rust
   assert!(serde_json::from_value::<AgentAction>(json!({"action":"chief","request":{"action":"approve_work"}})).is_err());
   assert!(serde_json::from_value::<Role>(json!("chief")).is_err());
   ```
+
   Add `migration_preserves_v2_links_messages_and_spawns`, `migration_reopen_is_idempotent`, and `future_schema_is_refused`; assert old rows unchanged and no partial migration after injected failure.
 - [ ] Run `cargo test --manifest-path apps/Cargo.toml -p cockpit --test chief_protocol --test chief_store`; expect failures for the absent chief module/actions.
 - [ ] Implement only serialization, validation and migration. Preserve existing private-directory/symlink checks. Limits: brief/body 4,000 characters, blocker 1,000, context page at most 50 records and below existing 65,536-byte agent reply bound; reject oversized single records rather than truncating approved briefs. Maximum 256 active approved work records and 100 open chief decisions; reject excess visibly.

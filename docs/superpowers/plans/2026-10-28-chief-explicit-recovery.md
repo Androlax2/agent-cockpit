@@ -33,12 +33,14 @@
 ### Task 1: Exact host-authorized grant replacement
 
 **Files (relative to the isolated checkout):**
+
 - Modify: `apps/cockpit/src/chief.rs` — host action and validation.
 - Modify: `apps/cockpit/src/chief/store.rs` — atomic replacement and audit events.
 - Modify: `apps/osd/src/chief.rs` — authoritative liveness and native admission preflight.
 - Test: `apps/cockpit/tests/chief_store.rs`, `apps/cockpit/tests/chief_events.rs`, `apps/osd/src/chief_tests.rs`.
 
 **Interfaces:**
+
 - Add `ChiefHostAction::Recover { request_id: String, expected_epoch: String, expected_revision: i64, session: VerifiedSession }`, serialized as `recover`.
 - Keep `store::host(connection, action, live, now_ms)` and daemon `chief::host(registry, action)` signatures unchanged.
 - Recovery response records `previous_epoch`, new `epoch`, replacement identity and preserved `state`. The existing request fingerprint/receipt is the idempotency boundary; an exact replay is only a receipt, never another activation.
@@ -55,11 +57,13 @@
 ### Task 2: Reviewable host entry point, independent review and deployment
 
 **Files:**
+
 - Modify: `apps/cockpit/src/bin/cockpit-team.rs` — read-only recovery review mode and host-only submission confirmation.
 - Test: `apps/cockpit/tests/` — use the existing CLI harness discovered in the isolated checkout.
 - Update this plan with exact verification commands/results and applied revisions; no general documentation cleanup.
 
 **Interfaces:**
+
 - Add proposed CLI mode `cockpit-team recovery-review <session-id>`: host-only snapshot read via `chief::host_snapshot()`, select exactly one retained grant and exactly one fresh replacement worker, emit the complete proposed `ChiefHostAction::Recover` request JSON without mutation. Never choose a different conversation as fallback or automatically verify admission.
 - Submit through existing `cockpit-team chief-host`, with a separate exact-payload host confirmation analogous to existing reconciliation confirmation. Both review and submission run through ask-to-run.
 - Retain existing `VerifyChiefAdmission`: it must follow an actual controlled native queue/draft check on the replacement runtime, with evidence recorded by the host. The new review helper must not manufacture this evidence or attest based on chat text.

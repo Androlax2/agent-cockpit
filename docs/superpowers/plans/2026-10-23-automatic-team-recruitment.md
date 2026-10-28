@@ -39,12 +39,14 @@
 ### Task 1: Activate recruitment atomically and launch it immediately
 
 **Files:**
+
 - Modify: `apps/cockpit/src/teams/store.rs`
 - Modify: `apps/osd/src/teams.rs`
 - Test: `apps/cockpit/tests/team_store.rs`
 - Test: `apps/osd/src/tests.rs`
 
 **Interfaces:**
+
 - Change `store::recruit` to accept verified directories before `now_ms`: `recruit(connection: &mut Connection, sender: &VerifiedSession, recruitment: &super::Recruitment, agent: Option<&str>, live: &[VerifiedSession], directories: &HashMap<String, String>, now_ms: i64) -> Result<TeamReply, TeamError>`.
 - Preserve recruitment response fields `proposal_id`, `revision`, `mapping_hash`; add `status: "approved"` to indicate activation. Keep stored proposal status `approved`, avoiding a schema migration.
 - Reuse private `approve_mapping` inside the recruitment transaction; no sandbox-accessible host action.
@@ -59,6 +61,7 @@
 ### Task 2: Preserve authority boundaries and document the new policy
 
 **Files:**
+
 - Modify: `apps/cockpit/src/teams/store.rs`
 - Modify: `apps/cockpit/src/teams.rs`
 - Modify: `apps/cockpit/src/bin/cockpit-team.rs`
@@ -69,6 +72,7 @@
 - Test: `apps/osd/src/tests.rs`
 
 **Interfaces:**
+
 - Keep `qa_brief_text(standing: &str, handoff: &Value, findings: &[String]) -> String` and existing protocol JSON unchanged.
 - Reuse existing Team view membership and failure rows; no UI redesign or new controls.
 

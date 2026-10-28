@@ -31,10 +31,12 @@
 ### Task 1: Global Ideas panel
 
 **Files:**
+
 - Modify: `apps/cockpit/src/app.rs` — panel state, rendering, input, header destination, help and palette.
 - Test: `apps/cockpit/src/tests.rs` — public App input/render/store behavior and affected layout expectations.
 
 **Interfaces:**
+
 - Consumes: `TodoList.items`, `Item.source()`, `Item.project()`, `Item.why()`, `TodoList.approve()`, `TodoList.decline()`, existing session snapshots and proposal detail formatting.
 - Produces: panel index 4 (`Ideas`), accessible with `4`, Tab/BackTab, the action palette and the header idea indicator; `y` approves, `n` declines, Enter shows details.
 

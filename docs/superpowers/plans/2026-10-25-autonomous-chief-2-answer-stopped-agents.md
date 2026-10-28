@@ -62,6 +62,7 @@
 **Files:** Modify `apps/cockpit/src/chief/store.rs` (new `upgrade_to_13`, `upgrade_events` trigger list, `clear_dispatch_leftovers`), `apps/cockpit/src/teams/store.rs` (`migrate_with`, both version range checks to `0..=13`), `apps/cockpit/src/teams/links.rs` (range check). Test: `apps/cockpit/tests/chief_store.rs` and every hard-coded `user_version` 12 assertion listed in the code map §7.
 
 **Interfaces:** Produces tables:
+
 - `chief_stops(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, runtime TEXT NOT NULL, boundary TEXT NOT NULL, project TEXT NOT NULL, task_id TEXT NOT NULL, bundle TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('open','answered','escalated','superseded')), created_at INTEGER NOT NULL, UNIQUE(session_id, boundary))`
 - `chief_answers(id TEXT PRIMARY KEY, stop_id TEXT NOT NULL REFERENCES chief_stops(id), session_id TEXT NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL, reason TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('chief','theo')), delivery TEXT NOT NULL CHECK(delivery IN ('queued','received','uncertain','cancelled')), created_at INTEGER NOT NULL)`
 - `chief_decisions` new nullable columns `session_id`, `stop_id`, `category` (CHECK `security|scope|not_sure`), `suggested_answer`; `work`/`assignment` columns dropped by rebuild or left unused (implementer's choice, recorded).
@@ -79,12 +80,14 @@
 **Files:** Create `apps/cockpit/src/chief/bundle.rs`; modify `apps/cockpit/src/chief.rs` (`pub mod bundle`), `apps/cockpit/src/remote/conversation.rs` only to share the read-only DB open helper if needed. Test: `apps/cockpit/tests/chief_bundle.rs`.
 
 **Interfaces:** Produces
+
 ```rust
 pub struct StopBundle { pub question: Option<FormQuestion>, pub last_assistant: String, pub recent: Vec<BundleMessage>, pub task_text: String, pub task_notes: String }
 pub struct FormQuestion { pub header: String, pub question: String, pub options: Vec<String> }
 pub struct BundleMessage { pub role: String, pub text: String }
 pub fn stop_bundle(database: &Path, session_id: &str, todo: &crate::todo::Item) -> Result<StopBundle, TeamError>
 ```
+
 (serde-serialisable; role ∈ `user|assistant|synthetic`).
 
 - [ ] **Step 1: Failing tests** (SQLite fixture like `claude_remote.rs` §8): `a_bundle_keeps_conversation_text_and_drops_tool_outputs`; `a_bundle_masks_tokens_and_escapes_hiding_characters` (planted `ghp_…` → masked; bidi char escaped); `a_bundle_includes_the_open_question_form` (running `question` tool → `FormQuestion`); `a_bundle_respects_its_size_caps` (20 messages, 2,000 chars each, 16,000 total); `a_missing_database_yields_an_error_not_an_empty_bundle`.
@@ -98,6 +101,7 @@ pub fn stop_bundle(database: &Path, session_id: &str, todo: &crate::todo::Item) 
 **Files:** Modify `apps/osd/src/chief.rs` (`observe_stops` in `tick`), `apps/cockpit/src/chief/store.rs` (`record_stop`, `supersede_stops`, `stopped_session` record in `context_records`, `stop_detected` event), `apps/cockpit/src/teams.rs` (`envelope_text` chief_wake: instructions for stops, `Answer`/`Escalate`, the authorisation boundary and the escalation rules from the spec). Test: `apps/osd/src/chief_tests.rs`, `apps/cockpit/tests/chief_events.rs`.
 
 **Interfaces:**
+
 - Consumes Task 3 tables, Task 4 `stop_bundle`.
 - Produces `pub fn record_stop(connection, session: &VerifiedSession, boundary: &str, task: &TaskKey, bundle: &StopBundle, now_ms) -> Result<Option<String>, TeamError>` (stop id; `None` if the boundary was already recorded) and `pub fn supersede_stops(connection, session_id, current_boundary) -> Result<(), TeamError>`; Context record `{"kind":"stopped_session","stop":id,"session":…,"project":…,"task_id":…,"bundle":…}`.
 - Stop rule: OpenCode session, not the Chief, todo found for the session with status `doing`, state `waiting` or `needs-you` without an open permission (telemetry `pending_permissions == 0`), boundary `"{state}:{since}"`.

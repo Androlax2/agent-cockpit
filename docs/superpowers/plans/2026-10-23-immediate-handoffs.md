@@ -28,6 +28,7 @@
 ### Task 1: Dispatch handed work immediately into fresh sessions
 
 **Files:**
+
 - Modify: `apps/cockpit/src/app.rs` (dispatch order and handed-work selection).
 - Modify: `apps/cockpit/src/todo.rs` (blocker dispatch documentation).
 - Modify: `config/bin/.local/bin/cockpit-agents/claude.sh` (collision-resistant background session names).
@@ -35,6 +36,7 @@
 - Test: `apps/cockpit/tests/cockpit_script.rs` (two successful same-second launches).
 
 **Interfaces:**
+
 - Consumes: `App::dispatch_queue(&mut self)`, `App::start_sessions_for_handed_work(&mut self, &queue::QueueContext)` and existing `TodoList` update fixtures.
 - Produces: Same interfaces, with immediate fresh-session routing for eligible handed items.
 

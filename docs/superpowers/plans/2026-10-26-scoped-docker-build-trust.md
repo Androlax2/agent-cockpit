@@ -29,10 +29,12 @@
 ## Task 1: Shared helper and generated build inputs
 
 **Files:**
+
 - Create `config/bin/.local/bin/agent-docker-build`.
 - Create `tools/tests/test_agent_docker_build.py`.
 
 **Interfaces:**
+
 - `agent-docker-build build [-f DOCKERFILE] [-t TAG] [--build-arg KEY=VALUE] CONTEXT`.
 - `agent-docker-build compose [-f COMPOSE_FILE ...] SERVICE` builds one selected service.
 - Consumes launcher-provided `DOCKER_HOST`, `DOCKER_CONFIG`, and `AGENT_DOCKER_CA_BUNDLE`.
@@ -54,11 +56,13 @@
 ## Task 2: Launcher distribution and usage
 
 **Files:**
+
 - Modify `config/bin/.local/bin/greywall-agents/launcher-common.sh`.
 - Modify `apps/cockpit/tests/greywall_launcher.rs`.
 - Create `docs/agent-docker-build.md`.
 
 **Interfaces:**
+
 - Copy the helper into the existing read-only shim directory using the launcher's checked atomic-copy pattern.
 - Export `AGENT_DOCKER_CA_BUNDLE` for sessions with a project Docker socket.
 - Preserve the existing proxy identity, Docker config, and socket selection.
@@ -72,9 +76,11 @@
 ## Task 3: Live verification, deployment, and Stadeo handoff
 
 **Files:**
+
 - Create `tools/tests/verify_agent_docker_build.py`, an opt-in image-save inspector accepting an image archive and CA certificate path.
 
 **Interfaces:**
+
 - Inspector reads Docker-save image config and every layer tar; rejects the CA fingerprint/PEM content and helper trust overrides persisted in image configuration or files.
 
 - [ ] Add fixture tests proving the inspector catches a CA added in an earlier layer then deleted, plus persistent trust environment/configuration, and accepts a clean image. Run them before implementing the inspector, then require PASS.

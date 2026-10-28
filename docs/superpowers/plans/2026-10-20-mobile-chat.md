@@ -31,6 +31,7 @@
 ### Task 1: Allow replies to ordinary OpenCode questions
 
 **Files:**
+
 - Modify: `config/bin/.local/bin/claude-sessions-agents/opencode.sh`
 - Test: `apps/cockpit/tests/claude_sessions_script.rs`
 - Test: `apps/cockpit/tests/claude_remote.rs`
@@ -46,6 +47,7 @@
 ### Task 2: Expose real conversation text
 
 **Files:**
+
 - Create: `apps/cockpit/src/remote/conversation.rs`
 - Modify: `apps/cockpit/src/remote.rs`
 - Modify: `apps/cockpit/src/bin/claude-remote.rs`
@@ -62,6 +64,7 @@
 ### Task 3: Replace the mobile terminal-first layout
 
 **Files:**
+
 - Modify: `apps/cockpit/assets/remote/page.js`
 - Modify: `apps/cockpit/assets/remote/page.html`
 - Create: `apps/cockpit/tests/remote_chat_ui.rs`

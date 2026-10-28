@@ -30,12 +30,14 @@
 ### Task 1: Safe multiline terminal delivery
 
 **Files:**
+
 - Modify: `config/bin/.local/bin/cockpit`
 - Modify: `config/bin/.local/bin/cockpit-agents/claude.sh`
 - Test: `apps/cockpit/tests/cockpit_script.rs`
 - Reference: `config/bin/.local/bin/cockpit-agents/opencode.sh` already calls `submit_to_pane`.
 
 **Interfaces:**
+
 - Consumes: `say_to_session(id, message)`, `agent_claude_say(id, pane, message)`, and `submit_to_pane(pane, text)`.
 - Produces: `type_into_pane(pane, text)` returns nonzero on failed delivery; both submission paths use it explicitly.
 
@@ -49,12 +51,14 @@
 ### Task 2: Server and queue accept paragraphs
 
 **Files:**
+
 - Modify: `apps/cockpit/src/remote.rs`
 - Modify: `apps/cockpit/src/prompts.rs`
 - Test: `apps/cockpit/tests/claude_remote.rs`
 - Test: `apps/cockpit/src/tests.rs`
 
 **Interfaces:**
+
 - Consumes: Task 1's public `cockpit say` behavior and existing `prompts::add(session, text)` / `oldest(session)`.
 - Produces: unchanged HTTP request/response schemas; `message` and `start_session` accept LF, while `add_todo` continues to use `one_line`.
 
@@ -67,12 +71,14 @@
 ### Task 3: Phone sends the original paragraphs
 
 **Files:**
+
 - Modify: `apps/cockpit/assets/remote/page.js`
 - Test: `apps/cockpit/tests/remote_mobile_ui.mjs`
 - Test: `apps/cockpit/tests/mobile_browser.py`
 - Reference: `apps/cockpit/tests/remote_chat_ui.rs` runs the Node suites through Cargo.
 
 **Interfaces:**
+
 - Consumes: Task 2's unchanged `{text}` and `{prompt}` HTTP bodies accepting multiline content.
 - Produces: `messageText(text)` preserves internal LF/blank lines/indentation, normalizes CRLF and converts tabs to spaces as before.
 

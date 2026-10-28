@@ -34,11 +34,13 @@
 ### Task 1: The sleep model in Rust
 
 **Files:**
+
 - Create: `apps/cockpit/src/sleep.rs`
 - Modify: `apps/cockpit/src/lib.rs` (add `pub mod sleep;`), `apps/cockpit/src/paths.rs` (add `asleep_dir`), `apps/cockpit/src/agents.rs` (add `Feature::Sleep` to Claude and opencode, and its name in `feature_names`), `apps/cockpit/src/sessions.rs` (`Session.asleep`, `is_external`, `is_idle`)
 - Test: unit tests in `apps/cockpit/src/sleep.rs` (`#[cfg(test)] mod tests`, as sessions.rs does)
 
 **Interfaces:**
+
 - Produces:
   - `paths::asleep_dir() -> PathBuf` = `state_dir().join("asleep")`
   - `sessions::Session.asleep: Option<i64>`: when it fell asleep; `None` for a live session
@@ -67,10 +69,12 @@
 ### Task 2: `cockpit sleep <id>`
 
 **Files:**
+
 - Modify: `config/bin/.local/bin/cockpit` (new `sleep_session`, `prompt_has_draft`, `background_shell_of`, dispatch `sleep)`, `KNOWN_SETTINGS += idle-sleep`, `LAUNCH_SETTINGS += idle-sleep-after`, its `validate_launch_setting` case and fallback `""`, the usage comment near line 79), `config/bin/.local/bin/cockpit-agents/claude.sh` and `opencode.sh` (`sleep` in `agent_*_can`), `config/bin/.local/bin/cockpit-agents/README.md` (the `sleep` feature)
 - Test: `apps/cockpit/tests/cockpit_script.rs`
 
 **Interfaces:**
+
 - Consumes: `paths::asleep_dir` layout from Task 1 (`$COCKPIT_STATE_HOME`/`$XDG_STATE_HOME` + `/cockpit/asleep/<id>`).
 - Produces:
   - `ASLEEP_DIR` in the script.
@@ -79,6 +83,7 @@
   - `cockpit setting idle-sleep-after <minutes>` accepts integers of 30 or more.
 
 `sleep_session` does these steps in order, stopping at the first one that fails:
+
 1. Check the id with `^[A-Za-z0-9_-]+$` and require the `sleep` feature.
 2. Require a pane, state `waiting`, and not `needs_input`.
 3. Claude: `has_conversation`, and the snapshot's `background` and `agents` are both 0.
@@ -89,13 +94,14 @@
 8. Run `clear_exited_viewer id` and log `INFO sleep "<project> asleep after <n> min idle"`.
 
 The two pane checks:
+
 - **`prompt_has_draft <pane>`**: false only when the cursor sits right after the agent's `prompt_start` (as in `cockpit-left`) **and** the rest of that line after the cursor is blank or dim. Read the line with `capture-pane -p -e -N`; dim means every visible character after the cursor is inside SGR 2 or SGR 90 (bright black). Anything else, or a tmux error, counts as a draft.
 - **`background_shell_of <pane>`**: prints `pid comm` of the first process whose `comm` is in `bash sh zsh fish dash` and whose parent's `comm` is `claude` or `opencode`, among the pane pid's descendants. Use `ps -eo pid=,ppid=,comm=` and the descendant walk from `record_stuck_exit`.
 
 - [ ] **Step 1: Write the failing tests** in `cockpit_script.rs` (fake tmux, `SHIM_PANE_TEXT`, a `ps` shim):
   - `sleep_writes_a_note_and_exits_without_ending_the_session`: exit 0. The note exists with `idle_since` equal to the snapshot's `since`. `/exit` is sent. `ended-sessions` does not contain the id.
-  - `sleep_keeps_a_session_with_a_draft`: the pane line is `❯ fix the tests` with the cursor after `❯ ` → exit 3, no note, no send-keys.
-  - `sleep_reads_a_dim_placeholder_as_an_empty_prompt`: the line is `❯ \e[2mTry "refactor"\e[0m` with the cursor after `❯ ` → exit 0.
+  - `sleep_keeps_a_session_with_a_draft`: the pane line is `❯ fix the tests` with the cursor after `❯` and its trailing space → exit 3, no note, no send-keys.
+  - `sleep_reads_a_dim_placeholder_as_an_empty_prompt`: the line is `❯ \e[2mTry "refactor"\e[0m` with the cursor after `❯` and its trailing space → exit 0.
   - `sleep_keeps_a_session_with_a_background_shell`: the `ps` shim gives the pane pid → fish → claude → bash → exit 3, and the log names `bash`.
   - `sleep_keeps_a_claude_session_with_background_work`: snapshot `background: 1` → exit 3.
   - `sleep_keeps_a_claude_session_with_no_conversation`: no transcript → exit 3.
@@ -110,10 +116,12 @@ The two pane checks:
 ### Task 3: `cockpit wake <id>` and every way in
 
 **Files:**
+
 - Modify: `config/bin/.local/bin/cockpit` (`wake_session`, `is_asleep`, `queue_for_wake`; branches in `view_session`, `say_to_session`, `restart_session`, the `exit)` dispatch; dispatch `wake)`)
 - Test: `apps/cockpit/tests/cockpit_script.rs`
 
 **Interfaces:**
+
 - Consumes: the note format from Task 2. `RESTARTING_DIR` and its note format (`since\nproject\ndir\nold-pane`, old pane empty). `agent_<agent>_restore dir id`.
 - Produces:
   - `cockpit wake <id>`. Exit 0 when the resume has started. Exit 1 when it has not, after deleting the note and logging a WARN with the reason.
@@ -121,6 +129,7 @@ The two pane checks:
   - `queue_for_wake <id> <message>` writes the message as `queue_prompt_ask` does (`prompt-queue/<id>/<ns>.txt`).
 
 How `wake_session` works:
+
 - If the cwd is missing, or for Claude `has_conversation` fails: delete the note, log `WARN sleep "<project> could not wake: <reason>"`, and return 1.
 - Otherwise:
   1. Write the restart note.
@@ -130,6 +139,7 @@ How `wake_session` works:
   5. If `remote` was true, start in the background (`setsid -f`) a wait of at most `RESTART_TIMEOUT_S`. It waits for the snapshot to show the id with a pane, state `waiting` and `started` at or after the wake. Then, unless `session_is_remote`, it calls `send_remote_toggle pane`.
 
 The branches, each placed right where the pane lookup fails today:
+
 - `view_session`: if asleep, wake, `printf '%s\n' "$id" > "$CURRENT"`, `show_restarting`, return 0.
 - `say_to_session`: if asleep, or a restart note exists for the id with no pane yet: check the message as today, `queue_for_wake`, then `setsid -f cockpit wake` when asleep. Return 0 with `queued until it wakes` on stdout.
 - `restart_session`: if asleep, call `wake_session` and return its status.
@@ -151,6 +161,7 @@ The branches, each placed right where the pane lookup fails today:
 ### Task 4: The column puts sessions to sleep and shows them asleep
 
 **Files:**
+
 - Modify: `apps/cockpit/src/app.rs`:
   - `build_sessions`: add asleep cards after `hold_restarting_cards`.
   - The card badge near line 1529.
@@ -161,6 +172,7 @@ The branches, each placed right where the pane lookup fails today:
 - Test: `apps/cockpit/src/tests.rs`
 
 **Interfaces:**
+
 - Consumes: everything from Task 1. `cockpit sleep` and `cockpit wake` from Tasks 2–3.
 - Produces:
   - `const SLEEP_CHECK_S: f64 = 60.0;` and an `App.sleep_checked: f64` field.
@@ -177,7 +189,7 @@ The branches, each placed right where the pane lookup fails today:
   - The `idle-sleep-after` row cycles 30 → 60 → 120 → 240 → 30 on Enter, through `manager(&["setting", "idle-sleep-after", value])`.
 
 - [ ] **Step 1: Write the failing tests** (the `Fixture` style of `ready_sessions_left_alone_past_the_idle_threshold_show_as_idle_not_ready`, notes written into the fixture's state dir):
-  - `an_asleep_note_shows_as_an_asleep_card`: the badge starts with `Asleep `, and the card is listed with no snapshot row.
+  - `an_asleep_note_shows_as_an_asleep_card`: the badge starts with `Asleep` followed by a space, and the card is listed with no snapshot row.
   - `a_running_session_drops_its_stale_sleep_note`: snapshot row with `started > slept_at` → one card, and the note is deleted.
   - `asleep_sessions_are_not_offered_for_restore`: `recent-sessions.json` lists the id, with a boot time in the offer window → `app.restore` is empty.
   - `summary_counts_asleep_sessions`: "1 asleep".
@@ -195,10 +207,12 @@ The branches, each placed right where the pane lookup fails today:
 ### Task 5: The phone page sees and wakes asleep sessions
 
 **Files:**
+
 - Modify: `apps/cockpit/src/remote.rs` (`state`, `message`, new `wake`), `apps/cockpit/src/bin/claude-remote.rs` (route `POST /api/wake/<id>`), `apps/cockpit/assets/remote/page.js` (the asleep state and a Wake button)
 - Test: `apps/cockpit/tests/claude_remote.rs`, and `apps/cockpit/tests/remote_mobile_ui.mjs` if the page's rendering tests live there
 
 **Interfaces:**
+
 - Consumes: `sleep::asleep()` and `Asleep::card()`.
 - Produces:
   - `remote::state()` appends one card per asleep note not in the snapshot: `"state": "asleep"` and `"since": slept_at`, with the other fields as today.
@@ -221,6 +235,7 @@ The branches, each placed right where the pane lookup fails today:
 ### Task 6: Clone sweep, docs, full suite
 
 **Files:**
+
 - Modify: `config/bin/.local/bin/cockpit` (`clone_leftovers` / `reviewed_clone_report`: a clone whose path is an asleep note's `cwd` counts as having a session), `README.md` (Sessions section: the Asleep badge, wake triggers, the two settings and the 7-day expiry; the settings list in the `S` sentence)
 - Test: `apps/cockpit/tests/cockpit_script.rs`
 

@@ -26,6 +26,8 @@ typography:
     fontWeight: 700
 ---
 
+# Agent Cockpit terminal design
+
 ## Cost reporting
 
 ### Overview
@@ -103,6 +105,7 @@ Cover mixed billing, historical-only billing, zero-valued categories, no recorde
 - Do not call estimates actual spend, paid charges, invoices, or provider balances.
 - Do not add browser pages, Storybook, dependencies, invoice integration, or new provider-billing fetches.
 - Do not modify unrelated product UI or replace the existing terminal design system.
+
 ## Desktop team visibility
 
 ### Overview
@@ -397,7 +400,7 @@ One key map for the whole column. It resolves every clash between the redesign a
 answer anything.** Approving happens in the pinned ask once the session is open (`⏎` or `→`).
 
 | Key | Where | Does | Was |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `1` `2` `3` `4` `5` | everywhere (also CMD+1…5 from the session) | Sessions, Todo, Ideas, Teams, Chief tabs | 0-4 panels; F1-F4 and Tab panel cycling go |
 | `s` | everywhere | Status overlay (usage, spending, Chief, PRs, phone, services) | `s` slept the session: now `z` |
 | `?` | everywhere | help for the current tab + legend | same |
@@ -439,7 +442,7 @@ Use the existing terminal styling and `design/tokens.cockpit-ui.{json,css}`; the
 wireframes specify placements and behavior, not a replacement visual system.
 
 | Frame | Home | Approved actions |
-|---|---|---|
+| --- | --- | --- |
 | `4048` | Status → Services / Utilities | Select Claude or Codex service and Enter opens its existing official status URL. Utilities has Daily digest and Clones review/cleanup, each opened with Enter. |
 | `4064` | `N` New session | Keep the applied form, with Claude Code, Codex and OpenCode for blank sessions. Add an explicit Blank session / Claude Design canvas starting option. |
 | `4087` | Todo row and `i` details | `T` opens the selected task's existing trail; lowercase `t` remains Add. |
@@ -478,7 +481,7 @@ are `readyForDev` (todo `d6f4d98a`). Previews 21 and 22 retain the styling revie
 records the final desktop key cap and dedicated-folder copy.
 
 | Host state / condition | Desktop frame | Phone 390 / 320 frames | Content and action |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Verified Off, no unresolved attempt | `4191` | `4267` / `4339` | “Chief is off”; “Chief handles routine questions from your agents and brings important decisions to you.” One “Start Chief” action; no session picker. |
 | Start submitted, acknowledgement pending, or `starting` | `4202` | `4276` / `4348` | “Starting Chief…”; action unavailable immediately. Keep tracking the same attempt. |
 | `checking`, uncertain launch, or activation not verified | `4211` | `4285` / `4357` | “Checking Chief…”; show the actual reported reason when present. No Start or Try again. |
@@ -533,7 +536,7 @@ previews 24-27; built, frames `completed`). Goal: answer what the Chief sends yo
 at a time, with a small context and the suggestion broken into steps.
 
 | Frame | State | Content and keys |
-|---|---|---|
+| --- | --- | --- |
 | `4546` | Question | “! Chief needs you · 1 of N” (amber) with progress dots; `project › task` (project colour); category in words and age; “What's going on” (at most 2 lines); “◆ Chief suggests · N steps” (purple) as a numbered list; `a` do this, step by step (amber key), `w` write my own, `l` later, `i` full details; dim “Written by the Chief: check it before acting.” |
 | `4579` | Step by step | “Step k of N” (blue) in a blue-outlined box: the step in bold, one help line, a helper key when the Cockpit can do it (`g` show the guide), `d` done, next step. Then the remaining steps dim. `esc` back to the question. |
 | `4608` | Last step | Done steps ticked and dim. “Step N of N · send to the agent”: the exact message, `y` send (amber), `e` edit first. Enter never sends. |

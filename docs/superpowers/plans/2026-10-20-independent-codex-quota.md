@@ -29,8 +29,8 @@
 
 ## References
 
-- https://developers.openai.com/codex/app-server/ — initialize/initialized, managed `account/login/start`, `account/login/completed`, `account/read`, `account/rateLimits/read`.
-- https://developers.openai.com/codex/auth/ — managed refresh, CODEX_HOME and credential-store configuration.
+- <https://developers.openai.com/codex/app-server/> — initialize/initialized, managed `account/login/start`, `account/login/completed`, `account/read`, `account/rateLimits/read`.
+- <https://developers.openai.com/codex/auth/> — managed refresh, CODEX_HOME and credential-store configuration.
 - Confirm the installed CLI version and supported flags through an approved host command before live integration. Do not assume current online docs exactly match it.
 
 ## Execution ledger
@@ -68,11 +68,13 @@
 ### Task 1: Dedicated login and quota protocol client
 
 **Files:**
+
 - Create: `config/waybar/.config/waybar/scripts/codex-quota.py`
 - Create: `apps/cockpit/tests/codex_quota_client.rs`
 - Reuse: `apps/cockpit/tests/common/sandbox.rs` (inspect actual test helper layout before editing).
 
 **Interfaces:**
+
 - `python3 codex-quota.py`: print only normalized quota JSON to stdout; fixed errors to stderr, nonzero exit on failure.
 - `python3 codex-quota.py --login`: explicit interactive login; print the authorization URL supplied by Codex and wait for completion. Login must never occur during polling.
 - Both modes use the same dedicated home and vendor binary. Set Codex's documented credential store to `file` for this isolated home; Codex writes/refreshes credentials, the helper never reads them.
@@ -90,11 +92,13 @@
 ### Task 2: Integrate polling and document sign-in
 
 **Files:**
+
 - Modify: `config/waybar/.config/waybar/scripts/codex-usage.sh`
 - Modify: `apps/cockpit/tests/waybar_claude_scripts.rs`
 - Modify: `README.md` (existing cockpit/usage documentation).
 
 **Interfaces:**
+
 - Preserve normal and `--force` behavior, 240-second cache reuse, runtime flock, atomic writes, cache filenames and error JSON shape.
 - Add `codex-usage.sh --login` forwarding to the sibling helper before acquiring the polling cache lock; success must invalidate freshness or perform a forced read so the next display reflects the new sign-in.
 - Invoke the sibling Python helper instead of sqlite/jq credential extraction/curl; never inspect credential files. Remove obsolete OpenCode/CLI credential fallback code.
