@@ -568,3 +568,71 @@ fn without_a_daemon_an_update_fails_loudly() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("cannot reach the OSD daemon"), "{}", stderr(&output));
 }
+
+/// Runs `test` in a child process inside a fresh sandbox, so cockpit::paths resolve into it.
+fn in_sandbox_child(test: &str) -> bool {
+    if std::env::var_os("TODO_UNWAIT_CHILD").is_some() { return true; }
+    let sandbox = Sandbox::new();
+    let output = sandbox.command(std::env::current_exe().unwrap(), &[("TODO_UNWAIT_CHILD", "1")])
+        .args(["--exact", test, "--nocapture"]).output().unwrap();
+    assert!(output.status.success(), "{}\n{}", stdout(&output), stderr(&output));
+    false
+}
+
+/// An item of `project` waiting on two others, made to wait through the daemon's queue as a session would.
+fn waiting_item(todos: &mut cockpit::todo::TodoList) -> (std::path::PathBuf, String, String, String) {
+    let project = cockpit::paths::home().join("IdeaProjects/project");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    let first = todos.add("project", project.to_str().unwrap(), "Prerequisite one");
+    let second = todos.add("project", project.to_str().unwrap(), "Prerequisite two");
+    let waiting = todos.add("project", project.to_str().unwrap(), "Held work");
+    let after = json!({"action": "after", "id": waiting, "after": [first, second], "started_in": project});
+    fs::write(cockpit::paths::todo_updates(), format!("{after}\n")).unwrap();
+    assert_eq!(todos.apply_updates(), 1);
+    (project, waiting, first, second)
+}
+
+fn host_todo(arguments: &[&str]) -> Output {
+    std::process::Command::new(bin().join("cockpit-todo")).args(arguments).output().unwrap()
+}
+
+#[test]
+fn host_unwait_drops_only_the_named_wait_audits_it_and_does_not_queue_the_item() {
+    if !in_sandbox_child("host_unwait_drops_only_the_named_wait_audits_it_and_does_not_queue_the_item") { return; }
+    let mut todos = cockpit::todo::TodoList::load();
+    let (_, waiting, first, second) = waiting_item(&mut todos);
+    let output = host_todo(&["unwait", &waiting, &first]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(todos.apply_updates(), 1);
+    let saved = cockpit::todo::TodoList::load();
+    let item = saved.items.iter().find(|item| item.id() == waiting).unwrap();
+    assert_eq!(item.after(), [second]);
+    assert!(!saved.is_queued(&waiting));
+    let day = cockpit::audit::dir().join(format!("audit-{}.jsonl", chrono::Local::now().format("%Y-%m-%d")));
+    let audit = fs::read_to_string(day).unwrap();
+    assert!(audit.lines().map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .any(|line| line["event"] == "todo.unwaited" && line["id"] == waiting.as_str() && line["dropped"] == json!([first])), "{audit}");
+}
+
+#[test]
+fn host_unwait_refuses_an_item_the_target_does_not_wait_on_and_queues_nothing() {
+    if !in_sandbox_child("host_unwait_refuses_an_item_the_target_does_not_wait_on_and_queues_nothing") { return; }
+    let mut todos = cockpit::todo::TodoList::load();
+    let (_, waiting, _, _) = waiting_item(&mut todos);
+    let output = host_todo(&["unwait", &waiting, "0000beef"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains(&format!("{waiting} does not wait on 0000beef")), "{}", stderr(&output));
+    assert!(fs::read_to_string(cockpit::paths::todo_updates()).unwrap_or_default().is_empty());
+}
+
+#[test]
+fn an_unwait_carrying_a_sandbox_folder_is_refused_by_the_column() {
+    if !in_sandbox_child("an_unwait_carrying_a_sandbox_folder_is_refused_by_the_column") { return; }
+    let mut todos = cockpit::todo::TodoList::load();
+    let (project, waiting, first, second) = waiting_item(&mut todos);
+    let forged = json!({"action": "unwait", "id": waiting, "after": [first], "started_in": project});
+    fs::write(cockpit::paths::todo_updates(), format!("{forged}\n")).unwrap();
+    assert_eq!(todos.apply_updates(), 0);
+    let item = cockpit::todo::TodoList::load().items.into_iter().find(|item| item.id() == waiting).unwrap();
+    assert_eq!(item.after(), [first, second]);
+}

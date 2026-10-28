@@ -4500,3 +4500,14 @@ fn a_request_held_or_refused_is_audited_without_its_command() {
     assert_eq!(lines[0]["started_in"].as_str(), Some(folder.as_str()));
     assert!(!lines[0].to_string().contains("secret-step"));
 }
+
+#[test]
+fn a_session_cannot_send_an_unwait_through_the_report_socket() {
+    let mut bench = Bench::new();
+    let (folder, _) = project_folder(&bench);
+    bench.world.borrow_mut().sender_directories.insert(500, folder);
+    let raw = json!({"action": "unwait", "id": "0123abcd", "after": ["4567cdef"]}).to_string();
+    let error = bench.registry.request_from("todo-update", &raw, 500).unwrap_err();
+    assert!(error.contains("unwait is host only"), "{error}");
+    assert!(!cockpit::paths::todo_updates().exists());
+}

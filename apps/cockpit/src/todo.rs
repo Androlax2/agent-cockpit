@@ -1120,6 +1120,30 @@ impl TodoList {
         Ok((pending, inputs))
     }
 
+    /// cockpit-todo unwait <id> <other>… (host only): the item stops waiting on the named items.
+    /// Its status and queue place stay as they are: queueing it remains Theo's Q.
+    fn stop_waiting(&mut self, update: &Map<String, Value>) -> Result<(), String> {
+        let id = update.get("id").and_then(Value::as_str).filter(|id| typed_id().is_match(id)).ok_or("unwait names no item id")?.to_string();
+        let named: Vec<String> = update.get("after").and_then(Value::as_array).ok_or("unwait names no items to stop waiting on")?
+            .iter().map(|other| other.as_str().filter(|other| typed_id().is_match(other)).map(str::to_string))
+            .collect::<Option<_>>().ok_or("unwait holds something that is not an item id")?;
+        if named.is_empty() || named.len() > 5 {
+            return Err(format!("unwait names {} items: 1 to 5", named.len()));
+        }
+        let item = self.items.iter_mut().find(|item| item.id() == id).ok_or_else(|| format!("{id} to stop waiting is not in the list"))?;
+        let waits_on = item.after();
+        if let Some(missing) = named.iter().find(|other| !waits_on.contains(other)) {
+            return Err(format!("{id} does not wait on {missing}"));
+        }
+        let remaining: Vec<String> = waits_on.into_iter().filter(|other| !named.contains(other)).collect();
+        item.0.insert("after".into(), json!(remaining));
+        item.0.insert("updated".into(), json!(now_secs()));
+        self.try_save().map_err(|error| format!("cannot save todo: {error}"))?;
+        crate::audit::record("column", "todo.unwaited", "ok", json!({"id": id, "dropped": named, "remaining": remaining}));
+        util::log_event("INFO", &format!("todo {id} no longer waits on {} (Theo, cockpit-todo unwait)", named.join(", ")));
+        Ok(())
+    }
+
     /// claude-todo after <id> <other>…: an item of any project still to do (or the sender's own in
     /// progress, back to to do) waits until the others are done, then joins the queue.
     fn make_wait(&mut self, update: &Map<String, Value>, sender_project: &str) -> Result<(), String> {
@@ -1335,6 +1359,12 @@ impl TodoList {
             Ok(Value::Object(update)) => update,
             _ => return Err("not a JSON object".into()),
         };
+        if update.get("action").and_then(Value::as_str) == Some("unwait") {
+            // The daemon refuses unwait and stamps started_in on every sandbox update: a line
+            // carrying one did not come from Theo's host command.
+            if update.contains_key("started_in") { return Err("unwait is host only: it never comes through a sandbox".into()); }
+            return self.stop_waiting(&update);
+        }
         let started_in = update.get("started_in").and_then(Value::as_str).filter(|folder| std::path::Path::new(folder).is_dir())
             .ok_or("no folder its sandbox started in")?.to_string();
         let sender_project = project_name(&repository_root(&started_in));

@@ -46,6 +46,8 @@ const USAGE: &str = "    cockpit-todo list [--all]        the items of this dire
     cockpit-todo receipt <request-id>  saved/rejected/pending result of any filing
     cockpit-todo approve-request <request-id>
                                      host only, through ask-to-run: approve the exact capped handoff
+    cockpit-todo unwait <id> <other>…  host only, through ask-to-run: the item stops waiting on those
+                                     items; it is not queued (Q stays Theo's)
     cockpit-todo start <id>          mark it in progress
     cockpit-todo done <id> [--summary '<branch, commit, PR>']
                                     mark it done; the summary reaches the items waiting on it and,
@@ -321,6 +323,12 @@ fn main() {
             Ok(()) => { println!("Approval for exact request {id} submitted; check its saved receipt before claiming success."); 0 }
             Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
         },
+        ["unwait", id, others @ ..] if item_key.is_match(id) && !others.is_empty() && others.len() <= 5 && others.iter().all(|other| item_key.is_match(other)) => {
+            match cockpit::todo_requests::unwait(id, others) {
+                Ok(()) => { println!("{id} stops waiting on {} once the column applies it; it is not queued.", others.join(", ")); 0 }
+                Err(error) => { eprintln!("cockpit-todo: {error}"); 1 }
+            }
+        }
         ["--help" | "-h" | "help", ..] | ["add" | "propose" | "blocked" | "stack" | "greywall" | "after" | "done", "--help" | "-h", ..] | ["stack", _, "--help" | "-h", ..] => { println!("{USAGE}"); 0 }
         [] | ["list", ..] => list(words.contains(&"--all")),
         ["done", id, "--summary", summary] if item_key.is_match(id) && !summary.trim().is_empty() => {

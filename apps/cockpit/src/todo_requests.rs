@@ -125,6 +125,18 @@ pub fn finish(request: &Value, outcome: &str, item: Option<&crate::todo::Item>, 
     }
 }
 
+/// Theo's host command: `id` stops waiting on `others`. It writes the queue the sandbox cannot
+/// reach, and the daemon refuses the action from any sandbox, so no session can release a wait.
+pub fn unwait(id: &str, others: &[&str]) -> Result<(), String> {
+    let list = crate::todo::TodoList::load_checked()?;
+    let item = list.items.iter().find(|item| item.id() == id).ok_or_else(|| format!("{id} is not in the list"))?;
+    let waits_on = item.after();
+    if let Some(missing) = others.iter().find(|other| !waits_on.iter().any(|waited| waited == *other)) {
+        return Err(format!("{id} does not wait on {missing} (it waits on: {})", if waits_on.is_empty() { "nothing".into() } else { waits_on.join(", ") }));
+    }
+    append_update(&json!({"action": "unwait", "id": id, "after": others}))
+}
+
 pub fn is_retained(request: &Value) -> bool {
     let Some(fields) = request.as_object() else { return false };
     let Some(id) = fields.get("request_id").and_then(Value::as_str).filter(|id| approval::valid_id(id)) else { return false };
