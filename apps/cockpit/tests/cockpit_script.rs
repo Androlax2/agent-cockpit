@@ -3297,6 +3297,21 @@ fn reload_restarts_an_osd_daemon_older_than_its_build() {
 }
 
 #[test]
+fn the_deferred_osd_restart_holds_no_lock_of_the_apply_that_reloaded() {
+    // A waiter that kept the install lock blocked the approved installs it waited on (2026-10-28).
+    let manager = Manager::new();
+    let binary = osd_daemon(&manager, 3600, 60);
+    manager.sandbox.shim("setsid", r#"if grep -q FLOCK /proc/$$/fdinfo/*; then echo "setsid inherited a lock" >> "$SHIM_LOG"; fi"#);
+    let install_lock = manager.sandbox.root.join("install.lock");
+    let output = manager.sandbox.command("flock", &[("COCKPIT_OSD_BINARY", &binary)])
+        .arg(&install_lock).arg(bin().join("cockpit")).arg("reload").output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = manager.calls("setsid");
+    assert!(calls.iter().any(|call| call.ends_with("restart-osd-when-idle")), "{calls:?}");
+    assert!(!calls.iter().any(|call| call.contains("inherited a lock")), "{calls:?}");
+}
+
+#[test]
 fn reload_leaves_an_osd_daemon_on_its_build_alone() {
     let manager = Manager::new();
     let binary = osd_daemon(&manager, 60, 3600);

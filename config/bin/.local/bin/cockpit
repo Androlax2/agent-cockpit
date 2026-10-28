@@ -1633,8 +1633,21 @@ restart_stale_osd() {
     osd_is_stale || return 0
     echo "The OSD daemon runs an older build: it restarts once no approval is open."
     log_event INFO manager "osd.service runs a build older than $OSD_BINARY: restart once no approval is open"
-    setsid -f "$0" restart-osd-when-idle >/dev/null 2>&1
+    start_detached "$0" restart-osd-when-idle
 }
+
+# start_detached <command…>: in its own session, holding none of the caller's descriptors. The OSD
+# waiter outlived the apply that reloaded and kept its install lock open (2026-10-28): the
+# approved installs queued behind that lock never ran, so the approvals the waiter waited on
+# never closed.
+start_detached() (
+    local descriptor
+    for descriptor in /proc/$BASHPID/fd/*; do
+        descriptor=${descriptor##*/}
+        if (( descriptor > 2 && descriptor != 255 )); then exec {descriptor}>&-; fi
+    done
+    exec setsid -f "$@" </dev/null >/dev/null 2>&1
+)
 
 # The phone page (claude-remote.service) is compiled into its binary: after an apply the phone kept
 # the old page until a manual restart. It restarts at once: it shows no approval of its own (a
