@@ -1,5 +1,5 @@
 //! The Chief following a known session or todo through the authenticated daemon route after its
-//! 50-record Context budget is spent (todo 5b91edcf, reproducing the 5779dac9 stall).
+//! Context record budget is spent (todo 5b91edcf, reproducing the 5779dac9 stall).
 use super::*;
 
 fn inspect(bench: &mut Bench, peer: u32, target: serde_json::Value) -> Result<serde_json::Value, cockpit::teams::TeamError> {
@@ -11,11 +11,13 @@ fn inspect(bench: &mut Bench, peer: u32, target: serde_json::Value) -> Result<se
 
 /// More open host decisions than one turn may read, then the one Context read that spends the budget.
 fn spend_context_budget(bench: &mut Bench) {
-    bench.registry.teams.as_ref().unwrap().execute_batch("WITH RECURSIVE backlog(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM backlog WHERE n<60)
+    bench.registry.teams.as_ref().unwrap().execute_batch("WITH RECURSIVE backlog(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM backlog WHERE n<99)
         INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at)
         SELECT 'backlog-'||n,'backlog-'||n,'key','Historical decision','Review only','open',1,n FROM backlog;").unwrap();
-    let page = context(bench, 20).unwrap().result.unwrap();
-    assert_eq!(page["records"].as_array().unwrap().len(), 50, "{page}");
+    for _ in 0..cockpit::chief::CONTEXT_RECORDS_PER_TURN / cockpit::chief::MAX_CONTEXT_RECORDS {
+        let page = context(bench, 20).unwrap().result.unwrap();
+        assert_eq!(page["records"].as_array().unwrap().len(), cockpit::chief::MAX_CONTEXT_RECORDS, "{page}");
+    }
     let exhausted = context(bench, 20).unwrap().result.unwrap_err();
     assert_eq!(exhausted.code, ErrorCode::Limit);
     assert!(exhausted.message.contains("event-record budget exhausted"), "{}", exhausted.message);

@@ -48,6 +48,8 @@ pub fn host_snapshot() -> Result<Value, TeamError> {
 
 pub const MAX_OPEN_DECISIONS: usize = 100;
 pub const MAX_CONTEXT_RECORDS: usize = 50;
+/// How many Context records one admitted Chief turn may read, across its pages.
+pub const CONTEXT_RECORDS_PER_TURN: usize = 100;
 /// How many habits one answer may name as the ones it relied on.
 pub const MAX_CITED_HABITS: usize = 5;
 /// The limit of a Chief answer, in the words Theo approved. Told to the Chief in its wake text and
@@ -124,7 +126,7 @@ pub enum ChiefAgentAction {
     /// pass. The host frames it as the Chief's and adds `CHIEF_MESSAGE_BOUNDARY`; it grants nothing.
     Message { session: String, text: String, reason: String },
     /// Read-only look at one known session or todo, named by exactly one of the two: its owner, open
-    /// stop, and the delivery state of what the Chief sent it. Outside the 50-record Context budget,
+    /// stop, and the delivery state of what the Chief sent it. Outside the `CONTEXT_RECORDS_PER_TURN` Context budget,
     /// at most `INSPECTIONS_PER_TURN` per admitted turn.
     Inspect { #[serde(default)] session: Option<String>, #[serde(default)] todo: Option<String> },
 }

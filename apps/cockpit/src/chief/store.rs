@@ -2133,7 +2133,7 @@ fn bounded_chief_snapshot(connection: &Connection, live: &[WorkerState], epoch: 
 fn context_remaining(connection: &Connection, epoch: &str, turn: Option<&(String,i64,i64,i64)>) -> Result<usize, TeamError> {
     let records = if let Some((_,_,_,records)) = turn {*records}
         else {connection.query_row("SELECT preview_records FROM chief_coordination WHERE epoch=?1",[epoch],|row|row.get::<_,i64>(0))?};
-    Ok(50i64.saturating_sub(records).max(0) as usize)
+    Ok((super::CONTEXT_RECORDS_PER_TURN as i64).saturating_sub(records).max(0) as usize)
 }
 
 fn record_read(connection: &Connection, dispatch: &str, read_through: i64) -> Result<(), TeamError> {
@@ -2151,7 +2151,7 @@ fn unread_context(connection: &Connection, epoch: &str) -> Result<(Option<i64>, 
         .query_map(params![epoch,UNREAD_CONTEXT_TURNS as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<i64>>(2)?)))?
         .collect::<Result<Vec<_>,_>>()?;
     let position = turns.first().and_then(|(_,_,read)|*read);
-    let stalled = turns.iter().take_while(|(through,records,read)|read.is_some_and(|read|read<*through) && *records<50).count();
+    let stalled = turns.iter().take_while(|(through,records,read)|read.is_some_and(|read|read<*through) && *records<super::CONTEXT_RECORDS_PER_TURN as i64).count();
     Ok((position,stalled))
 }
 
@@ -2335,7 +2335,7 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
     let mut records = Vec::new();
     let mut statement = connection.prepare("SELECT session_id,epoch,state FROM chief_grants WHERE state!='disabled' ORDER BY id")?;
     records.extend(statement.query_map([], |row| Ok(json!({"kind": "chief", "session_id": row.get::<_, String>(0)?, "epoch": row.get::<_, String>(1)?, "state": row.get::<_, String>(2)?})))?.collect::<Result<Vec<_>, _>>()?);
-    // Right after the chief record: a turn reads at most 50 records and a stop is what it is woken for.
+    // Right after the chief record: a turn reads at most CONTEXT_RECORDS_PER_TURN records and a stop is what it is woken for.
     let stops = connection.prepare("SELECT id,session_id,project,task_id,bundle FROM chief_stops WHERE state='open' ORDER BY created_at,id")?
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?
         .collect::<Result<Vec<_>, _>>()?;

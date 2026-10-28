@@ -279,23 +279,24 @@ fn failed_native_bootstrap_never_opens_budget_or_blindly_retries() {
 }
 
 #[test]
-fn fifty_records_are_a_cumulative_turn_budget_and_new_events_wait_for_next_admitted_boundary() {
+fn a_hundred_records_are_a_cumulative_turn_budget_and_new_events_wait_for_next_admitted_boundary() {
     let (mut connection,mut live) = setup();
     enable_events(&mut connection,&live);
-    for index in 0..60 {
+    for index in 0..120 {
         connection.execute("INSERT INTO chief_events(id,source,submission_key,fingerprint,kind,body,created_at) VALUES (?1,'host',?1,'test','status','{}',100)",[format!("control-{index}")]).unwrap();
     }
     admit_events(&mut connection,&live,"bootstrap",100);
-    let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:1,limit:30},&live,100).unwrap().result.unwrap();
-    assert_eq!(first["records"].as_array().unwrap().len(),30);
-    let next = first["next"].as_i64().unwrap();
-    let second = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:next,limit:30},&live,100).unwrap().result.unwrap();
-    assert_eq!(second["records"].as_array().unwrap().len(),20);
+    let mut next = 1;
+    for (limit,expected) in [(50,50),(30,30),(30,20)] {
+        let page = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:next,limit},&live,100).unwrap().result.unwrap();
+        assert_eq!(page["records"].as_array().unwrap().len(),expected);
+        next = page["next"].as_i64().unwrap();
+    }
     assert_eq!(store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:1},&live,100).unwrap().result.unwrap_err().code,ErrorCode::Limit);
     for worker in &mut live {worker.observed_at_ms=30_100;}
     store::observe(&mut connection,&live,30_100).unwrap();
     let wake = store::claim(&mut connection,&live[0].session,"backlog-boundary",30_100).unwrap().expect("unread control backlog has a durable deadline wake");
-    assert_eq!(wake.envelope["context_continuation"]["resume_after"],second["next"]);
+    assert_eq!(wake.envelope["context_continuation"]["resume_after"],next);
     store::finish_for(&mut connection,&live[0].session,&wake.id,&cockpit::teams::TransportOutcome::Received {native_id:"backlog-admitted".into()},30_100).unwrap();
     let epoch: String = connection.query_row("SELECT epoch FROM chief_grants WHERE state='active'",[],|row|row.get(0)).unwrap();
     store::host(&mut connection,&ChiefHostAction::Disable {request_id:"replace-backlog-disable".into(),expected_epoch:epoch},&live,30_100).unwrap().result.unwrap();
@@ -499,19 +500,22 @@ fn failed_actions_consume_a_durable_budget_without_partial_mutations() {
 #[test]
 fn large_redacted_snapshots_continue_at_a_new_native_boundary_without_invalidating_their_own_generation() {
     let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
-    for index in 0..60 {
+    for index in 0..95 {
         connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at) VALUES (?1,?1,'key','Bounded host decision','Review only','open',1,100)",[format!("snapshot-{index}")]).unwrap();
     }
+    for index in 0..20 { context_decision(&connection,&format!("resolved-{index}"),"resolved",40,Some(60)); }
     admit_events(&mut connection,&live,"bootstrap",100);
     let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:0,limit:50,generation:None},&live,100).unwrap().result.unwrap();
     assert_eq!(first["records"].as_array().unwrap().len(),50);
+    let middle = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:first["next"].as_i64().unwrap(),limit:50,generation:Some(first["generation"].as_str().unwrap().into())},&live,100).unwrap().result.unwrap();
+    assert_eq!(middle["records"].as_array().unwrap().len(),50);
     for worker in &mut live {worker.observed_at_ms=30_100;}
     let wake = admit_events(&mut connection,&live,"snapshot-boundary",30_100);
-    assert_eq!(wake.envelope["context_continuation"]["snapshot_after"],first["next"]);
-    let second = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:first["next"].as_i64().unwrap(),limit:50,generation:Some(first["generation"].as_str().unwrap().into())},&live,30_100).unwrap().result.unwrap();
+    assert_eq!(wake.envelope["context_continuation"]["snapshot_after"],middle["next"]);
+    let second = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:middle["next"].as_i64().unwrap(),limit:50,generation:Some(first["generation"].as_str().unwrap().into())},&live,30_100).unwrap().result.unwrap();
     assert_ne!(second["invalidated"],true);
     assert_eq!(second["has_more"],false);
-    assert_eq!(first["records"].as_array().unwrap().len()+second["records"].as_array().unwrap().len(),63);
+    assert_eq!(100+second["records"].as_array().unwrap().len(),118);
 }
 
 #[test]
@@ -602,18 +606,20 @@ fn incremental_availability_exports_only_the_context_worker_fields() {
 fn availability_backlogs_resume_incrementally_without_exceeding_the_turn_budget() {
     let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
     let after: i64 = connection.query_row("SELECT max(seq) FROM chief_events",[],|row|row.get(0)).unwrap();
-    for index in 0..55 {insert_availability_event(&connection,&format!("availability-{index}"),"host",r#"{"workers":[]}"#);}
+    for index in 0..105 {insert_availability_event(&connection,&format!("availability-{index}"),"host",r#"{"workers":[]}"#);}
     for worker in &mut live {worker.observed_at_ms=30_100;}
     admit_events(&mut connection,&live,"availability-backlog",30_100);
     let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,30_100).unwrap().result.unwrap();
     assert_eq!(first["snapshot_required"],false,"{first}");
     assert_eq!(first["records"].as_array().unwrap().len(),50);
     assert_eq!(first["has_more"],true);
-    assert_eq!(store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:first["next"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap_err().code,ErrorCode::Limit);
+    let second = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:first["next"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap();
+    assert_eq!((second["records"].as_array().unwrap().len(),second["has_more"].clone()),(50,json!(true)));
+    assert_eq!(store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:second["next"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap_err().code,ErrorCode::Limit);
     for worker in &mut live {worker.observed_at_ms=60_100;}
     let wake = admit_events(&mut connection,&live,"availability-continuation",60_100);
-    assert_eq!(wake.envelope["context_continuation"]["resume_after"],first["next"]);
-    let rest = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:first["next"].as_i64().unwrap(),limit:50},&live,60_100).unwrap().result.unwrap();
+    assert_eq!(wake.envelope["context_continuation"]["resume_after"],second["next"]);
+    let rest = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:second["next"].as_i64().unwrap(),limit:50},&live,60_100).unwrap().result.unwrap();
     assert_eq!(rest["snapshot_required"],false,"{rest}");
     assert_eq!(rest["has_more"],false);
     assert_eq!(rest["records"].as_array().unwrap().iter().filter(|record|record["kind"]=="availability_changed").count(),5);
@@ -718,7 +724,7 @@ fn routine_capacity_idle_and_no_approved_work_do_not_create_host_attention() {
 #[test]
 fn context_reads_before_bootstrap_are_bounded_and_cannot_mint_a_mutation_turn() {
     let (mut connection,live) = setup(); enable_events(&mut connection,&live);
-    for _ in 0..50 {store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:1},&live,100).unwrap().result.unwrap();}
+    for _ in 0..cockpit::chief::CONTEXT_RECORDS_PER_TURN {store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:1},&live,100).unwrap().result.unwrap();}
     assert_eq!(store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:1},&live,100).unwrap().result.unwrap_err().code,ErrorCode::Limit);
     assert_eq!(connection.query_row("SELECT count(*) FROM chief_turns",[],|row|row.get::<_,i64>(0)).unwrap(),0);
     admit_events(&mut connection,&live,"bootstrap",100);
@@ -910,6 +916,15 @@ fn the_chief_wake_text_explains_stops_and_states_the_authorisation_boundary() {
         assert!(text.contains(expected),"{expected}: {text}");
     }
     assert_eq!(cockpit::chief::CHIEF_ANSWER_BOUNDARY,"Chief answer on Theo's behalf. It authorises edits, builds, tests and commits inside your current task only. Installs, dependency changes, pushes, merges, default-branch or other Git writes your project does not already allow, anything outside the task, and anything security-related still need Theo. Permission prompts, ask-to-run and cockpit apply are always Theo's.");
+}
+
+#[test]
+fn the_chief_wake_text_states_the_enforced_turn_budgets() {
+    let text = cockpit::teams::envelope_text(&json!({"message_id":"wake","kind":"chief_wake","body":"Material coordination work is pending.","context_continuation":null,"summary_requests":[]}));
+    assert_eq!(cockpit::chief::CONTEXT_RECORDS_PER_TURN,100);
+    for expected in ["At most 20 mutations and 100 records in this admitted turn","beside the 100 records","\"limit\":50"] {
+        assert!(text.contains(expected),"{expected}: {text}");
+    }
 }
 
 /// The worker stopped at `waiting:1000`: some time in second 1,000, so the 30 s grace is over for
@@ -2443,26 +2458,26 @@ fn unread_notices(connection: &Connection) -> Vec<(String,i64,String)> {
 fn a_stop_behind_more_history_than_one_turn_reaches_the_chief_and_its_answer_is_delivered() {
     let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
     store::verify_admission(&mut connection,&live[1].session,"opencode-queued-v1","Controlled fixture, not live proof",100).unwrap();
-    for index in 0..77 { context_decision(&connection,&format!("open-{index}"),"open",50,None); }
-    for index in 0..30 { context_decision(&connection,&format!("resolved-{index}"),"resolved",40,Some(60)); }
+    for index in 0..95 { context_decision(&connection,&format!("open-{index}"),"open",50,None); }
+    for index in 0..20 { context_decision(&connection,&format!("resolved-{index}"),"resolved",40,Some(60)); }
     admit_events(&mut connection,&live,"bootstrap",100);
     let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:50},&live,100).unwrap().result.unwrap();
     assert_eq!((first["snapshot_required"].clone(),first["has_more"].clone()),(json!(true),json!(true)));
+    let generation = first["snapshot_generation"].as_str().unwrap().to_string();
     observed_at(&mut live,30_100);
     let stop = store::record_stop(&mut connection,&live[1].session,STOP_BOUNDARY,&stopped_task(),&stop_bundle_fixture("Which option do you want?"),30_100).unwrap().unwrap();
-    let second_wake = admit_events(&mut connection,&live,"snapshot-rest",30_100);
-    assert_eq!(second_wake.envelope["context_continuation"]["snapshot_after"],first["snapshot_next"]);
-    let rest = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {
-        after:first["snapshot_next"].as_i64().unwrap(),limit:50,generation:Some(first["snapshot_generation"].as_str().unwrap().into()),
+    let middle = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {
+        after:first["snapshot_next"].as_i64().unwrap(),limit:50,generation:Some(generation.clone()),
     },&live,30_100).unwrap().result.unwrap();
-    assert_eq!((rest["records"].as_array().unwrap().len(),rest["has_more"].clone()),(50,json!(false)),"the old snapshot ends exactly at the turn budget");
+    assert_eq!((middle["records"].as_array().unwrap().len(),middle["has_more"].clone()),(50,json!(true)),"the first turn ends at its budget inside the snapshot");
+    let second_wake = admit_events(&mut connection,&live,"snapshot-rest",30_100);
+    assert_eq!(second_wake.envelope["context_continuation"]["snapshot_after"],middle["next"]);
+    let rest = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {
+        after:middle["next"].as_i64().unwrap(),limit:50,generation:Some(generation),
+    },&live,30_100).unwrap().result.unwrap();
+    assert_eq!(rest["has_more"],json!(false));
     assert!(stopped_records(&rest).is_empty(),"the frozen snapshot predates the stop");
-    assert_eq!(store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:rest["event_cursor"].as_i64().unwrap(),limit:50},&live,30_100)
-        .unwrap().result.unwrap_err().code,ErrorCode::Limit);
-    observed_at(&mut live,60_100);
-    let resumed = admit_events(&mut connection,&live,"unread-stop",60_100);
-    assert_eq!(resumed.envelope["context_continuation"]["resume_after"],rest["event_cursor"],"{}",resumed.envelope);
-    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:rest["event_cursor"].as_i64().unwrap(),limit:50},&live,60_100).unwrap().result.unwrap();
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:rest["event_cursor"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap();
     assert_eq!(stopped_records(&context)[0]["stop"],stop.as_str(),"{context}");
     assert_eq!(stopped_records(&context)[0]["bundle"]["last_assistant"],"Which option do you want?");
     store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Answer {stop:stop.clone(),text:"Use option A.".into(),
@@ -2521,9 +2536,11 @@ fn a_snapshot_read_across_full_budget_turns_is_progress_not_an_unread_notice() {
     for index in 0..95 { context_decision(&connection,&format!("open-{index}"),"open",50,None); }
     for index in 0..20 { context_decision(&connection,&format!("resolved-{index}"),"resolved",40,Some(60)); }
     admit_events(&mut connection,&live,"bootstrap",100);
-    let mut page = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:50},&live,100).unwrap().result.unwrap();
-    let (generation,mut after) = (page["snapshot_generation"].clone(),page["snapshot_next"].as_i64().unwrap());
-    for (turn,now) in [("snapshot-2",30_100),("snapshot-3",60_100)] {
+    let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:0,limit:50},&live,100).unwrap().result.unwrap();
+    let generation = first["snapshot_generation"].clone();
+    let mut page = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:first["snapshot_next"].as_i64().unwrap(),limit:50,generation:Some(generation.as_str().unwrap().into())},&live,100).unwrap().result.unwrap();
+    let mut after = page["next"].as_i64().unwrap();
+    for (turn,now) in [("snapshot-2",30_100)] {
         observed_at(&mut live,now);
         let wake = admit_events(&mut connection,&live,turn,now);
         assert_eq!(wake.envelope["context_continuation"]["snapshot_after"],after);
@@ -2666,7 +2683,7 @@ fn the_chiefs_own_message_is_read_after_a_complete_cursor_without_a_snapshot() {
 
 /// The turn's own end, after a turn spent its whole record budget reading up to it.
 fn spend_turn_budget(connection: &Connection) -> i64 {
-    connection.execute("UPDATE chief_turns SET records=50 WHERE rowid=(SELECT max(rowid) FROM chief_turns)",[]).unwrap();
+    connection.execute("UPDATE chief_turns SET records=?1 WHERE rowid=(SELECT max(rowid) FROM chief_turns)",[cockpit::chief::CONTEXT_RECORDS_PER_TURN as i64]).unwrap();
     connection.query_row("SELECT through_seq FROM chief_turns WHERE rowid=(SELECT max(rowid) FROM chief_turns)",[],|row|row.get(0)).unwrap()
 }
 
@@ -2679,7 +2696,7 @@ fn a_spent_turn_read_to_its_end_answers_empty_instead_of_an_exhausted_budget() {
     assert_eq!(context["has_more"],false);
     assert_eq!(context["snapshot_required"],false);
     assert_eq!(context["event_cursor"],through);
-    assert_eq!(connection.query_row("SELECT records FROM chief_turns WHERE rowid=(SELECT max(rowid) FROM chief_turns)",[],|row|row.get::<_,i64>(0)).unwrap(),50,"nothing is charged");
+    assert_eq!(connection.query_row("SELECT records FROM chief_turns WHERE rowid=(SELECT max(rowid) FROM chief_turns)",[],|row|row.get::<_,i64>(0)).unwrap(),cockpit::chief::CONTEXT_RECORDS_PER_TURN as i64,"nothing is charged");
 }
 
 #[test]
