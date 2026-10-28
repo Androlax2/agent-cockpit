@@ -1,12 +1,11 @@
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
-
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 LOCK = REPO / "tools/full-test-lock.py"
@@ -20,14 +19,29 @@ class FullTestLockTests(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
 
     def start(self, holder, script):
-        return subprocess.Popen([sys.executable, str(LOCK), str(self.lock_folder), holder, sys.executable, "-c", script],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return subprocess.Popen(
+            [
+                sys.executable,
+                str(LOCK),
+                str(self.lock_folder),
+                holder,
+                sys.executable,
+                "-c",
+                script,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
 
     def start_holder(self, holder="/clones/first"):
         started = self.root / "started"
         release = self.root / "release"
-        running = self.start(holder, f"import os, time\nopen({str(started)!r}, 'w').close()\n"
-                                     f"while not os.path.exists({str(release)!r}): time.sleep(0.02)")
+        running = self.start(
+            holder,
+            f"import os, time\nopen({str(started)!r}, 'w').close()\n"
+            f"while not os.path.exists({str(release)!r}): time.sleep(0.02)",
+        )
         self.addCleanup(running.communicate)
         # Lets the command finish too when a test killed the lock holder above it.
         self.addCleanup(release.touch)
@@ -65,12 +79,18 @@ class FullTestLockTests(unittest.TestCase):
         output, errors = running.communicate(timeout=10)
         self.assertEqual((running.returncode, output, errors), (7, "ran\n", ""))
 
-    def test_an_unreachable_lock_folder_runs_unlocked_and_says_so(self):
+    def test_an_unreachable_lock_folder_refuses_to_start_the_command(self):
         self.lock_folder = Path("/proc/full-test-lock-unreachable")
-        running = self.start("/clones/old-session", "print('ran')")
+        started = self.root / "command-started"
+        running = self.start(
+            "/clones/old-session", f"from pathlib import Path; Path({str(started)!r}).touch()"
+        )
         output, errors = running.communicate(timeout=10)
-        self.assertEqual((running.returncode, output), (0, "ran\n"), errors)
-        self.assertIn("running without the test lock", errors)
+        self.assertFalse(started.exists(), "the command ran without the shared lock")
+        self.assertEqual((running.returncode, output), (126, ""), errors)
+        self.assertIn(f"cannot reach {self.lock_folder}", errors)
+        self.assertIn("refusing to run", errors)
+        self.assertIn("Restart the session", errors)
 
     def test_a_planted_symlink_is_refused_without_touching_its_target(self):
         target = self.root / "bashrc"

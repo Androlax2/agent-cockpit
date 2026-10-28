@@ -2,10 +2,9 @@
 """Run background build tools at the lowest CPU priority, below interactive work."""
 
 import os
-from pathlib import Path
 import shutil
 import sys
-
+from pathlib import Path
 
 LOWEST_NICE = 19
 
@@ -22,8 +21,11 @@ def main():
     if is_shim:
         # Keep the shims on the child's PATH: make must still find the cargo shim.
         shim_directory = Path(sys.argv[0]).absolute().parent
-        search_path = os.pathsep.join(directory for directory in search_path.split(os.pathsep)
-                                      if Path(directory).absolute() != shim_directory)
+        search_path = os.pathsep.join(
+            directory
+            for directory in search_path.split(os.pathsep)
+            if Path(directory).absolute() != shim_directory
+        )
     executable = shutil.which(arguments[0], path=search_path)
     if executable is None:
         print(f"agent-build: command not found: {arguments[0]}", file=sys.stderr)

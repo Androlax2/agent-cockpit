@@ -10,9 +10,9 @@ Full runs in parallel clones loaded the machine enough to make timing tests flak
 import errno
 import fcntl
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 UNREACHABLE = {errno.EROFS, errno.EACCES, errno.EPERM, errno.ENOENT}
 
@@ -21,7 +21,9 @@ def open_lock(lock_folder):
     os.makedirs(lock_folder, mode=0o700, exist_ok=True)
     # Every sandbox writes this folder; a session that left a symlink here must not make the host
     # overwrite the file it points to.
-    return os.open(lock_folder / "full-test.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    return os.open(
+        lock_folder / "full-test.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+    )
 
 
 def read_holder(lock):
@@ -39,13 +41,21 @@ def main():
     except OSError as error:
         if error.errno not in UNREACHABLE:
             raise
-        print(f"full-test-lock: cannot reach {lock_folder} ({error.strerror}); running without the "
-              "test lock. Restart the session to share it.", file=sys.stderr, flush=True)
-        return subprocess.call(command)
+        print(
+            f"full-test-lock: cannot reach {lock_folder} ({error.strerror}); refusing to run "
+            "without the shared test lock. Restart the session to share it.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 126
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print(f"Waiting for the test lock (held by {read_holder(lock)}) …", file=sys.stderr, flush=True)
+        print(
+            f"Waiting for the test lock (held by {read_holder(lock)}) …",
+            file=sys.stderr,
+            flush=True,
+        )
         fcntl.flock(lock, fcntl.LOCK_EX)
     os.ftruncate(lock, 0)
     os.pwrite(lock, f"{holder}\n".encode(), 0)
