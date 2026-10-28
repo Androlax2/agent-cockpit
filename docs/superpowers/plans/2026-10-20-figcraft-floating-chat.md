@@ -32,10 +32,12 @@
 ### Task 1: Interactive conversation-only terminal
 
 **Files:**
+
 - Modify: `config/bin/.local/bin/claude-sessions`
 - Test: `apps/cockpit/tests/claude_sessions_script.rs`
 
 **Interfaces:**
+
 - Consumes: daemon snapshot `sessions[].session`, `tmux_pane`, existing `CURRENT` selection, and tmux's `#{session_name}` lookup.
 - Produces: `claude-sessions design-review start [session-id]`, `claude-sessions design-review stop`; start uses the current selection only when no explicit ID is supplied.
 
@@ -48,12 +50,14 @@
 ### Task 2: Workspace placement, lifecycle, and documentation
 
 **Files:**
+
 - Modify: `config/hyprland/.config/hypr/figcraft-review.lua`
 - Modify: `config/hyprland/.config/hypr/apps/claude.lua`
 - Modify: `apps/cockpit/tests/figcraft_review_lua.rs`
 - Modify: `README.md`
 
 **Interfaces:**
+
 - Consumes: Task 1's dedicated Kitty window and resolved conversation target.
 - Produces: explicit selection/placement of the chat on the selected FigCraft workspace, without side-by-side layout operations.
 

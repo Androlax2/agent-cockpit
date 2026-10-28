@@ -29,6 +29,7 @@
 ### Task 1: Explicit question lifecycle
 
 **Files:**
+
 - Create: `config/bin/.local/bin/claude-needs-input`
 - Modify: `config/claude/.claude/hooks/session-state.sh`
 - Modify: `apps/desktop/src/registry.rs`
@@ -36,6 +37,7 @@
 - Test: `apps/desktop/src/tests.rs`
 
 **Interfaces:**
+
 - Command: `claude-needs-input '<question>'`; session comes from `CLAUDE_CODE_SESSION_ID`, working directory from the current directory. Reject missing/invalid session IDs and empty questions.
 - Hook: `NeedsInput` event with `message`, `session_id`, and `cwd`; stored question under `~/.cache/claude/`, isolated by validated session ID.
 - Report: optional boolean `needs_input`; true means preserve `needs-you` with the explicit question, false releases protection. Missing means no change to protection.
@@ -50,11 +52,13 @@
 ### Task 2: Make the command available and required
 
 **Files:**
+
 - Modify: `config/greywall/.config/greywall/greywall.json`
 - Modify: `config/claude/.claude/CLAUDE.md`
 - Modify: `README.md` (existing cockpit usage section)
 
 **Interfaces:**
+
 - Allow reading the new shell command through the sandbox, following adjacent command entries.
 - Agent instruction: call `claude-needs-input '<question>'` immediately before ending with a question whose answer is required to proceed. Do not signal optional offers; do not replace `ask-to-run` or `ask-to-guide`.
 

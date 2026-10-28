@@ -33,6 +33,7 @@
 ### Task 1: Incremental transcript capture
 
 **Files:**
+
 - Modify: `config/claude/.claude/hooks/billing-capture.py`
 - Create: `tools/tests/test_billing_capture.py`
 
@@ -46,6 +47,7 @@
 ### Task 2: Bounded pending import and retained recovery
 
 **Files:**
+
 - Modify: `apps/cockpit/src/billing.rs`
 - Modify: `apps/cockpit/tests/costs.rs`
 

@@ -69,11 +69,13 @@ message queued for it, a permission prompt is open, Theo is gaming. The Chief's
 own turns are not held by the 5-minute guard either.
 
 The Chief reads:
+
 - the agent's last message;
 - the task's context: the todo text and notes, and the recent conversation of
   that session.
 
 Then it decides one of:
+
 - **Answer:** confident, and none of the escalation rules apply. It sends the
   answer to the session as a message.
 - **Escalate:** security, scope change, or not confident. Theo sees it as a
@@ -94,6 +96,7 @@ one-line reason, time, and which habits it relied on.
 A Chief "yes, continue" counts as Theo's explicit instruction for actions already
 inside the agent's given task: edits, builds, tests and commits on the task's
 feature branch. It never authorises, and these still come to Theo:
+
 - installs, dependency manifest changes, migrations;
 - pushes, merges, anything on the default branch, and other git writes the
   project's own `## Git authorization` does not already allow;
@@ -169,18 +172,21 @@ instead of raw ids and JSON).
 ## What changes in the existing Chief
 
 Remove (no longer needed for the goal):
+
 - work proposals, per-work approvals and approval hashes;
 - evidence gates and manual attestations;
 - Chief-owned assignments and the Chief's scheduling ownership, including the
   rule that pauses the legacy todo queue while the Chief is on.
 
 Keep and reuse:
+
 - the verified OpenCode delivery path and its receipts;
 - admission verification of a Chief session and worker readiness checks;
 - the visible-session guard (`fd4f35e`), focus publishing (`baafca2`);
 - enable/disable of the Chief with a verified session.
 
 Rework:
+
 - The Chief's read access: today the Chief sees only bounded status, never
   conversations. It now needs, for a stopped session: the last message, the task's
   todo text/notes and the recent conversation. Read access stays scoped to what a

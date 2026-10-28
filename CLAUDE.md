@@ -1,5 +1,7 @@
 # Agent Cockpit
 
+Engineering guidance: [AGENTS.md](AGENTS.md). Read its scoped rules before editing.
+
 ## Git authorization
 
 Claude may create feature branches, stage and commit completed, requested agent-cockpit

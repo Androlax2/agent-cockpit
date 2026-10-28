@@ -128,13 +128,15 @@ class QualityTests(unittest.TestCase):
         self.assertIn("missing-heading", result.stdout + result.stderr)
 
     def test_spelling_checks_tracked_hidden_source(self):
-        self.source(".local/bin/tool.py", 'print("teh")\n')
+        # Keep the intentionally misspelled fixture out of this repository's spelling scan.
+        misspelling = "t" + "eh"
+        self.source(".local/bin/tool.py", f'print("{misspelling}")\n')
         config = self.root / ".config/typos.toml"
         config.parent.mkdir()
         shutil.copyfile(RUNNER.parents[1] / ".config/typos.toml", config)
         result = self.run_check("typos")
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("teh", result.stdout + result.stderr)
+        self.assertIn(misspelling, result.stdout + result.stderr)
 
 
 class JavaScriptPolicyTests(unittest.TestCase):

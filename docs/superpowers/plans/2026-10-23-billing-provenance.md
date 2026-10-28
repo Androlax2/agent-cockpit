@@ -38,10 +38,12 @@
 ### Task 1: Archive per-reply evidence and expose grouped totals
 
 **Files:**
+
 - Modify: `apps/cockpit/src/costs.rs`
 - Test: `apps/cockpit/tests/costs.rs`
 
 **Interfaces:**
+
 - Consumes: existing `replies.key`, `replies.day`, and nullable `replies.cost`.
 - Produces: `Billing` enum (`Api`, `Subscription`, `Unknown`), and `BillingTotals` containing `api`, `subscription`, and `unknown`, each of type `Totals`.
 - Produces: `archived_billing_totals(&Connection) -> rusqlite::Result<BillingTotals>` and `Costs::billing_totals(&self) -> BillingTotals`.
@@ -55,6 +57,7 @@
 ### Task 2: Add metadata-only cache capture and import
 
 **Files:**
+
 - Create: `apps/cockpit/src/billing.rs`
 - Modify: `apps/cockpit/src/lib.rs`
 - Modify: `apps/cockpit/src/paths.rs`
@@ -63,6 +66,7 @@
 - Test: `apps/cockpit/tests/costs.rs`
 
 **Interfaces:**
+
 - Consumes: per-reply JSON with exactly `key` and `billing`.
 - Produces: `python3 config/claude/.claude/hooks/billing-capture.py record-billing`, reading one JSON record from stdin and atomically saving it in `~/.cache/claude/billing/` under a content-addressed SHA-1 filename. The digest is a filename, not authentication.
 - Produces: the same helper's `record-transcript-billing <api|subscription> <since-rfc3339> <transcript-path>`, emitting evidence only for valid Claude replies timestamped at or after the verified launch start.
@@ -76,12 +80,14 @@
 ### Task 3: Capture Claude billing at the launch boundary
 
 **Files:**
+
 - Modify: `config/bin/.local/bin/greywall-agents/claude`
 - Modify: `config/claude/.claude/hooks/session-state.sh`
 - Test: `apps/cockpit/tests/greywall_launcher.rs`
 - Test: existing hook test harness under `apps/cockpit/tests/`
 
 **Interfaces:**
+
 - Consumes: explicit launcher `COCKPIT_CREDITS` and the already-validated API key launch path.
 - Produces: non-secret `COCKPIT_BILLING` (`api` or `subscription`) and `COCKPIT_BILLING_STARTED_AT` (RFC3339 UTC) exported immediately before launch.
 - Consumes: Claude Stop-hook `transcript_path`; invokes `record-transcript-billing` with those launch facts, recovering them from the nearest launcher ancestor when Claude scrubs the hook environment.
@@ -94,10 +100,12 @@
 ### Task 4: Capture OpenCode funding without reading secrets
 
 **Files:**
+
 - Modify: `config/opencode/.config/opencode/plugins/cockpit.ts`
 - Test: `apps/cockpit/tests/opencode_team.rs` and the existing OpenCode plugin harness used there
 
 **Interfaces:**
+
 - Consumes: OpenCode V2 `ctx.session.hook('http.request', ...)` and the native `session.step.started` event. Never read or resolve saved credentials to infer an already-assembled request's billing.
 - Produces: metadata for the exact `opencode:<assistantMessageID>` key, with request-bound billing snapped before dispatch and provider/model consistency checked at the native step event. Conflicting retry evidence becomes unknown.
 - Native Anthropic HTTPS API-key requests are API; ambiguous Anthropic Bearer requests remain unknown. OpenAI HTTPS API and ChatGPT service routes, with authorization present, distinguish API and subscription service. Other routes/providers are unknown. Neither category is an invoice assertion.
