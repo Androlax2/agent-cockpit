@@ -1600,6 +1600,71 @@ fn a_session_asking_for_an_answer_with_no_todo_in_progress_is_a_stop_without_a_t
     assert_eq!(stop_event_count(&bench), 1, "the Chief is woken for it");
 }
 
+/// What the session hook and the OpenCode plugin report while the agent waits on its own question
+/// form with no todo in progress: `needs-you` from the form notification, then fresh telemetry.
+fn ask_worker_form(bench: &mut Bench, is_form: bool) {
+    let connection = LinkConnection::open(bench.fixture.root.join("opencode.db")).unwrap();
+    let form = json!({"content":[{"type":"text","text":"Which layout should the keymap use?"},{"type":"tool","name":"question",
+        "state":{"status":"running","input":{"questions":[{"header":"Keymap","question":"Which layout?","options":[{"label":"ANSI"},{"label":"ISO"}]}]}}}]});
+    connection.execute("insert into session_message values (?1, ?2, 'assistant', 99, ?3)", (format!("{STOPPED_WORKER}-form"), STOPPED_WORKER, form.to_string())).unwrap();
+    let directory = bench.registry.sessions[STOPPED_WORKER].cwd.clone();
+    let report = parse_session(&json!({"session":STOPPED_WORKER,"agent":"opencode","project":"project-a","cwd":directory,
+        "state":"needs-you","needs_input":false,"question_form":is_form,"message":"opencode has a question for you","sticky":true}).to_string()).unwrap();
+    bench.registry.report_from(report, STOPPED_WORKER_PEER).unwrap();
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().since -= 2.0;
+    let telemetry = serde_json::from_value(json!({"action":"native_telemetry","sequence":1,"counts":{
+        "running_sessions":1,"pending_inbox":0,"pending_permissions":0,"pending_forms":u32::from(is_form)}})).unwrap();
+    crate::teams::request(&mut bench.registry, STOPPED_WORKER_PEER, telemetry).unwrap().result.unwrap();
+}
+
+fn chief_stopped_sessions(bench: &mut Bench) -> Vec<serde_json::Value> {
+    prepare_chief_boundary(bench);
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().since -= 7.0;
+    let dispatch = crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(dispatch["envelope"]["kind"], "chief_wake");
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Receipt { dispatch_id:dispatch["dispatch_id"].as_str().unwrap().into(),
+        outcome:cockpit::teams::TransportOutcome::Received {native_id:"chief-form-wake".into()} }).unwrap().result.unwrap();
+    let page = context(bench, 20).unwrap().result.unwrap();
+    page["records"].as_array().unwrap().iter().filter(|record| record["kind"] == "stopped_session").cloned().collect()
+}
+
+#[test]
+fn a_session_waiting_on_its_question_form_with_no_todo_shows_the_chief_its_question() {
+    let mut bench = stop_bench();
+    ask_worker_form(&mut bench, true);
+    bench.registry.tick_queues();
+    let worker = crate::chief::workers(&mut bench.registry).unwrap().into_iter().find(|worker| worker.session.session_id == STOPPED_WORKER).unwrap();
+    for reason in ["native_busy_at_form", "native_form_pending", "human_input"] {
+        assert!(worker.blocked_by.iter().any(|blocked| blocked == reason), "{:?}", worker.blocked_by);
+    }
+    let stops = chief_stopped_sessions(&mut bench);
+    assert_eq!(stops.len(), 1, "{stops:?}");
+    assert_eq!(stops[0]["session"], STOPPED_WORKER);
+    assert_eq!(stops[0]["task_id"], "");
+    assert_eq!(stops[0]["bundle"]["question"]["question"], "Which layout?");
+    assert_eq!(stops[0]["bundle"]["question"]["options"], json!(["ANSI", "ISO"]));
+    assert_eq!(stops[0]["bundle"]["question"]["question_count"], 1);
+}
+
+#[test]
+fn the_chief_can_answer_a_question_form_of_a_session_with_no_todo() {
+    let mut bench = stop_bench();
+    ask_worker_form(&mut bench, true);
+    bench.registry.tick_queues();
+    let stop = chief_stopped_sessions(&mut bench)[0]["stop"].as_str().unwrap().to_owned();
+    let answer = AgentAction::Chief { request: ChiefAgentAction::AnswerForm { stop, choice: "ISO".into(), reason: "The repository's keymaps are ISO.".into(), habits: vec![] } };
+    let queued = crate::teams::request(&mut bench.registry, 20, answer).unwrap().result.unwrap();
+    assert_eq!(queued["delivery"], "queued");
+}
+
+#[test]
+fn a_needs_you_notification_without_a_form_or_question_and_no_todo_is_no_stop() {
+    let mut bench = stop_bench();
+    ask_worker_form(&mut bench, false);
+    bench.registry.tick_queues();
+    assert!(stop_states(&bench).is_empty());
+}
+
 #[test]
 fn a_session_that_only_finished_its_turn_with_no_todo_is_no_stop() {
     let mut bench = stop_bench();

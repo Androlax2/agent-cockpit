@@ -365,7 +365,7 @@ fn observe_stops(registry: &mut Registry, live: &[WorkerState], now_ms: i64) -> 
 /// Withdraws Theo's corrections whose session is gone or restarted, closes the stops of sessions that
 /// moved on (cancelling queued answers only for sessions that are gone), and, while a Chief is enabled,
 /// records a stop for every OpenCode session other than the Chief that sits at a stop boundary while
-/// its todo is in progress, or that asks for an answer with no todo in progress.
+/// its todo is in progress, or that asks for an answer (or waits on its question form) with no todo in progress.
 /// A stop whose bundle cannot be built is not recorded; it is retried after a backoff and logged once
 /// per boundary. The todo list is read only when some session is at a stop boundary.
 ///
@@ -389,10 +389,11 @@ pub(crate) fn observe_stops_with(registry: &mut Registry, live: &[WorkerState], 
         .collect();
     let todos = (!candidates.is_empty()).then(load_todos);
     // A session with no todo in progress is stopped for the Chief only while it asks for an answer
-    // (cockpit-needs-input): one that merely finished its turn has nothing to answer.
+    // (cockpit-needs-input or its own question form): one that merely finished its turn has nothing to answer.
     let stopped: Vec<(VerifiedSession, String, Option<cockpit::todo::Item>)> = candidates.into_iter().filter_map(|(session, boundary)| {
         let item = todos.as_ref()?.items.iter().find(|item| item.status() == "doing" && item.session() == session.session_id).cloned();
-        let asks_for_answer = registry.sessions.get(&session.session_id).is_some_and(|entry| entry.state == "needs-you" && entry.needs_input);
+        let asks_for_answer = registry.sessions.get(&session.session_id)
+            .is_some_and(|entry| entry.state == "needs-you" && (entry.needs_input || entry.question_form));
         (item.is_some() || asks_for_answer).then_some((session, boundary, item))
     }).collect();
     let connection = registry.teams.as_mut().expect("workers_at opens the protected store");
