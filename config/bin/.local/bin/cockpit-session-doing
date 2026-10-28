@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (( $# != 1 )); then
+if (($# != 1)); then
     echo "usage: cockpit-session-doing '<2–12 words: what you are doing in this step>'" >&2
     exit 2
 fi

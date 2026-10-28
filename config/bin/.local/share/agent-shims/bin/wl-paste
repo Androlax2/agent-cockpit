@@ -10,21 +10,21 @@ fetch_image() {
 }
 
 case " $* " in
-    *" -l "* | *" --list-types "*)
-        # The bridge only ever answers with an image, so any reply means one is there.
-        if [ -n "$(fetch_image | head -c 8 | od -An -tx1)" ]; then
-            echo image/png
-        fi
-        ;;
-    *" --type image/png "* | *" -t image/png "*)
-        image=$(mktemp)
-        trap 'rm -f "$image"' EXIT
-        fetch_image > "$image"
-        # An empty reply means no image: fail, so callers fall through instead of saving nothing.
-        [ -s "$image" ] || exit 1
-        cat "$image"
-        ;;
-    *)
-        exit 1
-        ;;
+*" -l "* | *" --list-types "*)
+    # The bridge only ever answers with an image, so any reply means one is there.
+    if [ -n "$(fetch_image | head -c 8 | od -An -tx1)" ]; then
+        echo image/png
+    fi
+    ;;
+*" --type image/png "* | *" -t image/png "*)
+    image=$(mktemp)
+    trap 'rm -f "$image"' EXIT
+    fetch_image >"$image"
+    # An empty reply means no image: fail, so callers fall through instead of saving nothing.
+    [ -s "$image" ] || exit 1
+    cat "$image"
+    ;;
+*)
+    exit 1
+    ;;
 esac

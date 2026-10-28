@@ -26,7 +26,10 @@ greywall_sha256=4fb512bcd02515af39d273953aabcf60c704827afb491a6f987ea6b8170067a1
 tun2socks_url=https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-amd64.zip
 tun2socks_sha256=4aa7737009a9f06b9f4957c4fc12932ae0cd2039471d2ae4e5d4666ffeb40a2e
 
-[[ $(uname -m) == x86_64 ]] || { echo "greywall-patch: only x86_64 is pinned" >&2; exit 1; }
+[[ $(uname -m) == x86_64 ]] || {
+    echo "greywall-patch: only x86_64 is pinned" >&2
+    exit 1
+}
 
 fetch_verified() {
     local url=$1 sha256=$2 destination=$3

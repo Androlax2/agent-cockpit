@@ -6,9 +6,12 @@ set -euo pipefail
 
 binary=${1:-$HOME/.local/bin/greyproxy}
 pinned=$(sed -n 's/^greyproxy_commit=\([0-9a-f]\{40\}\).*/\1/p' "$(dirname "$0")/build.sh")
-[[ -n $pinned ]] || { echo "no greyproxy_commit pin in $(dirname "$0")/build.sh" >&2; exit 2; }
+[[ -n $pinned ]] || {
+    echo "no greyproxy_commit pin in $(dirname "$0")/build.sh" >&2
+    exit 2
+}
 version=$("$binary" --version 2>/dev/null) || true
-installed=$(sed -n 's/^ *commit: *\([0-9a-f]\{40\}\).*/\1/p' <<< "$version")
+installed=$(sed -n 's/^ *commit: *\([0-9a-f]\{40\}\).*/\1/p' <<<"$version")
 if [[ $installed == "$pinned" ]]; then
     echo "greyproxy is the pinned build (${pinned:0:7})"
     exit 0

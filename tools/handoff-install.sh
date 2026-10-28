@@ -13,7 +13,10 @@ repo=${HANDOFF_REPO:-$(cd "$(dirname "$0")/.." && pwd)}
 handoff="$repo/.handoff"
 status=0
 
-[[ -d $handoff ]] || { echo "nothing to install: no $handoff"; exit 0; }
+[[ -d $handoff ]] || {
+    echo "nothing to install: no $handoff"
+    exit 0
+}
 shopt -s nullglob
 for group_dir in "$handoff"/*/; do
     group=$(basename "$group_dir")
@@ -41,8 +44,10 @@ for group_dir in "$handoff"/*/; do
             problem="$file is not in SHA256SUMS"
             break
         fi
-        files+=("$file"); destinations+=("$destination"); afters+=("${after:-}")
-    done < "$manifest"
+        files+=("$file")
+        destinations+=("$destination")
+        afters+=("${after:-}")
+    done <"$manifest"
     if [[ -z $problem ]] && ! (cd "$group_dir" && sha256sum --check --quiet SHA256SUMS); then
         problem="checksum mismatch"
     fi
@@ -59,11 +64,14 @@ for group_dir in "$handoff"/*/; do
             # Shown with control characters made visible (cat -v): nothing hides in the review.
             # A new file is shown whole, against /dev/null.
             current=$target
-            [[ -e $target ]] || { current=/dev/null; echo "   new file: ${destinations[$index]}"; }
+            [[ -e $target ]] || {
+                current=/dev/null
+                echo "   new file: ${destinations[$index]}"
+            }
             diff -u --label "${destinations[$index]} (now)" --label "${destinations[$index]} (handoff)" "$current" "$source" | cat -v || true
         fi
     done
-    if (( ! changed )); then
+    if ((! changed)); then
         echo "   already installed; removing the handoff"
         rm -rf "$group_dir"
         continue
@@ -72,7 +80,7 @@ for group_dir in "$handoff"/*/; do
     for after in "${afters[@]}"; do
         [[ -z $after || -n ${shown[$after]:-} ]] && continue
         shown[$after]=1
-        echo "   then runs: $(cat -v <<< "$after")"
+        echo "   then runs: $(cat -v <<<"$after")"
     done
     unset shown
     read -r -p "Install $group? [y/N] " answer || answer=""
@@ -90,7 +98,10 @@ for group_dir in "$handoff"/*/; do
         [[ -z $after || -n ${ran[$after]:-} ]] && continue
         ran[$after]=1
         echo "   running: $after"
-        (cd "$repo" && bash -c "$after") || { echo "   failed: $after"; status=1; }
+        (cd "$repo" && bash -c "$after") || {
+            echo "   failed: $after"
+            status=1
+        }
     done
     unset ran
     rm -rf "$group_dir"

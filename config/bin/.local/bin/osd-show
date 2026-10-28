@@ -3,4 +3,4 @@
 # The host FIFO: sandboxes may only send their own reports on osd.fifo.
 fifo="${XDG_RUNTIME_DIR:-/tmp}/osd-host.fifo"
 [[ -p $fifo ]] || exit 0
-printf '%s\n' "$*" > "$fifo"
+printf '%s\n' "$*" >"$fifo"

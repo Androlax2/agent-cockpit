@@ -19,12 +19,12 @@ fi
 
 exec 9>"$CACHE.lock"
 flock 9
-if [[ ${1:-} != --force && -f $CACHE ]] && (( $(date +%s) - $(stat -c %Y "$CACHE") < 240 )); then
+if [[ ${1:-} != --force && -f $CACHE ]] && (($(date +%s) - $(stat -c %Y "$CACHE") < 240)); then
     exit 0
 fi
 
 fail() {
-    jq -cn --arg reason "$1" '{error: $reason}' > "$ERROR_CACHE.tmp"
+    jq -cn --arg reason "$1" '{error: $reason}' >"$ERROR_CACHE.tmp"
     mv "$ERROR_CACHE.tmp" "$ERROR_CACHE"
     exit 0
 }
@@ -32,9 +32,9 @@ fail() {
 if ! quota=$(python3 "$HELPER" 2>/dev/null); then
     fail "Codex quota unavailable; check Codex CLI or run codex-usage.sh --login"
 fi
-if ! jq -e '.rate_limit | type == "object"' <<< "$quota" >/dev/null 2>&1; then
+if ! jq -e '.rate_limit | type == "object"' <<<"$quota" >/dev/null 2>&1; then
     fail "Codex usage response unrecognized"
 fi
-jq '{rate_limit: .rate_limit}' <<< "$quota" > "$CACHE.tmp"
+jq '{rate_limit: .rate_limit}' <<<"$quota" >"$CACHE.tmp"
 mv "$CACHE.tmp" "$CACHE"
 rm -f "$ERROR_CACHE"

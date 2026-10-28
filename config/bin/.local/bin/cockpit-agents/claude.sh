@@ -17,8 +17,8 @@ agent_claude_tmux_prefix() { echo "claude-retry-"; }
 
 agent_claude_can() { # feature
     case $1 in
-        effort|billing|compact|remote|redraw|sleep) return 0 ;;
-        *) return 1 ;;
+    effort | billing | compact | remote | redraw | sleep) return 0 ;;
+    *) return 1 ;;
     esac
 }
 
@@ -27,6 +27,8 @@ agent_claude_can() { # feature
 # Appended to every launch in the viewer pane: a start that fails says so and stays on screen,
 # instead of leaving a bare "Pane is dead (status 1)". Claude itself runs in its own tmux session
 # (claude-auto-retry), so its error may be there; the epilogue lists those sessions.
+# The fish child expands its own status and environment.
+# shellcheck disable=SC2016
 CLAUDE_LAUNCH_EPILOGUE='; set -l code $status; if test $code -ne 0; cockpit log manager ERROR "claude exited with status $code in $PWD" 2>/dev/null; echo; echo "  ✗ claude exited with status $code"; echo "  Claude sessions still open:"; tmux ls 2>/dev/null | string match "*claude-retry*" | string replace -r "^" "    "; echo "  More: cockpit doctor · journalctl --user -u cockpit"; read -n 1 -P "  any key closes this pane " answer; end'
 
 # A session started out of the viewer pane, in a tmux session named like claude-auto-retry's so the
@@ -42,6 +44,8 @@ claude_launch_detached() { # dir claude-arguments...
     require_plain_directory "$directory"
     size=$(detached_size)
     if [[ -n ${launch_team_resume:-} ]]; then resume_environment+=(COCKPIT_TEAM_RESUME="$launch_team_resume"); fi
+    # cockpit supplies launch_team_spawn; fish expands its own argv and status.
+    # shellcheck disable=SC2154,SC2016
     tmux new-session -d -s "claude-retry-restart-$(date +%s%N)" -x "${size% *}" -y "${size#* }" -c "$directory" \
         env -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" "${resume_environment[@]}" \
         COCKPIT_SUBSCRIPTION_ROUTE="${launch_subscription_route:-}" \
@@ -58,10 +62,12 @@ agent_claude_new() { # dir [claude arguments]
     local directory=$1
     shift
     loading_overlay "Starting Claude in $(basename "$directory") …" "$directory"
+    # Expand the inline script in the child fish, not in the manager.
+    # shellcheck disable=SC2016
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$directory" \
         env -u TMUX -u TMUX_PANE -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" \
         fish -ic 'echo; echo "  ⟳ Starting Claude in $PWD …"; echo; claude $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$@"
-    : > "$CURRENT"
+    : >"$CURRENT"
     label_panes "$(basename "$directory")"
 }
 
@@ -71,6 +77,8 @@ agent_claude_new_with_prompt() { # dir prompt
 }
 
 agent_claude_background() { # dir prompt
+    # argv belongs to the child fish.
+    # shellcheck disable=SC2016
     tmux new-session -d -s "claude-retry-bg-$(date +%s%N)" -x 200 -y 50 -c "$1" \
         env -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" fish -ic 'claude $argv' -- "$2"
 }
@@ -88,10 +96,12 @@ agent_claude_resume() { # dir id [effort]
     if [[ -n ${launch_team_resume:-} ]]; then resume_environment+=(COCKPIT_TEAM_RESUME="$launch_team_resume"); fi
     ensure_manager
     loading_overlay "Resuming $(basename "$1")${3:+ · effort $3} …" "$1" "$2"
+    # Expand the inline script in the child fish, not in the manager.
+    # shellcheck disable=SC2016
     tmux respawn-pane -k -t "$(viewer_pane)" -c "$1" \
         env -u TMUX -u TMUX_PANE -u COCKPIT_TEAM_RESUME COCKPIT_INSIDE=1 COCKPIT_CREDITS="$launch_credits" COCKPIT_TEAM_SPAWN="$launch_team_spawn" "${resume_environment[@]}" \
         fish -ic 'echo; echo "  ⟳ Resuming the conversation in $PWD …"; echo; claude --resume $argv'"$CLAUDE_LAUNCH_EPILOGUE" -- "$2" "${effort_flags[@]}"
-    : > "$CURRENT"
+    : >"$CURRENT"
     label_panes "$(basename "$1")"
     focus_viewer
 }
@@ -133,7 +143,7 @@ agent_claude_restart() { # id dir [effort] [detached] [credits|subscription]
     tmux respawn-pane -k -t "$(viewer_pane)" sh -c 'printf "\n  ⟳ Session closed, resuming it …\n"; sleep 30'
     resume_session "$directory" "$id" "$effort"
     # Still the session on screen: its card stays the active one through the restart.
-    printf '%s\n' "$id" > "$CURRENT"
+    printf '%s\n' "$id" >"$CURRENT"
 }
 
 # A conversation is resumed; a session nobody typed in yet has none, and starts fresh in its folder.
@@ -146,7 +156,10 @@ agent_claude_restore() { # dir id
     if has_conversation "$id"; then
         claude_launch_detached "$directory" --resume "$id" ${effort:+--effort "$effort"}
     else
-        [[ -z ${launch_team_resume:-} ]] || { echo "cockpit: team conversation is gone" >&2; return 1; }
+        [[ -z ${launch_team_resume:-} ]] || {
+            echo "cockpit: team conversation is gone" >&2
+            return 1
+        }
         log_event INFO manager "restore: $id had no conversation yet, a fresh session starts in $directory"
         claude_launch_detached "$directory" ${effort:+--effort "$effort"}
     fi
@@ -157,6 +170,8 @@ agent_claude_restore() { # dir id
 # "press again to exit" window. Two rounds with a one-second grace each, then force-close.
 agent_claude_exit() { # tmux-session pane id
     local target=$1 pane=$2 id=$3 attempt
+    # The loop limits attempts; its value is deliberately unused.
+    # shellcheck disable=SC2034
     for attempt in 1 2; do
         if pane_at_prompt "$pane"; then
             submit_to_pane "$pane" "/exit"

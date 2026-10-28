@@ -16,7 +16,7 @@ OWNER=theo
 GROUP=agent-docker
 FIRST_UID=2000
 LAST_UID=2999
-EGRESS_TABLE="inet agent_docker_egress"
+EGRESS_TABLE=(inet agent_docker_egress)
 
 # Greyproxy intercepts TLS and its CA is deliberately not trusted system-wide, so the agent
 # daemons get a bundle of their own (system roots plus Greyproxy's CA), named in the unit's
@@ -26,7 +26,10 @@ GREYPROXY_CA=/home/theo/.local/share/greyproxy/ca-cert.pem
 CA_BUNDLE_DIR=/var/lib/agent-docker
 CA_BUNDLE=$CA_BUNDLE_DIR/ca-bundle.pem
 
-die() { echo "agent-docker: $*" >&2; exit 1; }
+die() {
+    echo "agent-docker: $*" >&2
+    exit 1
+}
 
 require_root() { [[ $EUID -eq 0 ]] || die "run it with sudo"; }
 
@@ -35,21 +38,21 @@ require_valid_name() {
 }
 
 require_egress_firewall() {
-    nft list table $EGRESS_TABLE >/dev/null 2>&1 \
-        || die "nftables table agent_docker_egress is not loaded: agents would have open network access"
+    nft list table "${EGRESS_TABLE[@]}" >/dev/null 2>&1 ||
+        die "nftables table agent_docker_egress is not loaded: agents would have open network access"
 }
 
 next_free_uid() {
     local uid=$FIRST_UID
     while getent passwd "$uid" >/dev/null; do uid=$((uid + 1)); done
-    (( uid <= LAST_UID )) || die "the agent uid range $FIRST_UID-$LAST_UID is full"
+    ((uid <= LAST_UID)) || die "the agent uid range $FIRST_UID-$LAST_UID is full"
     echo "$uid"
 }
 
 write_ca_bundle() {
     [[ -r $GREYPROXY_CA ]] || die "greyproxy CA not found at $GREYPROXY_CA"
     install -d -m 755 "$CA_BUNDLE_DIR"
-    cat "$SYSTEM_CA_BUNDLE" "$GREYPROXY_CA" > "$CA_BUNDLE.new"
+    cat "$SYSTEM_CA_BUNDLE" "$GREYPROXY_CA" >"$CA_BUNDLE.new"
     chmod 644 "$CA_BUNDLE.new"
     mv "$CA_BUNDLE.new" "$CA_BUNDLE"
     echo "agent-docker: CA bundle written to $CA_BUNDLE"
@@ -132,16 +135,17 @@ grant() { # project container-uid relative-path...
     local name=$1 container_uid=$2 user=agent-$1 relative start count host_uid target
     shift 2
     require_valid_name "$name"
-    [[ $container_uid =~ ^[0-9]+$ ]] && (( container_uid >= 1 && container_uid <= 65535 )) \
-        || die "container uid must be between 1 and 65535 (0 already has access): $container_uid"
-    (( $# > 0 )) || die "name at least one folder, relative to the project (e.g. storage bootstrap/cache)"
+    if ! [[ $container_uid =~ ^[0-9]+$ ]] || ! ((container_uid >= 1 && container_uid <= 65535)); then
+        die "container uid must be between 1 and 65535 (0 already has access): $container_uid"
+    fi
+    (($# > 0)) || die "name at least one folder, relative to the project (e.g. storage bootstrap/cache)"
     for relative in "$@"; do
-        [[ $relative =~ ^[A-Za-z0-9._/-]+$ && $relative != /* && /$relative/ != */../* && /$relative/ != */./* ]] \
-            || die "not a plain relative folder: $relative"
+        [[ $relative =~ ^[A-Za-z0-9._/-]+$ && $relative != /* && /$relative/ != */../* && /$relative/ != */./* ]] ||
+            die "not a plain relative folder: $relative"
     done
     require_root
     IFS=: read -r _ start count < <(grep "^$user:" /etc/subuid) || die "no subordinate uids for $user: run make agent-docker-add PROJECT=$name first"
-    (( container_uid <= count )) || die "container uid $container_uid is outside $user's $count subordinate uids"
+    ((container_uid <= count)) || die "container uid $container_uid is outside $user's $count subordinate uids"
     host_uid=$((start + container_uid - 1))
     for relative in "$@"; do
         for target in "$PROJECTS_DIR/$name/$relative" "$CLONES_DIR/$name"/*/"$relative"; do
@@ -163,18 +167,26 @@ status() {
     getent passwd | awk -F: -v first="$FIRST_UID" -v last="$LAST_UID" '$3 >= first && $3 <= last { print $1 }' |
         while read -r user; do
             name=${user#agent-}
-            socket=$( [[ -S $PROJECTS_DIR/$name/.agent-docker.sock ]] && echo present || echo missing )
-            clones_socket=$( [[ -S $CLONES_DIR/$name/.agent-docker/docker.sock ]] && echo present || echo missing )
+            socket=$([[ -S $PROJECTS_DIR/$name/.agent-docker.sock ]] && echo present || echo missing)
+            clones_socket=$([[ -S $CLONES_DIR/$name/.agent-docker/docker.sock ]] && echo present || echo missing)
             printf '%-20s daemon=%-8s socket=%-8s clones socket=%s\n' "$name" "$(systemctl is-active "agent-docker@$name" || true)" "$socket" "$clones_socket"
         done
 }
 
 case ${1:-} in
-    setup) setup ;;
-    add) add "${2:?usage: agent-docker.sh add <project>}" ;;
-    remove) remove "${2:?usage: agent-docker.sh remove <project>}" ;;
-    grant) (( $# >= 4 )) || { echo "usage: agent-docker.sh grant <project> <container uid> <folder>..." >&2; exit 2; }
-        grant "${@:2}" ;;
-    status) status ;;
-    *) echo "usage: agent-docker.sh setup | add <project> | remove <project> | grant <project> <container uid> <folder>... | status" >&2; exit 2 ;;
+setup) setup ;;
+add) add "${2:?usage: agent-docker.sh add <project>}" ;;
+remove) remove "${2:?usage: agent-docker.sh remove <project>}" ;;
+grant)
+    (($# >= 4)) || {
+        echo "usage: agent-docker.sh grant <project> <container uid> <folder>..." >&2
+        exit 2
+    }
+    grant "${@:2}"
+    ;;
+status) status ;;
+*)
+    echo "usage: agent-docker.sh setup | add <project> | remove <project> | grant <project> <container uid> <folder>... | status" >&2
+    exit 2
+    ;;
 esac

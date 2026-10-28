@@ -1,12 +1,14 @@
 #!/bin/sh
 # Keep this launcher separate from the binary replaced by vendor updates.
 agent=codex
+# Greywall matches these literal policy patterns, including the tilde.
+# shellcheck disable=SC2088
 own_folders="~/.codex/**"
 export COCKPIT_AGENT=codex
 . "$(dirname "$0")/launcher-common.sh"
 COCKPIT_SUBSCRIPTION_ACCOUNT=$(python3 "$HOME/.config/waybar/scripts/native-subscription.py" identity codex 2>/dev/null) || COCKPIT_SUBSCRIPTION_ACCOUNT=
 for argument in "$@"; do
-    case "$argument" in -c|-c?*|--config|--config=*|--profile|--profile=*|-p|-p?*|--oss|--local-provider|--local-provider=*) COCKPIT_SUBSCRIPTION_ACCOUNT= ;; esac
+    case "$argument" in -c | -c?* | --config | --config=* | --profile | --profile=* | -p | -p?* | --oss | --local-provider | --local-provider=*) COCKPIT_SUBSCRIPTION_ACCOUNT= ;; esac
 done
 export COCKPIT_SUBSCRIPTION_ACCOUNT
 if [ -n "${COCKPIT_SUBSCRIPTION_ROUTE:-}" ]; then

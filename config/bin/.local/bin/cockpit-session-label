@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (( $# != 1 )); then
+if (($# != 1)); then
     echo "usage: cockpit-session-label '<3–6 word task label>'" >&2
     exit 2
 fi
