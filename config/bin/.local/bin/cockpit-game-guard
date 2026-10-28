@@ -4,7 +4,7 @@
 CPU-only step 1 of gaming protection (todo d021dc46), not full protection: no CPU-time quota, no
 disk, memory or Docker limits, and new heavy jobs still start (they are pinned within one scan).
 
-usage: cockpit-game-guard run | restore | status | topology
+usage: cockpit-game-guard run | restore | status | topology | hold | release [MINUTES] | off | on
 
 A game is any open Hyprland window whose class is a game (focused or not, so alt-tab keeps it) or
 the gamemode submap; it is over 30 s after the last one closed. Heavy work is every thread that
@@ -12,6 +12,14 @@ agent-build put at SCHED_IDLE (its children inherit it) inside an agent session'
 app.slice/tmux-spawn-*.scope, owned by this user. Nothing is frozen, stopped or killed: only CPU
 affinity changes, each thread's original set is recorded with its start time, and the record is
 restored when the game ends, on stop, and on the next start after a crash.
+
+Step 2 (admission): it also writes ~/.cache/agent-shims/heavy-gate.json every 5 s, which
+agent-build reads before a new heavy job starts: gaming while a game is open, memory while memory
+is low (hold under 3 GiB available or memory PSI some avg10 >= 5 %; release only after 60 s at
+>= 5 GiB and PSI avg60 < 1 %), held while Theo holds jobs, otherwise clear. A crashed guard leaves
+the status stale, which holds new jobs until Theo releases them (his choice, policy C). Theo's host
+commands: hold, release [MINUTES] (default 60, works with no guard running), off (admission off:
+jobs are not held), on.
 """
 
 import errno
@@ -39,7 +47,15 @@ MIN_PHYSICAL_CORES = 6
 # Over one core between two scans while not pinned: named in the status as untracked work.
 UNTRACKED_CORES = 1.0
 CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
-USAGE = "usage: cockpit-game-guard run | restore | status | topology"
+USAGE = "usage: cockpit-game-guard run | restore | status | topology | hold | release [MINUTES] | off | on"
+GATE_VERSION = 1
+GIB_KB = 1024 * 1024
+MEMORY_HOLD_BELOW_KB = 3 * GIB_KB
+MEMORY_RELEASE_FROM_KB = 5 * GIB_KB
+PSI_HOLD_AVG10 = 5.0
+PSI_RELEASE_AVG60 = 1.0
+MEMORY_CALM_S = 60
+DEFAULT_RELEASE_MINUTES = 60
 
 
 def log(level, message):
@@ -373,10 +389,107 @@ def save_state(path, state):
     os.replace(temporary, path)
 
 
+def read_memory(proc="/proc"):
+    """{available_kb, psi_some_avg10, psi_some_avg60}, or None when either file is unreadable."""
+    try:
+        available = next(int(line.split()[1]) for line in (Path(proc) / "meminfo").read_text().splitlines()
+                         if line.startswith("MemAvailable:"))
+        some = next(line for line in (Path(proc) / "pressure/memory").read_text().splitlines() if line.startswith("some "))
+        values = dict(part.split("=") for part in some.split()[1:])
+        return {"available_kb": available, "psi_some_avg10": float(values["avg10"]), "psi_some_avg60": float(values["avg60"])}
+    except (OSError, StopIteration, ValueError, KeyError, IndexError):
+        return None
+
+
+def next_memory_hold(state, sample, now):
+    """Whether low memory holds new heavy jobs, with hysteresis; an unreadable sample holds."""
+    if sample is None:
+        state["memory_hold"] = True
+        state.pop("memory_calm_since", None)
+        return True
+    if not state.get("memory_hold"):
+        if sample["available_kb"] < MEMORY_HOLD_BELOW_KB or sample["psi_some_avg10"] >= PSI_HOLD_AVG10:
+            state["memory_hold"] = True
+            state.pop("memory_calm_since", None)
+        return bool(state.get("memory_hold"))
+    if sample["available_kb"] >= MEMORY_RELEASE_FROM_KB and sample["psi_some_avg60"] < PSI_RELEASE_AVG60:
+        state.setdefault("memory_calm_since", now)
+        if now - state["memory_calm_since"] >= MEMORY_CALM_S:
+            state["memory_hold"] = False
+            state.pop("memory_calm_since", None)
+    else:
+        state.pop("memory_calm_since", None)
+    return bool(state.get("memory_hold"))
+
+
+def memory_reason(sample):
+    if sample is None:
+        return "memory: /proc/meminfo or /proc/pressure/memory unreadable"
+    return (f"memory is low: {sample['available_kb'] // 1024} MiB available, pressure "
+            f"{sample['psi_some_avg10']:.1f} % (10 s); new heavy jobs wait until 5 GiB are free for a minute")
+
+
+def gate_state(manual, protecting, memory_hold, sample, now):
+    """(state, reason) for the gate; Theo's off and hold come first."""
+    if manual.get("off"):
+        return "off", "admission is off (cockpit-game-guard off)"
+    if manual.get("hold"):
+        return "held", "Theo holds new heavy jobs (cockpit-game-guard hold)"
+    if protecting:
+        return "gaming", "a game is open; new heavy jobs wait until 30 s after it closes"
+    if memory_hold:
+        return "memory", memory_reason(sample)
+    return "clear", ""
+
+
+def gate_file(home=None):
+    return Path(home or Path.home()) / ".cache/agent-shims/heavy-gate.json"
+
+
+def manual_dir():
+    """Theo's hold and off survive a reboot, like the gate's off state does."""
+    state_home = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    return Path(state_home) / "cockpit"
+
+
+def manual_path(directory):
+    return Path(directory) / "game-guard-manual.json"
+
+
+def load_manual(directory):
+    try:
+        manual = json.loads(manual_path(directory).read_text())
+    except (OSError, ValueError):
+        return {}
+    return manual if isinstance(manual, dict) else {}
+
+
+def current_boot_id():
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return None
+
+
+def write_gate(path, gate):
+    """Atomic and world-readable (sandboxes read it; the folder is read-only for them)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(descriptor, "w") as file:
+        os.fchmod(file.fileno(), 0o644)
+        json.dump(gate, file, sort_keys=True)
+    os.replace(temporary, path)
+
+
 class Guard:
     def __init__(self, runtime_dir, proc="/proc", topology=choose_build_cpus, scanner=None,
-                 detect=None, clock=time.monotonic, wall=time.time, sleep=time.sleep):
+                 detect=None, clock=time.monotonic, wall=time.time, sleep=time.sleep,
+                 memory=None, gate_path=None, manual_directory=None):
         self.runtime_dir = runtime_dir
+        self.manual_dir = manual_directory or manual_dir()
+        self.memory = memory or (lambda: read_memory(proc))
+        self.gate_path = gate_path or gate_file()
         self.proc = proc
         uid = os.getuid()
         self.scan = scanner or (lambda: scan(proc, uid))
@@ -392,10 +505,42 @@ class Guard:
         self.scans = 0
         self.detections = 0
 
-    def save(self):
+    def publish_gate(self):
+        """Writes the admission status agent-build reads; called at least every 5 s."""
+        sample = self.memory()
+        now = self.wall()
+        memory_hold = next_memory_hold(self.state, sample, now)
+        manual = load_manual(self.manual_dir)
+        state, reason = gate_state(manual, bool(self.state.get("protecting")), memory_hold, sample, now)
+        previous = self.state.get("gate") or {}
+        if previous.get("state") != state:
+            log("INFO", f"admission {previous.get('state', 'unset')} -> {state}: {reason or 'new heavy jobs start'}; memory {sample}")
+            previous = {"state": state, "since": now}
+        self.state["gate"] = previous
+        self.state["gate_sequence"] = self.state.get("gate_sequence", 0) + 1
+        release_until = manual.get("release_until")
+        write_gate(self.gate_path, {
+            "version": GATE_VERSION, "state": state, "reason": reason, "since": previous["since"],
+            "updated_at": now, "sequence": self.state["gate_sequence"], "boot_id": current_boot_id(),
+            "writer": "guard", "guard_pid": os.getpid(), "memory": sample,
+            "manual_release_until": release_until if isinstance(release_until, (int, float)) else None,
+        })
+
+    def save(self, publish=False):
+        """Saves the pin records first: they must survive a failing gate write. Only the detection
+        loop publishes the gate: a stop or restore must never write a fresh status (a dead guard
+        would look alive, and mid-game it would say clear)."""
         self.state["build_cpus"] = self.build_cpus
         self.state["default_cpus"] = self.default_cpus
         self.state["updated_at"] = int(self.wall())
+        save_state(self.path, self.state)
+        if not publish:
+            return
+        try:
+            self.publish_gate()
+        except OSError as error:
+            log("ERROR", f"could not write the admission status {self.gate_path}: {error}; new heavy jobs hold once it is stale")
+            return
         save_state(self.path, self.state)
 
     def release(self, reason):
@@ -420,6 +565,7 @@ class Guard:
         if not protecting:
             if was_protecting:
                 self.release("game over")
+            self.save(publish=True)
             return DETECT_EVERY_S
         if not was_protecting:
             log("INFO", f"game open: agent builds share CPUs {self.build_cpus} ({self.why})")
@@ -437,7 +583,7 @@ class Guard:
                     log("WARN", f"untracked heavy work not pinned: {report}")
             if failed:
                 log("WARN", f"{len(failed)} heavy threads could not be pinned: {failed[:3]}")
-            self.save()
+            self.save(publish=True)
             before, started = others, self.clock()
             if self.stopping:
                 break
@@ -474,7 +620,14 @@ def main(arguments):
     if command == "status":
         state = load_state(state_path(runtime_dir))
         print(json.dumps(state, indent=1, sort_keys=True) if state else "no state: the guard has not run")
+        try:
+            print("admission status (heavy-gate.json):", gate_file().read_text().strip())
+        except OSError as error:
+            print(f"admission status unreadable: {error}")
+        print("manual controls:", json.dumps(load_manual(manual_dir()), sort_keys=True))
         return 0
+    if command in ("hold", "release", "off", "on"):
+        return manual_command(manual_dir(), command, arguments[1:])
     if command not in ("run", "restore"):
         print(USAGE, file=sys.stderr)
         return 2
@@ -493,6 +646,57 @@ def main(arguments):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     guard.run()
+    return 0
+
+
+def number(value, default):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+
+
+def manual_command(directory, command, arguments, home=None, wall=time.time):
+    """Theo's host-side controls. They take effect at once, also with no guard running: the gate
+    file is rewritten here too, so a dead guard cannot keep jobs held after a release."""
+    manual = load_manual(directory)
+    now = wall()
+    if command == "release":
+        try:
+            minutes = int(arguments[0]) if arguments else DEFAULT_RELEASE_MINUTES
+        except ValueError:
+            minutes = 0
+        if not 1 <= minutes <= 24 * 60:
+            print("usage: cockpit-game-guard release [MINUTES, 1 to 1440]", file=sys.stderr)
+            return 2
+        manual.update(hold=False, release_until=now + minutes * 60)
+        said = f"new heavy jobs may start for the next {minutes} min, whatever the guard says"
+    elif command == "hold":
+        manual.update(hold=True, off=False, release_until=None)
+        said = "new heavy jobs are held until cockpit-game-guard release (admission is on)"
+    elif command == "off":
+        manual.update(off=True, hold=False, release_until=None)
+        said = "admission is off: new heavy jobs start without waiting for games or memory"
+    else:
+        manual.update(off=False, release_until=None)
+        said = "admission is on again"
+    manual_path(directory).parent.mkdir(parents=True, exist_ok=True)
+    save_state(manual_path(directory), manual)
+    path = gate_file(home)
+    try:
+        gate = json.loads(path.read_text())
+        if not isinstance(gate, dict):
+            gate = {}
+    except (OSError, ValueError):
+        gate = {}
+    state = "off" if manual.get("off") else "held" if manual.get("hold") else gate.get("state", "held")
+    if state == "off" and not manual.get("off"):
+        state = "held"
+    write_gate(path, gate | {
+        # updated_at stays the guard's: a manual command must never make a dead guard look alive.
+        "version": GATE_VERSION, "state": state, "since": number(gate.get("since"), now), "updated_at": number(gate.get("updated_at"), 0),
+        "reason": gate.get("reason") if state == gate.get("state") else said,
+        "boot_id": current_boot_id(), "writer": f"manual {command}",
+        "manual_release_until": manual.get("release_until"),
+    })
+    print(said)
     return 0
 
 

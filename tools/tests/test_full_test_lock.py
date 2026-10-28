@@ -1,3 +1,5 @@
+import fcntl
+import json
 import os
 import signal
 import subprocess
@@ -9,6 +11,23 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 LOCK = REPO / "tools/full-test-lock.py"
+AGENT_BUILD = REPO / "config/bin/.local/bin/agent-build"
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+
+def write_gate(home, state, **fields):
+    """A status as the host game guard writes it, fresh unless fields say otherwise."""
+    path = home / ".cache/agent-shims/heavy-gate.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    path.write_text(json.dumps({"version": 1, "state": state, "reason": f"test {state}", "since": now,
+                                "updated_at": now, "boot_id": BOOT_ID} | fields))
+
+
+def marker_of_this_process():
+    """An admitted ancestor for a run this test starts."""
+    text = Path(f"/proc/{os.getpid()}/stat").read_text()
+    return f"{os.getpid()}:{text[text.rindex(')') + 2:].split()[19]}"
 
 
 class FullTestLockTests(unittest.TestCase):
@@ -17,8 +36,10 @@ class FullTestLockTests(unittest.TestCase):
         self.root = Path(self.folder.name)
         self.lock_folder = self.root / "test-lock"
         self.addCleanup(self.folder.cleanup)
+        self.home = self.root / "home"
+        write_gate(self.home, "clear")
 
-    def start(self, holder, script):
+    def start(self, holder, script, admitted=False):
         return subprocess.Popen(
             [
                 sys.executable,
@@ -32,7 +53,21 @@ class FullTestLockTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # A fresh run unless admitted: make test runs these tests inside an admitted run.
+            env={key: value for key, value in os.environ.items() if key != "AGENT_BUILD_ADMITTED"}
+            | {"HOME": str(self.home)}
+            | ({"AGENT_BUILD_ADMITTED": marker_of_this_process()} if admitted else {}),
         )
+
+    def lock_is_free(self):
+        self.lock_folder.mkdir(exist_ok=True)
+        with open(self.lock_folder / "full-test.lock", "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            return True
 
     def start_holder(self, holder="/clones/first"):
         started = self.root / "started"
@@ -103,6 +138,69 @@ class FullTestLockTests(unittest.TestCase):
         self.assertNotIn("EXECUTED", output)
         self.assertIn("full-test-lock:", errors)
         self.assertEqual(target.read_text(), "keep me\n")
+
+    def test_a_fresh_run_waits_for_admission_without_holding_the_lock(self):
+        write_gate(self.home, "gaming")
+        started = self.root / "command-started"
+        waiting = self.start("/clones/gaming", f"from pathlib import Path; Path({str(started)!r}).touch(); print('ran')")
+        self.addCleanup(lambda: waiting.poll() is None and waiting.kill())
+        time.sleep(1)
+        self.assertIsNone(waiting.poll(), "the run did not wait for admission")
+        self.assertFalse(started.exists())
+        self.assertTrue(self.lock_is_free(), "a run waiting for admission holds the shared test lock")
+        write_gate(self.home, "clear")
+        output, errors = waiting.communicate(timeout=30)
+        self.assertEqual((waiting.returncode, output), (0, "ran\n"), errors)
+        self.assertIn("waits", errors)
+        self.assertIn("test gaming", errors)
+
+    def test_a_run_queued_for_the_lock_checks_admission_again_and_gives_the_lock_back(self):
+        holding, release = self.start_holder("/clones/first")
+        started = self.root / "second-started"
+        queued = self.start("/clones/second", f"from pathlib import Path; Path({str(started)!r}).touch(); print('second ran')")
+        self.addCleanup(lambda: queued.poll() is None and queued.kill())
+        time.sleep(0.5)
+        self.assertIsNone(queued.poll(), "the second run did not queue for the lock")
+        write_gate(self.home, "gaming")
+        release.touch()
+        self.assertEqual(holding.wait(10), 0)
+        time.sleep(1)
+        self.assertIsNone(queued.poll(), "the queued run started although a game began")
+        self.assertFalse(started.exists())
+        self.assertTrue(self.lock_is_free(), "the queued run kept the lock while held")
+        write_gate(self.home, "clear")
+        output, errors = queued.communicate(timeout=30)
+        self.assertEqual((queued.returncode, output), (0, "second ran\n"), errors)
+        self.assertIn("gave the lock back and waits again", errors)
+
+    def test_a_run_inside_an_admitted_job_does_not_wait(self):
+        write_gate(self.home, "gaming")
+        running = self.start("/clones/nested", "import sys; print('ran'); sys.exit(5)", admitted=True)
+        self.addCleanup(lambda: running.poll() is None and running.kill())
+        output, errors = running.communicate(timeout=10)
+        self.assertEqual((running.returncode, output), (5, "ran\n"), errors)
+
+    def test_builds_started_while_holding_the_lock_never_wait_when_a_game_starts(self):
+        go = self.root / "go"
+        started = self.root / "suite-started"
+        script = (f"import os, subprocess, sys, time\n"
+                  f"open({str(started)!r}, 'w').close()\n"
+                  f"while not os.path.exists({str(go)!r}): time.sleep(0.02)\n"
+                  f"sys.exit(subprocess.call([sys.executable, {str(AGENT_BUILD)!r}, sys.executable, '-c', 'print(\\'nested ran\\')']))")
+        running = self.start("/clones/admitted", script)
+        self.addCleanup(lambda: running.poll() is None and running.kill())
+        self.wait_for(started.exists)
+        write_gate(self.home, "gaming")
+        go.touch()
+        output, errors = running.communicate(timeout=10)
+        self.assertEqual((running.returncode, output), (0, "nested ran\n"), errors)
+        self.assertNotIn("waits", errors)
+
+    def test_an_unreachable_lock_folder_still_refuses_after_admission(self):
+        self.lock_folder = Path("/proc/full-test-lock-unreachable")
+        running = self.start("/clones/old-session", "print('EXECUTED')")
+        output, errors = running.communicate(timeout=10)
+        self.assertEqual((running.returncode, output), (126, ""), errors)
 
 
 if __name__ == "__main__":

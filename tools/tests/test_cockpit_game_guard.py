@@ -18,6 +18,8 @@ SPEC = importlib.util.spec_from_loader("cockpit_game_guard", LOADER)
 guard = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(guard)
 
+PLENTY = {"available_kb": 10 * 1024 * 1024, "psi_some_avg10": 0.0, "psi_some_avg60": 0.0}
+
 # This host's layout (Ryzen 7 7800X3D): core n is CPUs n and n+8, CPPC highest_perf per core.
 RYZEN_RANKS = [171, 196, 166, 191, 181, 196, 176, 186]
 
@@ -338,7 +340,9 @@ class GuardServiceTests(IdleChildCase):
                 service.stopping = True
         service = guard.Guard(self.runtime, topology=lambda: (self.build_cpus, "test"),
                               scanner=lambda: (self.heavy(self.child.pid), {}),
-                              detect=lambda: self.game_open, clock=lambda: self.now, sleep=sleep)
+                              detect=lambda: self.game_open, clock=lambda: self.now, sleep=sleep,
+                              memory=lambda: PLENTY, gate_path=self.runtime / "heavy-gate.json",
+                              manual_directory=self.runtime)
         return service
 
     def saved_state(self):
@@ -418,10 +422,240 @@ class GuardServiceTests(IdleChildCase):
         self.assertEqual(self.saved_state()["untracked"][0]["comm"], "node")
 
 
+AGENT_BUILD = REPO / "config/bin/.local/bin/agent-build"
+BUILD_LOADER = importlib.machinery.SourceFileLoader("agent_build_for_guard", str(AGENT_BUILD))
+agent_build = importlib.util.module_from_spec(importlib.util.spec_from_loader("agent_build_for_guard", BUILD_LOADER))
+BUILD_LOADER.exec_module(agent_build)
+GIB = 1024 * 1024
+
+
+def memory(available_gib, avg10=0.0, avg60=0.0):
+    return {"available_kb": int(available_gib * GIB), "psi_some_avg10": avg10, "psi_some_avg60": avg60}
+
+
+class MemoryHoldTests(unittest.TestCase):
+    def holds_over(self, timeline):
+        state = {}
+        return [guard.next_memory_hold(state, sample, now) for now, sample in timeline]
+
+    def test_cases(self):
+        cases = {
+            "plenty of memory never holds": ([(0, memory(10)), (5, memory(8))], [False, False]),
+            "under 3 GiB available holds": ([(0, memory(2.9))], [True]),
+            "pressure at 5 % over 10 s holds": ([(0, memory(10, avg10=5.0))], [True]),
+            "release needs a full minute at 5 GiB and low pressure": (
+                [(0, memory(2)), (10, memory(5)), (69, memory(6)), (70, memory(6))], [True, True, True, False]),
+            "a dip during the calm minute restarts it": (
+                [(0, memory(2)), (10, memory(6)), (40, memory(4.9)), (80, memory(6)), (139, memory(6)), (140, memory(6))],
+                [True, True, True, True, True, False]),
+            "pressure over the last minute keeps the hold": (
+                [(0, memory(2)), (10, memory(6, avg60=1.0)), (100, memory(6, avg60=1.0))], [True, True, True]),
+            "between 3 and 5 GiB keeps the current state": ([(0, memory(4)), (10, memory(4))], [False, False]),
+            "an unreadable sample holds": ([(0, None)], [True]),
+        }
+        for name, (timeline, expected) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.holds_over(timeline), expected)
+
+    def test_memory_is_read_from_meminfo_and_pressure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            proc = Path(folder)
+            write(proc / "meminfo", "MemTotal: 32452248 kB\nMemAvailable:   10739372 kB\n")
+            write(proc / "pressure/memory", "some avg10=1.50 avg60=0.25 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
+            self.assertEqual(guard.read_memory(proc), {"available_kb": 10739372, "psi_some_avg10": 1.5, "psi_some_avg60": 0.25})
+            (proc / "pressure/memory").unlink()
+            self.assertIsNone(guard.read_memory(proc))
+
+
+class GateTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.runtime = self.root / "run"
+        self.runtime.mkdir()
+        self.gate = self.root / "home/.cache/agent-shims/heavy-gate.json"
+        self.game_open = False
+        self.sample = memory(10)
+        self.now = 1000.0
+
+    def make_guard(self):
+        return guard.Guard(self.runtime, topology=lambda: ([sorted(os.sched_getaffinity(0))[-1]], "test"),
+                           scanner=lambda: ([], {}), detect=lambda: self.game_open, clock=lambda: self.now,
+                           wall=lambda: self.now, sleep=lambda seconds: None, memory=lambda: self.sample,
+                           gate_path=self.gate, manual_directory=self.runtime)
+
+    def written(self):
+        return json.loads(self.gate.read_text())
+
+    def admitted(self):
+        """What agent-build would decide on the file the guard wrote."""
+        gate, problem = agent_build.read_gate(self.gate)
+        return agent_build.admission(gate, problem, self.now, agent_build.boot_id())[0]
+
+    def test_precedence_of_the_gate_states(self):
+        cases = [
+            ({"off": True, "hold": True}, True, True, "off"),
+            ({"hold": True}, True, True, "held"),
+            ({}, True, True, "gaming"),
+            ({}, False, True, "memory"),
+            ({}, False, False, "clear"),
+        ]
+        for manual, protecting, memory_hold, expected in cases:
+            with self.subTest(expected):
+                self.assertEqual(guard.gate_state(manual, protecting, memory_hold, memory(10), 0)[0], expected)
+
+    def test_the_guard_publishes_clear_gaming_and_memory_that_agent_build_reads(self):
+        service = self.make_guard()
+        service.tick()
+        self.assertEqual(self.written()["state"], "clear")
+        self.assertTrue(self.admitted())
+        self.game_open = True
+        service.tick()
+        self.assertEqual(self.written()["state"], "gaming")
+        self.assertFalse(self.admitted())
+        self.game_open = False
+        service.tick()
+        self.now += 30
+        service.tick()
+        self.assertEqual(self.written()["state"], "clear")
+        self.sample = memory(1)
+        service.tick()
+        self.assertEqual(self.written()["state"], "memory")
+        self.assertIn("MiB available", self.written()["reason"])
+        self.assertFalse(self.admitted())
+
+    def test_the_status_is_rewritten_every_detection_while_idle(self):
+        service = self.make_guard()
+        sequences = []
+        for _ in range(3):
+            service.tick()
+            sequences.append(self.written()["sequence"])
+            self.now += 5
+        self.assertEqual(sequences, sorted(set(sequences)))
+        self.assertEqual(self.written()["boot_id"], agent_build.boot_id())
+
+    def test_the_status_is_readable_by_sessions_and_written_atomically(self):
+        self.make_guard().tick()
+        self.assertEqual(self.gate.stat().st_mode & 0o777, 0o644)
+        self.assertEqual([path.name for path in self.gate.parent.iterdir()], ["heavy-gate.json"])
+
+    def test_a_dead_guards_status_goes_stale_and_holds(self):
+        self.make_guard().tick()
+        self.now += 31
+        self.assertFalse(self.admitted())
+
+    def manual(self, *arguments):
+        return guard.manual_command(self.runtime, arguments[0], list(arguments[1:]), home=self.root / "home", wall=lambda: self.now)
+
+    def test_theos_release_works_with_no_guard_running_and_expires(self):
+        self.make_guard().tick()
+        self.now += 600
+        self.assertFalse(self.admitted())
+        self.assertEqual(self.manual("release", "30"), 0)
+        self.assertTrue(self.admitted())
+        self.assertEqual(self.written()["updated_at"], 1000.0, "a release must not make a dead guard look alive")
+        self.now += 30 * 60 + 1
+        self.assertFalse(self.admitted())
+
+    def test_theos_hold_and_off_and_on(self):
+        service = self.make_guard()
+        service.tick()
+        self.manual("hold")
+        self.assertEqual(self.written()["state"], "held")
+        service.tick()
+        self.assertEqual(self.written()["state"], "held", "the running guard keeps Theo's hold")
+        self.assertFalse(self.admitted())
+        self.manual("off")
+        self.assertEqual(self.written()["state"], "off")
+        self.assertTrue(self.admitted())
+        self.manual("on")
+        service.tick()
+        self.assertEqual(self.written()["state"], "clear")
+
+    def test_a_running_guard_keeps_a_release_until_it_expires(self):
+        service = self.make_guard()
+        self.game_open = True
+        service.tick()
+        self.manual("release", "10")
+        service.tick()
+        self.assertTrue(self.admitted())
+        self.now += 10 * 60 + 1
+        service.tick()
+        self.assertFalse(self.admitted())
+
+    def test_a_stop_or_restore_mid_game_never_publishes_a_fresh_status(self):
+        service = self.make_guard()
+        self.game_open = True
+        service.tick()
+        written = self.gate.read_text()
+        service.stopping = True
+        service.run()
+        self.make_guard().release("restore")
+        self.assertEqual(self.gate.read_text(), written)
+        self.now += 31
+        self.assertFalse(self.admitted(), "a stopped guard's status must go stale and hold")
+
+    def test_a_failing_status_write_keeps_the_pin_records(self):
+        service = self.make_guard()
+        service.state["tasks"] = {"4242": {"start": 1, "original": [0]}}
+        self.gate.parent.mkdir(parents=True)
+        self.gate.parent.chmod(0o500)
+        self.addCleanup(self.gate.parent.chmod, 0o700)
+        service.tick()
+        self.assertIn("4242", json.loads((self.runtime / "cockpit-game-guard.json").read_text())["tasks"])
+
+    def test_hold_turns_admission_back_on(self):
+        self.make_guard().tick()
+        self.manual("off")
+        self.manual("hold")
+        self.assertEqual(self.written()["state"], "held")
+        self.assertFalse(self.admitted())
+
+    def test_a_release_from_an_earlier_boot_counts_only_once_the_guard_republishes_it(self):
+        self.game_open = True
+        self.manual("release", "120")
+        gate = self.written() | {"boot_id": "earlier-boot"}
+        self.gate.write_text(json.dumps(gate))
+        self.assertFalse(self.admitted(), "after a reboot the old file alone must not release")
+        self.make_guard().tick()
+        self.assertTrue(self.admitted(), "the guard republishes the saved release for this boot")
+        self.now += 120 * 60 + 1
+        self.make_guard().tick()
+        self.assertFalse(self.admitted(), "the release ends at its absolute time")
+
+    def test_hold_and_off_are_kept_in_the_persistent_state_folder(self):
+        with tempfile.TemporaryDirectory() as state_home:
+            original = os.environ.get("XDG_STATE_HOME")
+            os.environ["XDG_STATE_HOME"] = state_home
+            try:
+                self.assertEqual(guard.manual_dir(), Path(state_home) / "cockpit")
+            finally:
+                if original is None:
+                    os.environ.pop("XDG_STATE_HOME")
+                else:
+                    os.environ["XDG_STATE_HOME"] = original
+
+    def test_a_restarted_guard_publishes_nothing_before_its_first_detection(self):
+        self.game_open = True
+        self.make_guard().tick()
+        written = self.gate.read_text()
+        restarted = self.make_guard()
+        restarted.stopping = True
+        restarted.run()
+        self.assertEqual(self.gate.read_text(), written)
+
+    def test_release_minutes_are_bounded(self):
+        for minutes in ["0", "1441", "soon"]:
+            with self.subTest(minutes):
+                self.assertEqual(self.manual("release", minutes), 2)
+
+
 class CommandTests(unittest.TestCase):
     def run_guard(self, *arguments, runtime):
         return subprocess.run([sys.executable, str(SCRIPT), *arguments], capture_output=True, text=True,
-                              env=os.environ | {"XDG_RUNTIME_DIR": str(runtime)}, timeout=30)
+                              env=os.environ | {"XDG_RUNTIME_DIR": str(runtime), "HOME": str(runtime),
+                                                "XDG_STATE_HOME": str(runtime)}, timeout=30)
 
     def test_status_without_state_says_the_guard_has_not_run(self):
         with tempfile.TemporaryDirectory() as runtime:

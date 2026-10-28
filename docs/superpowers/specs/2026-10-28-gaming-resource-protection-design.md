@@ -17,6 +17,70 @@ Scope: one Python script `config/bin/.local/bin/cockpit-game-guard` and one user
 - Separately approved: `cockpit setting freeze-while-gaming off` (stops the dotfiles freeze).
 Deferred: queueing new jobs, memory gate, disk cap, Docker. Sections 2-6 remain the later steps.
 
+## 0b. Step 2: heavy-job admission (implemented on feat/game-guard-admission, not deployed)
+
+Ownership agreed: workflow owner ses_e7d89f02 (lock pair, base fc6df5d) and refactor owner
+ses_e7e1238d (agent-build pair, base 4ea478a2 formatting); both reserve no part.
+
+- Status `~/.cache/agent-shims/heavy-gate.json`, written only by the guard's detection loop
+  (atomic, 0644; sandboxes see ~/.cache read-only). Fields: version 1, state (clear | gaming |
+  memory | held | off), reason, since, updated_at, sequence, boot_id, writer, guard_pid, memory,
+  manual_release_until. Rewritten every detection (5 s idle, each pin scan while gaming). A stop or
+  `restore` never writes it, so a dead guard's status goes stale.
+- Readers (`agent-build`; `full-test-lock.py` via `agent-build --wait-gate`, before `open_lock`)
+  accept it only if: opened O_NOFOLLOW, regular, owned by them, <= 4 KiB, valid JSON and schema,
+  finite times. Then: `off` runs (warning, any boot); a same-boot `manual_release_until` within
+  24 h runs; otherwise it must be this boot and -5..30 s old, and state clear.
+- Policy C (Theo, 2026-10-28): anything else holds until Theo acts on the host:
+  `cockpit-game-guard release [MINUTES]` (1-1440, default 60; works with no guard; never refreshes
+  updated_at), `hold` (also turns admission back on), `off`, `on`. Kept in
+  ~/.local/state/cockpit/game-guard-manual.json, so they survive a reboot.
+- Nested work (workflow review P1): admission is tracked by AGENT_BUILD_ADMITTED=<pid>:<start
+  time> of the admitted process (agent-build execs into the tool, keeping its pid;
+  full-test-lock.py marks its command with its own). It counts only while that exact process is an
+  ancestor of the caller; priority alone never counts. `full-test-lock.py` no longer changes the
+  suite's priority. Cheap calls are whole invocations only (`--version`, `-V`, `--help`, `-h` as
+  the sole argument, `make help`, `cargo fmt ...`, `cargo metadata ...`); `make help test` waits,
+  and a cheap call admits nothing below it.
+- Memory hold: MemAvailable < 3 GiB or PSI some avg10 >= 5 %; release after 60 s at >= 5 GiB and
+  PSI some avg60 < 1 %; unreadable memory holds. Every transition logged with its sample.
+- After a hold: one job per 10 s through a flock ticket in ~/.cache/cockpit/test-lock, then the
+  gate is checked again (a game may have started meanwhile).
+- Waiting jobs print why once a minute, that nothing has run yet, and the release command.
+- Deployment order: apply, then restart the guard at once (until the new guard writes the file,
+  policy C holds every new heavy job, including a host `make build` in after-apply when apps/
+  changed). Existing sessions: ~/.cache is bind-mounted read-only, so the file appears live; their
+  shims copy refreshes at the next session start.
+
+### Step 2 review answers (Theo's questions, 2026-10-29)
+
+- Stop policy (Theo chose B): a clean stop, restore, crash or restart never publishes, never marks
+  admission off; the status goes stale and holds until `cockpit-game-guard release`/`off`.
+- Admission proof: scheduling priority never counts (tests: SCHED_IDLE, SCHED_BATCH, nice 19 all
+  wait). The ancestor marker is still cooperative: a session can deliberately forge it (it can
+  already skip the shims with absolute paths). Long-lived admitted watchers (e.g. a dev server
+  started through npm) start their rebuilds without waiting, CPU-pinned only.
+- Existing sessions: the status file is live for them (~/.cache bind-mounted read-only). Their
+  shims run ~/.cache/agent-shims/bin/agent-build, shared by all sessions and refreshed at every
+  session start; until then they run the old runner (no gate). Deployment refreshes that shared
+  copy once, the same atomic copy the launcher makes, so no session restart is needed.
+- Direct runner: agent-cockpit's Makefile runs each checkout's own agent-build and
+  full-test-lock.py. An old checkout's runner has no gate itself; inside a sandbox it finds the
+  shared cargo shim first on PATH, and that shim now gates it (an old runner sets SCHED_IDLE but no
+  marker, which the refactor review's reproduction relied on). On the host (no shims on PATH) an
+  old checkout stays ungated until rebased onto Step 2.
+- A run queued behind another clone's full suite checks admission again once it has the lock;
+  if jobs became held meanwhile it gives the lock back and waits again (refactor review P1).
+- Ordering: apply (after-apply builds only when apps/ changed; Step 2 changes no apps/ file, so no
+  build) -> restart the guard -> refresh the shared shim copy -> verify. Between apply and the new
+  guard's first detection (< 5 s) a new heavy job holds (C). Restart unpins pinned build threads
+  for up to one scan (ExecStopPost restore) until the new guard pins them again.
+- Manual release across reboot: the release time is absolute, saved in
+  ~/.local/state/cockpit/game-guard-manual.json. Readers honour it only with this boot's id, so
+  after a reboot it counts again once the guard has republished it, until it expires; with no
+  guard running after a reboot it does not count (run release again). hold and off are saved
+  there too and survive reboots; off is accepted from any boot until `on`.
+
 ## 1. What exists today (evidence)
 
 | Piece | Where | What it does | Problem for this task |

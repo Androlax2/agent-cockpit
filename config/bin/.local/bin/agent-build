@@ -1,17 +1,221 @@
 #!/usr/bin/env python3
-"""Run background build tools at the lowest CPU priority, below interactive work."""
+"""Run background build tools at the lowest CPU priority, below interactive work.
 
+A new heavy job first passes the admission gate (todo d021dc46): while the host's game guard says a
+game is open, memory is low or Theo holds jobs, it waits and says why, then starts unchanged. Its
+exit status is the tool's own. Work started inside an admitted job never waits again: the job
+carries AGENT_BUILD_ADMITTED=<pid>:<start time> of the admitted process, and it counts only while
+that process is one of the caller's ancestors (priority alone proves nothing). A missing, stale or invalid guard status holds too, until Theo releases jobs on the
+host (`cockpit-game-guard release`). The gate is cooperative scheduling, not sandbox enforcement.
+"""
+
+import errno
+import fcntl
+import json
+import math
 import os
 import shutil
+import stat
 import sys
+import time
 from pathlib import Path
 
 LOWEST_NICE = 19
+GATE_VERSION = 1
+GATE_MAX_BYTES = 4096
+GATE_FRESH_S = 30
+GATE_POLL_S = 2
+WAIT_REPORT_EVERY_S = 60
+RELEASE_SPACING_S = 10
+HELD_EXIT = 75
+RUNNING_STATES = {"clear"}
+HOLDING_STATES = {"gaming", "memory", "held"}
+ADMITTED_ENV = "AGENT_BUILD_ADMITTED"
+MAX_ANCESTORS = 64
+# Whole invocations that never load the machine. They skip the gate but admit nothing below them.
+CHEAP_FLAGS = {"--version", "-V", "--help", "-h"}
+
+
+def gate_path():
+    return Path.home() / ".cache/agent-shims/heavy-gate.json"
+
+
+def release_ticket_path():
+    return Path.home() / ".cache/cockpit/test-lock/admission.lock"
+
+
+def boot_id():
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return None
+
+
+def read_gate(path):
+    """The status the host guard wrote, or (None, why it cannot be trusted)."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None, "the game guard status is missing"
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            return None, "the game guard status is a symbolic link"
+        return None, f"the game guard status is unreadable ({error.strerror})"
+    with os.fdopen(descriptor, "rb") as file:
+        details = os.fstat(file.fileno())
+        if not stat.S_ISREG(details.st_mode):
+            return None, "the game guard status is not a regular file"
+        if details.st_uid != os.getuid():
+            return None, "the game guard status belongs to another user"
+        content = file.read(GATE_MAX_BYTES + 1)
+    if len(content) > GATE_MAX_BYTES:
+        return None, "the game guard status is too large"
+    try:
+        gate = json.loads(content)
+    except ValueError:
+        return None, "the game guard status is not valid JSON"
+    if not isinstance(gate, dict) or gate.get("version") != GATE_VERSION:
+        return None, "the game guard status has an unknown format"
+    if not isinstance(gate.get("state"), str) or gate["state"] not in RUNNING_STATES | HOLDING_STATES | {"off"}:
+        return None, "the game guard status has an unknown state"
+    if not all(is_time(gate.get(key)) for key in ("updated_at", "since")):
+        return None, "the game guard status has no valid times"
+    return gate, None
+
+
+def is_time(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def admission(gate, problem, now, current_boot):
+    """(may start, why not, warning)."""
+    if gate is None:
+        return False, problem, None
+    if gate["state"] == "off":
+        return True, None, "the game guard admission is off: this job is not held for games or memory"
+    same_boot = current_boot is not None and gate.get("boot_id") == current_boot
+    release_until = gate.get("manual_release_until")
+    if same_boot and is_time(release_until) and now < release_until <= now + 24 * 3600:
+        return True, None, None
+    if not same_boot:
+        return False, "the game guard status is from an earlier boot", None
+    age = now - gate["updated_at"]
+    if not -5 <= age <= GATE_FRESH_S:
+        return False, f"the game guard status is stale (last written {int(age)} s ago)", None
+    if gate["state"] in HOLDING_STATES:
+        return False, str(gate.get("reason") or gate["state"]), None
+    return True, None, None
+
+
+def is_cheap(arguments):
+    tool, rest = Path(arguments[0]).name, arguments[1:]
+    if len(rest) == 1 and rest[0] in CHEAP_FLAGS:
+        return True
+    return (tool == "make" and rest == ["help"]) or (tool == "cargo" and rest[:1] in (["fmt"], ["metadata"]))
+
+
+def take_release_turn():
+    """After a hold, jobs start one per RELEASE_SPACING_S, in the order they get the ticket lock."""
+    path = release_ticket_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError as error:
+        if error.errno not in (errno.EACCES, errno.EROFS, errno.EPERM):
+            raise
+        # Sessions started before the shared test-lock folder existed cannot space their starts.
+        return
+    with os.fdopen(descriptor, "r+b") as ticket:
+        fcntl.flock(ticket, fcntl.LOCK_EX)
+        try:
+            last = float(ticket.read().strip() or 0)
+        except ValueError:
+            last = 0
+        wait = last + RELEASE_SPACING_S - time.time()
+        if 0 < wait <= RELEASE_SPACING_S:
+            time.sleep(wait)
+        ticket.seek(0)
+        ticket.truncate()
+        ticket.write(f"{time.time()}\n".encode())
+
+
+def wait_for_admission(label, read=read_gate, clock=time.time, sleep=time.sleep, out=sys.stderr):
+    """Blocks until the gate lets a new heavy job start. Returns whether it had to wait."""
+    started = clock()
+    reported_at = None
+    while True:
+        gate, problem = read(gate_path())
+        may_start, why, warning = admission(gate, problem, clock(), boot_id())
+        if may_start:
+            if warning:
+                print(f"agent-build: warning: {warning}", file=out, flush=True)
+            if reported_at is not None:
+                print(f"agent-build: {label} starts after {int(clock() - started)} s", file=out, flush=True)
+            return reported_at is not None
+        now = clock()
+        if reported_at is None or now - reported_at >= WAIT_REPORT_EVERY_S:
+            print(f"agent-build: {label} waits ({int(now - started)} s so far): {why}. It starts by itself "
+                  "when that ends; nothing has run yet. Theo can release held jobs on the host: "
+                  "cockpit-game-guard release", file=out, flush=True)
+            reported_at = now
+        sleep(GATE_POLL_S)
+
+
+def stat_fields(pid):
+    text = Path(f"/proc/{pid}/stat").read_text()
+    return text[text.rindex(")") + 2:].split()
+
+
+def admission_marker(pid=None):
+    """<pid>:<start time> of an admitted process, for its descendants."""
+    pid = os.getpid() if pid is None else pid
+    return f"{pid}:{stat_fields(pid)[19]}"
+
+
+def is_admitted():
+    """Whether an admitted job is one of this process's ancestors (or this process)."""
+    marker = os.environ.get(ADMITTED_ENV, "")
+    admitted_pid, _, admitted_start = marker.partition(":")
+    if not (admitted_pid.isdigit() and admitted_start.isdigit()):
+        return False
+    pid = os.getpid()
+    for _ in range(MAX_ANCESTORS):
+        try:
+            fields = stat_fields(pid)
+        except (OSError, ValueError, IndexError):
+            return False
+        if str(pid) == admitted_pid:
+            return fields[19] == admitted_start
+        pid = int(fields[1])
+        if pid <= 0:
+            return False
+    return False
+
+
+def admit(label):
+    """Waits for admission; after a hold, takes a release turn, then checks again: a game may
+    have started while earlier jobs took their turns."""
+    if is_admitted():
+        return
+    while wait_for_admission(label):
+        take_release_turn()
+        gate, problem = read_gate(gate_path())
+        if admission(gate, problem, time.time(), boot_id())[0]:
+            return
 
 
 def main():
     invoked_name = Path(sys.argv[0]).name
     is_shim = invoked_name != "agent-build"
+    if not is_shim and sys.argv[1:2] == ["--wait-gate"]:
+        admit(" ".join(sys.argv[2:]) or "this job")
+        return 0
+    if not is_shim and sys.argv[1:] == ["--check-gate"]:
+        # For a run that waited on another lock after its admission: may it still start now?
+        if is_admitted():
+            return 0
+        gate, problem = read_gate(gate_path())
+        return 0 if admission(gate, problem, time.time(), boot_id())[0] else HELD_EXIT
     arguments = [invoked_name, *sys.argv[1:]] if is_shim else sys.argv[1:]
     if not arguments:
         print("usage: agent-build COMMAND [ARGUMENTS...]", file=sys.stderr)
@@ -31,6 +235,12 @@ def main():
         print(f"agent-build: command not found: {arguments[0]}", file=sys.stderr)
         return 127
 
+    if not is_cheap(arguments):
+        admit(" ".join(arguments[:2]))
+        # execv keeps this pid: the tool itself is the admitted process its children point to.
+        os.environ[ADMITTED_ENV] = admission_marker()
+    elif not is_admitted():
+        os.environ.pop(ADMITTED_ENV, None)
     # Nice alone only orders tasks inside one cgroup, and every session has its own. A waking
     # normal task preempts a SCHED_IDLE one and treats its CPU as free, across cgroups too.
     # Builds keep every CPU thread they were given: idle cores are better used than reserved.
@@ -45,3 +255,5 @@ if __name__ == "__main__":
     except OSError as error:
         print(f"agent-build: {error}", file=sys.stderr)
         sys.exit(126)
+    except KeyboardInterrupt:
+        sys.exit(130)
