@@ -54,6 +54,66 @@ fn admit_events(connection: &mut Connection, live: &[WorkerState], turn: &str, n
     wake
 }
 
+fn context_decision(connection: &Connection, id: &str, state: &str, created_at: i64, resolved_at: Option<i64>) {
+    connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at,resolved_at)
+        VALUES (?1,?1,'key','Host decision','Review only',?2,1,?3,?4)",rusqlite::params![id,state,created_at,resolved_at]).unwrap();
+}
+
+fn snapshot_decision_ids(connection: &mut Connection, live: &[WorkerState]) -> Vec<String> {
+    let snapshot = store::agent(connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:0,limit:50,generation:None},live,100).unwrap().result.unwrap();
+    assert_eq!(snapshot["has_more"],false);
+    snapshot["records"].as_array().unwrap().iter().filter(|record|record["kind"]=="decision")
+        .map(|record|record["id"].as_str().unwrap().to_owned()).collect()
+}
+
+#[test]
+fn context_lists_open_decisions_before_resolved_with_each_group_newest_first() {
+    let (mut connection,live) = setup(); enable_events(&mut connection,&live);
+    context_decision(&connection,"open-old","open",10,None);
+    context_decision(&connection,"open-new-a","open",20,None);
+    context_decision(&connection,"open-new-b","open",20,None);
+    context_decision(&connection,"resolved-old","resolved",50,Some(100));
+    context_decision(&connection,"resolved-new-a","resolved",30,Some(200));
+    context_decision(&connection,"resolved-new-b","resolved",30,Some(200));
+    assert_eq!(snapshot_decision_ids(&mut connection,&live),[
+        "open-new-b","open-new-a","open-old","resolved-new-b","resolved-new-a","resolved-old"]);
+}
+
+#[test]
+fn context_keeps_only_the_twenty_most_recent_resolutions_without_deleting_history() {
+    let (mut connection,live) = setup(); enable_events(&mut connection,&live);
+    for index in 0..22 {
+        context_decision(&connection,&format!("resolved-{index:02}"),"resolved",100-index,Some(index));
+    }
+    let ids = snapshot_decision_ids(&mut connection,&live);
+    assert_eq!(ids.len(),20);
+    assert_eq!(ids.first().unwrap(),"resolved-21");
+    assert_eq!(ids.last().unwrap(),"resolved-02");
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_decisions WHERE state='resolved'",[],|row|row.get::<_,i64>(0)).unwrap(),22);
+}
+
+#[test]
+fn context_keeps_every_open_decision_even_when_there_are_more_than_twenty() {
+    let (mut connection,live) = setup(); enable_events(&mut connection,&live);
+    for index in 0..30 {
+        context_decision(&connection,&format!("open-{index:02}"),"open",index,None);
+    }
+    context_decision(&connection,"recent-resolution","resolved",100,Some(200));
+    let ids = snapshot_decision_ids(&mut connection,&live);
+    assert_eq!(ids.len(),31);
+    assert_eq!(ids.first().unwrap(),"open-29");
+    assert_eq!(ids[29],"open-00");
+    assert_eq!(ids[30],"recent-resolution");
+}
+
+#[test]
+fn context_omits_superseded_decisions_without_deleting_them() {
+    let (mut connection,live) = setup(); enable_events(&mut connection,&live);
+    context_decision(&connection,"superseded","superseded",100,Some(200));
+    assert!(snapshot_decision_ids(&mut connection,&live).is_empty());
+    assert_eq!(connection.query_row("SELECT state FROM chief_decisions WHERE id='superseded'",[],|row|row.get::<_,String>(0)).unwrap(),"superseded");
+}
+
 #[test]
 fn enable_seeds_one_native_bootstrap_and_only_its_admission_opens_the_mutation_budget() {
     let (mut connection,live) = setup();

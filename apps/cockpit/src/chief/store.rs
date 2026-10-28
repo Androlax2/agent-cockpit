@@ -1908,9 +1908,13 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
     // `answer_id` names Theo's answer to an escalated stop, so the Chief can give it as a habit's source.
     // `answer_delivery` says whether that answer reached the session: a resolved escalation alone does not.
     records.extend(connection.prepare("WITH latest AS (SELECT d.id,d.state,d.revision,d.resolution,
-            (SELECT a.id FROM chief_answers a WHERE a.stop_id=d.stop_id AND a.source='theo' ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1) AS answer,d.created_at
-            FROM chief_decisions d)
-            SELECT l.id,l.state,l.revision,l.resolution,l.answer,(SELECT delivery FROM chief_answers WHERE id=l.answer) FROM latest l ORDER BY l.created_at,l.id")?
+            (SELECT a.id FROM chief_answers a WHERE a.stop_id=d.stop_id AND a.source='theo' ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1) AS answer,d.created_at,d.resolved_at
+            FROM chief_decisions d WHERE d.state='open' OR d.id IN (
+                SELECT id FROM chief_decisions WHERE state='resolved'
+                ORDER BY resolved_at DESC,created_at DESC,id DESC LIMIT 20))
+            SELECT l.id,l.state,l.revision,l.resolution,l.answer,(SELECT delivery FROM chief_answers WHERE id=l.answer) FROM latest l
+            ORDER BY (l.state='open') DESC,
+                CASE WHEN l.state='open' THEN l.created_at ELSE l.resolved_at END DESC,l.created_at DESC,l.id DESC")?
         .query_map([],|row|Ok(json!({"kind":"decision","source":"protected_host_control","id":row.get::<_,String>(0)?,
             "state":row.get::<_,String>(1)?,"revision":row.get::<_,i64>(2)?,"resolution":row.get::<_,Option<String>>(3)?,"resolution_grants_authority":false,
             "answer_id":row.get::<_,Option<String>>(4)?,"answer_delivery":row.get::<_,Option<String>>(5)?})))?
