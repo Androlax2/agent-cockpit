@@ -6,15 +6,23 @@ use std::fs;
 
 pub fn sandbox() -> Sandbox {
     let mut sandbox = Sandbox::new();
-    sandbox.env.insert("XDG_DATA_HOME".into(), sandbox.home.join(".local/share").display().to_string());
-    sandbox.env.insert("CODEX_HOME".into(), sandbox.home.join("normal-codex").display().to_string());
+    sandbox.env.insert(
+        "XDG_DATA_HOME".into(),
+        sandbox.home.join(".local/share").display().to_string(),
+    );
+    sandbox.env.insert(
+        "CODEX_HOME".into(),
+        sandbox.home.join("normal-codex").display().to_string(),
+    );
     fs::write(sandbox.home.join("quota-response.json"), json!({
         "rateLimits": {"limitId":"codex", "primary":{"usedPercent":28,"windowDurationMins":300,"resetsAt":4102444800i64},
             "secondary":{"usedPercent":86,"windowDurationMins":10080,"resetsAt":4102444800i64}},
         "rateLimitsByLimitId": null
     }).to_string()).unwrap();
     fs::write(sandbox.home.join("account-response.json"), json!({"account":{"type":"chatgpt","email":"private@example.test","planType":"pro"},"requiresOpenaiAuth":true}).to_string()).unwrap();
-    vendor(&sandbox, r#"
+    vendor(
+        &sandbox,
+        r#"
 import json, os, sys
 from pathlib import Path
 home = Path.home()
@@ -51,12 +59,16 @@ for line in sys.stdin:
             send({'method':'account/login/completed','params':{'loginId':'test-login','success':True,'error':None}})
     else:
         raise AssertionError('Forbidden method: '+method)
-"#);
+"#,
+    );
     sandbox
 }
 
 pub fn vendor(sandbox: &Sandbox, body: &str) {
-    write_executable(&sandbox.home.join(".local/npm/bin/codex"), &format!("#!/usr/bin/env python3\n{body}"));
+    write_executable(
+        &sandbox.home.join(".local/npm/bin/codex"),
+        &format!("#!/usr/bin/env python3\n{body}"),
+    );
 }
 
 pub fn client(sandbox: &Sandbox, arguments: &[&str]) -> std::process::Output {

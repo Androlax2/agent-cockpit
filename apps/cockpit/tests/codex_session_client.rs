@@ -9,7 +9,9 @@ fn sandbox(items: Value) -> Sandbox {
     let sandbox = Sandbox::new();
     fs::create_dir_all(sandbox.home.join(".codex")).unwrap();
     fs::write(sandbox.home.join("thread-items.json"), items.to_string()).unwrap();
-    write_executable(&sandbox.home.join(".local/npm/bin/codex"), r#"#!/usr/bin/env python3
+    write_executable(
+        &sandbox.home.join(".local/npm/bin/codex"),
+        r#"#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
 home = Path.home()
@@ -43,12 +45,18 @@ for line in sys.stdin:
         result = {'data': items[start:start+limit], 'nextCursor':str(start+limit) if start+limit < len(items) else None}
     else: raise AssertionError('Forbidden mutating method: '+method)
     print(json.dumps({'id':request['id'],'result':result}), flush=True)
-"#);
+"#,
+    );
     sandbox
 }
 
 fn read(sandbox: &Sandbox, thread: &str) -> std::process::Output {
-    sandbox.command("python3", &[]).arg(waybar_scripts().join("codex-session.py")).arg(thread).output().unwrap()
+    sandbox
+        .command("python3", &[])
+        .arg(waybar_scripts().join("codex-session.py"))
+        .arg(thread)
+        .output()
+        .unwrap()
 }
 
 #[test]
@@ -64,10 +72,13 @@ fn session_export_returns_only_visible_text_and_the_original_model() {
     let context: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["model"], "gpt-6.1-sol");
     assert_eq!(context["effort"], "high");
-    assert_eq!(context["messages"], json!([
-        {"id":"request", "role":"user", "text":"Finish this task"},
-        {"id":"reply", "role":"assistant", "text":"Current result"}
-    ]));
+    assert_eq!(
+        context["messages"],
+        json!([
+            {"id":"request", "role":"user", "text":"Finish this task"},
+            {"id":"reply", "role":"assistant", "text":"Current result"}
+        ])
+    );
     assert_eq!(context["latest_user"], "Finish this task");
     assert!(!String::from_utf8_lossy(&output.stdout).contains("private"));
 }
@@ -79,42 +90,82 @@ fn legacy_history_uses_supported_read_only_turns_without_enabling_migration() {
         {"turnId":"turn","item":{"type":"reasoning","id":"private","text":"private reasoning"}},
         {"turnId":"turn","item":{"type":"userMessage","id":"request","content":[{"type":"text","text":"Finish only this task"}]}}
     ]));
-    let output = sandbox.command("python3", &[("SHIM_LEGACY","1")])
-        .arg(waybar_scripts().join("codex-session.py")).arg(THREAD).output().unwrap();
+    let output = sandbox
+        .command("python3", &[("SHIM_LEGACY", "1")])
+        .arg(waybar_scripts().join("codex-session.py"))
+        .arg(THREAD)
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     let context: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["latest_user"], "Finish only this task");
-    assert_eq!(context["messages"], json!([
-        {"id":"request","role":"user","text":"Finish only this task"},
-        {"id":"reply","role":"assistant","text":"Current result"}
-    ]));
-    assert!(!fs::read_to_string(&sandbox.log).unwrap().contains("thread/items/list"));
+    assert_eq!(
+        context["messages"],
+        json!([
+            {"id":"request","role":"user","text":"Finish only this task"},
+            {"id":"reply","role":"assistant","text":"Current result"}
+        ])
+    );
+    assert!(
+        !fs::read_to_string(&sandbox.log)
+            .unwrap()
+            .contains("thread/items/list")
+    );
 }
 
 #[test]
 fn only_a_verified_failed_quota_turn_marks_an_unassigned_codex_task_pending() {
-    for (status,error,expected) in [("failed","usageLimitExceeded",true),("failed","rateLimitExceeded",true),
-        ("completed","usageLimitExceeded",false),("interrupted","usageLimitExceeded",false),("failed","serverError",false)] {
+    for (status, error, expected) in [
+        ("failed", "usageLimitExceeded", true),
+        ("failed", "rateLimitExceeded", true),
+        ("completed", "usageLimitExceeded", false),
+        ("interrupted", "usageLimitExceeded", false),
+        ("failed", "serverError", false),
+    ] {
         let sandbox = sandbox(json!([]));
-        let output = sandbox.command("python3",&[("SHIM_LEGACY","1"),("SHIM_TURN_STATUS",status),("SHIM_TURN_ERROR",error)])
-            .arg(waybar_scripts().join("codex-session.py")).arg(THREAD).output().unwrap();
-        assert!(output.status.success(),"{}",stderr(&output));
-        assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap()["quota_stopped"],expected);
+        let output = sandbox
+            .command(
+                "python3",
+                &[
+                    ("SHIM_LEGACY", "1"),
+                    ("SHIM_TURN_STATUS", status),
+                    ("SHIM_TURN_ERROR", error),
+                ],
+            )
+            .arg(waybar_scripts().join("codex-session.py"))
+            .arg(THREAD)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["quota_stopped"],
+            expected
+        );
     }
 }
 
 #[test]
 fn session_export_refuses_a_native_thread_mismatch() {
     let sandbox = sandbox(json!([]));
-    let output = sandbox.command("python3", &[]).arg(waybar_scripts().join("codex-session.py")).arg(THREAD)
-        .env("SHIM_WRONG_THREAD", "bbbbbbbb-0000-4000-8000-000000000000").output().unwrap();
+    let output = sandbox
+        .command("python3", &[])
+        .arg(waybar_scripts().join("codex-session.py"))
+        .arg(THREAD)
+        .env("SHIM_WRONG_THREAD", "bbbbbbbb-0000-4000-8000-000000000000")
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(stderr(&output).contains("thread identity"));
 }
 
 #[test]
 fn invalid_thread_ids_never_start_the_vendor_cli() {
-    for invalid in ["../thread", "--last", "", "AAAAAAAA-0000-4000-8000-000000000000"] {
+    for invalid in [
+        "../thread",
+        "--last",
+        "",
+        "AAAAAAAA-0000-4000-8000-000000000000",
+    ] {
         let sandbox = sandbox(json!([]));
         let output = read(&sandbox, invalid);
         assert!(!output.status.success());
@@ -125,8 +176,12 @@ fn invalid_thread_ids_never_start_the_vendor_cli() {
 
 #[test]
 fn bounded_history_retains_a_user_request_older_than_a_hundred_visible_replies() {
-    let mut items: Vec<Value> = (0..110).map(|index| json!({"turnId":"turn", "item":{
-        "type":"agentMessage", "id":format!("reply-{index}"), "text":format!("Progress {index}")}})).collect();
+    let mut items: Vec<Value> = (0..110)
+        .map(|index| {
+            json!({"turnId":"turn", "item":{
+        "type":"agentMessage", "id":format!("reply-{index}"), "text":format!("Progress {index}")}})
+        })
+        .collect();
     items.push(json!({"turnId":"turn", "item":{"type":"userMessage", "id":"request", "content":[{"type":"text", "text":"Original restriction"}]}}));
     let sandbox = sandbox(json!(items));
     let output = read(&sandbox, THREAD);
@@ -146,7 +201,10 @@ fn oversized_visible_text_is_bounded_at_a_unicode_boundary() {
     let output = read(&sandbox, THREAD);
     assert!(output.status.success(), "{}", stderr(&output));
     let context: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["messages"][0]["text"].as_str().unwrap().len(), 256 * 1024);
+    assert_eq!(
+        context["messages"][0]["text"].as_str().unwrap().len(),
+        256 * 1024
+    );
     assert_eq!(context["latest_user"], "Keep working");
     assert_eq!(context["truncated"], true);
 }

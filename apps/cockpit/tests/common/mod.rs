@@ -1,8 +1,8 @@
 //! A program on a pseudo-terminal, for the tests that drive a full-screen program as Theo would.
 #![allow(dead_code)]
 
-pub mod sandbox;
 pub mod chief;
+pub mod sandbox;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -19,7 +19,12 @@ pub struct Terminal {
 }
 
 pub fn set_size(fd: i32, rows: u16, columns: u16) {
-    let size = libc::winsize { ws_row: rows, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0 };
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) };
 }
 
@@ -27,12 +32,25 @@ impl Terminal {
     /// The program on a new pseudo-terminal of 24 × 80, as the session leader so the terminal is its own.
     pub fn start(program: &Path, arguments: &[&str], environment: &[(&str, &Path)]) -> Terminal {
         let (mut master, mut slave) = (0, 0);
-        unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) };
+        unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
         set_size(master, 24, 80);
         let slave_fd = unsafe { OwnedFd::from_raw_fd(slave) };
         let mut command = Command::new(program);
-        command.args(arguments).env("TMUX", "1").env("TERM", "xterm-256color")
-            .stdin(Stdio::from(slave_fd.try_clone().unwrap())).stdout(Stdio::from(slave_fd.try_clone().unwrap())).stderr(Stdio::from(slave_fd));
+        command
+            .args(arguments)
+            .env("TMUX", "1")
+            .env("TERM", "xterm-256color")
+            .stdin(Stdio::from(slave_fd.try_clone().unwrap()))
+            .stdout(Stdio::from(slave_fd.try_clone().unwrap()))
+            .stderr(Stdio::from(slave_fd));
         for (name, value) in environment {
             command.env(name, value);
         }
@@ -45,7 +63,11 @@ impl Terminal {
         }
         let child = command.spawn().unwrap();
         unsafe { libc::fcntl(master, libc::F_SETFL, libc::O_NONBLOCK) };
-        Terminal { master: unsafe { fs::File::from_raw_fd(master) }, child, screen: Vec::new() }
+        Terminal {
+            master: unsafe { fs::File::from_raw_fd(master) },
+            child,
+            screen: Vec::new(),
+        }
     }
 
     /// Collects what is drawn for `seconds`, or until `until` shows up.
@@ -73,7 +95,10 @@ impl Terminal {
                 self.pump(0.2, None);
                 return status;
             }
-            assert!(Instant::now() < end, "the program did not exit within {seconds}s");
+            assert!(
+                Instant::now() < end,
+                "the program did not exit within {seconds}s"
+            );
         }
     }
 
@@ -83,9 +108,14 @@ impl Terminal {
 }
 
 pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 pub fn last_index(haystack: &[u8], needle: &[u8]) -> usize {
-    haystack.windows(needle.len()).rposition(|window| window == needle).expect("text on screen")
+    haystack
+        .windows(needle.len())
+        .rposition(|window| window == needle)
+        .expect("text on screen")
 }

@@ -40,24 +40,42 @@ impl HookTest {
                 if text.starts_with("session-request ") {
                     let _ = stream.write_all(reply.as_bytes());
                 }
-                collected.lock().unwrap().extend(text.lines().map(str::to_string));
+                collected
+                    .lock()
+                    .unwrap()
+                    .extend(text.lines().map(str::to_string));
             }
         });
         sandbox.shim("notify-send", "echo 42");
         sandbox.shim("gdbus", "");
-        HookTest { sandbox, socket, lines }
+        HookTest {
+            sandbox,
+            socket,
+            lines,
+        }
     }
 
     fn run_hook(&self, payload: Value, extra: &[(&str, &str)]) -> Output {
         let mut environment = vec![("KITTY_PID", "4242"), ("TMUX_PANE", "%3")];
         environment.extend_from_slice(extra);
-        self.sandbox.run_with_input("bash", &[hook().to_str().unwrap()], &environment, &payload.to_string())
+        self.sandbox.run_with_input(
+            "bash",
+            &[hook().to_str().unwrap()],
+            &environment,
+            &payload.to_string(),
+        )
     }
 
     fn received(&mut self) -> Vec<Value> {
         std::thread::sleep(Duration::from_millis(300));
-        self.lines.lock().unwrap().iter()
-            .filter_map(|line| line.strip_prefix("session ").or_else(|| line.strip_prefix("session-request ")))
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|line| {
+                line.strip_prefix("session ")
+                    .or_else(|| line.strip_prefix("session-request "))
+            })
             .map(|payload| serde_json::from_str(payload).unwrap())
             .collect()
     }
@@ -73,24 +91,47 @@ fn with_session(payload: Value, cwd: &str) -> Value {
 #[test]
 fn a_quota_failed_native_turn_stays_pending_instead_of_becoming_completed_work() {
     let mut test = HookTest::new();
-    let output = test.run_hook(with_session(json!({"hook_event_name":"StopFailure","error":"rate_limit"}),"/x/proj"),&[]);
-    assert!(output.status.success(),"{}",stderr(&output));
+    let output = test.run_hook(
+        with_session(
+            json!({"hook_event_name":"StopFailure","error":"rate_limit"}),
+            "/x/proj",
+        ),
+        &[],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
     let reports = test.received();
-    assert_eq!(reports[0]["state"],"waiting");
-    assert_eq!(reports[0]["quota_stopped"],true);
-    assert_ne!(reports[0]["turn_complete"],true);
+    assert_eq!(reports[0]["state"], "waiting");
+    assert_eq!(reports[0]["quota_stopped"], true);
+    assert_ne!(reports[0]["turn_complete"], true);
 }
 
 #[test]
 fn a_routed_claude_prompt_is_stopped_when_the_gate_is_missing_or_refuses() {
-    for gate in ["exit 127", "echo '{\"continue\":false,\"stopReason\":\"Ownership pending\"}'"] {
+    for gate in [
+        "exit 127",
+        "echo '{\"continue\":false,\"stopReason\":\"Ownership pending\"}'",
+    ] {
         let mut test = HookTest::new();
         test.sandbox.shim("cockpit-subscription", gate);
-        let output = test.run_hook(with_session(json!({"hook_event_name":"UserPromptSubmit","prompt":"Continue"}), "/x/proj"),
-            &[("COCKPIT_SUBSCRIPTION_ROUTE", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]);
+        let output = test.run_hook(
+            with_session(
+                json!({"hook_event_name":"UserPromptSubmit","prompt":"Continue"}),
+                "/x/proj",
+            ),
+            &[(
+                "COCKPIT_SUBSCRIPTION_ROUTE",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )],
+        );
         assert!(output.status.success(), "{}", stderr(&output));
-        assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap()["continue"], false);
-        assert!(test.received().is_empty(), "a denied prompt must not report work as started");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["continue"],
+            false
+        );
+        assert!(
+            test.received().is_empty(),
+            "a denied prompt must not report work as started"
+        );
     }
 }
 
@@ -116,9 +157,17 @@ fn turn_ends_never_take_team_messages_themselves() {
     // opencode: a second taker at Stop would race them.
     for agent in ["", "opencode"] {
         let mut test = HookTest::new();
-        let team = test.sandbox.team_socket(json!({"dispatch_id": "d1", "message_id": "m1", "text": "hi"}));
-        test.sandbox.shim("cockpit-team", &format!("exec '{}' \"$@\"", env!("CARGO_BIN_EXE_cockpit-team")));
-        let output = test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[("COCKPIT_AGENT", agent)]);
+        let team = test
+            .sandbox
+            .team_socket(json!({"dispatch_id": "d1", "message_id": "m1", "text": "hi"}));
+        test.sandbox.shim(
+            "cockpit-team",
+            &format!("exec '{}' \"$@\"", env!("CARGO_BIN_EXE_cockpit-team")),
+        );
+        let output = test.run_hook(
+            with_session(json!({"hook_event_name": "Stop"}), "/x/proj"),
+            &[("COCKPIT_AGENT", agent)],
+        );
         assert!(output.status.success(), "{}", stderr(&output));
         assert!(output.stdout.is_empty(), "{agent}");
         assert_eq!(test.received().len(), 1, "{agent}");
@@ -130,15 +179,30 @@ fn turn_ends_never_take_team_messages_themselves() {
 fn continuity_stop_reuses_its_turn_id_but_a_new_prompt_gets_another() {
     for session in [SESSION_A, OPENCODE_SESSION] {
         let mut test = HookTest::new();
-        for event in ["UserPromptSubmit", "Stop", "Stop", "UserPromptSubmit", "Stop"] {
-            let mut payload = with_session(json!({"hook_event_name": event, "prompt": "work"}), "/x/proj");
+        for event in [
+            "UserPromptSubmit",
+            "Stop",
+            "Stop",
+            "UserPromptSubmit",
+            "Stop",
+        ] {
+            let mut payload = with_session(
+                json!({"hook_event_name": event, "prompt": "work"}),
+                "/x/proj",
+            );
             payload["session_id"] = json!(session);
             assert!(test.run_hook(payload, &[]).status.success());
         }
         let reports = test.received();
-        let first = reports[1]["turn_id"].as_str().expect("completion has a stable turn id");
+        let first = reports[1]["turn_id"]
+            .as_str()
+            .expect("completion has a stable turn id");
         assert_eq!(first.len(), 32);
-        assert!(first.chars().all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()));
+        assert!(
+            first
+                .chars()
+                .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+        );
         assert_eq!(reports[2]["turn_id"], first);
         assert_ne!(reports[4]["turn_id"], first);
         assert_eq!(reports[1]["turn_complete"], true);
@@ -149,8 +213,15 @@ fn continuity_stop_reuses_its_turn_id_but_a_new_prompt_gets_another() {
 #[test]
 fn continuity_a_stop_question_still_reports_completion() {
     let mut test = HookTest::new();
-    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which provider?"}), json!({"hook_event_name": "Stop"})] {
-        assert!(test.run_hook(with_session(payload, "/x/proj"), &[]).status.success());
+    for payload in [
+        json!({"hook_event_name": "NeedsInput", "message": "Which provider?"}),
+        json!({"hook_event_name": "Stop"}),
+    ] {
+        assert!(
+            test.run_hook(with_session(payload, "/x/proj"), &[])
+                .status
+                .success()
+        );
     }
     let reports = test.received();
     assert_eq!(reports[1]["needs_input"], true);
@@ -162,7 +233,14 @@ fn continuity_a_stop_question_still_reports_completion() {
 fn continuity_fallback_completion_does_not_reuse_a_prior_turn() {
     let mut test = HookTest::new();
     for event in ["Stop", "Stop", "PostToolUse", "Stop"] {
-        assert!(test.run_hook(with_session(json!({"hook_event_name": event}), "/x/proj"), &[]).status.success());
+        assert!(
+            test.run_hook(
+                with_session(json!({"hook_event_name": event}), "/x/proj"),
+                &[]
+            )
+            .status
+            .success()
+        );
     }
     let reports = test.received();
     assert!(reports[0]["turn_id"].is_string());
@@ -172,10 +250,25 @@ fn continuity_fallback_completion_does_not_reuse_a_prior_turn() {
 
 #[test]
 fn continuity_repository_and_branch_are_read_inside_the_sandbox() {
-    for (origin, expected) in [("git@github.com:Acme/Shop.git", "acme/shop"), ("https://github.com/Acme/Shop.git", "acme/shop"), ("ssh://git@github.com/Acme/Shop.git", "acme/shop"), ("/local/shop", "")] {
+    for (origin, expected) in [
+        ("git@github.com:Acme/Shop.git", "acme/shop"),
+        ("https://github.com/Acme/Shop.git", "acme/shop"),
+        ("ssh://git@github.com/Acme/Shop.git", "acme/shop"),
+        ("/local/shop", ""),
+    ] {
         let mut test = HookTest::new();
         test.sandbox.shim("git", &format!("case \"$*\" in *'remote get-url origin') echo '{origin}';; *'symbolic-ref --quiet --short HEAD') echo 'todo-aabbccdd';; esac"));
-        assert!(test.run_hook(with_session(json!({"hook_event_name": "SessionStart", "source": "startup"}), "/x/proj"), &[]).status.success());
+        assert!(
+            test.run_hook(
+                with_session(
+                    json!({"hook_event_name": "SessionStart", "source": "startup"}),
+                    "/x/proj"
+                ),
+                &[]
+            )
+            .status
+            .success()
+        );
         let report = &test.received()[0];
         assert_eq!(report["repository"], expected);
         assert_eq!(report["branch"], "todo-aabbccdd");
@@ -185,16 +278,36 @@ fn continuity_repository_and_branch_are_read_inside_the_sandbox() {
 #[test]
 fn continuity_a_branch_or_origin_the_daemon_would_refuse_is_left_out_of_the_report() {
     let long_branch = "b".repeat(301);
-    for (origin, branch) in [("https://github.com/acme/shop", "feat#{x}"), ("https://github.com/acme/shop", "feat#(x)"), ("https://github.com/acme/shop", long_branch.as_str()),
-                             ("https://github.com/../shop", "main"), ("https://github.com/acme/..", "main")] {
+    for (origin, branch) in [
+        ("https://github.com/acme/shop", "feat#{x}"),
+        ("https://github.com/acme/shop", "feat#(x)"),
+        ("https://github.com/acme/shop", long_branch.as_str()),
+        ("https://github.com/../shop", "main"),
+        ("https://github.com/acme/..", "main"),
+    ] {
         let mut test = HookTest::new();
         test.sandbox.shim("git", &format!("case \"$*\" in *'remote get-url origin') echo '{origin}';; *'symbolic-ref --quiet --short HEAD') echo '{branch}';; esac"));
-        assert!(test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[]).status.success());
+        assert!(
+            test.run_hook(
+                with_session(json!({"hook_event_name": "Stop"}), "/x/proj"),
+                &[]
+            )
+            .status
+            .success()
+        );
         let report = &test.received()[0];
         assert_eq!(report["turn_complete"], true, "{origin} {branch}");
-        let expected_repository = if origin.contains("..") { "" } else { "acme/shop" };
+        let expected_repository = if origin.contains("..") {
+            ""
+        } else {
+            "acme/shop"
+        };
         let expected_branch = if branch == "main" { "main" } else { "" };
-        assert_eq!((report["repository"].as_str(), report["branch"].as_str()), (Some(expected_repository), Some(expected_branch)), "{origin} {branch}");
+        assert_eq!(
+            (report["repository"].as_str(), report["branch"].as_str()),
+            (Some(expected_repository), Some(expected_branch)),
+            "{origin} {branch}"
+        );
     }
 }
 
@@ -202,23 +315,66 @@ fn continuity_a_branch_or_origin_the_daemon_would_refuse_is_left_out_of_the_repo
 fn events_map_to_states() {
     let mut test = HookTest::new();
     let cases = [
-        (json!({"hook_event_name": "SessionStart", "source": "startup"}), "waiting", None),
-        (json!({"hook_event_name": "UserPromptSubmit", "prompt": "add the chip\nmore"}), "working", None),
-        (json!({"hook_event_name": "PostToolUse", "tool_name": "Bash"}), "working", None),
-        (json!({"hook_event_name": "Notification", "message": "perm", "notification_type": "permission_prompt"}), "needs-you", Some(true)),
-        (json!({"hook_event_name": "Notification", "message": "idle", "notification_type": "idle_prompt"}), "waiting", Some(true)),
-        (json!({"hook_event_name": "Notification", "message": "done", "notification_type": "push_notification"}), "waiting", None),
+        (
+            json!({"hook_event_name": "SessionStart", "source": "startup"}),
+            "waiting",
+            None,
+        ),
+        (
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "add the chip\nmore"}),
+            "working",
+            None,
+        ),
+        (
+            json!({"hook_event_name": "PostToolUse", "tool_name": "Bash"}),
+            "working",
+            None,
+        ),
+        (
+            json!({"hook_event_name": "Notification", "message": "perm", "notification_type": "permission_prompt"}),
+            "needs-you",
+            Some(true),
+        ),
+        (
+            json!({"hook_event_name": "Notification", "message": "idle", "notification_type": "idle_prompt"}),
+            "waiting",
+            Some(true),
+        ),
+        (
+            json!({"hook_event_name": "Notification", "message": "done", "notification_type": "push_notification"}),
+            "waiting",
+            None,
+        ),
         (json!({"hook_event_name": "Stop"}), "waiting", None),
-        (json!({"hook_event_name": "SessionEnd", "reason": "exit"}), "gone", None),
+        (
+            json!({"hook_event_name": "SessionEnd", "reason": "exit"}),
+            "gone",
+            None,
+        ),
     ];
     for (payload, _, _) in &cases {
         test.run_hook(with_session(payload.clone(), "/x/proj"), &[]);
     }
     let lines = test.received();
-    let states: Vec<&str> = lines.iter().map(|line| line["state"].as_str().unwrap()).collect();
-    assert_eq!(states, cases.iter().map(|(_, state, _)| *state).collect::<Vec<_>>());
-    let stickies: Vec<Option<bool>> = lines.iter().map(|line| line.get("sticky").map(|sticky| sticky.as_bool().unwrap())).collect();
-    assert_eq!(stickies, cases.iter().map(|(_, _, sticky)| *sticky).collect::<Vec<_>>());
+    let states: Vec<&str> = lines
+        .iter()
+        .map(|line| line["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        states,
+        cases.iter().map(|(_, state, _)| *state).collect::<Vec<_>>()
+    );
+    let stickies: Vec<Option<bool>> = lines
+        .iter()
+        .map(|line| line.get("sticky").map(|sticky| sticky.as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        stickies,
+        cases
+            .iter()
+            .map(|(_, _, sticky)| *sticky)
+            .collect::<Vec<_>>()
+    );
     assert_eq!(lines[1]["task"], "add the chip");
     assert_eq!(lines[0]["tmux_pane"], "%3");
 }
@@ -227,13 +383,23 @@ fn events_map_to_states() {
 fn task_label_wrapper_reports_only_session_metadata_for_both_agents() {
     for session in [SESSION_A, OPENCODE_SESSION] {
         let mut test = HookTest::new();
-        let output = test.sandbox.run("bash", &[bin().join("claude-session-label").to_str().unwrap(), "  Free   disk space  "], &[("CLAUDE_CODE_SESSION_ID", session)]);
+        let output = test.sandbox.run(
+            "bash",
+            &[
+                bin().join("claude-session-label").to_str().unwrap(),
+                "  Free   disk space  ",
+            ],
+            &[("CLAUDE_CODE_SESSION_ID", session)],
+        );
         assert!(output.status.success(), "{}", stderr(&output));
         let report = test.received().remove(0);
         assert_eq!(report["label"], "Free disk space");
         assert_eq!(report["session"], session);
         for field in ["state", "message", "task", "needs_input"] {
-            assert!(report.get(field).is_none(), "label overwrites {field}: {report}");
+            assert!(
+                report.get(field).is_none(),
+                "label overwrites {field}: {report}"
+            );
         }
     }
 }
@@ -241,8 +407,20 @@ fn task_label_wrapper_reports_only_session_metadata_for_both_agents() {
 #[test]
 fn task_label_reports_reject_invalid_names_without_sending_anything() {
     let mut test = HookTest::new();
-    for label in ["Two words".into(), "one two three four five six seven".into(), "a".repeat(57) + " b c", "Free\ndisk space".into(), "Read #(id) output".into()] {
-        let output = test.run_hook(with_session(json!({"hook_event_name": "TaskLabel", "label": label}), "/x/proj"), &[]);
+    for label in [
+        "Two words".into(),
+        "one two three four five six seven".into(),
+        "a".repeat(57) + " b c",
+        "Free\ndisk space".into(),
+        "Read #(id) output".into(),
+    ] {
+        let output = test.run_hook(
+            with_session(
+                json!({"hook_event_name": "TaskLabel", "label": label}),
+                "/x/proj",
+            ),
+            &[],
+        );
         assert_eq!(output.status.code(), Some(2));
     }
     assert!(test.received().is_empty());
@@ -251,9 +429,11 @@ fn task_label_reports_reject_invalid_names_without_sending_anything() {
 #[test]
 fn task_label_reporting_does_not_clear_a_pending_question() {
     let mut test = HookTest::new();
-    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
-                    json!({"hook_event_name": "TaskLabel", "label": "Fix session navigation"}),
-                    json!({"hook_event_name": "Stop"})] {
+    for payload in [
+        json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+        json!({"hook_event_name": "TaskLabel", "label": "Fix session navigation"}),
+        json!({"hook_event_name": "Stop"}),
+    ] {
         let output = test.run_hook(with_session(payload, "/x/proj"), &[]);
         assert!(output.status.success(), "{}", stderr(&output));
     }
@@ -268,12 +448,27 @@ fn task_label_reporting_does_not_clear_a_pending_question() {
 fn task_label_rejections_fail_without_touching_existing_question_toasts() {
     for daemon_missing in [false, true] {
         let test = HookTest::with_reply("refused: no session target");
-        if daemon_missing { fs::remove_file(&test.socket).unwrap(); }
-        let toast = test.sandbox.home.join(format!(".cache/claude/toast-{SESSION_A}.id"));
+        if daemon_missing {
+            fs::remove_file(&test.socket).unwrap();
+        }
+        let toast = test
+            .sandbox
+            .home
+            .join(format!(".cache/claude/toast-{SESSION_A}.id"));
         fs::create_dir_all(toast.parent().unwrap()).unwrap();
         fs::write(&toast, "42").unwrap();
-        let output = test.sandbox.run("bash", &[bin().join("claude-session-label").to_str().unwrap(), "Fix session navigation"], &[("CLAUDE_CODE_SESSION_ID", SESSION_A)]);
-        assert!(!output.status.success(), "label publication falsely succeeded");
+        let output = test.sandbox.run(
+            "bash",
+            &[
+                bin().join("claude-session-label").to_str().unwrap(),
+                "Fix session navigation",
+            ],
+            &[("CLAUDE_CODE_SESSION_ID", SESSION_A)],
+        );
+        assert!(
+            !output.status.success(),
+            "label publication falsely succeeded"
+        );
         assert_eq!(fs::read_to_string(&toast).unwrap(), "42");
         assert!(test.sandbox.calls("gdbus").is_empty());
         assert!(test.sandbox.calls("notify-send").is_empty());
@@ -284,14 +479,38 @@ fn task_label_rejections_fail_without_touching_existing_question_toasts() {
 fn doing_now_wrapper_reports_only_session_metadata_for_both_agents() {
     for session in [SESSION_A, OPENCODE_SESSION] {
         let mut test = HookTest::new();
-        let output = test.sandbox.run("bash", &[bin().join("cockpit-session-doing").to_str().unwrap(), "  Running   the Rust tests "], &[("CLAUDE_CODE_SESSION_ID", session)]);
+        let output = test.sandbox.run(
+            "bash",
+            &[
+                bin().join("cockpit-session-doing").to_str().unwrap(),
+                "  Running   the Rust tests ",
+            ],
+            &[("CLAUDE_CODE_SESSION_ID", session)],
+        );
         assert!(output.status.success(), "{}", stderr(&output));
-        assert!(test.lines.lock().unwrap().iter().all(|line| line.starts_with("session-request ")), "doing-now needs the daemon's acknowledgement");
+        assert!(
+            test.lines
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|line| line.starts_with("session-request ")),
+            "doing-now needs the daemon's acknowledgement"
+        );
         let report = test.received().remove(0);
         assert_eq!(report["doing"], "Running the Rust tests");
         assert_eq!(report["session"], session);
-        for field in ["state", "message", "task", "needs_input", "label", "last_tool"] {
-            assert!(report.get(field).is_none(), "doing-now overwrites {field}: {report}");
+        for field in [
+            "state",
+            "message",
+            "task",
+            "needs_input",
+            "label",
+            "last_tool",
+        ] {
+            assert!(
+                report.get(field).is_none(),
+                "doing-now overwrites {field}: {report}"
+            );
         }
     }
 }
@@ -299,8 +518,20 @@ fn doing_now_wrapper_reports_only_session_metadata_for_both_agents() {
 #[test]
 fn doing_now_reports_reject_invalid_text_without_sending_anything() {
     let mut test = HookTest::new();
-    for doing in ["Testing".to_string(), "a ".repeat(13), format!("Running {}", "x".repeat(80)), "Running\nthe tests".into(), "Reading #(id) output".into()] {
-        let output = test.run_hook(with_session(json!({"hook_event_name": "TaskStep", "doing": doing}), "/x/proj"), &[]);
+    for doing in [
+        "Testing".to_string(),
+        "a ".repeat(13),
+        format!("Running {}", "x".repeat(80)),
+        "Running\nthe tests".into(),
+        "Reading #(id) output".into(),
+    ] {
+        let output = test.run_hook(
+            with_session(
+                json!({"hook_event_name": "TaskStep", "doing": doing}),
+                "/x/proj",
+            ),
+            &[],
+        );
         assert_eq!(output.status.code(), Some(2), "{doing:?}");
     }
     assert!(test.received().is_empty());
@@ -309,8 +540,18 @@ fn doing_now_reports_reject_invalid_text_without_sending_anything() {
 #[test]
 fn doing_now_fails_loudly_when_the_daemon_refuses_it() {
     let test = HookTest::with_reply("refused: no session target");
-    let output = test.sandbox.run("bash", &[bin().join("cockpit-session-doing").to_str().unwrap(), "Running the tests"], &[("CLAUDE_CODE_SESSION_ID", SESSION_A)]);
-    assert!(!output.status.success(), "doing-now publication falsely succeeded");
+    let output = test.sandbox.run(
+        "bash",
+        &[
+            bin().join("cockpit-session-doing").to_str().unwrap(),
+            "Running the tests",
+        ],
+        &[("CLAUDE_CODE_SESSION_ID", SESSION_A)],
+    );
+    assert!(
+        !output.status.success(),
+        "doing-now publication falsely succeeded"
+    );
     assert!(test.sandbox.calls("notify-send").is_empty());
 }
 
@@ -318,19 +559,39 @@ fn doing_now_fails_loudly_when_the_daemon_refuses_it() {
 fn a_tool_use_reports_a_safe_one_line_summary_of_the_tool() {
     let mut test = HookTest::new();
     let long = "x".repeat(300);
-    for (tool, input) in [("Bash", json!({"command": "cargo nextest run\necho done", "description": "Run the tests"})),
-                          ("Edit", json!({"file_path": "/r/app.rs", "old_string": "a"})),
-                          ("mcp__figcraft__get_node", json!({"id": 4})),
-                          ("Bash", json!({"command": "echo #{x} #(y)\tz"})),
-                          ("Bash", json!({"command": long}))] {
+    for (tool, input) in [
+        (
+            "Bash",
+            json!({"command": "cargo nextest run\necho done", "description": "Run the tests"}),
+        ),
+        ("Edit", json!({"file_path": "/r/app.rs", "old_string": "a"})),
+        ("mcp__figcraft__get_node", json!({"id": 4})),
+        ("Bash", json!({"command": "echo #{x} #(y)\tz"})),
+        ("Bash", json!({"command": long})),
+    ] {
         assert!(test.run_hook(with_session(json!({"hook_event_name": "PostToolUse", "tool_name": tool, "tool_input": input}), "/x/proj"), &[]).status.success());
     }
-    let summaries: Vec<String> = test.received().iter().map(|report| report["last_tool"].as_str().unwrap().to_string()).collect();
-    assert_eq!(&summaries[..4], ["Bash  cargo nextest run", "Edit  /r/app.rs", "mcp__figcraft__get_node", "Bash  echo # {x} # (y) z"]);
+    let summaries: Vec<String> = test
+        .received()
+        .iter()
+        .map(|report| report["last_tool"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        &summaries[..4],
+        [
+            "Bash  cargo nextest run",
+            "Edit  /r/app.rs",
+            "mcp__figcraft__get_node",
+            "Bash  echo # {x} # (y) z"
+        ]
+    );
     assert_eq!(summaries[4].chars().count(), 100);
     assert!(summaries[4].ends_with('…'));
     let summary = cockpit::sessions::tool_summary("Bash", Some(&json!({"command": long}))).unwrap();
-    assert_eq!(summaries[4], summary, "the hook and the Rust summary must agree");
+    assert_eq!(
+        summaries[4], summary,
+        "the hook and the Rust summary must agree"
+    );
 }
 
 #[test]
@@ -349,13 +610,32 @@ fn informational_notification_carries_no_state() {
 fn an_explicit_question_waits_for_turn_end_for_both_agents() {
     for session in [SESSION_A, OPENCODE_SESSION] {
         let mut test = HookTest::new();
-        let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), "Which option should I use?"],
-            &[("CLAUDE_CODE_SESSION_ID", session)]);
+        let result = test.sandbox.run(
+            "bash",
+            &[
+                bin().join("claude-needs-input").to_str().unwrap(),
+                "Which option should I use?",
+            ],
+            &[("CLAUDE_CODE_SESSION_ID", session)],
+        );
         assert!(result.status.success(), "{}", stderr(&result));
         for event in ["PostToolUse", "Notification", "Stop", "PostToolUse"] {
-            let mut payload = with_session(json!({"hook_event_name": event, "message": "Still running", "notification_type": "auth_success"}), "/x/proj");
+            let mut payload = with_session(
+                json!({"hook_event_name": event, "message": "Still running", "notification_type": "auth_success"}),
+                "/x/proj",
+            );
             payload["session_id"] = json!(session);
-            let result = test.run_hook(payload, &[("COCKPIT_AGENT", if session == SESSION_A { "claude" } else { "opencode" })]);
+            let result = test.run_hook(
+                payload,
+                &[(
+                    "COCKPIT_AGENT",
+                    if session == SESSION_A {
+                        "claude"
+                    } else {
+                        "opencode"
+                    },
+                )],
+            );
             assert!(result.status.success(), "{}", stderr(&result));
         }
         let lines = test.received();
@@ -369,7 +649,14 @@ fn an_explicit_question_waits_for_turn_end_for_both_agents() {
             assert_eq!(line["state"], "needs-you");
             assert_eq!(line["message"], "Which option should I use?");
             assert_eq!(line["needs_input"], true);
-            assert_eq!(line["agent"].as_str().unwrap_or("claude"), if session == SESSION_A { "claude" } else { "opencode" });
+            assert_eq!(
+                line["agent"].as_str().unwrap_or("claude"),
+                if session == SESSION_A {
+                    "claude"
+                } else {
+                    "opencode"
+                }
+            );
         }
     }
 }
@@ -377,9 +664,11 @@ fn an_explicit_question_waits_for_turn_end_for_both_agents() {
 #[test]
 fn a_pending_question_does_not_delay_a_permission_prompt() {
     let mut test = HookTest::new();
-    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+    for payload in [
+        json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
         json!({"hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "Allow Bash?"}),
-        json!({"hook_event_name": "Stop"})] {
+        json!({"hook_event_name": "Stop"}),
+    ] {
         let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
         assert!(result.status.success(), "{}", stderr(&result));
     }
@@ -392,26 +681,45 @@ fn a_pending_question_does_not_delay_a_permission_prompt() {
 
 #[test]
 fn a_real_dialog_overrides_an_already_published_chat_question() {
-    for notification in ["permission_prompt", "worker_permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"] {
+    for notification in [
+        "permission_prompt",
+        "worker_permission_prompt",
+        "elicitation_dialog",
+        "elicitation_url_dialog",
+        "agent_needs_input",
+    ] {
         let mut test = HookTest::new();
-        for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+        for payload in [
+            json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
             json!({"hook_event_name": "Stop"}),
-            json!({"hook_event_name": "Notification", "notification_type": notification, "message": "Allow tool?"})] {
+            json!({"hook_event_name": "Notification", "notification_type": notification, "message": "Allow tool?"}),
+        ] {
             let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
             assert!(result.status.success(), "{}", stderr(&result));
         }
         let lines = test.received();
-        assert_eq!(lines[2]["needs_input"], false, "{notification}: {}", lines[2]);
+        assert_eq!(
+            lines[2]["needs_input"], false,
+            "{notification}: {}",
+            lines[2]
+        );
         assert_eq!(lines[2]["message"], "Allow tool?");
     }
 }
 
 #[test]
 fn native_question_forms_and_permissions_have_distinct_attention_kinds() {
-    for (agent, notification, is_form) in [("opencode", "elicitation_dialog", true), ("opencode", "permission_prompt", false),
-        ("opencode", "worker_permission_prompt", false), ("claude", "elicitation_dialog", false)] {
+    for (agent, notification, is_form) in [
+        ("opencode", "elicitation_dialog", true),
+        ("opencode", "permission_prompt", false),
+        ("opencode", "worker_permission_prompt", false),
+        ("claude", "elicitation_dialog", false),
+    ] {
         let mut test = HookTest::new();
-        let payload = with_session(json!({"hook_event_name":"Notification","notification_type":notification,"message":"Input requested"}), "/x/proj");
+        let payload = with_session(
+            json!({"hook_event_name":"Notification","notification_type":notification,"message":"Input requested"}),
+            "/x/proj",
+        );
         let result = test.run_hook(payload, &[("COCKPIT_AGENT", agent)]);
         assert!(result.status.success(), "{}", stderr(&result));
         let row = test.received().remove(0);
@@ -425,13 +733,25 @@ fn lifecycle_resets_clear_an_explicit_question() {
     for event in ["UserPromptSubmit", "SessionStart", "SessionEnd"] {
         for has_finished in [false, true] {
             let mut test = HookTest::new();
-            let result = test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
+            let result = test.run_hook(
+                with_session(
+                    json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+                    "/x/proj",
+                ),
+                &[],
+            );
             assert!(result.status.success(), "{}", stderr(&result));
             if has_finished {
-                let result = test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[]);
+                let result = test.run_hook(
+                    with_session(json!({"hook_event_name": "Stop"}), "/x/proj"),
+                    &[],
+                );
                 assert!(result.status.success(), "{}", stderr(&result));
             }
-            for payload in [json!({"hook_event_name": event, "prompt": "Use option A"}), json!({"hook_event_name": "Stop"})] {
+            for payload in [
+                json!({"hook_event_name": event, "prompt": "Use option A"}),
+                json!({"hook_event_name": "Stop"}),
+            ] {
                 let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
                 assert!(result.status.success(), "{event}: {}", stderr(&result));
             }
@@ -447,7 +767,13 @@ fn lifecycle_resets_clear_an_explicit_question() {
 #[test]
 fn an_explicit_question_does_not_leak_to_another_session() {
     let mut test = HookTest::new();
-    test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+            "/x/proj",
+        ),
+        &[],
+    );
     let mut payload = with_session(json!({"hook_event_name": "Stop"}), "/x/proj");
     payload["session_id"] = json!(SESSION_B);
     test.run_hook(payload, &[]);
@@ -460,8 +786,17 @@ fn an_explicit_question_does_not_leak_to_another_session() {
 #[test]
 fn an_idle_notification_does_not_clear_an_explicit_question() {
     let mut test = HookTest::new();
-    test.run_hook(with_session(json!({"hook_event_name": "NeedsInput", "message": "Which option?"}), "/x/proj"), &[]);
-    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+            "/x/proj",
+        ),
+        &[],
+    );
+    test.run_hook(
+        with_session(json!({"hook_event_name": "Stop"}), "/x/proj"),
+        &[],
+    );
     test.run_hook(with_session(json!({"hook_event_name": "Notification", "notification_type": "idle_prompt", "message": "idle"}), "/x/proj"), &[]);
     let lines = test.received();
     assert_eq!(lines[2]["state"], "needs-you");
@@ -471,10 +806,12 @@ fn an_idle_notification_does_not_clear_an_explicit_question() {
 #[test]
 fn a_system_prompt_does_not_answer_an_explicit_question() {
     let mut test = HookTest::new();
-    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+    for payload in [
+        json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
         json!({"hook_event_name": "Stop"}),
         json!({"hook_event_name": "UserPromptSubmit", "source": "system", "prompt": "Background task finished"}),
-        json!({"hook_event_name": "Stop"})] {
+        json!({"hook_event_name": "Stop"}),
+    ] {
         let result = test.run_hook(with_session(payload, "/x/proj"), &[]);
         assert!(result.status.success(), "{}", stderr(&result));
     }
@@ -487,12 +824,17 @@ fn a_system_prompt_does_not_answer_an_explicit_question() {
 #[test]
 fn after_a_chief_answer_the_old_needs_input_question_does_not_return() {
     let mut test = HookTest::new();
-    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+    for payload in [
+        json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
         json!({"hook_event_name": "Stop"}),
         json!({"hook_event_name": "UserPromptSubmit", "source": "system"}),
         json!({"hook_event_name": "UserPromptSubmit", "source": "chief_answer"}),
-        json!({"hook_event_name": "Stop"})] {
-        let result = test.run_hook(with_session(payload, "/x/proj"), &[("COCKPIT_AGENT", "opencode")]);
+        json!({"hook_event_name": "Stop"}),
+    ] {
+        let result = test.run_hook(
+            with_session(payload, "/x/proj"),
+            &[("COCKPIT_AGENT", "opencode")],
+        );
         assert!(result.status.success(), "{}", stderr(&result));
     }
     let lines = test.received();
@@ -502,18 +844,26 @@ fn after_a_chief_answer_the_old_needs_input_question_does_not_return() {
     assert_eq!(lines[4]["state"], "waiting");
     assert_eq!(lines[4]["needs_input"], false);
     assert_ne!(lines[4]["message"], "Which option?");
-    assert!(lines[3].get("task").is_none(), "a Chief answer does not rename Theo's task");
+    assert!(
+        lines[3].get("task").is_none(),
+        "a Chief answer does not rename Theo's task"
+    );
 }
 
 #[test]
 fn a_question_asked_after_a_chief_answer_is_kept() {
     let mut test = HookTest::new();
-    for payload in [json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
+    for payload in [
+        json!({"hook_event_name": "NeedsInput", "message": "Which option?"}),
         json!({"hook_event_name": "Stop"}),
         json!({"hook_event_name": "NeedsInput", "message": "And the colour?"}),
         json!({"hook_event_name": "UserPromptSubmit", "source": "chief_answer"}),
-        json!({"hook_event_name": "Stop"})] {
-        let result = test.run_hook(with_session(payload, "/x/proj"), &[("COCKPIT_AGENT", "opencode")]);
+        json!({"hook_event_name": "Stop"}),
+    ] {
+        let result = test.run_hook(
+            with_session(payload, "/x/proj"),
+            &[("COCKPIT_AGENT", "opencode")],
+        );
         assert!(result.status.success(), "{}", stderr(&result));
     }
     let lines = test.received();
@@ -525,9 +875,18 @@ fn a_question_asked_after_a_chief_answer_is_kept() {
 fn the_question_command_requires_the_daemons_acceptance() {
     let test = HookTest::new();
     for reply in ["", "refused: session.cwd contains a tmux format sequence"] {
-        test.sandbox.shim("socat", &format!("cat >/dev/null\nprintf '%s\\n' '{reply}'"));
-        let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), "Which option?"],
-            &[("CLAUDE_CODE_SESSION_ID", SESSION_A)]);
+        test.sandbox.shim(
+            "socat",
+            &format!("cat >/dev/null\nprintf '%s\\n' '{reply}'"),
+        );
+        let result = test.sandbox.run(
+            "bash",
+            &[
+                bin().join("claude-needs-input").to_str().unwrap(),
+                "Which option?",
+            ],
+            &[("CLAUDE_CODE_SESSION_ID", SESSION_A)],
+        );
         assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
     }
 }
@@ -536,10 +895,19 @@ fn the_question_command_requires_the_daemons_acceptance() {
 fn the_question_command_rejects_invalid_input() {
     let test = HookTest::new();
     let long_question = "a".repeat(301);
-    for (session, question) in [("", "Which option?"), ("../../other", "Which option?"), (SESSION_A, "  "),
-        (SESSION_A, "line\nbreak"), (SESSION_A, "#{pane_id}"), (SESSION_A, long_question.as_str())] {
-        let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), question],
-            &[("CLAUDE_CODE_SESSION_ID", session)]);
+    for (session, question) in [
+        ("", "Which option?"),
+        ("../../other", "Which option?"),
+        (SESSION_A, "  "),
+        (SESSION_A, "line\nbreak"),
+        (SESSION_A, "#{pane_id}"),
+        (SESSION_A, long_question.as_str()),
+    ] {
+        let result = test.sandbox.run(
+            "bash",
+            &[bin().join("claude-needs-input").to_str().unwrap(), question],
+            &[("CLAUDE_CODE_SESSION_ID", session)],
+        );
         assert_eq!(result.status.code(), Some(2), "{}", stderr(&result));
     }
 }
@@ -548,8 +916,14 @@ fn the_question_command_rejects_invalid_input() {
 fn the_question_command_reports_a_missing_daemon() {
     let test = HookTest::new();
     fs::remove_file(&test.socket).unwrap();
-    let result = test.sandbox.run("bash", &[bin().join("claude-needs-input").to_str().unwrap(), "Which option?"],
-        &[("CLAUDE_CODE_SESSION_ID", SESSION_A)]);
+    let result = test.sandbox.run(
+        "bash",
+        &[
+            bin().join("claude-needs-input").to_str().unwrap(),
+            "Which option?",
+        ],
+        &[("CLAUDE_CODE_SESSION_ID", SESSION_A)],
+    );
     assert_eq!(result.status.code(), Some(1), "{}", stderr(&result));
     assert!(stderr(&result).contains("osd"), "{}", stderr(&result));
 }
@@ -557,9 +931,16 @@ fn the_question_command_reports_a_missing_daemon() {
 #[test]
 fn unknown_event_fails_loudly() {
     let test = HookTest::new();
-    let result = test.run_hook(with_session(json!({"hook_event_name": "PreCompact"}), "/x"), &[]);
+    let result = test.run_hook(
+        with_session(json!({"hook_event_name": "PreCompact"}), "/x"),
+        &[],
+    );
     assert_eq!(result.status.code(), Some(1));
-    assert!(stderr(&result).contains("unexpected hook event"), "{}", stderr(&result));
+    assert!(
+        stderr(&result).contains("unexpected hook event"),
+        "{}",
+        stderr(&result)
+    );
 }
 
 #[test]
@@ -570,7 +951,12 @@ fn nested_claude_reports_nothing() {
     let fake = fake_claude(&test.sandbox.root);
     let script = format!("bash {}; :", hook().display());
     let payload = with_session(json!({"hook_event_name": "Stop"}), "/x/.issues-tmp");
-    test.sandbox.run_with_input(&fake, &["-c", &script], &[("CLAUDECODE", "1")], &payload.to_string());
+    test.sandbox.run_with_input(
+        &fake,
+        &["-c", &script],
+        &[("CLAUDECODE", "1")],
+        &payload.to_string(),
+    );
     assert_eq!(test.received(), Vec::<Value>::new());
 }
 
@@ -581,7 +967,12 @@ fn a_session_nested_in_an_opencode_tool_reports_nothing() {
     let fake = fake_agent(&test.sandbox.root, "opencode");
     let script = format!("bash {}; :", hook().display());
     let payload = with_session(json!({"hook_event_name": "Stop"}), "/x/proj");
-    test.sandbox.run_with_input(&fake, &["-c", &script], &[("OPENCODE", "1"), ("COCKPIT_AGENT", "opencode")], &payload.to_string());
+    test.sandbox.run_with_input(
+        &fake,
+        &["-c", &script],
+        &[("OPENCODE", "1"), ("COCKPIT_AGENT", "opencode")],
+        &payload.to_string(),
+    );
     assert_eq!(test.received(), Vec::<Value>::new());
 }
 
@@ -593,15 +984,38 @@ fn an_opencode_session_started_from_a_shell_reports_its_agent() {
     let script = format!("bash {}; :", hook().display());
     let mut payload = json!({"hook_event_name": "SessionStart", "session_id": "ses_3f2a9c0b1ffeQkTz8mWn4rJd2L", "cwd": "/x/proj"});
     // Unmarked, like a session you start (these tests may themselves run under an agent's tool).
-    let mut child = test.sandbox.command(&fake, &[("COCKPIT_AGENT", "opencode")]).env_remove("CLAUDECODE").env_remove("OPENCODE")
-        .args(["-c", &script]).stdin(Stdio::piped()).spawn().unwrap();
-    child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let mut child = test
+        .sandbox
+        .command(&fake, &[("COCKPIT_AGENT", "opencode")])
+        .env_remove("CLAUDECODE")
+        .env_remove("OPENCODE")
+        .args(["-c", &script])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.to_string().as_bytes())
+        .unwrap();
     child.wait().unwrap();
     payload["session_id"] = json!(SESSION_A);
     test.run_hook(payload, &[]);
     let lines = test.received();
-    assert_eq!((&lines[0]["session"], &lines[0]["agent"], &lines[0]["state"]), (&json!("ses_3f2a9c0b1ffeQkTz8mWn4rJd2L"), &json!("opencode"), &json!("waiting")));
-    assert!(lines[1].get("agent").is_none(), "a Claude report carries no agent: {}", lines[1]);
+    assert_eq!(
+        (&lines[0]["session"], &lines[0]["agent"], &lines[0]["state"]),
+        (
+            &json!("ses_3f2a9c0b1ffeQkTz8mWn4rJd2L"),
+            &json!("opencode"),
+            &json!("waiting")
+        )
+    );
+    assert!(
+        lines[1].get("agent").is_none(),
+        "a Claude report carries no agent: {}",
+        lines[1]
+    );
 }
 
 #[test]
@@ -614,7 +1028,11 @@ fn a_session_started_from_a_shell_reports_even_under_the_daemon() {
     let fake = fake_claude(&test.sandbox.root);
     // The daemon scrubs the session's environment: the pane and the kitty window come from
     // the launcher above (the outer fake claude here).
-    let script = format!("env -u TMUX_PANE -u KITTY_PID {} -c 'bash {}'; :", fake.display(), hook().display());
+    let script = format!(
+        "env -u TMUX_PANE -u KITTY_PID {} -c 'bash {}'; :",
+        fake.display(),
+        hook().display()
+    );
     let mut child = test
         .sandbox
         .command(&fake, &[("TMUX_PANE", "%9"), ("KITTY_PID", "4242")])
@@ -625,12 +1043,23 @@ fn a_session_started_from_a_shell_reports_even_under_the_daemon() {
         .spawn()
         .unwrap();
     let payload = with_session(json!({"hook_event_name": "Stop"}), "/x/proj");
-    child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.to_string().as_bytes())
+        .unwrap();
     child.wait().unwrap();
     let lines = test.received();
-    let states: Vec<&str> = lines.iter().map(|line| line["state"].as_str().unwrap()).collect();
+    let states: Vec<&str> = lines
+        .iter()
+        .map(|line| line["state"].as_str().unwrap())
+        .collect();
     assert_eq!(states, ["waiting"]);
-    assert_eq!((&lines[0]["tmux_pane"], &lines[0]["kitty_pid"]), (&json!("%9"), &json!("4242")));
+    assert_eq!(
+        (&lines[0]["tmux_pane"], &lines[0]["kitty_pid"]),
+        (&json!("%9"), &json!("4242"))
+    );
 }
 
 #[test]
@@ -639,20 +1068,47 @@ fn a_claude_stop_captures_billing_from_the_launch_even_when_the_environment_is_s
         let test = HookTest::new();
         let transcript = test.sandbox.root.join("transcript.jsonl");
         fs::write(&transcript, r#"{"timestamp":"2026-10-23T10:02:00Z","requestId":"request","message":{"id":"reply","model":"claude-opus-5-5","usage":{"output_tokens":100}}}"#).unwrap();
-        let payload = with_session(json!({"hook_event_name":"Stop", "transcript_path":transcript}), "/x/proj");
-        let extra = [("COCKPIT_BILLING", "api"), ("COCKPIT_BILLING_STARTED_AT", "2026-10-23T10:01:00Z")];
+        let payload = with_session(
+            json!({"hook_event_name":"Stop", "transcript_path":transcript}),
+            "/x/proj",
+        );
+        let extra = [
+            ("COCKPIT_BILLING", "api"),
+            ("COCKPIT_BILLING_STARTED_AT", "2026-10-23T10:01:00Z"),
+        ];
         let output = if scrubbed {
             let fake = fake_claude(&test.sandbox.root);
-            let script = format!("env -u COCKPIT_BILLING -u COCKPIT_BILLING_STARTED_AT {} -c 'bash {}'; :", fake.display(), hook().display());
-            let mut child = test.sandbox.command(&fake, &extra).env_remove("CLAUDECODE").env_remove("OPENCODE")
-                .args(["-c", &script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-            child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+            let script = format!(
+                "env -u COCKPIT_BILLING -u COCKPIT_BILLING_STARTED_AT {} -c 'bash {}'; :",
+                fake.display(),
+                hook().display()
+            );
+            let mut child = test
+                .sandbox
+                .command(&fake, &extra)
+                .env_remove("CLAUDECODE")
+                .env_remove("OPENCODE")
+                .args(["-c", &script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(payload.to_string().as_bytes())
+                .unwrap();
             child.wait_with_output().unwrap()
         } else {
             test.run_hook(payload, &extra)
         };
         assert!(output.status.success(), "{}", stderr(&output));
-        let files = fs::read_dir(test.sandbox.home.join(".cache/claude/billing")).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        let files = fs::read_dir(test.sandbox.home.join(".cache/claude/billing"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         assert_eq!(files.len(), 1);
         let record: Value = serde_json::from_slice(&fs::read(files[0].path()).unwrap()).unwrap();
         assert_eq!(record, json!({"key":"reply:request", "billing":"api"}));
@@ -662,8 +1118,13 @@ fn a_claude_stop_captures_billing_from_the_launch_even_when_the_environment_is_s
 #[test]
 fn a_stop_without_launch_evidence_does_not_guess_billing() {
     let test = HookTest::new();
-    let output = test.run_hook(with_session(json!({"hook_event_name":"Stop", "transcript_path":"/unused"}), "/x/proj"),
-        &[("COCKPIT_BILLING", ""), ("COCKPIT_BILLING_STARTED_AT", "")]);
+    let output = test.run_hook(
+        with_session(
+            json!({"hook_event_name":"Stop", "transcript_path":"/unused"}),
+            "/x/proj",
+        ),
+        &[("COCKPIT_BILLING", ""), ("COCKPIT_BILLING_STARTED_AT", "")],
+    );
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(!test.sandbox.home.join(".cache/claude/billing").exists());
 }
@@ -671,10 +1132,22 @@ fn a_stop_without_launch_evidence_does_not_guess_billing() {
 #[test]
 fn failed_billing_capture_is_logged_without_losing_the_stop_report() {
     let mut test = HookTest::new();
-    let output = test.run_hook(with_session(json!({"hook_event_name":"Stop", "transcript_path":"/missing"}), "/x/proj"),
-        &[("COCKPIT_BILLING", "api"), ("COCKPIT_BILLING_STARTED_AT", "2026-10-23T10:01:00Z")]);
+    let output = test.run_hook(
+        with_session(
+            json!({"hook_event_name":"Stop", "transcript_path":"/missing"}),
+            "/x/proj",
+        ),
+        &[
+            ("COCKPIT_BILLING", "api"),
+            ("COCKPIT_BILLING_STARTED_AT", "2026-10-23T10:01:00Z"),
+        ],
+    );
     assert!(output.status.success(), "{}", stderr(&output));
-    assert!(fs::read_to_string(test.sandbox.home.join(".cache/claude/hook.log")).unwrap().contains("billing capture failed"));
+    assert!(
+        fs::read_to_string(test.sandbox.home.join(".cache/claude/hook.log"))
+            .unwrap()
+            .contains("billing capture failed")
+    );
     assert_eq!(test.received().len(), 1);
 }
 
@@ -688,7 +1161,12 @@ fn each_event_leaves_a_line_in_the_hook_log() {
     test.received();
     let log = fs::read_to_string(test.sandbox.home.join(".cache/claude/hook.log")).unwrap();
     let line = log.lines().last().unwrap();
-    assert!(regex::Regex::new(r" UserPromptSubmit aaaaaaaa working: sent to the osd daemon$").unwrap().is_match(line), "{line}");
+    assert!(
+        regex::Regex::new(r" UserPromptSubmit aaaaaaaa working: sent to the osd daemon$")
+            .unwrap()
+            .is_match(line),
+        "{line}"
+    );
     assert!(!line.contains("secret"), "{line}");
 }
 
@@ -696,18 +1174,36 @@ fn each_event_leaves_a_line_in_the_hook_log() {
 fn fallback_toast_when_the_daemon_is_unreachable() {
     let test = HookTest::new();
     fs::remove_file(&test.socket).unwrap();
-    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), "/x/proj"), &[]);
+    test.run_hook(
+        with_session(json!({"hook_event_name": "Stop"}), "/x/proj"),
+        &[],
+    );
     assert_eq!(test.sandbox.calls("notify-send").len(), 1);
-    let toast_id = test.sandbox.home.join(format!(".cache/claude/toast-{SESSION_A}.id"));
+    let toast_id = test
+        .sandbox
+        .home
+        .join(format!(".cache/claude/toast-{SESSION_A}.id"));
     assert_eq!(fs::read_to_string(&toast_id).unwrap().trim(), "42");
-    test.run_hook(with_session(json!({"hook_event_name": "UserPromptSubmit", "prompt": "x"}), "/x/proj"), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "x"}),
+            "/x/proj",
+        ),
+        &[],
+    );
     assert_eq!(test.sandbox.calls("gdbus").len(), 1);
     assert!(!toast_id.exists());
 }
 
 fn git(repository: &Path, arguments: &[&str]) {
-    let status = Command::new("git").arg("-C").arg(repository).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(arguments)
-        .output().unwrap().status;
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+        .args(arguments)
+        .output()
+        .unwrap()
+        .status;
     assert!(status.success(), "git {arguments:?}");
 }
 
@@ -723,14 +1219,23 @@ fn a_finished_turn_reports_its_commits_and_uncommitted_changes() {
     git(&repository, &["add", "a.txt"]);
     git(&repository, &["commit", "-qm", "start"]);
     let cwd = repository.to_string_lossy().into_owned();
-    test.run_hook(with_session(json!({"hook_event_name": "UserPromptSubmit", "prompt": "work"}), &cwd), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "work"}),
+            &cwd,
+        ),
+        &[],
+    );
     fs::write(repository.join("b.txt"), "two\n").unwrap();
     git(&repository, &["add", "b.txt"]);
     git(&repository, &["commit", "-qm", "work"]);
     fs::write(repository.join("a.txt"), "one\nmore\nlines\n").unwrap();
     test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &cwd), &[]);
     let reports = test.received();
-    assert_eq!(reports.last().unwrap()["outcome"], "1 commit · 1 file changed, +2 −0 uncommitted");
+    assert_eq!(
+        reports.last().unwrap()["outcome"],
+        "1 commit · 1 file changed, +2 −0 uncommitted"
+    );
 }
 
 #[test]
@@ -738,7 +1243,13 @@ fn a_turn_outside_a_repository_reports_no_outcome() {
     let mut test = HookTest::new();
     let folder = test.sandbox.root.join("notes");
     fs::create_dir(&folder).unwrap();
-    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &folder.to_string_lossy()), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "Stop"}),
+            &folder.to_string_lossy(),
+        ),
+        &[],
+    );
     assert!(test.received().last().unwrap().get("outcome").is_none());
 }
 
@@ -754,7 +1265,16 @@ fn transcript(folder: &Path, turns: &[(&str, &[(&str, bool)])]) -> String {
         }
     }
     let path = folder.join("transcript.jsonl");
-    fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    fs::write(
+        &path,
+        lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
     path.to_string_lossy().into_owned()
 }
 
@@ -762,35 +1282,65 @@ fn stop_outcome(turns: &[(&str, &[(&str, bool)])]) -> Option<String> {
     let mut test = HookTest::new();
     let folder = test.sandbox.root.join("notes");
     fs::create_dir(&folder).unwrap();
-    let mut payload = with_session(json!({"hook_event_name": "Stop"}), &folder.to_string_lossy());
+    let mut payload = with_session(
+        json!({"hook_event_name": "Stop"}),
+        &folder.to_string_lossy(),
+    );
     payload["transcript_path"] = json!(transcript(&folder, turns));
     test.run_hook(payload, &[]);
-    test.received().last().unwrap().get("outcome").and_then(Value::as_str).map(str::to_string)
+    test.received()
+        .last()
+        .unwrap()
+        .get("outcome")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 #[test]
 fn a_turn_whose_last_test_run_failed_says_so() {
-    let outcome = stop_outcome(&[("fix it", &[("make test", false), ("cargo test -p vitals", true)])]);
+    let outcome = stop_outcome(&[(
+        "fix it",
+        &[("make test", false), ("cargo test -p vitals", true)],
+    )]);
     assert_eq!(outcome.as_deref(), Some("tests failed"));
 }
 
 #[test]
 fn a_turn_that_passed_its_tests_and_closed_a_todo_says_both() {
     for command in ["claude-todo done 8e50f7a0", "cockpit-todo done 8e50f7a0"] {
-        let outcome = stop_outcome(&[("fix it", &[("ask-to-run --why 'x' 'make cockpit; and make test'", false), (command, false)])]);
-        assert_eq!(outcome.as_deref(), Some("tests passed · todo done"), "{command}");
+        let outcome = stop_outcome(&[(
+            "fix it",
+            &[
+                ("ask-to-run --why 'x' 'make cockpit; and make test'", false),
+                (command, false),
+            ],
+        )]);
+        assert_eq!(
+            outcome.as_deref(),
+            Some("tests passed · todo done"),
+            "{command}"
+        );
     }
 }
 
 #[test]
 fn tests_of_an_earlier_turn_do_not_count() {
-    let outcome = stop_outcome(&[("first", &[("make test", true)]), ("second", &[("ls", false)])]);
+    let outcome = stop_outcome(&[
+        ("first", &[("make test", true)]),
+        ("second", &[("ls", false)]),
+    ]);
     assert_eq!(outcome, None);
 }
 
 #[test]
 fn a_test_command_only_mentioned_in_text_does_not_count() {
-    let outcome = stop_outcome(&[("write the test", &[("cat >> t.rs <<'X'\nstop_outcome(&[(\"make test\", true), (\"claude-todo done 1\", false)]);\nX", false)])]);
+    let outcome = stop_outcome(&[(
+        "write the test",
+        &[(
+            "cat >> t.rs <<'X'\nstop_outcome(&[(\"make test\", true), (\"claude-todo done 1\", false)]);\nX",
+            false,
+        )],
+    )]);
     assert_eq!(outcome, None);
 }
 
@@ -799,11 +1349,26 @@ fn a_session_started_in_its_own_terminal_says_so() {
     let mut test = HookTest::new();
     let folder = test.sandbox.root.join("notes");
     fs::create_dir(&folder).unwrap();
-    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[("COCKPIT_TERMINAL", "1")]);
-    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "SessionStart"}),
+            &folder.to_string_lossy(),
+        ),
+        &[("COCKPIT_TERMINAL", "1")],
+    );
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "SessionStart"}),
+            &folder.to_string_lossy(),
+        ),
+        &[],
+    );
     let reports = test.received();
     assert_eq!(reports[0]["terminal"], true);
-    assert!(reports[1].get("terminal").is_none(), "a cockpit session carries no flag");
+    assert!(
+        reports[1].get("terminal").is_none(),
+        "a cockpit session carries no flag"
+    );
 }
 
 #[test]
@@ -811,10 +1376,25 @@ fn every_report_says_whether_the_session_bills_api_credits() {
     let mut test = HookTest::new();
     let folder = test.sandbox.root.join("notes");
     fs::create_dir(&folder).unwrap();
-    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[("COCKPIT_CREDITS", "1")]);
-    test.run_hook(with_session(json!({"hook_event_name": "SessionStart"}), &folder.to_string_lossy()), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "SessionStart"}),
+            &folder.to_string_lossy(),
+        ),
+        &[("COCKPIT_CREDITS", "1")],
+    );
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "SessionStart"}),
+            &folder.to_string_lossy(),
+        ),
+        &[],
+    );
     let reports = test.received();
-    assert_eq!((&reports[0]["credits"], &reports[1]["credits"]), (&json!(true), &json!(false)));
+    assert_eq!(
+        (&reports[0]["credits"], &reports[1]["credits"]),
+        (&json!(true), &json!(false))
+    );
 }
 
 #[test]
@@ -823,20 +1403,39 @@ fn a_finished_turn_counts_the_commits_not_on_a_remote() {
     let remote = test.sandbox.root.join("remote.git");
     let repository = test.sandbox.root.join("repo");
     fs::create_dir(&repository).unwrap();
-    assert!(Command::new("git").args(["init", "-q", "--bare"]).arg(&remote).status().unwrap().success());
+    assert!(
+        Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .arg(&remote)
+            .status()
+            .unwrap()
+            .success()
+    );
     git(&repository, &["init", "-q"]);
-    git(&repository, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
     fs::write(repository.join("a"), "1\n").unwrap();
     git(&repository, &["add", "a"]);
     git(&repository, &["commit", "-qm", "pushed"]);
-    git(&repository, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    git(
+        &repository,
+        &["push", "-q", "origin", "HEAD:refs/heads/main"],
+    );
     git(&repository, &["fetch", "-q", "origin"]);
     for name in ["b", "c"] {
         fs::write(repository.join(name), "1\n").unwrap();
         git(&repository, &["add", name]);
         git(&repository, &["commit", "-qm", name]);
     }
-    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &repository.to_string_lossy()), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "Stop"}),
+            &repository.to_string_lossy(),
+        ),
+        &[],
+    );
     assert_eq!(test.received().last().unwrap()["unpushed"], 2);
 }
 
@@ -853,18 +1452,39 @@ fn a_clone_of_a_running_copy_counts_the_commits_live_main_lacks_not_the_unpushed
         fs::write(live.join("a"), "1\n").unwrap();
         git(&live, &["add", "a"]);
         git(&live, &["commit", "-qm", "base"]);
-        assert!(Command::new("git").args(["clone", "-q"]).arg(&live).arg(&clone).status().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args(["clone", "-q"])
+                .arg(&live)
+                .arg(&clone)
+                .status()
+                .unwrap()
+                .success()
+        );
         for name in ["applied", "waiting"] {
             fs::write(clone.join(name), "1\n").unwrap();
             git(&clone, &["add", name]);
             git(&clone, &["commit", "-qm", name]);
         }
-        let patch = Command::new("git").arg("-C").arg(&clone).args(["format-patch", "-1", "HEAD~1", "--stdout"]).output().unwrap().stdout;
+        let patch = Command::new("git")
+            .arg("-C")
+            .arg(&clone)
+            .args(["format-patch", "-1", "HEAD~1", "--stdout"])
+            .output()
+            .unwrap()
+            .stdout;
         let patch_file = test.sandbox.root.join("applied.patch");
         fs::write(&patch_file, patch).unwrap();
         git(&live, &["am", "-q", patch_file.to_str().unwrap()]);
-        test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &clone.to_string_lossy()), &[]);
-        assert_eq!(test.received().last().unwrap()["unpushed"], 1, "{repository}");
+        test.run_hook(
+            with_session(json!({"hook_event_name": "Stop"}), &clone.to_string_lossy()),
+            &[],
+        );
+        assert_eq!(
+            test.received().last().unwrap()["unpushed"],
+            1,
+            "{repository}"
+        );
     }
 }
 
@@ -874,28 +1494,53 @@ fn a_repository_without_a_remote_reports_no_count() {
     let repository = test.sandbox.root.join("repo");
     fs::create_dir(&repository).unwrap();
     git(&repository, &["init", "-q"]);
-    test.run_hook(with_session(json!({"hook_event_name": "Stop"}), &repository.to_string_lossy()), &[]);
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "Stop"}),
+            &repository.to_string_lossy(),
+        ),
+        &[],
+    );
     assert!(test.received().last().unwrap().get("unpushed").is_none());
 }
 
 fn apps_reported(port: u16) -> Option<String> {
     let mut test = HookTest::new();
-    test.sandbox.shim("ps", &format!("echo 'figcraft-cli mcp --attach {port}'"));
+    test.sandbox
+        .shim("ps", &format!("echo 'figcraft-cli mcp --attach {port}'"));
     let folder = test.sandbox.root.join("notes");
     fs::create_dir(&folder).unwrap();
-    test.run_hook(with_session(json!({"hook_event_name": "PostToolUse"}), &folder.to_string_lossy()), &[]);
-    test.received().last().unwrap().get("apps").and_then(Value::as_str).map(str::to_string)
+    test.run_hook(
+        with_session(
+            json!({"hook_event_name": "PostToolUse"}),
+            &folder.to_string_lossy(),
+        ),
+        &[],
+    );
+    test.received()
+        .last()
+        .unwrap()
+        .get("apps")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 #[test]
 fn a_craft_app_that_answers_is_reported_on() {
     let app = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    assert_eq!(apps_reported(app.local_addr().unwrap().port()).as_deref(), Some("figcraft:on"));
+    assert_eq!(
+        apps_reported(app.local_addr().unwrap().port()).as_deref(),
+        Some("figcraft:on")
+    );
 }
 
 #[test]
 fn a_craft_app_that_is_closed_is_reported_off() {
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     assert_eq!(apps_reported(port).as_deref(), Some("figcraft:off"));
 }
 
@@ -906,13 +1551,19 @@ fn background_reported(payload: Value) -> (Option<u64>, Option<u64>) {
     fs::create_dir(&folder).unwrap();
     test.run_hook(with_session(payload, &folder.to_string_lossy()), &[]);
     let report = test.received().last().unwrap().clone();
-    (report.get("agents").and_then(Value::as_u64), report.get("background").and_then(Value::as_u64))
+    (
+        report.get("agents").and_then(Value::as_u64),
+        report.get("background").and_then(Value::as_u64),
+    )
 }
 
 #[test]
 fn a_finished_turn_counts_its_background_agents_apart_from_other_background_work() {
     let tasks = json!([{"type": "subagent"}, {"type": "subagent"}, {"type": "teammate"}, {"type": "shell"}, {"type": "monitor"}, {"type": "dream"}]);
-    assert_eq!(background_reported(json!({"hook_event_name": "Stop", "background_tasks": tasks})), (Some(3), Some(2)));
+    assert_eq!(
+        background_reported(json!({"hook_event_name": "Stop", "background_tasks": tasks})),
+        (Some(3), Some(2))
+    );
 }
 
 #[test]
@@ -931,11 +1582,20 @@ fn background_notifications_update_counts_without_finishing_another_turn() {
 
 #[test]
 fn a_finished_turn_without_a_task_list_reports_no_count() {
-    assert_eq!(background_reported(json!({"hook_event_name": "Stop"})), (None, None));
+    assert_eq!(
+        background_reported(json!({"hook_event_name": "Stop"})),
+        (None, None)
+    );
 }
 
 #[test]
 fn a_fresh_or_resumed_session_has_no_background_work_and_a_cleared_one_keeps_its_own() {
-    assert_eq!(background_reported(json!({"hook_event_name": "SessionStart", "source": "resume"})), (Some(0), Some(0)));
-    assert_eq!(background_reported(json!({"hook_event_name": "SessionStart", "source": "clear"})), (None, None));
+    assert_eq!(
+        background_reported(json!({"hook_event_name": "SessionStart", "source": "resume"})),
+        (Some(0), Some(0))
+    );
+    assert_eq!(
+        background_reported(json!({"hook_event_name": "SessionStart", "source": "clear"})),
+        (None, None)
+    );
 }

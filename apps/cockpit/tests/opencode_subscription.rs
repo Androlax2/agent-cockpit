@@ -129,7 +129,8 @@ fn failed() -> Value {
 
 #[test]
 fn interrupting_subscription_recovery_never_resumes_the_cancelled_work() {
-    let interrupted = json!({"event":{"type":"session.execution.interrupted","data":{"sessionID":ROOT}}});
+    let interrupted =
+        json!({"event":{"type":"session.execution.interrupted","data":{"sessionID":ROOT}}});
     for scenario in [
         json!({"targetUsed":100,"steps":[failed(),interrupted,{"targetUsed":10,"poll":true}]}),
         json!({"busy":true,"steps":[{"startBusy":true},interrupted,{"release":true,"poll":true}]}),
@@ -143,9 +144,16 @@ fn interrupting_subscription_recovery_never_resumes_the_cancelled_work() {
 #[test]
 fn anthropic_reauthentication_under_the_same_connection_cancels_return() {
     let original = json!({"providerID":"anthropic","id":"claude-opus-4-7","variant":"high"});
-    let result = run(json!({"original":original,"targetUsed":100,"sourceUsed":10,"steps":[failed(),
-        {"anthropicAccount":"another-account","targetUsed":10,"poll":true}]}));
-    let switches = result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "switch").count();
+    let result = run(
+        json!({"original":original,"targetUsed":100,"sourceUsed":10,"steps":[failed(),
+        {"anthropicAccount":"another-account","targetUsed":10,"poll":true}]}),
+    );
+    let switches = result["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|call| call["kind"] == "switch")
+        .count();
     assert_eq!(switches, 1, "{result}");
     assert_eq!(result["model"]["providerID"], "openai");
 }
@@ -154,9 +162,13 @@ fn run(scenario: Value) -> Value {
     let sandbox = Sandbox::new();
     let harness = sandbox.root.join("subscription.mjs");
     fs::write(&harness, HARNESS).unwrap();
-    let output = sandbox.command("node", &[]).arg(harness)
+    let output = sandbox
+        .command("node", &[])
+        .arg(harness)
         .arg(repo().join("config/opencode/.config/opencode/lib/subscription-routing.ts"))
-        .arg(scenario.to_string()).output().unwrap();
+        .arg(scenario.to_string())
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(!stderr(&output).contains("fixture-token"));
     serde_json::from_str(stdout(&output).lines().last().unwrap()).unwrap()
@@ -164,12 +176,30 @@ fn run(scenario: Value) -> Value {
 
 #[test]
 fn opencode_falls_back_and_restores_the_exact_original_model_without_another_prompt() {
-    let result = run(json!({"steps":[failed(), {"event":{"type":"session.execution.succeeded", "data":{"sessionID":ROOT}}}, {"used":10,"poll":true}]}));
-    let switches: Vec<&Value> = result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "switch").collect();
+    let result = run(
+        json!({"steps":[failed(), {"event":{"type":"session.execution.succeeded", "data":{"sessionID":ROOT}}}, {"used":10,"poll":true}]}),
+    );
+    let switches: Vec<&Value> = result["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|call| call["kind"] == "switch")
+        .collect();
     assert_eq!(switches.len(), 2);
-    assert_eq!(switches[0]["model"], json!({"providerID":"anthropic", "id":"claude-opus-4-7"}));
+    assert_eq!(
+        switches[0]["model"],
+        json!({"providerID":"anthropic", "id":"claude-opus-4-7"})
+    );
     assert_eq!(switches[1]["model"], result["original"]);
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "continue").count(), 1);
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "continue")
+            .count(),
+        1
+    );
     assert_eq!(result["model"], result["original"]);
     assert_eq!(result["timers"], 0);
 }
@@ -177,19 +207,40 @@ fn opencode_falls_back_and_restores_the_exact_original_model_without_another_pro
 #[test]
 fn opencode_can_fall_back_from_anthropic_and_return_to_its_original_variant() {
     let original = json!({"providerID":"anthropic","id":"claude-opus-4-7","variant":"high"});
-    let result = run(json!({"original":original,"targetUsed":100,"sourceUsed":10,"steps":[failed(),
-        {"event":{"type":"session.execution.succeeded","data":{"sessionID":ROOT}}},{"targetUsed":10,"poll":true}]}));
-    let switches: Vec<&Value> = result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "switch").collect();
+    let result = run(
+        json!({"original":original,"targetUsed":100,"sourceUsed":10,"steps":[failed(),
+        {"event":{"type":"session.execution.succeeded","data":{"sessionID":ROOT}}},{"targetUsed":10,"poll":true}]}),
+    );
+    let switches: Vec<&Value> = result["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|call| call["kind"] == "switch")
+        .collect();
     assert_eq!(switches.len(), 2);
     assert_eq!(switches[0]["model"]["providerID"], "openai");
     assert_eq!(switches[1]["model"], original);
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "continue").count(), 1);
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "continue")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn opencode_rejects_api_key_unusable_and_wrong_account_alternatives() {
-    for restriction in [json!({"targetMethod":"key"}), json!({"enabled":false}), json!({"tools":false}),
-                        json!({"wrongAccount":true}), json!({"targetUsed":100}), json!({"malformedLimits":true})] {
+    for restriction in [
+        json!({"targetMethod":"key"}),
+        json!({"enabled":false}),
+        json!({"tools":false}),
+        json!({"wrongAccount":true}),
+        json!({"targetUsed":100}),
+        json!({"malformedLimits":true}),
+    ] {
         let mut scenario = restriction;
         scenario["steps"] = json!([failed()]);
         assert!(run(scenario)["calls"].as_array().unwrap().is_empty());
@@ -204,7 +255,11 @@ fn transient_rate_limits_do_not_switch_a_subscription_with_confirmed_capacity() 
 
 #[test]
 fn paid_or_unconfirmed_claude_overage_blocks_automatic_fallback() {
-    for restriction in [json!({"extraUsage":true}), json!({"extraUsage":"false"}), json!({"profileUnavailable":true})] {
+    for restriction in [
+        json!({"extraUsage":true}),
+        json!({"extraUsage":"false"}),
+        json!({"profileUnavailable":true}),
+    ] {
         let mut scenario = restriction;
         scenario["steps"] = json!([failed()]);
         assert!(run(scenario)["calls"].as_array().unwrap().is_empty());
@@ -213,8 +268,10 @@ fn paid_or_unconfirmed_claude_overage_blocks_automatic_fallback() {
 
 #[test]
 fn enabling_claude_overage_blocks_return_and_outgoing_automatic_requests() {
-    let result = run(json!({"original":{"providerID":"anthropic","id":"claude-opus-4-7"},
-        "targetUsed":100,"sourceUsed":10,"steps":[failed(),{"extraUsage":true,"targetUsed":10,"poll":true}]}));
+    let result = run(
+        json!({"original":{"providerID":"anthropic","id":"claude-opus-4-7"},
+        "targetUsed":100,"sourceUsed":10,"steps":[failed(),{"extraUsage":true,"targetUsed":10,"poll":true}]}),
+    );
     assert_eq!(result["model"]["providerID"], "openai");
     let result = run(json!({"steps":[failed(),{"extraUsage":true,"request":{}},
         {"request":{"kind":"title"}},{"request":{"kind":"compaction"}}]}));
@@ -224,13 +281,23 @@ fn enabling_claude_overage_blocks_return_and_outgoing_automatic_requests() {
 #[test]
 fn plugin_connection_references_do_not_need_http_api_only_method_metadata() {
     let result = run(json!({"lightweightConnections":true,"steps":[failed()]}));
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "continue").count(), 1);
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "continue")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn running_native_shells_and_tools_prevent_model_switches() {
-    for history in [json!([{"type":"shell","id":"msg_shell","status":"running"}]),
-                    json!([{"type":"assistant","id":"msg_assistant","content":[{"type":"tool","name":"shell","state":{"status":"running"}}]}])] {
+    for history in [
+        json!([{"type":"shell","id":"msg_shell","status":"running"}]),
+        json!([{"type":"assistant","id":"msg_assistant","content":[{"type":"tool","name":"shell","state":{"status":"running"}}]}]),
+    ] {
         let result = run(json!({"history":history,"steps":[failed()]}));
         assert!(result["calls"].as_array().unwrap().is_empty());
     }
@@ -238,22 +305,44 @@ fn running_native_shells_and_tools_prevent_model_switches() {
 
 #[test]
 fn a_pending_form_survives_reload_and_blocks_switching_until_the_user_answers() {
-    let result = run(json!({"steps":[{"event":{"type":"form.created","data":{"form":{"id":"form_fixture","sessionID":ROOT}}}},
-        failed(),{"reload":true},{"poll":true}]}));
+    let result = run(
+        json!({"steps":[{"event":{"type":"form.created","data":{"form":{"id":"form_fixture","sessionID":ROOT}}}},
+        failed(),{"reload":true},{"poll":true}]}),
+    );
     assert!(result["calls"].as_array().unwrap().is_empty());
-    let result = run(json!({"steps":[{"event":{"type":"form.created","data":{"form":{"id":"form_fixture","sessionID":ROOT}}}},
-        failed(),{"event":{"type":"form.replied","data":{"id":"form_fixture","sessionID":ROOT,"answer":{}}}}, {"poll":true}]}));
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "continue").count(), 1);
+    let result = run(
+        json!({"steps":[{"event":{"type":"form.created","data":{"form":{"id":"form_fixture","sessionID":ROOT}}}},
+        failed(),{"event":{"type":"form.replied","data":{"id":"form_fixture","sessionID":ROOT,"answer":{}}}}, {"poll":true}]}),
+    );
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "continue")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn a_running_background_subagent_is_waited_for_without_changing_its_model() {
     let child = "ses_3f2a9c0b2000AbCdEfGhIjKlMn";
-    let result = run(json!({"childID":child,"childBusy":true,"history":[{"type":"assistant","content":[{
+    let result = run(
+        json!({"childID":child,"childBusy":true,"history":[{"type":"assistant","content":[{
         "type":"tool","name":"subagent","state":{"status":"completed","metadata":{"sessionID":child,"status":"running"}}}]}],
-        "steps":[{"startBusy":true},{"release":true}]}));
+        "steps":[{"startBusy":true},{"release":true}]}),
+    );
     assert_eq!(result["waiting"], true);
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "continue").count(), 1);
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "continue")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -261,34 +350,64 @@ fn manual_model_changes_cancel_pending_automatic_return() {
     let manual = json!({"providerID":"anthropic", "id":"claude-opus-4-7", "variant":"high"});
     let result = run(json!({"steps":[failed(), {"manual":manual, "used":10,"poll":true}]}));
     assert_eq!(result["model"], manual);
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "switch").count(), 1);
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "switch")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn changing_the_account_inside_an_existing_connection_cancels_automatic_return() {
-    let result = run(json!({"steps":[failed(),{"accountID":"replacement-account","used":10,"poll":true}]}));
+    let result =
+        run(json!({"steps":[failed(),{"accountID":"replacement-account","used":10,"poll":true}]}));
     assert_eq!(result["model"]["providerID"], "anthropic");
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "switch").count(), 1);
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "switch")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn cached_capacity_for_a_previous_account_cannot_authorize_a_new_account() {
-    let result = run(json!({"original":{"providerID":"anthropic","id":"claude-opus-4-7"},"targetUsed":100,"sourceUsed":100,
+    let result = run(
+        json!({"original":{"providerID":"anthropic","id":"claude-opus-4-7"},"targetUsed":100,"sourceUsed":100,
         "saved":{"subscription-quota/openai/openai-connection":{"fetched":1790000000000_i64,"matched":true,"account":"a".repeat(64),
-            "usage":{"rate_limit":{"allowed":true,"primary_window":{"used_percent":10,"reset_at":4102444800_i64}}}}},"steps":[failed()]}));
+            "usage":{"rate_limit":{"allowed":true,"primary_window":{"used_percent":10,"reset_at":4102444800_i64}}}}},"steps":[failed()]}),
+    );
     assert!(result["calls"].as_array().unwrap().is_empty());
 }
 
 #[test]
 fn lost_admission_receipts_and_plugin_reload_do_not_duplicate_a_continuation() {
-    let result = run(json!({"loseReceipt":true,"steps":[failed(), {"reload":true}, {"poll":true}]}));
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "continue").count(), 1);
+    let result =
+        run(json!({"loseReceipt":true,"steps":[failed(), {"reload":true}, {"poll":true}]}));
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "continue")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn a_child_sessions_failure_does_not_change_the_root_model() {
-    let result = run(json!({"steps":[{"event":{"type":"session.execution.failed", "data":{
-        "sessionID":"ses_3f2a9c0b2000AbCdEfGhIjKlMn", "error":{"status":429}}}}]}));
+    let result = run(
+        json!({"steps":[{"event":{"type":"session.execution.failed", "data":{
+        "sessionID":"ses_3f2a9c0b2000AbCdEfGhIjKlMn", "error":{"status":429}}}}]}),
+    );
     assert!(result["calls"].as_array().unwrap().is_empty());
 }
 
@@ -300,7 +419,9 @@ fn pending_permissions_block_a_fallback_without_answering_the_dialog() {
 
 #[test]
 fn a_new_user_prompt_supersedes_a_blocked_subscription_continuation() {
-    let result = run(json!({"permission":true,"steps":[failed(),{"permission":false,"userPrompt":true},{"poll":true}]}));
+    let result = run(
+        json!({"permission":true,"steps":[failed(),{"permission":false,"userPrompt":true},{"poll":true}]}),
+    );
     assert!(result["calls"].as_array().unwrap().is_empty());
 }
 
@@ -311,13 +432,21 @@ fn invalid_saved_phases_are_preserved_instead_of_becoming_automatic_actions() {
     let key = format!("subscription-route/{ROOT}");
     let result = run(json!({"saved":{key.clone():invalid.clone()},"expectInvalid":true}));
     assert_eq!(result["caught"], true);
-    assert_eq!(result["storage"], json!([[key,invalid]]));
+    assert_eq!(result["storage"], json!([[key, invalid]]));
 }
 
 #[test]
 fn duplicate_failure_events_admit_only_one_continuation() {
     let result = run(json!({"steps":[failed(),failed(),{"reload":true},failed()]}));
-    assert_eq!(result["calls"].as_array().unwrap().iter().filter(|call| call["kind"] == "continue").count(), 1);
+    assert_eq!(
+        result["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|call| call["kind"] == "continue")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -339,13 +468,19 @@ fn automatic_continuations_reject_api_key_transport_but_manual_billing_changes_a
 
 #[test]
 fn websocket_requests_cannot_silently_switch_to_api_billing() {
-    let result = run(json!({"targetUsed":100,"steps":[failed(), {"sourceMethod":"key","request":{"ws":true}}]}));
+    let result = run(
+        json!({"targetUsed":100,"steps":[failed(), {"sourceMethod":"key","request":{"ws":true}}]}),
+    );
     assert_eq!(result["blockedRequests"], 1);
 }
 
 #[test]
 fn auxiliary_requests_and_unexpected_bearer_tokens_cannot_bypass_subscription_billing_guards() {
-    for request in [json!({"kind":"compaction","apiKey":true}),json!({"kind":"title","wrongBearer":true}),json!({"wrongBearer":true})] {
+    for request in [
+        json!({"kind":"compaction","apiKey":true}),
+        json!({"kind":"title","wrongBearer":true}),
+        json!({"wrongBearer":true}),
+    ] {
         let result = run(json!({"steps":[failed(),{"request":request}]}));
         assert_eq!(result["blockedRequests"], 1);
     }
@@ -363,8 +498,12 @@ for(const test of JSON.parse(readFileSync(fixture,'utf8'))){
   if(actual!==test.expected)throw new Error(`${test.name}: expected ${test.expected}, got ${actual}`)
 }
 "#;
-    let output = sandbox.command("node", &[]).args(["--input-type=module", "-e", program])
+    let output = sandbox
+        .command("node", &[])
+        .args(["--input-type=module", "-e", program])
         .arg(repo().join("config/opencode/.config/opencode/lib/subscription-routing.ts"))
-        .arg(repo().join("apps/cockpit/tests/fixtures/subscription-fallback/capacity-cases.json")).output().unwrap();
+        .arg(repo().join("apps/cockpit/tests/fixtures/subscription-fallback/capacity-cases.json"))
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
 }
