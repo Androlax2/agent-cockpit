@@ -1983,6 +1983,13 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
     let turn = current_turn(connection,epoch)?;
     let through = turn.as_ref().map_or(head,|(_,through,_,_)|*through);
     let remaining = context_remaining(connection,epoch,turn.as_ref())?;
+    // A turn that spent its budget and read to its own end has nothing left: say so instead of an error
+    // that reads like a block. Later events arrive with the next admitted wake.
+    if let Some((dispatch,_,_,_)) = turn.as_ref().filter(|_|remaining==0 && after>0 && after==through) {
+        record_read(connection,dispatch,through)?;
+        return Ok(json!({"records":[],"next":through,"has_more":false,"snapshot_required":false,"bootstrap_pending":false,
+            "cursor_kind":"event_sequence","event_cursor":through}));
+    }
     if remaining==0 {return Err(TeamError::new(ErrorCode::Limit,"chief turn event-record budget exhausted"))}
     let mut result = if after==0 || after<head.saturating_sub(1000) || after>through {
         context_recovery_snapshot(connection,live,epoch,through,after,limit.min(remaining),now_ms)?

@@ -2663,3 +2663,46 @@ fn the_chiefs_own_message_is_read_after_a_complete_cursor_without_a_snapshot() {
     assert_eq!((ledger["id"].clone(),ledger["session"].as_str().unwrap(),ledger["state"].as_str().unwrap()),
         (requested["request"].clone(),live[1].session.session_id.as_str(),"queued"));
 }
+
+/// The turn's own end, after a turn spent its whole record budget reading up to it.
+fn spend_turn_budget(connection: &Connection) -> i64 {
+    connection.execute("UPDATE chief_turns SET records=50 WHERE rowid=(SELECT max(rowid) FROM chief_turns)",[]).unwrap();
+    connection.query_row("SELECT through_seq FROM chief_turns WHERE rowid=(SELECT max(rowid) FROM chief_turns)",[],|row|row.get(0)).unwrap()
+}
+
+#[test]
+fn a_spent_turn_read_to_its_end_answers_empty_instead_of_an_exhausted_budget() {
+    let (mut connection,live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let through = spend_turn_budget(&connection);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:through,limit:50},&live,100).unwrap().result.unwrap();
+    assert_eq!(context["records"],json!([]),"{context}");
+    assert_eq!(context["has_more"],false);
+    assert_eq!(context["snapshot_required"],false);
+    assert_eq!(context["event_cursor"],through);
+    assert_eq!(connection.query_row("SELECT records FROM chief_turns WHERE rowid=(SELECT max(rowid) FROM chief_turns)",[],|row|row.get::<_,i64>(0)).unwrap(),50,"nothing is charged");
+}
+
+#[test]
+fn a_spent_turn_still_refuses_every_read_that_would_return_records() {
+    let (mut connection,live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let through = spend_turn_budget(&connection);
+    for after in [0, through-1, through+1] {
+        let refused = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,100).unwrap().result;
+        assert_eq!(refused.unwrap_err().code,ErrorCode::Limit,"after {after}");
+    }
+    let snapshot = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:0,limit:50,generation:None},&live,100).unwrap().result;
+    assert_eq!(snapshot.unwrap_err().code,ErrorCode::Limit);
+}
+
+#[test]
+fn events_after_a_spent_turns_end_arrive_with_the_next_admitted_wake() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let through = spend_turn_budget(&connection);
+    live[1].ready=false;
+    live[1].blocked_by=vec!["needs_input".into()];
+    for worker in &mut live {worker.observed_at_ms=30_100;}
+    admit_events(&mut connection,&live,"next-wake",30_100);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:through,limit:50},&live,30_100).unwrap().result.unwrap();
+    let availability = context["records"].as_array().unwrap().iter().find(|record|record["kind"]=="availability_changed").expect("the blocked worker");
+    assert_eq!(availability["workers"][0]["blocked_by"],json!(["needs_input"]));
+}
