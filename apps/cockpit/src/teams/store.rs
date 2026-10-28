@@ -89,6 +89,7 @@ fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamErr
     crate::chief::store::ensure_session_starts(&transaction)?;
     crate::chief::store::ensure_context_snapshots(&transaction)?;
     crate::chief::store::ensure_todo_completions(&transaction)?;
+    crate::chief::store::ensure_supervised_tasks(&transaction)?;
     crate::chief::store::clear_dispatch_leftovers(&transaction)?;
     transaction.commit()?;
     Ok(())

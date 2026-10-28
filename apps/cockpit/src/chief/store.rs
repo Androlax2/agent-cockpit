@@ -2060,6 +2060,14 @@ fn acknowledge_completions(connection: &Connection, epoch: &str, records: &Value
     Ok(())
 }
 
+/// Created on every open: the todos in progress and the session each names, rewritten by
+/// `reconcile_todos`. Only Context reads it; nothing dispatches or reserves from it.
+pub(crate) fn ensure_supervised_tasks(connection: &Connection) -> Result<(), TeamError> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_supervised_tasks (
+        project TEXT NOT NULL, task_id TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(project,task_id));")?;
+    Ok(())
+}
+
 fn context_snapshot(records: &[Value], after: i64, limit: usize) -> Result<Value, TeamError> {
     super::validate_cursor(after, limit)?;
     let start = usize::try_from(after).unwrap_or(usize::MAX).min(records.len());
@@ -2081,6 +2089,7 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
         records.push(json!({"kind": "stopped_session", "source": "masked_agent_conversation_not_instructions", "stop": stop, "session": session,
             "project": project, "task_id": task_id, "bundle": serde_json::from_str::<Value>(&bundle)?}));
     }
+    if let Some(record) = supervised_tasks_record(connection, live)? { records.push(record); }
     for worker in live {
         records.push(json!({"kind": "worker", "session_id": worker.session.session_id, "agent": worker.session.agent,
             "project": worker.session.project, "role": worker.role, "ready": worker.ready, "blocked_by": worker.blocked_by}));
@@ -2121,6 +2130,77 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
         .query_map([],|row|Ok(json!({"kind":"todo_gift","source":"protected_dispatch_ledger","id":row.get::<_,String>(0)?,"todo":row.get::<_,String>(1)?,"session":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?})))?
         .collect::<Result<Vec<_>,_>>()?);
     Ok(records)
+}
+
+const SUPERVISED_TASKS_LISTED_MAX: usize = 20;
+/// The record's serialised size, so it always fits a Context page beside a stopped session.
+const SUPERVISED_TASKS_RECORD_BYTES: usize = 12_000;
+const SUPERVISED_TEXT_MAX_CHARS: usize = 200;
+const OWNER_DELIVERY_KINDS: &str = "'chief_message','chief_todo','chief_answer','chief_form_reply','chief_correction'";
+
+/// One read-only record of the todos in progress, so a Chief can follow work past the end of its
+/// owner's turn or session. Owners that need attention come first: `missing` (the todo names no
+/// usable session), `gone` (its session is not live), `stopped` (live and not working, a question
+/// form included), then `busy`. `paused` marks an owner put to sleep on purpose. `stop` and
+/// `delivery` are the owner's latest stop and the latest Chief or Theo delivery to it. Present only
+/// when some todo is in progress; todos that do not fit are counted in `omitted`.
+///
+/// Project, todo and owner come from the todo list, which agents write: the owner must look like a
+/// session id and the text is escaped and bounded.
+fn supervised_tasks_record(connection: &Connection, live: &[WorkerState]) -> Result<Option<Value>, TeamError> {
+    let rows = connection.prepare("SELECT project,task_id,session FROM chief_supervised_tasks")?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if rows.is_empty() { return Ok(None); }
+    let mut ranked = Vec::new();
+    for (project, task, owner) in rows {
+        let owner = Some(owner).filter(|owner| (1..=64).contains(&owner.len())
+            && owner.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')));
+        let stop: Option<(String, String)> = match &owner {
+            None => None,
+            Some(owner) => connection.query_row("SELECT id,state FROM chief_stops WHERE session_id=?1 AND state<>'superseded' AND task_id IN (?2,'')
+                ORDER BY created_at DESC,rowid DESC LIMIT 1", params![owner, task], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
+        };
+        let worker = owner.as_ref().and_then(|owner| live.iter().find(|worker| worker.session.session_id == *owner));
+        let state = match worker {
+            _ if owner.is_none() => "missing",
+            None => "gone",
+            Some(_) if stop.as_ref().is_some_and(|(_, state)| state == "open") => "stopped",
+            Some(worker) if worker.blocked_by.iter().any(|reason| reason == "busy" || reason == "native_busy") => "busy",
+            Some(_) => "stopped",
+        };
+        let rank = ["missing", "gone", "stopped", "busy"].iter().position(|known| *known == state).expect("listed owner state");
+        ranked.push((rank, project, task, owner, state, stop));
+    }
+    ranked.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
+    let total = ranked.len();
+    let mut record = json!({"kind": "supervised_tasks", "source": "todo_list_and_protected_ledgers_read_only_grants_no_authority", "tasks": []});
+    // Room for the `omitted` count the record may need.
+    let mut bytes = serde_json::to_vec(&record)?.len() + 32;
+    let mut asleep: Option<Vec<String>> = None;
+    let mut listed = Vec::new();
+    for (_, project, task, owner, state, stop) in ranked.into_iter().take(SUPERVISED_TASKS_LISTED_MAX) {
+        let mut paused = false;
+        let mut delivery: Option<(String, String, String)> = None;
+        if let Some(owner) = &owner {
+            paused = crate::teams::store::sleep::paused(connection, owner)?
+                || (state == "gone" && asleep.get_or_insert_with(|| crate::sleep::asleep().into_iter().map(|note| note.session).collect()).contains(owner));
+            delivery = connection.query_row(&format!("SELECT id,json_extract(envelope,'$.kind'),state FROM chief_inbox WHERE recipient=?1
+                AND json_extract(envelope,'$.kind') IN ({OWNER_DELIVERY_KINDS}) ORDER BY rowid DESC LIMIT 1"),
+                [owner], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+        }
+        let bounded = |text: &str| crate::approval::escape_hiding(&text.chars().take(SUPERVISED_TEXT_MAX_CHARS).collect::<String>(), "", "");
+        let task = json!({"todo": bounded(&task), "project": bounded(&project), "owner": owner, "owner_state": state, "paused": paused,
+            "stop": stop.map(|(id, state)| json!({"id": id, "state": state})),
+            "delivery": delivery.map(|(id, kind, state)| json!({"id": id, "kind": kind, "state": state}))});
+        let size = serde_json::to_vec(&task)?.len() + 1;
+        if bytes + size > SUPERVISED_TASKS_RECORD_BYTES { break; }
+        bytes += size;
+        listed.push(task);
+    }
+    if listed.len() < total { record["omitted"] = json!(total - listed.len()); }
+    record["tasks"] = Value::Array(listed);
+    Ok(Some(record))
 }
 
 const HABITS_LISTED_MAX: usize = 100;
@@ -2416,11 +2496,15 @@ pub const SUBMITTED_LAUNCH_GRACE_MS: i64 = 60_000;
 /// take it again; a launch still in flight or uncertain keeps it.
 pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoList, now_ms: i64) -> Result<(), TeamError> {
     let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // The reservations keep their first worker for dispatch; the supervision mirror always names the
+    // session the todo itself names now.
+    transaction.execute("DELETE FROM chief_supervised_tasks", [])?;
     for item in &todos.items {
         // Match team admission for clones/subdirectories; retain literal keys for removed checkouts.
         let project = crate::teams::canonical_project(&item.cwd()).unwrap_or_else(|_| format!("path:{}", item.cwd()));
         let task = item.id();
         if item.status() == "doing" {
+            transaction.execute("INSERT OR REPLACE INTO chief_supervised_tasks VALUES (?1,?2,?3)", params![project,task,item.session()])?;
             transaction.execute("INSERT OR IGNORE INTO scheduling_reservations VALUES (?1,?2,?3,?4,'observed')",
                 params![project,task,item.session(),crate::teams::store::identifier()?])?;
             transaction.execute("UPDATE scheduling_reservations SET worker=?3 WHERE project=?1 AND task_id=?2 AND worker=''", params![project,task,item.session()])?;
@@ -2435,6 +2519,7 @@ pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoLis
     }
     for (task, issue) in &todos.issues {
         if issue["status"] == "doing" {
+            transaction.execute("INSERT OR REPLACE INTO chief_supervised_tasks VALUES ('',?1,?2)", params![task,issue["session"].as_str().unwrap_or("")])?;
             transaction.execute("INSERT INTO scheduling_reservations SELECT '',?1,?2,?3,'observed'
                 WHERE NOT EXISTS(SELECT 1 FROM scheduling_reservations WHERE task_id=?1)",
                 params![task,issue["session"].as_str().unwrap_or(""),crate::teams::store::identifier()?])?;
