@@ -527,6 +527,161 @@ fn snapshot_page_two_survives_worker_availability_changes_between_turns() {
 }
 
 #[test]
+fn completed_snapshots_continue_incrementally_across_worker_changes_and_native_turns() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+    for index in 0..60 { context_decision(&connection,&format!("open-{index}"),"open",100,None); }
+    admit_events(&mut connection,&live,"bootstrap",100);
+    let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:0,limit:50,generation:None},&live,100).unwrap().result.unwrap();
+    live[1].ready=false;
+    live[1].blocked_by=vec!["needs_input".into()];
+    for worker in &mut live {worker.observed_at_ms=30_100;}
+    admit_events(&mut connection,&live,"snapshot-completion",30_100);
+    let last = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {
+        after:first["next"].as_i64().unwrap(),limit:50,generation:Some(first["generation"].as_str().unwrap().into()),
+    },&live,30_100).unwrap().result.unwrap();
+    assert_eq!(last["has_more"],false);
+    assert_eq!(last["event_cursor"],first["event_cursor"]);
+    let delta = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {
+        after:last["event_cursor"].as_i64().unwrap(),limit:50,
+    },&live,30_100).unwrap().result.unwrap();
+    assert_eq!(delta["snapshot_required"],false,"{delta}");
+    assert_eq!(delta["has_more"],false);
+    let availability = delta["records"].as_array().unwrap().iter().find(|record|record["kind"]=="availability_changed").unwrap();
+    assert_eq!(availability["workers"][0]["session_id"],live[1].session.session_id);
+    assert_eq!(availability["workers"][0]["ready"],false);
+    assert_eq!(availability["workers"][0]["blocked_by"],json!(["needs_input"]));
+    live.pop();
+    live[0].observed_at_ms=60_100;
+    admit_events(&mut connection,&live,"worker-gone",60_100);
+    let next = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {
+        after:delta["next"].as_i64().unwrap(),limit:50,
+    },&live,60_100).unwrap().result.unwrap();
+    assert_eq!(next["snapshot_required"],false,"{next}");
+    assert_eq!(next["has_more"],false);
+    let availability = next["records"].as_array().unwrap().iter().find(|record|record["kind"]=="availability_changed").unwrap();
+    assert_eq!(availability["workers"],json!([]),"the complete product roster also reports removals");
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_context_snapshots WHERE generation=?1",[first["generation"].as_str().unwrap()],|row|row.get::<_,i64>(0)).unwrap(),1);
+}
+
+fn insert_availability_event(connection: &Connection, id: &str, source: &str, body: &str) {
+    connection.execute("INSERT INTO chief_events(id,source,submission_key,fingerprint,kind,body,created_at)
+        VALUES (?1,?2,?1,'fixture','availability_changed',?3,101)",rusqlite::params![id,source,body]).unwrap();
+}
+
+#[test]
+fn incremental_availability_exports_only_the_context_worker_fields() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let after: i64 = connection.query_row("SELECT max(seq) FROM chief_events",[],|row|row.get(0)).unwrap();
+    let mut worker = serde_json::to_value(&live[1]).unwrap();
+    worker["session"]["runtime"]=json!("PRIVATE runtime");
+    worker["request"]=json!("PRIVATE request");
+    worker["blocked_by"]=json!(["observation_stale"]);
+    worker["ready"]=json!(false);
+    insert_availability_event(&connection,"redacted","host",&json!({"workers":[worker],"registry":"PRIVATE registry"}).to_string());
+    for worker in &mut live {worker.observed_at_ms=30_100;}
+    admit_events(&mut connection,&live,"availability",30_100);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,30_100).unwrap().result.unwrap();
+    assert_eq!(context["snapshot_required"],false,"{context}");
+    let record = context["records"].as_array().unwrap().iter().find(|record|record["kind"]=="availability_changed").unwrap();
+    assert_eq!(record["source"],"daemon_derived_availability");
+    assert_eq!(record["workers"],json!([{"session_id":live[1].session.session_id,"agent":"opencode","project":"path:/a",
+        "role":null,"ready":false,"blocked_by":["observation_stale"]}]));
+    assert!(!context.to_string().contains("PRIVATE"));
+    assert!(record.get("body").is_none());
+}
+
+#[test]
+fn availability_backlogs_resume_incrementally_without_exceeding_the_turn_budget() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let after: i64 = connection.query_row("SELECT max(seq) FROM chief_events",[],|row|row.get(0)).unwrap();
+    for index in 0..55 {insert_availability_event(&connection,&format!("availability-{index}"),"host",r#"{"workers":[]}"#);}
+    for worker in &mut live {worker.observed_at_ms=30_100;}
+    admit_events(&mut connection,&live,"availability-backlog",30_100);
+    let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,30_100).unwrap().result.unwrap();
+    assert_eq!(first["snapshot_required"],false,"{first}");
+    assert_eq!(first["records"].as_array().unwrap().len(),50);
+    assert_eq!(first["has_more"],true);
+    assert_eq!(store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:first["next"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap_err().code,ErrorCode::Limit);
+    for worker in &mut live {worker.observed_at_ms=60_100;}
+    let wake = admit_events(&mut connection,&live,"availability-continuation",60_100);
+    assert_eq!(wake.envelope["context_continuation"]["resume_after"],first["next"]);
+    let rest = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:first["next"].as_i64().unwrap(),limit:50},&live,60_100).unwrap().result.unwrap();
+    assert_eq!(rest["snapshot_required"],false,"{rest}");
+    assert_eq!(rest["has_more"],false);
+    assert_eq!(rest["records"].as_array().unwrap().iter().filter(|record|record["kind"]=="availability_changed").count(),5);
+}
+
+#[test]
+fn invalid_untrusted_or_oversize_availability_events_keep_bounded_snapshot_recovery() {
+    for (source,body) in [("host","not JSON".to_owned()),("host",r#"{"workers":[{}]}"#.to_owned()),
+        ("agent",r#"{"workers":[]}"#.to_owned())] {
+        let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+        let after: i64 = connection.query_row("SELECT max(seq) FROM chief_events",[],|row|row.get(0)).unwrap();
+        insert_availability_event(&connection,"invalid",source,&body);
+        for worker in &mut live {worker.observed_at_ms=30_100;}
+        admit_events(&mut connection,&live,"invalid-availability",30_100);
+        let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:2},&live,30_100).unwrap().result.unwrap();
+        assert_eq!(context["snapshot_required"],true,"{context}");
+        assert_eq!(context["next"],after);
+        assert!(context["records"].as_array().unwrap().len()<=2);
+    }
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let after: i64 = connection.query_row("SELECT max(seq) FROM chief_events",[],|row|row.get(0)).unwrap();
+    let mut worker = serde_json::to_value(&live[1]).unwrap();
+    worker["blocked_by"]=json!(["x".repeat(60_000)]);
+    insert_availability_event(&connection,"oversize","host",&json!({"workers":[worker]}).to_string());
+    for worker in &mut live {worker.observed_at_ms=30_100;}
+    admit_events(&mut connection,&live,"oversize-availability",30_100);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:2},&live,30_100).unwrap().result.unwrap();
+    assert_eq!(context["snapshot_required"],true,"{context}");
+    assert_eq!(context["next"],after);
+    assert!(serde_json::to_vec(&context).unwrap().len()<65_000);
+}
+
+#[test]
+fn new_stops_still_reach_context_after_incremental_availability() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let first = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::ContextSnapshot {after:0,limit:50,generation:None},&live,100).unwrap().result.unwrap();
+    live[1].ready=false;
+    live[1].blocked_by=vec!["needs_input".into()];
+    let stop = store::record_stop(&mut connection,&live[1].session,"waiting:1000",&stopped_task(),&stop_bundle_fixture("Which option?"),30_100).unwrap().unwrap();
+    for worker in &mut live {worker.observed_at_ms=30_100;}
+    admit_events(&mut connection,&live,"new-stop",30_100);
+    let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after:first["event_cursor"].as_i64().unwrap(),limit:50},&live,30_100).unwrap().result.unwrap();
+    assert_eq!(context["snapshot_required"],true);
+    assert_eq!(context["has_more"],false);
+    assert_eq!(stopped_records(&context)[0]["stop"],stop);
+    assert!(stopped_records(&context)[0]["bundle"].is_object());
+}
+
+#[test]
+fn availability_at_the_reply_byte_boundary_always_advances_or_recovers() {
+    for projected_bytes in [59_996,59_997,59_998] {
+        let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+        let after: i64 = connection.query_row("SELECT max(seq) FROM chief_events",[],|row|row.get(0)).unwrap();
+        let projected = json!({"sequence":after+1,"source":"daemon_derived_availability","kind":"availability_changed",
+            "complete_product_roster":true,"workers":[{"session_id":live[1].session.session_id,"agent":"opencode",
+                "project":"path:/a","role":null,"ready":false,"blocked_by":[""]}]});
+        let padding = projected_bytes-serde_json::to_vec(&projected).unwrap().len();
+        let mut worker = serde_json::to_value(&live[1]).unwrap();
+        worker["blocked_by"]=json!(["x".repeat(padding)]);
+        worker["ready"]=json!(false);
+        insert_availability_event(&connection,"byte-boundary","host",&json!({"workers":[worker]}).to_string());
+        for worker in &mut live {worker.observed_at_ms=30_100;}
+        admit_events(&mut connection,&live,"byte-boundary",30_100);
+        let context = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,30_100).unwrap().result.unwrap();
+        if projected_bytes==59_996 {
+            assert_eq!(context["snapshot_required"],false,"{projected_bytes}");
+            assert_eq!(context["next"],after+1);
+            assert_eq!(serde_json::to_vec(&context["records"][0]).unwrap().len(),projected_bytes);
+        } else {
+            assert_eq!(context["snapshot_required"],true,"{projected_bytes}: {context}");
+        }
+        assert!(!context["records"].as_array().unwrap().is_empty(),"{projected_bytes}: {context}");
+    }
+}
+
+#[test]
 fn a_new_snapshot_replaces_the_frozen_copy_and_retires_its_generation() {
     let (mut connection,live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
     let restart = ChiefAgentAction::ContextSnapshot {after:0,limit:1,generation:None};

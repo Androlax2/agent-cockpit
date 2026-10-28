@@ -1740,6 +1740,23 @@ pub fn agent(connection: &mut Connection, sender: &VerifiedSession, action: &Chi
     Ok(TeamReply { request_id: "chief".into(), result })
 }
 
+// Invalid availability data keeps the existing snapshot-recovery path instead of skipping an event.
+fn context_availability_workers(body: &str) -> Option<Vec<Value>> {
+    #[derive(serde::Deserialize)]
+    struct Availability { workers: Vec<Worker> }
+    #[derive(serde::Deserialize)]
+    struct Worker {
+        session: VerifiedSession,
+        role: Option<crate::teams::Role>,
+        ready: bool,
+        blocked_by: Vec<String>,
+    }
+    let availability: Availability = serde_json::from_str(body).ok()?;
+    Some(availability.workers.into_iter().map(|worker|json!({"session_id":worker.session.session_id,
+        "agent":worker.session.agent,"project":worker.session.project,"role":worker.role,
+        "ready":worker.ready,"blocked_by":worker.blocked_by})).collect())
+}
+
 /// Explicit safe projection: never serialize registry entries, action payloads, or event bodies.
 fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, after: i64, limit: usize, now_ms: i64) -> Result<Value, TeamError> {
     super::validate_cursor(after,limit)?;
@@ -1757,6 +1774,14 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
         let mut records = Vec::new();
         let mut needs_snapshot = false;
         for (sequence,origin,kind,body) in events {
+            if origin=="host" && kind=="availability_changed" {
+                let Some(workers) = context_availability_workers(&body) else {needs_snapshot=true; break;};
+                let record = json!({"sequence":sequence,"source":"daemon_derived_availability","kind":kind,
+                    "complete_product_roster":true,"workers":workers});
+                if serde_json::to_vec(&record)?.len()+3>=super::CONTEXT_BYTES {needs_snapshot=true; break;}
+                records.push(record);
+                continue;
+            }
             let mut decision_id: Option<String> = None;
             let mut decision_revision: Option<i64> = None;
             if origin=="host" && kind=="decision_resolved" {
