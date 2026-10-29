@@ -2632,6 +2632,8 @@ fn native_telemetry_pipeline(bench: &mut Bench, mode: &str) -> Vec<serde_json::V
         .parent()
         .unwrap()
         .parent()
+        .unwrap()
+        .parent()
         .unwrap();
     let binary = std::env::current_exe()
         .unwrap()

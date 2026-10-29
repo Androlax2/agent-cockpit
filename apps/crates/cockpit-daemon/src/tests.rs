@@ -23,7 +23,7 @@ const CODEX_SESSION: &str = "cdx_c214e8c0c9458f09ea4300974071bcad955995188f33264
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
 
-#[path = "../../cockpit/tests/common/link_fixture.rs"]
+#[path = "../../../cockpit/tests/common/link_fixture.rs"]
 mod link_fixture;
 use cockpit::teams::store::Connection as LinkConnection;
 
@@ -3932,7 +3932,7 @@ fn interrupt_recorded_claude_exit(does_helper_exit_agent: bool) {
     let mut bench = linked_team_bench();
     let root = bench.fixture.root.clone();
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+        .join("../../..")
         .canonicalize()
         .unwrap();
     let script = fs::read_to_string(repository.join("config/bin/.local/bin/cockpit")).unwrap();

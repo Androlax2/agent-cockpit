@@ -245,6 +245,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-daemon"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "cockpit",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
 name = "compact_str"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1364,12 +1374,11 @@ dependencies = [
 name = "osd"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "cockpit",
+ "cockpit-daemon",
  "glib-unix",
  "gtk4",
  "gtk4-layer-shell",
- "regex",
  "serde_json",
 ]
 

@@ -173,6 +173,8 @@ fn native_inbox(bench: &mut Bench, peer: u32, session: &str) -> Vec<Value> {
         .parent()
         .unwrap()
         .parent()
+        .unwrap()
+        .parent()
         .unwrap();
     let binary = std::env::current_exe()
         .unwrap()
