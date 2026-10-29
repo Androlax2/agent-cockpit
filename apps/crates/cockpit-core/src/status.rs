@@ -191,7 +191,7 @@ impl ProviderStatus {
     }
 
     /// Fetches right now, in this thread (tests).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fetch_now(&self) {
         self.tick();
         for _ in 0..200 {

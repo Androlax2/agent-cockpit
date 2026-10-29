@@ -20,9 +20,9 @@
 //! permission dialog, choice menus, spinner and idle prompt. Also the run and guide queues
 //! (ask-to-run, ask-to-guide).
 
-use cockpit::agents::{self, Feature};
-use cockpit::paths;
-use cockpit::util::parallel_clone_repository;
+use cockpit_core::agents::{self, Feature};
+use cockpit_core::paths;
+use cockpit_core::util::parallel_clone_repository;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -109,7 +109,7 @@ fn urgency(state: &str) -> i32 {
 /// To the journal (osd.service), and to the log the session manager shares with the column.
 pub fn log(message: &str) {
     eprintln!("osd: {message}");
-    cockpit::util::log_as("daemon", "INFO", message);
+    cockpit_core::util::log_as("daemon", "INFO", message);
 }
 
 // ---- Reports ----
@@ -190,7 +190,7 @@ pub struct Report {
     /// The desktop apps the session drives through an attached MCP server: "figcraft:on wordcraft:off"
     /// (the hook checks inside the sandbox). None when the report did not say (the daemon's own updates).
     pub apps: Option<String>,
-    /// Which agent runs the session (cockpit::agents). None when the report did not say: Claude.
+    /// Which agent runs the session (cockpit_core::agents). None when the report did not say: Claude.
     pub agent: Option<String>,
     pub native_thread: Option<String>,
     /// Set only by the daemon from the sender's launcher incarnation, never parsed from a report.
@@ -211,7 +211,7 @@ fn native_thread_of(report: &Map<String, Value>) -> Result<Option<String>, Strin
             .get("native_thread")
             .and_then(Value::as_str)
             .ok_or("native Codex report has no native thread")?;
-        if cockpit::codex::cockpit_id(native)? != session {
+        if cockpit_core::codex::cockpit_id(native)? != session {
             return Err("native Codex thread does not match its cockpit id".into());
         }
         return Ok(Some(native.to_string()));
@@ -273,7 +273,9 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         return Err("session.turn_complete is not true or false".into());
     }
     if let Some(id) = report.get("turn_id")
-        && !id.as_str().is_some_and(cockpit::sessions::valid_turn_id)
+        && !id
+            .as_str()
+            .is_some_and(cockpit_core::sessions::valid_turn_id)
     {
         return Err("session.turn_id is not a 32-character hexadecimal id".into());
     }
@@ -286,7 +288,7 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     }
     if report.get("repository").is_some_and(|value| {
         !value.as_str().is_some_and(|repository| {
-            repository.is_empty() || cockpit::sessions::valid_repository(repository)
+            repository.is_empty() || cockpit_core::sessions::valid_repository(repository)
         })
     }) {
         return Err("session.repository is not a canonical GitHub repository".into());
@@ -364,13 +366,13 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         turn_id: text("turn_id"),
         turn_complete,
         label: text("label")
-            .map(|label| cockpit::sessions::validate_task_label(&label))
+            .map(|label| cockpit_core::sessions::validate_task_label(&label))
             .transpose()?,
         doing: text("doing")
-            .map(|doing| cockpit::sessions::validate_doing(&doing))
+            .map(|doing| cockpit_core::sessions::validate_doing(&doing))
             .transpose()?,
         last_tool: text("last_tool")
-            .map(|tool| cockpit::sessions::validate_last_tool(&tool))
+            .map(|tool| cockpit_core::sessions::validate_last_tool(&tool))
             .transpose()?,
         terminal: report
             .get("terminal")
@@ -609,7 +611,7 @@ pub trait System {
     fn runtime_subscription_account(&mut self, _runtime: &str) -> Option<String> {
         None
     }
-    fn native_input_clear(&mut self, _session: &cockpit::sessions::Session) -> bool {
+    fn native_input_clear(&mut self, _session: &cockpit_core::sessions::Session) -> bool {
         false
     }
     /// The cockpit's default agent for new sessions (Settings, `default-agent`): "claude" without a
@@ -668,7 +670,7 @@ fn basename(path: &str) -> String {
 // ---- The run and guide queues ----
 
 pub fn runs_dir() -> PathBuf {
-    cockpit::approval::runs_dir()
+    cockpit_core::approval::runs_dir()
 }
 
 /// The project of a held request: the daemon set it from the folder the sender's sandbox started in.
@@ -704,7 +706,7 @@ const WAITING_PER_FOLDER_MAX: usize = 3;
 const TODO_UPDATE_MAX_BYTES: usize = 65_536;
 
 /// A claude-todo change as a sandbox sent it on the report socket, queued for the column
-/// (cockpit::todo::Todo::apply_updates) in the runtime directory, where no sandbox reaches, with the
+/// (cockpit_core::todo::Todo::apply_updates) in the runtime directory, where no sandbox reaches, with the
 /// folder its sandbox started in: that folder, never one the update names, decides the project
 /// (security audit 2026-10-19, M4). The queue has a size cap: a session cannot flood the list.
 /// `chief_epoch` is the active grant the daemon verified for the sender, never one the update names.
@@ -733,23 +735,23 @@ pub fn queue_todo_update(
         update.get("action").and_then(Value::as_str),
         Some("add" | "propose")
     ) && let Some(target) = update.get("project").and_then(Value::as_str)
-        && cockpit::todo::project_checkout(target).is_none()
+        && cockpit_core::todo::project_checkout(target).is_none()
     {
         return Err(format!(
             "no project checkout named {:?}",
             target.chars().take(60).collect::<String>()
         ));
     }
-    cockpit::todo_requests::hold(
+    cockpit_core::todo_requests::hold(
         &mut update,
         started_in,
         &answers_key_of(Path::new(started_in)),
     )?;
-    cockpit::todo_requests::append_update(&Value::Object(update))
+    cockpit_core::todo_requests::append_update(&Value::Object(update))
 }
 
 /// A run or guide request as a sandbox sent it on the report socket (`kind` "run-request" or
-/// "guide-request"), kept as the daemon's own copy (cockpit::approval::held_request) before anything
+/// "guide-request"), kept as the daemon's own copy (cockpit_core::approval::held_request) before anything
 /// else: the approval and the guide window read only that copy, which no sandbox reaches, so no other
 /// session can rewrite it before Theo reads it (security audit 2026-10-19, H3). The copy carries
 /// what the sandbox cannot choose: the folder its sandbox started in, that folder's project, and the
@@ -783,7 +785,7 @@ pub fn hold_request(
             "its answers folder is not {answers}, the one of the folder its sandbox started in (restart the session)"
         ));
     }
-    let path = cockpit::approval::held_request(&id, extension);
+    let path = cockpit_core::approval::held_request(&id, extension);
     if path.exists() {
         return Err(format!("{id} is already filed"));
     }
@@ -794,7 +796,7 @@ pub fn hold_request(
     if let Some(session) = verified_session {
         request.insert("verified_session".into(), json!(session));
     }
-    cockpit::util::write_json(&path, &Value::Object(request))
+    cockpit_core::util::write_json(&path, &Value::Object(request))
         .map_err(|error| format!("cannot keep {}: {error}", path.display()))?;
     Ok(id)
 }
@@ -812,11 +814,11 @@ fn common_git_dir(directory: &Path) -> Option<PathBuf> {
         if metadata.is_dir() {
             return Some(entry);
         }
-        let text = cockpit::util::read_untrusted_text(&entry, 4096).ok()?;
+        let text = cockpit_core::util::read_untrusted_text(&entry, 4096).ok()?;
         let pointed = folder.join(text.trim().strip_prefix("gitdir:")?.trim());
         // A worktree's own git directory names the shared one in its commondir file.
         return Some(
-            match cockpit::util::read_untrusted_text(&pointed.join("commondir"), 4096) {
+            match cockpit_core::util::read_untrusted_text(&pointed.join("commondir"), 4096) {
                 Ok(common) => pointed.join(common.trim()),
                 Err(_) => pointed,
             },
@@ -919,28 +921,28 @@ fn is_abandoned(id: &str) -> bool {
             .ok()
     };
     touched(runs_dir().join(format!("{id}.waiting")))
-        .or_else(|| touched(cockpit::approval::held_request(id, "request")))
+        .or_else(|| touched(cockpit_core::approval::held_request(id, "request")))
         .and_then(|time| time.elapsed().ok())
         .is_some_and(|age| age > ABANDONED_AFTER)
 }
 
-/// The answers folder a held run or guide request names (cockpit::approval::request_answers_dir);
+/// The answers folder a held run or guide request names (cockpit_core::approval::request_answers_dir);
 /// None when the request is gone.
 fn answers_named_by(request: &Path, kind: &str) -> Option<PathBuf> {
     let request: Value = fs::read_to_string(request)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())?;
-    cockpit::approval::request_answers_dir(&request, kind)
+    cockpit_core::approval::request_answers_dir(&request, kind)
 }
 
 fn run_result(id: &str) -> Option<PathBuf> {
-    answers_named_by(&cockpit::approval::held_request(id, "request"), "runs")
+    answers_named_by(&cockpit_core::approval::held_request(id, "request"), "runs")
         .map(|answers| answers.join(format!("{id}.result")))
 }
 
 /// A report the daemon refused or corrected; `reason` says why.
 fn audit_report(report: &Report, sender: u32, event: &str, outcome: &str, reason: &str) {
-    cockpit::audit::record(
+    cockpit_core::audit::record(
         "daemon",
         event,
         outcome,
@@ -963,14 +965,14 @@ fn audit_request(
         request
             .get(key)
             .and_then(Value::as_str)
-            .map(cockpit::audit::fingerprint)
+            .map(cockpit_core::audit::fingerprint)
     };
     let (event, held) = match kind {
         "run-request" => ("run", "held"),
         "guide-request" => ("guide", "held"),
         _ => ("todo", "queued"),
     };
-    let mut fields = json!({"started_in": started_in, "sender_pid": sender, "request": cockpit::audit::fingerprint(raw),
+    let mut fields = json!({"started_in": started_in, "sender_pid": sender, "request": cockpit_core::audit::fingerprint(raw),
                             "claimed_id": request.get("id"), "claimed_session": request.get("session"), "claimed_cwd": request.get("cwd")});
     for (key, value) in [
         ("command", text("command")),
@@ -985,17 +987,17 @@ fn audit_request(
         fields["action"] = action.clone();
     }
     match result {
-        Ok(()) => cockpit::audit::record("daemon", &format!("{event}.{held}"), "ok", fields),
+        Ok(()) => cockpit_core::audit::record("daemon", &format!("{event}.{held}"), "ok", fields),
         Err(reason) => {
             fields["reason"] = json!(reason);
-            cockpit::audit::record("daemon", &format!("{event}.refused"), "refused", fields);
+            cockpit_core::audit::record("daemon", &format!("{event}.refused"), "refused", fields);
         }
     }
 }
 
 /// The answer ask-to-run --wait finds for a dropped request.
 fn write_abandoned(id: &str) {
-    cockpit::audit::record(
+    cockpit_core::audit::record(
         "daemon",
         "run.abandoned",
         "dropped",
@@ -1010,7 +1012,7 @@ fn write_abandoned(id: &str) {
     if path.exists() {
         return;
     }
-    if let Err(error) = cockpit::util::write_json(&path, &json!({"status": "abandoned"})) {
+    if let Err(error) = cockpit_core::util::write_json(&path, &json!({"status": "abandoned"})) {
         log(&format!("cannot drop request {id}: {error}"));
     }
 }
@@ -1025,23 +1027,23 @@ fn write_lost_result(id: &str) -> bool {
     if path.exists() {
         return true;
     }
-    if let Err(error) = cockpit::util::write_json(&path, &json!({"status": "result_lost"})) {
+    if let Err(error) = cockpit_core::util::write_json(&path, &json!({"status": "result_lost"})) {
         log(&format!("cannot report lost result for {id}: {error}"));
         return false;
     }
     if let Err(error) =
-        cockpit::util::write_json(&path.with_extension("phase"), &json!({"phase": "done"}))
+        cockpit_core::util::write_json(&path.with_extension("phase"), &json!({"phase": "done"}))
     {
         log(&format!(
             "cannot clear lost command status for {id}: {error}"
         ));
     }
-    cockpit::audit::record("daemon", "run.result_lost", "unknown", json!({"id": id}));
+    cockpit_core::audit::record("daemon", "run.result_lost", "unknown", json!({"id": id}));
     true
 }
 
 fn saved_run_phase(id: &str) -> Option<String> {
-    cockpit::util::read_json(&run_result(id)?.with_extension("phase"))?
+    cockpit_core::util::read_json(&run_result(id)?.with_extension("phase"))?
         .get("phase")?
         .as_str()
         .filter(|phase| RUN_PHASES.contains(phase))
@@ -1077,7 +1079,7 @@ impl RunRequests {
             let Some(id) = name
                 .to_str()
                 .and_then(|name| name.strip_suffix(".request"))
-                .filter(|id| cockpit::approval::valid_id(id))
+                .filter(|id| cockpit_core::approval::valid_id(id))
             else {
                 continue;
             };
@@ -1133,7 +1135,7 @@ impl RunRequests {
             .chain(self.waiting_input.iter().map(|id| (id, "input")));
         for (id, phase) in requests {
             let Some(session) =
-                cockpit::util::read_json(&cockpit::approval::held_request(id, "request"))
+                cockpit_core::util::read_json(&cockpit_core::approval::held_request(id, "request"))
                     .and_then(|request| request.get("session")?.as_str().map(str::to_string))
             else {
                 continue;
@@ -1194,7 +1196,7 @@ impl RunRequests {
             return Err(format!("cannot start the approval for {id}"));
         }
         system.run(&["cockpit", "approval-pane", id], &[0]);
-        let project = project_from_request(&cockpit::approval::held_request(id, "request"));
+        let project = project_from_request(&cockpit_core::approval::held_request(id, "request"));
         if !system.quiet() {
             banners.raise_notice(&Notice {
                 id: format!("run-{id}"),
@@ -1550,7 +1552,7 @@ impl GuideRequests {
         if self.queue.iter().any(|queued| queued == id) || self.current == id {
             return Ok(());
         }
-        let project = project_from_request(&cockpit::approval::held_request(id, "guide"));
+        let project = project_from_request(&cockpit_core::approval::held_request(id, "guide"));
         if !system.gaming() {
             banners.raise_notice(&Notice {
                 id: format!("guide-{id}"),
@@ -1570,9 +1572,10 @@ impl GuideRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            let Some(answers) =
-                answers_named_by(&cockpit::approval::held_request(&id, "guide"), "guides")
-            else {
+            let Some(answers) = answers_named_by(
+                &cockpit_core::approval::held_request(&id, "guide"),
+                "guides",
+            ) else {
                 log(&format!(
                     "guide {id} dropped: it names no answers folder (its session started before answers went per project)"
                 ));
@@ -1621,7 +1624,7 @@ impl GuideRequests {
             .unwrap_or(json!({}));
             let closed = json!({"status": "closed", "step": progress.get("step").cloned().unwrap_or(json!("?")),
                                 "total": progress.get("total").cloned().unwrap_or(json!("?"))});
-            if let Err(error) = cockpit::util::write_json(&result, &closed) {
+            if let Err(error) = cockpit_core::util::write_json(&result, &closed) {
                 log(&format!("cannot close guide {}: {error}", self.current));
             }
         }
@@ -1666,7 +1669,7 @@ pub struct Entry {
     pub outcome: String,
     pub repository: String,
     pub branch: String,
-    pub last_result: Option<cockpit::sessions::TurnResult>,
+    pub last_result: Option<cockpit_core::sessions::TurnResult>,
     /// Its hook reports repositories and turn ids, so a missing result is not an outdated hook.
     pub reports_turns: bool,
     pub terminal: bool,
@@ -1675,7 +1678,7 @@ pub struct Entry {
     pub agents: u64,
     pub background: u64,
     pub apps: String,
-    /// The name of the agent that runs it (cockpit::agents).
+    /// The name of the agent that runs it (cockpit_core::agents).
     pub agent: String,
     pub native_thread: String,
     /// The launcher incarnation that reported it (trusted_runtime); never published.
@@ -1699,13 +1702,14 @@ pub struct Registry {
     recent_written: (f64, Vec<String>),
     project_cache: HashMap<String, String>,
     /// Linked-session state, opened on first use (teams.rs).
-    pub(crate) teams: Option<cockpit::teams::store::Connection>,
+    pub(crate) teams: Option<cockpit_core::teams::store::Connection>,
     pub(crate) chief_focus: Option<(String, bool, bool, i64)>,
     pub(crate) chief_fault: Option<String>,
     pub(crate) chief_attention_presentations: HashMap<String, bool>,
     chief_question_deadlines: HashMap<String, i64>,
     chief_question_banners: HashMap<String, (String, i64, Banner)>,
-    pub(crate) chief_native: HashMap<String, (cockpit::teams::VerifiedSession, bool, bool, i64)>,
+    pub(crate) chief_native:
+        HashMap<String, (cockpit_core::teams::VerifiedSession, bool, bool, i64)>,
     pub(crate) chief_telemetry: HashMap<String, crate::chief::NativeTelemetryObservation>,
     /// Session -> (stop boundary, time of the last failed bundle): logged once, retried after a backoff.
     pub(crate) chief_stop_failures: HashMap<String, (String, i64)>,
@@ -1713,7 +1717,7 @@ pub struct Registry {
     /// How many live-session passes ran: the budget tests hold each request to its share.
     pub(crate) live_session_passes: u64,
     /// Only Receive/NativeTelemetry polls may reuse this; authority-changing requests stay fresh.
-    pub(crate) live_session_cache: Option<(Instant, Vec<cockpit::teams::VerifiedSession>)>,
+    pub(crate) live_session_cache: Option<(Instant, Vec<cockpit_core::teams::VerifiedSession>)>,
 }
 
 pub fn snapshot_path() -> PathBuf {
@@ -1810,9 +1814,9 @@ impl Registry {
         runs.chain(guides)
             .filter(|(id, _)| !id.is_empty())
             .any(|(id, extension)| {
-                let Some(request) =
-                    cockpit::util::read_json(&cockpit::approval::held_request(id, extension))
-                else {
+                let Some(request) = cockpit_core::util::read_json(
+                    &cockpit_core::approval::held_request(id, extension),
+                ) else {
                     return true;
                 };
                 // Only the daemon's verified owner is authoritative; the caller's `session` is not.
@@ -1842,13 +1846,13 @@ impl Registry {
             .queue
             .iter()
             .chain(std::iter::once(&self.runs.current))
-            .map(|id| cockpit::approval::held_request(id, "request"));
+            .map(|id| cockpit_core::approval::held_request(id, "request"));
         let guides = self
             .guides
             .queue
             .iter()
             .chain(std::iter::once(&self.guides.current))
-            .map(|id| cockpit::approval::held_request(id, "guide"));
+            .map(|id| cockpit_core::approval::held_request(id, "guide"));
         runs.chain(guides)
             .filter(|path| {
                 fs::read_to_string(path)
@@ -1906,7 +1910,7 @@ impl Registry {
             return Err("subscription admission belongs to another runtime".into());
         }
         let mut routes =
-            cockpit::subscription_fallback::RoutingStore::load(&paths::subscription_routes())?;
+            cockpit_core::subscription_fallback::RoutingStore::load(&paths::subscription_routes())?;
         if !routes.execution_allowed(generation, session, &runtime) {
             return Err(
                 "subscription replacement waits for verified task ownership binding".into(),
@@ -1920,7 +1924,7 @@ impl Registry {
         let _task_writer = if !route.is_session_task()
             && (!route.initial_admitted || initial && !route.initial_started)
         {
-            Some(cockpit::todo::lock_mutations().map_err(|error| {
+            Some(cockpit_core::todo::lock_mutations().map_err(|error| {
                 format!("cannot serialize subscription task admission: {error}")
             })?)
         } else {
@@ -1928,14 +1932,14 @@ impl Registry {
         };
         if !route.initial_admitted || initial && !route.initial_started {
             if !route.is_session_task()
-                && cockpit::todo::TodoList::load_checked()?.status_of(&route.task) != "doing"
+                && cockpit_core::todo::TodoList::load_checked()?.status_of(&route.task) != "doing"
             {
                 return Err("subscription task is missing or no longer in progress".into());
             }
             routes.confirm_initial_admission(&route.original.session, generation)?;
         }
         if initial && !route.initial_started {
-            cockpit::subscription_fallback::prepare_admission_inbox(&route, generation)?;
+            cockpit_core::subscription_fallback::prepare_admission_inbox(&route, generation)?;
             routes.start_initial_turn(&route.original.session, generation)?;
         }
         Ok(())
@@ -2219,7 +2223,7 @@ impl Registry {
             report.cwd = self.system.sender_directory(sender);
         }
         if !self.sessions.contains_key(&report.session) {
-            cockpit::audit::record(
+            cockpit_core::audit::record(
                 "daemon",
                 "session.first_report",
                 "ok",
@@ -2460,7 +2464,7 @@ impl Registry {
                     .is_none_or(|result| result.id != **id)
             })
         {
-            entry.last_result = Some(cockpit::sessions::TurnResult {
+            entry.last_result = Some(cockpit_core::sessions::TurnResult {
                 id: id.clone(),
                 completed_at: now() as i64,
                 outcome: report.outcome.clone().unwrap_or_default(),
@@ -2726,7 +2730,7 @@ impl Registry {
     pub fn publish(&mut self) {
         self.live_session_cache = None;
         let path = snapshot_path();
-        let _ = cockpit::util::write_json(&path, &json!({"sessions": self.snapshot_rows()}));
+        let _ = cockpit_core::util::write_json(&path, &json!({"sessions": self.snapshot_rows()}));
         self.remember_sessions();
         self.system.signal_waybar();
     }
@@ -2746,7 +2750,7 @@ impl Registry {
             return;
         }
         let path = paths::recent_sessions();
-        let mut recent = match cockpit::util::read_json(&path) {
+        let mut recent = match cockpit_core::util::read_json(&path) {
             Some(Value::Object(map)) => map,
             _ => Map::new(),
         };
@@ -2762,7 +2766,7 @@ impl Registry {
         let oldest = time - RECENT_SESSIONS_DAYS * 86400.0;
         recent
             .retain(|_, row| row.get("last_seen").and_then(Value::as_f64).unwrap_or(0.0) >= oldest);
-        if let Err(error) = cockpit::util::write_json(&path, &Value::Object(recent)) {
+        if let Err(error) = cockpit_core::util::write_json(&path, &Value::Object(recent)) {
             log(&format!("cannot write {}: {error}", path.display()));
         }
         self.recent_written = (time, ids);
@@ -2848,25 +2852,25 @@ impl Registry {
                     .get("label")
                     .and_then(Value::as_str)
                     .filter(|label| !label.is_empty())
-                    .map(cockpit::sessions::validate_task_label)
+                    .map(cockpit_core::sessions::validate_task_label)
                     .transpose()?
                     .unwrap_or_default();
                 let doing = row
                     .get("doing")
                     .and_then(Value::as_str)
                     .filter(|doing| !doing.is_empty())
-                    .map(cockpit::sessions::validate_doing)
+                    .map(cockpit_core::sessions::validate_doing)
                     .transpose()?
                     .unwrap_or_default();
                 let last_tool = row
                     .get("last_tool")
                     .and_then(Value::as_str)
                     .filter(|tool| !tool.is_empty())
-                    .map(cockpit::sessions::validate_last_tool)
+                    .map(cockpit_core::sessions::validate_last_tool)
                     .transpose()?
                     .unwrap_or_default();
                 let repository = row.get("repository").and_then(Value::as_str).unwrap_or("");
-                if !repository.is_empty() && !cockpit::sessions::valid_repository(repository) {
+                if !repository.is_empty() && !cockpit_core::sessions::valid_repository(repository) {
                     return Err("invalid repository in snapshot".into());
                 }
                 let branch = row.get("branch").and_then(Value::as_str).unwrap_or("");
@@ -2874,7 +2878,7 @@ impl Registry {
                 let last_result = row
                     .get("last_result")
                     .filter(|value| !value.is_null())
-                    .map(cockpit::sessions::TurnResult::from_value)
+                    .map(cockpit_core::sessions::TurnResult::from_value)
                     .transpose()?;
                 Ok((
                     session,
@@ -3282,7 +3286,7 @@ pub fn waybar_pids_in(table: &dyn Processes) -> Vec<String> {
 /// A command's exit code, stdout and stderr, or None when it cannot start or outlives `timeout`.
 pub fn output_within(command: &[&str], timeout: Duration) -> Option<(i32, String, String)> {
     if command[0] == "hyprctl" {
-        cockpit::util::refresh_hyprland_instance();
+        cockpit_core::util::refresh_hyprland_instance();
     }
     let started = Instant::now();
     let output = wait_for_output(command, timeout, started);
@@ -3922,11 +3926,11 @@ impl System for RealSystem {
     fn runtime_subscription_account(&mut self, runtime: &str) -> Option<String> {
         runtime_subscription_account(&Proc, runtime)
     }
-    fn native_input_clear(&mut self, session: &cockpit::sessions::Session) -> bool {
-        match cockpit::subscription_fallback::native::input_boundary(session) {
+    fn native_input_clear(&mut self, session: &cockpit_core::sessions::Session) -> bool {
+        match cockpit_core::subscription_fallback::native::input_boundary(session) {
             Ok(target) => target.is_some(),
             Err(error) => {
-                cockpit::util::log_event(
+                cockpit_core::util::log_event(
                     "WARN",
                     &format!("native subscription inbox input check failed: {error}"),
                 );
@@ -3935,7 +3939,7 @@ impl System for RealSystem {
         }
     }
     fn default_agent(&mut self) -> Option<String> {
-        default_agent_in(&cockpit::paths::settings())
+        default_agent_in(&cockpit_core::paths::settings())
     }
     fn sender_spawn_token(&mut self, sender: u32) -> Option<String> {
         trusted_spawn_token(&Proc, &sender.to_string())

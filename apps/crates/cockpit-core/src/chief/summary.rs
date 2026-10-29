@@ -8,7 +8,7 @@ pub fn status(snapshot: &Value) -> String {
     status_with_startup_phase(snapshot, startup_phase(snapshot))
 }
 
-pub(super) fn startup_phase(snapshot: &Value) -> &str {
+pub fn startup_phase(snapshot: &Value) -> &str {
     match snapshot["startup"]["state"].as_str() {
         None if snapshot["startup"].is_null() => "off",
         Some("ended") => "off",
@@ -43,7 +43,7 @@ pub(super) fn unavailable_reason(snapshot: &Value, chief: &Value) -> Option<Stri
         .map(text)
 }
 
-pub(super) fn status_with_startup_phase(snapshot: &Value, phase: &str) -> String {
+pub fn status_with_startup_phase(snapshot: &Value, phase: &str) -> String {
     let chiefs: Vec<_> = snapshot["records"]
         .as_array()
         .into_iter()
@@ -74,7 +74,7 @@ pub(super) fn status_with_startup_phase(snapshot: &Value, phase: &str) -> String
 }
 
 /// A host-supplied string cut to one escaped line: agent-chosen text can hold newlines, terminal codes and any length.
-pub(crate) fn one_line(value: &str, limit: usize) -> String {
+pub fn one_line(value: &str, limit: usize) -> String {
     let escaped = escape_hiding(
         &value.split_whitespace().collect::<Vec<_>>().join(" "),
         "",
@@ -152,18 +152,18 @@ pub fn since_label(since_ms: i64, today: chrono::NaiveDate) -> String {
 }
 
 /// A project key as Theo reads it (its last path part), or `everywhere` for none.
-pub(super) fn scope_name(project: &Value) -> String {
+pub fn scope_name(project: &Value) -> String {
     match project.as_str() {
         Some(project) => crate::teams::summary::short_project(project),
         None => "everywhere".into(),
     }
 }
 
-pub(super) fn host_flag(value: &Value) -> bool {
+pub fn host_flag(value: &Value) -> bool {
     value == true || value == 1
 }
 
-pub(super) fn text(value: &Value) -> String {
+pub fn text(value: &Value) -> String {
     value
         .as_str()
         .map(|value| escape_hiding(value, "", ""))
@@ -184,6 +184,6 @@ pub const DIGEST_LINES: usize = crate::chief::store::DIGEST_ANSWER_LINES;
 
 pub const DIGEST_LINE_WIDTH: usize = 100;
 
-pub(super) const LINE_LIMIT: usize = 300;
+pub const LINE_LIMIT: usize = 300;
 
-pub(super) const NAME_LIMIT: usize = 80;
+pub const NAME_LIMIT: usize = 80;

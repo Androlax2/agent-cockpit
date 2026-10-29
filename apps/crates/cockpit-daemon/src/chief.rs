@@ -1,9 +1,11 @@
 //! Chief routes reuse the team socket's kernel-peer and protected database boundary.
 
 use crate::{registry::Registry, teams};
-use cockpit::chief::{ChiefAgentAction, ChiefHostAction, WorkerState, store};
-use cockpit::teams::store::storage_error;
-use cockpit::teams::{ErrorCode, NativeCounts, TaskKey, TeamError, TeamReply, VerifiedSession};
+use cockpit_core::chief::{ChiefAgentAction, ChiefHostAction, WorkerState, store};
+use cockpit_core::teams::store::storage_error;
+use cockpit_core::teams::{
+    ErrorCode, NativeCounts, TaskKey, TeamError, TeamReply, VerifiedSession,
+};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -22,7 +24,7 @@ pub(crate) fn native_telemetry(
     counts: Option<NativeCounts>,
 ) -> Result<TeamReply, TeamError> {
     if sender.agent != "opencode"
-        || cockpit::agents::of_session_id(&sender.session_id).map(|agent| agent.name)
+        || cockpit_core::agents::of_session_id(&sender.session_id).map(|agent| agent.name)
             != Some("opencode")
     {
         return Err(TeamError::new(
@@ -104,7 +106,7 @@ pub(crate) fn legacy_auto_ready(
     is_chief_requested: bool,
 ) -> Result<(), &'static str> {
     let now = teams::now_ms();
-    if !cockpit::settings::is_on("todo-queue") {
+    if !cockpit_core::settings::is_on("todo-queue") {
         return Err("the todo queue is off");
     }
     if registry.system.gaming() {
@@ -146,16 +148,16 @@ pub(crate) fn legacy_auto_ready(
     if *active && viewed == worker {
         return Err("Theo is viewing the session");
     }
-    if cockpit::prompts::count(worker) > 0 || cockpit::prompts::restart_wanted(worker) {
+    if cockpit_core::prompts::count(worker) > 0 || cockpit_core::prompts::restart_wanted(worker) {
         return Err("a message or restart waits for the session");
     }
     let Some(entry) = registry.sessions.get(worker).filter(|entry| {
         !entry.runtime.is_empty() && registry.system.runtime_is_live(&entry.runtime)
     }) else {
-        let is_asleep_idle = cockpit::sleep::asleep().iter().any(|note| {
+        let is_asleep_idle = cockpit_core::sleep::asleep().iter().any(|note| {
             note.session == worker
                 && !note.remote
-                && now / 1000 - note.idle_since >= cockpit::queue::QUEUE_IDLE_S
+                && now / 1000 - note.idle_since >= cockpit_core::queue::QUEUE_IDLE_S
                 && teams::canonical_project(&note.cwd).is_ok_and(|current| current == project)
         });
         return if is_asleep_idle {
@@ -169,7 +171,7 @@ pub(crate) fn legacy_auto_ready(
         && !entry.terminal
         && entry.agents == 0
         && entry.background == 0
-        && now / 1000 - entry.since as i64 >= cockpit::queue::QUEUE_IDLE_S;
+        && now / 1000 - entry.since as i64 >= cockpit_core::queue::QUEUE_IDLE_S;
     if is_idle {
         Ok(())
     } else {
@@ -209,7 +211,7 @@ pub(crate) fn workers_among(
             let role = store::worker_role(connection, &session)?;
             let mut blocked_by = Vec::new();
             if teams::sleep_operation_is_live(&session.session_id)?
-                || cockpit::teams::store::sleep::paused(connection, &session.session_id)?
+                || cockpit_core::teams::store::sleep::paused(connection, &session.session_id)?
             {
                 blocked_by.push("host_sleep_in_progress".into());
             }
@@ -303,10 +305,10 @@ pub(crate) fn workers_among(
             if gaming {
                 blocked_by.push("gaming".into());
             }
-            if cockpit::prompts::count(&session.session_id) > 0 {
+            if cockpit_core::prompts::count(&session.session_id) > 0 {
                 blocked_by.push("human_prompt_queued".into());
             }
-            if cockpit::prompts::restart_wanted(&session.session_id) {
+            if cockpit_core::prompts::restart_wanted(&session.session_id) {
                 blocked_by.push("restart_pending".into());
             }
             if store::legacy_worker_busy(connection, &session.session_id)? {
@@ -316,7 +318,7 @@ pub(crate) fn workers_among(
                 if entry.needs_input {
                     blocked_by.push("human_input".into());
                 }
-                if now / 1000 - (entry.since as i64) < cockpit::queue::QUEUE_IDLE_S
+                if now / 1000 - (entry.since as i64) < cockpit_core::queue::QUEUE_IDLE_S
                     && !store::is_chief(connection, &session.session_id)?
                 {
                     blocked_by.push("idle_guard".into());
@@ -356,7 +358,7 @@ pub(crate) fn workers_among(
 /// The active grant's epoch when the report-socket sender is the verified chief runtime. Any doubt
 /// (no store, no unique live session, a store error) means no chief: the ordinary limits apply.
 pub(crate) fn active_epoch_of(registry: &mut Registry, peer: u32) -> Option<String> {
-    if registry.teams.is_none() && !cockpit::paths::team_database().is_file() {
+    if registry.teams.is_none() && !cockpit_core::paths::team_database().is_file() {
         return None;
     }
     let result = teams::live_sessions(registry).and_then(|live| {
@@ -418,14 +420,14 @@ pub fn request(
             .as_ref()
             .err()
             .map(|error| error.message.as_str());
-        cockpit::audit::record(
+        cockpit_core::audit::record(
             "daemon",
             "chief.session_start_requested",
             if refusal.is_none() { "ok" } else { "refused" },
             serde_json::json!({"session": sender.session_id, "task_id": todo, "project": project, "reason": reason, "refusal": refusal, "dispatch_policy": dispatch_policy}),
         );
         if refusal.is_none() {
-            cockpit::util::log_as(
+            cockpit_core::util::log_as(
                 "daemon",
                 "INFO",
                 &format!("chief: asked for a fresh session for {todo} in {project}: {reason}"),
@@ -447,7 +449,7 @@ pub fn request(
             reason,
         } => Some((
             "chief.message_requested",
-            serde_json::json!({"session":session,"text_sha256":cockpit::audit::sha256_hex(text.as_bytes()),"reason":reason}),
+            serde_json::json!({"session":session,"text_sha256":cockpit_core::audit::sha256_hex(text.as_bytes()),"reason":reason}),
         )),
         _ => None,
     };
@@ -455,7 +457,7 @@ pub fn request(
         fields["chief"] = serde_json::json!(sender.session_id);
         fields["refusal"] =
             serde_json::json!(reply.result.as_ref().err().map(|error| &error.message));
-        cockpit::audit::record(
+        cockpit_core::audit::record(
             "daemon",
             event,
             if reply.result.is_ok() {
@@ -495,7 +497,7 @@ pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamRep
                 return Ok(TeamReply {
                     request_id: request_id.clone(),
                     result: Err(TeamError::new(
-                        cockpit::teams::ErrorCode::Conflict,
+                        cockpit_core::teams::ErrorCode::Conflict,
                         "the previous Chief launcher is still alive; recovery is refused",
                     )),
                 });
@@ -532,8 +534,8 @@ pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamRep
                 return Ok(TeamReply {
                     request_id: request_id.clone(),
                     result: Err(TeamError::new(
-                        cockpit::teams::ErrorCode::Unavailable,
-                        cockpit::chief::ADMISSION_REQUIRED,
+                        cockpit_core::teams::ErrorCode::Unavailable,
+                        cockpit_core::chief::ADMISSION_REQUIRED,
                     )),
                 });
             }
@@ -598,7 +600,7 @@ pub fn snapshot(
     let records = snapshot["records"]
         .as_array()
         .expect("host snapshot records");
-    let page = cockpit::chief::context_page(records, limit)?;
+    let page = cockpit_core::chief::context_page(records, limit)?;
     let count = page.as_array().expect("bounded page").len();
     if count < records.len() {
         snapshot["next"] = serde_json::json!(after.saturating_add(count as i64));
@@ -693,7 +695,7 @@ pub(crate) fn question_grace_deadlines(
     if !registry.sessions.values().any(|entry| {
         entry.agent == "opencode"
             && entry.state == "needs-you"
-            && (0..cockpit::chief::QUESTION_GRACE_S)
+            && (0..cockpit_core::chief::QUESTION_GRACE_S)
                 .contains(&(now_ms / 1000).saturating_sub(entry.since as i64))
     }) {
         return Ok(deadlines);
@@ -745,7 +747,7 @@ pub(crate) fn question_grace_deadlines(
             continue;
         }
         let since = entry.since as i64;
-        let until = since.saturating_add(cockpit::chief::QUESTION_GRACE_S);
+        let until = since.saturating_add(cockpit_core::chief::QUESTION_GRACE_S);
         if now < since || now >= until {
             continue;
         }
@@ -794,7 +796,7 @@ fn observe_stops(
     live: &[WorkerState],
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    observe_stops_with(registry, live, now_ms, cockpit::todo::TodoList::load)
+    observe_stops_with(registry, live, now_ms, cockpit_core::todo::TodoList::load)
 }
 
 /// Withdraws Theo's corrections whose session is gone or restarted, closes the stops of sessions that
@@ -811,7 +813,7 @@ pub(crate) fn observe_stops_with(
     registry: &mut Registry,
     live: &[WorkerState],
     now_ms: i64,
-    load_todos: impl FnOnce() -> cockpit::todo::TodoList,
+    load_todos: impl FnOnce() -> cockpit_core::todo::TodoList,
 ) -> Result<(), TeamError> {
     store::cancel_stranded_corrections(
         registry
@@ -855,7 +857,7 @@ pub(crate) fn observe_stops_with(
     let todos = (!candidates.is_empty()).then(load_todos);
     // A session with no todo in progress is stopped for the Chief only while it asks for an answer
     // (cockpit-needs-input or its own question form): one that merely finished its turn has nothing to answer.
-    let stopped: Vec<(VerifiedSession, String, Option<cockpit::todo::Item>)> = candidates
+    let stopped: Vec<(VerifiedSession, String, Option<cockpit_core::todo::Item>)> = candidates
         .into_iter()
         .filter_map(|(session, boundary)| {
             let item = todos
@@ -892,7 +894,7 @@ pub(crate) fn observe_stops_with(
         let (instructions, warnings) = project_instructions(&session.project);
         if failure.is_none() {
             for warning in warnings {
-                cockpit::util::log_as(
+                cockpit_core::util::log_as(
                     "daemon",
                     "WARN",
                     &format!(
@@ -902,8 +904,8 @@ pub(crate) fn observe_stops_with(
                 );
             }
         }
-        match cockpit::chief::bundle::stop_bundle(
-            &cockpit::paths::opencode_database(),
+        match cockpit_core::chief::bundle::stop_bundle(
+            &cockpit_core::paths::opencode_database(),
             &session.session_id,
             item.as_ref(),
             instructions,
@@ -913,14 +915,14 @@ pub(crate) fn observe_stops_with(
                     project: session.project.clone(),
                     task_id: item
                         .as_ref()
-                        .map(cockpit::todo::Item::id)
+                        .map(cockpit_core::todo::Item::id)
                         .unwrap_or_default(),
                 };
                 store::record_stop(connection, session, boundary, &task, &bundle, now_ms)?;
             }
             Err(error) => {
                 if failure.is_none() {
-                    cockpit::util::log_as(
+                    cockpit_core::util::log_as(
                         "daemon",
                         "WARN",
                         &format!(
@@ -949,9 +951,12 @@ pub(crate) fn observe_stops_with(
 /// no directory: nothing is read and the caller logs the warning.
 pub(crate) fn project_instructions(
     project: &str,
-) -> (Vec<cockpit::chief::bundle::InstructionFile>, Vec<String>) {
+) -> (
+    Vec<cockpit_core::chief::bundle::InstructionFile>,
+    Vec<String>,
+) {
     match project.strip_prefix("path:") {
-        Some(root) => cockpit::chief::bundle::instruction_files(std::path::Path::new(root)),
+        Some(root) => cockpit_core::chief::bundle::instruction_files(std::path::Path::new(root)),
         None => (
             Vec::new(),
             vec![format!(
@@ -962,7 +967,7 @@ pub(crate) fn project_instructions(
 }
 
 pub fn tick(registry: &mut Registry, now_ms: i64) -> Result<(), TeamError> {
-    if registry.teams.is_none() && !cockpit::paths::team_database().is_file() {
+    if registry.teams.is_none() && !cockpit_core::paths::team_database().is_file() {
         return Ok(());
     }
     let observation = workers_at(registry, now_ms, true);
@@ -970,7 +975,7 @@ pub fn tick(registry: &mut Registry, now_ms: i64) -> Result<(), TeamError> {
         return observation.map(|_| ());
     };
     let pending = connection.prepare("SELECT a.decision,d.category FROM chief_attention a JOIN chief_decisions d ON d.id=a.decision WHERE d.state='open' ORDER BY a.created_at,a.decision LIMIT ?1").map_err(storage_error)?
-        .query_map([cockpit::chief::MAX_OPEN_DECISIONS as i64],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
+        .query_map([cockpit_core::chief::MAX_OPEN_DECISIONS as i64],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     for (decision, is_visible) in &mut registry.chief_attention_presentations {
         if *is_visible && !pending.iter().any(|(open, _)| open == decision) {
             registry
@@ -1077,7 +1082,7 @@ fn advance_startup(registry: &mut Registry, live: &[WorkerState]) -> Result<(), 
             registry,
             attempt,
             "checking",
-            Some(cockpit::chief::ADMISSION_REQUIRED),
+            Some(cockpit_core::chief::ADMISSION_REQUIRED),
         );
     }
     let action = ChiefHostAction::Enable {

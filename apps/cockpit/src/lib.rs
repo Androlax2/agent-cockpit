@@ -1,36 +1,38 @@
-//! The Agent Cockpit: the code its programs share (paths, sessions, usage, the column's app).
+//! Cockpit terminal application, executable support and compatibility exports.
 
-pub mod agents;
+pub use cockpit_core::agents;
+pub use cockpit_core::audit;
+pub use cockpit_core::background;
+pub use cockpit_core::billing;
+pub use cockpit_core::codex;
+pub use cockpit_core::continuity;
+pub use cockpit_core::costs;
+pub use cockpit_core::errors;
+pub use cockpit_core::failsafe;
+pub use cockpit_core::paths;
+pub use cockpit_core::prompts;
+pub use cockpit_core::push;
+pub use cockpit_core::queue;
+pub use cockpit_core::remote;
+pub use cockpit_core::reviews;
+pub use cockpit_core::sessions;
+pub use cockpit_core::settings;
+pub use cockpit_core::sleep;
+pub use cockpit_core::status;
+pub use cockpit_core::subscription_fallback;
+pub use cockpit_core::todo;
+pub use cockpit_core::todo_images;
+pub use cockpit_core::todo_requests;
+pub use cockpit_core::util;
+
 pub mod app;
 pub mod approval;
-pub mod audit;
-pub mod background;
-pub mod billing;
 pub mod chief;
-pub mod codex;
-pub mod continuity;
-pub mod costs;
-pub mod errors;
-pub mod failsafe;
-pub mod paths;
-pub mod prompts;
-pub mod push;
-pub mod queue;
-pub mod remote;
-pub mod reviews;
-pub mod sessions;
-pub mod settings;
-pub mod sleep;
-pub mod status;
-pub mod subscription_fallback;
 pub mod teams;
-pub mod todo;
+pub mod usage;
+
 mod todo_composer;
 mod todo_editor;
-pub mod todo_images;
-pub mod todo_requests;
-pub mod usage;
-pub mod util;
 
 #[cfg(test)]
 mod tests;

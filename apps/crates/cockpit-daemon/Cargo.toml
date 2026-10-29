@@ -9,6 +9,9 @@ workspace = true
 
 [dependencies]
 chrono = "0.4.45"
-cockpit = { version = "0.1.0", path = "../../cockpit" }
+cockpit-core = { version = "0.1.0", path = "../cockpit-core" }
 regex = "1.13.1"
 serde_json = "1.0.154"
+
+[dev-dependencies]
+cockpit = { version = "0.1.0", path = "../../cockpit" }
