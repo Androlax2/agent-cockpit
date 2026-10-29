@@ -25,6 +25,7 @@ jobs are not held), on.
 import errno
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import signal
@@ -442,14 +443,27 @@ def gate_state(manual, protecting, memory_hold, sample, now):
     return "clear", ""
 
 
+def account_home():
+    """The account's home from the password database, never $HOME or XDG_*: a command run with
+    another HOME must still write the status agent-build reads, with its manual file."""
+    uid = os.getuid()
+    try:
+        home = pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        raise OSError(f"no password entry for uid {uid}") from None
+    if not os.path.isabs(home):
+        raise OSError(f"the home of uid {uid} is not an absolute path: {home!r}")
+    return Path(home)
+
+
 def gate_file(home=None):
-    return Path(home or Path.home()) / ".cache/agent-shims/heavy-gate.json"
+    return Path(home or account_home()) / ".cache/agent-shims/heavy-gate.json"
 
 
 def manual_dir():
-    """Theo's hold and off survive a reboot, like the gate's off state does."""
-    state_home = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
-    return Path(state_home) / "cockpit"
+    """Theo's hold and off survive a reboot, like the gate's off state does. Same account home as
+    gate_file(), so a command under another HOME never splits the two."""
+    return account_home() / ".local/state/cockpit"
 
 
 def manual_path(directory):

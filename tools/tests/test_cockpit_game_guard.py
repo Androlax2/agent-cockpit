@@ -624,17 +624,47 @@ class GateTests(unittest.TestCase):
         self.make_guard().tick()
         self.assertFalse(self.admitted(), "the release ends at its absolute time")
 
-    def test_hold_and_off_are_kept_in_the_persistent_state_folder(self):
-        with tempfile.TemporaryDirectory() as state_home:
-            original = os.environ.get("XDG_STATE_HOME")
-            os.environ["XDG_STATE_HOME"] = state_home
-            try:
-                self.assertEqual(guard.manual_dir(), Path(state_home) / "cockpit")
-            finally:
-                if original is None:
-                    os.environ.pop("XDG_STATE_HOME")
-                else:
-                    os.environ["XDG_STATE_HOME"] = original
+    def account_home_from_getent(self):
+        entry = subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True, text=True, check=True)
+        return Path(entry.stdout.strip().split(":")[5])
+
+    def test_status_and_manual_files_come_from_the_account_home_whatever_home_and_xdg_say(self):
+        changed = {"HOME": "/tmp/elsewhere", "XDG_STATE_HOME": "/tmp/xdg-state", "XDG_CACHE_HOME": "/tmp/xdg-cache"}
+        saved = {key: os.environ.get(key) for key in changed}
+        os.environ.update(changed)
+        try:
+            gate, manual = guard.gate_file(), guard.manual_dir()
+        finally:
+            for key, value in saved.items():
+                os.environ.pop(key, None) if value is None else os.environ.__setitem__(key, value)
+        home = self.account_home_from_getent()
+        self.assertEqual(gate, home / ".cache/agent-shims/heavy-gate.json")
+        self.assertEqual(manual, home / ".local/state/cockpit")
+
+    def test_a_release_under_another_home_writes_the_account_files_together(self):
+        account = self.root / "account"
+        original_lookup, original_home = guard.account_home, os.environ.get("HOME")
+        guard.account_home = lambda: account
+        os.environ["HOME"] = str(self.root / "elsewhere")
+        try:
+            self.assertEqual(guard.main(["release", "5"]), 0)
+        finally:
+            guard.account_home = original_lookup
+            os.environ["HOME"] = original_home
+        self.assertTrue((account / ".cache/agent-shims/heavy-gate.json").exists())
+        self.assertTrue((account / ".local/state/cockpit/game-guard-manual.json").exists())
+        self.assertFalse((self.root / "elsewhere").exists())
+
+    def test_a_missing_account_fails_closed(self):
+        def missing(uid):
+            raise KeyError(uid)
+        original = guard.pwd.getpwuid
+        guard.pwd.getpwuid = missing
+        try:
+            with self.assertRaisesRegex(OSError, "no password entry"):
+                guard.gate_file()
+        finally:
+            guard.pwd.getpwuid = original
 
     def test_a_restarted_guard_publishes_nothing_before_its_first_detection(self):
         self.game_open = True

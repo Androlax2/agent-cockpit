@@ -13,6 +13,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 RUNNER = REPO / "config/bin/.local/bin/agent-build"
+# Test-only: runs the shipped runner with only its account home replaced (never installed).
+HARNESS = REPO / "tools/tests/admission_harness.py"
 PROBE = (
     "import json, os; print(json.dumps({'cpus': sorted(os.sched_getaffinity(0)), "
     "'nice': os.getpriority(os.PRIO_PROCESS, 0), 'idle': os.sched_getscheduler(0) == os.SCHED_IDLE}))"
@@ -23,6 +25,19 @@ LOADER = importlib.machinery.SourceFileLoader("agent_build", str(RUNNER))
 SPEC = importlib.util.spec_from_loader("agent_build", LOADER)
 agent_build = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(agent_build)
+
+
+def through_harness(fixture_home, argv0="agent-build"):
+    """The command prefix that runs the shipped runner with fixture_home as its account home."""
+    return [sys.executable, str(HARNESS), str(fixture_home), argv0]
+
+
+def write_shim(directory, name, fixture_home):
+    """A shim named like a tool, as the launcher's cargo -> agent-build link, through the harness."""
+    shim = directory / name
+    shim.write_text(f'#!/bin/sh\nexec {sys.executable} {HARNESS} {fixture_home} "$0" "$@"\n')
+    shim.chmod(0o755)
+    return shim
 
 
 def write_gate(home, state, **fields):
@@ -75,12 +90,11 @@ class AgentBuildTests(unittest.TestCase):
         self.addCleanup(home.cleanup)
         self.home = Path(home.name)
         write_gate(self.home, "clear")
-        self.environment["HOME"] = str(self.home)
         self.environment = fresh_environment(self.environment)
 
     def run_build(self, *arguments, environment=None, **options):
         return subprocess.run(
-            [sys.executable, str(RUNNER), *arguments],
+            [*through_harness(self.home), *arguments],
             env=self.environment if environment is None else environment,
             preexec_fn=lambda: os.sched_setaffinity(0, self.available_cpus),
             capture_output=True,
@@ -105,7 +119,7 @@ class AgentBuildTests(unittest.TestCase):
         self.assertEqual(os.sched_getscheduler(0), caller_policy)
 
     def test_nested_builds_stay_at_the_lowest_priority_on_every_cpu_thread(self):
-        result = self.run_build(sys.executable, str(RUNNER), sys.executable, "-c", PROBE)
+        result = self.run_build(*through_harness(self.home), sys.executable, "-c", PROBE)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             json.loads(result.stdout),
@@ -149,7 +163,7 @@ class AgentBuildTests(unittest.TestCase):
             tools = root / "tools"
             shims.mkdir()
             tools.mkdir()
-            (shims / "cargo").symlink_to(RUNNER)
+            write_shim(shims, "cargo", self.home)
             tool = tools / "cargo"
             tool.write_text(f"#!{sys.executable}\n{PROBE}\n")
             tool.chmod(0o755)
@@ -173,10 +187,13 @@ class AgentBuildTests(unittest.TestCase):
             tool = Path(directory) / "cargo"
             tool.write_text(f"#!{sys.executable}\n{PROBE}\n")
             tool.chmod(0o755)
+            # make runs the shipped runner, which reads the account's real status: this test runs
+            # inside an admitted ancestor (itself) so it checks priority, not admission.
             result = subprocess.run(
                 ["make", "--no-print-directory", "build"],
                 cwd=REPO,
-                env=self.environment | {"PATH": f"{directory}:{self.environment['PATH']}"},
+                env=self.environment | {"PATH": f"{directory}:{self.environment['PATH']}",
+                                        "AGENT_BUILD_ADMITTED": marker_of_this_process()},
                 preexec_fn=lambda: os.sched_setaffinity(0, self.available_cpus),
                 capture_output=True,
                 text=True,
@@ -189,19 +206,23 @@ class AgentBuildTests(unittest.TestCase):
 
 
 class AdmissionTests(unittest.TestCase):
-    """A new heavy job through the real runner, with a status file in a temporary home."""
+    """A new heavy job through the shipped runner, with the account home replaced by a temporary
+    folder (harness); HOME points elsewhere, so nothing here can come from HOME."""
 
     def setUp(self):
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
         self.home = Path(home.name)
         self.marker = self.home / "ran"
-        self.environment = fresh_environment(os.environ | {"HOME": str(self.home)})
+        other_home = tempfile.TemporaryDirectory()
+        self.addCleanup(other_home.cleanup)
+        self.other_home = Path(other_home.name)
+        self.environment = fresh_environment(os.environ | {"HOME": str(self.other_home)})
 
     def start(self, *arguments, preexec_fn=None, environment=None):
         script = f"from pathlib import Path; Path({str(self.marker)!r}).touch(); print('ran'); raise SystemExit(9)"
         command = arguments or (sys.executable, "-c", script)
-        job = subprocess.Popen([sys.executable, str(RUNNER), *command], env=environment or self.environment,
+        job = subprocess.Popen([*through_harness(self.home), *command], env=environment or self.environment,
                                preexec_fn=preexec_fn, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                start_new_session=True)
         def stop():
@@ -316,7 +337,7 @@ class AdmissionTests(unittest.TestCase):
         fake_make = tools / "make"
         nested = f"from pathlib import Path; Path({str(self.marker)!r}).touch()"
         fake_make.write_text(f"#!{sys.executable}\nimport subprocess, sys\n"
-                             f"sys.exit(subprocess.call([sys.executable, {str(RUNNER)!r}, sys.executable, '-c', {nested!r}]))\n")
+                             f"sys.exit(subprocess.call([*{through_harness(self.home)!r}, sys.executable, '-c', {nested!r}]))\n")
         fake_make.chmod(0o755)
         environment = self.environment | {"PATH": f"{tools}:{self.environment['PATH']}"}
         job = self.start("make", "help", environment=environment)
@@ -356,6 +377,63 @@ class AdmissionTests(unittest.TestCase):
                 os.killpg(job.pid, signal.SIGKILL)
                 job.communicate(timeout=10)
 
+    def test_a_forged_clear_status_under_home_cannot_admit_while_the_account_status_holds(self):
+        write_gate(self.home, "gaming")
+        write_gate(self.other_home, "clear")
+        self.assert_waits(self.start())
+
+    def test_an_empty_home_does_not_hold_a_job_the_account_status_clears(self):
+        write_gate(self.home, "clear")
+        output, errors = self.start().communicate(timeout=10)
+        self.assertEqual(output, "ran\n", errors)
+
+    def test_a_forged_held_status_under_home_does_not_hold_a_cleared_job(self):
+        write_gate(self.home, "clear")
+        write_gate(self.other_home, "held")
+        output, errors = self.start().communicate(timeout=10)
+        self.assertEqual(output, "ran\n", errors)
+
+    def test_a_shim_name_follows_the_account_status_not_home(self):
+        tools = self.home / "real-tools"
+        shims = self.home / "shims"
+        tools.mkdir()
+        shims.mkdir()
+        (tools / "cargo").write_text(f"#!{sys.executable}\nfrom pathlib import Path; Path({str(self.marker)!r}).touch(); print('ran')\n")
+        (tools / "cargo").chmod(0o755)
+        write_shim(shims, "cargo", self.home)
+        environment = self.environment | {"PATH": f"{shims}:{tools}:{self.environment['PATH']}"}
+        cases = {"forged clear under HOME, account gaming": ("gaming", "clear", True),
+                 "forged held under HOME, account clear": ("clear", "held", False)}
+        for name, (account, forged, waits) in cases.items():
+            with self.subTest(name):
+                self.marker.unlink(missing_ok=True)
+                write_gate(self.home, account)
+                write_gate(self.other_home, forged)
+                job = subprocess.Popen([str(shims / "cargo"), "build"], env=environment, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, start_new_session=True)
+                self.addCleanup(lambda job=job: job.poll() is None and os.killpg(job.pid, signal.SIGKILL))
+                if waits:
+                    read_until(job.stderr, "waits")
+                    self.assertFalse(self.marker.exists())
+                    os.killpg(job.pid, signal.SIGKILL)
+                    job.communicate(timeout=10)
+                else:
+                    output, errors = job.communicate(timeout=10)
+                    self.assertEqual(output, "ran\n", errors)
+
+    def test_a_future_ticket_under_home_does_not_delay_a_released_job(self):
+        ticket = self.other_home / ".cache/cockpit/test-lock/admission.lock"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text(f"{time.time() + 5}\n")
+        write_gate(self.home, "gaming")
+        job = self.start()
+        self.assert_waits(job)
+        write_gate(self.home, "clear")
+        started = time.monotonic()
+        output, errors = job.communicate(timeout=30)
+        self.assertEqual(output, "ran\n", errors)
+        self.assertLess(time.monotonic() - started, 8, "a ticket under HOME delayed the job")
+
     def test_asking_a_tool_for_its_version_never_waits(self):
         write_gate(self.home, "gaming")
         job = self.start(sys.executable, "--version")
@@ -368,14 +446,14 @@ class AdmissionTests(unittest.TestCase):
         ticket.parent.mkdir(parents=True)
         ticket.write_text(f"{time.time()}\n")
         slept = []
-        original_home, original_sleep = os.environ.get("HOME"), agent_build.time.sleep
-        os.environ["HOME"] = str(self.home)
+        original_home, original_sleep = agent_build.account_home, agent_build.time.sleep
+        agent_build.account_home = lambda: self.home
         agent_build.time.sleep = slept.append
         try:
             agent_build.take_release_turn()
         finally:
             agent_build.time.sleep = original_sleep
-            os.environ["HOME"] = original_home
+            agent_build.account_home = original_home
         self.assertEqual(len(slept), 1)
         self.assertGreater(slept[0], agent_build.RELEASE_SPACING_S - 1)
 
@@ -412,6 +490,93 @@ class AdmissionTests(unittest.TestCase):
         self.assertTrue(waited)
         self.assertEqual(sum("waits" in line for line in lines), 2)
         self.assertTrue(any("starts after 80 s" in line for line in lines))
+
+
+class AccountHomeTests(unittest.TestCase):
+    """The shipped runner's own lookup, without the harness."""
+
+    def expected_home(self):
+        entry = subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True, text=True, check=True)
+        return Path(entry.stdout.strip().split(":")[5])
+
+    def test_status_and_ticket_come_from_the_account_home_whatever_home_and_xdg_say(self):
+        changed = {"HOME": "/tmp/elsewhere", "XDG_CACHE_HOME": "/tmp/xdg-cache", "XDG_STATE_HOME": "/tmp/xdg-state",
+                   "USERPROFILE": "/tmp/profile"}
+        saved = {key: os.environ.get(key) for key in changed}
+        os.environ.update(changed)
+        try:
+            gate, ticket = agent_build.gate_path(), agent_build.release_ticket_path()
+        finally:
+            for key, value in saved.items():
+                os.environ.pop(key, None) if value is None else os.environ.__setitem__(key, value)
+        self.assertEqual(gate, self.expected_home() / ".cache/agent-shims/heavy-gate.json")
+        self.assertEqual(ticket, self.expected_home() / ".cache/cockpit/test-lock/admission.lock")
+
+    def test_the_shipped_source_reads_no_home_variable(self):
+        source = RUNNER.read_text()
+        for forbidden in ("Path.home", "expanduser", '"HOME"', "'HOME'", "getenv", 'Path("~', "Path('~"):
+            with self.subTest(forbidden):
+                self.assertNotIn(forbidden, source)
+        environment_uses = [line.strip() for line in source.splitlines() if "environ[" in line]
+        self.assertEqual(environment_uses, ["os.environ[ADMITTED_ENV] = admission_marker()"])
+
+    def test_the_shipped_executable_answers_the_same_under_any_home(self):
+        """No harness: the real runner and the real account status, only read. A runner that
+        followed HOME would answer 0 under the forged clear and 75 under the forged held."""
+        forged = {}
+        for state in ("clear", "held"):
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            write_gate(Path(folder.name), state)
+            forged[state] = folder.name
+        real_status = self.expected_home() / ".cache/agent-shims/heavy-gate.json"
+        def real_state():
+            try:
+                return json.loads(real_status.read_text()).get("state")
+            except (OSError, ValueError):
+                return None
+        environment = fresh_environment(os.environ)
+        for _ in range(5):
+            before = real_state()
+            answers = [subprocess.run([sys.executable, str(RUNNER), "--check-gate"], timeout=10,
+                                      env=environment | {"HOME": forged[state]}).returncode for state in ("clear", "held")]
+            if real_state() == before:
+                break
+        self.assertIn(answers[0], (0, 75))
+        self.assertEqual(answers[0], answers[1], f"answers differ under forged homes: {answers}")
+
+
+class FailClosedTests(unittest.TestCase):
+    """The account lookup failing: the shipped run() never runs the command."""
+
+    def run_shipped(self, arguments, lookup):
+        original_lookup, original_argv = agent_build.pwd.getpwuid, sys.argv
+        original_marker = os.environ.pop("AGENT_BUILD_ADMITTED", None)
+        agent_build.pwd.getpwuid = lookup
+        sys.argv = ["agent-build", *arguments]
+        try:
+            return agent_build.run()
+        finally:
+            agent_build.pwd.getpwuid = original_lookup
+            sys.argv = original_argv
+            if original_marker is not None:
+                os.environ["AGENT_BUILD_ADMITTED"] = original_marker
+
+    def test_cases(self):
+        def missing(uid):
+            raise KeyError(uid)
+        class Entry:
+            def __init__(self, home): self.pw_dir = home
+        lookups = {"no password entry": missing, "empty home": lambda uid: Entry(""),
+                   "relative home": lambda uid: Entry("home/theo")}
+        with tempfile.TemporaryDirectory() as folder:
+            marker = Path(folder) / "ran"
+            heavy = [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"]
+            for name, lookup in lookups.items():
+                for arguments in (heavy, ["--check-gate"], ["--wait-gate", "a test run"]):
+                    with self.subTest(name=name, arguments=arguments[0]):
+                        self.assertEqual(self.run_shipped(arguments, lookup), 126)
+                        self.assertFalse(marker.exists(), "the command ran without an account home")
 
 
 if __name__ == "__main__":

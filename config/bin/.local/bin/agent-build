@@ -5,8 +5,9 @@ A new heavy job first passes the admission gate (todo d021dc46): while the host'
 game is open, memory is low or Theo holds jobs, it waits and says why, then starts unchanged. Its
 exit status is the tool's own. Work started inside an admitted job never waits again: the job
 carries AGENT_BUILD_ADMITTED=<pid>:<start time> of the admitted process, and it counts only while
-that process is one of the caller's ancestors (priority alone proves nothing). A missing, stale or invalid guard status holds too, until Theo releases jobs on the
-host (`cockpit-game-guard release`). The gate is cooperative scheduling, not sandbox enforcement.
+that process is one of the caller's ancestors (priority alone proves nothing). A missing, stale or
+invalid guard status holds too, until Theo releases jobs on the host (`cockpit-game-guard
+release`). The status is read from the account's home in the password database, never $HOME. The gate is cooperative scheduling, not sandbox enforcement.
 """
 
 import errno
@@ -14,6 +15,7 @@ import fcntl
 import json
 import math
 import os
+import pwd
 import shutil
 import stat
 import sys
@@ -36,12 +38,26 @@ MAX_ANCESTORS = 64
 CHEAP_FLAGS = {"--version", "-V", "--help", "-h"}
 
 
+def account_home():
+    """The account's home from the password database, never $HOME: a tool run with another HOME
+    (tests, builds with a temporary home) must still see the guard's real status, and a status
+    file under a chosen HOME must not admit anything. No supported override exists."""
+    uid = os.getuid()
+    try:
+        home = pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        raise OSError(f"no password entry for uid {uid}") from None
+    if not os.path.isabs(home):
+        raise OSError(f"the home of uid {uid} is not an absolute path: {home!r}")
+    return Path(home)
+
+
 def gate_path():
-    return Path.home() / ".cache/agent-shims/heavy-gate.json"
+    return account_home() / ".cache/agent-shims/heavy-gate.json"
 
 
 def release_ticket_path():
-    return Path.home() / ".cache/cockpit/test-lock/admission.lock"
+    return account_home() / ".cache/cockpit/test-lock/admission.lock"
 
 
 def boot_id():
@@ -249,11 +265,17 @@ def main():
     os.execv(executable, arguments)
 
 
-if __name__ == "__main__":
+def run():
+    """main() with its failures mapped to exit codes: an account or file problem never runs the
+    command (126)."""
     try:
-        sys.exit(main())
+        return main()
     except OSError as error:
         print(f"agent-build: {error}", file=sys.stderr)
-        sys.exit(126)
+        return 126
     except KeyboardInterrupt:
-        sys.exit(130)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(run())

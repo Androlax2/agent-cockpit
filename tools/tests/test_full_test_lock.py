@@ -11,7 +11,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 LOCK = REPO / "tools/full-test-lock.py"
-AGENT_BUILD = REPO / "config/bin/.local/bin/agent-build"
+# Test-only: runs the shipped agent-build with only its account home replaced (never installed).
+HARNESS = REPO / "tools/tests/admission_harness.py"
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
@@ -38,12 +39,35 @@ class FullTestLockTests(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
         self.home = self.root / "home"
         write_gate(self.home, "clear")
+        self.lock = self.stage_layout()
+
+    def stage_layout(self):
+        """A byte copy of the committed lock helper, next to an adapter in agent-build's place: the
+        shipped helper finds it through its own unchanged parents[1] rule, and the adapter runs the
+        shipped agent-build with the fixture home as its account home."""
+        committed = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD:tools/full-test-lock.py"],
+                                   capture_output=True, text=True, check=True).stdout.strip()
+        working = subprocess.run(["git", "hash-object", str(LOCK)], capture_output=True, text=True, check=True).stdout.strip()
+        if working != committed:
+            raise AssertionError(f"tools/full-test-lock.py is {working}, not the committed {committed}: commit or restore it")
+        layout = self.root / "layout"
+        lock = layout / "tools/full-test-lock.py"
+        lock.parent.mkdir(parents=True)
+        lock.write_bytes(LOCK.read_bytes())
+        copied = subprocess.run(["git", "hash-object", str(lock)], capture_output=True, text=True, check=True).stdout.strip()
+        if copied != committed:
+            raise AssertionError(f"the copied lock helper is {copied}, not {committed}")
+        adapter = layout / "config/bin/.local/bin/agent-build"
+        adapter.parent.mkdir(parents=True)
+        adapter.write_text(f"import os, sys\nos.execv(sys.executable, [sys.executable, {str(HARNESS)!r}, "
+                           f"{str(self.home)!r}, 'agent-build', *sys.argv[1:]])\n")
+        return lock
 
     def start(self, holder, script, admitted=False):
         return subprocess.Popen(
             [
                 sys.executable,
-                str(LOCK),
+                str(self.lock),
                 str(self.lock_folder),
                 holder,
                 sys.executable,
@@ -55,7 +79,6 @@ class FullTestLockTests(unittest.TestCase):
             text=True,
             # A fresh run unless admitted: make test runs these tests inside an admitted run.
             env={key: value for key, value in os.environ.items() if key != "AGENT_BUILD_ADMITTED"}
-            | {"HOME": str(self.home)}
             | ({"AGENT_BUILD_ADMITTED": marker_of_this_process()} if admitted else {}),
         )
 
@@ -186,7 +209,8 @@ class FullTestLockTests(unittest.TestCase):
         script = (f"import os, subprocess, sys, time\n"
                   f"open({str(started)!r}, 'w').close()\n"
                   f"while not os.path.exists({str(go)!r}): time.sleep(0.02)\n"
-                  f"sys.exit(subprocess.call([sys.executable, {str(AGENT_BUILD)!r}, sys.executable, '-c', 'print(\\'nested ran\\')']))")
+                  f"sys.exit(subprocess.call([sys.executable, {str(HARNESS)!r}, {str(self.home)!r}, 'agent-build', "
+                  f"sys.executable, '-c', 'print(\\'nested ran\\')']))")
         running = self.start("/clones/admitted", script)
         self.addCleanup(lambda: running.poll() is None and running.kill())
         self.wait_for(started.exists)
