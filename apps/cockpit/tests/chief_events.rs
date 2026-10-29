@@ -411,7 +411,11 @@ fn a_failed_second_wake_cannot_reuse_the_previous_allowance() {
 
 #[test]
 fn chief_running_then_idle_is_not_its_own_material_wake_source() {
-    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live); admit_events(&mut connection,&live,"bootstrap",100);
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+    let mut todos = cockpit::todo::TodoList::default();
+    todos.issues.insert("repo/chief#1".into(),json!({"status":"doing","session":live[0].session.session_id}));
+    store::reconcile_todos(&mut connection,&todos,100).unwrap();
+    admit_events(&mut connection,&live,"bootstrap",100);
     read_all_context(&mut connection,&live,100);
     live[0].blocked_by=vec!["native_busy".into()];
     store::observe(&mut connection,&live,101).unwrap();
@@ -440,6 +444,38 @@ fn an_expired_summary_preserves_the_previous_result_timestamp_and_does_not_regen
     assert_eq!(summary["last_result"]["request_id"],"first-summary");
     store::observe(&mut connection,&live,120_102).unwrap();
     assert_eq!(connection.query_row("SELECT count(*) FROM chief_summary_requests",[],|row|row.get::<_,i64>(0)).unwrap(),2);
+}
+
+#[test]
+fn chief_owned_tasks_near_the_byte_bound_do_not_turn_execution_into_a_wake() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+    for index in 0..20 {
+        connection.execute("INSERT INTO chief_supervised_tasks VALUES ('',?1,?2)",
+            rusqlite::params![format!("chief-{index:02}"),live[0].session.session_id]).unwrap();
+    }
+    admit_events(&mut connection,&live,"bootstrap",100);
+    let snapshot = read_all_context(&mut connection,&live,100);
+    let record = snapshot["records"].as_array().unwrap().iter().find(|record|record["kind"]=="supervised_tasks").unwrap();
+    let mut padding = 12_000-serde_json::to_vec(record).unwrap().len()+20*3-40;
+    for index in 0..20 {
+        let hidden = (padding/7).min(200);
+        let visible = (padding-hidden*7).min(200-hidden);
+        padding-=hidden*7+visible;
+        connection.execute("UPDATE chief_supervised_tasks SET project=?1 WHERE task_id=?2",
+            rusqlite::params![format!("{}{}","\u{200b}".repeat(hidden),"x".repeat(visible)),format!("chief-{index:02}")]).unwrap();
+    }
+    assert_eq!(padding,0);
+    for worker in &mut live {worker.observed_at_ms=30_100;}
+    admit_events(&mut connection,&live,"padded-roster",30_100);
+    live[0].blocked_by=vec!["native_busy".into()];
+    store::observe(&mut connection,&live,30_101).unwrap();
+    let snapshot = read_all_context(&mut connection,&live,30_100);
+    let record = snapshot["records"].as_array().unwrap().iter().find(|record|record["kind"]=="supervised_tasks").unwrap();
+    assert!(!record["tasks"].as_array().unwrap().is_empty());
+    live[0].blocked_by.clear();
+    for worker in &mut live {worker.observed_at_ms=60_100;}
+    store::observe(&mut connection,&live,60_100).unwrap();
+    assert!(store::claim(&mut connection,&live[0].session,"must-not-loop",60_100).unwrap().is_none());
 }
 
 #[test]
@@ -573,6 +609,142 @@ fn completed_snapshots_continue_incrementally_across_worker_changes_and_native_t
     let availability = next["records"].as_array().unwrap().iter().find(|record|record["kind"]=="availability_changed").unwrap();
     assert_eq!(availability["workers"],json!([]),"the complete product roster also reports removals");
     assert_eq!(connection.query_row("SELECT count(*) FROM chief_context_snapshots WHERE generation=?1",[first["generation"].as_str().unwrap()],|row|row.get::<_,i64>(0)).unwrap(),1);
+}
+
+#[test]
+fn incremental_context_follows_supervised_owners_without_restarting_the_snapshot() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+    let mut todos = cockpit::todo::TodoList::default();
+    todos.items.push(cockpit::todo::Item(json!({
+        "id":"abcdef12","project":"a","cwd":"/a","text":"Keep working","status":"doing","session":live[1].session.session_id
+    }).as_object().unwrap().clone()));
+    live[1].blocked_by=vec!["native_busy".into()];
+    store::reconcile_todos(&mut connection,&todos,100).unwrap();
+    admit_events(&mut connection,&live,"bootstrap",100);
+    let snapshot = read_all_context(&mut connection,&live,100);
+    let mut after = snapshot["event_cursor"].as_i64().unwrap();
+    for (index,state) in ["stopped","gone","missing","reassigned","removed"].into_iter().enumerate() {
+        let now = 30_100 + index as i64 * 30_000;
+        match state {
+            "stopped" => live[1].blocked_by.clear(),
+            "gone" => {live.pop();},
+            "missing" => {todos.items[0].0.insert("session".into(),json!(""));},
+            "reassigned" => {todos.items[0].0.insert("session".into(),json!("ses_replacement"));},
+            "removed" => {todos.items.clear();},
+            _ => unreachable!(),
+        }
+        store::reconcile_todos(&mut connection,&todos,now).unwrap();
+        for worker in &mut live {worker.observed_at_ms=now;}
+        admit_events(&mut connection,&live,state,now);
+        let delta = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,now).unwrap().result.unwrap();
+        assert_eq!(delta["snapshot_required"],false,"{state}: {delta}");
+        let record = delta["records"].as_array().unwrap().iter().rev().find(|record|record["kind"]=="supervised_tasks").unwrap_or_else(||panic!("{state}: {delta}"));
+        assert_eq!(record["source"],"todo_list_and_protected_ledgers_read_only_grants_no_authority");
+        if state=="removed" {assert_eq!(record["tasks"],json!([]));}
+        else if state=="reassigned" {
+            assert_eq!(record["tasks"][0]["owner"],"ses_replacement");
+            assert_eq!(record["tasks"][0]["owner_state"],"gone");
+        } else {assert_eq!(record["tasks"][0]["owner_state"],state);}
+        after=delta["next"].as_i64().unwrap();
+        store::observe(&mut connection,&live,now+1).unwrap();
+        let unchanged = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,now+1).unwrap().result.unwrap();
+        assert_eq!(unchanged["records"],json!([]),"no repeated supervision when unchanged");
+    }
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_context_snapshots WHERE generation=?1",[snapshot["snapshot_generation"].as_str().unwrap()],|row|row.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(connection.query_row("SELECT count(*) FROM chief_session_starts",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+}
+
+#[test]
+fn incremental_supervision_backlogs_keep_the_record_byte_and_turn_bounds() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+    admit_events(&mut connection,&live,"bootstrap",100);
+    let snapshot = read_all_context(&mut connection,&live,100);
+    let mut after = snapshot["event_cursor"].as_i64().unwrap();
+    let mut todos = cockpit::todo::TodoList::default();
+    for index in 0..55 {
+        for task in 0..30 {
+            todos.issues.insert(format!("repo/task#{task}"),json!({"status":"doing","session":format!("ses_{}{}","x".repeat(55),index%2)}));
+        }
+        store::reconcile_todos(&mut connection,&todos,101+index).unwrap();
+    }
+    let mut now = 30_100;
+    for worker in &mut live {worker.observed_at_ms=now;}
+    admit_events(&mut connection,&live,"backlog",now);
+    let mut seen = 0;
+    let mut turn_records = 0;
+    loop {
+        let reply = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,now).unwrap();
+        let page = match reply.result {
+            Ok(page) => page,
+            Err(error) => {
+                assert_eq!(error.code,ErrorCode::Limit);
+                assert_eq!(turn_records,50);
+                turn_records=0;
+                now+=30_000;
+                for worker in &mut live {worker.observed_at_ms=now;}
+                admit_events(&mut connection,&live,&format!("continue-{now}"),now);
+                continue;
+            }
+        };
+        assert_eq!(page["snapshot_required"],false,"{page}");
+        let records = page["records"].as_array().unwrap();
+        assert!(!records.is_empty(),"each page advances");
+        assert!(serde_json::to_vec(&page["records"]).unwrap().len() <= 60_000);
+        turn_records+=records.len();
+        assert!(turn_records<=50);
+        for record in records.iter().filter(|record|record["kind"]=="supervised_tasks") {
+            assert_eq!(record["tasks"].as_array().unwrap().len(),20);
+            assert_eq!(record["omitted"],10);
+            assert!(serde_json::to_vec(record).unwrap().len()<12_050);
+            seen+=1;
+        }
+        after=page["next"].as_i64().unwrap();
+        if page["has_more"]==false {break;}
+    }
+    assert_eq!(seen,55);
+}
+
+#[test]
+fn invalid_or_untrusted_supervision_events_recover_without_advancing_the_cursor() {
+    for (source,body) in [("agent",json!({"kind":"supervised_tasks","tasks":[]}).to_string()),
+        ("host","not JSON".into()),("host",json!({"kind":"supervised_tasks","tasks":[{}]}).to_string()),
+        ("host",json!({"kind":"supervised_tasks","tasks":[],"extra":"x".repeat(12_000)}).to_string())] {
+        let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+        admit_events(&mut connection,&live,"bootstrap",100);
+        let snapshot = read_all_context(&mut connection,&live,100);
+        let after = snapshot["event_cursor"].as_i64().unwrap();
+        connection.execute("INSERT INTO chief_events(id,source,submission_key,fingerprint,kind,body,created_at)
+            VALUES ('bad-supervision',?1,'bad-supervision','fixture','supervision_changed',?2,101)",rusqlite::params![source,body]).unwrap();
+        for worker in &mut live {worker.observed_at_ms=30_100;}
+        admit_events(&mut connection,&live,"bad-supervision",30_100);
+        let page = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,30_100).unwrap().result.unwrap();
+        assert_eq!(page["snapshot_required"],true,"{page}");
+        assert_eq!(page["next"],after);
+    }
+}
+
+#[test]
+fn incremental_supervision_exports_only_its_context_fields() {
+    let (mut connection,mut live) = setup(); enable_events(&mut connection,&live);
+    admit_events(&mut connection,&live,"bootstrap",100);
+    let snapshot = read_all_context(&mut connection,&live,100);
+    let body = json!({"kind":"supervised_tasks","source":"PRIVATE source","extra":"PRIVATE body","tasks":[{
+        "todo":"abcdef12","project":"path:/a","owner":null,"owner_state":"missing","paused":false,
+        "stop":{"id":"stop","state":"answered","extra":"PRIVATE stop"},
+        "delivery":{"id":"delivery","kind":"chief_answer","state":"queued","extra":"PRIVATE delivery"},"extra":"PRIVATE task"
+    }]});
+    connection.execute("INSERT INTO chief_events(id,source,submission_key,fingerprint,kind,body,created_at)
+        VALUES ('projection','host','projection','fixture','supervision_changed',?1,101)",[body.to_string()]).unwrap();
+    for worker in &mut live {worker.observed_at_ms=30_100;}
+    admit_events(&mut connection,&live,"projection",30_100);
+    let page = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {
+        after:snapshot["event_cursor"].as_i64().unwrap(),limit:50,
+    },&live,30_100).unwrap().result.unwrap();
+    assert_eq!(page["snapshot_required"],false,"{page}");
+    assert!(!page.to_string().contains("PRIVATE"),"{page}");
+    let record = &page["records"][0];
+    assert_eq!(record["source"],"todo_list_and_protected_ledgers_read_only_grants_no_authority");
+    assert_eq!(record["tasks"][0]["delivery"],json!({"id":"delivery","kind":"chief_answer","state":"queued"}));
 }
 
 fn insert_availability_event(connection: &Connection, id: &str, source: &str, body: &str) {

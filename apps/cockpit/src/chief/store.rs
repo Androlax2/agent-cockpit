@@ -1403,6 +1403,7 @@ fn notice_unread_context(connection: &Connection, epoch: &str, chief: &VerifiedS
 }
 
 fn observe_coordination(connection: &Connection, live: &[WorkerState], now_ms: i64) -> Result<(), TeamError> {
+    observe_supervision(connection, live, now_ms)?;
     let grants = connection.prepare("SELECT epoch,session_id,agent,project,runtime,observation FROM chief_grants JOIN chief_coordination USING(epoch) WHERE state IN ('active','paused')")?
         .query_map([],|row|Ok((row.get::<_,String>(0)?,VerifiedSession {session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?},row.get::<_,String>(5)?)))?.collect::<Result<Vec<_>,_>>()?;
     for (epoch,chief,old) in grants {
@@ -2000,6 +2001,12 @@ fn event_context(connection: &Connection, live: &[WorkerState], epoch: &str, aft
         let mut records = Vec::new();
         let mut needs_snapshot = false;
         for (sequence,origin,kind,body) in events {
+            if origin=="host" && kind=="supervision_changed" {
+                let Some(mut record) = context_supervision_record(&body) else {needs_snapshot=true; break;};
+                record["sequence"] = json!(sequence);
+                records.push(record);
+                continue;
+            }
             if origin=="host" && kind=="availability_changed" {
                 let Some(workers) = context_availability_workers(&body) else {needs_snapshot=true; break;};
                 let record = json!({"sequence":sequence,"source":"daemon_derived_availability","kind":kind,
@@ -2267,6 +2274,53 @@ pub(crate) fn ensure_supervised_tasks(connection: &Connection) -> Result<(), Tea
     Ok(())
 }
 
+fn observe_supervision(connection: &Connection, live: &[WorkerState], now_ms: i64) -> Result<(), TeamError> {
+    let record = supervised_tasks_record(connection, live)?;
+    let previous: Option<String> = connection.query_row("SELECT body FROM chief_events WHERE source='host' AND kind='supervision_changed' ORDER BY seq DESC LIMIT 1",
+        [], |row| row.get(0)).optional()?;
+    if record.is_none() && previous.is_none() { return Ok(()); }
+    // An empty replacement clears tasks completed or returned to To do since the last page.
+    let record = record.unwrap_or_else(|| json!({"kind":"supervised_tasks","source":"todo_list_and_protected_ledgers_read_only_grants_no_authority","tasks":[]}));
+    let chief: Option<String> = connection.query_row("SELECT session_id FROM chief_grants WHERE state IN ('active','paused')", [], |row| row.get(0)).optional()?;
+    let material = |mut record: Value| {
+        if let Some(tasks) = record["tasks"].as_array_mut() {
+            for task in tasks.iter_mut().filter(|task| task["owner"].as_str()==chief.as_deref() && chief.is_some()) {
+                // The Chief's own execution must not manufacture its next turn.
+                task.as_object_mut().expect("supervised task is an object").remove("owner_state");
+            }
+        }
+        record
+    };
+    let previous = previous.as_deref().and_then(context_supervision_record);
+    if previous.map(&material) != Some(material(record.clone())) {
+        coordination_event(connection, "supervision_changed", &record, now_ms)?;
+        schedule_wake(connection, now_ms)?;
+    }
+    Ok(())
+}
+
+fn context_supervision_record(body: &str) -> Option<Value> {
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct Stop { id: String, state: String }
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct Delivery { id: String, kind: String, state: String }
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct Task {
+        todo: String, project: String, owner: Option<String>, owner_state: String, paused: bool,
+        stop: Option<Stop>, delivery: Option<Delivery>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Supervision { kind: String, tasks: Vec<Task>, omitted: Option<usize> }
+    if body.len() > SUPERVISED_TASKS_RECORD_BYTES { return None; }
+    let supervision: Supervision = serde_json::from_str(body).ok()?;
+    if supervision.kind != "supervised_tasks" || supervision.tasks.len() > SUPERVISED_TASKS_LISTED_MAX
+        || supervision.tasks.iter().any(|task| !matches!(task.owner_state.as_str(), "missing"|"gone"|"stopped"|"busy")) { return None; }
+    let mut record = json!({"kind":"supervised_tasks","source":"todo_list_and_protected_ledgers_read_only_grants_no_authority","tasks":supervision.tasks});
+    if let Some(omitted) = supervision.omitted { record["omitted"] = json!(omitted); }
+    if serde_json::to_vec(&record).ok()?.len() > SUPERVISED_TASKS_RECORD_BYTES { return None; }
+    Some(record)
+}
+
 fn context_snapshot(records: &[Value], after: i64, limit: usize) -> Result<Value, TeamError> {
     super::validate_cursor(after, limit)?;
     let start = usize::try_from(after).unwrap_or(usize::MAX).min(records.len());
@@ -2404,6 +2458,7 @@ fn supervised_tasks_record(connection: &Connection, live: &[WorkerState]) -> Res
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?
         .collect::<Result<Vec<_>, _>>()?;
     if rows.is_empty() { return Ok(None); }
+    let chief: Option<String> = connection.query_row("SELECT session_id FROM chief_grants WHERE state IN ('active','paused')", [], |row| row.get(0)).optional()?;
     let mut ranked = Vec::new();
     for (project, task, owner) in rows {
         let owner = Some(owner).filter(|owner| (1..=64).contains(&owner.len())
@@ -2421,7 +2476,9 @@ fn supervised_tasks_record(connection: &Connection, live: &[WorkerState]) -> Res
             Some(worker) if worker.blocked_by.iter().any(|reason| reason == "busy" || reason == "native_busy") => "busy",
             Some(_) => "stopped",
         };
-        let rank = ["missing", "gone", "stopped", "busy"].iter().position(|known| *known == state).expect("listed owner state");
+        // Keep the bounded roster stable across the Chief's own busy/idle transitions.
+        let rank = if owner.as_deref()==chief.as_deref() && chief.is_some() { 3 }
+            else { ["missing", "gone", "stopped", "busy"].iter().position(|known| *known == state).expect("listed owner state") };
         ranked.push((rank, project, task, owner, state, stop));
     }
     ranked.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
@@ -2442,10 +2499,11 @@ fn supervised_tasks_record(connection: &Connection, live: &[WorkerState]) -> Res
                 [owner], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
         }
         let bounded = |text: &str| crate::approval::escape_hiding(&text.chars().take(SUPERVISED_TEXT_MAX_CHARS).collect::<String>(), "", "");
+        let state_padding = if owner.as_deref()==chief.as_deref() && chief.is_some() { "stopped".len()-state.len() } else { 0 };
         let task = json!({"todo": bounded(&task), "project": bounded(&project), "owner": owner, "owner_state": state, "paused": paused,
             "stop": stop.map(|(id, state)| json!({"id": id, "state": state})),
             "delivery": delivery.map(|(id, kind, state)| json!({"id": id, "kind": kind, "state": state}))});
-        let size = serde_json::to_vec(&task)?.len() + 1;
+        let size = serde_json::to_vec(&task)?.len() + 1 + state_padding;
         if bytes + size > SUPERVISED_TASKS_RECORD_BYTES { break; }
         bytes += size;
         listed.push(task);
@@ -2784,6 +2842,7 @@ pub fn reconcile_todos(connection: &mut Connection, todos: &crate::todo::TodoLis
         }
     }
     transaction.execute("UPDATE legacy_launches SET state='released',revision=revision+1 WHERE state IN ('manual','submitted') AND NOT EXISTS(SELECT 1 FROM scheduling_reservations r WHERE r.token=legacy_launches.token)",[])?;
+    observe_supervision(&transaction, &observed(&transaction)?, now_ms)?;
     transaction.commit()?;
     Ok(())
 }

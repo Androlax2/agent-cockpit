@@ -1792,6 +1792,31 @@ fn chief_context_marks_an_owner_put_to_sleep_as_paused_not_only_gone() {
 }
 
 #[test]
+fn incremental_chief_context_reports_a_supervised_owner_disappearing_mid_epoch() {
+    let mut bench = stop_bench();
+    let task = doing_todo(&bench, "Fix login", STOPPED_WORKER);
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().state = "working".into();
+    bench.registry.tick_queues();
+    let snapshot = context(&mut bench, 20).unwrap().result.unwrap();
+    assert_eq!(snapshot["has_more"], false);
+    bench.registry.sessions.get_mut(STOPPED_WORKER).unwrap().runtime.clear();
+    bench.world.borrow_mut().sender_runtimes.remove(&STOPPED_WORKER_PEER);
+    bench.registry.tick_queues();
+    prepare_chief_boundary(&mut bench);
+    bench.registry.sessions.get_mut(OPENCODE_SESSION).unwrap().since -= 7.0;
+    let dispatch = crate::teams::request(&mut bench.registry, 20, AgentAction::Receive).unwrap().result.unwrap();
+    assert_eq!(dispatch["envelope"]["kind"], "chief_wake");
+    crate::teams::request(&mut bench.registry, 20, AgentAction::Receipt { dispatch_id: dispatch["dispatch_id"].as_str().unwrap().into(),
+        outcome: cockpit::teams::TransportOutcome::Received { native_id: "chief-gone-owner".into() } }).unwrap().result.unwrap();
+    let delta = crate::teams::request(&mut bench.registry, 20, AgentAction::Chief { request: ChiefAgentAction::Context {
+        after: snapshot["event_cursor"].as_i64().unwrap(), limit: 50,
+    }}).unwrap().result.unwrap();
+    assert_eq!(delta["snapshot_required"], false, "{delta}");
+    let record = delta["records"].as_array().unwrap().iter().rev().find(|record| record["kind"] == "supervised_tasks").unwrap();
+    assert_eq!(supervised(record["tasks"].as_array().unwrap(), &task)["owner_state"], "gone");
+}
+
+#[test]
 fn chief_context_follows_an_answer_to_the_owner_through_its_delivery_state() {
     let mut bench = stop_bench();
     let task = doing_todo(&bench, "Fix login", STOPPED_WORKER);
