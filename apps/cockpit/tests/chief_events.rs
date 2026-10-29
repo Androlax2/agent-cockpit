@@ -661,7 +661,7 @@ fn incremental_supervision_backlogs_keep_the_record_byte_and_turn_bounds() {
     let snapshot = read_all_context(&mut connection,&live,100);
     let mut after = snapshot["event_cursor"].as_i64().unwrap();
     let mut todos = cockpit::todo::TodoList::default();
-    for index in 0..55 {
+    for index in 0..105 {
         for task in 0..30 {
             todos.issues.insert(format!("repo/task#{task}"),json!({"status":"doing","session":format!("ses_{}{}","x".repeat(55),index%2)}));
         }
@@ -672,13 +672,15 @@ fn incremental_supervision_backlogs_keep_the_record_byte_and_turn_bounds() {
     admit_events(&mut connection,&live,"backlog",now);
     let mut seen = 0;
     let mut turn_records = 0;
+    let mut continuations = 0;
     loop {
         let reply = store::agent(&mut connection,&live[0].session,&ChiefAgentAction::Context {after,limit:50},&live,now).unwrap();
         let page = match reply.result {
             Ok(page) => page,
             Err(error) => {
                 assert_eq!(error.code,ErrorCode::Limit);
-                assert_eq!(turn_records,50);
+                assert!(turn_records>=50);
+                continuations+=1;
                 turn_records=0;
                 now+=30_000;
                 for worker in &mut live {worker.observed_at_ms=now;}
@@ -691,7 +693,9 @@ fn incremental_supervision_backlogs_keep_the_record_byte_and_turn_bounds() {
         assert!(!records.is_empty(),"each page advances");
         assert!(serde_json::to_vec(&page["records"]).unwrap().len() <= 60_000);
         turn_records+=records.len();
-        assert!(turn_records<=50);
+        assert!(records.len()<=50);
+        let charged: i64 = connection.query_row("SELECT records FROM chief_turns ORDER BY rowid DESC LIMIT 1",[],|row|row.get(0)).unwrap();
+        assert_eq!(charged,turn_records as i64,"every returned supervision record consumes the turn allowance");
         for record in records.iter().filter(|record|record["kind"]=="supervised_tasks") {
             assert_eq!(record["tasks"].as_array().unwrap().len(),20);
             assert_eq!(record["omitted"],10);
@@ -701,7 +705,8 @@ fn incremental_supervision_backlogs_keep_the_record_byte_and_turn_bounds() {
         after=page["next"].as_i64().unwrap();
         if page["has_more"]==false {break;}
     }
-    assert_eq!(seen,55);
+    assert_eq!(seen,105);
+    assert!(continuations>0,"a backlog continues only after another admitted boundary");
 }
 
 #[test]
