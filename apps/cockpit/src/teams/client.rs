@@ -23,13 +23,7 @@ pub fn request(action: &AgentAction) -> Result<TeamReply, TeamError> {
     let wire = serde_json::to_vec(action)?;
     if wire.len() > REQUEST_MAX { return Err(TeamError::new(ErrorCode::Limit, "team request exceeds 32 KiB")); }
     let path = socket_path()?;
-    let metadata = fs::symlink_metadata(&path).map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("team socket unavailable ({error}); reload the cockpit and restart this session if needed")))?;
-    if !metadata.file_type().is_socket() { return Err(TeamError::new(ErrorCode::Unavailable, "team socket must be a real socket, not a symlink or regular file")); }
-    // Project answer slugs can exceed AF_UNIX's 108-byte pathname limit. Use only this opened directory.
-    let folder = fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(path.parent().ok_or_else(|| TeamError::new(ErrorCode::Storage, "invalid team socket path"))?)?;
-    let endpoint = format!("/proc/self/fd/{}/agent.sock", folder.as_raw_fd());
-    let mut stream = UnixStream::connect(endpoint).map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("team socket cannot connect: {error}")))?;
+    let mut stream = connect_through_restart(&path, CONNECT_PATIENCE)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     stream.write_all(&wire)?;
@@ -39,6 +33,43 @@ pub fn request(action: &AgentAction) -> Result<TeamReply, TeamError> {
         .map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("team reply unavailable ({error}); resubmit only with the same submission key")))?;
     if reply.len() > AGENT_REPLY_MAX { return Err(TeamError::new(ErrorCode::Limit, "team reply exceeds its limit")); }
     serde_json::from_slice(&reply).map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("invalid team reply ({error}); resubmit only with the same submission key")))
+}
+
+/// How long a refused connect is retried: an OSD restart binds and re-links the socket in seconds.
+const CONNECT_PATIENCE: Duration = Duration::from_secs(15);
+
+/// During a daemon restart the session's link still names the old socket, which refuses: nothing
+/// was received, so only the connect is retried, never a request that was written. Each attempt
+/// reopens the folder: the restarted daemon links its new socket there.
+fn connect_through_restart(path: &Path, patience: Duration) -> Result<UnixStream, TeamError> {
+    let deadline = std::time::Instant::now() + patience;
+    loop {
+        match connect_once(path) {
+            Err(error) if is_restart_gap(&error) && std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(500)),
+            Err(error) if is_restart_gap(&error) => return Err(TeamError::new(ErrorCode::Unavailable, format!(
+                "team socket cannot connect for {} s ({error}); nothing was sent: retry with the same submission key once the OSD daemon runs", patience.as_secs()))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(TeamError::new(ErrorCode::Unavailable,
+                format!("team socket unavailable ({error}); reload the cockpit and restart this session if needed"))),
+            Err(error) => return Err(TeamError::new(ErrorCode::Unavailable, format!("team socket cannot connect: {error}"))),
+            Ok(Err(refusal)) => return Err(refusal),
+            Ok(Ok(stream)) => return Ok(stream),
+        }
+    }
+}
+
+fn is_restart_gap(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::ConnectionRefused
+}
+
+/// The outer error is a connect failure worth retrying; the inner one a refusal that is final.
+fn connect_once(path: &Path) -> std::io::Result<Result<UnixStream, TeamError>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_socket() { return Ok(Err(TeamError::new(ErrorCode::Unavailable, "team socket must be a real socket, not a symlink or regular file"))); }
+    // Project answer slugs can exceed AF_UNIX's 108-byte pathname limit. Use only this opened directory.
+    let Some(parent) = path.parent() else { return Ok(Err(TeamError::new(ErrorCode::Storage, "invalid team socket path"))) };
+    let folder = fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW).open(parent)?;
+    let endpoint = format!("/proc/self/fd/{}/agent.sock", folder.as_raw_fd());
+    UnixStream::connect(endpoint).map(Ok)
 }
 
 pub const HOST_REPLY_MAX: usize = 1 << 20;
