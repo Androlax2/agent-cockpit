@@ -287,6 +287,42 @@ fn no_recovery_check_without_exactly_one_new_runtime_of_the_retained_conversatio
     }
 }
 
+/// A retained grant for `boot-a` in a database on disk, with a check queued for `boot-b`.
+fn check_queued_on_disk(sandbox: &common::sandbox::Sandbox) -> (std::path::PathBuf, String, VerifiedSession) {
+    let path = sandbox.home.join("protected/check.db");
+    let mut connection = cockpit::teams::store::open(&path).unwrap();
+    let old = session("boot-a:10:100");
+    let grant = store::host(&mut connection, &ChiefHostAction::Enable {request_id:"enable".into(),session:old.clone()}, &[live(&old)], NOW-100).unwrap().result.unwrap();
+    let replacement = session("boot-b:20:200");
+    let check = send_check(&mut connection, grant["epoch"].as_str().unwrap(), &[live(&replacement)], "check").unwrap()["check"].as_str().unwrap().to_string();
+    (path, check, replacement)
+}
+
+#[test]
+fn a_queued_recovery_check_survives_reopening_the_store_and_is_received() {
+    // Every open cleared old dispatch leftovers and cancelled pending checks with them (b4329b6f).
+    let sandbox = common::sandbox::Sandbox::new();
+    let (path, check, replacement) = check_queued_on_disk(&sandbox);
+    let mut reopened = cockpit::teams::store::open(&path).unwrap();
+    let dispatch = store::claim_check(&mut reopened, &replacement, "idle-1", NOW).unwrap().expect("the check is still queued after a reopen");
+    assert_eq!(dispatch.message_id, check);
+    store::finish_for(&mut reopened, &replacement, &dispatch.id,
+        &cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{}",dispatch.message_id)}, NOW).unwrap();
+    assert_eq!(recovery_check(&reopened, &[live(&replacement)], NOW)["check"]["state"], "received");
+}
+
+#[test]
+fn a_recovery_check_in_flight_during_a_reopen_still_records_its_receipt() {
+    let sandbox = common::sandbox::Sandbox::new();
+    let (path, _, replacement) = check_queued_on_disk(&sandbox);
+    let mut connection = cockpit::teams::store::open(&path).unwrap();
+    let dispatch = store::claim_check(&mut connection, &replacement, "idle-1", NOW).unwrap().unwrap();
+    let mut reopened = cockpit::teams::store::open(&path).unwrap();
+    store::finish_for(&mut reopened, &replacement, &dispatch.id,
+        &cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{}",dispatch.message_id)}, NOW).unwrap();
+    assert_eq!(recovery_check(&reopened, &[live(&replacement)], NOW)["check"]["state"], "received");
+}
+
 #[test]
 fn a_recovery_check_reaches_only_the_new_runtime_it_names() {
     for recipient in [session("boot-a:10:100"), session("boot-c:30:300")] {

@@ -2673,17 +2673,22 @@ pub(crate) fn upgrade_scheduling(connection: &Connection) -> Result<(), TeamErro
 
 /// Run on every open: the removed dispatch protocol must not keep tasks reserved or hold decisions
 /// and deliveries open that nothing can act on any more.
+/// The deliveries of today's Chief, which `clear_dispatch_leftovers` keeps on every open; anything
+/// else still pending is a leftover of the retired dispatcher. A check left out was cancelled before
+/// its Chief could receive it (b4329b6f).
+const CURRENT_DELIVERY_KINDS: &str = "'chief_wake','chief_answer','chief_form_reply','chief_correction','chief_message','chief_todo','chief_check'";
+
 pub fn clear_dispatch_leftovers(transaction: &rusqlite::Transaction<'_>) -> Result<(), TeamError> {
     transaction.execute("DELETE FROM scheduling_reservations WHERE owner='chief'", [])?;
     transaction.execute("UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open'
         AND (work IS NOT NULL OR assignment IS NOT NULL OR scope_key LIKE 'host-assignment-%')", [])?;
-    transaction.execute("UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open'
+    transaction.execute(&format!("UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open'
         AND scope_key IN (SELECT 'host-delivery-'||id FROM chief_inbox WHERE state IN ('queued','submitting','uncertain')
-            AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction','chief_message','chief_todo'))", [])?;
-    transaction.execute("UPDATE chief_inbox SET state='cancelled' WHERE state IN ('queued','submitting','uncertain')
-        AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction','chief_message','chief_todo')", [])?;
-    transaction.execute("UPDATE chief_delivery_attempts SET state='cancelled' WHERE state IN ('submitting','uncertain')
-        AND coalesce(kind,'') NOT IN ('chief_wake','chief_answer','chief_form_reply','chief_correction','chief_message','chief_todo')", [])?;
+            AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ({CURRENT_DELIVERY_KINDS}))"), [])?;
+    transaction.execute(&format!("UPDATE chief_inbox SET state='cancelled' WHERE state IN ('queued','submitting','uncertain')
+        AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ({CURRENT_DELIVERY_KINDS})"), [])?;
+    transaction.execute(&format!("UPDATE chief_delivery_attempts SET state='cancelled' WHERE state IN ('submitting','uncertain')
+        AND coalesce(kind,'') NOT IN ({CURRENT_DELIVERY_KINDS})"), [])?;
     Ok(())
 }
 
