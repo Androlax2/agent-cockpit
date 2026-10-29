@@ -91,11 +91,14 @@ pub fn chief_starts_per_hour() -> Result<i64, String> {
 /// the Chief start or give todos its own project filed without Theo's Q. Missing or empty is off;
 /// anything but on or off is an error, so a typo never widens what the Chief may start.
 pub fn chief_dispatches_own_todos() -> Result<bool, String> {
-    let value = launch_value("chief-dispatches-own-todos").map_err(|error| format!("chief-dispatches-own-todos: {error}"))?;
+    let value = launch_value("chief-dispatches-own-todos")
+        .map_err(|error| format!("chief-dispatches-own-todos: {error}"))?;
     match value.as_str() {
         "" | "off" => Ok(false),
         "on" => Ok(true),
-        _ => Err(format!("invalid chief-dispatches-own-todos {value:?} in settings.json: expected on or off")),
+        _ => Err(format!(
+            "invalid chief-dispatches-own-todos {value:?} in settings.json: expected on or off"
+        )),
     }
 }
 

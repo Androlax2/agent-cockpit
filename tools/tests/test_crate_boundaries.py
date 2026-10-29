@@ -8,11 +8,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class CrateBoundaryTests(unittest.TestCase):
     def test_daemon_runtime_dependencies_do_not_include_gtk(self):
+        self.assert_runtime_boundary("cockpit-daemon", ("gtk", "gdk", "gsk"))
+
+    def test_protocol_runtime_dependencies_do_not_include_ui_or_sqlite(self):
+        self.assert_runtime_boundary(
+            "cockpit-protocol",
+            ("gtk", "gdk", "gsk", "ratatui", "crossterm", "rusqlite", "libsqlite"),
+        )
+
+    def assert_runtime_boundary(self, crate_name, forbidden_prefixes):
         result = subprocess.run(
             [
                 "cargo",
                 "metadata",
-                "--offline",
                 "--locked",
                 "--format-version",
                 "1",
@@ -25,10 +33,10 @@ class CrateBoundaryTests(unittest.TestCase):
         )
         metadata = json.loads(result.stdout)
         packages = {package["id"]: package["name"] for package in metadata["packages"]}
-        daemon = [identity for identity, name in packages.items() if name == "cockpit-daemon"]
-        self.assertEqual(len(daemon), 1, "the headless daemon must be a real workspace crate")
+        roots = [identity for identity, name in packages.items() if name == crate_name]
+        self.assertEqual(len(roots), 1, f"{crate_name} must be a real workspace crate")
         graph = {node["id"]: node["deps"] for node in metadata["resolve"]["nodes"]}
-        pending = list(daemon)
+        pending = list(roots)
         visited = set()
         while pending:
             identity = pending.pop()
@@ -36,8 +44,8 @@ class CrateBoundaryTests(unittest.TestCase):
                 continue
             visited.add(identity)
             self.assertFalse(
-                packages[identity].startswith(("gtk", "gdk", "gsk")),
-                f"daemon runtime reaches {packages[identity]}",
+                packages[identity].startswith(forbidden_prefixes),
+                f"{crate_name} runtime reaches {packages[identity]}",
             )
             pending.extend(
                 dependency["pkg"]

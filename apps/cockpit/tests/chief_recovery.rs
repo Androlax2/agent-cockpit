@@ -615,16 +615,34 @@ fn recovery_retires_pending_requests_but_preserves_started_and_reserved_launches
 /// A retained grant for `boot-a` whose runtime is gone, without any verification of the new runtime.
 fn restarted() -> (Connection, String, VerifiedSession) {
     let (connection, epoch, replacement) = fixture();
-    connection.execute("DELETE FROM chief_admission_verifications", []).unwrap();
+    connection
+        .execute("DELETE FROM chief_admission_verifications", [])
+        .unwrap();
     (connection, epoch, replacement)
 }
 
 fn recovery_check(connection: &Connection, workers: &[WorkerState], now_ms: i64) -> Value {
-    store::snapshot_page(connection, workers, 0, 50, None, now_ms).unwrap()["recovery_check"].clone()
+    store::snapshot_page(connection, workers, 0, 50, None, now_ms).unwrap()["recovery_check"]
+        .clone()
 }
 
-fn send_check(connection: &mut Connection, attempt: &str, workers: &[WorkerState], key: &str) -> Result<Value, cockpit::teams::TeamError> {
-    store::host(connection, &ChiefHostAction::SendCheck {request_id:key.into(),attempt:attempt.into()}, workers, NOW).unwrap().result
+fn send_check(
+    connection: &mut Connection,
+    attempt: &str,
+    workers: &[WorkerState],
+    key: &str,
+) -> Result<Value, cockpit::teams::TeamError> {
+    store::host(
+        connection,
+        &ChiefHostAction::SendCheck {
+            request_id: key.into(),
+            attempt: attempt.into(),
+        },
+        workers,
+        NOW,
+    )
+    .unwrap()
+    .result
 }
 
 #[test]
@@ -633,66 +651,186 @@ fn a_restarted_chief_gets_a_test_message_whose_confirmation_lets_recovery_throug
     let shown = recovery_check(&connection, &[live(&replacement)], NOW);
     assert_eq!(shown["id"], epoch);
     assert_eq!(shown["check_session"], json!(replacement));
-    assert!(shown["check"].is_null() && shown["verified_at_ms"].is_null(), "{shown}");
-    let check = send_check(&mut connection, &epoch, &[live(&replacement)], "check-1").unwrap()["check"].as_str().unwrap().to_string();
-    assert_eq!(send_check(&mut connection, &epoch, &[live(&replacement)], "check-2").unwrap()["check"], check, "a pending check is never sent twice");
-    let dispatch = store::claim_check(&mut connection, &replacement, "idle-1", NOW).unwrap().expect("the new runtime takes its check");
+    assert!(
+        shown["check"].is_null() && shown["verified_at_ms"].is_null(),
+        "{shown}"
+    );
+    let check =
+        send_check(&mut connection, &epoch, &[live(&replacement)], "check-1").unwrap()["check"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    assert_eq!(
+        send_check(&mut connection, &epoch, &[live(&replacement)], "check-2").unwrap()["check"],
+        check,
+        "a pending check is never sent twice"
+    );
+    let dispatch = store::claim_check(&mut connection, &replacement, "idle-1", NOW)
+        .unwrap()
+        .expect("the new runtime takes its check");
     assert_eq!(dispatch.envelope["kind"], "chief_check");
-    store::finish_for(&mut connection, &replacement, &dispatch.id,
-        &cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{}",dispatch.message_id)}, NOW).unwrap();
-    assert_eq!(recovery_check(&connection, &[live(&replacement)], NOW)["check"]["state"], "received");
-    assert!(recover(&mut connection, &request(&epoch, 1, &replacement, "early"), &replacement).is_err(), "a received check alone is not Theo's confirmation");
-    store::verify_admission(&mut connection, &replacement, "opencode-queued-v1", "Theo saw the delivery check arrive", NOW).unwrap();
-    assert_eq!(recovery_check(&connection, &[live(&replacement)], NOW)["verified_at_ms"], NOW);
-    recover(&mut connection, &request(&epoch, 1, &replacement, "recover"), &replacement).unwrap();
-    assert!(recovery_check(&connection, &[live(&replacement)], NOW).is_null(), "a recovered Chief needs no check");
+    store::finish_for(
+        &mut connection,
+        &replacement,
+        &dispatch.id,
+        &cockpit::teams::TransportOutcome::Received {
+            native_id: format!("msg_cockpit{}", dispatch.message_id),
+        },
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(
+        recovery_check(&connection, &[live(&replacement)], NOW)["check"]["state"],
+        "received"
+    );
+    assert!(
+        recover(
+            &mut connection,
+            &request(&epoch, 1, &replacement, "early"),
+            &replacement
+        )
+        .is_err(),
+        "a received check alone is not Theo's confirmation"
+    );
+    store::verify_admission(
+        &mut connection,
+        &replacement,
+        "opencode-queued-v1",
+        "Theo saw the delivery check arrive",
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(
+        recovery_check(&connection, &[live(&replacement)], NOW)["verified_at_ms"],
+        NOW
+    );
+    recover(
+        &mut connection,
+        &request(&epoch, 1, &replacement, "recover"),
+        &replacement,
+    )
+    .unwrap();
+    assert!(
+        recovery_check(&connection, &[live(&replacement)], NOW).is_null(),
+        "a recovered Chief needs no check"
+    );
 }
 
 #[test]
 fn a_recovery_check_is_offered_again_once_its_verification_expired() {
     let (mut connection, epoch, replacement) = restarted();
-    store::verify_admission(&mut connection, &replacement, "opencode-queued-v1", "Fixture", NOW-300_001).unwrap();
+    store::verify_admission(
+        &mut connection,
+        &replacement,
+        "opencode-queued-v1",
+        "Fixture",
+        NOW - 300_001,
+    )
+    .unwrap();
     let shown = recovery_check(&connection, &[live(&replacement)], NOW);
-    assert!(shown["verified_at_ms"].is_null() && shown["check"].is_null(), "{shown}");
+    assert!(
+        shown["verified_at_ms"].is_null() && shown["check"].is_null(),
+        "{shown}"
+    );
     assert!(send_check(&mut connection, &epoch, &[live(&replacement)], "check").is_ok());
-    store::verify_admission(&mut connection, &replacement, "opencode-queued-v1", "Fixture", NOW).unwrap();
-    assert!(send_check(&mut connection, &epoch, &[live(&replacement)], "fresh").is_err(), "a fresh verification needs no second check");
+    store::verify_admission(
+        &mut connection,
+        &replacement,
+        "opencode-queued-v1",
+        "Fixture",
+        NOW,
+    )
+    .unwrap();
+    assert!(
+        send_check(&mut connection, &epoch, &[live(&replacement)], "fresh").is_err(),
+        "a fresh verification needs no second check"
+    );
 }
 
 #[test]
 fn no_recovery_check_without_exactly_one_new_runtime_of_the_retained_conversation() {
-    for case in ["old-runtime-live","none-live","other-session","other-project","two-new","team","disabled","startup-attempt"] {
+    for case in [
+        "old-runtime-live",
+        "none-live",
+        "other-session",
+        "other-project",
+        "two-new",
+        "team",
+        "disabled",
+        "startup-attempt",
+    ] {
         let (mut connection, epoch, replacement) = restarted();
         let mut workers = vec![live(&replacement)];
         let mut attempt = epoch.clone();
         match case {
             "old-runtime-live" => workers.push(live(&session("boot-a:10:100"))),
             "none-live" => workers.clear(),
-            "other-session" => workers[0].session.session_id = "ses_other000000000000000000000".into(),
+            "other-session" => {
+                workers[0].session.session_id = "ses_other000000000000000000000".into()
+            }
             "other-project" => workers[0].session.project = "path:/project-b".into(),
             "two-new" => workers.push(live(&session("boot-c:30:300"))),
             "team" => {
-                connection.execute("INSERT INTO teams VALUES ('task','path:/project-a','aaaaaaaa',1)", []).unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO teams VALUES ('task','path:/project-a','aaaaaaaa',1)",
+                        [],
+                    )
+                    .unwrap();
                 connection.execute("INSERT INTO members VALUES ('task',?1,'developer','opencode',?2,'member-epoch',NULL)", params![replacement.session_id,replacement.runtime]).unwrap();
-            },
-            "disabled" => { connection.execute("UPDATE chief_grants SET state='disabled'", []).unwrap(); },
+            }
+            "disabled" => {
+                connection
+                    .execute("UPDATE chief_grants SET state='disabled'", [])
+                    .unwrap();
+            }
             "startup-attempt" => attempt = "another-attempt".into(),
             _ => unreachable!(),
         }
-        if case != "startup-attempt" { assert!(recovery_check(&connection, &workers, NOW).is_null(), "{case}"); }
-        assert!(send_check(&mut connection, &attempt, &workers, "check").is_err(), "{case}");
+        if case != "startup-attempt" {
+            assert!(
+                recovery_check(&connection, &workers, NOW).is_null(),
+                "{case}"
+            );
+        }
+        assert!(
+            send_check(&mut connection, &attempt, &workers, "check").is_err(),
+            "{case}"
+        );
         assert_eq!(connection.query_row("SELECT count(*) FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_check'", [], |row| row.get::<_,i64>(0)).unwrap(), 0, "{case}");
     }
 }
 
 /// A retained grant for `boot-a` in a database on disk, with a check queued for `boot-b`.
-fn check_queued_on_disk(sandbox: &common::sandbox::Sandbox) -> (std::path::PathBuf, String, VerifiedSession) {
+fn check_queued_on_disk(
+    sandbox: &common::sandbox::Sandbox,
+) -> (std::path::PathBuf, String, VerifiedSession) {
     let path = sandbox.home.join("protected/check.db");
     let mut connection = cockpit::teams::store::open(&path).unwrap();
     let old = session("boot-a:10:100");
-    let grant = store::host(&mut connection, &ChiefHostAction::Enable {request_id:"enable".into(),session:old.clone()}, &[live(&old)], NOW-100).unwrap().result.unwrap();
+    let grant = store::host(
+        &mut connection,
+        &ChiefHostAction::Enable {
+            request_id: "enable".into(),
+            session: old.clone(),
+        },
+        &[live(&old)],
+        NOW - 100,
+    )
+    .unwrap()
+    .result
+    .unwrap();
     let replacement = session("boot-b:20:200");
-    let check = send_check(&mut connection, grant["epoch"].as_str().unwrap(), &[live(&replacement)], "check").unwrap()["check"].as_str().unwrap().to_string();
+    let check = send_check(
+        &mut connection,
+        grant["epoch"].as_str().unwrap(),
+        &[live(&replacement)],
+        "check",
+    )
+    .unwrap()["check"]
+        .as_str()
+        .unwrap()
+        .to_string();
     (path, check, replacement)
 }
 
@@ -702,11 +840,24 @@ fn a_queued_recovery_check_survives_reopening_the_store_and_is_received() {
     let sandbox = common::sandbox::Sandbox::new();
     let (path, check, replacement) = check_queued_on_disk(&sandbox);
     let mut reopened = cockpit::teams::store::open(&path).unwrap();
-    let dispatch = store::claim_check(&mut reopened, &replacement, "idle-1", NOW).unwrap().expect("the check is still queued after a reopen");
+    let dispatch = store::claim_check(&mut reopened, &replacement, "idle-1", NOW)
+        .unwrap()
+        .expect("the check is still queued after a reopen");
     assert_eq!(dispatch.message_id, check);
-    store::finish_for(&mut reopened, &replacement, &dispatch.id,
-        &cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{}",dispatch.message_id)}, NOW).unwrap();
-    assert_eq!(recovery_check(&reopened, &[live(&replacement)], NOW)["check"]["state"], "received");
+    store::finish_for(
+        &mut reopened,
+        &replacement,
+        &dispatch.id,
+        &cockpit::teams::TransportOutcome::Received {
+            native_id: format!("msg_cockpit{}", dispatch.message_id),
+        },
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(
+        recovery_check(&reopened, &[live(&replacement)], NOW)["check"]["state"],
+        "received"
+    );
 }
 
 #[test]
@@ -714,11 +865,24 @@ fn a_recovery_check_in_flight_during_a_reopen_still_records_its_receipt() {
     let sandbox = common::sandbox::Sandbox::new();
     let (path, _, replacement) = check_queued_on_disk(&sandbox);
     let mut connection = cockpit::teams::store::open(&path).unwrap();
-    let dispatch = store::claim_check(&mut connection, &replacement, "idle-1", NOW).unwrap().unwrap();
+    let dispatch = store::claim_check(&mut connection, &replacement, "idle-1", NOW)
+        .unwrap()
+        .unwrap();
     let mut reopened = cockpit::teams::store::open(&path).unwrap();
-    store::finish_for(&mut reopened, &replacement, &dispatch.id,
-        &cockpit::teams::TransportOutcome::Received {native_id:format!("msg_cockpit{}",dispatch.message_id)}, NOW).unwrap();
-    assert_eq!(recovery_check(&reopened, &[live(&replacement)], NOW)["check"]["state"], "received");
+    store::finish_for(
+        &mut reopened,
+        &replacement,
+        &dispatch.id,
+        &cockpit::teams::TransportOutcome::Received {
+            native_id: format!("msg_cockpit{}", dispatch.message_id),
+        },
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(
+        recovery_check(&reopened, &[live(&replacement)], NOW)["check"]["state"],
+        "received"
+    );
 }
 
 #[test]
@@ -726,7 +890,17 @@ fn a_recovery_check_reaches_only_the_new_runtime_it_names() {
     for recipient in [session("boot-a:10:100"), session("boot-c:30:300")] {
         let (mut connection, epoch, replacement) = restarted();
         send_check(&mut connection, &epoch, &[live(&replacement)], "check").unwrap();
-        assert!(store::claim_check(&mut connection, &recipient, "idle-1", NOW).unwrap().is_none(), "{recipient:?}");
-        assert!(store::claim_check(&mut connection, &replacement, "idle-1", NOW).unwrap().is_none(), "a check offered to another runtime is cancelled, never redirected");
+        assert!(
+            store::claim_check(&mut connection, &recipient, "idle-1", NOW)
+                .unwrap()
+                .is_none(),
+            "{recipient:?}"
+        );
+        assert!(
+            store::claim_check(&mut connection, &replacement, "idle-1", NOW)
+                .unwrap()
+                .is_none(),
+            "a check offered to another runtime is cancelled, never redirected"
+        );
     }
 }

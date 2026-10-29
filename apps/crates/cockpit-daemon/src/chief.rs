@@ -2,6 +2,7 @@
 
 use crate::{registry::Registry, teams};
 use cockpit::chief::{ChiefAgentAction, ChiefHostAction, WorkerState, store};
+use cockpit::teams::store::storage_error;
 use cockpit::teams::{ErrorCode, NativeCounts, TaskKey, TeamError, TeamReply, VerifiedSession};
 use serde_json::Value;
 
@@ -478,13 +479,15 @@ pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamRep
     } = action
     {
         let connection = registry.teams.as_ref().expect("opened above");
-        let replay = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM chief_actions WHERE request_id=?1)",
-            [request_id],
-            |row| row.get::<_, bool>(0),
-        )?;
+        let replay = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM chief_actions WHERE request_id=?1)",
+                [request_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(storage_error)?;
         if !replay {
-            let previous: Option<String>=connection.query_row("SELECT (SELECT runtime FROM chief_grants WHERE epoch=?1 AND state IN ('active','paused'))",[expected_epoch],|row|row.get(0))?;
+            let previous: Option<String>=connection.query_row("SELECT (SELECT runtime FROM chief_grants WHERE epoch=?1 AND state IN ('active','paused'))",[expected_epoch],|row|row.get(0)).map_err(storage_error)?;
             if previous
                 .as_deref()
                 .is_some_and(|runtime| registry.system.runtime_is_live(runtime))
@@ -506,11 +509,13 @@ pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamRep
     {
         let connection = registry.teams.as_ref().expect("opened above");
         // Preserve authentication errors; a valid enable still cannot activate unverified admission.
-        let replay = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM chief_actions WHERE request_id=?1)",
-            [request_id],
-            |row| row.get::<_, bool>(0),
-        )?;
+        let replay = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM chief_actions WHERE request_id=?1)",
+                [request_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(storage_error)?;
         if !replay
             && live.iter().any(|worker| worker.session == *session)
             && !store::is_product_worker(connection, &session.session_id)?
@@ -697,10 +702,10 @@ pub(crate) fn question_grace_deadlines(
         return Ok(deadlines);
     };
     let chiefs = connection.prepare("SELECT g.session_id,g.agent,g.project,g.runtime FROM chief_grants g JOIN chief_coordination c USING(epoch)
-        WHERE g.state='active' AND c.failed=0")?.query_map([], |row| Ok(VerifiedSession {
+        WHERE g.state='active' AND c.failed=0").map_err(storage_error)?.query_map([], |row| Ok(VerifiedSession {
             session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)?,
-        }))?
-        .collect::<Result<Vec<_>, _>>()?;
+        })).map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
     let Some(chief) = chiefs.first() else {
         return Ok(deadlines);
     };
@@ -772,7 +777,7 @@ pub(crate) fn question_grace_deadlines(
             WHERE s.session_id=?1 AND s.runtime=?2 AND s.boundary=?3 AND (s.state IN ('escalated','superseded')
                 OR EXISTS(SELECT 1 FROM chief_answers a WHERE a.stop_id=s.id AND a.delivery IN ('uncertain','cancelled'))
                 OR EXISTS(SELECT 1 FROM chief_inbox i WHERE json_extract(i.envelope,'$.stop')=s.id AND i.state IN ('failed','uncertain','cancelled'))))",
-            (session, &entry.runtime, &boundary), |row| row.get(0))?;
+            (session, &entry.runtime, &boundary), |row| row.get(0)).map_err(storage_error)?;
         if !needs_theo {
             deadlines.insert(session.clone(), until);
         }
@@ -964,8 +969,8 @@ pub fn tick(registry: &mut Registry, now_ms: i64) -> Result<(), TeamError> {
     let Some(connection) = registry.teams.as_mut() else {
         return observation.map(|_| ());
     };
-    let pending = connection.prepare("SELECT a.decision,d.category FROM chief_attention a JOIN chief_decisions d ON d.id=a.decision WHERE d.state='open' ORDER BY a.created_at,a.decision LIMIT ?1")?
-        .query_map([cockpit::chief::MAX_OPEN_DECISIONS as i64],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let pending = connection.prepare("SELECT a.decision,d.category FROM chief_attention a JOIN chief_decisions d ON d.id=a.decision WHERE d.state='open' ORDER BY a.created_at,a.decision LIMIT ?1").map_err(storage_error)?
+        .query_map([cockpit::chief::MAX_OPEN_DECISIONS as i64],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     for (decision, is_visible) in &mut registry.chief_attention_presentations {
         if *is_visible && !pending.iter().any(|(open, _)| open == decision) {
             registry
@@ -991,10 +996,12 @@ pub fn tick(registry: &mut Registry, now_ms: i64) -> Result<(), TeamError> {
         registry
             .chief_attention_presentations
             .insert(decision.clone(), true);
-        connection.execute(
-            "UPDATE chief_attention SET notified_at=coalesce(notified_at,?2) WHERE decision=?1",
-            (decision.as_str(), now_ms),
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_attention SET notified_at=coalesce(notified_at,?2) WHERE decision=?1",
+                (decision.as_str(), now_ms),
+            )
+            .map_err(storage_error)?;
     }
     if let Ok(live) = &observation {
         advance_startup(registry, live)?;
@@ -1021,7 +1028,7 @@ fn advance_startup(registry: &mut Registry, live: &[WorkerState]) -> Result<(), 
         .expect("stored startup directory");
     if state == "starting" {
         // Claim before dispatch: a daemon crash here leaves Checking, never a second process.
-        if connection.execute("UPDATE chief_startup SET state='checking',revision=revision+1 WHERE id=?1 AND state='starting'", [attempt])? == 0 { return Ok(()); }
+        if connection.execute("UPDATE chief_startup SET state='checking',revision=revision+1 WHERE id=?1 AND state='starting'", [attempt]).map_err(storage_error)? == 0 { return Ok(()); }
         if let Err(error) = registry.system.start_chief(session, directory) {
             startup_outcome(registry, attempt, "failed", Some(&error))?;
         }
@@ -1080,10 +1087,15 @@ fn advance_startup(registry: &mut Registry, live: &[WorkerState]) -> Result<(), 
     match host(registry, &action)?.result {
         // A replayed success whose grant was disabled meanwhile still settles as activated: the store reports it ended.
         Ok(_) => {
-            registry.teams.as_ref().expect("opened above").execute(
-                "UPDATE chief_startup SET identity=?2 WHERE id=?1",
-                (attempt, serde_json::to_string(&worker.session)?),
-            )?;
+            registry
+                .teams
+                .as_ref()
+                .expect("opened above")
+                .execute(
+                    "UPDATE chief_startup SET identity=?2 WHERE id=?1",
+                    (attempt, serde_json::to_string(&worker.session)?),
+                )
+                .map_err(storage_error)?;
             startup_outcome(registry, attempt, "active", None)
         }
         Err(error) => startup_outcome(registry, attempt, "checking", Some(&error.message)),
@@ -1104,6 +1116,7 @@ fn startup_outcome(
             "UPDATE chief_startup SET state=?2,error=?3,revision=revision+1
         WHERE id=?1 AND state='checking' AND (state!=?2 OR error IS NOT ?3)",
             (attempt, state, error),
-        )?;
+        )
+        .map_err(storage_error)?;
     Ok(())
 }

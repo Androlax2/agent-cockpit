@@ -12,6 +12,7 @@
 
 use crate::paths;
 use crate::reviews::Issue;
+use crate::teams::store::storage_error;
 use crate::util::{self, now_secs, project_name, repository_root};
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -426,15 +427,18 @@ fn tracked_work(
     connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<Vec<crate::teams::TaskKey>, crate::teams::TeamError> {
-    Ok(connection
-        .prepare("SELECT project,task_id FROM link_work WHERE task_id=?1")?
+    connection
+        .prepare("SELECT project,task_id FROM link_work WHERE task_id=?1")
+        .map_err(storage_error)?
         .query_map([id], |row| {
             Ok(crate::teams::TaskKey {
                 project: row.get(0)?,
                 task_id: row.get(1)?,
             })
-        })?
-        .collect::<Result<_, _>>()?)
+        })
+        .map_err(storage_error)?
+        .collect::<Result<_, _>>()
+        .map_err(storage_error)
 }
 
 fn invalidate_item(

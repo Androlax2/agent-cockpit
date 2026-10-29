@@ -216,6 +216,29 @@ fn approve(
 }
 
 #[test]
+fn sql_failure_during_approval_preserves_the_storage_error_and_rolls_back_membership() {
+    let sandbox = Sandbox::new();
+    let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();
+    let request = propose(&mut connection, &proposal());
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_approval BEFORE UPDATE OF status ON proposals
+             WHEN NEW.status = 'approved'
+             BEGIN SELECT RAISE(ABORT, 'fixture approval write failed'); END;",
+        )
+        .unwrap();
+
+    let error = approve(&mut connection, &request).unwrap_err();
+    assert_eq!(
+        serde_json::to_value(error).unwrap(),
+        serde_json::json!({"code": "storage", "message": "fixture approval write failed"})
+    );
+    let snapshot = store::snapshot(&connection, None, None, 100).unwrap();
+    assert!(snapshot["members"].as_array().unwrap().is_empty());
+    assert_eq!(snapshot["proposals"][0]["status"], "pending");
+}
+
+#[test]
 fn pending_request_grants_no_messaging_membership() {
     let sandbox = Sandbox::new();
     let mut connection = store::open(&sandbox.root.join("protected/teams.sqlite")).unwrap();

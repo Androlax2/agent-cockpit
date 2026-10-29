@@ -2682,9 +2682,18 @@ fn say_without_the_session_snapshot_fails_with_a_reason_instead_of_a_silent_exit
     let result = manager.run(&["say", SESSION_A, "the snapshot is ready"], &[]);
     assert_eq!(result.status.code(), Some(1));
     let reason = stderr(&result);
-    assert!(reason.contains("cannot read the session list") && reason.contains("runs on the host only"), "{reason}");
-    assert!(!reason.contains("cockpit-team chief"), "only the Chief's own session may use cockpit-team chief: {reason}");
-    assert!(reason.contains("cockpit-needs-input") && reason.contains("ask-to-run"), "{reason}");
+    assert!(
+        reason.contains("cannot read the session list") && reason.contains("runs on the host only"),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("cockpit-team chief"),
+        "only the Chief's own session may use cockpit-team chief: {reason}"
+    );
+    assert!(
+        reason.contains("cockpit-needs-input") && reason.contains("ask-to-run"),
+        "{reason}"
+    );
     assert!(manager.tmux_calls("send-keys").is_empty());
 }
 
@@ -6113,12 +6122,26 @@ fn the_deferred_osd_restart_holds_no_lock_of_the_apply_that_reloaded() {
     let binary = osd_daemon(&manager, 3600, 60);
     manager.sandbox.shim("setsid", r#"if grep -q FLOCK /proc/$$/fdinfo/*; then echo "setsid inherited a lock" >> "$SHIM_LOG"; fi"#);
     let install_lock = manager.sandbox.root.join("install.lock");
-    let output = manager.sandbox.command("flock", &[("COCKPIT_OSD_BINARY", &binary)])
-        .arg(&install_lock).arg(bin().join("cockpit")).arg("reload").output().unwrap();
+    let output = manager
+        .sandbox
+        .command("flock", &[("COCKPIT_OSD_BINARY", &binary)])
+        .arg(&install_lock)
+        .arg(bin().join("cockpit"))
+        .arg("reload")
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     let calls = manager.calls("setsid");
-    assert!(calls.iter().any(|call| call.ends_with("restart-osd-when-idle")), "{calls:?}");
-    assert!(!calls.iter().any(|call| call.contains("inherited a lock")), "{calls:?}");
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.ends_with("restart-osd-when-idle")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call.contains("inherited a lock")),
+        "{calls:?}"
+    );
 }
 
 #[test]
@@ -9962,17 +9985,27 @@ fn chief_starts_per_hour_takes_one_to_sixty_or_empty_for_the_default() {
 fn chief_dispatches_own_todos_starts_off_and_takes_only_on_or_off() {
     let manager = Manager::new();
     let file = manager.sandbox.state.join("cockpit/settings.json");
-    assert_eq!(stdout(&manager.run(&["setting", "chief-dispatches-own-todos"], &[])).trim(), "chief-dispatches-own-todos:");
+    assert_eq!(
+        stdout(&manager.run(&["setting", "chief-dispatches-own-todos"], &[])).trim(),
+        "chief-dispatches-own-todos:"
+    );
     for value in ["on", "off", ""] {
         let result = manager.run(&["setting", "chief-dispatches-own-todos", value], &[]);
         assert!(result.status.success(), "{value:?}: {}", stderr(&result));
-        assert_eq!(stdout(&manager.run(&["setting", "chief-dispatches-own-todos"], &[])).trim(), format!("chief-dispatches-own-todos: {value}").trim());
+        assert_eq!(
+            stdout(&manager.run(&["setting", "chief-dispatches-own-todos"], &[])).trim(),
+            format!("chief-dispatches-own-todos: {value}").trim()
+        );
     }
     let saved = fs::read_to_string(&file).unwrap();
     for value in ["yes", "true", "ON", "1"] {
         let result = manager.run(&["setting", "chief-dispatches-own-todos", value], &[]);
         assert!(!result.status.success(), "{value:?}");
-        assert!(stderr(&result).contains("invalid chief-dispatches-own-todos"), "{value:?}: {}", stderr(&result));
+        assert!(
+            stderr(&result).contains("invalid chief-dispatches-own-todos"),
+            "{value:?}: {}",
+            stderr(&result)
+        );
         assert_eq!(fs::read_to_string(&file).unwrap(), saved);
     }
 }
@@ -9980,11 +10013,33 @@ fn chief_dispatches_own_todos_starts_off_and_takes_only_on_or_off() {
 #[test]
 fn turning_on_chief_dispatches_own_todos_is_audited() {
     let manager = Manager::new();
-    assert!(manager.run(&["setting", "chief-dispatches-own-todos", "on"], &[]).status.success());
+    assert!(
+        manager
+            .run(&["setting", "chief-dispatches-own-todos", "on"], &[])
+            .status
+            .success()
+    );
     let folder = manager.sandbox.state.join("claude-audit");
-    let day = fs::read_dir(&folder).unwrap().flatten().find(|entry| entry.file_name().to_string_lossy().starts_with("audit-")).expect("no audit log").path();
-    let line: serde_json::Value = serde_json::from_str(fs::read_to_string(day).unwrap().lines().last().unwrap()).unwrap();
-    assert_eq!((line["event"].as_str(), line["name"].as_str(), line["value"].as_str()), (Some("setting.changed"), Some("chief-dispatches-own-todos"), Some("on")));
+    let day = fs::read_dir(&folder)
+        .unwrap()
+        .flatten()
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("audit-"))
+        .expect("no audit log")
+        .path();
+    let line: serde_json::Value =
+        serde_json::from_str(fs::read_to_string(day).unwrap().lines().last().unwrap()).unwrap();
+    assert_eq!(
+        (
+            line["event"].as_str(),
+            line["name"].as_str(),
+            line["value"].as_str()
+        ),
+        (
+            Some("setting.changed"),
+            Some("chief-dispatches-own-todos"),
+            Some("on")
+        )
+    );
 }
 
 #[test]

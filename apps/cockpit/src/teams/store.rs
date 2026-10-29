@@ -21,6 +21,11 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::Duration;
 
+/// Convert a database failure at a runtime/store boundary without changing its wire error.
+pub fn storage_error(error: rusqlite::Error) -> TeamError {
+    TeamError::new(ErrorCode::Storage, error.to_string())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct BoundMember {
     session_id: String,
@@ -103,11 +108,13 @@ fn open_database(path: &Path, create: bool) -> Result<Connection, TeamError> {
         } else {
             rusqlite::OpenFlags::empty()
         };
-    let mut connection = Connection::open_with_flags(path, flags)?;
-    connection.busy_timeout(Duration::from_millis(250))?;
-    connection.execute_batch(
-        "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
-    )?;
+    let mut connection = Connection::open_with_flags(path, flags).map_err(storage_error)?;
+    connection
+        .busy_timeout(Duration::from_millis(250))
+        .map_err(storage_error)?;
+    connection
+        .execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+        .map_err(storage_error)?;
     migrate_with(&mut connection, create)?;
     Ok(connection)
 }
@@ -117,8 +124,9 @@ pub fn migrate(connection: &mut Connection) -> Result<(), TeamError> {
 }
 
 fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     upgrade_schema(&transaction, create)?;
     super::links::migrate(&transaction)?;
     crate::chief::store::upgrade_to_13(&transaction)?;
@@ -132,12 +140,14 @@ fn migrate_with(connection: &mut Connection, create: bool) -> Result<(), TeamErr
     crate::chief::store::ensure_supervised_tasks(&transaction)?;
     crate::chief::store::ensure_turn_inspections(&transaction)?;
     crate::chief::store::clear_dispatch_leftovers(&transaction)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
 fn upgrade_schema(connection: &rusqlite::Transaction<'_>, create: bool) -> Result<(), TeamError> {
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(storage_error)?;
     if !create && version == 0 {
         return Err(TeamError::new(
             ErrorCode::Storage,
@@ -156,30 +166,40 @@ fn upgrade_schema(connection: &rusqlite::Transaction<'_>, create: bool) -> Resul
     }
     if version == 9 {
         crate::chief::store::upgrade_launches(connection)?;
-        connection.execute_batch("PRAGMA user_version=10;")?;
+        connection
+            .execute_batch("PRAGMA user_version=10;")
+            .map_err(storage_error)?;
         return Ok(());
     }
     if version == 8 {
         crate::chief::store::upgrade_events(connection)?;
-        connection.execute_batch("PRAGMA user_version=10;")?;
+        connection
+            .execute_batch("PRAGMA user_version=10;")
+            .map_err(storage_error)?;
         return Ok(());
     }
     crate::chief::store::upgrade_review(connection)?;
     if version == 7 {
         crate::chief::store::upgrade_events(connection)?;
-        connection.execute_batch("PRAGMA user_version=10;")?;
+        connection
+            .execute_batch("PRAGMA user_version=10;")
+            .map_err(storage_error)?;
         return Ok(());
     }
     crate::chief::store::upgrade_evidence(connection)?;
     if version == 6 {
         crate::chief::store::upgrade_events(connection)?;
-        connection.execute_batch("PRAGMA user_version=10;")?;
+        connection
+            .execute_batch("PRAGMA user_version=10;")
+            .map_err(storage_error)?;
         return Ok(());
     }
     if version == 5 {
         crate::chief::store::upgrade_scheduling(connection)?;
         crate::chief::store::upgrade_events(connection)?;
-        connection.execute_batch("PRAGMA user_version=10;")?;
+        connection
+            .execute_batch("PRAGMA user_version=10;")
+            .map_err(storage_error)?;
         return Ok(());
     }
     if version == 3 || version == 4 {
@@ -189,7 +209,9 @@ fn upgrade_schema(connection: &rusqlite::Transaction<'_>, create: bool) -> Resul
         crate::chief::store::upgrade_inbox(connection)?;
         crate::chief::store::upgrade_scheduling(connection)?;
         crate::chief::store::upgrade_events(connection)?;
-        connection.execute_batch("PRAGMA user_version=10;")?;
+        connection
+            .execute_batch("PRAGMA user_version=10;")
+            .map_err(storage_error)?;
         return Ok(());
     }
     connection.execute_batch("CREATE TABLE IF NOT EXISTS teams (task_key TEXT PRIMARY KEY, project TEXT NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL);
@@ -219,27 +241,34 @@ fn upgrade_schema(connection: &rusqlite::Transaction<'_>, create: bool) -> Resul
             directory TEXT NOT NULL, commit_id TEXT, brief TEXT NOT NULL, handoff_id TEXT, status TEXT NOT NULL, session_id TEXT,
             created_at INTEGER NOT NULL, started_at INTEGER);
         CREATE TABLE IF NOT EXISTS team_qa (task_key TEXT PRIMARY KEY, brief TEXT NOT NULL, agent TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS qa_exits (session_id TEXT PRIMARY KEY, status TEXT NOT NULL);")?;
+        CREATE TABLE IF NOT EXISTS qa_exits (session_id TEXT PRIMARY KEY, status TEXT NOT NULL);").map_err(storage_error)?;
     // Version 2: a proposal can carry recruits (teammates to start on approval) and the agent they run in.
     let columns: Vec<String> = connection
-        .prepare("SELECT name FROM pragma_table_info('proposals')")?
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
+        .prepare("SELECT name FROM pragma_table_info('proposals')")
+        .map_err(storage_error)?
+        .query_map([], |row| row.get(0))
+        .map_err(storage_error)?
+        .collect::<Result<_, _>>()
+        .map_err(storage_error)?;
     for (column, definition) in [
         ("recruits", "TEXT NOT NULL DEFAULT '[]'"),
         ("spawn_agent", "TEXT NOT NULL DEFAULT ''"),
     ] {
         if !columns.iter().any(|existing| existing == column) {
-            connection.execute_batch(&format!(
-                "ALTER TABLE proposals ADD COLUMN {column} {definition};"
-            ))?;
+            connection
+                .execute_batch(&format!(
+                    "ALTER TABLE proposals ADD COLUMN {column} {definition};"
+                ))
+                .map_err(storage_error)?;
         }
     }
     crate::chief::store::create_schema(connection)?;
     crate::chief::store::upgrade_inbox(connection)?;
     crate::chief::store::upgrade_scheduling(connection)?;
     crate::chief::store::upgrade_events(connection)?;
-    connection.execute_batch("PRAGMA user_version=10;")?;
+    connection
+        .execute_batch("PRAGMA user_version=10;")
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -326,11 +355,11 @@ pub fn propose(
     let bound = bind(proposal, live)?;
     let mapping = serde_json::to_string(&bound)?;
     let fingerprint = audit::sha256_hex(serde_json::to_string(proposal)?.as_bytes());
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction().map_err(storage_error)?;
     sleep::guard_sender(&transaction, &sender.session_id)?;
     let previous: Option<(String, String, String, i64)> = transaction.query_row(
         "SELECT id, fingerprint, mapping_hash, revision FROM proposals WHERE sender=?1 AND submission_key=?2",
-        params![sender.session_id, proposal.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+        params![sender.session_id, proposal.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(storage_error)?;
     if let Some((id, old_fingerprint, mapping_hash, revision)) = previous {
         if old_fingerprint != fingerprint {
             return Err(TeamError::new(
@@ -350,8 +379,8 @@ pub fn propose(
     let task_key = serde_json::to_string(&proposal.task)?;
     let mapping_hash = audit::sha256_hex(format!("{task_key}\n{mapping}").as_bytes());
     transaction.execute("INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,revision,status,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,'pending',?11)",
-        params![id, sender.session_id, proposal.submission_key, fingerprint, task_key, proposal.task.project, proposal.task.task_id, mapping, mapping_hash, proposal.reason, now_ms])?;
-    transaction.commit()?;
+        params![id, sender.session_id, proposal.submission_key, fingerprint, task_key, proposal.task.project, proposal.task.task_id, mapping, mapping_hash, proposal.reason, now_ms]).map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(TeamReply {
         request_id: proposal.submission_key.clone(),
         result: Ok(json!({"proposal_id": id, "revision": 1, "mapping_hash": mapping_hash})),
@@ -383,12 +412,13 @@ pub fn recruit(
         ));
     }
     let contents = serde_json::to_string(recruitment)?;
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     sleep::guard_sender(&transaction, &sender.session_id)?;
     let previous: Option<(String, String, String, i64, String, String)> = transaction.query_row(
         "SELECT id, fingerprint, mapping_hash, revision, status, spawn_agent FROM proposals WHERE sender=?1 AND submission_key=?2",
-        params![sender.session_id, recruitment.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional()?;
+        params![sender.session_id, recruitment.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional().map_err(storage_error)?;
     if let Some((id, old_fingerprint, mapping_hash, revision, status, original_agent)) = previous {
         let fingerprint = audit::sha256_hex(format!("{contents}\n{original_agent}").as_bytes());
         if old_fingerprint != fingerprint {
@@ -431,7 +461,8 @@ pub fn recruit(
             [&sender.session_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if own_task.as_ref().is_some_and(|(own_key, own_role)| {
         *own_key != task_key || own_role != role_name(recruitment.role)
     }) {
@@ -441,9 +472,12 @@ pub fn recruit(
         ));
     }
     let occupied: Vec<String> = transaction
-        .prepare("SELECT role FROM members WHERE task_key=?1 AND session_id<>?2")?
-        .query_map(params![task_key, sender.session_id], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
+        .prepare("SELECT role FROM members WHERE task_key=?1 AND session_id<>?2")
+        .map_err(storage_error)?
+        .query_map(params![task_key, sender.session_id], |row| row.get(0))
+        .map_err(storage_error)?
+        .collect::<Result<_, _>>()
+        .map_err(storage_error)?;
     if roles
         .iter()
         .any(|role| occupied.iter().any(|taken| taken == role_name(*role)))
@@ -483,7 +517,7 @@ pub fn recruit(
     transaction.execute("INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,revision,status,created_at,recruits,spawn_agent)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,'pending',?11,?12,?13)",
         params![id, sender.session_id, recruitment.submission_key, fingerprint, task_key, recruitment.task.project, recruitment.task.task_id,
-            mapping, mapping_hash, recruitment.reason, now_ms, recruits, agent])?;
+            mapping, mapping_hash, recruitment.reason, now_ms, recruits, agent]).map_err(storage_error)?;
     approve_mapping(
         &transaction,
         &id,
@@ -493,7 +527,7 @@ pub fn recruit(
         directories,
         now_ms,
     )?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(TeamReply {
         request_id: recruitment.submission_key.clone(),
         result: Ok(
@@ -537,14 +571,15 @@ pub fn control_with(
         | HostAction::Dismiss { request_id, .. } => request_id,
     };
     let fingerprint = audit::sha256_hex(serde_json::to_string(action)?.as_bytes());
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction().map_err(storage_error)?;
     let prior: Option<(String, String)> = transaction
         .query_row(
             "SELECT fingerprint, response FROM host_actions WHERE request_id=?1",
             [request_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if let Some((old_fingerprint, response)) = prior {
         if fingerprint != old_fingerprint {
             return Err(TeamError::new(
@@ -580,7 +615,7 @@ pub fn control_with(
         } => {
             let old: Option<(String, String, i64, String, String, String)> = transaction.query_row(
                 "SELECT sender, project, revision, status, recruits, spawn_agent FROM proposals WHERE id=?1", [proposal_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional()?;
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional().map_err(storage_error)?;
             let Some((sender, project, revision, status, recruits, spawn_agent)) = old else {
                 return Err(TeamError::new(
                     ErrorCode::NotFound,
@@ -606,13 +641,15 @@ pub fn control_with(
                 )
             };
             let id = identifier()?;
-            transaction.execute(
-                "UPDATE proposals SET status='superseded' WHERE id=?1",
-                [proposal_id],
-            )?;
+            transaction
+                .execute(
+                    "UPDATE proposals SET status='superseded' WHERE id=?1",
+                    [proposal_id],
+                )
+                .map_err(storage_error)?;
             transaction.execute("INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,revision,status,created_at,parent_id,created_by,recruits,spawn_agent)
                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,'host',?14,?15)",
-                params![id,sender,format!("host-edit-{}",identifier()?),fingerprint,task_key,project,replacement.task.task_id,mapping,mapping_hash,replacement.reason,revision+1,now_ms,proposal_id,recruits,spawn_agent])?;
+                params![id,sender,format!("host-edit-{}",identifier()?),fingerprint,task_key,project,replacement.task.task_id,mapping,mapping_hash,replacement.reason,revision+1,now_ms,proposal_id,recruits,spawn_agent]).map_err(storage_error)?;
             json!({"proposal_id":id,"revision":revision+1,"mapping_hash":mapping_hash})
         }
         HostAction::Reject {
@@ -620,7 +657,7 @@ pub fn control_with(
             expected_revision,
             ..
         } => {
-            let changed = transaction.execute("UPDATE proposals SET status='rejected' WHERE id=?1 AND revision=?2 AND status='pending'", params![proposal_id,expected_revision])?;
+            let changed = transaction.execute("UPDATE proposals SET status='rejected' WHERE id=?1 AND revision=?2 AND status='pending'", params![proposal_id,expected_revision]).map_err(storage_error)?;
             if changed != 1 {
                 return Err(TeamError::new(
                     ErrorCode::Conflict,
@@ -634,20 +671,25 @@ pub fn control_with(
         } => {
             let task_key = serde_json::to_string(task)?;
             cancel_member_messages(&transaction, &task_key, session_id)?;
-            if transaction.execute(
-                "DELETE FROM members WHERE task_key=?1 AND session_id=?2",
-                params![task_key, session_id],
-            )? != 1
+            if transaction
+                .execute(
+                    "DELETE FROM members WHERE task_key=?1 AND session_id=?2",
+                    params![task_key, session_id],
+                )
+                .map_err(storage_error)?
+                != 1
             {
                 return Err(TeamError::new(
                     ErrorCode::NotFound,
                     "that session is not a member of this task's team",
                 ));
             }
-            transaction.execute(
-                "UPDATE teams SET revision=revision+1 WHERE task_key=?1",
-                [&task_key],
-            )?;
+            transaction
+                .execute(
+                    "UPDATE teams SET revision=revision+1 WHERE task_key=?1",
+                    [&task_key],
+                )
+                .map_err(storage_error)?;
             json!({"session_id":session_id,"status":"unlinked"})
         }
         HostAction::Resolve {
@@ -665,17 +707,19 @@ pub fn control_with(
                 ));
             }
             let changed = transaction.execute("UPDATE escalations SET status='resolved', note=?2, resolved_at=?3 WHERE thread_id=?1 AND status='open'",
-                params![thread_id, note, now_ms])?;
+                params![thread_id, note, now_ms]).map_err(storage_error)?;
             if changed != 1 {
                 return Err(TeamError::new(
                     ErrorCode::Conflict,
                     "no open escalation for this thread",
                 ));
             }
-            transaction.execute(
-                "UPDATE threads SET status='resolved' WHERE id=?1",
-                [thread_id],
-            )?;
+            transaction
+                .execute(
+                    "UPDATE threads SET status='resolved' WHERE id=?1",
+                    [thread_id],
+                )
+                .map_err(storage_error)?;
             json!({"thread_id": thread_id, "status": "resolved"})
         }
         HostAction::Propose { proposal, .. } => {
@@ -685,7 +729,7 @@ pub fn control_with(
             let id = identifier()?;
             transaction.execute("INSERT INTO proposals (id,sender,submission_key,fingerprint,task_key,project,task_id,mapping,mapping_hash,reason,revision,status,created_at,parent_id,created_by)
                 VALUES (?1,'host',?2,?3,?4,?5,?6,?7,?8,?9,1,'pending',?10,NULL,'host')",
-                params![id, format!("host-{id}"), fingerprint, task_key, proposal.task.project, proposal.task.task_id, mapping, mapping_hash, proposal.reason, now_ms])?;
+                params![id, format!("host-{id}"), fingerprint, task_key, proposal.task.project, proposal.task.task_id, mapping, mapping_hash, proposal.reason, now_ms]).map_err(storage_error)?;
             json!({"proposal_id": id, "revision": 1, "mapping_hash": mapping_hash})
         }
         HostAction::Reconcile {
@@ -704,7 +748,7 @@ pub fn control_with(
                 }
             };
             let changed = transaction.execute("UPDATE messages SET state=?2, last_error='reconciled by Theo' WHERE id=?1 AND (state='uncertain' OR (state='failed' AND ?2='cancelled'))",
-                params![message_id, state])?;
+                params![message_id, state]).map_err(storage_error)?;
             if changed != 1 {
                 return Err(TeamError::new(
                     ErrorCode::Conflict,
@@ -712,11 +756,11 @@ pub fn control_with(
                 ));
             }
             transaction.execute("UPDATE attempts SET state=?2, finished_at=?3 WHERE message_id=?1 AND state='uncertain'",
-                params![message_id, if state == "received" { "received" } else { "not_submitted" }, now_ms])?;
+                params![message_id, if state == "received" { "received" } else { "not_submitted" }, now_ms]).map_err(storage_error)?;
             json!({"message_id": message_id, "state": state})
         }
         HostAction::Dismiss { token, .. } => {
-            if transaction.execute("UPDATE spawns SET status='dismissed' WHERE token=?1 AND status IN ('failed','refused')", [token])? != 1 {
+            if transaction.execute("UPDATE spawns SET status='dismissed' WHERE token=?1 AND status IN ('failed','refused')", [token]).map_err(storage_error)? != 1 {
                 return Err(TeamError::new(ErrorCode::Conflict, "only a start that failed or could not join is dismissed"));
             }
             json!({"token": token, "status": "dismissed"})
@@ -727,11 +771,13 @@ pub fn control_with(
         | HostAction::LinkReject { .. }
         | HostAction::LinkRevoke { .. } => unreachable!("link controls dispatched above"),
     };
-    transaction.execute(
-        "INSERT INTO host_actions VALUES (?1,?2,?3)",
-        params![request_id, fingerprint, response.to_string()],
-    )?;
-    transaction.commit()?;
+    transaction
+        .execute(
+            "INSERT INTO host_actions VALUES (?1,?2,?3)",
+            params![request_id, fingerprint, response.to_string()],
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(TeamReply {
         request_id: request_id.clone(),
         result: Ok(response),
@@ -750,7 +796,7 @@ fn approve_mapping(
     type StoredProposal = (String, String, String, String, String, i64, String, String);
     let stored: Option<StoredProposal> = transaction.query_row(
         "SELECT task_key, project, task_id, mapping, mapping_hash, revision, status, reason FROM proposals WHERE id=?1", [proposal_id],
-        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional()?;
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional().map_err(storage_error)?;
     let Some((task_key, project, task_id, mapping, stored_hash, revision, status, reason)) = stored
     else {
         return Err(TeamError::new(
@@ -789,22 +835,27 @@ fn approve_mapping(
     for member in &bound {
         crate::chief::store::require_non_chief(transaction, &member.session_id)?;
     }
-    transaction.execute("INSERT INTO teams VALUES (?1,?2,?3,1) ON CONFLICT(task_key) DO UPDATE SET revision=revision+1", params![task_key, project, task_id])?;
+    transaction.execute("INSERT INTO teams VALUES (?1,?2,?3,1) ON CONFLICT(task_key) DO UPDATE SET revision=revision+1", params![task_key, project, task_id]).map_err(storage_error)?;
     let existing: Vec<(String, String, String)> = {
         let mut statement = transaction
-            .prepare("SELECT session_id, role, runtime FROM members WHERE task_key=?1")?;
+            .prepare("SELECT session_id, role, runtime FROM members WHERE task_key=?1")
+            .map_err(storage_error)?;
         statement
             .query_map([&task_key], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .collect::<Result<_, _>>()?
+            })
+            .map_err(storage_error)?
+            .collect::<Result<_, _>>()
+            .map_err(storage_error)?
     };
     // A link request names the whole team; a recruit request names only its asker and adds to the team.
-    let is_recruit: bool = transaction.query_row(
-        "SELECT spawn_agent<>'' FROM proposals WHERE id=?1",
-        [proposal_id],
-        |row| row.get(0),
-    )?;
+    let is_recruit: bool = transaction
+        .query_row(
+            "SELECT spawn_agent<>'' FROM proposals WHERE id=?1",
+            [proposal_id],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     if is_recruit {
         recruit_roles_still_free(transaction, proposal_id, &task_key, &bound)?;
     }
@@ -817,10 +868,12 @@ fn approve_mapping(
             })
         {
             cancel_member_messages(transaction, &task_key, &session)?;
-            transaction.execute(
-                "DELETE FROM members WHERE task_key=?1 AND session_id=?2",
-                params![task_key, session],
-            )?;
+            transaction
+                .execute(
+                    "DELETE FROM members WHERE task_key=?1 AND session_id=?2",
+                    params![task_key, session],
+                )
+                .map_err(storage_error)?;
         }
     }
     for member in bound {
@@ -830,7 +883,8 @@ fn approve_mapping(
                 [&member.session_id],
                 |row| row.get(0),
             )
-            .optional()?;
+            .optional()
+            .map_err(storage_error)?;
         if old_task.as_ref().is_some_and(|old| old != &task_key) {
             return Err(TeamError::new(
                 ErrorCode::Conflict,
@@ -838,23 +892,27 @@ fn approve_mapping(
             ));
         }
         transaction.execute("INSERT INTO members (task_key,session_id,role,agent,runtime,epoch) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(task_key,role) DO NOTHING",
-            params![task_key, member.session_id, role_name(member.role), member.agent, member.runtime, identifier()?])?;
+            params![task_key, member.session_id, role_name(member.role), member.agent, member.runtime, identifier()?]).map_err(storage_error)?;
     }
     queue_recruits(transaction, proposal_id, &task_key, directories, now_ms)?;
-    transaction.execute(
-        "UPDATE proposals SET status='approved' WHERE id=?1",
-        [proposal_id],
-    )?;
+    transaction
+        .execute(
+            "UPDATE proposals SET status='approved' WHERE id=?1",
+            [proposal_id],
+        )
+        .map_err(storage_error)?;
     schedule_qa(transaction, &task_key, now_ms)?;
     Ok(json!({"proposal_id": proposal_id, "status": "approved"}))
 }
 
 fn has_qa_plan(connection: &Connection, task_key: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM team_qa WHERE task_key=?1)",
-        [task_key],
-        |row| row.get(0),
-    )?)
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM team_qa WHERE task_key=?1)",
+            [task_key],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)
 }
 
 /// Members, launches in progress and standing QA instructions all reserve their roles.
@@ -864,11 +922,13 @@ fn recruit_roles_still_free(
     task_key: &str,
     bound: &[BoundMember],
 ) -> Result<(), TeamError> {
-    let recruits: String = transaction.query_row(
-        "SELECT recruits FROM proposals WHERE id=?1",
-        [proposal_id],
-        |row| row.get(0),
-    )?;
+    let recruits: String = transaction
+        .query_row(
+            "SELECT recruits FROM proposals WHERE id=?1",
+            [proposal_id],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     let recruits: Vec<super::Recruit> = serde_json::from_str(&recruits)?;
     let taken = |role: Role, except: Option<&str>| -> Result<bool, TeamError> {
         let holder: Option<String> = transaction
@@ -877,9 +937,10 @@ fn recruit_roles_still_free(
                 params![task_key, role_name(role)],
                 |row| row.get(0),
             )
-            .optional()?;
+            .optional()
+            .map_err(storage_error)?;
         let starting: i64 = transaction.query_row("SELECT count(*) FROM spawns WHERE task_key=?1 AND role=?2 AND status IN ('pending','started')",
-            params![task_key, role_name(role)], |row| row.get(0))?;
+            params![task_key, role_name(role)], |row| row.get(0)).map_err(storage_error)?;
         let is_existing_holder = except.is_some() && holder.as_deref() == except;
         let standing_qa = role == Role::Qa && has_qa_plan(transaction, task_key)?;
         Ok(!is_existing_holder && (holder.is_some() || starting > 0 || standing_qa))
@@ -919,7 +980,8 @@ fn queue_recruits(
             "SELECT sender, recruits, spawn_agent, mapping FROM proposals WHERE id=?1",
             [proposal_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )?;
+        )
+        .map_err(storage_error)?;
     let asker_role = serde_json::from_str::<Vec<BoundMember>>(&mapping)?
         .first()
         .map(|member| role_name(member.role))
@@ -940,12 +1002,12 @@ fn queue_recruits(
     for recruit in recruits {
         if recruit.role == Role::Qa {
             transaction.execute("INSERT INTO team_qa VALUES (?1,?2,?3) ON CONFLICT(task_key) DO UPDATE SET brief=?2, agent=?3",
-                params![task_key, recruit.brief, agent])?;
+                params![task_key, recruit.brief, agent]).map_err(storage_error)?;
             continue;
         }
         transaction.execute("INSERT INTO spawns (token,task_key,role,agent,directory,brief,status,created_at) VALUES (?1,?2,?3,?4,?5,?6,'pending',?7)",
             params![identifier()?, task_key, role_name(recruit.role), agent, directory,
-                super::recruit_brief_text(recruit.role, asker_role, &recruit.brief), now_ms])?;
+                super::recruit_brief_text(recruit.role, asker_role, &recruit.brief), now_ms]).map_err(storage_error)?;
     }
     Ok(())
 }
@@ -971,7 +1033,7 @@ fn role_of(name: &str) -> Option<Role> {
 }
 
 pub fn pending_spawns(connection: &Connection) -> Result<Vec<Spawn>, TeamError> {
-    let mut statement = connection.prepare("SELECT token, role, agent, directory, commit_id, brief FROM spawns WHERE status='pending' ORDER BY created_at, token")?;
+    let mut statement = connection.prepare("SELECT token, role, agent, directory, commit_id, brief FROM spawns WHERE status='pending' ORDER BY created_at, token").map_err(storage_error)?;
     let rows = statement
         .query_map([], |row| {
             Ok((
@@ -982,8 +1044,10 @@ pub fn pending_spawns(connection: &Connection) -> Result<Vec<Spawn>, TeamError> 
                 row.get(4)?,
                 row.get(5)?,
             ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        })
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     Ok(rows
         .into_iter()
         .filter_map(|(token, role, agent, directory, commit_id, brief)| {
@@ -1004,28 +1068,34 @@ pub fn mark_spawn_started(
     token: &str,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    connection.execute(
-        "UPDATE spawns SET status='started', started_at=?2 WHERE token=?1 AND status='pending'",
-        params![token, now_ms],
-    )?;
+    connection
+        .execute(
+            "UPDATE spawns SET status='started', started_at=?2 WHERE token=?1 AND status='pending'",
+            params![token, now_ms],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
 /// A start that could not even be launched: Theo's to look at at once, never retried.
 pub fn mark_spawn_failed(connection: &Connection, token: &str) -> Result<(), TeamError> {
-    connection.execute(
-        "UPDATE spawns SET status='failed' WHERE token=?1 AND status IN ('pending','started')",
-        [token],
-    )?;
+    connection
+        .execute(
+            "UPDATE spawns SET status='failed' WHERE token=?1 AND status IN ('pending','started')",
+            [token],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
 /// A started session that never reported is Theo's to look at: never started a second time.
 pub fn expire_spawns(connection: &Connection, now_ms: i64) -> Result<(), TeamError> {
-    connection.execute(
-        "UPDATE spawns SET status='failed' WHERE status='started' AND started_at<?1",
-        [now_ms - 300_000],
-    )?;
+    connection
+        .execute(
+            "UPDATE spawns SET status='failed' WHERE status='started' AND started_at<?1",
+            [now_ms - 300_000],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -1038,9 +1108,9 @@ pub fn bind_spawn(
     session: &VerifiedSession,
     now_ms: i64,
 ) -> Result<bool, TeamError> {
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction().map_err(storage_error)?;
     let spawn: Option<(String, String, String, String)> = transaction.query_row("SELECT task_key, role, status, agent FROM spawns WHERE token=?1 AND status IN ('started','superseded')",
-        [token], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+        [token], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(storage_error)?;
     let Some((task_key, role, status, agent)) = spawn else {
         return Ok(false);
     };
@@ -1051,40 +1121,47 @@ pub fn bind_spawn(
     {
         return Ok(false);
     }
-    let project: String = transaction.query_row(
-        "SELECT project FROM teams WHERE task_key=?1",
-        [&task_key],
-        |row| row.get(0),
-    )?;
+    let project: String = transaction
+        .query_row(
+            "SELECT project FROM teams WHERE task_key=?1",
+            [&task_key],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     let elsewhere: Option<String> = transaction
         .query_row(
             "SELECT task_key FROM members WHERE session_id=?1",
             [&session.session_id],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if project != session.project || elsewhere.is_some() || session.runtime.is_empty() {
         return Ok(false);
     }
     crate::chief::store::require_non_chief(&transaction, &session.session_id)?;
     let is_bound = status == "started" && transaction.execute("INSERT INTO members (task_key,session_id,role,agent,runtime,epoch) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(task_key,role) DO NOTHING",
-        params![task_key, session.session_id, role, session.agent, session.runtime, identifier()?])? == 1;
+        params![task_key, session.session_id, role, session.agent, session.runtime, identifier()?]).map_err(storage_error)? == 1;
     if is_bound {
-        transaction.execute(
-            "UPDATE spawns SET status='bound', session_id=?2 WHERE token=?1",
-            params![token, session.session_id],
-        )?;
-        transaction.execute(
-            "UPDATE teams SET revision=revision+1 WHERE task_key=?1",
-            [&task_key],
-        )?;
+        transaction
+            .execute(
+                "UPDATE spawns SET status='bound', session_id=?2 WHERE token=?1",
+                params![token, session.session_id],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE teams SET revision=revision+1 WHERE task_key=?1",
+                [&task_key],
+            )
+            .map_err(storage_error)?;
         schedule_qa(&transaction, &task_key, now_ms)?;
     } else {
         transaction.execute("UPDATE spawns SET status=CASE status WHEN 'superseded' THEN 'superseded' ELSE 'refused' END, session_id=?2 WHERE token=?1",
-            params![token, session.session_id])?;
-        transaction.execute("INSERT INTO qa_exits VALUES (?1,'pending') ON CONFLICT(session_id) DO UPDATE SET status='pending'", [&session.session_id])?;
+            params![token, session.session_id]).map_err(storage_error)?;
+        transaction.execute("INSERT INTO qa_exits VALUES (?1,'pending') ON CONFLICT(session_id) DO UPDATE SET status='pending'", [&session.session_id]).map_err(storage_error)?;
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(is_bound)
 }
 
@@ -1097,56 +1174,58 @@ pub fn snapshot(
     limit: usize,
 ) -> Result<Value, TeamError> {
     let task_key = task.map(serde_json::to_string).transpose()?;
-    let mut members = connection.prepare("SELECT m.session_id,m.role,m.agent,m.runtime,m.epoch,t.project,t.task_id FROM members m JOIN teams t ON t.task_key=m.task_key WHERE (?1 IS NULL OR m.task_key=?1) ORDER BY t.task_key,m.role")?;
+    let mut members = connection.prepare("SELECT m.session_id,m.role,m.agent,m.runtime,m.epoch,t.project,t.task_id FROM members m JOIN teams t ON t.task_key=m.task_key WHERE (?1 IS NULL OR m.task_key=?1) ORDER BY t.task_key,m.role").map_err(storage_error)?;
     let members = members.query_map(params![task_key], |row| Ok(json!({"session_id":row.get::<_,String>(0)?,"role":row.get::<_,String>(1)?,"agent":row.get::<_,String>(2)?,
-        "runtime":row.get::<_,String>(3)?,"epoch":row.get::<_,String>(4)?,"project":row.get::<_,String>(5)?,"task_id":row.get::<_,String>(6)?})))?.collect::<Result<Vec<_>,_>>()?;
+        "runtime":row.get::<_,String>(3)?,"epoch":row.get::<_,String>(4)?,"project":row.get::<_,String>(5)?,"task_id":row.get::<_,String>(6)?}))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     let mut proposals = connection.prepare("SELECT id,project,task_id,mapping,mapping_hash,revision,status,reason,sender,created_by,parent_id,recruits,spawn_agent FROM proposals WHERE (?1 IS NULL OR task_key=?1)
         AND (status='pending' OR id IN (SELECT id FROM proposals WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC, id DESC LIMIT ?2))
-        ORDER BY created_at,id")?;
+        ORDER BY created_at,id").map_err(storage_error)?;
     let proposals = proposals.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"proposal_id":row.get::<_,String>(0)?,"project":row.get::<_,String>(1)?,"task_id":row.get::<_,String>(2)?,
-        "mapping":row.get::<_,String>(3)?,"mapping_hash":row.get::<_,String>(4)?,"revision":row.get::<_,i64>(5)?,"status":row.get::<_,String>(6)?,"reason":row.get::<_,String>(7)?,"sender":row.get::<_,String>(8)?,"created_by":row.get::<_,String>(9)?,"parent_id":row.get::<_,Option<String>>(10)?,"recruits":row.get::<_,String>(11)?,"spawn_agent":row.get::<_,String>(12)?})))?.collect::<Result<Vec<_>,_>>()?;
+        "mapping":row.get::<_,String>(3)?,"mapping_hash":row.get::<_,String>(4)?,"revision":row.get::<_,i64>(5)?,"status":row.get::<_,String>(6)?,"reason":row.get::<_,String>(7)?,"sender":row.get::<_,String>(8)?,"created_by":row.get::<_,String>(9)?,"parent_id":row.get::<_,Option<String>>(10)?,"recruits":row.get::<_,String>(11)?,"spawn_agent":row.get::<_,String>(12)?}))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     let mut messages = connection.prepare("SELECT seq,id,envelope,state,attempts,next_at,last_error,created_at FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2)
         AND (state IN ('uncertain','failed') OR seq IN (SELECT seq FROM messages WHERE (?1 IS NULL OR task_key=?1) AND (?2 IS NULL OR seq>?2) ORDER BY seq DESC LIMIT ?3))
-        ORDER BY seq")?;
+        ORDER BY seq").map_err(storage_error)?;
     let messages = messages.query_map(params![task_key, after, limit.min(100) as i64], |row| Ok(json!({"seq":row.get::<_,i64>(0)?,"message_id":row.get::<_,String>(1)?,
         "envelope":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?,"attempts":row.get::<_,i64>(4)?,"next_at":row.get::<_,i64>(5)?,"error":row.get::<_,String>(6)?,
-        "created_at":row.get::<_,i64>(7)?})))?.collect::<Result<Vec<_>,_>>()?;
+        "created_at":row.get::<_,i64>(7)?}))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     let mut escalations = connection.prepare("SELECT e.thread_id,e.reason,e.status,e.note,e.created_at,
         json_extract(e.task_key,'$.project'),json_extract(e.task_key,'$.task_id'),thread.link_id
         FROM escalations e JOIN threads thread ON thread.id=e.thread_id WHERE (?1 IS NULL OR e.task_key=?1)
         AND (e.status='open' OR e.thread_id IN (SELECT thread_id FROM escalations WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC LIMIT ?2))
-        ORDER BY e.created_at")?;
+        ORDER BY e.created_at").map_err(storage_error)?;
     let escalations = escalations.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"thread_id":row.get::<_,String>(0)?,
         "reason":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?,"note":row.get::<_,String>(3)?,"created_at":row.get::<_,i64>(4)?,
-        "project":row.get::<_,String>(5)?,"task_id":row.get::<_,String>(6)?,"link_id":row.get::<_,Option<String>>(7)?})))?
-        .collect::<Result<Vec<_>,_>>()?;
+        "project":row.get::<_,String>(5)?,"task_id":row.get::<_,String>(6)?,"link_id":row.get::<_,Option<String>>(7)?}))).map_err(storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     let mut spawns = connection.prepare("SELECT token,task_key,role,agent,directory,commit_id,status,session_id,created_at FROM spawns
         WHERE (?1 IS NULL OR task_key=?1) AND status NOT IN ('cancelled','dismissed')
         AND (status IN ('failed','refused') OR token IN (SELECT token FROM spawns WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC LIMIT ?2))
-        ORDER BY created_at DESC")?;
+        ORDER BY created_at DESC").map_err(storage_error)?;
     let spawns = spawns.query_map(params![task_key, limit.min(100) as i64], |row| Ok(json!({"token":row.get::<_,String>(0)?,"task_key":row.get::<_,String>(1)?,
         "role":row.get::<_,String>(2)?,"agent":row.get::<_,String>(3)?,"directory":row.get::<_,String>(4)?,"commit_id":row.get::<_,Option<String>>(5)?,
-        "status":row.get::<_,String>(6)?,"session_id":row.get::<_,Option<String>>(7)?,"created_at":row.get::<_,i64>(8)?})))?.collect::<Result<Vec<_>,_>>()?;
+        "status":row.get::<_,String>(6)?,"session_id":row.get::<_,Option<String>>(7)?,"created_at":row.get::<_,i64>(8)?}))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     let mut handoffs = connection.prepare("SELECT h.id,t.project,t.task_id,h.developer,h.status,h.created_at,h.payload FROM handoffs h JOIN teams t ON t.task_key=h.task_key
         WHERE (?1 IS NULL OR h.task_key=?1) AND (h.status='current' OR h.id IN
-        (SELECT id FROM handoffs WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2)) ORDER BY h.created_at,h.id")?;
+        (SELECT id FROM handoffs WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2)) ORDER BY h.created_at,h.id").map_err(storage_error)?;
     let handoffs = handoffs.query_map(params![task_key, limit.min(100) as i64], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,
-        row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,i64>(5)?,row.get::<_,String>(6)?)))?
+        row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,i64>(5)?,row.get::<_,String>(6)?))).map_err(storage_error)?
         .map(|row| {
-            let (id, project, task_id, developer, status, created_at, payload) = row?;
+            let (id, project, task_id, developer, status, created_at, payload) = row.map_err(storage_error)?;
             Ok(json!({"handoff_id":id,"project":project,"task_id":task_id,"developer":developer,"status":status,
                 "created_at":created_at,"payload":serde_json::from_str::<Value>(&payload)?}))
         }).collect::<Result<Vec<_>,TeamError>>()?;
     let mut qa_plans = connection.prepare(
         "SELECT t.project,t.task_id,q.agent FROM team_qa q JOIN teams t ON t.task_key=q.task_key
         WHERE (?1 IS NULL OR q.task_key=?1) ORDER BY q.task_key",
-    )?;
+    ).map_err(storage_error)?;
     let qa_plans = qa_plans
         .query_map(params![task_key], |row| {
             Ok(json!({"project":row.get::<_,String>(0)?,
         "task_id":row.get::<_,String>(1)?,"agent":row.get::<_,String>(2)?}))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        })
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     let mut snapshot = super::links::snapshot(connection, task, limit)?;
     snapshot.as_object_mut().expect("host snapshot").extend(json!({"members":members,"proposals":proposals,"messages":messages,"escalations":escalations,"spawns":spawns,"handoffs":handoffs,"qa_plans":qa_plans}).as_object().expect("snapshot").clone());
     Ok(snapshot)
@@ -1157,8 +1236,8 @@ fn cancel_member_messages(
     task_key: &str,
     session: &str,
 ) -> Result<(), TeamError> {
-    connection.execute("UPDATE sleep_permits SET state='cancelled' WHERE task_key=?1 AND session_id=?2 AND state IN ('prepared','launch_requested','waking','failed')", params![task_key,session])?;
-    connection.execute("UPDATE messages SET state='cancelled', last_error='membership revoked' WHERE scope_kind='team' AND task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('queued','ready')", params![task_key,session])?;
+    connection.execute("UPDATE sleep_permits SET state='cancelled' WHERE task_key=?1 AND session_id=?2 AND state IN ('prepared','launch_requested','waking','failed')", params![task_key,session]).map_err(storage_error)?;
+    connection.execute("UPDATE messages SET state='cancelled', last_error='membership revoked' WHERE scope_kind='team' AND task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('queued','ready')", params![task_key,session]).map_err(storage_error)?;
     Ok(())
 }
 
@@ -1169,34 +1248,52 @@ pub(crate) fn release_completed_task(
     task_id: &str,
 ) -> Result<(), TeamError> {
     let task_keys: Vec<String> = transaction
-        .prepare("SELECT task_key FROM teams WHERE task_id=?1 AND (?2 IS NULL OR project=?2)")?
-        .query_map(params![task_id, project], |row| row.get(0))?
-        .collect::<Result<_, _>>()?;
+        .prepare("SELECT task_key FROM teams WHERE task_id=?1 AND (?2 IS NULL OR project=?2)")
+        .map_err(storage_error)?
+        .query_map(params![task_id, project], |row| row.get(0))
+        .map_err(storage_error)?
+        .collect::<Result<_, _>>()
+        .map_err(storage_error)?;
     for task_key in task_keys {
         let members: Vec<String> = transaction
-            .prepare("SELECT session_id FROM members WHERE task_key=?1")?
-            .query_map([&task_key], |row| row.get(0))?
-            .collect::<Result<_, _>>()?;
+            .prepare("SELECT session_id FROM members WHERE task_key=?1")
+            .map_err(storage_error)?
+            .query_map([&task_key], |row| row.get(0))
+            .map_err(storage_error)?
+            .collect::<Result<_, _>>()
+            .map_err(storage_error)?;
         for session in &members {
             cancel_member_messages(transaction, &task_key, session)?;
         }
-        if transaction.execute("DELETE FROM members WHERE task_key=?1", [&task_key])? > 0 {
-            transaction.execute(
-                "UPDATE teams SET revision=revision+1 WHERE task_key=?1",
-                [&task_key],
-            )?;
+        if transaction
+            .execute("DELETE FROM members WHERE task_key=?1", [&task_key])
+            .map_err(storage_error)?
+            > 0
+        {
+            transaction
+                .execute(
+                    "UPDATE teams SET revision=revision+1 WHERE task_key=?1",
+                    [&task_key],
+                )
+                .map_err(storage_error)?;
         }
         // Late starts and approvals must not recreate the completed team's memberships.
-        transaction.execute("UPDATE spawns SET status='superseded' WHERE task_key=?1 AND status IN ('pending','started')", [&task_key])?;
-        transaction.execute(
-            "UPDATE proposals SET status='superseded' WHERE task_key=?1 AND status='pending'",
-            [&task_key],
-        )?;
-        transaction.execute(
-            "UPDATE handoffs SET status='superseded' WHERE task_key=?1 AND status='current'",
-            [&task_key],
-        )?;
-        transaction.execute("DELETE FROM team_qa WHERE task_key=?1", [&task_key])?;
+        transaction.execute("UPDATE spawns SET status='superseded' WHERE task_key=?1 AND status IN ('pending','started')", [&task_key]).map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE proposals SET status='superseded' WHERE task_key=?1 AND status='pending'",
+                [&task_key],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE handoffs SET status='superseded' WHERE task_key=?1 AND status='current'",
+                [&task_key],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute("DELETE FROM team_qa WHERE task_key=?1", [&task_key])
+            .map_err(storage_error)?;
     }
     Ok(())
 }
@@ -1214,14 +1311,16 @@ pub(super) fn guard_sender_budget(
     sender: &str,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    let recent: i64 = connection.query_row(
-        "SELECT
+    let recent: i64 = connection
+        .query_row(
+            "SELECT
         (SELECT count(*) FROM messages WHERE sender=?1 AND created_at>?2) +
         (SELECT count(*) FROM proposals WHERE sender=?1 AND created_at>?2) +
         (SELECT count(*) FROM link_proposals WHERE sender=?1 AND created_at>?2)",
-        params![sender, now_ms.saturating_sub(60_000)],
-        |row| row.get(0),
-    )?;
+            params![sender, now_ms.saturating_sub(60_000)],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     if recent >= 10 {
         return Err(TeamError::new(
             ErrorCode::Limit,
@@ -1236,7 +1335,7 @@ fn member(
     task_key: &str,
     session: &str,
 ) -> Result<Option<ActiveMember>, TeamError> {
-    Ok(connection
+    connection
         .query_row(
             "SELECT role,epoch,agent,runtime FROM members WHERE task_key=?1 AND session_id=?2",
             params![task_key, session],
@@ -1249,7 +1348,8 @@ fn member(
                 })
             },
         )
-        .optional()?)
+        .optional()
+        .map_err(storage_error)
 }
 
 pub fn accept(
@@ -1295,7 +1395,7 @@ pub fn accept(
         ));
     }
     let task_key = serde_json::to_string(&message.task)?;
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction().map_err(storage_error)?;
     let source = member(&transaction, &task_key, &sender.session_id)?
         .filter(|member| member.runtime == sender.runtime && member.agent == sender.agent)
         .ok_or_else(|| {
@@ -1323,7 +1423,8 @@ pub fn accept(
             params![sender.session_id, message.submission_key],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if let Some((id, old_fingerprint)) = previous {
         if fingerprint != old_fingerprint {
             return Err(TeamError::new(
@@ -1336,7 +1437,7 @@ pub fn accept(
             result: Ok(json!({"message_id":id})),
         });
     }
-    let pending: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE task_key=?1 AND state IN ('queued','ready','submitting','uncertain')", [&task_key], |row| row.get(0))?;
+    let pending: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE task_key=?1 AND state IN ('queued','ready','submitting','uncertain')", [&task_key], |row| row.get(0)).map_err(storage_error)?;
     guard_sender_budget(&transaction, &sender.session_id, now_ms)?;
     if pending >= 100 {
         return Err(TeamError::new(
@@ -1349,7 +1450,7 @@ pub fn accept(
             match thread_request(&transaction, &task_key, None, sender, message, now_ms)? {
                 ThreadStep::Proceed(thread_id, round) => Some((thread_id, round)),
                 ThreadStep::Escalated => {
-                    transaction.commit()?;
+                    transaction.commit().map_err(storage_error)?;
                     return Err(TeamError::new(
                         ErrorCode::Limit,
                         "three clarification rounds are used up; this question is escalated to Theo",
@@ -1375,17 +1476,19 @@ pub fn accept(
         "recipient":{"session_id":message.recipient,"role":target.role,"agent":target.agent},
         "authorization":"collaborator_content_not_user_authorization"});
     transaction.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime,scope_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11,'team')",
-        params![id,task_key,sender.session_id,message.recipient,source.epoch,target.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,target.runtime])?;
+        params![id,task_key,sender.session_id,message.recipient,source.epoch,target.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,target.runtime]).map_err(storage_error)?;
     if is_findings {
         // Keep the membership epoch: the stored report still needs it for delivery after QA exits.
-        transaction.execute(
-            "INSERT INTO qa_exits SELECT session_id,'pending' FROM spawns
+        transaction
+            .execute(
+                "INSERT INTO qa_exits SELECT session_id,'pending' FROM spawns
             WHERE task_key=?1 AND session_id=?2 AND role='qa' AND status='bound' AND handoff_id=?3
             ON CONFLICT(session_id) DO NOTHING",
-            params![task_key, sender.session_id, message.handoff_id],
-        )?;
+                params![task_key, sender.session_id, message.handoff_id],
+            )
+            .map_err(storage_error)?;
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(TeamReply {
         request_id: message.submission_key.clone(),
         result: Ok(json!({"message_id":id,"thread_id":thread_id,"round":round})),
@@ -1404,7 +1507,8 @@ fn handoff_reference(
             params![handoff_id, task_key],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let (payload, status) = stored
         .ok_or_else(|| TeamError::new(ErrorCode::NotFound, "handoff not found in this task"))?;
     let payload: super::Handoff = serde_json::from_str(&payload)?;
@@ -1493,7 +1597,7 @@ pub fn handoff_in(
         ));
     }
     let task_key = serde_json::to_string(&handoff.task)?;
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction().map_err(storage_error)?;
     let developer = member(&transaction, &task_key, &sender.session_id)?
         .filter(|member| {
             member.runtime == sender.runtime
@@ -1514,7 +1618,8 @@ pub fn handoff_in(
             params![sender.session_id, handoff.submission_key],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if let Some((id, old_fingerprint)) = previous {
         if old_fingerprint != fingerprint {
             return Err(TeamError::new(
@@ -1527,30 +1632,36 @@ pub fn handoff_in(
             result: Ok(json!({"handoff_id": id})),
         });
     }
-    transaction.execute(
-        "UPDATE handoffs SET status='superseded' WHERE task_key=?1 AND status='current'",
-        [&task_key],
-    )?;
+    transaction
+        .execute(
+            "UPDATE handoffs SET status='superseded' WHERE task_key=?1 AND status='current'",
+            [&task_key],
+        )
+        .map_err(storage_error)?;
     // A review already handed to QA keeps running against its own commit; only unsent ones go.
-    transaction.execute(
-        "UPDATE messages SET state='cancelled', last_error='superseded by a newer handoff'
+    transaction
+        .execute(
+            "UPDATE messages SET state='cancelled', last_error='superseded by a newer handoff'
         WHERE task_key=?1 AND state='queued' AND json_extract(envelope,'$.kind')='qa_request'",
-        [&task_key],
-    )?;
+            [&task_key],
+        )
+        .map_err(storage_error)?;
     let id = identifier()?;
-    transaction.execute(
-        "INSERT INTO handoffs VALUES (?1,?2,?3,?4,?5,?6,?7,'current',?8)",
-        params![
-            id,
-            task_key,
-            sender.session_id,
-            developer.epoch,
-            handoff.submission_key,
-            fingerprint,
-            serde_json::to_string(handoff)?,
-            now_ms
-        ],
-    )?;
+    transaction
+        .execute(
+            "INSERT INTO handoffs VALUES (?1,?2,?3,?4,?5,?6,?7,'current',?8)",
+            params![
+                id,
+                task_key,
+                sender.session_id,
+                developer.epoch,
+                handoff.submission_key,
+                fingerprint,
+                serde_json::to_string(handoff)?,
+                now_ms
+            ],
+        )
+        .map_err(storage_error)?;
     let is_spawned = spawn_qa(
         &transaction,
         &task_key,
@@ -1560,7 +1671,7 @@ pub fn handoff_in(
         now_ms,
     )?;
     let is_requested = schedule_qa(&transaction, &task_key, now_ms)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(TeamReply {
         request_id: handoff.submission_key.clone(),
         result: Ok(
@@ -1585,7 +1696,8 @@ fn spawn_qa(
             [task_key],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let Some((standing, agent)) = standing else {
         return Ok(false);
     };
@@ -1599,11 +1711,13 @@ fn spawn_qa(
             "the Developer's folder is unknown; QA cannot be started",
         )
     })?;
-    let recent: i64 = transaction.query_row(
-        "SELECT count(*) FROM spawns WHERE task_key=?1 AND role='qa' AND created_at>?2",
-        params![task_key, now_ms - 600_000],
-        |row| row.get(0),
-    )?;
+    let recent: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM spawns WHERE task_key=?1 AND role='qa' AND created_at>?2",
+            params![task_key, now_ms - 600_000],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     if recent >= 3 {
         return Err(TeamError::new(
             ErrorCode::Limit,
@@ -1613,39 +1727,48 @@ fn spawn_qa(
     transaction.execute(
         "UPDATE spawns SET status='cancelled' WHERE task_key=?1 AND role='qa' AND status='pending'",
         [task_key],
-    )?;
+    ).map_err(storage_error)?;
     // Started but not joined yet: it can no longer take the role, and is closed once it shows up.
-    transaction.execute("UPDATE spawns SET status='superseded' WHERE task_key=?1 AND role='qa' AND status='started'", [task_key])?;
+    transaction.execute("UPDATE spawns SET status='superseded' WHERE task_key=?1 AND role='qa' AND status='started'", [task_key]).map_err(storage_error)?;
     let previous: Option<String> = transaction
         .query_row(
             "SELECT session_id FROM members WHERE task_key=?1 AND role='qa'",
             [task_key],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if let Some(previous) = previous {
         cancel_member_messages(transaction, task_key, &previous)?;
-        transaction.execute(
-            "DELETE FROM members WHERE task_key=?1 AND session_id=?2",
-            params![task_key, previous],
-        )?;
-        transaction.execute("INSERT INTO qa_exits VALUES (?1,'pending') ON CONFLICT(session_id) DO UPDATE SET status='pending'", [&previous])?;
-        transaction.execute(
-            "UPDATE teams SET revision=revision+1 WHERE task_key=?1",
-            [task_key],
-        )?;
+        transaction
+            .execute(
+                "DELETE FROM members WHERE task_key=?1 AND session_id=?2",
+                params![task_key, previous],
+            )
+            .map_err(storage_error)?;
+        transaction.execute("INSERT INTO qa_exits VALUES (?1,'pending') ON CONFLICT(session_id) DO UPDATE SET status='pending'", [&previous]).map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE teams SET revision=revision+1 WHERE task_key=?1",
+                [task_key],
+            )
+            .map_err(storage_error)?;
     }
-    let mut findings = transaction.prepare(
-        "SELECT json_extract(envelope,'$.body') FROM messages WHERE task_key=?1
+    let mut findings = transaction
+        .prepare(
+            "SELECT json_extract(envelope,'$.body') FROM messages WHERE task_key=?1
         AND json_extract(envelope,'$.kind')='findings' ORDER BY seq DESC LIMIT 10",
-    )?;
+        )
+        .map_err(storage_error)?;
     let findings: Vec<String> = findings
-        .query_map([task_key], |row| row.get::<_, String>(0))?
-        .collect::<Result<_, _>>()?;
+        .query_map([task_key], |row| row.get::<_, String>(0))
+        .map_err(storage_error)?
+        .collect::<Result<_, _>>()
+        .map_err(storage_error)?;
     let mut reference = handoff_reference(transaction, task_key, handoff_id)?;
     reference["task"] = serde_json::from_str(task_key)?;
     transaction.execute("INSERT INTO spawns (token,task_key,role,agent,directory,commit_id,brief,handoff_id,status,created_at) VALUES (?1,?2,'qa',?3,?4,?5,?6,?7,'pending',?8)",
-        params![identifier()?, task_key, agent, folder, commit, super::qa_brief_text(&standing, &reference, &findings), handoff_id, now_ms])?;
+        params![identifier()?, task_key, agent, folder, commit, super::qa_brief_text(&standing, &reference, &findings), handoff_id, now_ms]).map_err(storage_error)?;
     Ok(true)
 }
 
@@ -1660,29 +1783,35 @@ fn qa_member_is_spawned(
             [task_key],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let Some(member) = member else {
         return Ok(None);
     };
     let spawned: Option<i64> = connection.query_row("SELECT 1 FROM spawns WHERE task_key=?1 AND role='qa' AND status='bound' AND session_id=?2",
-        params![task_key, member], |row| row.get(0)).optional()?;
+        params![task_key, member], |row| row.get(0)).optional().map_err(storage_error)?;
     Ok(Some(spawned.is_some()))
 }
 
 /// Started sessions to close: QA that reported or was replaced, and starts that could not join.
 pub fn superseded_qa(connection: &Connection) -> Result<Vec<String>, TeamError> {
     let mut statement = connection
-        .prepare("SELECT session_id FROM qa_exits WHERE status='pending' ORDER BY session_id")?;
-    Ok(statement
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<_, _>>()?)
+        .prepare("SELECT session_id FROM qa_exits WHERE status='pending' ORDER BY session_id")
+        .map_err(storage_error)?;
+    statement
+        .query_map([], |row| row.get(0))
+        .map_err(storage_error)?
+        .collect::<Result<_, _>>()
+        .map_err(storage_error)
 }
 
 pub fn mark_qa_exited(connection: &Connection, session_id: &str) -> Result<(), TeamError> {
-    connection.execute(
-        "UPDATE qa_exits SET status='exited' WHERE session_id=?1",
-        [session_id],
-    )?;
+    connection
+        .execute(
+            "UPDATE qa_exits SET status='exited' WHERE session_id=?1",
+            [session_id],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -1695,7 +1824,8 @@ fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<b
             [task_key],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if has_standing_qa.is_some() && qa_member_is_spawned(connection, task_key)? != Some(false) {
         return Ok(false);
     }
@@ -1715,14 +1845,17 @@ fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<b
             )
             .optional()
     };
-    let (Some(developer), Some(qa)) = (role_member("developer")?, role_member("qa")?) else {
+    let (Some(developer), Some(qa)) = (
+        role_member("developer").map_err(storage_error)?,
+        role_member("qa").map_err(storage_error)?,
+    ) else {
         return Ok(false);
     };
     if sleep::paused(connection, &developer.0)? {
         return Ok(false);
     }
     let current: Option<String> = connection.query_row("SELECT id FROM handoffs WHERE task_key=?1 AND status='current' AND developer=?2 AND developer_epoch=?3",
-        params![task_key, developer.0, developer.1], |row| row.get(0)).optional()?;
+        params![task_key, developer.0, developer.1], |row| row.get(0)).optional().map_err(storage_error)?;
     let Some(handoff_id) = current else {
         return Ok(false);
     };
@@ -1733,7 +1866,8 @@ fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<b
             params![developer.0, key],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if exists.is_some() {
         return Ok(false);
     }
@@ -1744,7 +1878,7 @@ fn schedule_qa(connection: &Connection, task_key: &str, now_ms: i64) -> Result<b
         "handoff": reference, "sender": {"session_id": developer.0, "role": "developer", "agent": developer.2},
         "recipient": {"session_id": qa.0, "role": "qa", "agent": qa.2}, "authorization": "collaborator_content_not_user_authorization"});
     connection.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime,scope_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'queued',?10,?10,?11,'team')",
-        params![id, task_key, developer.0, qa.0, developer.1, qa.1, key, audit::sha256_hex(key.as_bytes()), envelope.to_string(), now_ms, qa.3])?;
+        params![id, task_key, developer.0, qa.0, developer.1, qa.1, key, audit::sha256_hex(key.as_bytes()), envelope.to_string(), now_ms, qa.3]).map_err(storage_error)?;
     Ok(true)
 }
 
@@ -1765,12 +1899,12 @@ pub(super) fn thread_request(
     let Some(thread_id) = &message.thread_id else {
         let thread_id = identifier()?;
         transaction.execute("INSERT INTO threads (id,task_key,asker,answerer,round,status,created_at,scope_kind,link_id) VALUES (?1,?2,?3,?4,1,'awaiting_reply',?5,?6,?7)",
-            params![thread_id, task_key, sender.session_id, message.recipient, now_ms, if link_id.is_some() { "link" } else { "team" }, link_id])?;
+            params![thread_id, task_key, sender.session_id, message.recipient, now_ms, if link_id.is_some() { "link" } else { "team" }, link_id]).map_err(storage_error)?;
         return Ok(ThreadStep::Proceed(thread_id, 1));
     };
     let thread: Option<(String, String, i64, String)> = transaction.query_row("SELECT asker,answerer,round,status FROM threads WHERE id=?1 AND task_key=?2
         AND ((scope_kind='team' AND ?3 IS NULL AND link_id IS NULL) OR (scope_kind='link' AND link_id=?3))",
-        params![thread_id, task_key, link_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+        params![thread_id, task_key, link_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(storage_error)?;
     let Some((asker, answerer, round, status)) = thread else {
         return Err(TeamError::new(
             ErrorCode::NotFound,
@@ -1799,10 +1933,12 @@ pub(super) fn thread_request(
             format!("this clarification is {status}, not awaiting a follow-up"),
         ));
     }
-    transaction.execute(
-        "UPDATE threads SET round=round+1, status='awaiting_reply' WHERE id=?1",
-        [thread_id],
-    )?;
+    transaction
+        .execute(
+            "UPDATE threads SET round=round+1, status='awaiting_reply' WHERE id=?1",
+            [thread_id],
+        )
+        .map_err(storage_error)?;
     Ok(ThreadStep::Proceed(thread_id.clone(), round + 1))
 }
 
@@ -1821,7 +1957,7 @@ pub(super) fn thread_reply(
     };
     let thread: Option<(String, String, i64, String)> = transaction.query_row("SELECT asker,answerer,round,status FROM threads WHERE id=?1 AND task_key=?2
         AND ((scope_kind='team' AND ?3 IS NULL AND link_id IS NULL) OR (scope_kind='link' AND link_id=?3))",
-        params![thread_id, task_key, link_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+        params![thread_id, task_key, link_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(storage_error)?;
     let Some((asker, answerer, round, status)) = thread else {
         return Err(TeamError::new(
             ErrorCode::NotFound,
@@ -1840,10 +1976,12 @@ pub(super) fn thread_reply(
             format!("this clarification is {status}, not awaiting a reply"),
         ));
     }
-    transaction.execute(
-        "UPDATE threads SET status='awaiting_assessment' WHERE id=?1",
-        [thread_id],
-    )?;
+    transaction
+        .execute(
+            "UPDATE threads SET status='awaiting_assessment' WHERE id=?1",
+            [thread_id],
+        )
+        .map_err(storage_error)?;
     Ok((thread_id.clone(), round))
 }
 
@@ -1856,11 +1994,13 @@ fn escalate(
     now_ms: i64,
 ) -> Result<(), TeamError> {
     transaction.execute("INSERT OR IGNORE INTO escalations (thread_id,task_key,reason,status,created_at) VALUES (?1,?2,?3,'open',?4)",
-        params![thread_id, task_key, reason, now_ms])?;
-    transaction.execute(
-        "UPDATE threads SET status='escalated' WHERE id=?1",
-        [thread_id],
-    )?;
+        params![thread_id, task_key, reason, now_ms]).map_err(storage_error)?;
+    transaction
+        .execute(
+            "UPDATE threads SET status='escalated' WHERE id=?1",
+            [thread_id],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -1879,7 +2019,7 @@ pub fn assess(
         return Err(TeamError::new(ErrorCode::Invalid, "not an assessment"));
     };
     let task_key = serde_json::to_string(task)?;
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction().map_err(storage_error)?;
     member(&transaction, &task_key, &sender.session_id)?
         .filter(|member| member.runtime == sender.runtime && member.agent == sender.agent)
         .ok_or_else(|| {
@@ -1895,7 +2035,7 @@ pub fn assess(
         *resolved,
         now_ms,
     )?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(reply)
 }
 
@@ -1910,7 +2050,7 @@ pub(super) fn assess_thread(
 ) -> Result<TeamReply, TeamError> {
     let thread: Option<(String, i64, String)> = transaction.query_row("SELECT asker,round,status FROM threads WHERE id=?1 AND task_key=?2
         AND ((scope_kind='team' AND ?3 IS NULL AND link_id IS NULL) OR (scope_kind='link' AND link_id=?3))",
-        params![thread_id, task_key, link_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+        params![thread_id, task_key, link_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(storage_error)?;
     let Some((asker, round, status)) = thread else {
         return Err(TeamError::new(
             ErrorCode::NotFound,
@@ -1945,10 +2085,12 @@ pub(super) fn assess_thread(
             now_ms,
         )?;
     } else {
-        transaction.execute(
-            "UPDATE threads SET status=?2 WHERE id=?1",
-            params![thread_id, next],
-        )?;
+        transaction
+            .execute(
+                "UPDATE threads SET status=?2 WHERE id=?1",
+                params![thread_id, next],
+            )
+            .map_err(storage_error)?;
     }
     Ok(TeamReply {
         request_id: thread_id.into(),
@@ -1958,20 +2100,21 @@ pub(super) fn assess_thread(
 
 /// The launch a member was bound to, for a daemon that restarted and lost its in-memory copy.
 pub fn member_runtime(connection: &Connection, session: &str) -> Result<Option<String>, TeamError> {
-    Ok(connection
+    connection
         .query_row(
             "SELECT runtime FROM members WHERE session_id=?1",
             [session],
             |row| row.get(0),
         )
-        .optional()?)
+        .optional()
+        .map_err(storage_error)
 }
 
 /// Candidates for restart restoration; the daemon must select exactly one live process.
 pub fn approved_runtimes(connection: &Connection, session: &str) -> Result<Vec<String>, TeamError> {
-    Ok(connection.prepare("SELECT runtime FROM members WHERE session_id=?1 UNION
-        SELECT p.runtime FROM link_participants p JOIN links l ON l.proposal_id=p.proposal_id WHERE p.session_id=?1 AND l.state='active'")?
-        .query_map([session], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?)
+    connection.prepare("SELECT runtime FROM members WHERE session_id=?1 UNION
+        SELECT p.runtime FROM link_participants p JOIN links l ON l.proposal_id=p.proposal_id WHERE p.session_id=?1 AND l.state='active'").map_err(storage_error)?
+        .query_map([session], |row| row.get::<_, String>(0)).map_err(storage_error)?.collect::<Result<Vec<_>, _>>().map_err(storage_error)
 }
 
 /// Host-only routing coordinator: both runtimes and source retirement must be verified first.
@@ -2013,15 +2156,17 @@ pub fn replace_subscription_member(
     let fingerprint =
         audit::sha256_hex(serde_json::to_vec(&(task, source, replacement))?.as_slice());
     let request_id = format!("subscription-{generation}");
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let previous: Option<(String, String)> = transaction
         .query_row(
             "SELECT fingerprint,response FROM host_actions WHERE request_id=?1",
             [&request_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if let Some((recorded, response)) = previous {
         if recorded != fingerprint {
             return Err(conflict());
@@ -2034,12 +2179,15 @@ pub fn replace_subscription_member(
             [&source.session_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
-        .optional()?;
-    let occupied: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM members WHERE session_id=?1)",
-        [&replacement.session_id],
-        |row| row.get(0),
-    )?;
+        .optional()
+        .map_err(storage_error)?;
+    let occupied: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM members WHERE session_id=?1)",
+            [&replacement.session_id],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     if occupied {
         return Err(conflict());
     }
@@ -2051,7 +2199,7 @@ pub fn replace_subscription_member(
         // The runtime gate is shared by every scope: any unresolved delivery into the source blocks.
         let uncertain: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE state IN ('submitting','uncertain')
             AND ((recipient=?2 AND recipient_runtime=?3) OR (scope_kind='team' AND task_key=?1 AND (sender=?2 OR recipient=?2))))",
-            params![task_key, source.session_id, source.runtime], |row| row.get(0))?;
+            params![task_key, source.session_id, source.runtime], |row| row.get(0)).map_err(storage_error)?;
         if uncertain {
             return Err(TeamError::new(
                 ErrorCode::Conflict,
@@ -2059,12 +2207,14 @@ pub fn replace_subscription_member(
             ));
         }
         let next_epoch = identifier()?;
-        let mut statement = transaction.prepare("SELECT id,envelope,sender,recipient FROM messages WHERE scope_kind='team' AND task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('queued','ready')")?;
+        let mut statement = transaction.prepare("SELECT id,envelope,sender,recipient FROM messages WHERE scope_kind='team' AND task_key=?1 AND (sender=?2 OR recipient=?2) AND state IN ('queued','ready')").map_err(storage_error)?;
         let queued: Vec<(String, String, String, String)> = statement
             .query_map(params![task_key, source.session_id], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })?
-            .collect::<Result<_, _>>()?;
+            })
+            .map_err(storage_error)?
+            .collect::<Result<_, _>>()
+            .map_err(storage_error)?;
         drop(statement);
         for (id, envelope, sender, recipient) in queued {
             let mut envelope: Value = serde_json::from_str(&envelope)?;
@@ -2072,44 +2222,50 @@ pub fn replace_subscription_member(
                 envelope["historical_sender"] = envelope["sender"].clone();
                 envelope["sender"]["session_id"] = json!(replacement.session_id);
                 envelope["sender"]["agent"] = json!(replacement.agent);
-                transaction.execute(
-                    "UPDATE messages SET sender=?2,sender_epoch=?3 WHERE id=?1",
-                    params![id, replacement.session_id, next_epoch],
-                )?;
+                transaction
+                    .execute(
+                        "UPDATE messages SET sender=?2,sender_epoch=?3 WHERE id=?1",
+                        params![id, replacement.session_id, next_epoch],
+                    )
+                    .map_err(storage_error)?;
             }
             if recipient == source.session_id {
                 envelope["recipient"]["session_id"] = json!(replacement.session_id);
                 envelope["recipient"]["agent"] = json!(replacement.agent);
                 transaction.execute("UPDATE messages SET recipient=?2,recipient_epoch=?3,recipient_runtime=?4 WHERE id=?1",
-                    params![id,replacement.session_id,next_epoch,replacement.runtime])?;
+                    params![id,replacement.session_id,next_epoch,replacement.runtime]).map_err(storage_error)?;
             }
-            transaction.execute(
-                "UPDATE messages SET envelope=?2 WHERE id=?1",
-                params![id, envelope.to_string()],
-            )?;
+            transaction
+                .execute(
+                    "UPDATE messages SET envelope=?2 WHERE id=?1",
+                    params![id, envelope.to_string()],
+                )
+                .map_err(storage_error)?;
         }
         // Link approval binds the exact session and runtime; a replacement never inherits it.
-        transaction.execute("UPDATE threads SET asker=?3 WHERE scope_kind='team' AND task_key=?1 AND asker=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id])?;
-        transaction.execute("UPDATE threads SET answerer=?3 WHERE scope_kind='team' AND task_key=?1 AND answerer=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id])?;
+        transaction.execute("UPDATE threads SET asker=?3 WHERE scope_kind='team' AND task_key=?1 AND asker=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id]).map_err(storage_error)?;
+        transaction.execute("UPDATE threads SET answerer=?3 WHERE scope_kind='team' AND task_key=?1 AND answerer=?2 AND status<>'resolved'", params![task_key,source.session_id,replacement.session_id]).map_err(storage_error)?;
         transaction.execute("UPDATE handoffs SET developer=?3,developer_epoch=?4 WHERE task_key=?1 AND developer=?2 AND developer_epoch=?5 AND status='current'",
-            params![task_key,source.session_id,replacement.session_id,next_epoch,epoch])?;
+            params![task_key,source.session_id,replacement.session_id,next_epoch,epoch]).map_err(storage_error)?;
         transaction.execute("UPDATE spawns SET session_id=?3,agent=?4 WHERE task_key=?1 AND session_id=?2 AND status='started'",
-            params![task_key,source.session_id,replacement.session_id,replacement.agent])?;
+            params![task_key,source.session_id,replacement.session_id,replacement.agent]).map_err(storage_error)?;
         transaction.execute("UPDATE members SET session_id=?2,agent=?3,runtime=?4,epoch=?5,last_idle_turn=NULL WHERE task_key=?1 AND session_id=?6",
-            params![task_key,replacement.session_id,replacement.agent,replacement.runtime,next_epoch,source.session_id])?;
+            params![task_key,replacement.session_id,replacement.agent,replacement.runtime,next_epoch,source.session_id]).map_err(storage_error)?;
         // The source's record stays with its link identity; never erase a turn already used by this runtime.
         transaction.execute("INSERT INTO delivery_recipients VALUES (?1,?2,NULL) ON CONFLICT(session_id,runtime) DO NOTHING",
-            params![replacement.session_id,replacement.runtime])?;
+            params![replacement.session_id,replacement.runtime]).map_err(storage_error)?;
     }
-    transaction.execute(
-        "INSERT INTO host_actions (request_id,fingerprint,response) VALUES (?1,?2,?3)",
-        params![
-            request_id,
-            fingerprint,
-            serde_json::to_string(&has_membership)?
-        ],
-    )?;
-    transaction.commit()?;
+    transaction
+        .execute(
+            "INSERT INTO host_actions (request_id,fingerprint,response) VALUES (?1,?2,?3)",
+            params![
+                request_id,
+                fingerprint,
+                serde_json::to_string(&has_membership)?
+            ],
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(has_membership)
 }
 
@@ -2121,23 +2277,26 @@ pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Valu
             params![sender.session_id, sender.runtime, sender.agent],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let mut members = Vec::new();
     let mut task = Value::Null;
     let mut qa_starts_at_handoff = false;
     if let Some(task_key) = task_key {
         task = serde_json::from_str(&task_key)?;
-        let mut statement = connection.prepare(
-            "SELECT session_id, role, agent FROM members WHERE task_key=?1 ORDER BY role",
-        )?;
+        let mut statement = connection
+            .prepare("SELECT session_id, role, agent FROM members WHERE task_key=?1 ORDER BY role")
+            .map_err(storage_error)?;
         members = statement
             .query_map([&task_key], |row| {
                 Ok(
                     json!({"session_id": row.get::<_, String>(0)?, "role": row.get::<_, String>(1)?,
             "agent": row.get::<_, String>(2)?}),
                 )
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
         qa_starts_at_handoff = has_qa_plan(connection, &task_key)?;
     }
     let mut context = json!({"session_id": sender.session_id, "agent": sender.agent, "project": sender.project, "task": task, "members": members,
@@ -2168,9 +2327,9 @@ pub(crate) fn inbox_available(
         return Ok(false);
     }
     let in_flight: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE recipient=?1 AND state IN ('submitting','uncertain')) OR EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?1 AND state IN ('submitting','uncertain'))",
-        [&recipient.session_id], |row| row.get(0))?;
+        [&recipient.session_id], |row| row.get(0)).map_err(storage_error)?;
     let used: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM inbox_turns WHERE recipient=?1 AND runtime=?2 AND idle_turn=?3) OR EXISTS(SELECT 1 FROM delivery_recipients WHERE session_id=?1 AND runtime=?2 AND last_idle_turn=?3) OR EXISTS(SELECT 1 FROM members WHERE session_id=?1 AND runtime=?2 AND last_idle_turn=?3)",
-        params![recipient.session_id, recipient.runtime, idle_turn], |row| row.get(0))?;
+        params![recipient.session_id, recipient.runtime, idle_turn], |row| row.get(0)).map_err(storage_error)?;
     Ok(!in_flight && !used)
 }
 
@@ -2180,7 +2339,7 @@ pub(crate) fn record_inbox_turn(
     idle_turn: &str,
 ) -> Result<(), TeamError> {
     connection.execute("INSERT INTO inbox_turns VALUES (?1,?2,?3) ON CONFLICT(recipient) DO UPDATE SET runtime=excluded.runtime,idle_turn=excluded.idle_turn",
-        params![recipient.session_id, recipient.runtime, idle_turn])?;
+        params![recipient.session_id, recipient.runtime, idle_turn]).map_err(storage_error)?;
     Ok(())
 }
 
@@ -2206,40 +2365,43 @@ pub fn claim(
     {
         return Ok(None);
     }
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     if !inbox_available(&transaction, recipient, Some(idle_turn))? {
         return Ok(None);
     }
     let used_turn: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM delivery_recipients WHERE session_id=?1 AND runtime=?2 AND last_idle_turn=?3)",
-        params![recipient.session_id,recipient.runtime,idle_turn], |row| row.get(0))?;
+        params![recipient.session_id,recipient.runtime,idle_turn], |row| row.get(0)).map_err(storage_error)?;
     if used_turn {
         return Ok(None);
     }
-    let unresolved: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE recipient=?1 AND recipient_runtime=?2 AND state IN ('submitting','uncertain')", params![recipient.session_id,recipient.runtime], |row| row.get(0))?;
+    let unresolved: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE recipient=?1 AND recipient_runtime=?2 AND state IN ('submitting','uncertain')", params![recipient.session_id,recipient.runtime], |row| row.get(0)).map_err(storage_error)?;
     if unresolved > 0 {
         return Ok(None);
     }
-    let candidates = transaction.prepare("SELECT id,envelope,attempts,scope_kind FROM messages WHERE recipient=?1 AND recipient_runtime=?2 AND state='queued' AND next_at<=?3 ORDER BY seq")?
-        .query_map(params![recipient.session_id,recipient.runtime,now_ms], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?)))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let candidates = transaction.prepare("SELECT id,envelope,attempts,scope_kind FROM messages WHERE recipient=?1 AND recipient_runtime=?2 AND state='queued' AND next_at<=?3 ORDER BY seq").map_err(storage_error)?
+        .query_map(params![recipient.session_id,recipient.runtime,now_ms], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?))).map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
     let mut candidate = None;
     for (message_id, envelope, attempts, scope) in candidates {
         let authorized = match scope.as_str() {
             "team" => team_delivery_authorized(&transaction, &message_id).and_then(|approved| {
                 let identity: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages q JOIN members r ON r.task_key=q.task_key AND r.session_id=q.recipient
                     JOIN teams t ON t.task_key=q.task_key WHERE q.id=?1 AND q.scope_kind='team' AND r.runtime=?2 AND r.agent=?3 AND t.project=?4)",
-                    params![message_id,recipient.runtime,recipient.agent,recipient.project], |row| row.get(0))?;
+                    params![message_id,recipient.runtime,recipient.agent,recipient.project], |row| row.get(0)).map_err(storage_error)?;
                 if approved && identity { Ok(()) } else { Err(TeamError::new(ErrorCode::Unauthorized, "team membership no longer approved")) }
             }),
             "link" => super::links::delivery(&transaction, &message_id).and_then(|link| link.require_live(live)),
             _ => Err(TeamError::new(ErrorCode::Unauthorized, "unknown delivery scope")),
         };
         if let Err(error) = authorized {
-            transaction.execute(
-                "UPDATE messages SET last_error=?2 WHERE id=?1",
-                params![message_id, error.message],
-            )?;
+            transaction
+                .execute(
+                    "UPDATE messages SET last_error=?2 WHERE id=?1",
+                    params![message_id, error.message],
+                )
+                .map_err(storage_error)?;
             continue;
         }
         candidate = Some((
@@ -2250,20 +2412,22 @@ pub fn claim(
         break;
     }
     let Some((message_id, envelope, attempts)) = candidate else {
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(None);
     };
     let attempt_id = identifier()?;
     // Commit before the irreversible native submission. Recovery must never blindly replay it.
-    transaction.execute(
-        "UPDATE messages SET state='submitting',attempts=attempts+1,idle_turn=?2 WHERE id=?1",
-        params![message_id, idle_turn],
-    )?;
-    transaction.execute("INSERT INTO attempts (id,message_id,number,state,started_at) VALUES (?1,?2,?3,'submitting',?4)", params![attempt_id,message_id,attempts+1,now_ms])?;
+    transaction
+        .execute(
+            "UPDATE messages SET state='submitting',attempts=attempts+1,idle_turn=?2 WHERE id=?1",
+            params![message_id, idle_turn],
+        )
+        .map_err(storage_error)?;
+    transaction.execute("INSERT INTO attempts (id,message_id,number,state,started_at) VALUES (?1,?2,?3,'submitting',?4)", params![attempt_id,message_id,attempts+1,now_ms]).map_err(storage_error)?;
     record_inbox_turn(&transaction, recipient, idle_turn)?;
     transaction.execute("INSERT INTO delivery_recipients VALUES (?1,?2,?3) ON CONFLICT(session_id,runtime) DO UPDATE SET last_idle_turn=excluded.last_idle_turn",
-        params![recipient.session_id,recipient.runtime,idle_turn])?;
-    transaction.commit()?;
+        params![recipient.session_id,recipient.runtime,idle_turn]).map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(Some(Dispatch {
         id: attempt_id,
         message_id,
@@ -2272,10 +2436,10 @@ pub fn claim(
 }
 
 fn team_delivery_authorized(connection: &Connection, message_id: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM messages q
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM messages q
         JOIN members s ON s.task_key=q.task_key AND s.session_id=q.sender AND s.epoch=q.sender_epoch
         JOIN members r ON r.task_key=q.task_key AND r.session_id=q.recipient AND r.epoch=q.recipient_epoch AND r.runtime=q.recipient_runtime
-        WHERE q.id=?1 AND q.scope_kind='team' AND q.link_id IS NULL)", [message_id], |row| row.get(0))?)
+        WHERE q.id=?1 AND q.scope_kind='team' AND q.link_id IS NULL)", [message_id], |row| row.get(0)).map_err(storage_error)
 }
 
 /// A native adapter reporting on its own delivery; another session's receipt is refused.
@@ -2287,7 +2451,7 @@ pub fn finish_for(
     now_ms: i64,
 ) -> Result<(), TeamError> {
     let owner: Option<(String, String)> = connection.query_row("SELECT m.recipient, m.recipient_runtime FROM attempts a JOIN messages m ON m.id=a.message_id WHERE a.id=?1",
-        [dispatch_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+        [dispatch_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(storage_error)?;
     if owner != Some((recipient.session_id.clone(), recipient.runtime.clone())) {
         return Err(TeamError::new(
             ErrorCode::NotFound,
@@ -2301,11 +2465,11 @@ pub fn finish_for(
 pub const RECEIPT_TIMEOUT_MS: i64 = 120_000;
 
 pub fn expire(connection: &mut Connection, now_ms: i64) -> Result<(), TeamError> {
-    let transaction = connection.transaction()?;
+    let transaction = connection.transaction().map_err(storage_error)?;
     transaction.execute("UPDATE messages SET state='uncertain', last_error='no receipt from the recipient within two minutes; reconcile before proceeding'
-        WHERE id IN (SELECT message_id FROM attempts WHERE state='submitting' AND started_at<=?1)", [now_ms - RECEIPT_TIMEOUT_MS])?;
-    transaction.execute("UPDATE attempts SET state='uncertain', finished_at=?2 WHERE state='submitting' AND started_at<=?1", params![now_ms - RECEIPT_TIMEOUT_MS, now_ms])?;
-    transaction.commit()?;
+        WHERE id IN (SELECT message_id FROM attempts WHERE state='submitting' AND started_at<=?1)", [now_ms - RECEIPT_TIMEOUT_MS]).map_err(storage_error)?;
+    transaction.execute("UPDATE attempts SET state='uncertain', finished_at=?2 WHERE state='submitting' AND started_at<=?1", params![now_ms - RECEIPT_TIMEOUT_MS, now_ms]).map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
@@ -2315,8 +2479,9 @@ pub fn finish(
     outcome: &TransportOutcome,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     type DeliveryAttempt = (
         String,
         i64,
@@ -2329,7 +2494,7 @@ pub fn finish(
     );
     let attempt: Option<DeliveryAttempt> = transaction.query_row(
         "SELECT a.message_id,a.number,a.state,a.native_id,m.recipient,m.recipient_runtime,m.state,m.idle_turn FROM attempts a JOIN messages m ON m.id=a.message_id WHERE a.id=?1", [dispatch_id],
-        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional()?;
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional().map_err(storage_error)?;
     let Some((
         message_id,
         number,
@@ -2368,14 +2533,18 @@ pub fn finish(
     }
     match outcome {
         TransportOutcome::Received { native_id } => {
-            transaction.execute(
-                "UPDATE attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",
-                params![dispatch_id, native_id, now_ms],
-            )?;
-            transaction.execute(
-                "UPDATE messages SET state='received',last_error='' WHERE id=?1",
-                [&message_id],
-            )?;
+            transaction
+                .execute(
+                    "UPDATE attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",
+                    params![dispatch_id, native_id, now_ms],
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE messages SET state='received',last_error='' WHERE id=?1",
+                    [&message_id],
+                )
+                .map_err(storage_error)?;
         }
         TransportOutcome::NotSubmitted { reason } => {
             if attempt_state != "submitting" {
@@ -2384,11 +2553,13 @@ pub fn finish(
                     "uncertain delivery needs reconciliation, not a retry",
                 ));
             }
-            let scope: String = transaction.query_row(
-                "SELECT scope_kind FROM messages WHERE id=?1",
-                [&message_id],
-                |row| row.get(0),
-            )?;
+            let scope: String = transaction
+                .query_row(
+                    "SELECT scope_kind FROM messages WHERE id=?1",
+                    [&message_id],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
             let authorization_error = match scope.as_str() {
                 "team" => {
                     if team_delivery_authorized(&transaction, &message_id)? {
@@ -2403,15 +2574,19 @@ pub fn finish(
                 _ => Some("unknown delivery scope".into()),
             };
             if let Some(error) = authorization_error {
-                transaction.execute(
-                    "UPDATE attempts SET state='not_submitted',finished_at=?2 WHERE id=?1",
-                    params![dispatch_id, now_ms],
-                )?;
-                transaction.execute(
-                    "UPDATE messages SET state='cancelled',last_error=?2 WHERE id=?1",
-                    params![message_id, error],
-                )?;
-                transaction.commit()?;
+                transaction
+                    .execute(
+                        "UPDATE attempts SET state='not_submitted',finished_at=?2 WHERE id=?1",
+                        params![dispatch_id, now_ms],
+                    )
+                    .map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE messages SET state='cancelled',last_error=?2 WHERE id=?1",
+                        params![message_id, error],
+                    )
+                    .map_err(storage_error)?;
+                transaction.commit().map_err(storage_error)?;
                 return Ok(());
             }
             let delay = match number {
@@ -2420,37 +2595,47 @@ pub fn finish(
                 3 => Some(30_000),
                 _ => None,
             };
-            transaction.execute(
-                "UPDATE attempts SET state='not_submitted',finished_at=?2 WHERE id=?1",
-                params![dispatch_id, now_ms],
-            )?;
-            transaction.execute(
-                "UPDATE messages SET state=?2,next_at=?3,last_error=?4 WHERE id=?1",
-                params![
-                    message_id,
-                    if delay.is_some() { "queued" } else { "failed" },
-                    now_ms + delay.unwrap_or(0),
-                    reason
-                ],
-            )?;
-            transaction.execute(
-                "DELETE FROM inbox_turns WHERE recipient=?1 AND idle_turn=?2",
-                params![recipient, idle_turn],
-            )?;
-            transaction.execute("UPDATE delivery_recipients SET last_idle_turn=NULL WHERE session_id=?1 AND runtime=?2 AND last_idle_turn=?3", params![recipient,runtime,idle_turn])?;
+            transaction
+                .execute(
+                    "UPDATE attempts SET state='not_submitted',finished_at=?2 WHERE id=?1",
+                    params![dispatch_id, now_ms],
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE messages SET state=?2,next_at=?3,last_error=?4 WHERE id=?1",
+                    params![
+                        message_id,
+                        if delay.is_some() { "queued" } else { "failed" },
+                        now_ms + delay.unwrap_or(0),
+                        reason
+                    ],
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM inbox_turns WHERE recipient=?1 AND idle_turn=?2",
+                    params![recipient, idle_turn],
+                )
+                .map_err(storage_error)?;
+            transaction.execute("UPDATE delivery_recipients SET last_idle_turn=NULL WHERE session_id=?1 AND runtime=?2 AND last_idle_turn=?3", params![recipient,runtime,idle_turn]).map_err(storage_error)?;
         }
         TransportOutcome::Uncertain { reason } => {
-            transaction.execute(
-                "UPDATE attempts SET state='uncertain',finished_at=?2 WHERE id=?1",
-                params![dispatch_id, now_ms],
-            )?;
-            transaction.execute(
-                "UPDATE messages SET state='uncertain',last_error=?2 WHERE id=?1",
-                params![message_id, reason],
-            )?;
+            transaction
+                .execute(
+                    "UPDATE attempts SET state='uncertain',finished_at=?2 WHERE id=?1",
+                    params![dispatch_id, now_ms],
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE messages SET state='uncertain',last_error=?2 WHERE id=?1",
+                    params![message_id, reason],
+                )
+                .map_err(storage_error)?;
         }
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
@@ -2461,44 +2646,52 @@ pub fn recover(
 ) -> Result<(), TeamError> {
     // Host-verified sleep replacements must bind before recovery; a token alone cannot exempt a restart.
     sleep::expire_wakes(connection, now_ms)?;
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    transaction.execute(
-        "UPDATE attempts SET state='uncertain',finished_at=?1 WHERE state='submitting'",
-        [now_ms],
-    )?;
-    transaction.execute("UPDATE messages SET state='uncertain',last_error='daemon restarted during submission; reconcile before proceeding' WHERE state='submitting'", [])?;
-    transaction.execute("UPDATE messages AS q SET state='cancelled',last_error='membership no longer approved' WHERE q.scope_kind='team' AND q.state='queued' AND (NOT EXISTS(SELECT 1 FROM members WHERE task_key=q.task_key AND session_id=q.sender AND epoch=q.sender_epoch) OR NOT EXISTS(SELECT 1 FROM members WHERE task_key=q.task_key AND session_id=q.recipient AND epoch=q.recipient_epoch))", [])?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    transaction
+        .execute(
+            "UPDATE attempts SET state='uncertain',finished_at=?1 WHERE state='submitting'",
+            [now_ms],
+        )
+        .map_err(storage_error)?;
+    transaction.execute("UPDATE messages SET state='uncertain',last_error='daemon restarted during submission; reconcile before proceeding' WHERE state='submitting'", []).map_err(storage_error)?;
+    transaction.execute("UPDATE messages AS q SET state='cancelled',last_error='membership no longer approved' WHERE q.scope_kind='team' AND q.state='queued' AND (NOT EXISTS(SELECT 1 FROM members WHERE task_key=q.task_key AND session_id=q.sender AND epoch=q.sender_epoch) OR NOT EXISTS(SELECT 1 FROM members WHERE task_key=q.task_key AND session_id=q.recipient AND epoch=q.recipient_epoch))", []).map_err(storage_error)?;
     for session in live {
-        transaction.execute("UPDATE messages SET state='cancelled',last_error='recipient runtime changed; fresh approval required' WHERE recipient=?1 AND recipient_runtime<>?2 AND state='queued'", params![session.session_id,session.runtime])?;
-        transaction.execute("UPDATE messages SET state='cancelled',last_error='sender runtime changed; fresh approval required' WHERE scope_kind='team' AND sender=?1 AND sender_epoch IN (SELECT epoch FROM members WHERE session_id=?1 AND runtime<>?2) AND state='queued'", params![session.session_id,session.runtime])?;
+        transaction.execute("UPDATE messages SET state='cancelled',last_error='recipient runtime changed; fresh approval required' WHERE recipient=?1 AND recipient_runtime<>?2 AND state='queued'", params![session.session_id,session.runtime]).map_err(storage_error)?;
+        transaction.execute("UPDATE messages SET state='cancelled',last_error='sender runtime changed; fresh approval required' WHERE scope_kind='team' AND sender=?1 AND sender_epoch IN (SELECT epoch FROM members WHERE session_id=?1 AND runtime<>?2) AND state='queued'", params![session.session_id,session.runtime]).map_err(storage_error)?;
     }
     let pending = transaction
-        .prepare("SELECT id FROM messages WHERE scope_kind='link' AND state IN ('queued','ready')")?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+        .prepare("SELECT id FROM messages WHERE scope_kind='link' AND state IN ('queued','ready')")
+        .map_err(storage_error)?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     for message_id in pending {
         let closed: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages q JOIN links l ON l.id=q.link_id
             LEFT JOIN link_work w ON w.task_key=l.task_key WHERE q.id=?1 AND (l.state<>'active' OR l.epoch<>q.sender_epoch
-            OR l.epoch<>q.recipient_epoch OR w.generation<>l.work_generation OR w.state IN ('done','deleted')))", [&message_id], |row| row.get(0))?;
+            OR l.epoch<>q.recipient_epoch OR w.generation<>l.work_generation OR w.state IN ('done','deleted')))", [&message_id], |row| row.get(0)).map_err(storage_error)?;
         let changed = live.iter().try_fold(false, |changed, session| -> Result<bool, TeamError> {
             Ok(changed || transaction.query_row("SELECT EXISTS(SELECT 1 FROM messages q JOIN links l ON l.id=q.link_id
                 JOIN link_participants p ON p.proposal_id=l.proposal_id WHERE q.id=?1 AND p.session_id=?2
                 AND (p.runtime<>?3 OR p.agent<>?4 OR p.project<>?5))",
-                params![message_id,session.session_id,session.runtime,session.agent,session.project], |row| row.get::<_, bool>(0))?)
+                params![message_id,session.session_id,session.runtime,session.agent,session.project], |row| row.get::<_, bool>(0)).map_err(storage_error)?)
         })?;
         if closed || changed {
-            transaction.execute("UPDATE messages SET state='cancelled',last_error='link approval no longer valid' WHERE id=?1", [&message_id])?;
+            transaction.execute("UPDATE messages SET state='cancelled',last_error='link approval no longer valid' WHERE id=?1", [&message_id]).map_err(storage_error)?;
         } else if let Err(error) = super::links::delivery(&transaction, &message_id)
             .and_then(|link| link.require_live(live))
         {
-            transaction.execute(
-                "UPDATE messages SET last_error=?2 WHERE id=?1",
-                params![message_id, error.message],
-            )?;
+            transaction
+                .execute(
+                    "UPDATE messages SET last_error=?2 WHERE id=?1",
+                    params![message_id, error.message],
+                )
+                .map_err(storage_error)?;
         }
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     crate::chief::store::recover(connection, now_ms)?;
     Ok(())
 }

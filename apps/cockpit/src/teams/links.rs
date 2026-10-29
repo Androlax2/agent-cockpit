@@ -1,5 +1,6 @@
 //! Protected shared-work identity and schema; no link grants team membership.
 
+use super::store::storage_error;
 use super::{
     AgentAction, ErrorCode, HostAction, LinkProposal, LinkSubmission, MessageKind, TaskKey,
     TeamError, TeamReply, VerifiedSession, store,
@@ -86,22 +87,22 @@ pub fn snapshot(
         WHERE (?1 IS NULL OR p.task_key=?1) AND (p.status='pending' OR p.id IN (SELECT proposal_id FROM links WHERE state='active'
         OR id IN (SELECT id FROM links WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2))
         OR p.id IN (SELECT id FROM link_proposals WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2))
-        ORDER BY p.created_at,p.id")?;
+        ORDER BY p.created_at,p.id").map_err(storage_error)?;
     let records = statement.query_map(params![task_key,limit.min(100) as i64], |row| Ok((
         json!({"proposal_id":row.get::<_,String>(0)?,"sender":row.get::<_,String>(1)?,"purpose":row.get::<_,String>(3)?,
             "revision":row.get::<_,i64>(4)?,"mapping_hash":row.get::<_,String>(5)?,"work_generation":row.get::<_,i64>(6)?,
             "status":row.get::<_,String>(7)?,"closure_reason":row.get::<_,Option<String>>(8)?,"parent_id":row.get::<_,Option<String>>(9)?,
             "created_at":row.get::<_,i64>(10)?,"permission":"coordination_messages_only"}),
         row.get::<_,String>(2)?,row.get::<_,Option<i64>>(11)?,row.get::<_,Option<String>>(12)?
-    )))?.collect::<Result<Vec<_>,_>>()?;
+    ))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     let mut proposals = Vec::new();
     for (mut record, task_key, generation, state) in records {
         let task: TaskKey = serde_json::from_str(&task_key)?;
         record["task"] = json!(task);
-        let participants = connection.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot")?
+        let participants = connection.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot").map_err(storage_error)?
             .query_map([record["proposal_id"].as_str().expect("stored id")], |row| Ok(VerifiedSession {
                 session_id:row.get(0)?,agent:row.get(1)?,project:row.get(2)?,runtime:row.get(3)?
-            }))?.collect::<Result<Vec<_>,_>>()?;
+            })).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
         record["participants"] = json!(participants);
         if record["status"] == "pending" || record["status"] == "approved" {
             let blocked = if generation != record["work_generation"].as_i64()
@@ -119,11 +120,11 @@ pub fn snapshot(
     }
     let mut statement = connection.prepare("SELECT id,proposal_id,state,closure_reason,created_at,closed_at,epoch FROM links
         WHERE (?1 IS NULL OR task_key=?1) AND (state='active' OR id IN
-        (SELECT id FROM links WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2)) ORDER BY created_at,id")?;
+        (SELECT id FROM links WHERE (?1 IS NULL OR task_key=?1) ORDER BY created_at DESC,id DESC LIMIT ?2)) ORDER BY created_at,id").map_err(storage_error)?;
     let records = statement.query_map(params![task_key,limit.min(100) as i64], |row| Ok(json!({"link_id":row.get::<_,String>(0)?,
         "proposal_id":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?,"closure_reason":row.get::<_,Option<String>>(3)?,
-        "created_at":row.get::<_,i64>(4)?,"closed_at":row.get::<_,Option<i64>>(5)?,"epoch":row.get::<_,String>(6)?})))?
-        .collect::<Result<Vec<_>,_>>()?;
+        "created_at":row.get::<_,i64>(4)?,"closed_at":row.get::<_,Option<i64>>(5)?,"epoch":row.get::<_,String>(6)?}))).map_err(storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     let mut links = Vec::new();
     for record in records {
         let proposal_id = record["proposal_id"].as_str().expect("stored proposal id");
@@ -152,40 +153,46 @@ pub fn context(connection: &Connection, sender: &VerifiedSession) -> Result<Valu
         JOIN link_participants own ON own.proposal_id=l.proposal_id
         JOIN link_participants peer ON peer.proposal_id=l.proposal_id AND peer.slot!=own.slot
         WHERE own.session_id=?1 AND own.agent=?2 AND own.project=?3 AND own.runtime=?4
-        ORDER BY (l.state='active') DESC,l.created_at DESC,l.id DESC LIMIT 30")?;
-    let mut rows = statement.query(params![
-        sender.session_id,
-        sender.agent,
-        sender.project,
-        sender.runtime
-    ])?;
-    while let Some(row) = rows.next()? {
-        approved_count = row.get::<_, i64>(8)?;
-        let task: TaskKey = serde_json::from_str(&row.get::<_, String>(1)?)?;
-        approved.push(json!({"link_id":row.get::<_, String>(0)?,"task":task,"purpose":row.get::<_, String>(2)?,
-            "status":row.get::<_, String>(3)?,"closure_reason":row.get::<_, Option<String>>(4)?,
-            "peer":{"session_id":row.get::<_, String>(5)?,"agent":row.get::<_, String>(6)?,"project":row.get::<_, String>(7)?}}));
+        ORDER BY (l.state='active') DESC,l.created_at DESC,l.id DESC LIMIT 30").map_err(storage_error)?;
+    let mut rows = statement
+        .query(params![
+            sender.session_id,
+            sender.agent,
+            sender.project,
+            sender.runtime
+        ])
+        .map_err(storage_error)?;
+    while let Some(row) = rows.next().map_err(storage_error)? {
+        approved_count = row.get::<_, i64>(8).map_err(storage_error)?;
+        let task: TaskKey = serde_json::from_str(&row.get::<_, String>(1).map_err(storage_error)?)?;
+        approved.push(json!({"link_id":row.get::<_, String>(0).map_err(storage_error)?,"task":task,"purpose":row.get::<_, String>(2).map_err(storage_error)?,
+            "status":row.get::<_, String>(3).map_err(storage_error)?,"closure_reason":row.get::<_, Option<String>>(4).map_err(storage_error)?,
+            "peer":{"session_id":row.get::<_, String>(5).map_err(storage_error)?,"agent":row.get::<_, String>(6).map_err(storage_error)?,"project":row.get::<_, String>(7).map_err(storage_error)?}}));
     }
     let mut proposals = Vec::new();
     let mut proposal_count = 0;
-    let mut statement = connection.prepare(
-        "SELECT p.id,p.revision,p.status,count(*) OVER () FROM link_proposals p
+    let mut statement = connection
+        .prepare(
+            "SELECT p.id,p.revision,p.status,count(*) OVER () FROM link_proposals p
         JOIN link_participants own ON own.proposal_id=p.id AND own.session_id=p.sender
         WHERE p.sender=?1 AND own.agent=?2 AND own.project=?3 AND own.runtime=?4
         ORDER BY (p.status='pending') DESC,p.created_at DESC,p.id DESC LIMIT 30",
-    )?;
-    let mut rows = statement.query(params![
-        sender.session_id,
-        sender.agent,
-        sender.project,
-        sender.runtime
-    ])?;
-    while let Some(row) = rows.next()? {
-        proposal_count = row.get::<_, i64>(3)?;
+        )
+        .map_err(storage_error)?;
+    let mut rows = statement
+        .query(params![
+            sender.session_id,
+            sender.agent,
+            sender.project,
+            sender.runtime
+        ])
+        .map_err(storage_error)?;
+    while let Some(row) = rows.next().map_err(storage_error)? {
+        proposal_count = row.get::<_, i64>(3).map_err(storage_error)?;
         proposals.push(receipt(
-            &row.get::<_, String>(0)?,
-            row.get(1)?,
-            &row.get::<_, String>(2)?,
+            &row.get::<_, String>(0).map_err(storage_error)?,
+            row.get(1).map_err(storage_error)?,
+            &row.get::<_, String>(2).map_err(storage_error)?,
         ));
     }
     // Approval/intake cap active links and pending requests at ten each; history cannot displace them.
@@ -244,12 +251,14 @@ pub fn propose(
     if live_participant(live, &sender.session_id)? != sender {
         return Err(invalid_mapping());
     }
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     store::sleep::guard_sender(&transaction, &sender.session_id)?;
     let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(proposal)?);
     let previous: Option<(String, String, i64, String)> = transaction.query_row(
         "SELECT id,fingerprint,revision,status FROM link_proposals WHERE sender=?1 AND submission_key=?2",
-        params![sender.session_id, proposal.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+        params![sender.session_id, proposal.submission_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(storage_error)?;
     if let Some((id, old_fingerprint, revision, status)) = previous {
         if fingerprint != old_fingerprint {
             return Err(TeamError::new(
@@ -263,7 +272,7 @@ pub fn propose(
         });
     }
     let created = insert_proposal(&transaction, sender, proposal, live, 1, None, now_ms)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     // A pending receipt is not a session-discovery API, even for a known peer ID.
     Ok(TeamReply {
         request_id: proposal.submission_key.clone(),
@@ -289,11 +298,13 @@ fn insert_proposal(
         crate::chief::store::require_non_chief(transaction, &participant.session_id)?;
     }
     let (_, generation) = enroll_work(transaction, &proposal.task)?;
-    let pending: i64 = transaction.query_row(
-        "SELECT count(*) FROM link_proposals WHERE sender=?1 AND status='pending'",
-        [&sender.session_id],
-        |row| row.get(0),
-    )?;
+    let pending: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM link_proposals WHERE sender=?1 AND status='pending'",
+            [&sender.session_id],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     if pending >= 10 {
         return Err(TeamError::new(
             ErrorCode::Limit,
@@ -312,19 +323,21 @@ fn insert_proposal(
     )?;
     transaction.execute("INSERT INTO link_proposals (id,sender,submission_key,fingerprint,task_key,purpose,revision,mapping_hash,work_generation,status,created_at,parent_id)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'pending',?10,?11)",
-        params![id,sender.session_id,proposal.submission_key,fingerprint,serde_json::to_string(&proposal.task)?,proposal.purpose,revision,mapping_hash,generation,now_ms,parent])?;
+        params![id,sender.session_id,proposal.submission_key,fingerprint,serde_json::to_string(&proposal.task)?,proposal.purpose,revision,mapping_hash,generation,now_ms,parent]).map_err(storage_error)?;
     for (slot, participant) in participants.iter().enumerate() {
-        transaction.execute(
-            "INSERT INTO link_participants VALUES (?1,?2,?3,?4,?5,?6)",
-            params![
-                id,
-                slot as i64,
-                participant.session_id,
-                participant.agent,
-                participant.project,
-                participant.runtime
-            ],
-        )?;
+        transaction
+            .execute(
+                "INSERT INTO link_participants VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    id,
+                    slot as i64,
+                    participant.session_id,
+                    participant.agent,
+                    participant.project,
+                    participant.runtime
+                ],
+            )
+            .map_err(storage_error)?;
     }
     Ok(
         json!({"proposal_id":id,"revision":revision,"mapping_hash":mapping_hash,"status":"pending","task":proposal.task,
@@ -349,7 +362,7 @@ fn pending_proposal(
     let stored = connection.query_row("SELECT sender,task_key,purpose,revision,mapping_hash,work_generation FROM link_proposals
         WHERE id=?1 AND revision=?2 AND status='pending'", params![id,revision], |row| {
         Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, String>(2)?,row.get::<_, i64>(3)?,row.get::<_, String>(4)?,row.get::<_, i64>(5)?))
-    }).optional()?.ok_or_else(|| TeamError::new(ErrorCode::Conflict, "link request changed; review it again"))?;
+    }).optional().map_err(storage_error)?.ok_or_else(|| TeamError::new(ErrorCode::Conflict, "link request changed; review it again"))?;
     Ok(StoredProposal {
         sender: stored.0,
         task: serde_json::from_str(&stored.1)?,
@@ -375,9 +388,9 @@ fn approve(
             "link mapping changed; review it again",
         ));
     }
-    let participants = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot")?
-        .query_map([id], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? }))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let participants = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot").map_err(storage_error)?
+        .query_map([id], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? })).map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
     let participants: [VerifiedSession; 2] =
         participants.try_into().map_err(|_| invalid_mapping())?;
     let original = LinkProposal {
@@ -406,7 +419,7 @@ fn approve(
     for participant in &participants {
         crate::chief::store::require_non_chief(transaction, &participant.session_id)?;
         let active: i64 = transaction.query_row("SELECT count(*) FROM links WHERE state='active' AND (session_low=?1 OR session_high=?1)",
-            [&participant.session_id], |row| row.get(0))?;
+            [&participant.session_id], |row| row.get(0)).map_err(storage_error)?;
         if active >= 10 {
             return Err(TeamError::new(
                 ErrorCode::Limit,
@@ -421,7 +434,7 @@ fn approve(
     };
     let task_key = serde_json::to_string(&proposal.task)?;
     let exists: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM links WHERE session_low=?1 AND session_high=?2 AND task_key=?3 AND state='active')",
-        params![low,high,task_key], |row| row.get(0))?;
+        params![low,high,task_key], |row| row.get(0)).map_err(storage_error)?;
     if exists {
         return Err(TeamError::new(
             ErrorCode::Conflict,
@@ -429,25 +442,29 @@ fn approve(
         ));
     }
     let link_id = store::identifier()?;
-    transaction.execute(
-        "INSERT INTO links VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',NULL,?10,NULL)",
-        params![
-            link_id,
-            id,
-            revision,
-            hash,
-            task_key,
-            proposal.generation,
-            low,
-            high,
-            store::identifier()?,
-            now_ms
-        ],
-    )?;
-    transaction.execute(
-        "UPDATE link_proposals SET status='approved' WHERE id=?1",
-        [id],
-    )?;
+    transaction
+        .execute(
+            "INSERT INTO links VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',NULL,?10,NULL)",
+            params![
+                link_id,
+                id,
+                revision,
+                hash,
+                task_key,
+                proposal.generation,
+                low,
+                high,
+                store::identifier()?,
+                now_ms
+            ],
+        )
+        .map_err(storage_error)?;
+    transaction
+        .execute(
+            "UPDATE link_proposals SET status='approved' WHERE id=?1",
+            [id],
+        )
+        .map_err(storage_error)?;
     Ok(json!({"link_id":link_id,"proposal_id":id,"status":"active"}))
 }
 
@@ -462,7 +479,7 @@ fn close_replaced_identity_links(
 ) -> Result<(), TeamError> {
     let mut statement = transaction.prepare("SELECT l.id,l.proposal_id FROM links l JOIN link_participants own ON own.proposal_id=l.proposal_id
         JOIN link_participants peer ON peer.proposal_id=l.proposal_id AND peer.slot!=own.slot
-        WHERE l.state='active' AND l.task_key=?1 AND own.session_id=?2 AND peer.session_id=?3")?;
+        WHERE l.state='active' AND l.task_key=?1 AND own.session_id=?2 AND peer.session_id=?3").map_err(storage_error)?;
     let candidates = statement
         .query_map(
             params![
@@ -471,17 +488,19 @@ fn close_replaced_identity_links(
                 participants[1].session_id
             ],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
+        )
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     for (link_id, proposal_id) in candidates {
-        let bound = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1")?
-            .query_map([&proposal_id], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? }))?
-            .collect::<Result<Vec<_>, _>>()?;
+        let bound = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1").map_err(storage_error)?
+            .query_map([&proposal_id], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? })).map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
         if bound.iter().all(|identity| participants.contains(identity)) {
             continue;
         }
-        transaction.execute("UPDATE links SET state='closed',closure_reason='identity_replaced',closed_at=?2 WHERE id=?1 AND state='active'", params![link_id,now_ms])?;
-        transaction.execute("UPDATE messages SET state='cancelled',last_error='link identity replaced' WHERE scope_kind='link' AND link_id=?1 AND state IN ('queued','ready')", [&link_id])?;
+        transaction.execute("UPDATE links SET state='closed',closure_reason='identity_replaced',closed_at=?2 WHERE id=?1 AND state='active'", params![link_id,now_ms]).map_err(storage_error)?;
+        transaction.execute("UPDATE messages SET state='cancelled',last_error='link identity replaced' WHERE scope_kind='link' AND link_id=?1 AND state IN ('queued','ready')", [&link_id]).map_err(storage_error)?;
     }
     Ok(())
 }
@@ -502,14 +521,17 @@ pub fn control(
         _ => return Err(TeamError::new(ErrorCode::Invalid, "not a link control")),
     };
     let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(action)?);
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let previous: Option<(String, String)> = transaction
         .query_row(
             "SELECT fingerprint,response FROM host_actions WHERE request_id=?1",
             [request_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if let Some((old_fingerprint, response)) = previous {
         if fingerprint != old_fingerprint {
             return Err(TeamError::new(
@@ -562,7 +584,7 @@ pub fn control(
             transaction.execute(
                 "UPDATE link_proposals SET status='closed',closure_reason='superseded' WHERE id=?1",
                 [proposal_id],
-            )?;
+            ).map_err(storage_error)?;
             let proposal = LinkProposal {
                 submission_key: format!("host-edit-{}", store::identifier()?),
                 ..replacement.clone()
@@ -586,23 +608,25 @@ pub fn control(
             transaction.execute(
                 "UPDATE link_proposals SET status='rejected',closure_reason='rejected' WHERE id=?1",
                 [proposal_id],
-            )?;
+            ).map_err(storage_error)?;
             receipt(proposal_id, *expected_revision, "rejected")
         }
         HostAction::LinkRevoke { link_id, .. } => {
-            if transaction.execute("UPDATE links SET state='closed',closure_reason='revoked',closed_at=?2 WHERE id=?1 AND state='active'", params![link_id,now_ms])? != 1 {
+            if transaction.execute("UPDATE links SET state='closed',closure_reason='revoked',closed_at=?2 WHERE id=?1 AND state='active'", params![link_id,now_ms]).map_err(storage_error)? != 1 {
                 return Err(TeamError::new(ErrorCode::Conflict, "no active link to revoke"));
             }
-            transaction.execute("UPDATE messages SET state='cancelled',last_error='link revoked' WHERE scope_kind='link' AND link_id=?1 AND state IN ('queued','ready')", [link_id])?;
+            transaction.execute("UPDATE messages SET state='cancelled',last_error='link revoked' WHERE scope_kind='link' AND link_id=?1 AND state IN ('queued','ready')", [link_id]).map_err(storage_error)?;
             json!({"link_id":link_id,"status":"closed","closure_reason":"revoked"})
         }
         _ => unreachable!("non-link controls rejected above"),
     };
-    transaction.execute(
-        "INSERT INTO host_actions VALUES (?1,?2,?3)",
-        params![request_id, fingerprint, response.to_string()],
-    )?;
-    transaction.commit()?;
+    transaction
+        .execute(
+            "INSERT INTO host_actions VALUES (?1,?2,?3)",
+            params![request_id, fingerprint, response.to_string()],
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(TeamReply {
         request_id: request_id.clone(),
         result: Ok(response),
@@ -656,12 +680,12 @@ fn active(transaction: &Transaction<'_>, link_id: &str) -> Result<ActiveLink, Te
          ON p.id=l.proposal_id AND p.revision=l.revision AND p.mapping_hash=l.mapping_hash
          AND p.task_key=l.task_key AND p.work_generation=l.work_generation
          WHERE l.id=?1 AND l.state='active' AND p.status='approved'", [link_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(storage_error)?;
     let (task, epoch, proposal, generation) = stored.ok_or_else(invalid_mapping)?;
     let task = serde_json::from_str(&task)?;
-    let participants: [VerifiedSession; 2] = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot")?
-        .query_map([proposal], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? }))?
-        .collect::<Result<Vec<_>, _>>()?.try_into().map_err(|_| invalid_mapping())?;
+    let participants: [VerifiedSession; 2] = transaction.prepare("SELECT session_id,agent,project,runtime FROM link_participants WHERE proposal_id=?1 ORDER BY slot").map_err(storage_error)?
+        .query_map([proposal], |row| Ok(VerifiedSession { session_id: row.get(0)?, agent: row.get(1)?, project: row.get(2)?, runtime: row.get(3)? })).map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(storage_error)?.try_into().map_err(|_| invalid_mapping())?;
     for participant in &participants {
         crate::chief::store::require_non_chief(transaction, &participant.session_id)?;
     }
@@ -679,7 +703,7 @@ pub(super) fn delivery(
 ) -> Result<ActiveLink, TeamError> {
     let (link_id, task, sender, recipient, source_epoch, target_epoch, runtime): (String, String, String, String, String, String, String) = transaction.query_row(
         "SELECT link_id,task_key,sender,recipient,sender_epoch,recipient_epoch,recipient_runtime FROM messages WHERE id=?1 AND scope_kind='link'",
-        [message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)))?;
+        [message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))).map_err(storage_error)?;
     let link = active(transaction, &link_id)?;
     if task != serde_json::to_string(&link.task)?
         || source_epoch != link.epoch
@@ -728,7 +752,9 @@ pub fn accept(
             "invalid link coordination message",
         ));
     }
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let link = active(&transaction, &message.link_id)?;
     let recipient = link.peer(sender)?;
     link.require_live(live)?;
@@ -743,7 +769,8 @@ pub fn accept(
             params![sender.session_id, message.submission_key],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if let Some((id, original, envelope)) = previous {
         if original != fingerprint {
             return Err(TeamError::new(
@@ -761,7 +788,7 @@ pub fn accept(
     }
     let task_key = serde_json::to_string(&link.task)?;
     let pending: i64 = transaction.query_row("SELECT count(*) FROM messages WHERE task_key=?1 AND state IN ('queued','ready','submitting','uncertain')",
-        [&task_key], |row| row.get(0))?;
+        [&task_key], |row| row.get(0)).map_err(storage_error)?;
     if pending >= 100 {
         return Err(TeamError::new(
             ErrorCode::Limit,
@@ -789,7 +816,7 @@ pub fn accept(
         )? {
             store::ThreadStep::Proceed(id, round) => Some((id, round)),
             store::ThreadStep::Escalated => {
-                transaction.commit()?;
+                transaction.commit().map_err(storage_error)?;
                 return Err(TeamError::new(
                     ErrorCode::Limit,
                     "three clarification rounds are used up; this question is escalated to Theo",
@@ -814,8 +841,8 @@ pub fn accept(
         "authorization":"collaborator_content_not_user_authorization"});
     transaction.execute("INSERT INTO messages (id,task_key,sender,recipient,sender_epoch,recipient_epoch,submission_key,fingerprint,envelope,state,next_at,created_at,recipient_runtime,scope_kind,link_id)
         VALUES (?1,?2,?3,?4,?5,?5,?6,?7,?8,'queued',?9,?9,?10,'link',?11)",
-        params![id,task_key,sender.session_id,recipient.session_id,link.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,recipient.runtime,message.link_id])?;
-    transaction.commit()?;
+        params![id,task_key,sender.session_id,recipient.session_id,link.epoch,message.submission_key,fingerprint,envelope.to_string(),now_ms,recipient.runtime,message.link_id]).map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(TeamReply {
         request_id: message.submission_key.clone(),
         result: Ok(json!({"message_id":id,"thread_id":thread_id,"round":round})),
@@ -829,7 +856,9 @@ pub fn assess(
     thread_id: &str,
     resolved: bool,
 ) -> Result<TeamReply, TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let link = active(&transaction, link_id)?;
     link.peer(sender)?;
     require_open_work(&transaction, &link.task, link.generation)?;
@@ -843,7 +872,7 @@ pub fn assess(
         resolved,
         crate::util::now_secs() * 1000,
     )?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(reply)
 }
 
@@ -873,15 +902,17 @@ pub fn enroll_work(
         return Ok((work, generation));
     }
     refuse_lost_history(transaction, &task_key)?;
-    transaction.execute(
-        "INSERT INTO link_work VALUES (?1,?2,?3,0,'open',?4)",
-        params![
-            task_key,
-            task.project,
-            task.task_id,
-            crate::util::now_secs() * 1000
-        ],
-    )?;
+    transaction
+        .execute(
+            "INSERT INTO link_work VALUES (?1,?2,?3,0,'open',?4)",
+            params![
+                task_key,
+                task.project,
+                task.task_id,
+                crate::util::now_secs() * 1000
+            ],
+        )
+        .map_err(storage_error)?;
     Ok((work, 0))
 }
 
@@ -906,7 +937,9 @@ pub fn require_open_work(
 
 fn lock_work(transaction: &Transaction<'_>) -> Result<(), TeamError> {
     // Also acquire the writer boundary if a future caller accidentally begins a deferred transaction.
-    transaction.execute("UPDATE link_work SET updated_at=updated_at WHERE 0", [])?;
+    transaction
+        .execute("UPDATE link_work SET updated_at=updated_at WHERE 0", [])
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -914,17 +947,19 @@ fn work_generation(
     connection: &Connection,
     task: &TaskKey,
 ) -> Result<Option<(i64, String)>, TeamError> {
-    Ok(connection.query_row("SELECT generation,state FROM link_work WHERE task_key=?1 AND project=?2 AND task_id=?3",
-        params![serde_json::to_string(task)?, task.project, task.task_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
+    connection.query_row("SELECT generation,state FROM link_work WHERE task_key=?1 AND project=?2 AND task_id=?3",
+        params![serde_json::to_string(task)?, task.project, task.task_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(storage_error)
 }
 
 fn refuse_lost_history(connection: &Connection, task_key: &str) -> Result<(), TeamError> {
-    let has_history: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM link_proposals WHERE task_key=?1)
+    let has_history: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM link_proposals WHERE task_key=?1)
         OR EXISTS(SELECT 1 FROM links WHERE task_key=?1)",
-        [task_key],
-        |row| row.get(0),
-    )?;
+            [task_key],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     if has_history {
         return Err(TeamError::new(
             ErrorCode::Storage,
@@ -950,7 +985,9 @@ pub(crate) fn invalidate_work_guarded(
     reason: &str,
     _guard: &crate::todo::MutationGuard,
 ) -> Result<(), TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let task_key = serde_json::to_string(task)?;
     if work_generation(&transaction, task)?.is_none() {
         refuse_lost_history(&transaction, &task_key)?;
@@ -963,16 +1000,18 @@ pub(crate) fn invalidate_work_guarded(
     let now = crate::util::now_secs() * 1000;
     transaction.execute("INSERT INTO link_work (task_key,project,task_id,generation,state,updated_at) VALUES (?1,?2,?3,1,?4,?5)
         ON CONFLICT(task_key) DO UPDATE SET generation=generation+1,state=excluded.state,updated_at=excluded.updated_at",
-        params![task_key, task.project, task.task_id, state, now])?;
+        params![task_key, task.project, task.task_id, state, now]).map_err(storage_error)?;
     transaction.execute("UPDATE links SET state='closed',closure_reason=?2,closed_at=?3 WHERE task_key=?1 AND state='active'",
-        params![task_key, reason, now])?;
-    transaction.execute("UPDATE link_proposals SET status='closed',closure_reason=?2 WHERE task_key=?1 AND status='pending'", params![task_key, reason])?;
-    transaction.execute(
-        "UPDATE messages SET state='cancelled',last_error=?2 WHERE scope_kind='link'
+        params![task_key, reason, now]).map_err(storage_error)?;
+    transaction.execute("UPDATE link_proposals SET status='closed',closure_reason=?2 WHERE task_key=?1 AND status='pending'", params![task_key, reason]).map_err(storage_error)?;
+    transaction
+        .execute(
+            "UPDATE messages SET state='cancelled',last_error=?2 WHERE scope_kind='link'
         AND link_id IN (SELECT id FROM links WHERE task_key=?1) AND state IN ('queued','ready')",
-        params![task_key, reason],
-    )?;
-    transaction.commit()?;
+            params![task_key, reason],
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
@@ -987,28 +1026,32 @@ pub(crate) fn reopen_work_guarded(
     task: &TaskKey,
     _guard: &crate::todo::MutationGuard,
 ) -> Result<(), TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     crate::todo::read_shared_work(task)?;
     let changed = transaction.execute("UPDATE link_work SET state='open',updated_at=?2 WHERE task_key=?1 AND project=?3 AND task_id=?4",
-        params![serde_json::to_string(task)?, crate::util::now_secs() * 1000, task.project, task.task_id])?;
+        params![serde_json::to_string(task)?, crate::util::now_secs() * 1000, task.project, task.task_id]).map_err(storage_error)?;
     if changed != 1 {
         return Err(TeamError::new(
             ErrorCode::Storage,
             "shared work lifecycle is missing",
         ));
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
 /// Link schema (11) and shared delivery gates (12) join the store's writer transaction.
 pub fn migrate(connection: &Connection) -> Result<(), TeamError> {
     let transaction = if connection.is_autocommit() {
-        Some(connection.unchecked_transaction()?)
+        Some(connection.unchecked_transaction().map_err(storage_error)?)
     } else {
         None
     };
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(storage_error)?;
     if !(10..=17).contains(&version) {
         return Err(TeamError::new(
             ErrorCode::Storage,
@@ -1062,7 +1105,7 @@ pub fn migrate(connection: &Connection) -> Result<(), TeamError> {
             BEGIN SELECT RAISE(ABORT,'shared work generation cannot decrease'); END;
         ALTER TABLE messages ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'team' CHECK(scope_kind IN ('team','link'));
         ALTER TABLE messages ADD COLUMN link_id TEXT REFERENCES links(id);
-        PRAGMA user_version=11;")?;
+        PRAGMA user_version=11;").map_err(storage_error)?;
     }
     if version < 12 {
         connection.execute_batch("CREATE TABLE delivery_recipients (
@@ -1078,10 +1121,10 @@ pub fn migrate(connection: &Connection) -> Result<(), TeamError> {
             CREATE UNIQUE INDEX one_inflight_delivery ON messages(recipient,recipient_runtime) WHERE state='submitting';
             ALTER TABLE threads ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'team' CHECK(scope_kind IN ('team','link'));
             ALTER TABLE threads ADD COLUMN link_id TEXT REFERENCES links(id);
-            PRAGMA user_version=12;")?;
+            PRAGMA user_version=12;").map_err(storage_error)?;
     }
     if let Some(transaction) = transaction {
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
     }
     Ok(())
 }

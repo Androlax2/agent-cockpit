@@ -2,6 +2,7 @@
 
 use crate::registry::Registry;
 pub(crate) use cockpit::teams::canonical_project;
+use cockpit::teams::store::storage_error;
 use cockpit::teams::{
     AgentAction, ErrorCode, HostAction, TeamError, TeamReply, VerifiedSession, store,
 };
@@ -1085,7 +1086,7 @@ pub fn host(
             if automatic {
                 let has_gift: bool = registry.teams.as_ref().unwrap().query_row(
                     "SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE project=?1 AND task_id=?2 AND worker IS NOT NULL AND state='requested' AND created_at>?3)",
-                    (&task.project,&task.task_id,now_ms()-cockpit::chief::SESSION_START_OPEN_MS), |row|row.get(0))?;
+                    (&task.project,&task.task_id,now_ms()-cockpit::chief::SESSION_START_OPEN_MS), |row|row.get(0)).map_err(storage_error)?;
                 if has_gift {
                     return Err(TeamError::new(
                         ErrorCode::Conflict,

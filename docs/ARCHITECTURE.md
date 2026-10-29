@@ -1,6 +1,6 @@
 # Architecture
 
-This map includes the headless daemon extraction from the engineering alignment work.
+This map includes the headless daemon and shared protocol extractions from engineering alignment.
 Planned extractions are listed separately.
 
 ## Source owners
@@ -9,7 +9,8 @@ Planned extractions are listed separately.
 | --- | --- |
 | `apps/cockpit/src/app*` | Terminal application, refresh and screen composition |
 | `apps/cockpit/src/bin/` | CLI and terminal executable entry points |
-| `apps/cockpit/src/teams*`, `chief*` | Collaboration contracts, client calls, SQLite stores and presentation |
+| `apps/cockpit/src/teams*`, `chief*` | Compatibility exports, client calls, SQLite stores and presentation |
+| `apps/crates/cockpit-protocol/src/` | Team/Chief wire contracts, pure validators and agent identity catalog |
 | `apps/cockpit/src/remote*`, `assets/remote/` | Phone server support and browser assets |
 | `apps/cockpit/src/approval.rs` | Approval request helpers and terminal support |
 | `apps/crates/cockpit-daemon/src/registry.rs` | Session registry, request queues and host-operation coordination |
@@ -24,14 +25,19 @@ Planned extractions are listed separately.
 ## Dependency direction today
 
 `osd` depends on `cockpit-daemon` and `cockpit`; `cockpit-daemon` depends on `cockpit`.
+`cockpit` depends on `cockpit-protocol`, whose only external dependencies are serde,
+serde_json and regex. Its Cargo-graph test rejects GTK, terminal UI and SQLite dependencies.
 The daemon crate has no GTK runtime dependency, enforced by the Cargo-graph test in
 `tools/tests/test_crate_boundaries.py`. The `cockpit` library still combines terminal UI,
 state access, wire types and other shared behavior, so this is not yet a UI-free dependency
 tree. GTK dependencies and executable ownership remain in `osd`.
 
-Team and Chief types reference each other. Chief storage uses the team store's SQLite
-connection; these are not independent databases. Background modules also call the
-application refresh notifier. Those edges need explicit treatment before moving modules.
+Team and Chief types reference each other within the protocol crate. Existing
+`cockpit::teams`, `cockpit::chief` and `cockpit::agents` paths re-export the contracts.
+Chief storage still uses the team store's SQLite connection; these are not independent
+databases. Explicit SQL-error conversions use `teams::store::storage_error`, preserving
+the wire `Storage` code and SQLite error text without giving the protocol a database dependency.
+Background modules still call the application refresh notifier.
 
 ## Runtime and trust boundaries
 
@@ -51,13 +57,13 @@ from the three-level `apps/crates/cockpit-daemon` layout; other package fixtures
 their two-level paths. Native roundtrips use the existing release `cockpit-team` binary,
 which must be built before running the daemon tests on a clean checkout.
 
-## Proposed boundaries
+## Deferred UI boundary
 
-These are proposals, not existing crates:
-
-1. `apps/crates/cockpit-protocol`: shared team/Chief wire contracts, without UI or storage.
-2. A UI library only after refresh notification and draft persistence ownership are
-   separated enough to avoid reverse dependencies.
+A separate UI crate is not justified by the current ownership graph: refresh notification,
+draft persistence and terminal presentation still share runtime state in `cockpit`.
+The protocol extraction provides the useful dependency boundary without moving those
+responsibilities or adding a reverse dependency. Reassess a UI crate only when that
+state ownership can be separated for a concrete consumer.
 
 Retain the `apps/` workspace and existing binary packages during these extractions.
 See the [engineering plan](superpowers/plans/2026-10-28-engineering-workflow.md).

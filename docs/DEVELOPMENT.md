@@ -3,7 +3,7 @@
 ## Workspace and prerequisites
 
 The Rust workspace is [apps/Cargo.toml](../apps/Cargo.toml), with `cockpit`, `osd` and
-`crates/cockpit-daemon` members. This project targets Linux and integrates with GTK,
+`crates/cockpit-daemon` and `crates/cockpit-protocol` members. This project targets Linux and integrates with GTK,
 terminals and host tools.
 
 The Rust toolchain is pinned in [rust-toolchain.toml](../rust-toolchain.toml). Distro

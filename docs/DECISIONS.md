@@ -1,5 +1,15 @@
 # Engineering decisions
 
+## 2026-10-29 — Keep database error conversion at the store boundary
+
+Team and Chief wire contracts share `cockpit-protocol`, which has no SQLite or UI
+dependency. Moving `TeamError` prevents `cockpit` from implementing the foreign
+`From<rusqlite::Error>` trait for it. SQL callers therefore explicitly map errors with
+`teams::store::storage_error`, retaining `ErrorCode::Storage` and `error.to_string()`.
+The existing stores retain their queries, connections and transaction ownership.
+A public approval-operation regression checks the serialized SQL error and rollback
+of membership when the final proposal write fails.
+
 ## 2026-10-28 — Reuse Make as the verification entry point
 
 Cockpit already owns build/test resource controls in Make and its helper scripts.

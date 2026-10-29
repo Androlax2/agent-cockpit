@@ -149,22 +149,28 @@ fn wait_for_result(answers_key: &str, id: &str) -> i32 {
 /// The approval terminal runs the command with fish: a Bash heredoc or `if …; then … fi` would
 /// only fail there, after Theo was interrupted. fish parses it here without running it.
 fn refuse_what_fish_cannot_parse(command: &str) {
-    let parsed = std::process::Command::new("fish").args(["--no-config", "--no-execute", "-c", command])
-        .stdin(std::process::Stdio::null()).output();
+    let parsed = std::process::Command::new("fish")
+        .args(["--no-config", "--no-execute", "-c", command])
+        .stdin(std::process::Stdio::null())
+        .output();
     let parsed = match parsed {
         Ok(parsed) => parsed,
         Err(error) => {
-            eprintln!("ask-to-run: cannot check the command with fish ({error}); asking Theo unchecked.");
+            eprintln!(
+                "ask-to-run: cannot check the command with fish ({error}); asking Theo unchecked."
+            );
             return;
         }
     };
     if parsed.status.success() {
         return;
     }
-    eprintln!("ask-to-run: the approval terminal runs fish, and fish cannot parse this command:\n{}\n\
+    eprintln!(
+        "ask-to-run: the approval terminal runs fish, and fish cannot parse this command:\n{}\n\
                Nothing was sent to Theo. Write the commands to a script file in the project or .handoff/ and \
                ask to run it with its interpreter (bash script.sh), or use fish syntax.",
-              String::from_utf8_lossy(&parsed.stderr).trim_end());
+        String::from_utf8_lossy(&parsed.stderr).trim_end()
+    );
     std::process::exit(2);
 }
 

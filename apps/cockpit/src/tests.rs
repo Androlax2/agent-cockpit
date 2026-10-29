@@ -358,16 +358,20 @@ fn todo_completion_closes_links_before_daemon_observation() {
             .unwrap();
         assert_eq!(pending, "closed", "{via}");
         let mut approve_old_proposal = || -> Result<(), crate::teams::TeamError> {
-            let transaction =
-                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let transaction = connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(crate::teams::store::storage_error)?;
             let task = crate::teams::TaskKey {
                 project: format!("path:{}", project.display()),
                 task_id: id.clone(),
             };
             crate::teams::links::require_open_work(&transaction, &task, 4)?;
             transaction.execute("INSERT INTO links SELECT 'old-approval',id,revision,mapping_hash,task_key,work_generation,'a','b','old-epoch','active',NULL,30,NULL
-                FROM link_proposals WHERE id=?1", [format!("{id}-pending")])?;
-            Ok(transaction.commit()?)
+                FROM link_proposals WHERE id=?1", [format!("{id}-pending")])
+                .map_err(crate::teams::store::storage_error)?;
+            transaction
+                .commit()
+                .map_err(crate::teams::store::storage_error)
         };
         assert!(approve_old_proposal().is_err(), "{via}");
     }
