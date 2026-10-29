@@ -2,14 +2,13 @@ import importlib.machinery
 import importlib.util
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
-
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "config/bin/.local/bin/cockpit-game-guard"
@@ -42,7 +41,9 @@ def write(path, text):
     path.write_text(text)
 
 
-def fake_sysfs(root, cores=8, threads_per_core=2, ranks=None, l3_domains=1, packages=1, hybrid=False):
+def fake_sysfs(
+    root, cores=8, threads_per_core=2, ranks=None, l3_domains=1, packages=1, hybrid=False
+):
     cpu_root = root / "devices/system/cpu"
     total = cores * threads_per_core
     write(cpu_root / "online", f"0-{total - 1}")
@@ -84,15 +85,28 @@ class GameDetectionTests(unittest.TestCase):
         write(self.runtime / "hypr/instance-a/.socket.sock", "")
 
     def test_the_game_list_matches_the_daemons(self):
-        registry = (REPO / "apps/osd/src/registry.rs").read_text()
-        daemon_pattern = re.search(r'static GAME_CLASS: LazyLock<Regex> = LazyLock::new\(\|\| regex\(r"([^"]+)"\)\);', registry).group(1)
+        registry = (REPO / "apps/crates/cockpit-daemon/src/registry.rs").read_text()
+        daemon_pattern = re.search(
+            r'static GAME_CLASS: LazyLock<Regex> =\s*LazyLock::new\(\|\| regex\(r"([^"]+)"\)\);',
+            registry,
+        ).group(1)
         self.assertEqual(guard.GAME_CLASS.pattern, daemon_pattern)
 
     def test_cases(self):
         cases = {
             "an unfocused game window (alt-tab to the cockpit) is a game": (
-                Hyprland([{"class": "kitty", "focusHistoryID": 0}, {"class": "steam_app_1245620", "focusHistoryID": 1}]), True),
-            "the gamemode submap is a game": (Hyprland([{"class": "kitty"}], submap="gamemode"), True),
+                Hyprland(
+                    [
+                        {"class": "kitty", "focusHistoryID": 0},
+                        {"class": "steam_app_1245620", "focusHistoryID": 1},
+                    ]
+                ),
+                True,
+            ),
+            "the gamemode submap is a game": (
+                Hyprland([{"class": "kitty"}], submap="gamemode"),
+                True,
+            ),
             "no game window is no game": (Hyprland([{"class": "kitty"}, {"class": "zen"}]), False),
             "hyprctl failing is unknown, not over": (Hyprland([], fails=True), None),
         }
@@ -102,7 +116,9 @@ class GameDetectionTests(unittest.TestCase):
 
     def test_no_hyprland_socket_means_no_game(self):
         (self.runtime / "hypr/instance-a/.socket.sock").unlink()
-        self.assertIs(guard.game_seen(self.runtime, run=Hyprland([{"class": "steam_app_1"}])), False)
+        self.assertIs(
+            guard.game_seen(self.runtime, run=Hyprland([{"class": "steam_app_1"}])), False
+        )
 
 
 class GameLifetimeTests(unittest.TestCase):
@@ -113,16 +129,22 @@ class GameLifetimeTests(unittest.TestCase):
         return results
 
     def test_protection_lasts_until_30_seconds_after_the_last_game_window(self):
-        self.assertEqual(self.protecting_over([(0, True), (5, True), (10, False), (39, False), (40, False)]),
-                         [True, True, True, True, False])
+        self.assertEqual(
+            self.protecting_over([(0, True), (5, True), (10, False), (39, False), (40, False)]),
+            [True, True, True, True, False],
+        )
 
     def test_a_game_window_back_within_30_seconds_keeps_protection(self):
-        self.assertEqual(self.protecting_over([(0, True), (10, False), (30, True), (55, False), (61, False)]),
-                         [True, True, True, True, True])
+        self.assertEqual(
+            self.protecting_over([(0, True), (10, False), (30, True), (55, False), (61, False)]),
+            [True, True, True, True, True],
+        )
 
     def test_an_unknown_answer_keeps_protection_then_releases_after_ten_minutes(self):
-        self.assertEqual(self.protecting_over([(0, True), (5, None), (300, None), (605, None)]),
-                         [True, True, True, False])
+        self.assertEqual(
+            self.protecting_over([(0, True), (5, None), (300, None), (605, None)]),
+            [True, True, True, False],
+        )
 
     def test_an_unknown_answer_never_starts_protection(self):
         self.assertEqual(self.protecting_over([(0, None), (5, None)]), [False, False])
@@ -178,7 +200,10 @@ class ScanTests(unittest.TestCase):
             fields[11] = str(ticks)
             fields[19] = str(1000 + pid + offset)
             fields[38] = str(policy)
-            write(base / "task" / str(pid + offset) / "stat", f"{pid + offset} ({comm}) " + " ".join(fields))
+            write(
+                base / "task" / str(pid + offset) / "stat",
+                f"{pid + offset} ({comm}) " + " ".join(fields),
+            )
             if offset == 0:
                 write(base / "stat", f"{pid} ({comm}) " + " ".join(fields))
 
@@ -189,18 +214,28 @@ class ScanTests(unittest.TestCase):
         self.process(40, self.KITTY, [0], comm="game")
         heavy, others = guard.scan(self.proc, os.getuid())
         self.assertEqual(heavy, [(10, 1010), (11, 1011)])
-        self.assertEqual({pid: why for pid, (_, _, why) in others.items()},
-                         {20: "not started through agent-build", 30: "SCHED_IDLE outside agent sessions"})
+        self.assertEqual(
+            {pid: why for pid, (_, _, why) in others.items()},
+            {20: "not started through agent-build", 30: "SCHED_IDLE outside agent sessions"},
+        )
 
     def test_other_users_processes_are_never_selected(self):
         self.process(10, self.AGENT, [guard.SCHED_IDLE])
         self.assertEqual(guard.scan(self.proc, os.getuid() + 1), ([], {}))
 
     def test_work_over_one_core_that_is_not_pinned_is_reported_as_untracked(self):
-        before = {20: ("node", 0, "not started through agent-build"), 30: ("tracker", 0, "SCHED_IDLE outside agent sessions")}
-        after = {20: ("node", 3 * guard.CLOCK_TICKS, "not started through agent-build"), 30: ("tracker", 1, "SCHED_IDLE outside agent sessions")}
-        self.assertEqual(guard.untracked_report(before, after, 2),
-                         [{"pid": 20, "comm": "node", "cores": 1.5, "why": "not started through agent-build"}])
+        before = {
+            20: ("node", 0, "not started through agent-build"),
+            30: ("tracker", 0, "SCHED_IDLE outside agent sessions"),
+        }
+        after = {
+            20: ("node", 3 * guard.CLOCK_TICKS, "not started through agent-build"),
+            30: ("tracker", 1, "SCHED_IDLE outside agent sessions"),
+        }
+        self.assertEqual(
+            guard.untracked_report(before, after, 2),
+            [{"pid": 20, "comm": "node", "cores": 1.5, "why": "not started through agent-build"}],
+        )
 
 
 class IdleChildCase(unittest.TestCase):
@@ -211,8 +246,13 @@ class IdleChildCase(unittest.TestCase):
         self.build_cpus = available[-1:]
         self.default_cpus = available
         self.original = available[:-1]
-        self.child = subprocess.Popen([sys.executable, "-c", IDLE_CHILD], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                      text=True, preexec_fn=lambda: os.sched_setaffinity(0, self.original))
+        self.child = subprocess.Popen(
+            [sys.executable, "-c", IDLE_CHILD],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            preexec_fn=lambda: os.sched_setaffinity(0, self.original),
+        )
         self.addCleanup(self.stop_child)
         self.assertEqual(int(self.child.stdout.readline()), self.child.pid)
         self.wait_for(lambda: len(self.tids(self.child.pid)) == 2)
@@ -243,11 +283,14 @@ class IdleChildCase(unittest.TestCase):
         return sorted(int(tid) for tid in os.listdir(f"/proc/{pid}/task"))
 
     def heavy(self, *pids):
-        return [(tid, guard.start_time(guard.stat_fields("/proc", tid))) for pid in pids for tid in self.tids(pid)]
+        return [
+            (tid, guard.start_time(guard.stat_fields("/proc", tid)))
+            for pid in pids
+            for tid in self.tids(pid)
+        ]
 
     def affinities(self, *pids):
         return {tid: sorted(os.sched_getaffinity(tid)) for pid in pids for tid in self.tids(pid)}
-
 
 
 @unittest.skipUnless(len(os.sched_getaffinity(0)) >= 2, "needs two CPU threads")
@@ -256,9 +299,13 @@ class AffinityTests(IdleChildCase):
         state = {}
         pinned, failed = guard.pin(state, self.heavy(self.child.pid), self.build_cpus, "/proc")
         self.assertEqual((pinned, failed), (2, []))
-        self.assertEqual(set(map(tuple, self.affinities(self.child.pid).values())), {tuple(self.build_cpus)})
+        self.assertEqual(
+            set(map(tuple, self.affinities(self.child.pid).values())), {tuple(self.build_cpus)}
+        )
         self.assertEqual(guard.restore(state, [], self.build_cpus, self.default_cpus, "/proc"), [])
-        self.assertEqual(set(map(tuple, self.affinities(self.child.pid).values())), {tuple(self.original)})
+        self.assertEqual(
+            set(map(tuple, self.affinities(self.child.pid).values())), {tuple(self.original)}
+        )
         self.assertEqual(state["tasks"], {})
 
     def test_a_child_born_while_pinned_gets_the_default_set_back(self):
@@ -282,10 +329,16 @@ class AffinityTests(IdleChildCase):
     def test_threads_that_refuse_or_do_not_take_the_set_are_reported_as_failed(self):
         def refuse(tid, cpus):
             raise PermissionError(1, "Operation not permitted")
-        cases = {"refused": dict(setaffinity=refuse), "not taken": dict(setaffinity=lambda tid, cpus: None)}
+
+        cases = {
+            "refused": dict(setaffinity=refuse),
+            "not taken": dict(setaffinity=lambda tid, cpus: None),
+        }
         for name, options in cases.items():
             with self.subTest(name):
-                pinned, failed = guard.pin({}, self.heavy(self.child.pid), self.build_cpus, "/proc", **options)
+                pinned, failed = guard.pin(
+                    {}, self.heavy(self.child.pid), self.build_cpus, "/proc", **options
+                )
                 self.assertEqual(pinned, 0)
                 self.assertEqual(len(failed), 2)
                 self.assertEqual(sorted(os.sched_getaffinity(self.child.pid)), self.original)
@@ -313,7 +366,9 @@ class AffinityTests(IdleChildCase):
     def test_a_reused_thread_id_is_not_touched(self):
         os.sched_setaffinity(self.child.pid, self.build_cpus)
         start = guard.start_time(guard.stat_fields("/proc", self.child.pid))
-        state = {"tasks": {str(self.child.pid): {"start": start + 1, "original": self.default_cpus}}}
+        state = {
+            "tasks": {str(self.child.pid): {"start": start + 1, "original": self.default_cpus}}
+        }
         guard.restore(state, [], self.build_cpus, self.default_cpus, "/proc")
         self.assertEqual(sorted(os.sched_getaffinity(self.child.pid)), self.build_cpus)
         self.assertEqual(state["tasks"], {})
@@ -338,11 +393,18 @@ class GuardServiceTests(IdleChildCase):
             self.now += seconds
             if stop_after_sleeps is not None and len(self.sleeps) >= stop_after_sleeps:
                 service.stopping = True
-        service = guard.Guard(self.runtime, topology=lambda: (self.build_cpus, "test"),
-                              scanner=lambda: (self.heavy(self.child.pid), {}),
-                              detect=lambda: self.game_open, clock=lambda: self.now, sleep=sleep,
-                              memory=lambda: PLENTY, gate_path=self.runtime / "heavy-gate.json",
-                              manual_directory=self.runtime)
+
+        service = guard.Guard(
+            self.runtime,
+            topology=lambda: (self.build_cpus, "test"),
+            scanner=lambda: (self.heavy(self.child.pid), {}),
+            detect=lambda: self.game_open,
+            clock=lambda: self.now,
+            sleep=sleep,
+            memory=lambda: PLENTY,
+            gate_path=self.runtime / "heavy-gate.json",
+            manual_directory=self.runtime,
+        )
         return service
 
     def saved_state(self):
@@ -397,9 +459,18 @@ class GuardServiceTests(IdleChildCase):
     def test_a_malformed_state_file_is_dropped_record_by_record(self):
         start = guard.start_time(guard.stat_fields("/proc", self.child.pid))
         os.sched_setaffinity(self.child.pid, self.build_cpus)
-        (self.runtime / "cockpit-game-guard.json").write_text(json.dumps({"tasks": {
-            str(self.child.pid): {"start": start, "original": self.original},
-            "x": {"start": 1, "original": None}, "7": {"start": "late"}, "8": [1]}}))
+        (self.runtime / "cockpit-game-guard.json").write_text(
+            json.dumps(
+                {
+                    "tasks": {
+                        str(self.child.pid): {"start": start, "original": self.original},
+                        "x": {"start": 1, "original": None},
+                        "7": {"start": "late"},
+                        "8": [1],
+                    }
+                }
+            )
+        )
         restarted = self.make_guard()
         restarted.stopping = True
         restarted.run()
@@ -415,8 +486,12 @@ class GuardServiceTests(IdleChildCase):
 
     def test_status_names_untracked_work(self):
         service = self.make_guard()
-        reports = iter([{20: ("node", 0, "not started through agent-build")},
-                        {20: ("node", 4 * guard.CLOCK_TICKS, "not started through agent-build")}])
+        reports = iter(
+            [
+                {20: ("node", 0, "not started through agent-build")},
+                {20: ("node", 4 * guard.CLOCK_TICKS, "not started through agent-build")},
+            ]
+        )
         service.scan = lambda: (self.heavy(self.child.pid), next(reports))
         service.tick()
         self.assertEqual(self.saved_state()["untracked"][0]["comm"], "node")
@@ -424,13 +499,19 @@ class GuardServiceTests(IdleChildCase):
 
 AGENT_BUILD = REPO / "config/bin/.local/bin/agent-build"
 BUILD_LOADER = importlib.machinery.SourceFileLoader("agent_build_for_guard", str(AGENT_BUILD))
-agent_build = importlib.util.module_from_spec(importlib.util.spec_from_loader("agent_build_for_guard", BUILD_LOADER))
+agent_build = importlib.util.module_from_spec(
+    importlib.util.spec_from_loader("agent_build_for_guard", BUILD_LOADER)
+)
 BUILD_LOADER.exec_module(agent_build)
 GIB = 1024 * 1024
 
 
 def memory(available_gib, avg10=0.0, avg60=0.0):
-    return {"available_kb": int(available_gib * GIB), "psi_some_avg10": avg10, "psi_some_avg60": avg60}
+    return {
+        "available_kb": int(available_gib * GIB),
+        "psi_some_avg10": avg10,
+        "psi_some_avg60": avg60,
+    }
 
 
 class MemoryHoldTests(unittest.TestCase):
@@ -444,13 +525,28 @@ class MemoryHoldTests(unittest.TestCase):
             "under 3 GiB available holds": ([(0, memory(2.9))], [True]),
             "pressure at 5 % over 10 s holds": ([(0, memory(10, avg10=5.0))], [True]),
             "release needs a full minute at 5 GiB and low pressure": (
-                [(0, memory(2)), (10, memory(5)), (69, memory(6)), (70, memory(6))], [True, True, True, False]),
+                [(0, memory(2)), (10, memory(5)), (69, memory(6)), (70, memory(6))],
+                [True, True, True, False],
+            ),
             "a dip during the calm minute restarts it": (
-                [(0, memory(2)), (10, memory(6)), (40, memory(4.9)), (80, memory(6)), (139, memory(6)), (140, memory(6))],
-                [True, True, True, True, True, False]),
+                [
+                    (0, memory(2)),
+                    (10, memory(6)),
+                    (40, memory(4.9)),
+                    (80, memory(6)),
+                    (139, memory(6)),
+                    (140, memory(6)),
+                ],
+                [True, True, True, True, True, False],
+            ),
             "pressure over the last minute keeps the hold": (
-                [(0, memory(2)), (10, memory(6, avg60=1.0)), (100, memory(6, avg60=1.0))], [True, True, True]),
-            "between 3 and 5 GiB keeps the current state": ([(0, memory(4)), (10, memory(4))], [False, False]),
+                [(0, memory(2)), (10, memory(6, avg60=1.0)), (100, memory(6, avg60=1.0))],
+                [True, True, True],
+            ),
+            "between 3 and 5 GiB keeps the current state": (
+                [(0, memory(4)), (10, memory(4))],
+                [False, False],
+            ),
             "an unreadable sample holds": ([(0, None)], [True]),
         }
         for name, (timeline, expected) in cases.items():
@@ -461,8 +557,14 @@ class MemoryHoldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             proc = Path(folder)
             write(proc / "meminfo", "MemTotal: 32452248 kB\nMemAvailable:   10739372 kB\n")
-            write(proc / "pressure/memory", "some avg10=1.50 avg60=0.25 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
-            self.assertEqual(guard.read_memory(proc), {"available_kb": 10739372, "psi_some_avg10": 1.5, "psi_some_avg60": 0.25})
+            write(
+                proc / "pressure/memory",
+                "some avg10=1.50 avg60=0.25 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
+            )
+            self.assertEqual(
+                guard.read_memory(proc),
+                {"available_kb": 10739372, "psi_some_avg10": 1.5, "psi_some_avg60": 0.25},
+            )
             (proc / "pressure/memory").unlink()
             self.assertIsNone(guard.read_memory(proc))
 
@@ -480,10 +582,18 @@ class GateTests(unittest.TestCase):
         self.now = 1000.0
 
     def make_guard(self):
-        return guard.Guard(self.runtime, topology=lambda: ([sorted(os.sched_getaffinity(0))[-1]], "test"),
-                           scanner=lambda: ([], {}), detect=lambda: self.game_open, clock=lambda: self.now,
-                           wall=lambda: self.now, sleep=lambda seconds: None, memory=lambda: self.sample,
-                           gate_path=self.gate, manual_directory=self.runtime)
+        return guard.Guard(
+            self.runtime,
+            topology=lambda: ([sorted(os.sched_getaffinity(0))[-1]], "test"),
+            scanner=lambda: ([], {}),
+            detect=lambda: self.game_open,
+            clock=lambda: self.now,
+            wall=lambda: self.now,
+            sleep=lambda seconds: None,
+            memory=lambda: self.sample,
+            gate_path=self.gate,
+            manual_directory=self.runtime,
+        )
 
     def written(self):
         return json.loads(self.gate.read_text())
@@ -503,7 +613,9 @@ class GateTests(unittest.TestCase):
         ]
         for manual, protecting, memory_hold, expected in cases:
             with self.subTest(expected):
-                self.assertEqual(guard.gate_state(manual, protecting, memory_hold, memory(10), 0)[0], expected)
+                self.assertEqual(
+                    guard.gate_state(manual, protecting, memory_hold, memory(10), 0)[0], expected
+                )
 
     def test_the_guard_publishes_clear_gaming_and_memory_that_agent_build_reads(self):
         service = self.make_guard()
@@ -546,7 +658,13 @@ class GateTests(unittest.TestCase):
         self.assertFalse(self.admitted())
 
     def manual(self, *arguments):
-        return guard.manual_command(self.runtime, arguments[0], list(arguments[1:]), home=self.root / "home", wall=lambda: self.now)
+        return guard.manual_command(
+            self.runtime,
+            arguments[0],
+            list(arguments[1:]),
+            home=self.root / "home",
+            wall=lambda: self.now,
+        )
 
     def test_theos_release_works_with_no_guard_running_and_expires(self):
         self.make_guard().tick()
@@ -554,7 +672,9 @@ class GateTests(unittest.TestCase):
         self.assertFalse(self.admitted())
         self.assertEqual(self.manual("release", "30"), 0)
         self.assertTrue(self.admitted())
-        self.assertEqual(self.written()["updated_at"], 1000.0, "a release must not make a dead guard look alive")
+        self.assertEqual(
+            self.written()["updated_at"], 1000.0, "a release must not make a dead guard look alive"
+        )
         self.now += 30 * 60 + 1
         self.assertFalse(self.admitted())
 
@@ -603,7 +723,9 @@ class GateTests(unittest.TestCase):
         self.gate.parent.chmod(0o500)
         self.addCleanup(self.gate.parent.chmod, 0o700)
         service.tick()
-        self.assertIn("4242", json.loads((self.runtime / "cockpit-game-guard.json").read_text())["tasks"])
+        self.assertIn(
+            "4242", json.loads((self.runtime / "cockpit-game-guard.json").read_text())["tasks"]
+        )
 
     def test_hold_turns_admission_back_on(self):
         self.make_guard().tick()
@@ -625,11 +747,17 @@ class GateTests(unittest.TestCase):
         self.assertFalse(self.admitted(), "the release ends at its absolute time")
 
     def account_home_from_getent(self):
-        entry = subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True, text=True, check=True)
+        entry = subprocess.run(
+            ["getent", "passwd", str(os.getuid())], capture_output=True, text=True, check=True
+        )
         return Path(entry.stdout.strip().split(":")[5])
 
     def test_status_and_manual_files_come_from_the_account_home_whatever_home_and_xdg_say(self):
-        changed = {"HOME": "/tmp/elsewhere", "XDG_STATE_HOME": "/tmp/xdg-state", "XDG_CACHE_HOME": "/tmp/xdg-cache"}
+        changed = {
+            "HOME": "/tmp/elsewhere",
+            "XDG_STATE_HOME": "/tmp/xdg-state",
+            "XDG_CACHE_HOME": "/tmp/xdg-cache",
+        }
         saved = {key: os.environ.get(key) for key in changed}
         os.environ.update(changed)
         try:
@@ -658,6 +786,7 @@ class GateTests(unittest.TestCase):
     def test_a_missing_account_fails_closed(self):
         def missing(uid):
             raise KeyError(uid)
+
         original = guard.pwd.getpwuid
         guard.pwd.getpwuid = missing
         try:
@@ -683,9 +812,18 @@ class GateTests(unittest.TestCase):
 
 class CommandTests(unittest.TestCase):
     def run_guard(self, *arguments, runtime):
-        return subprocess.run([sys.executable, str(SCRIPT), *arguments], capture_output=True, text=True,
-                              env=os.environ | {"XDG_RUNTIME_DIR": str(runtime), "HOME": str(runtime),
-                                                "XDG_STATE_HOME": str(runtime)}, timeout=30)
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *arguments],
+            capture_output=True,
+            text=True,
+            env=os.environ
+            | {
+                "XDG_RUNTIME_DIR": str(runtime),
+                "HOME": str(runtime),
+                "XDG_STATE_HOME": str(runtime),
+            },
+            timeout=30,
+        )
 
     def test_status_without_state_says_the_guard_has_not_run(self):
         with tempfile.TemporaryDirectory() as runtime:

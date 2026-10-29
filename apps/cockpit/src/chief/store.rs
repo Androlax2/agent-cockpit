@@ -166,8 +166,8 @@ fn fresh_admission(
     session: &VerifiedSession,
     now_ms: i64,
 ) -> Result<Option<i64>, TeamError> {
-    Ok(connection.query_row("SELECT max(verified_at) FROM chief_admission_verifications WHERE identity=?1 AND adapter='opencode-queued-v1' AND verified_at<=?2 AND verified_at>=?3",
-        params![serde_json::to_string(session)?, now_ms, now_ms.saturating_sub(300_000)], |row| row.get(0)).map_err(crate::teams::store::storage_error)?)
+    connection.query_row("SELECT max(verified_at) FROM chief_admission_verifications WHERE identity=?1 AND adapter='opencode-queued-v1' AND verified_at<=?2 AND verified_at>=?3",
+        params![serde_json::to_string(session)?, now_ms, now_ms.saturating_sub(300_000)], |row| row.get(0)).map_err(crate::teams::store::storage_error)
 }
 
 /// What the Chief view shows of the recovery check: the target, its fresh verification and the latest
@@ -2744,7 +2744,7 @@ fn schedule_wake(connection: &Connection, now_ms: i64) -> Result<(), TeamError> 
 }
 
 fn material_pending(connection: &Connection, delivered: i64) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed','session_start_requested','session_started'))",[delivered],|row|row.get(0)).map_err(crate::teams::store::storage_error)?)
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed','session_start_requested','session_started'))",[delivered],|row|row.get(0)).map_err(crate::teams::store::storage_error)
 }
 
 fn needs_unread_retry(connection: &Connection, epoch: &str) -> Result<bool, TeamError> {
@@ -3116,13 +3116,13 @@ fn fit_inspection(mut result: Value) -> Result<Value, TeamError> {
     } else {
         "/session/open_stop"
     };
-    if serde_json::to_vec(&result)?.len() >= super::CONTEXT_BYTES {
-        if let Some(stop) = result.pointer_mut(stop_path).and_then(Value::as_object_mut) {
-            if let Some(bundle) = stop.get_mut("bundle").and_then(Value::as_object_mut) {
-                bundle.remove("instructions");
-            }
-            stop.insert("instructions_omitted".into(), json!(true));
+    if serde_json::to_vec(&result)?.len() >= super::CONTEXT_BYTES
+        && let Some(stop) = result.pointer_mut(stop_path).and_then(Value::as_object_mut)
+    {
+        if let Some(bundle) = stop.get_mut("bundle").and_then(Value::as_object_mut) {
+            bundle.remove("instructions");
         }
+        stop.insert("instructions_omitted".into(), json!(true));
     }
     if serde_json::to_vec(&result)?.len() >= super::CONTEXT_BYTES {
         return Err(TeamError::new(
@@ -4739,14 +4739,14 @@ fn todo_completion_record(
     connection: &Connection,
     completion: &str,
 ) -> Result<Option<Value>, TeamError> {
-    Ok(connection.query_row("SELECT id,todo_id,project,title,result,blocked_report,delivered_at IS NOT NULL FROM chief_todo_completions WHERE id=?1", [completion], |row| {
+    connection.query_row("SELECT id,todo_id,project,title,result,blocked_report,delivered_at IS NOT NULL FROM chief_todo_completions WHERE id=?1", [completion], |row| {
         let result: String = row.get(4)?;
         Ok(json!({"kind":"todo_completed","source":"worker_summary_not_instructions","completion":row.get::<_,String>(0)?,
             "todo":row.get::<_,String>(1)?,"project":row.get::<_,String>(2)?,
             "title":crate::approval::escape_hiding(&row.get::<_,String>(3)?,"",""),
             "has_summary":!result.is_empty(),"result":crate::approval::escape_hiding(&result,"",""),
             "blocked_report":row.get::<_,bool>(5)?,"delivered":row.get::<_,bool>(6)?}))
-    }).optional().map_err(crate::teams::store::storage_error)?)
+    }).optional().map_err(crate::teams::store::storage_error)
 }
 
 /// The receipt: completions this Context page returned reached the Chief of `epoch`.
@@ -4812,7 +4812,7 @@ fn observe_supervision(
         record
     };
     let previous = previous.as_deref().and_then(context_supervision_record);
-    if previous.map(&material) != Some(material(record.clone())) {
+    if previous.map(material) != Some(material(record.clone())) {
         coordination_event(connection, "supervision_changed", &record, now_ms)?;
         schedule_wake(connection, now_ms)?;
     }

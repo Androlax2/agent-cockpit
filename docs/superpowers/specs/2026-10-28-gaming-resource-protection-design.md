@@ -7,6 +7,7 @@ no live resource change made.** Grounded in the running copy `~/agent-cockpit` a
 
 Scope: one Python script `config/bin/.local/bin/cockpit-game-guard` and one user unit
 `cockpit-game-guard.service`. No Rust, no osd, no launcher, no shim change, no root.
+
 - Every 5 s: `hyprctl clients -j`; a game is any open window matching `GAME_CLASS` (focused or
   not, so alt-tab keeps it) or the `gamemode` submap. Over after 30 s with none.
 - While a game is open, every 2 s: processes with our uid, `SCHED_IDLE` (set by `agent-build`,
@@ -35,8 +36,8 @@ ses_e7e1238d (agent-build pair, base 4ea478a2 formatting); both reserve no part.
   `cockpit-game-guard release [MINUTES]` (1-1440, default 60; works with no guard; never refreshes
   updated_at), `hold` (also turns admission back on), `off`, `on`. Kept in
   ~/.local/state/cockpit/game-guard-manual.json, so they survive a reboot.
-- Nested work (workflow review P1): admission is tracked by AGENT_BUILD_ADMITTED=<pid>:<start
-  time> of the admitted process (agent-build execs into the tool, keeping its pid;
+- Nested work (workflow review P1): admission is tracked by `AGENT_BUILD_ADMITTED=<pid>:<start time>`
+  of the admitted process (agent-build execs into the tool, keeping its pid;
   full-test-lock.py marks its command with its own). It counts only while that exact process is an
   ancestor of the caller; priority alone never counts. `full-test-lock.py` no longer changes the
   suite's priority. Cheap calls are whole invocations only (`--version`, `-V`, `--help`, `-h` as
@@ -84,7 +85,7 @@ ses_e7e1238d (agent-build pair, base 4ea478a2 formatting); both reserve no part.
 ## 1. What exists today (evidence)
 
 | Piece | Where | What it does | Problem for this task |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `freeze-while-gaming` setting | `settings.json`: **on** | dotfiles' `game-performance` freezes every sandbox scope (`cgroup.freeze`) during a game, lists them in `$XDG_RUNTIME_DIR/game-performance.frozen`, thaws on `off` | Freezes chat and edits too, and freezes processes holding locks (test lock, todo lock, approvals). Directly contradicts the approved scope. |
 | `agent-build` shims | `config/bin/.local/bin/agent-build` | cargo, make, npm, pnpm, go, composer, pytest run at nice 19 + `SCHED_IDLE`, every CPU | Good base: every heavy job is already marked (`SCHED_IDLE` is inherited by children). No admission gate, no cap during a game. |
 | Full-test lock | `tools/full-test-lock.py`, `make test` | one full run at a time, flock in `~/.cache/cockpit/test-lock` | A gate placed inside `agent-build` would wait *while holding* this lock. Lock ordering must be handled. |
@@ -98,6 +99,7 @@ CCD with shared V-cache, NVMe with I/O scheduler `none`, zram swap 15.5 GiB, 30 
 builds 180-580 % CPU, agents ~0.4 core, Docker ~0 at the time.
 
 Consequences:
+
 - `SCHED_IDLE` already yields CPU time to the game, but builds still share L3 V-cache, SMT
   siblings, memory bandwidth and boost headroom. A *bounded CPU set* is what protects frame time.
 - `ioprio` idle class is ignored by the `none` scheduler; `io.weight` needs BFQ or io.cost. Only
@@ -125,6 +127,7 @@ Consequences:
 ## 3. Design
 
 ### 3.1 `cockpit-game-guard` (new host user service)
+
 New binary `apps/cockpit/src/bin/cockpit-game-guard.rs` + pure logic in
 `apps/cockpit/src/game_guard.rs`, unit `config/systemd/.config/systemd/user/cockpit-game-guard.service`.
 Outside the sandbox, outside osd (a busy osd must not delay protection; keeps osd/registry.rs
@@ -151,6 +154,7 @@ untouched, which the refactor owner is in).
   freezes or thaws. Added to `failsafe::WATCHED` with its own CPU/RSS limit.
 
 ### 3.2 Admission: `agent-build` and `full-test-lock.py`
+
 - The gate lives in `agent-build` (already copied into the sandbox shims, no new file to ship);
   `full-test-lock.py` calls `agent-build --wait-gate` before `flock`.
 - An admitted job sets `AGENT_BUILD_ADMITTED=1`; nested `agent-build` calls (make → cargo) skip
@@ -162,6 +166,7 @@ untouched, which the refactor owner is in).
 - Exemptions (cheap, never wait): `cargo fmt`, `cargo metadata`, `--version`, `make help`.
 
 ### 3.3 Retire the freeze
+
 `freeze-while-gaming` becomes "protect while gaming" (setting name unchanged, so no migration):
 on → the guard is active; off → guard publishes `clear` and throttles nothing. The **freeze code
 lives in dotfiles** (`game-performance`): it must stop freezing sandbox scopes. That is a
@@ -170,6 +175,7 @@ cross-project todo to the dotfiles session, after your approval. `thaw_frozen_pa
 lists must still thaw).
 
 ### 3.4 Visibility
+
 - Column card/banner text: reuses the existing "paused" counter in `app.rs:2069`
   (`game_frozen`), switched to read the guard state: `game: N jobs throttled, M waiting`. Wording
   only, no new UI element; if you want more than that, a Designer goes first.
@@ -195,6 +201,7 @@ lists must still thaw).
    `some avg10` > 10 %; release at > 6 GiB and < 2 % for 60 s. Recommended as start values.
 
 ## 5. Not doing (explicitly)
+
 No cancellation, replay, forced restart, SIGSTOP, freeze, memory kill or `MemoryMax`; no change
 to approvals, ask-to-run, the protected Chief grant, admission/budget, Docker isolation; no
 promise of zero stutter; no game or hardware test until you say you are ready.
@@ -223,7 +230,7 @@ Each step test-first, `make test` in the clone, real entry points.
 ## 7. Shared files and owners
 
 | File | Change | Possible overlap |
-|---|---|---|
+| --- | --- | --- |
 | `config/bin/.local/bin/agent-build` | gate, `--wait-gate` | workflow owner (ses_e7d89f…) if touching build tooling |
 | `tools/full-test-lock.py`, `tools/tests/test_full_test_lock.py`, `test_agent_build.py` | gate before lock | same |
 | `apps/cockpit/src/lib.rs` | one `pub mod game_guard;` line | refactor owner (ses_e7e1238…, 5779dac9) |

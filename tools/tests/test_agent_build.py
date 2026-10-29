@@ -45,8 +45,19 @@ def write_gate(home, state, **fields):
     path = home / ".cache/agent-shims/heavy-gate.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     now = time.time()
-    path.write_text(json.dumps({"version": 1, "state": state, "reason": f"test {state}", "since": now,
-                                "updated_at": now, "boot_id": BOOT_ID} | fields))
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state": state,
+                "reason": f"test {state}",
+                "since": now,
+                "updated_at": now,
+                "boot_id": BOOT_ID,
+            }
+            | fields
+        )
+    )
     return path
 
 
@@ -58,7 +69,7 @@ def fresh_environment(environment):
 
 def marker_of_this_process():
     text = Path(f"/proc/{os.getpid()}/stat").read_text()
-    return f"{os.getpid()}:{text[text.rindex(')') + 2:].split()[19]}"
+    return f"{os.getpid()}:{text[text.rindex(')') + 2 :].split()[19]}"
 
 
 def read_until(stream, text, seconds=15):
@@ -192,8 +203,11 @@ class AgentBuildTests(unittest.TestCase):
             result = subprocess.run(
                 ["make", "--no-print-directory", "build"],
                 cwd=REPO,
-                env=self.environment | {"PATH": f"{directory}:{self.environment['PATH']}",
-                                        "AGENT_BUILD_ADMITTED": marker_of_this_process()},
+                env=self.environment
+                | {
+                    "PATH": f"{directory}:{self.environment['PATH']}",
+                    "AGENT_BUILD_ADMITTED": marker_of_this_process(),
+                },
                 preexec_fn=lambda: os.sched_setaffinity(0, self.available_cpus),
                 capture_output=True,
                 text=True,
@@ -222,9 +236,16 @@ class AdmissionTests(unittest.TestCase):
     def start(self, *arguments, preexec_fn=None, environment=None):
         script = f"from pathlib import Path; Path({str(self.marker)!r}).touch(); print('ran'); raise SystemExit(9)"
         command = arguments or (sys.executable, "-c", script)
-        job = subprocess.Popen([*through_harness(self.home), *command], env=environment or self.environment,
-                               preexec_fn=preexec_fn, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                               start_new_session=True)
+        job = subprocess.Popen(
+            [*through_harness(self.home), *command],
+            env=environment or self.environment,
+            preexec_fn=preexec_fn,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+
         def stop():
             # The whole group: a nested job still waiting would keep the pipes open forever.
             try:
@@ -232,6 +253,7 @@ class AdmissionTests(unittest.TestCase):
             except ProcessLookupError:
                 pass
             job.communicate(timeout=10)
+
         self.addCleanup(stop)
         return job
 
@@ -249,7 +271,9 @@ class AdmissionTests(unittest.TestCase):
             "Theo holds jobs": lambda: write_gate(self.home, "held"),
             "the status is missing": lambda: None,
             "the status is stale": lambda: write_gate(self.home, "clear", updated_at=stale),
-            "the status is from another boot": lambda: write_gate(self.home, "clear", boot_id="earlier-boot"),
+            "the status is from another boot": lambda: write_gate(
+                self.home, "clear", boot_id="earlier-boot"
+            ),
             "the status is not JSON": lambda: write_gate(self.home, "clear").write_text("{"),
             "the status is too large": lambda: write_gate(self.home, "clear", padding="x" * 5000),
             "the status has an unknown state": lambda: write_gate(self.home, "maybe"),
@@ -257,8 +281,12 @@ class AdmissionTests(unittest.TestCase):
             "the state is an object": lambda: write_gate(self.home, {}),
             "the state is a number": lambda: write_gate(self.home, 5),
             "the times are not numbers": lambda: write_gate(self.home, "clear", updated_at="now"),
-            "the status is from the future": lambda: write_gate(self.home, "clear", updated_at=time.time() + 3600),
-            "a release is too far ahead": lambda: write_gate(self.home, "gaming", manual_release_until=time.time() + 3 * 86400),
+            "the status is from the future": lambda: write_gate(
+                self.home, "clear", updated_at=time.time() + 3600
+            ),
+            "a release is too far ahead": lambda: write_gate(
+                self.home, "gaming", manual_release_until=time.time() + 3 * 86400
+            ),
             "the status is a symbolic link": self.plant_symlinked_gate,
         }
         for name, prepare in cases.items():
@@ -297,7 +325,12 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual((job.returncode, output), (9, "ran\n"), errors)
 
     def test_theos_release_starts_jobs_even_with_a_stale_status(self):
-        write_gate(self.home, "gaming", updated_at=time.time() - 600, manual_release_until=time.time() + 600)
+        write_gate(
+            self.home,
+            "gaming",
+            updated_at=time.time() - 600,
+            manual_release_until=time.time() + 600,
+        )
         output, errors = self.start().communicate(timeout=10)
         self.assertEqual(output, "ran\n", errors)
 
@@ -321,8 +354,11 @@ class AdmissionTests(unittest.TestCase):
     def test_a_marker_that_is_not_an_ancestor_or_has_another_start_time_waits(self):
         write_gate(self.home, "gaming")
         pid, _, start = marker_of_this_process().partition(":")
-        for name, marker in {"wrong start time": f"{pid}:{int(start) + 1}", "not an ancestor": "1:1",
-                             "garbage": "yes"}.items():
+        for name, marker in {
+            "wrong start time": f"{pid}:{int(start) + 1}",
+            "not an ancestor": "1:1",
+            "garbage": "yes",
+        }.items():
             with self.subTest(name):
                 self.marker.unlink(missing_ok=True)
                 job = self.start(environment=self.environment | {"AGENT_BUILD_ADMITTED": marker})
@@ -336,8 +372,10 @@ class AdmissionTests(unittest.TestCase):
         tools.mkdir()
         fake_make = tools / "make"
         nested = f"from pathlib import Path; Path({str(self.marker)!r}).touch()"
-        fake_make.write_text(f"#!{sys.executable}\nimport subprocess, sys\n"
-                             f"sys.exit(subprocess.call([*{through_harness(self.home)!r}, sys.executable, '-c', {nested!r}]))\n")
+        fake_make.write_text(
+            f"#!{sys.executable}\nimport subprocess, sys\n"
+            f"sys.exit(subprocess.call([*{through_harness(self.home)!r}, sys.executable, '-c', {nested!r}]))\n"
+        )
         fake_make.chmod(0o755)
         environment = self.environment | {"PATH": f"{tools}:{self.environment['PATH']}"}
         job = self.start("make", "help", environment=environment)
@@ -349,30 +387,45 @@ class AdmissionTests(unittest.TestCase):
             with self.subTest(arguments):
                 tools = self.home / "mixed"
                 tools.mkdir(exist_ok=True)
-                (tools / "make").write_text(f"#!{sys.executable}\nfrom pathlib import Path; Path({str(self.marker)!r}).touch()\n")
+                (tools / "make").write_text(
+                    f"#!{sys.executable}\nfrom pathlib import Path; Path({str(self.marker)!r}).touch()\n"
+                )
                 (tools / "make").chmod(0o755)
                 self.marker.unlink(missing_ok=True)
-                job = self.start(*arguments, environment=self.environment | {"PATH": f"{tools}:{self.environment['PATH']}"})
+                job = self.start(
+                    *arguments,
+                    environment=self.environment | {"PATH": f"{tools}:{self.environment['PATH']}"},
+                )
                 self.assert_waits(job)
                 os.killpg(job.pid, signal.SIGKILL)
                 job.communicate(timeout=10)
 
     def test_scheduling_priority_alone_never_counts_as_admitted(self):
         write_gate(self.home, "gaming")
+
         def as_idle_job():
             os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
+
         def as_batch_job():
             os.sched_setscheduler(0, os.SCHED_BATCH, os.sched_param(0))
+
         def as_niced_job():
             os.setpriority(os.PRIO_PROCESS, 0, 19)
-        for name, preexec in {"SCHED_IDLE": as_idle_job, "SCHED_BATCH": as_batch_job, "nice 19": as_niced_job}.items():
+
+        for name, preexec in {
+            "SCHED_IDLE": as_idle_job,
+            "SCHED_BATCH": as_batch_job,
+            "nice 19": as_niced_job,
+        }.items():
             with self.subTest(name):
                 self.marker.unlink(missing_ok=True)
                 try:
                     job = self.start(preexec_fn=preexec)
                 except subprocess.SubprocessError:
                     # Only SCHED_BATCH from an idle parent under RLIMIT_NICE 0; the others still run.
-                    self.skipTest(f"cannot start a {name} job here (RLIMIT_NICE 0 under SCHED_IDLE)")
+                    self.skipTest(
+                        f"cannot start a {name} job here (RLIMIT_NICE 0 under SCHED_IDLE)"
+                    )
                 self.assert_waits(job)
                 os.killpg(job.pid, signal.SIGKILL)
                 job.communicate(timeout=10)
@@ -398,20 +451,32 @@ class AdmissionTests(unittest.TestCase):
         shims = self.home / "shims"
         tools.mkdir()
         shims.mkdir()
-        (tools / "cargo").write_text(f"#!{sys.executable}\nfrom pathlib import Path; Path({str(self.marker)!r}).touch(); print('ran')\n")
+        (tools / "cargo").write_text(
+            f"#!{sys.executable}\nfrom pathlib import Path; Path({str(self.marker)!r}).touch(); print('ran')\n"
+        )
         (tools / "cargo").chmod(0o755)
         write_shim(shims, "cargo", self.home)
         environment = self.environment | {"PATH": f"{shims}:{tools}:{self.environment['PATH']}"}
-        cases = {"forged clear under HOME, account gaming": ("gaming", "clear", True),
-                 "forged held under HOME, account clear": ("clear", "held", False)}
+        cases = {
+            "forged clear under HOME, account gaming": ("gaming", "clear", True),
+            "forged held under HOME, account clear": ("clear", "held", False),
+        }
         for name, (account, forged, waits) in cases.items():
             with self.subTest(name):
                 self.marker.unlink(missing_ok=True)
                 write_gate(self.home, account)
                 write_gate(self.other_home, forged)
-                job = subprocess.Popen([str(shims / "cargo"), "build"], env=environment, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, text=True, start_new_session=True)
-                self.addCleanup(lambda job=job: job.poll() is None and os.killpg(job.pid, signal.SIGKILL))
+                job = subprocess.Popen(
+                    [str(shims / "cargo"), "build"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                self.addCleanup(
+                    lambda job=job: job.poll() is None and os.killpg(job.pid, signal.SIGKILL)
+                )
                 if waits:
                     read_until(job.stderr, "waits")
                     self.assertFalse(self.marker.exists())
@@ -460,8 +525,13 @@ class AdmissionTests(unittest.TestCase):
     def test_a_job_whose_turn_comes_during_a_new_game_waits_again(self):
         decisions = iter([False, True])
         waits = []
-        originals = (agent_build.is_admitted, agent_build.wait_for_admission, agent_build.take_release_turn,
-                     agent_build.admission, agent_build.read_gate)
+        originals = (
+            agent_build.is_admitted,
+            agent_build.wait_for_admission,
+            agent_build.take_release_turn,
+            agent_build.admission,
+            agent_build.read_gate,
+        )
         agent_build.is_admitted = lambda: False
         agent_build.wait_for_admission = lambda label: waits.append(label) or True
         agent_build.take_release_turn = lambda: None
@@ -470,23 +540,64 @@ class AdmissionTests(unittest.TestCase):
         try:
             agent_build.admit("cargo build")
         finally:
-            (agent_build.is_admitted, agent_build.wait_for_admission, agent_build.take_release_turn,
-             agent_build.admission, agent_build.read_gate) = originals
+            (
+                agent_build.is_admitted,
+                agent_build.wait_for_admission,
+                agent_build.take_release_turn,
+                agent_build.admission,
+                agent_build.read_gate,
+            ) = originals
         self.assertEqual(len(waits), 2, "after its turn the job saw a game and waited again")
 
     def test_waiting_jobs_say_why_once_a_minute_not_on_every_poll(self):
-        gates = iter([({"version": 1, "state": "gaming", "reason": "a game is open", "since": 0, "updated_at": 0, "boot_id": BOOT_ID}, None)] * 40
-                     + [({"version": 1, "state": "clear", "since": 0, "updated_at": 0, "boot_id": BOOT_ID}, None)])
+        gates = iter(
+            [
+                (
+                    {
+                        "version": 1,
+                        "state": "gaming",
+                        "reason": "a game is open",
+                        "since": 0,
+                        "updated_at": 0,
+                        "boot_id": BOOT_ID,
+                    },
+                    None,
+                )
+            ]
+            * 40
+            + [
+                (
+                    {
+                        "version": 1,
+                        "state": "clear",
+                        "since": 0,
+                        "updated_at": 0,
+                        "boot_id": BOOT_ID,
+                    },
+                    None,
+                )
+            ]
+        )
         now = [0.0]
         lines = []
+
         class Out:
-            def write(self, text): lines.append(text)
-            def flush(self): pass
-        def sleep(seconds): now[0] += seconds
+            def write(self, text):
+                lines.append(text)
+
+            def flush(self):
+                pass
+
+        def sleep(seconds):
+            now[0] += seconds
+
         def read(path):
             gate, problem = next(gates)
             return gate | {"updated_at": now[0]}, problem
-        waited = agent_build.wait_for_admission("cargo test", read=read, clock=lambda: now[0], sleep=sleep, out=Out())
+
+        waited = agent_build.wait_for_admission(
+            "cargo test", read=read, clock=lambda: now[0], sleep=sleep, out=Out()
+        )
         self.assertTrue(waited)
         self.assertEqual(sum("waits" in line for line in lines), 2)
         self.assertTrue(any("starts after 80 s" in line for line in lines))
@@ -496,12 +607,18 @@ class AccountHomeTests(unittest.TestCase):
     """The shipped runner's own lookup, without the harness."""
 
     def expected_home(self):
-        entry = subprocess.run(["getent", "passwd", str(os.getuid())], capture_output=True, text=True, check=True)
+        entry = subprocess.run(
+            ["getent", "passwd", str(os.getuid())], capture_output=True, text=True, check=True
+        )
         return Path(entry.stdout.strip().split(":")[5])
 
     def test_status_and_ticket_come_from_the_account_home_whatever_home_and_xdg_say(self):
-        changed = {"HOME": "/tmp/elsewhere", "XDG_CACHE_HOME": "/tmp/xdg-cache", "XDG_STATE_HOME": "/tmp/xdg-state",
-                   "USERPROFILE": "/tmp/profile"}
+        changed = {
+            "HOME": "/tmp/elsewhere",
+            "XDG_CACHE_HOME": "/tmp/xdg-cache",
+            "XDG_STATE_HOME": "/tmp/xdg-state",
+            "USERPROFILE": "/tmp/profile",
+        }
         saved = {key: os.environ.get(key) for key in changed}
         os.environ.update(changed)
         try:
@@ -514,7 +631,15 @@ class AccountHomeTests(unittest.TestCase):
 
     def test_the_shipped_source_reads_no_home_variable(self):
         source = RUNNER.read_text()
-        for forbidden in ("Path.home", "expanduser", '"HOME"', "'HOME'", "getenv", 'Path("~', "Path('~"):
+        for forbidden in (
+            "Path.home",
+            "expanduser",
+            '"HOME"',
+            "'HOME'",
+            "getenv",
+            'Path("~',
+            "Path('~",
+        ):
             with self.subTest(forbidden):
                 self.assertNotIn(forbidden, source)
         environment_uses = [line.strip() for line in source.splitlines() if "environ[" in line]
@@ -530,6 +655,7 @@ class AccountHomeTests(unittest.TestCase):
             write_gate(Path(folder.name), state)
             forged[state] = folder.name
         real_status = self.expected_home() / ".cache/agent-shims/heavy-gate.json"
+
         def decision_inputs():
             """Everything the real decision depends on, apart from the forged HOMEs: the state,
             boot, manual release and whether the status is fresh. Read only."""
@@ -539,11 +665,20 @@ class AccountHomeTests(unittest.TestCase):
                 return None
             if not isinstance(gate, dict):
                 return None
-            age = time.time() - gate.get("updated_at", 0) if isinstance(gate.get("updated_at"), (int, float)) else None
+            age = (
+                time.time() - gate.get("updated_at", 0)
+                if isinstance(gate.get("updated_at"), (int, float))
+                else None
+            )
             fresh = age is not None and -5 <= age <= agent_build.GATE_FRESH_S - 5
             stale = age is None or age > agent_build.GATE_FRESH_S + 5 or age < -10
-            return (gate.get("state"), gate.get("boot_id"), gate.get("manual_release_until"),
-                    "fresh" if fresh else "stale" if stale else "near the edge")
+            return (
+                gate.get("state"),
+                gate.get("boot_id"),
+                gate.get("manual_release_until"),
+                "fresh" if fresh else "stale" if stale else "near the edge",
+            )
+
         environment = fresh_environment(os.environ)
         answers = None
         for _ in range(10):
@@ -551,13 +686,21 @@ class AccountHomeTests(unittest.TestCase):
             if before is not None and before[3] == "near the edge":
                 time.sleep(1)
                 continue
-            pair = [subprocess.run([sys.executable, str(RUNNER), "--check-gate"], timeout=10,
-                                   env=environment | {"HOME": forged[state]}).returncode for state in ("clear", "held")]
+            pair = [
+                subprocess.run(
+                    [sys.executable, str(RUNNER), "--check-gate"],
+                    timeout=10,
+                    env=environment | {"HOME": forged[state]},
+                ).returncode
+                for state in ("clear", "held")
+            ]
             if decision_inputs() == before:
                 answers = pair
                 break
         if answers is None:
-            self.skipTest("the real status kept changing while sampled; no HOME conclusion either way")
+            self.skipTest(
+                "the real status kept changing while sampled; no HOME conclusion either way"
+            )
         self.assertIn(answers[0], (0, 75))
         self.assertEqual(answers[0], answers[1], f"answers differ under forged homes: {answers}")
 
@@ -581,13 +724,23 @@ class FailClosedTests(unittest.TestCase):
     def test_cases(self):
         def missing(uid):
             raise KeyError(uid)
+
         class Entry:
-            def __init__(self, home): self.pw_dir = home
-        lookups = {"no password entry": missing, "empty home": lambda uid: Entry(""),
-                   "relative home": lambda uid: Entry("home/theo")}
+            def __init__(self, home):
+                self.pw_dir = home
+
+        lookups = {
+            "no password entry": missing,
+            "empty home": lambda uid: Entry(""),
+            "relative home": lambda uid: Entry("home/theo"),
+        }
         with tempfile.TemporaryDirectory() as folder:
             marker = Path(folder) / "ran"
-            heavy = [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"]
+            heavy = [
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).touch()",
+            ]
             for name, lookup in lookups.items():
                 for arguments in (heavy, ["--check-gate"], ["--wait-gate", "a test run"]):
                     with self.subTest(name=name, arguments=arguments[0]):
