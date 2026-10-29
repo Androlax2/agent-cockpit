@@ -20,7 +20,7 @@ fn run_host_command(
 ) {
     let root = bench.fixture.root.clone();
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+        .join("../../..")
         .canonicalize()
         .unwrap();
     let errors = fs::File::create(root.join("roundtrip-stderr")).unwrap();
@@ -147,7 +147,7 @@ fn native_manager_and_daemon_complete_a_fallback_and_exact_original_return() {
             let mut bench = team_bench();
             let root = bench.fixture.root.clone();
             let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
+                .join("../../..")
                 .canonicalize()
                 .unwrap();
             let shims = root.join("shims");

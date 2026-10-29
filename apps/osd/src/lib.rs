@@ -1,11 +1,3 @@
-//! The cockpit's GTK programs: the OSD daemon (volume and brightness island, the Claude banners and
-//! the session registry, the run and guide queues, the teams) and the idle screen.
+//! GTK programs and compatibility exports for the headless daemon engine.
 
-pub mod chief;
-pub mod fifo;
-pub mod load;
-pub mod registry;
-pub mod teams;
-
-#[cfg(test)]
-mod tests;
+pub use cockpit_daemon::{chief, fifo, load, registry, teams};

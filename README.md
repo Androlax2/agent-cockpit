@@ -529,7 +529,7 @@ Polling reuses a successful runtime cache for four minutes. Missing CLI, sign-in
 | [`config/claude/.claude/hooks`](config/claude/.claude/hooks) | `session-state.sh` reports states; `agent-environment.sh` tells a session what its sandbox has |
 | [`config/bin/.local/bin`](config/bin/.local/bin) | `ask-to-run`, `claude-run-approve`, `ask-to-guide`, `claude-guide`, `claude-todo`, `claude-design`: wrappers of the Rust builds |
 | [`config/systemd/.config/systemd/user`](config/systemd/.config/systemd/user) | `osd`, `cockpit`, the health check, the version link |
-| [`apps/cockpit/tests`](apps/cockpit/tests), [`apps/osd/src/tests.rs`](apps/osd/src/tests.rs) | `make test`: the scripts, hooks and programs through fake commands on PATH, and the daemon's registry |
+| [`apps/cockpit/tests`](apps/cockpit/tests), [`apps/crates/cockpit-daemon/src/tests.rs`](apps/crates/cockpit-daemon/src/tests.rs) | `make test`: the scripts, hooks and programs through fake commands on PATH, and the daemon's registry |
 
 ## Install
 

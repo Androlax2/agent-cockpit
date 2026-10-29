@@ -1,6 +1,6 @@
 # The Agent Cockpit's Rust programs: one workspace, built with `make build` into apps/target/release.
 [workspace]
-members = ["cockpit", "osd"]
+members = ["cockpit", "osd", "crates/cockpit-daemon"]
 resolver = "3"
 
 [workspace.lints.clippy]
