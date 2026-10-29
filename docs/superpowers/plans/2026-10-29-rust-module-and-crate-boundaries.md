@@ -46,7 +46,10 @@ productization changes, not permission to alter runtime behavior inside A/B.
   Python220/Rust3266 tests (zero skipped) and independent review. A2–A5 is committed
   as `122e431` after final makeci passed Python222/Rust3267 tests (zero skipped) and
   independent review. Issue #3 is locally implemented; public delivery/closure is not claimed.
-  B remains gated on explicit manifest/lockfile approval; no push or deployment occurred.
+  Theo subsequently approved the five manifest/lockfile paths for internal core extraction.
+  B1 is committed as `8b1e98d`; B2/B3 are committed as `eb1cbc0` after final makeci passed
+  Python225/Rust3269 tests (zero skipped), graph checks and independent whole-branch review.
+  No push or deployment occurred.
 - Repository verified from the running copy's remote: `git@github.com:Androlax2/agent-cockpit.git`.
 - Baseline: GitHub main `f04897d2d17eab279d0c250858430599ef12781f`, merge of PR #1.
 - Planning branch: `docs/rust-architecture-plan-20261029`, created from that exact main.
@@ -513,15 +516,15 @@ Review Chief/phone owners before touching these files.
 - Move `usage::report_forever() -> !` to `usage/terminal.rs` with its old public export.
   Keep `report_lines(columns)` and usage evidence logic independent of terminal size probes.
 
-- [ ] Add byte-for-byte characterization for digest/phone status and draft formats before
+- [x] Add characterization for digest/phone status and draft formats before
   relocation; test stale/missing states through existing public consumers, not only helpers.
-- [ ] Compare `ChiefView::status` and phone status for Off/Starting/Checking/On/failure
+- [x] Compare `ChiefView::status` and phone status for Off/Starting/Checking/On/failure
   snapshots; preserve unknown-state behavior rather than supplying a convenient default.
-- [ ] Perform move-only adapter changes. Any required authority/permission behavior change
+- [x] Perform move-only adapter changes. Any required authority/permission behavior change
   stops the task for separate security approval; it is not part of this refactor.
-- [ ] Verify `approval_terminal`, `run_requests`, `guide_terminal`, `chief_ui`, `costs`,
+- [x] Verify `approval_terminal`, `run_requests`, `guide_terminal`, `chief_ui`, `costs`,
   and existing remote tests. Preserve type-ahead guard, remote answer validation and raw-mode cleanup.
-- [ ] Inventory remaining production references to `app`, `chief::view`, Ratatui and
+- [x] Inventory remaining production references to `app`, `chief::view`, Ratatui and
   Crossterm outside UI/adapters. Resolve every reverse edge before B2; no forbidden exception list.
 
 ### B2: Extract the core once, retaining explicit compatibility exports
@@ -551,27 +554,32 @@ from core back to `cockpit`. Expose only the minimum previously crate-private dr
 operations consumed across the new boundary, with documented signatures; no blanket
 visibility widening of App internals, test helpers or stores.
 
-- [ ] Add graph regressions requiring a real `cockpit-core` workspace member and forbidding
+- [x] Add graph regressions requiring a real `cockpit-core` workspace member and forbidding
   its production graph from reaching `cockpit`, `osd`, `cockpit-daemon`, GTK, Ratatui or
   Crossterm. They must fail before extraction. Preserve existing protocol/daemon guards.
-- [ ] Copy no models: relocate canonical definitions, keep protocol re-exports and preserve
+- [x] Copy no models: relocate canonical definitions, keep protocol re-exports and preserve
   the Team/Chief shared SQL connection, migrations, transaction boundaries and `storage_error`.
-- [ ] Keep each persistence/rollback owner intact: failed writes must not publish successful
+- [x] Keep each persistence/rollback owner intact: failed writes must not publish successful
   state or send a reload/handoff, and acknowledgements must retain their original request
   identity. Use the existing rollback/link-invalidation tests to verify moves, not a generic
   repository abstraction or independently committing Chief/Team stores.
-- [ ] Relocate non-UI unit tests and their fixtures into core with their subject. Keep UI
-  unit tests in `cockpit`. Specifically move the Todo JSON barrier hook and its two
-  transaction tests into core's `#[cfg(test)]` support with the same concurrency assertions;
+- [x] Relocate non-UI inline unit tests and their fixtures into core with their subject. Keep UI
+  unit tests in `cockpit`. Specifically move the Todo JSON barrier hook and all four
+  dependent transaction tests (two parent cases and `tests/session_link_saves.rs`) into
+  core's `#[cfg(test)]` support with the same concurrency assertions;
   do not enable test hooks in production or depend on a dependency's disabled `cfg(test)`.
-- [ ] Split test-only fixture setup only where required by the package boundary, retaining
+  Existing cache-only Reviews/status fixture helpers use a default-off `test-support`
+  feature enabled through the terminal dev-dependency; verify actual normal production
+  feature trees exclude it. This feature must not expose the transaction barrier or
+  change authority, storage or request-validation behavior.
+- [x] Split test-only fixture setup only where required by the package boundary, retaining
   environment locking and shutdown ownership. Keep `common/link_fixture.rs` usable via a
   verified checkout-root path or a reviewed test-only copy; no new fixture package by default.
-- [ ] Retarget `CARGO_MANIFEST_DIR`, inline fixtures and root discovery explicitly for the
+- [x] Verify `CARGO_MANIFEST_DIR`, inline fixtures and root discovery explicitly for the
   deeper crate. Keep all CLI tests under the package that owns their binaries.
-- [ ] Verify graph guards, compatibility imports, serialized outputs, draft/SQL regressions,
+- [x] Verify graph guards, compatibility imports, serialized outputs, draft/SQL regressions,
   every moved unit-test group and existing CLI integration targets. Account for all old tests.
-- [ ] Update architecture/development docs with the implemented graph only after verification.
+- [x] Update architecture/development docs with the implemented graph after verification.
   Do not modify Make, launchers, hooks, compose or CI merely to accommodate a cosmetic move.
 
 ### B3: Switch daemon production dependencies and prove the boundary
@@ -585,14 +593,16 @@ lockfile changes. Keep OSD binaries and `apps/osd/src/lib.rs` compatibility expo
 `cockpit_protocol` types through core's canonical re-exports. `cockpit` is at most a
 dev-dependency for existing cross-layer UI tests. No protocol or host-operation change.
 
-- [ ] Add a daemon graph assertion rejecting production reachability to `cockpit`,
+- [x] Add a daemon graph assertion rejecting production reachability to `cockpit`,
   Ratatui and Crossterm as well as the existing GTK rejection. Observe RED first.
-- [ ] Obtain pane/diagnostics/Chief owners' checkpoint or exact release before edits.
-- [ ] Replace production imports/dependency only; leave `System` injection, scheduling,
+- [x] Preserve pane/Chief checkpoint handoffs before moves. Diagnostics integration
+  sequencing remains held for any later publication/handoff; its separate instrumentation
+  was not overwritten or incorporated. Store bodies moved unchanged.
+- [x] Replace production imports/dependency only; leave `System` injection, scheduling,
   report identity and SQL calls at their original owners. Observe graph guard GREEN.
-- [ ] Exercise daemon tests, OSD consumers and `team_client`, `team_protocol`, `chief_protocol`,
+- [x] Exercise daemon tests, OSD consumers and `team_client`, `team_protocol`, `chief_protocol`,
   `chief_store`, `team_store`, `chief_ui`, `team_ui`, `todo_terminal`, `sidebar_refresh`.
-- [ ] Independently review the dependency graph and compatibility surface, then run the
+- [x] Independently review the dependency graph and compatibility surface, then run the
   authorized final shared gate once. Do not declare headless success from compilation alone.
 
 ## W — Separately scoped workflow and repository follow-ups
@@ -770,12 +780,41 @@ deleting completed design decisions or introducing a new UI design.
   Ledger `.handoff/refactor-5b93b063-progress.md` preserves commands, failures and rulings.
   #3 locally implemented; no push, public issue closure, #4 execution or deployment claimed.
 
-### Approval required before B
+### B approval and current evidence
 
 The exact next permission is workspace/internal path-dependency and lockfile edits in
 `apps/Cargo.toml`, `apps/Cargo.lock`, `apps/cockpit/Cargo.toml`,
 `apps/crates/cockpit-daemon/Cargo.toml` and new `apps/crates/cockpit-core/Cargo.toml`.
 This would introduce the planned local core crate and reassign existing dependencies;
 no new third-party dependency, version upgrade or tool installation is requested.
-Until Theo explicitly approves those manifest edits, B's existing approval gate remains
-closed. Do not infer authorization from routine source/test approval or issue creation.
+Theo explicitly approved exactly those paths for the internal core and existing dependency
+reassignment. No new third-party dependencies, version upgrades or installs were approved.
+The manifest gate is satisfied; protected host/publication/security approvals remain separate.
+
+B1 separated pure summary calculations and terminal adapters while retaining view-local
+stale/pending state. Its 338 affected integration tests and Clippy passed. Core/Cockpit
+libraries now pass870 tests/0skipped after B2/B3, with390 consumer tests/0skipped.
+All five real graph/feature checks pass; before extraction the new core/daemon assertions
+failed as expected. All294 third-party lock package records are unchanged. Fresh independent
+whole-branch review found no important code findings or lost test names.
+
+The first B final gate failed Ruff formatting, not tests; the exact line is corrected.
+Final gate rerun (`.handoff/b-final-ci-2.log`, full receipt retained in the ledger)
+passed: Python225 in31.331s/OK;
+Rust3269 passed(1slow),0skipped in378.980s across79 binaries. Source checkpoint `eb1cbc0`
+contains the tested extraction. This establishes local A/B implementation, not GitHub
+runner success, publication or deployment. Source/worker ownership holds remain explicit.
+
+### Final local delivery boundaries
+
+- Existing feature branch `docs/rust-architecture-plan-20261029`; original session and
+  checkout retained. Phase A commits `2239c62`, `122e431`, plan checkpoint `783fa09`,
+  B1 checkpoint `8b1e98d`, core extraction `eb1cbc0`. No history rewritten.
+- All294 external lock package entries, protocol identity, SQL transaction/durability
+  ownership, executable paths and approval checks preserved. All original performance
+  artifacts still pass their recorded checksums; no performance implementation was applied.
+- Source guards remain intentionally literal-path checks, not Rust alias/type resolution.
+  Optional ast-grep, packaging, unrelated cleanup/UI/autonomy and public rollout remain out of scope.
+- GitHub issues #3/#4 remain open: no push/PR/merge, host execution or deployment approved
+  or performed. Diagnostics task `8e473428` still appears doing; its sequencing and the
+  explicit old-to-core path map must be preserved before any later shared integration.
