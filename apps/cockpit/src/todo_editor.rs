@@ -1,7 +1,9 @@
 //! The TODO editor's reload guard and recoverable drafts.
 
+pub(crate) mod text;
+
 use crate::{
-    app, paths,
+    paths,
     todo::{Item, TodoList},
     util,
 };
@@ -79,7 +81,7 @@ impl Draft {
         let (title, notes, why) = item
             .map(|item| (item.text(), item.notes(), item.why()))
             .unwrap_or_default();
-        fs::write(draft.path("md"), app::editor_text(&title, &notes, &why))?;
+        fs::write(draft.path("md"), text::editor_text(&title, &notes, &why))?;
         draft.persist()?;
         Ok(draft)
     }
@@ -162,7 +164,7 @@ impl Draft {
             (!util::collapse(&crate::todo::without_controls(&text.title)).is_empty())
                 .then(|| (text.title.clone(), text.notes.clone()))
         } else {
-            app::parse_editor_text(&fs::read_to_string(self.path("md"))?)
+            text::parse_editor_text(&fs::read_to_string(self.path("md"))?)
         };
         let saved = if let Some((title, notes)) = contents {
             todos.save_editor(self, &title, &notes)?;

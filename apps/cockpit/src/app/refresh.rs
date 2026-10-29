@@ -7,19 +7,9 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-static BACKGROUND_CHANGED: AtomicBool = AtomicBool::new(false);
-
-/// Called explicitly after publishing a worker result; the terminal consumes it without cloning
-/// provider summaries or review lists on each input wait.
-pub fn background_changed() {
-    BACKGROUND_CHANGED.store(true, Ordering::Release);
-}
-pub fn take_background_changed() -> bool {
-    BACKGROUND_CHANGED.swap(false, Ordering::Acquire)
-}
+pub use crate::background::{background_changed, take_background_changed};
 
 pub const SAFETY_INTERVAL: Duration = Duration::from_secs(5);
 const CHANGE_INTERVAL: Duration = Duration::from_millis(250);

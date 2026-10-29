@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn background_notification_compatibility_paths_share_one_coalesced_signal() {
+    assert!(!crate::background::take_background_changed());
+    crate::app::refresh::background_changed();
+    assert!(crate::background::take_background_changed());
+    assert!(!crate::app::refresh::take_background_changed());
+    crate::background::background_changed();
+    crate::background::background_changed();
+    assert!(crate::app::refresh::take_background_changed());
+    assert!(!crate::background::take_background_changed());
+}
+
+#[test]
 fn the_column_greys_its_focused_panel_when_the_focus_leaves_it() {
     let fixture = Fixture::new();
     let mut app = fixture.app();

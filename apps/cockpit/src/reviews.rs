@@ -507,7 +507,7 @@ impl Reviews {
                     fetched_at: now(),
                 },
             );
-            crate::app::refresh::background_changed();
+            crate::background::background_changed();
         });
         true
     }
