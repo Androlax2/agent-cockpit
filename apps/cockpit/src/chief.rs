@@ -3,6 +3,7 @@
 pub mod bundle;
 pub mod inbox;
 pub mod store;
+pub mod summary;
 pub mod view;
 pub use store::reconcile_todos;
 

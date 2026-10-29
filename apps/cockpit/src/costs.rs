@@ -4,7 +4,7 @@
 //! replies join them from its database (archive_opencode), keyed `opencode:<message id>`.
 
 use crate::chief::store::{self as chief_store, ChiefDigest};
-use crate::chief::view as chief_view;
+use crate::chief::summary as chief_view;
 use crate::paths;
 use crate::reviews;
 use crate::sessions;

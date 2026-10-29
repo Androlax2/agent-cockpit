@@ -4,6 +4,7 @@ pub mod client;
 pub mod links;
 pub mod sidebar;
 pub mod store;
+pub mod summary;
 pub mod view;
 
 pub use cockpit_protocol::teams::*;

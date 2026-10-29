@@ -1,6 +1,9 @@
 //! The plan's usage, as claude.ai's usage page shows it, from the cache claude-usage.sh keeps;
 //! the full report for the session pane; and the 80 % / 95 % budget banners.
 
+mod terminal;
+pub use terminal::report_forever;
+
 use crate::paths;
 use crate::util::{self, now, parse_time, read_json};
 use chrono::{DateTime, Duration, Local, Utc};
@@ -774,19 +777,6 @@ pub fn report_lines(columns: usize) -> Vec<String> {
         ));
     }
     lines
-}
-
-/// cockpit usage: redraws the report until the pane is replaced.
-pub fn report_forever() -> ! {
-    loop {
-        let columns = crossterm::terminal::size()
-            .map(|(columns, _)| columns as usize)
-            .unwrap_or(80);
-        println!("\x1b[2J\x1b[H{}", report_lines(columns).join("\n"));
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
-        std::thread::sleep(std::time::Duration::from_secs(30));
-    }
 }
 
 /// Runs claude-usage.sh every 5 minutes so the cache stays fresh.
