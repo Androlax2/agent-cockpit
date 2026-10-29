@@ -45,9 +45,15 @@ def main():
         return 2
     lock_folder, holder, command = Path(sys.argv[1]), sys.argv[2], sys.argv[3:]
     while True:
-        admission = subprocess.call([sys.executable, str(AGENT_BUILD), "--wait-gate", f"the full test run of {holder}"])
+        admission = subprocess.call(
+            [sys.executable, str(AGENT_BUILD), "--wait-gate", f"the full test run of {holder}"]
+        )
         if admission != 0:
-            print(f"full-test-lock: the admission gate failed (exit {admission}); not running.", file=sys.stderr, flush=True)
+            print(
+                f"full-test-lock: the admission gate failed (exit {admission}); not running.",
+                file=sys.stderr,
+                flush=True,
+            )
             return 128 - admission if admission < 0 else admission
         try:
             lock = open_lock(lock_folder)
@@ -77,10 +83,18 @@ def main():
             break
         os.close(lock)
         if still_admitted != 75:
-            print(f"full-test-lock: the admission check failed (exit {still_admitted}); not running.", file=sys.stderr, flush=True)
+            print(
+                f"full-test-lock: the admission check failed (exit {still_admitted}); not running.",
+                file=sys.stderr,
+                flush=True,
+            )
             return 128 - still_admitted if still_admitted < 0 else still_admitted
-        print("full-test-lock: new heavy jobs became held while this run waited for the lock; "
-              "it gave the lock back and waits again.", file=sys.stderr, flush=True)
+        print(
+            "full-test-lock: new heavy jobs became held while this run waited for the lock; "
+            "it gave the lock back and waits again.",
+            file=sys.stderr,
+            flush=True,
+        )
     os.ftruncate(lock, 0)
     os.pwrite(lock, f"{holder}\n".encode(), 0)
     # The command does not inherit the lock: a daemon a test leaves behind must not hold it.
@@ -90,7 +104,7 @@ def main():
 def admission_marker():
     """<pid>:<start time> of this run: agent-build counts it while this run is an ancestor."""
     text = Path(f"/proc/{os.getpid()}/stat").read_text()
-    return f"{os.getpid()}:{text[text.rindex(')') + 2:].split()[19]}"
+    return f"{os.getpid()}:{text[text.rindex(')') + 2 :].split()[19]}"
 
 
 if __name__ == "__main__":

@@ -21,14 +21,25 @@ def write_gate(home, state, **fields):
     path = home / ".cache/agent-shims/heavy-gate.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     now = time.time()
-    path.write_text(json.dumps({"version": 1, "state": state, "reason": f"test {state}", "since": now,
-                                "updated_at": now, "boot_id": BOOT_ID} | fields))
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state": state,
+                "reason": f"test {state}",
+                "since": now,
+                "updated_at": now,
+                "boot_id": BOOT_ID,
+            }
+            | fields
+        )
+    )
 
 
 def marker_of_this_process():
     """An admitted ancestor for a run this test starts."""
     text = Path(f"/proc/{os.getpid()}/stat").read_text()
-    return f"{os.getpid()}:{text[text.rindex(')') + 2:].split()[19]}"
+    return f"{os.getpid()}:{text[text.rindex(')') + 2 :].split()[19]}"
 
 
 class FullTestLockTests(unittest.TestCase):
@@ -45,22 +56,34 @@ class FullTestLockTests(unittest.TestCase):
         """A byte copy of the committed lock helper, next to an adapter in agent-build's place: the
         shipped helper finds it through its own unchanged parents[1] rule, and the adapter runs the
         shipped agent-build with the fixture home as its account home."""
-        committed = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD:tools/full-test-lock.py"],
-                                   capture_output=True, text=True, check=True).stdout.strip()
-        working = subprocess.run(["git", "hash-object", str(LOCK)], capture_output=True, text=True, check=True).stdout.strip()
+        committed = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD:tools/full-test-lock.py"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        working = subprocess.run(
+            ["git", "hash-object", str(LOCK)], capture_output=True, text=True, check=True
+        ).stdout.strip()
         if working != committed:
-            raise AssertionError(f"tools/full-test-lock.py is {working}, not the committed {committed}: commit or restore it")
+            raise AssertionError(
+                f"tools/full-test-lock.py is {working}, not the committed {committed}: commit or restore it"
+            )
         layout = self.root / "layout"
         lock = layout / "tools/full-test-lock.py"
         lock.parent.mkdir(parents=True)
         lock.write_bytes(LOCK.read_bytes())
-        copied = subprocess.run(["git", "hash-object", str(lock)], capture_output=True, text=True, check=True).stdout.strip()
+        copied = subprocess.run(
+            ["git", "hash-object", str(lock)], capture_output=True, text=True, check=True
+        ).stdout.strip()
         if copied != committed:
             raise AssertionError(f"the copied lock helper is {copied}, not {committed}")
         adapter = layout / "config/bin/.local/bin/agent-build"
         adapter.parent.mkdir(parents=True)
-        adapter.write_text(f"import os, sys\nos.execv(sys.executable, [sys.executable, {str(HARNESS)!r}, "
-                           f"{str(self.home)!r}, 'agent-build', *sys.argv[1:]])\n")
+        adapter.write_text(
+            f"import os, sys\nos.execv(sys.executable, [sys.executable, {str(HARNESS)!r}, "
+            f"{str(self.home)!r}, 'agent-build', *sys.argv[1:]])\n"
+        )
         return lock
 
     def start(self, holder, script, admitted=False):
@@ -165,12 +188,17 @@ class FullTestLockTests(unittest.TestCase):
     def test_a_fresh_run_waits_for_admission_without_holding_the_lock(self):
         write_gate(self.home, "gaming")
         started = self.root / "command-started"
-        waiting = self.start("/clones/gaming", f"from pathlib import Path; Path({str(started)!r}).touch(); print('ran')")
+        waiting = self.start(
+            "/clones/gaming",
+            f"from pathlib import Path; Path({str(started)!r}).touch(); print('ran')",
+        )
         self.addCleanup(lambda: waiting.poll() is None and waiting.kill())
         time.sleep(1)
         self.assertIsNone(waiting.poll(), "the run did not wait for admission")
         self.assertFalse(started.exists())
-        self.assertTrue(self.lock_is_free(), "a run waiting for admission holds the shared test lock")
+        self.assertTrue(
+            self.lock_is_free(), "a run waiting for admission holds the shared test lock"
+        )
         write_gate(self.home, "clear")
         output, errors = waiting.communicate(timeout=30)
         self.assertEqual((waiting.returncode, output), (0, "ran\n"), errors)
@@ -180,7 +208,10 @@ class FullTestLockTests(unittest.TestCase):
     def test_a_run_queued_for_the_lock_checks_admission_again_and_gives_the_lock_back(self):
         holding, release = self.start_holder("/clones/first")
         started = self.root / "second-started"
-        queued = self.start("/clones/second", f"from pathlib import Path; Path({str(started)!r}).touch(); print('second ran')")
+        queued = self.start(
+            "/clones/second",
+            f"from pathlib import Path; Path({str(started)!r}).touch(); print('second ran')",
+        )
         self.addCleanup(lambda: queued.poll() is None and queued.kill())
         time.sleep(0.5)
         self.assertIsNone(queued.poll(), "the second run did not queue for the lock")
@@ -198,7 +229,9 @@ class FullTestLockTests(unittest.TestCase):
 
     def test_a_run_inside_an_admitted_job_does_not_wait(self):
         write_gate(self.home, "gaming")
-        running = self.start("/clones/nested", "import sys; print('ran'); sys.exit(5)", admitted=True)
+        running = self.start(
+            "/clones/nested", "import sys; print('ran'); sys.exit(5)", admitted=True
+        )
         self.addCleanup(lambda: running.poll() is None and running.kill())
         output, errors = running.communicate(timeout=10)
         self.assertEqual((running.returncode, output), (5, "ran\n"), errors)
@@ -206,11 +239,13 @@ class FullTestLockTests(unittest.TestCase):
     def test_builds_started_while_holding_the_lock_never_wait_when_a_game_starts(self):
         go = self.root / "go"
         started = self.root / "suite-started"
-        script = (f"import os, subprocess, sys, time\n"
-                  f"open({str(started)!r}, 'w').close()\n"
-                  f"while not os.path.exists({str(go)!r}): time.sleep(0.02)\n"
-                  f"sys.exit(subprocess.call([sys.executable, {str(HARNESS)!r}, {str(self.home)!r}, 'agent-build', "
-                  f"sys.executable, '-c', 'print(\\'nested ran\\')']))")
+        script = (
+            f"import os, subprocess, sys, time\n"
+            f"open({str(started)!r}, 'w').close()\n"
+            f"while not os.path.exists({str(go)!r}): time.sleep(0.02)\n"
+            f"sys.exit(subprocess.call([sys.executable, {str(HARNESS)!r}, {str(self.home)!r}, 'agent-build', "
+            f"sys.executable, '-c', 'print(\\'nested ran\\')']))"
+        )
         running = self.start("/clones/admitted", script)
         self.addCleanup(lambda: running.poll() is None and running.kill())
         self.wait_for(started.exists)
