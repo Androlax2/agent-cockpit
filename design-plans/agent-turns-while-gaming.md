@@ -10,7 +10,7 @@ diagnostics, not during-game continuation.
 Two different things are called "gaming protection" today:
 
 | | Agent-turn admission | Heavy local-job protection |
-|---|---|---|
+| --- | --- | --- |
 | What it guards | Whether an idle agent session is handed a prompt (Chief message, todo gift, answer, wake, queue start) | CPU, disk, RAM, GPU used by builds, tests and containers on this machine |
 | Cost of one admission | One LLM turn: network I/O and a node/bun process mostly waiting on the API. Light locally. | Whatever the turn *runs*: `cargo`, `make`, `pnpm`, `pytest`, Docker builds. Can be heavy. |
 | Gaming signal | Focus-based: `gamemode` submap or the *focused* window is a game (`apps/cockpit/src/util.rs:355`, `apps/osd/src/registry.rs` `gaming()`, 2 s cache). Alt-tab ends it. | Lifetime-based: any game window open, plus 30 s (`config/bin/.local/bin/cockpit-game-guard`) |
@@ -25,7 +25,7 @@ must be the thing that gets limited.
 Admission gates that currently refuse during games (line numbers on `origin/main` 1ca1228):
 
 | # | File:line | Gate | Proposed under C |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | G1 | `apps/osd/src/chief.rs:137`, `:141` (`workers_among`) | Pushes `"gaming"` into `blocked_by` (focus report and the daemon's own check). It can appear twice. | Keep pushing it. The reason stays visible to the Chief. |
 | G2 | `apps/cockpit/src/chief/store.rs:1539` (`claim`, `chief_message`) | Tolerated blockers: `live_queued_admission_verification_required`, `legacy_work_in_progress` | Also tolerate `gaming`, **only when the job guard is confirmed active** (§3). |
 | G3 | `store.rs:1631`, `:1634` (`ANSWER_IGNORES`, `FORM_REPLY_IGNORES`) | Theo's answers and corrections and the Chief's answers wait during games | Also tolerate `gaming` (Theo's own answers are the strongest case), behind the same guard check. |
@@ -35,6 +35,7 @@ Admission gates that currently refuse during games (line numbers on `origin/main
 | G7 | `SESSION_START_OPEN_MS` (`apps/cockpit/src/chief.rs:141`), used as the Chief-message expiry (`store.rs` `request_message`) | A message held longer than 10 minutes is cancelled | Unchanged under C, since messages would no longer be held for gaming. Alternative A (pause the clock while gaming) is not proposed. |
 
 Gates that stay untouched in every variant:
+
 - admission verification (`live_queued_admission_verification_required` is already tolerated and stays as it is);
 - the active Chief grant and epoch;
 - the exact recipient identity and runtime (a restart lapses the message);
