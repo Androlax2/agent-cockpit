@@ -289,6 +289,29 @@ fn repeated_team_polls_reuse_one_live_session_pass() {
 }
 
 #[test]
+fn empty_receive_polls_do_not_rewrite_every_workers_observation() {
+    use cockpit::teams::AgentAction;
+    let mut bench = team_bench();
+    let project = bench.registry.sessions[SESSION_A].cwd.clone();
+    for peer in 40..68 {
+        let session = format!("{peer:08x}-0000-4000-8000-000000000000");
+        bench.world.borrow_mut().sender_targets.insert(peer, target(&[("tmux_pane", &format!("%{peer}"))]));
+        bench.world.borrow_mut().sender_directories.insert(peer, project.clone());
+        bench.world.borrow_mut().sender_runtimes.insert(peer, format!("runtime-{peer}"));
+        let report = parse_session(&json!({"session":session,"agent":"claude","project":"project-a","cwd":project,"state":"waiting"}).to_string()).unwrap();
+        bench.registry.report_from(report, peer).unwrap();
+    }
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    let writes = bench.registry.teams.as_ref().unwrap().total_changes();
+    for _ in 0..20 {
+        assert!(crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap().result.unwrap().is_null());
+    }
+    let poll_writes = bench.registry.teams.as_ref().unwrap().total_changes() - writes;
+    assert!(poll_writes < 100, "20 empty polls with 31 sessions made {poll_writes} database writes; budget <100");
+}
+
+#[test]
 fn team_poll_cache_expires_after_one_second() {
     use cockpit::teams::AgentAction;
     let mut bench = team_bench();

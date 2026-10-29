@@ -366,8 +366,14 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
     let form_turn = registry.sessions.get(&sender.session_id)
         .filter(|entry| entry.state == "needs-you" && !entry.needs_input)
         .and_then(|entry| Some((format!("{}:{}", entry.state, entry.since), crate::chief::stop_boundary(registry, &sender, now_ms())?)));
-    // Not observed here: the Receive below records this observation right before its claims.
-    let chief_live = if matches!(action, AgentAction::Receive) { crate::chief::workers_among(registry, live.clone(), now_ms(), false)? } else { Vec::new() };
+    // The tick maintains global observations; empty inbox polls must not repeat that work for every session.
+    let has_chief_delivery = matches!(action, AgentAction::Receive)
+        && (turn.is_some() || answer_turn.is_some() || form_turn.is_some())
+        && registry.teams.as_ref().expect("live_sessions opens the protected store").query_row(
+            "SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?1 AND state='queued')
+                OR EXISTS(SELECT 1 FROM chief_session_starts WHERE worker=?1 AND worker_runtime=?2 AND state='requested')",
+            (&sender.session_id, &sender.runtime), |row| row.get::<_, bool>(0))?;
+    let chief_live = if has_chief_delivery { crate::chief::workers_among(registry, live.clone(), now_ms(), false)? } else { Vec::new() };
     let is_subscription_held = matches!(action, AgentAction::Receive)
         && cockpit::subscription_fallback::message_target(&sender.session_id)
             .map_err(|error| TeamError::new(ErrorCode::Unavailable, format!("subscription messaging is paused: {error}")))?.1;
@@ -405,7 +411,7 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
             }
         }
     }
-    let gift_ready = matches!(action,AgentAction::Receive) && turn.is_some()
+    let gift_ready = has_chief_delivery && turn.is_some()
         && crate::chief::legacy_auto_ready(registry,Some(&sender.session_id),&sender.project,false).is_ok();
     let result = database(registry, &live).and_then(|connection| match &action {
         AgentAction::Context => Ok(TeamReply { request_id: "context".into(), result: Ok(store::context(connection, &sender)?) }),
@@ -417,27 +423,27 @@ pub fn request(registry: &mut Registry, peer: u32, action: AgentAction) -> Resul
         AgentAction::Send { .. } => store::accept(connection, &sender, &action, now_ms()),
         AgentAction::Receive => {
             store::expire(connection, now_ms())?;
-            cockpit::chief::store::observe(connection, &chief_live, now_ms())?;
+            if has_chief_delivery { cockpit::chief::store::observe(connection, &chief_live, now_ms())?; }
             if is_subscription_held { return Ok(TeamReply { request_id:"receive".into(),result:Ok(Value::Null) }); }
             // The native Receive handoff shares the TODO closure boundary.
             let mut dispatch = match &turn { Some(turn) => store::claim(connection, &sender, turn, &live, now_ms())?, None => None };
             // Theo's correction goes out before any Chief answer.
-            if let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
+            if has_chief_delivery && let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
                 dispatch = cockpit::chief::store::claim_correction(connection, &sender, idle_turn, boundary, now_ms())?;
             }
-            if let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
+            if has_chief_delivery && let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
                 dispatch = cockpit::chief::store::claim_answer(connection, &sender, idle_turn, boundary, now_ms())?;
             }
-            if let (None, Some((idle_turn, boundary))) = (&dispatch, &form_turn) {
+            if has_chief_delivery && let (None, Some((idle_turn, boundary))) = (&dispatch, &form_turn) {
                 dispatch = cockpit::chief::store::claim_form_reply(connection, &sender, idle_turn, boundary, now_ms())?;
             }
-            if let (None, Some(turn)) = (&dispatch, &turn) {
+            if has_chief_delivery && let (None, Some(turn)) = (&dispatch, &turn) {
                 dispatch = cockpit::chief::store::claim_check(connection, &sender, turn, now_ms())?;
             }
             if gift_ready && let (None,Some(turn))=(&dispatch,&turn) {
                 dispatch=cockpit::chief::store::claim_todo_gift(connection,&sender,turn,now_ms())?;
             }
-            if let (None, Some(turn)) = (&dispatch, &turn) {
+            if has_chief_delivery && let (None, Some(turn)) = (&dispatch, &turn) {
                 dispatch = cockpit::chief::store::claim(connection, &sender, turn, now_ms())?;
             }
             Ok(TeamReply { request_id: "receive".into(), result: Ok(dispatch.map_or(Value::Null, |dispatch| json!({
