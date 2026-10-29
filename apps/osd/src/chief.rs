@@ -239,7 +239,8 @@ pub fn host(registry: &mut Registry, action: &ChiefHostAction) -> Result<TeamRep
 }
 
 pub fn snapshot(registry: &mut Registry, after: i64, limit: usize, generation: Option<&str>) -> Result<Value, TeamError> {
-    let live = workers_at(registry,teams::now_ms(),false)?;
+    let sessions = teams::polled_live_sessions(registry)?;
+    let live = workers_among(registry,sessions,teams::now_ms(),false)?;
     let mut snapshot = store::snapshot_page(registry.teams.as_ref().expect("opened above"), &live, after, limit, generation, teams::now_ms())?;
     let now = teams::now_ms();
     for record in snapshot["records"].as_array_mut().expect("host snapshot records") {

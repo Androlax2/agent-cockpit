@@ -262,18 +262,17 @@ fn team_requests_reuse_the_todo_list_while_todo_json_is_unchanged() {
     assert_eq!(bench.registry.resolved_todos.loads, loads);
 }
 
-/// Budget: sessions poll these every few seconds, so each pays for one live-session pass, not more
-/// (a Receive ran two on 2026-10-27, the largest share of osd's CPU).
+/// Only identity discovery is cached; explicit context requests still force a fresh pass.
 #[test]
-fn each_polled_team_request_runs_one_live_session_pass() {
+fn only_explicit_team_requests_refresh_a_recent_live_session_pass() {
     use cockpit::teams::AgentAction;
-    for (peer, action) in [(10, AgentAction::Receive), (10, AgentAction::Context),
-                           (20, AgentAction::NativeTelemetry { sequence: 1, counts: None })] {
+    for (peer, action, expected_passes) in [(10, AgentAction::Receive, 0), (10, AgentAction::Context, 1),
+                           (20, AgentAction::NativeTelemetry { sequence: 1, counts: None }, 0)] {
         let mut bench = team_bench();
         crate::teams::live_sessions(&mut bench.registry).unwrap();
         let passes = bench.registry.live_session_passes;
         let _ = crate::teams::request(&mut bench.registry, peer, action.clone());
-        assert_eq!(bench.registry.live_session_passes - passes, 1, "{action:?}");
+        assert_eq!(bench.registry.live_session_passes - passes, expected_passes, "{action:?}");
     }
 }
 
@@ -350,15 +349,78 @@ fn non_polling_team_requests_always_refresh_liveness() {
 }
 
 #[test]
-fn host_requests_invalidate_the_next_team_poll() {
+fn host_mutations_invalidate_the_next_team_poll() {
+    use cockpit::teams::{AgentAction, HostRequest};
+    for is_native_observation in [false, true] {
+        let mut bench = team_bench();
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+        let request = if is_native_observation {
+            let session = bench.registry.live_session_cache.as_ref().unwrap().1.iter()
+                .find(|session| session.session_id == OPENCODE_SESSION).unwrap().clone();
+            HostRequest::ChiefNativeObservation { session, idle: true, pending_input: false, observed_at_ms: crate::teams::now_ms() }
+        } else {
+            HostRequest::ChiefFocus { viewed: String::new(), workspace_active: false, gaming: false }
+        };
+        crate::teams::host(&mut bench.registry, 0, request).unwrap().result.unwrap();
+        let passes = bench.registry.live_session_passes;
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+        assert_eq!(bench.registry.live_session_passes - passes, 1, "native observation: {is_native_observation}");
+    }
+}
+
+#[test]
+fn mixed_snapshot_and_team_polls_share_the_one_second_budget() {
+    use cockpit::teams::{AgentAction, HostRequest};
+    let mut bench = team_bench();
+    let passes = bench.registry.live_session_passes;
+    let started = std::time::Instant::now();
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    crate::chief::tick(&mut bench.registry, crate::teams::now_ms()).unwrap();
+    for sequence in 1..=9 {
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap().result.unwrap();
+        crate::teams::request(&mut bench.registry, 20, AgentAction::NativeTelemetry { sequence, counts: None }).unwrap().result.unwrap();
+        if sequence % 3 == 0 {
+            crate::teams::host(&mut bench.registry, 0, HostRequest::ChiefSnapshot {
+                after: 0, limit: 50, generation: None,
+            }).unwrap().result.unwrap();
+        }
+        if sequence == 9 {
+            crate::teams::host(&mut bench.registry, 0, HostRequest::Snapshot).unwrap().result.unwrap();
+        }
+    }
+    // Slow CI may cross a cache expiry; each read still must fit one pass per elapsed second.
+    let budget = 2 + started.elapsed().as_secs();
+    assert!(bench.registry.live_session_passes - passes <= budget,
+        "mixed polls ran {} full passes; budget {budget}", bench.registry.live_session_passes - passes);
+}
+
+#[test]
+fn chief_snapshot_does_not_reuse_worker_readiness() {
     use cockpit::teams::{AgentAction, HostRequest};
     let mut bench = team_bench();
     crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
-    crate::teams::host(&mut bench.registry, 0, HostRequest::Snapshot).unwrap();
-    let passes = bench.registry.live_session_passes;
-    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
-    crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
-    assert_eq!(bench.registry.live_session_passes - passes, 1);
+    bench.registry.sessions.get_mut(SESSION_A).unwrap().state = "working".into();
+    let snapshot = crate::teams::host(&mut bench.registry, 0, HostRequest::ChiefSnapshot {
+        after: 0, limit: 50, generation: None,
+    }).unwrap().result.unwrap();
+    let worker = snapshot["records"].as_array().unwrap().iter()
+        .find(|record| record["kind"] == "worker" && record["session"]["session_id"] == SESSION_A).unwrap();
+    assert!(worker["blocked_by"].as_array().unwrap().contains(&json!("busy")));
+}
+
+#[test]
+fn snapshots_drop_exited_runtimes_when_the_identity_cache_expires() {
+    use cockpit::teams::{AgentAction, HostRequest};
+    for request in [HostRequest::Snapshot, HostRequest::ChiefSnapshot { after: 0, limit: 50, generation: None }] {
+        let mut bench = team_bench();
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+        bench.world.borrow_mut().sender_runtimes.remove(&10);
+        bench.registry.live_session_cache.as_mut().unwrap().0 = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        let snapshot = crate::teams::host(&mut bench.registry, 0, request).unwrap().result.unwrap();
+        let records = snapshot.get("sessions").or_else(|| snapshot.get("records")).unwrap().as_array().unwrap();
+        assert!(!records.iter().any(|record| record["session_id"] == SESSION_A || record["session"]["session_id"] == SESSION_A));
+    }
 }
 
 #[test]
