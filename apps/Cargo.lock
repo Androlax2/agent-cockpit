@@ -229,6 +229,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "cockpit-protocol",
  "crossterm",
  "libc",
  "ratatui",
@@ -251,6 +252,15 @@ dependencies = [
  "chrono",
  "cockpit",
  "regex",
+ "serde_json",
+]
+
+[[package]]
+name = "cockpit-protocol"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
  "serde_json",
 ]
 

@@ -34,22 +34,29 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), TeamError> {
         epoch TEXT NOT NULL, expires_at INTEGER NOT NULL, state TEXT NOT NULL,
         replacement_runtime TEXT, started_at INTEGER, error TEXT NOT NULL DEFAULT '', note_recorded INTEGER NOT NULL DEFAULT 0);
         CREATE UNIQUE INDEX IF NOT EXISTS one_sleep_continuation ON sleep_permits(session_id)
-            WHERE state IN ('prepared','launch_requested','waking','failed');")?;
+            WHERE state IN ('prepared','launch_requested','waking','failed');").map_err(storage_error)?;
     let columns = connection
-        .prepare("PRAGMA table_info(sleep_permits)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?;
+        .prepare("PRAGMA table_info(sleep_permits)")
+        .map_err(storage_error)?
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     if !columns.iter().any(|name| name == "note_recorded") {
-        connection.execute(
-            "ALTER TABLE sleep_permits ADD COLUMN note_recorded INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
+        connection
+            .execute(
+                "ALTER TABLE sleep_permits ADD COLUMN note_recorded INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(storage_error)?;
     }
     if !columns.iter().any(|name| name == "kind") {
-        connection.execute(
-            "ALTER TABLE sleep_permits ADD COLUMN kind TEXT NOT NULL DEFAULT 'sleep'",
-            [],
-        )?;
+        connection
+            .execute(
+                "ALTER TABLE sleep_permits ADD COLUMN kind TEXT NOT NULL DEFAULT 'sleep'",
+                [],
+            )
+            .map_err(storage_error)?;
     }
     Ok(())
 }
@@ -78,8 +85,8 @@ fn read_permit(row: &rusqlite::Row<'_>) -> rusqlite::Result<SleepPermit> {
 }
 
 pub fn permit(connection: &Connection, token: &str) -> Result<Option<SleepPermit>, TeamError> {
-    Ok(connection.query_row("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded,kind
-        FROM sleep_permits WHERE token=?1", [token], read_permit).optional()?)
+    connection.query_row("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded,kind
+        FROM sleep_permits WHERE token=?1", [token], read_permit).optional().map_err(storage_error)
 }
 
 fn membership_matches(
@@ -87,15 +94,15 @@ fn membership_matches(
     permit: &SleepPermit,
     runtime: &str,
 ) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM members m JOIN teams t ON t.task_key=m.task_key
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM members m JOIN teams t ON t.task_key=m.task_key
         WHERE m.session_id=?1 AND m.agent=?2 AND t.project=?3 AND m.runtime=?4 AND m.task_key=?5 AND m.role=?6 AND m.epoch=?7)",
-        params![permit.session_id, permit.agent, permit.project, runtime, permit.task_key, role_name(permit.role), permit.epoch], |row| row.get(0))?)
+        params![permit.session_id, permit.agent, permit.project, runtime, permit.task_key, role_name(permit.role), permit.epoch], |row| row.get(0)).map_err(storage_error)
 }
 
 pub fn paused(connection: &Connection, session: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM sleep_permits p JOIN members m ON m.session_id=p.session_id
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM sleep_permits p JOIN members m ON m.session_id=p.session_id
         AND m.task_key=p.task_key AND m.epoch=p.epoch AND m.runtime=p.old_runtime AND m.agent=p.agent AND m.role=p.role
-        WHERE p.session_id=?1 AND p.state IN ('prepared','launch_requested','waking','failed'))", [session], |row| row.get(0))?)
+        WHERE p.session_id=?1 AND p.state IN ('prepared','launch_requested','waking','failed'))", [session], |row| row.get(0)).map_err(storage_error)
 }
 
 pub(crate) fn guard_sender(connection: &Connection, session: &str) -> Result<(), TeamError> {
@@ -147,10 +154,12 @@ fn recover_dead_binding(
     member: &VerifiedSession,
     is_live: &dyn Fn(&str) -> bool,
 ) -> Result<bool, TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let bound: Option<(String, String, String, String, String)> = transaction.query_row(
         "SELECT m.task_key,m.epoch,m.agent,m.runtime,t.project FROM members m JOIN teams t ON t.task_key=m.task_key WHERE m.session_id=?1",
-        [&member.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
+        [&member.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional().map_err(storage_error)?;
     let Some((task_key, epoch, agent, runtime, project)) = bound else {
         return Ok(false);
     };
@@ -165,10 +174,10 @@ fn recover_dead_binding(
         return Ok(false);
     }
     transaction.execute("UPDATE members SET runtime=?2,last_idle_turn=NULL WHERE session_id=?1 AND epoch=?3 AND runtime=?4",
-        params![member.session_id, member.runtime, epoch, runtime])?;
+        params![member.session_id, member.runtime, epoch, runtime]).map_err(storage_error)?;
     transaction.execute("UPDATE messages SET recipient_runtime=?2 WHERE scope_kind='team' AND recipient=?1 AND task_key=?3 AND recipient_epoch=?4
-        AND recipient_runtime=?5 AND state='queued'", params![member.session_id, member.runtime, task_key, epoch, runtime])?;
-    transaction.commit()?;
+        AND recipient_runtime=?5 AND state='queued'", params![member.session_id, member.runtime, task_key, epoch, runtime]).map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(true)
 }
 
@@ -180,10 +189,12 @@ fn prepare_continuation(
     kind: &str,
     lifetime_ms: i64,
 ) -> Result<Option<String>, TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let identity: Option<(String, String, String, String, String, String)> = transaction.query_row(
         "SELECT m.task_key,m.role,m.epoch,m.agent,m.runtime,t.project FROM members m JOIN teams t ON t.task_key=m.task_key WHERE m.session_id=?1",
-        [&member.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional()?;
+        [&member.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional().map_err(storage_error)?;
     let Some((task_key, role, epoch, agent, runtime, project)) = identity else {
         return Ok(None);
     };
@@ -205,7 +216,7 @@ fn prepare_continuation(
         ));
     }
     let existing: Option<String> = transaction.query_row("SELECT token FROM sleep_permits WHERE session_id=?1 AND state IN ('prepared','launch_requested','waking','failed')",
-        [&member.session_id], |row| row.get(0)).optional()?;
+        [&member.session_id], |row| row.get(0)).optional().map_err(storage_error)?;
     if let Some(token) = existing {
         let existing = permit(&transaction, &token)?.expect("selected permit");
         if existing.state == "prepared"
@@ -228,7 +239,7 @@ fn prepare_continuation(
         (sender=?2 OR recipient=?2) AND state IN ('queued','ready','submitting','uncertain')
         AND NOT (?3 AND scope_kind='team' AND task_key=?1 AND state='queued'))
         OR EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?2 AND state IN ('queued','submitting','uncertain'))",
-        params![task_key, member.session_id, carries_queued_team_messages], |row| row.get(0))?;
+        params![task_key, member.session_id, carries_queued_team_messages], |row| row.get(0)).map_err(storage_error)?;
     if pending {
         return Err(TeamError::new(
             ErrorCode::Conflict,
@@ -241,24 +252,28 @@ fn prepare_continuation(
         .ok_or_else(|| TeamError::new(ErrorCode::Invalid, "invalid sleep time"))?;
     transaction.execute("INSERT INTO sleep_permits (token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,kind)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'prepared',?11)",
-        params![token, member.session_id, agent, project, checkout, runtime, task_key, role, epoch, expires_at, kind])?;
-    transaction.commit()?;
+        params![token, member.session_id, agent, project, checkout, runtime, task_key, role, epoch, expires_at, kind]).map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(Some(token))
 }
 
 pub fn cancel(connection: &mut Connection, session: &str, token: &str) -> Result<(), TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let Some(permit) = permit(&transaction, token)? else {
         return Ok(());
     };
     if permit.session_id != session {
         return Ok(());
     }
-    let changed = transaction.execute(
-        "UPDATE sleep_permits SET state='cancelled' WHERE session_id=?1 AND token=?2
+    let changed = transaction
+        .execute(
+            "UPDATE sleep_permits SET state='cancelled' WHERE session_id=?1 AND token=?2
         AND state IN ('prepared','launch_requested','waking','failed')",
-        params![session, token],
-    )?;
+            params![session, token],
+        )
+        .map_err(storage_error)?;
     if changed == 1 && membership_matches(&transaction, &permit, &permit.old_runtime)? {
         schedule_qa(
             &transaction,
@@ -266,7 +281,7 @@ pub fn cancel(connection: &mut Connection, session: &str, token: &str) -> Result
             (crate::util::now() * 1000.0) as i64,
         )?;
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
@@ -277,7 +292,9 @@ pub fn bind(
     checkout: &str,
     now_ms: i64,
 ) -> Result<bool, TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let Some(permit) = permit(&transaction, token)? else {
         return Ok(false);
     };
@@ -307,25 +324,29 @@ pub fn bind(
         return Ok(false);
     }
     transaction.execute("UPDATE members SET runtime=?2,last_idle_turn=NULL WHERE session_id=?1 AND epoch=?3 AND runtime=?4",
-        params![permit.session_id, replacement.runtime, permit.epoch, permit.old_runtime])?;
+        params![permit.session_id, replacement.runtime, permit.epoch, permit.old_runtime]).map_err(storage_error)?;
     transaction.execute("UPDATE messages SET recipient_runtime=?2 WHERE scope_kind='team' AND recipient=?1 AND task_key=?3 AND recipient_epoch=?4
-        AND recipient_runtime=?5 AND state='queued'", params![permit.session_id, replacement.runtime, permit.task_key, permit.epoch, permit.old_runtime])?;
-    transaction.execute(
-        "UPDATE sleep_permits SET state='bound',replacement_runtime=?2 WHERE token=?1",
-        params![token, replacement.runtime],
-    )?;
+        AND recipient_runtime=?5 AND state='queued'", params![permit.session_id, replacement.runtime, permit.task_key, permit.epoch, permit.old_runtime]).map_err(storage_error)?;
+    transaction
+        .execute(
+            "UPDATE sleep_permits SET state='bound',replacement_runtime=?2 WHERE token=?1",
+            params![token, replacement.runtime],
+        )
+        .map_err(storage_error)?;
     schedule_qa(&transaction, &permit.task_key, now_ms)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(true)
 }
 
 /// Protected records for host note reconciliation; failed launches are included, never retried.
 pub fn prepared_records(connection: &Connection) -> Result<Vec<SleepPermit>, TeamError> {
     let mut statement = connection.prepare("SELECT token,session_id,agent,project,checkout,old_runtime,task_key,role,epoch,expires_at,state,replacement_runtime,note_recorded,kind
-        FROM sleep_permits WHERE state IN ('prepared','launch_requested','waking','failed') ORDER BY expires_at,token")?;
-    Ok(statement
-        .query_map([], read_permit)?
-        .collect::<Result<_, _>>()?)
+        FROM sleep_permits WHERE state IN ('prepared','launch_requested','waking','failed') ORDER BY expires_at,token").map_err(storage_error)?;
+    statement
+        .query_map([], read_permit)
+        .map_err(storage_error)?
+        .collect::<Result<_, _>>()
+        .map_err(storage_error)
 }
 
 /// Host acknowledgement that the matching protected sleep note was durably written before exit.
@@ -334,7 +355,7 @@ pub fn record_note(
     session: &str,
     token: &str,
 ) -> Result<(), TeamError> {
-    let changed = connection.execute("UPDATE sleep_permits SET note_recorded=1 WHERE session_id=?1 AND token=?2 AND state='prepared'", params![session, token])?;
+    let changed = connection.execute("UPDATE sleep_permits SET note_recorded=1 WHERE session_id=?1 AND token=?2 AND state='prepared'", params![session, token]).map_err(storage_error)?;
     if changed != 1 {
         return Err(TeamError::new(
             ErrorCode::Conflict,
@@ -359,7 +380,7 @@ pub fn pending_wakes(connection: &Connection, now_ms: i64) -> Result<Vec<SleepPe
             WHERE q.scope_kind='team' AND q.recipient=?1 AND q.task_key=?2 AND q.recipient_epoch=?3 AND q.recipient_runtime=?4
             AND q.state='queued' AND q.next_at<=?5 AND NOT EXISTS(SELECT 1 FROM messages u
                 WHERE u.recipient=q.recipient AND u.recipient_runtime=q.recipient_runtime AND u.state IN ('submitting','uncertain')))",
-            params![permit.session_id, permit.task_key, permit.epoch, permit.old_runtime, now_ms], |row| row.get(0))?;
+            params![permit.session_id, permit.task_key, permit.epoch, permit.old_runtime, now_ms], |row| row.get(0)).map_err(storage_error)?;
         if deliverable {
             wakes.push(permit);
         }
@@ -374,7 +395,9 @@ pub fn reserve_wake(
     token: &str,
     now_ms: i64,
 ) -> Result<bool, TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let Some(permit) = permit(&transaction, token)? else {
         return Ok(false);
     };
@@ -392,11 +415,13 @@ pub fn reserve_wake(
     {
         return Ok(false);
     }
-    transaction.execute(
-        "UPDATE sleep_permits SET state='launch_requested',started_at=?2 WHERE token=?1",
-        params![token, now_ms],
-    )?;
-    transaction.commit()?;
+    transaction
+        .execute(
+            "UPDATE sleep_permits SET state='launch_requested',started_at=?2 WHERE token=?1",
+            params![token, now_ms],
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(true)
 }
 
@@ -406,7 +431,9 @@ pub fn begin_wake(
     token: &str,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let permit = permit(&transaction, token)?
         .ok_or_else(|| TeamError::new(ErrorCode::NotFound, "sleep continuation not found"))?;
     if permit.session_id != session
@@ -422,8 +449,8 @@ pub fn begin_wake(
     transaction.execute(
         "UPDATE sleep_permits SET state='waking',started_at=COALESCE(started_at,?2) WHERE token=?1",
         params![token, now_ms],
-    )?;
-    transaction.commit()?;
+    ).map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
@@ -433,26 +460,30 @@ pub fn mark_failed(
     token: &str,
     reason: &str,
 ) -> Result<(), TeamError> {
-    connection.execute(
-        "UPDATE sleep_permits SET state='failed',error=?3 WHERE session_id=?1 AND token=?2
+    connection
+        .execute(
+            "UPDATE sleep_permits SET state='failed',error=?3 WHERE session_id=?1 AND token=?2
         AND state IN ('prepared','launch_requested','waking')",
-        params![session, token, reason],
-    )?;
+            params![session, token, reason],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
 pub fn expire_wakes(connection: &mut Connection, now_ms: i64) -> Result<(), TeamError> {
-    connection.execute(
-        "UPDATE sleep_permits SET state='failed',error='wake acknowledgement timed out'
+    connection
+        .execute(
+            "UPDATE sleep_permits SET state='failed',error='wake acknowledgement timed out'
         WHERE state IN ('launch_requested','waking') AND started_at<=?1",
-        [now_ms.saturating_sub(WAKE_TIMEOUT_MS)],
-    )?;
+            [now_ms.saturating_sub(WAKE_TIMEOUT_MS)],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
 pub fn status(connection: &Connection, session: &str, token: &str) -> Result<Value, TeamError> {
     let result: Option<Value> = connection.query_row("SELECT state,error,replacement_runtime FROM sleep_permits WHERE session_id=?1 AND token=?2",
         params![session, token], |row| Ok(json!({"state": row.get::<_, String>(0)?, "error": row.get::<_, String>(1)?,
-            "replacement_runtime": row.get::<_, Option<String>>(2)?}))).optional()?;
+            "replacement_runtime": row.get::<_, Option<String>>(2)?}))).optional().map_err(storage_error)?;
     result.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "sleep continuation not found"))
 }

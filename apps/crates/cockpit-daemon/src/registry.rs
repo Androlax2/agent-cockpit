@@ -721,7 +721,9 @@ pub fn queue_todo_update(
         _ => return Err("not a JSON object".into()),
     };
     if update.get("action").and_then(Value::as_str) == Some("unwait") {
-        return Err("unwait is host only: ask Theo to run cockpit-todo unwait through ask-to-run".into());
+        return Err(
+            "unwait is host only: ask Theo to run cockpit-todo unwait through ask-to-run".into(),
+        );
     }
     update.remove("chief_epoch");
     if let Some(epoch) = chief_epoch {

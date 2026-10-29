@@ -1,7 +1,10 @@
 //! Protected chief grants, host decisions and native-inbox wake delivery.
 
 use super::{ChiefAgentAction, ChiefHostAction, EscalationCategory, WorkerState};
+use crate::teams::store::storage_error;
 use crate::teams::{ErrorCode, TeamError, TeamReply, VerifiedSession};
+use cockpit_protocol::chief::excerpt;
+pub use cockpit_protocol::chief::{HABIT_TEXT_LIMIT, habit_text};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
@@ -10,7 +13,9 @@ fn conflict(message: &str) -> TeamError {
 }
 
 pub(crate) fn upgrade_to_16(connection: &Connection) -> Result<(), TeamError> {
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(storage_error)?;
     if version >= 16 {
         return Ok(());
     }
@@ -18,20 +23,26 @@ pub(crate) fn upgrade_to_16(connection: &Connection) -> Result<(), TeamError> {
         singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL UNIQUE, directory TEXT NOT NULL,
         state TEXT NOT NULL CHECK(state IN ('starting','checking','active','failed')),
         revision INTEGER NOT NULL, created_at INTEGER NOT NULL, error TEXT, identity TEXT);
-        PRAGMA user_version=16;")?;
+        PRAGMA user_version=16;").map_err(storage_error)?;
     Ok(())
 }
 
 /// Version 17 lets Theo put an escalated question off: `later_until` (epoch ms), NULL when not deferred.
 pub(crate) fn upgrade_to_17(connection: &Connection) -> Result<(), TeamError> {
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(storage_error)?;
     if version >= 17 {
         return Ok(());
     }
     if !has_column(connection, "chief_decisions", "later_until")? {
-        connection.execute_batch("ALTER TABLE chief_decisions ADD COLUMN later_until INTEGER;")?;
+        connection
+            .execute_batch("ALTER TABLE chief_decisions ADD COLUMN later_until INTEGER;")
+            .map_err(storage_error)?;
     }
-    connection.execute_batch("PRAGMA user_version=17;")?;
+    connection
+        .execute_batch("PRAGMA user_version=17;")
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -41,19 +52,22 @@ pub(crate) fn ensure_session_starts(connection: &Connection) -> Result<(), TeamE
     connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_session_starts (
         id TEXT PRIMARY KEY, epoch TEXT NOT NULL, project TEXT NOT NULL, task_id TEXT NOT NULL, reason TEXT NOT NULL,
         state TEXT NOT NULL CHECK(state IN ('requested','started','expired')), token TEXT,
-        created_at INTEGER NOT NULL, started_at INTEGER);")?;
+        created_at INTEGER NOT NULL, started_at INTEGER);").map_err(storage_error)?;
     if !has_column(connection, "chief_session_starts", "theo_queued")? {
         connection.execute_batch(
             "ALTER TABLE chief_session_starts ADD COLUMN theo_queued INTEGER NOT NULL DEFAULT 0;",
-        )?;
+        ).map_err(storage_error)?;
     }
     // A request with a worker gives the todo to that live session instead of starting one.
     if !has_column(connection, "chief_session_starts", "worker")? {
-        connection.execute_batch("ALTER TABLE chief_session_starts ADD COLUMN worker TEXT;")?;
+        connection
+            .execute_batch("ALTER TABLE chief_session_starts ADD COLUMN worker TEXT;")
+            .map_err(storage_error)?;
     }
     if !has_column(connection, "chief_session_starts", "worker_runtime")? {
         connection
-            .execute_batch("ALTER TABLE chief_session_starts ADD COLUMN worker_runtime TEXT;")?;
+            .execute_batch("ALTER TABLE chief_session_starts ADD COLUMN worker_runtime TEXT;")
+            .map_err(storage_error)?;
     }
     Ok(())
 }
@@ -66,7 +80,7 @@ pub fn startup(connection: &Connection) -> Result<Option<Value>, TeamError> {
         'revision',revision,'created_at_ms',created_at,'error',error,'session',json(identity),'can_retry',json(CASE state WHEN 'failed' THEN 'true' ELSE 'false' END),
         'check',json((SELECT json_object('id',i.id,'state',i.state,'session',json(i.recipient_identity)) FROM chief_inbox i
             WHERE json_extract(i.envelope,'$.kind')='chief_check' AND i.chief_epoch=chief_startup.id ORDER BY i.rowid DESC LIMIT 1)))
-        FROM chief_startup WHERE singleton=1", [], |row| row.get(0)).optional()?;
+        FROM chief_startup WHERE singleton=1", [], |row| row.get(0)).optional().map_err(storage_error)?;
     encoded
         .map(|value| serde_json::from_str(&value).map_err(TeamError::from))
         .transpose()
@@ -119,9 +133,9 @@ fn recovery_target(
     connection: &Connection,
     live: &[WorkerState],
 ) -> Result<Option<(String, VerifiedSession)>, TeamError> {
-    let grants = connection.prepare("SELECT epoch,session_id,agent,project,runtime FROM chief_grants WHERE state IN ('active','paused')")?
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, VerifiedSession { session_id:row.get(1)?, agent:row.get(2)?, project:row.get(3)?, runtime:row.get(4)? })))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let grants = connection.prepare("SELECT epoch,session_id,agent,project,runtime FROM chief_grants WHERE state IN ('active','paused')").map_err(crate::teams::store::storage_error)?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, VerifiedSession { session_id:row.get(1)?, agent:row.get(2)?, project:row.get(3)?, runtime:row.get(4)? }))).map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(crate::teams::store::storage_error)?;
     let [(epoch, retained)] = grants.as_slice() else {
         return Ok(None);
     };
@@ -153,7 +167,7 @@ fn fresh_admission(
     now_ms: i64,
 ) -> Result<Option<i64>, TeamError> {
     Ok(connection.query_row("SELECT max(verified_at) FROM chief_admission_verifications WHERE identity=?1 AND adapter='opencode-queued-v1' AND verified_at<=?2 AND verified_at>=?3",
-        params![serde_json::to_string(session)?, now_ms, now_ms.saturating_sub(300_000)], |row| row.get(0))?)
+        params![serde_json::to_string(session)?, now_ms, now_ms.saturating_sub(300_000)], |row| row.get(0)).map_err(crate::teams::store::storage_error)?)
 }
 
 /// What the Chief view shows of the recovery check: the target, its fresh verification and the latest
@@ -170,7 +184,7 @@ fn recovery_check(
     let check: Option<String> = connection.query_row("SELECT json_object('id',id,'state',state,'session',json(recipient_identity)) FROM chief_inbox
         WHERE json_extract(envelope,'$.kind')='chief_check' AND chief_epoch=?1 AND recipient_identity=?2
         AND next_at>coalesce((SELECT max(verified_at) FROM chief_admission_verifications WHERE identity=?2 AND adapter='opencode-queued-v1'),-1)
-        ORDER BY rowid DESC LIMIT 1", params![epoch, identity], |row| row.get(0)).optional()?;
+        ORDER BY rowid DESC LIMIT 1", params![epoch, identity], |row| row.get(0)).optional().map_err(crate::teams::store::storage_error)?;
     Ok(
         json!({"id":epoch,"check_session":session,"verified_at_ms":fresh_admission(connection, &session, now_ms)?,
         "check":check.map(|check|serde_json::from_str::<Value>(&check)).transpose()?}),
@@ -182,23 +196,24 @@ fn exact_live(session: &VerifiedSession, live: &[WorkerState]) -> bool {
 }
 
 pub fn is_product_worker(connection: &Connection, session: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM members WHERE session_id=?1) OR EXISTS(SELECT 1 FROM links WHERE state='active' AND (session_low=?1 OR session_high=?1))",
-        [session], |row| row.get(0))?)
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM members WHERE session_id=?1) OR EXISTS(SELECT 1 FROM links WHERE state='active' AND (session_low=?1 OR session_high=?1))",
+        [session], |row| row.get(0)).map_err(storage_error)
 }
 
 pub fn is_chief(connection: &Connection, session_id: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE session_id=?1 AND state IN ('active','paused'))", [session_id], |row| row.get(0))?)
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE session_id=?1 AND state IN ('active','paused'))", [session_id], |row| row.get(0)).map_err(storage_error)
 }
 
 /// The session holding the one active or paused grant, if any.
 pub fn chief_session(connection: &Connection) -> Result<Option<String>, TeamError> {
-    Ok(connection
+    connection
         .query_row(
             "SELECT session_id FROM chief_grants WHERE state IN ('active','paused')",
             [],
             |row| row.get(0),
         )
-        .optional()?)
+        .optional()
+        .map_err(storage_error)
 }
 
 /// What the column's 5 Chief tab badge needs on every tab, without the full Chief snapshot: the
@@ -210,8 +225,9 @@ pub fn badge(connection: &Connection, now_ms: i64) -> Result<Value, TeamError> {
             [],
             |row| row.get(0),
         )
-        .optional()?;
-    let needs_you: i64 = connection.query_row("SELECT count(*) FROM chief_decisions WHERE state='open' AND (later_until IS NULL OR later_until<=?1)", [now_ms], |row| row.get(0))?;
+        .optional()
+        .map_err(storage_error)?;
+    let needs_you: i64 = connection.query_row("SELECT count(*) FROM chief_decisions WHERE state='open' AND (later_until IS NULL OR later_until<=?1)", [now_ms], |row| row.get(0)).map_err(storage_error)?;
     Ok(json!({"state": state, "needs_you": needs_you}))
 }
 
@@ -254,15 +270,17 @@ pub fn host(
     let result = (|| {
         action.validate()?;
         let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(action)?);
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
         let previous: Option<(String, String)> = transaction
             .query_row(
                 "SELECT fingerprint,response FROM chief_actions WHERE request_id=?1",
                 [&request_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()?;
+            .optional()
+            .map_err(storage_error)?;
         if let Some((old, response)) = previous {
             if old != fingerprint {
                 return Err(conflict(
@@ -293,16 +311,18 @@ pub fn host(
                 now_ms,
             )?;
         }
-        transaction.execute(
-            "INSERT INTO chief_actions VALUES (?1,?2,?3,?4)",
-            params![
-                request_id,
-                fingerprint,
-                serde_json::to_string(&response)?,
-                now_ms
-            ],
-        )?;
-        transaction.commit()?;
+        transaction
+            .execute(
+                "INSERT INTO chief_actions VALUES (?1,?2,?3,?4)",
+                params![
+                    request_id,
+                    fingerprint,
+                    serde_json::to_string(&response)?,
+                    now_ms
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
         Ok(response)
     })();
     Ok(TeamReply { request_id, result })
@@ -347,7 +367,7 @@ fn host_action(
             let directory = crate::paths::home().join("IdeaProjects/cockpit-chief");
             connection.execute("INSERT INTO chief_startup(singleton,id,session_id,directory,state,revision,created_at) VALUES (1,?1,?2,?4,'starting',1,?3)
                 ON CONFLICT(singleton) DO UPDATE SET id=excluded.id,session_id=excluded.session_id,state='starting',revision=chief_startup.revision+1,
-                directory=excluded.directory,created_at=excluded.created_at,error=NULL,identity=NULL", params![id,session_id,now_ms,directory.to_string_lossy()])?;
+                directory=excluded.directory,created_at=excluded.created_at,error=NULL,identity=NULL", params![id,session_id,now_ms,directory.to_string_lossy()]).map_err(storage_error)?;
             Ok(startup(connection)?.expect("inserted Chief startup"))
         }
         ChiefHostAction::SettleStartup {
@@ -366,7 +386,7 @@ fn host_action(
                 ));
             };
             if connection.execute("UPDATE chief_startup SET state='failed',revision=revision+1,error=?3 WHERE id=?1 AND revision=?2 AND state IN ('starting','checking')",
-                params![attempt,expected_revision,format!("Theo confirmed no Chief session remains: {note}")])? != 1 {
+                params![attempt,expected_revision,format!("Theo confirmed no Chief session remains: {note}")]).map_err(storage_error)? != 1 {
                 return Err(conflict("exact unresolved Chief startup revision is required"));
             }
             Ok(startup(connection)?.expect("settled Chief startup"))
@@ -400,45 +420,53 @@ fn host_action(
                     [&attempt],
                     |row| row.get(0),
                 )
-                .optional()?;
+                .optional()
+                .map_err(storage_error)?;
             if let Some(pending) = pending {
                 return Ok(json!({"check": pending}));
             }
             let id = crate::teams::store::identifier()?;
             let envelope = json!({"message_id": id, "kind": "chief_check", "attempt": attempt});
             connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
-                params![id, attempt, session.session_id, serde_json::to_string(&session)?, envelope.to_string(), now_ms])?;
+                params![id, attempt, session.session_id, serde_json::to_string(&session)?, envelope.to_string(), now_ms]).map_err(storage_error)?;
             Ok(json!({"check": id}))
         }
         ChiefHostAction::Enable { session, .. } => {
             if !exact_live(session, live) || is_product_worker(connection, &session.session_id)? {
                 return Err(unauthorized());
             }
-            if connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM chief_grants WHERE state IN ('active','paused'))",
-                [],
-                |row| row.get::<_, bool>(0),
-            )? {
+            if connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chief_grants WHERE state IN ('active','paused'))",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(storage_error)?
+            {
                 return Err(conflict("a global chief is already enabled"));
             }
             let epoch = crate::teams::store::identifier()?;
             let approval_hash = crate::audit::sha256_hex(&serde_json::to_vec(action)?);
-            connection.execute(
-                "INSERT INTO chief_grants VALUES (?1,?2,?3,?4,?5,?1,1,'active',?6,?7)",
-                params![
-                    epoch,
-                    session.session_id,
-                    session.agent,
-                    session.project,
-                    session.runtime,
-                    approval_hash,
-                    now_ms
-                ],
-            )?;
-            connection.execute(
-                "INSERT INTO chief_coordination(epoch) VALUES (?1)",
-                [&epoch],
-            )?;
+            connection
+                .execute(
+                    "INSERT INTO chief_grants VALUES (?1,?2,?3,?4,?5,?1,1,'active',?6,?7)",
+                    params![
+                        epoch,
+                        session.session_id,
+                        session.agent,
+                        session.project,
+                        session.runtime,
+                        approval_hash,
+                        now_ms
+                    ],
+                )
+                .map_err(storage_error)?;
+            connection
+                .execute(
+                    "INSERT INTO chief_coordination(epoch) VALUES (?1)",
+                    [&epoch],
+                )
+                .map_err(storage_error)?;
             coordination_event(connection, "bootstrap", &json!({"epoch":epoch}), now_ms)?;
             schedule_wake(connection, now_ms)?;
             Ok(json!({"epoch": epoch, "state": "active"}))
@@ -453,7 +481,7 @@ fn host_action(
                 "SELECT session_id,agent,project,runtime,state FROM chief_grants WHERE epoch=?1 AND revision=?2 AND state IN ('active','paused')",
                 params![expected_epoch,expected_revision], |row| Ok((VerifiedSession {
                     session_id:row.get(0)?,agent:row.get(1)?,project:row.get(2)?,runtime:row.get(3)?,
-                },row.get(4)?))).optional()?;
+                },row.get(4)?))).optional().map_err(storage_error)?;
             let Some((previous, state)) = previous else {
                 return Err(conflict("exact retained Chief grant revision is required"));
             };
@@ -476,7 +504,7 @@ fn host_action(
             }
             let verified: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_admission_verifications
                 WHERE identity=?1 AND adapter='opencode-queued-v1' AND verified_at<=?2 AND verified_at>=?3)",
-                params![serde_json::to_string(session)?,now_ms,now_ms.saturating_sub(300_000)], |row|row.get(0))?;
+                params![serde_json::to_string(session)?,now_ms,now_ms.saturating_sub(300_000)], |row|row.get(0)).map_err(storage_error)?;
             if !verified {
                 return Err(TeamError::new(
                     ErrorCode::Unavailable,
@@ -494,26 +522,30 @@ fn host_action(
                 now_ms,
             )?;
             // Retire future request authority, not its already-reserved launch or reconciliation token.
-            let retired_requests=connection.execute("UPDATE chief_session_starts SET state='expired' WHERE epoch=?1 AND state='requested'",[expected_epoch])?;
+            let retired_requests=connection.execute("UPDATE chief_session_starts SET state='expired' WHERE epoch=?1 AND state='requested'",[expected_epoch]).map_err(storage_error)?;
             let epoch = crate::teams::store::identifier()?;
             let approval_hash = crate::audit::sha256_hex(&serde_json::to_vec(action)?);
-            connection.execute(
-                "INSERT INTO chief_grants VALUES (?1,?2,?3,?4,?5,?1,1,?6,?7,?8)",
-                params![
-                    epoch,
-                    session.session_id,
-                    session.agent,
-                    session.project,
-                    session.runtime,
-                    state,
-                    approval_hash,
-                    now_ms
-                ],
-            )?;
-            connection.execute(
-                "INSERT INTO chief_coordination(epoch) VALUES (?1)",
-                [&epoch],
-            )?;
+            connection
+                .execute(
+                    "INSERT INTO chief_grants VALUES (?1,?2,?3,?4,?5,?1,1,?6,?7,?8)",
+                    params![
+                        epoch,
+                        session.session_id,
+                        session.agent,
+                        session.project,
+                        session.runtime,
+                        state,
+                        approval_hash,
+                        now_ms
+                    ],
+                )
+                .map_err(storage_error)?;
+            connection
+                .execute(
+                    "INSERT INTO chief_coordination(epoch) VALUES (?1)",
+                    [&epoch],
+                )
+                .map_err(storage_error)?;
             coordination_event(
                 connection,
                 "recovered",
@@ -535,23 +567,26 @@ fn host_action(
                     [expected_epoch],
                     |row| row.get(0),
                 )
-                .optional()?;
+                .optional()
+                .map_err(storage_error)?;
             let Some(state) = state else {
                 return Err(conflict("chief grant epoch is stale"));
             };
             if matches!(action, ChiefHostAction::Resume { .. }) {
-                let session = connection.query_row(
-                    "SELECT session_id,agent,project,runtime FROM chief_grants WHERE epoch=?1",
-                    [expected_epoch],
-                    |row| {
-                        Ok(VerifiedSession {
-                            session_id: row.get(0)?,
-                            agent: row.get(1)?,
-                            project: row.get(2)?,
-                            runtime: row.get(3)?,
-                        })
-                    },
-                )?;
+                let session = connection
+                    .query_row(
+                        "SELECT session_id,agent,project,runtime FROM chief_grants WHERE epoch=?1",
+                        [expected_epoch],
+                        |row| {
+                            Ok(VerifiedSession {
+                                session_id: row.get(0)?,
+                                agent: row.get(1)?,
+                                project: row.get(2)?,
+                                runtime: row.get(3)?,
+                            })
+                        },
+                    )
+                    .map_err(storage_error)?;
                 if !exact_live(&session, live)
                     || is_product_worker(connection, &session.session_id)?
                 {
@@ -568,23 +603,25 @@ fn host_action(
                     ));
                 }
             };
-            connection.execute(
-                "UPDATE chief_grants SET state=?2,revision=revision+1 WHERE epoch=?1",
-                params![expected_epoch, next],
-            )?;
+            connection
+                .execute(
+                    "UPDATE chief_grants SET state=?2,revision=revision+1 WHERE epoch=?1",
+                    params![expected_epoch, next],
+                )
+                .map_err(storage_error)?;
             if next == "disabled" {
                 let queued_answers = connection.prepare("SELECT id FROM chief_inbox WHERE chief_epoch=?1 AND state='queued' AND json_extract(envelope,'$.kind') IN ('chief_answer','chief_form_reply')
-                    AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')")?
-                    .query_map([expected_epoch], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+                    AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')").map_err(storage_error)?
+                    .query_map([expected_epoch], |row| row.get::<_, String>(0)).map_err(storage_error)?.collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
                 for message in queued_answers {
                     cancel_answer(connection, &message)?;
                 }
                 connection.execute(&format!("UPDATE chief_inbox SET state='cancelled',{CHIEF_MESSAGE_CANCELLATION} WHERE chief_epoch=?3 AND state='queued'
                     AND json_extract(envelope,'$.kind')='chief_message'
                     AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')"),
-                    params![MESSAGE_CHIEF_DISABLED, now_ms, expected_epoch])?;
+                    params![MESSAGE_CHIEF_DISABLED, now_ms, expected_epoch]).map_err(crate::teams::store::storage_error)?;
                 connection.execute("UPDATE chief_inbox SET state='cancelled' WHERE chief_epoch=?1 AND state='queued'
-                    AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')", [expected_epoch])?;
+                    AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')", [expected_epoch]).map_err(storage_error)?;
             }
             Ok(json!({"epoch": expected_epoch, "state": next}))
         }
@@ -602,14 +639,16 @@ fn host_action(
                 } => "released",
                 _ => return Err(conflict("explicit exact-launch safe stop is required")),
             };
-            if connection.execute("UPDATE legacy_launches SET state=?3,revision=revision+1 WHERE token=?1 AND revision=?2 AND state IN ('reserved','uncertain','submitted')",params![token,expected_revision,state])?!=1 {return Err(conflict("exact unresolved launch revision is required"));}
+            if connection.execute("UPDATE legacy_launches SET state=?3,revision=revision+1 WHERE token=?1 AND revision=?2 AND state IN ('reserved','uncertain','submitted')",params![token,expected_revision,state]).map_err(storage_error)?!=1 {return Err(conflict("exact unresolved launch revision is required"));}
             if state == "released" {
-                connection.execute(
-                    "DELETE FROM scheduling_reservations WHERE token=?1 AND owner='legacy'",
-                    [token],
-                )?;
+                connection
+                    .execute(
+                        "DELETE FROM scheduling_reservations WHERE token=?1 AND owner='legacy'",
+                        [token],
+                    )
+                    .map_err(storage_error)?;
             }
-            connection.execute("UPDATE chief_decisions SET state='resolved',revision=revision+1,resolution=?2,resolved_at=?3 WHERE scope_key=?1 AND state='open'",params![format!("host-launch-{token}"),serde_json::to_string(evidence)?,now_ms])?;
+            connection.execute("UPDATE chief_decisions SET state='resolved',revision=revision+1,resolution=?2,resolved_at=?3 WHERE scope_key=?1 AND state='open'",params![format!("host-launch-{token}"),serde_json::to_string(evidence)?,now_ms]).map_err(storage_error)?;
             Ok(json!({"token":token,"state":state,"verified_delivery":false,"completion":false}))
         }
         ChiefHostAction::ReconcileDelivery {
@@ -618,7 +657,7 @@ fn host_action(
             evidence,
             ..
         } => {
-            let record: Option<(String,i64)> = connection.query_row("SELECT recipient_identity,attempts FROM chief_inbox WHERE id=?1 AND state IN ('uncertain','failed')",[message],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            let record: Option<(String,i64)> = connection.query_row("SELECT recipient_identity,attempts FROM chief_inbox WHERE id=?1 AND state IN ('uncertain','failed')",[message],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(storage_error)?;
             let (identity, revision) =
                 record.ok_or_else(|| conflict("exact unresolved delivery is required"))?;
             if revision != *expected_revision {
@@ -633,13 +672,15 @@ fn host_action(
                 _ => return Err(conflict("explicit exact-target safe stop is required")),
             };
             // A host handling assertion is a tombstone, never a native receipt or chief-turn allowance.
-            connection.execute("UPDATE chief_coordination SET failed=1 WHERE epoch IN (SELECT chief_epoch FROM chief_inbox WHERE id=?1 AND json_extract(envelope,'$.kind')='chief_wake')",[message])?;
-            connection.execute(
-                "UPDATE chief_inbox SET state='cancelled' WHERE id=?1",
-                [message],
-            )?;
-            connection.execute("UPDATE chief_delivery_attempts SET state='cancelled',finished_at=?2 WHERE json_extract(envelope,'$.message_id')=?1",params![message,now_ms])?;
-            connection.execute("UPDATE chief_decisions SET state='resolved',revision=revision+1,resolution=?2,resolved_at=?3 WHERE scope_key=?1 AND state='open'",params![format!("host-delivery-{message}"),serde_json::to_string(evidence)?,now_ms])?;
+            connection.execute("UPDATE chief_coordination SET failed=1 WHERE epoch IN (SELECT chief_epoch FROM chief_inbox WHERE id=?1 AND json_extract(envelope,'$.kind')='chief_wake')",[message]).map_err(storage_error)?;
+            connection
+                .execute(
+                    "UPDATE chief_inbox SET state='cancelled' WHERE id=?1",
+                    [message],
+                )
+                .map_err(storage_error)?;
+            connection.execute("UPDATE chief_delivery_attempts SET state='cancelled',finished_at=?2 WHERE json_extract(envelope,'$.message_id')=?1",params![message,now_ms]).map_err(storage_error)?;
+            connection.execute("UPDATE chief_decisions SET state='resolved',revision=revision+1,resolution=?2,resolved_at=?3 WHERE scope_key=?1 AND state='open'",params![format!("host-delivery-{message}"),serde_json::to_string(evidence)?,now_ms]).map_err(storage_error)?;
             Ok(
                 json!({"message":message,"recipient":serde_json::from_str::<Value>(&identity)?,"state":"cancelled","handled":!stopped,"verified_delivery":false,"completion":false}),
             )
@@ -651,12 +692,14 @@ fn host_action(
             ..
         } => {
             if connection.execute("UPDATE chief_decisions SET state='resolved',revision=revision+1,resolution=?3,resolved_at=?4 WHERE id=?1 AND revision=?2 AND state='open'",
-                params![decision,expected_revision,resolution,now_ms])? != 1 { return Err(conflict("decision revision is stale or already answered")); }
-            let revision: i64 = connection.query_row(
-                "SELECT revision FROM chief_decisions WHERE id=?1",
-                [decision],
-                |row| row.get(0),
-            )?;
+                params![decision,expected_revision,resolution,now_ms]).map_err(storage_error)? != 1 { return Err(conflict("decision revision is stale or already answered")); }
+            let revision: i64 = connection
+                .query_row(
+                    "SELECT revision FROM chief_decisions WHERE id=?1",
+                    [decision],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
             coordination_event(
                 connection,
                 "decision_resolved",
@@ -672,7 +715,7 @@ fn host_action(
             ..
         } => {
             let escalation: Option<Option<String>> = connection.query_row("SELECT stop_id FROM chief_decisions WHERE id=?1 AND revision=?2 AND state='open'",
-                params![decision,expected_revision],|row|row.get(0)).optional()?;
+                params![decision,expected_revision],|row|row.get(0)).optional().map_err(storage_error)?;
             let stop = escalation
                 .ok_or_else(|| conflict("decision revision is stale or already answered"))?
                 .ok_or_else(|| {
@@ -688,7 +731,7 @@ fn host_action(
                 now_ms,
             )?;
             connection.execute("UPDATE chief_decisions SET state='resolved',revision=revision+1,resolution=?3,resolved_at=?4 WHERE id=?1 AND revision=?2",
-                params![decision,expected_revision,format!("Answered by Theo: {answer}"),now_ms])?;
+                params![decision,expected_revision,format!("Answered by Theo: {answer}"),now_ms]).map_err(storage_error)?;
             coordination_event(
                 connection,
                 "decision_resolved",
@@ -706,7 +749,7 @@ fn host_action(
         } => {
             let until = now_ms.saturating_add(super::CHIEF_LATER_MS);
             if connection.execute("UPDATE chief_decisions SET later_until=?3 WHERE id=?1 AND revision=?2 AND state='open' AND stop_id IS NOT NULL",
-                params![decision,expected_revision,until])? != 1 {
+                params![decision,expected_revision,until]).map_err(storage_error)? != 1 {
                 return Err(conflict("decision revision is stale, already answered or not an escalated question"));
             }
             Ok(json!({"decision":decision,"state":"open","later_until_ms":until}))
@@ -735,7 +778,7 @@ fn host_action(
                 "SELECT count(*) FROM chief_summary_requests WHERE state IN ('queued','pending')",
                 [],
                 |row| row.get(0),
-            )?;
+            ).map_err(storage_error)?;
             if pending >= 1 {
                 return Err(TeamError::new(
                     ErrorCode::Limit,
@@ -748,13 +791,16 @@ fn host_action(
                     [],
                     |row| row.get(0),
                 )
-                .optional()?;
-            connection.execute("INSERT INTO chief_summary_requests(id,epoch,state,created_at,deadline) VALUES (?1,?2,'queued',?3,?4)",params![request_id,epoch,now_ms,now_ms.saturating_add(900_000)])?;
+                .optional()
+                .map_err(storage_error)?;
+            connection.execute("INSERT INTO chief_summary_requests(id,epoch,state,created_at,deadline) VALUES (?1,?2,'queued',?3,?4)",params![request_id,epoch,now_ms,now_ms.saturating_add(900_000)]).map_err(storage_error)?;
             let state = if epoch.is_none() {
-                connection.execute(
-                    "UPDATE chief_summary_requests SET state='failed' WHERE id=?1",
-                    [request_id],
-                )?;
+                connection
+                    .execute(
+                        "UPDATE chief_summary_requests SET state='failed' WHERE id=?1",
+                        [request_id],
+                    )
+                    .map_err(storage_error)?;
                 decision_record(
                     connection,
                     &format!("host-summary-{request_id}"),
@@ -783,21 +829,24 @@ pub(crate) fn upgrade_evidence(connection: &Connection) -> Result<(), TeamError>
         id TEXT PRIMARY KEY, evidence TEXT NOT NULL, approval_hash TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL);
         CREATE TRIGGER IF NOT EXISTS chief_source_immutable BEFORE UPDATE OF id,evidence,approval_hash,created_at ON chief_sources
-        BEGIN SELECT RAISE(ABORT,'host source record is immutable'); END;")?;
+        BEGIN SELECT RAISE(ABORT,'host source record is immutable'); END;").map_err(storage_error)?;
     connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_handoffs (handoff_id TEXT PRIMARY KEY, work TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS chief_apply_reviews (id TEXT PRIMARY KEY, review TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS chief_qa_results (sender TEXT NOT NULL, submission_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
-            evidence_id TEXT NOT NULL, PRIMARY KEY(sender,submission_key));")?;
+            evidence_id TEXT NOT NULL, PRIMARY KEY(sender,submission_key));").map_err(storage_error)?;
     Ok(())
 }
 
 /// Recover only protected identities, never a runtime supplied by the agent or writable snapshot.
 pub fn runtime(connection: &Connection, session: &str) -> Result<Option<String>, TeamError> {
     let mut statement = connection
-        .prepare("SELECT runtime FROM chief_grants WHERE session_id=?1 AND state!='disabled'")?;
+        .prepare("SELECT runtime FROM chief_grants WHERE session_id=?1 AND state!='disabled'")
+        .map_err(storage_error)?;
     let runtimes = statement
-        .query_map([session], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+        .query_map([session], |row| row.get::<_, String>(0))
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     Ok(if runtimes.len() == 1 {
         runtimes.into_iter().next()
     } else {
@@ -810,8 +859,8 @@ pub fn active_epoch(
     connection: &Connection,
     session: &VerifiedSession,
 ) -> Result<Option<String>, TeamError> {
-    Ok(connection.query_row("SELECT epoch FROM chief_grants WHERE session_id=?1 AND agent=?2 AND project=?3 AND runtime=?4 AND state='active'",
-        params![session.session_id, session.agent, session.project, session.runtime], |row| row.get(0)).optional()?)
+    connection.query_row("SELECT epoch FROM chief_grants WHERE session_id=?1 AND agent=?2 AND project=?3 AND runtime=?4 AND state='active'",
+        params![session.session_id, session.agent, session.project, session.runtime], |row| row.get(0)).optional().map_err(storage_error)
 }
 
 pub fn worker_role(
@@ -819,7 +868,7 @@ pub fn worker_role(
     session: &VerifiedSession,
 ) -> Result<Option<crate::teams::Role>, TeamError> {
     let member: Option<String> = connection.query_row("SELECT m.role FROM members m JOIN teams t ON t.task_key=m.task_key WHERE m.session_id=?1 AND m.runtime=?2 AND m.agent=?3 AND t.project=?4",
-        params![session.session_id,session.runtime,session.agent,session.project], |row| row.get(0)).optional()?;
+        params![session.session_id,session.runtime,session.agent,session.project], |row| row.get(0)).optional().map_err(storage_error)?;
     member
         .map(|role| Ok(serde_json::from_value(json!(role))?))
         .transpose()
@@ -835,7 +884,7 @@ pub(crate) fn upgrade_inbox(connection: &Connection) -> Result<(), TeamError> {
         CREATE TABLE chief_submissions (sender TEXT NOT NULL, submission_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
             response TEXT NOT NULL, PRIMARY KEY(sender,submission_key));
         CREATE TABLE inbox_turns (recipient TEXT PRIMARY KEY, runtime TEXT NOT NULL, idle_turn TEXT NOT NULL);
-        CREATE UNIQUE INDEX chief_inbox_inflight ON chief_inbox(recipient) WHERE state IN ('submitting','uncertain');")?;
+        CREATE UNIQUE INDEX chief_inbox_inflight ON chief_inbox(recipient) WHERE state IN ('submitting','uncertain');").map_err(storage_error)?;
     Ok(())
 }
 
@@ -847,12 +896,12 @@ fn record_status(
 ) -> Result<(), TeamError> {
     let body = json!({"summary": summary, "provenance": "agent_report_not_evidence"});
     let fingerprint = crate::audit::sha256_hex(&serde_json::to_vec(&body)?);
-    let latest: Option<String> = connection.query_row("SELECT fingerprint FROM chief_events WHERE source=?1 AND kind='status' ORDER BY seq DESC LIMIT 1",[source],|row|row.get(0)).optional()?;
+    let latest: Option<String> = connection.query_row("SELECT fingerprint FROM chief_events WHERE source=?1 AND kind='status' ORDER BY seq DESC LIMIT 1",[source],|row|row.get(0)).optional().map_err(storage_error)?;
     if latest.as_deref() == Some(&fingerprint) {
         return Ok(());
     }
     connection.execute("INSERT INTO chief_events (id,source,submission_key,fingerprint,kind,body,created_at) VALUES (?1,?2,?1,?3,'status',?4,?5)",
-        params![crate::teams::store::identifier()?, source, fingerprint, body.to_string(), now_ms])?;
+        params![crate::teams::store::identifier()?, source, fingerprint, body.to_string(), now_ms]).map_err(storage_error)?;
     Ok(())
 }
 
@@ -862,17 +911,22 @@ pub fn observe(
     live: &[WorkerState],
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    transaction.execute("DELETE FROM chief_observations", [])?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    transaction
+        .execute("DELETE FROM chief_observations", [])
+        .map_err(storage_error)?;
     for worker in live {
         if worker.observed_at_ms > now_ms {
             continue;
         }
-        transaction.execute(
-            "INSERT INTO chief_observations VALUES (?1,?2)",
-            params![worker.session.session_id, serde_json::to_string(worker)?],
-        )?;
+        transaction
+            .execute(
+                "INSERT INTO chief_observations VALUES (?1,?2)",
+                params![worker.session.session_id, serde_json::to_string(worker)?],
+            )
+            .map_err(storage_error)?;
     }
     expire_todo_gifts(
         &transaction,
@@ -882,43 +936,51 @@ pub fn observe(
             .collect::<Vec<_>>(),
         now_ms,
     )?;
-    transaction.execute("UPDATE chief_inbox SET state='uncertain' WHERE id IN (SELECT json_extract(envelope,'$.message_id') FROM chief_delivery_attempts WHERE state='submitting' AND started_at<=?1)", [now_ms.saturating_sub(crate::teams::store::RECEIPT_TIMEOUT_MS)])?;
-    transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',finished_at=?2 WHERE state='submitting' AND started_at<=?1", params![now_ms.saturating_sub(crate::teams::store::RECEIPT_TIMEOUT_MS),now_ms])?;
+    transaction.execute("UPDATE chief_inbox SET state='uncertain' WHERE id IN (SELECT json_extract(envelope,'$.message_id') FROM chief_delivery_attempts WHERE state='submitting' AND started_at<=?1)", [now_ms.saturating_sub(crate::teams::store::RECEIPT_TIMEOUT_MS)]).map_err(storage_error)?;
+    transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',finished_at=?2 WHERE state='submitting' AND started_at<=?1", params![now_ms.saturating_sub(crate::teams::store::RECEIPT_TIMEOUT_MS),now_ms]).map_err(storage_error)?;
     log_uncertain_answers(&transaction)?;
     observe_coordination(&transaction, live, now_ms)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 pub fn recover(connection: &mut Connection, now_ms: i64) -> Result<(), TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    transaction.execute("UPDATE legacy_launches SET state='uncertain',revision=revision+1 WHERE state IN ('reserved','submitting')",[])?;
-    transaction.execute("DELETE FROM chief_observations", [])?;
-    transaction.execute(
-        "UPDATE chief_inbox SET state='uncertain' WHERE state='submitting'",
-        [],
-    )?;
-    transaction.execute("UPDATE chief_coordination SET failed=1 WHERE epoch IN (SELECT chief_epoch FROM chief_inbox WHERE state IN ('uncertain','failed') AND json_extract(envelope,'$.kind')='chief_wake')", [])?;
-    transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',finished_at=?1 WHERE state='submitting'", [now_ms])?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    transaction.execute("UPDATE legacy_launches SET state='uncertain',revision=revision+1 WHERE state IN ('reserved','submitting')",[]).map_err(storage_error)?;
+    transaction
+        .execute("DELETE FROM chief_observations", [])
+        .map_err(storage_error)?;
+    transaction
+        .execute(
+            "UPDATE chief_inbox SET state='uncertain' WHERE state='submitting'",
+            [],
+        )
+        .map_err(storage_error)?;
+    transaction.execute("UPDATE chief_coordination SET failed=1 WHERE epoch IN (SELECT chief_epoch FROM chief_inbox WHERE state IN ('uncertain','failed') AND json_extract(envelope,'$.kind')='chief_wake')", []).map_err(storage_error)?;
+    transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',finished_at=?1 WHERE state='submitting'", [now_ms]).map_err(storage_error)?;
     log_uncertain_answers(&transaction)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
 /// A Chief answer or Theo's correction whose delivery the inbox no longer knows the outcome of is logged as uncertain.
 fn log_uncertain_answers(connection: &Connection) -> Result<(), TeamError> {
     connection.execute("UPDATE chief_answers SET delivery='uncertain' WHERE delivery='queued' AND id IN (SELECT json_extract(envelope,'$.answer')
-        FROM chief_inbox WHERE state='uncertain' AND json_extract(envelope,'$.kind') IN ('chief_answer','chief_form_reply'))", [])?;
+        FROM chief_inbox WHERE state='uncertain' AND json_extract(envelope,'$.kind') IN ('chief_answer','chief_form_reply'))", []).map_err(storage_error)?;
     connection.execute("UPDATE chief_overrules SET delivery='uncertain' WHERE delivery='queued' AND id IN (SELECT json_extract(envelope,'$.overrule')
-        FROM chief_inbox WHERE state='uncertain' AND json_extract(envelope,'$.kind')='chief_correction')", [])?;
+        FROM chief_inbox WHERE state='uncertain' AND json_extract(envelope,'$.kind')='chief_correction')", []).map_err(storage_error)?;
     Ok(())
 }
 
 fn observed(connection: &Connection) -> Result<Vec<WorkerState>, TeamError> {
     let encoded = connection
-        .prepare("SELECT observation FROM chief_observations")?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+        .prepare("SELECT observation FROM chief_observations")
+        .map_err(storage_error)?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     encoded
         .iter()
         .map(|value| Ok(serde_json::from_str(value)?))
@@ -941,10 +1003,10 @@ pub(crate) fn upgrade_events(connection: &Connection) -> Result<(), TeamError> {
         INSERT OR IGNORE INTO chief_review_generation VALUES (1,0);
         INSERT OR IGNORE INTO chief_coordination(epoch) SELECT epoch FROM chief_grants WHERE state!='disabled';
         CREATE UNIQUE INDEX IF NOT EXISTS chief_one_queued_wake ON chief_inbox(chief_epoch)
-            WHERE json_extract(envelope,'$.kind')='chief_wake' AND state IN ('queued','submitting','uncertain');")?;
+            WHERE json_extract(envelope,'$.kind')='chief_wake' AND state IN ('queued','submitting','uncertain');").map_err(storage_error)?;
     create_review_triggers(connection)?;
-    let historical_grants = connection.prepare("SELECT epoch FROM chief_grants WHERE state IN ('active','paused') AND NOT EXISTS(SELECT 1 FROM chief_events WHERE kind='bootstrap' AND json_extract(body,'$.epoch')=chief_grants.epoch)")?
-        .query_map([],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+    let historical_grants = connection.prepare("SELECT epoch FROM chief_grants WHERE state IN ('active','paused') AND NOT EXISTS(SELECT 1 FROM chief_events WHERE kind='bootstrap' AND json_extract(body,'$.epoch')=chief_grants.epoch)").map_err(storage_error)?
+        .query_map([],|row|row.get::<_,String>(0)).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     for epoch in historical_grants {
         coordination_event(connection, "bootstrap", &json!({"epoch":epoch}), 0)?;
     }
@@ -967,18 +1029,20 @@ fn create_review_triggers(connection: &Connection) -> Result<(), TeamError> {
     ] {
         for operation in ["INSERT", "UPDATE", "DELETE"] {
             connection.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS review_{table}_{operation} AFTER {operation} ON {table}
-                BEGIN UPDATE chief_review_generation SET revision=revision+1 WHERE id=1; END;"))?;
+                BEGIN UPDATE chief_review_generation SET revision=revision+1 WHERE id=1; END;")).map_err(storage_error)?;
         }
     }
     Ok(())
 }
 
 fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
-        [table, column],
-        |row| row.get(0),
-    )?)
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+            [table, column],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)
 }
 
 /// Version 13 retires the dispatch protocol's tables and adds the stop/answer records.
@@ -989,7 +1053,9 @@ fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool
 /// `chief_decisions.work` and `assignment` stay as unused columns: dropping them needs a rebuild that
 /// buys nothing, and `clear_dispatch_leftovers` still reads them to retire old open decisions.
 pub(crate) fn upgrade_to_13(connection: &Connection) -> Result<(), TeamError> {
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(storage_error)?;
     if version >= 13 {
         return Ok(());
     }
@@ -1001,7 +1067,7 @@ pub(crate) fn upgrade_to_13(connection: &Connection) -> Result<(), TeamError> {
                 next_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
             INSERT INTO chief_inbox_v13 SELECT id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at,attempts FROM chief_inbox;
             DROP TABLE chief_inbox;
-            ALTER TABLE chief_inbox_v13 RENAME TO chief_inbox;")?;
+            ALTER TABLE chief_inbox_v13 RENAME TO chief_inbox;").map_err(storage_error)?;
     }
     if has_column(connection, "chief_delivery_attempts", "assignment")? {
         connection.execute_batch("CREATE TABLE chief_delivery_attempts_v13 (
@@ -1012,12 +1078,12 @@ pub(crate) fn upgrade_to_13(connection: &Connection) -> Result<(), TeamError> {
                 native_id TEXT, receipt TEXT, started_at INTEGER NOT NULL, finished_at INTEGER);
             INSERT INTO chief_delivery_attempts_v13 SELECT id,event_id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,native_id,receipt,started_at,finished_at FROM chief_delivery_attempts;
             DROP TABLE chief_delivery_attempts;
-            ALTER TABLE chief_delivery_attempts_v13 RENAME TO chief_delivery_attempts;")?;
+            ALTER TABLE chief_delivery_attempts_v13 RENAME TO chief_delivery_attempts;").map_err(storage_error)?;
     }
     connection.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS chief_inbox_inflight ON chief_inbox(recipient) WHERE state IN ('submitting','uncertain');
         CREATE UNIQUE INDEX IF NOT EXISTS chief_one_queued_wake ON chief_inbox(chief_epoch)
             WHERE json_extract(envelope,'$.kind')='chief_wake' AND state IN ('queued','submitting','uncertain');
-        CREATE UNIQUE INDEX IF NOT EXISTS chief_one_inflight_recipient ON chief_delivery_attempts(recipient) WHERE state IN ('submitting','uncertain');")?;
+        CREATE UNIQUE INDEX IF NOT EXISTS chief_one_inflight_recipient ON chief_delivery_attempts(recipient) WHERE state IN ('submitting','uncertain');").map_err(storage_error)?;
     create_review_triggers(connection)?;
     for table in [
         "chief_evidence",
@@ -1031,7 +1097,9 @@ pub(crate) fn upgrade_to_13(connection: &Connection) -> Result<(), TeamError> {
         "chief_submissions",
         "chief_worker_bindings",
     ] {
-        connection.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
+        connection
+            .execute_batch(&format!("DROP TABLE IF EXISTS {table};"))
+            .map_err(storage_error)?;
     }
     connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_stops (
             id TEXT PRIMARY KEY, session_id TEXT NOT NULL, runtime TEXT NOT NULL, boundary TEXT NOT NULL,
@@ -1043,7 +1111,7 @@ pub(crate) fn upgrade_to_13(connection: &Connection) -> Result<(), TeamError> {
             question TEXT NOT NULL, answer TEXT NOT NULL, reason TEXT NOT NULL,
             source TEXT NOT NULL CHECK(source IN ('chief','theo')),
             delivery TEXT NOT NULL CHECK(delivery IN ('queued','received','uncertain','cancelled')),
-            created_at INTEGER NOT NULL);")?;
+            created_at INTEGER NOT NULL);").map_err(storage_error)?;
     for (column, definition) in [
         ("session_id", "TEXT"),
         ("stop_id", "TEXT"),
@@ -1054,18 +1122,24 @@ pub(crate) fn upgrade_to_13(connection: &Connection) -> Result<(), TeamError> {
         ("suggested_answer", "TEXT"),
     ] {
         if !has_column(connection, "chief_decisions", column)? {
-            connection.execute_batch(&format!(
-                "ALTER TABLE chief_decisions ADD COLUMN {column} {definition};"
-            ))?;
+            connection
+                .execute_batch(&format!(
+                    "ALTER TABLE chief_decisions ADD COLUMN {column} {definition};"
+                ))
+                .map_err(storage_error)?;
         }
     }
-    connection.execute_batch("PRAGMA user_version=13;")?;
+    connection
+        .execute_batch("PRAGMA user_version=13;")
+        .map_err(storage_error)?;
     Ok(())
 }
 
 /// Version 14 adds the log of Theo's corrections to Chief answers and the indexes behind the per-session counts and the newest-answers review.
 pub(crate) fn upgrade_to_14(connection: &Connection) -> Result<(), TeamError> {
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(storage_error)?;
     if version >= 14 {
         return Ok(());
     }
@@ -1076,7 +1150,7 @@ pub(crate) fn upgrade_to_14(connection: &Connection) -> Result<(), TeamError> {
             created_at INTEGER NOT NULL, finished_at INTEGER);
         CREATE INDEX IF NOT EXISTS chief_answers_by_session ON chief_answers(session_id, created_at);
         CREATE INDEX IF NOT EXISTS chief_answers_by_created_at ON chief_answers(created_at);
-        PRAGMA user_version=14;")?;
+        PRAGMA user_version=14;").map_err(storage_error)?;
     Ok(())
 }
 
@@ -1085,7 +1159,9 @@ pub(crate) fn upgrade_to_14(connection: &Connection) -> Result<(), TeamError> {
 /// `source` is what Theo did (an overrule or his own answer); `source_kind` says where the host saw it: an overrule, his answer to an
 /// escalation, or his message in a stopped session's bundle. `reason` is the Chief's, NULL for overrule habits.
 pub(crate) fn upgrade_to_15(connection: &Connection) -> Result<(), TeamError> {
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(storage_error)?;
     if version >= 15 {
         return Ok(());
     }
@@ -1095,13 +1171,17 @@ pub(crate) fn upgrade_to_15(connection: &Connection) -> Result<(), TeamError> {
             source_kind TEXT NOT NULL CHECK(source_kind IN ('overrule','theo_answer','theo_message')), source_id TEXT NOT NULL, reason TEXT,
             state TEXT NOT NULL CHECK(state IN ('active','deleted')),
             created_at INTEGER NOT NULL, changed_at INTEGER NOT NULL);
-        CREATE INDEX IF NOT EXISTS chief_habits_by_state ON chief_habits(state, created_at);")?;
+        CREATE INDEX IF NOT EXISTS chief_habits_by_state ON chief_habits(state, created_at);").map_err(storage_error)?;
     if !has_column(connection, "chief_answers", "habits")? {
-        connection.execute_batch(
-            "ALTER TABLE chief_answers ADD COLUMN habits TEXT NOT NULL DEFAULT '[]';",
-        )?;
+        connection
+            .execute_batch(
+                "ALTER TABLE chief_answers ADD COLUMN habits TEXT NOT NULL DEFAULT '[]';",
+            )
+            .map_err(storage_error)?;
     }
-    connection.execute_batch("PRAGMA user_version=15;")?;
+    connection
+        .execute_batch("PRAGMA user_version=15;")
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -1128,19 +1208,21 @@ pub fn answer_counts(connection: &Connection) -> Result<Vec<AnswerCount>, TeamEr
             SELECT *, count(*) OVER (PARTITION BY session_id) AS total,
                 row_number() OVER (PARTITION BY session_id ORDER BY created_at DESC, answer_rowid DESC) AS recency
             FROM counted)
-        SELECT session_id,total,created_at,question,answer,delivery FROM ranked WHERE recency<=3 ORDER BY session_id,recency")?;
+        SELECT session_id,total,created_at,question,answer,delivery FROM ranked WHERE recency<=3 ORDER BY session_id,recency").map_err(storage_error)?;
     let mut counts: Vec<AnswerCount> = Vec::new();
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, u32>(1)?,
-            json!({
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u32>(1)?,
+                json!({
         "created_at_ms": row.get::<_, i64>(2)?, "question": row.get::<_, String>(3)?,
         "answer": row.get::<_, String>(4)?, "delivery": row.get::<_, String>(5)?}),
-        ))
-    })?;
+            ))
+        })
+        .map_err(storage_error)?;
     for row in rows {
-        let (session_id, count, recent) = row?;
+        let (session_id, count, recent) = row.map_err(storage_error)?;
         match counts.last_mut() {
             Some(last) if last.session_id == session_id => last.recent.push(recent),
             _ => counts.push(AnswerCount {
@@ -1190,7 +1272,9 @@ pub const DIGEST_HABIT_LINES: usize = 3;
 /// Habits count when created since and still active.
 pub fn answers_since(connection: &Connection, since_ms: i64) -> Result<ChiefDigest, TeamError> {
     let count = |sql: &str| -> Result<u32, TeamError> {
-        Ok(connection.query_row(sql, [since_ms], |row| row.get(0))?)
+        connection
+            .query_row(sql, [since_ms], |row| row.get(0))
+            .map_err(storage_error)
     };
     let answered = count(
         "SELECT count(*) FROM chief_answers WHERE source='chief' AND delivery!='cancelled' AND created_at>?1",
@@ -1201,15 +1285,15 @@ pub fn answers_since(connection: &Connection, since_ms: i64) -> Result<ChiefDige
         "SELECT count(*) FROM chief_overrules WHERE delivery!='cancelled' AND created_at>?1",
     )?;
     let lines = connection.prepare("SELECT session_id,question,answer FROM chief_answers WHERE source='chief' AND delivery!='cancelled' AND created_at>?1
-            ORDER BY created_at DESC,rowid DESC LIMIT ?2")?
-        .query_map(params![since_ms, DIGEST_ANSWER_LINES as i64], |row| Ok(DigestAnswer { session_id: row.get(0)?, question: row.get(1)?, answer: row.get(2)? }))?
-        .collect::<Result<Vec<_>, _>>()?;
+            ORDER BY created_at DESC,rowid DESC LIMIT ?2").map_err(storage_error)?
+        .query_map(params![since_ms, DIGEST_ANSWER_LINES as i64], |row| Ok(DigestAnswer { session_id: row.get(0)?, question: row.get(1)?, answer: row.get(2)? })).map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
     let more = answered.saturating_sub(lines.len() as u32);
     let new_habits =
         count("SELECT count(*) FROM chief_habits WHERE state='active' AND created_at>?1")?;
-    let habits = connection.prepare("SELECT text,project,created_at FROM chief_habits WHERE state='active' AND created_at>?1 ORDER BY created_at DESC,rowid DESC LIMIT ?2")?
-        .query_map(params![since_ms, DIGEST_HABIT_LINES as i64], |row| Ok(DigestHabit { text: row.get(0)?, project: row.get(1)?, created_at_ms: row.get(2)? }))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let habits = connection.prepare("SELECT text,project,created_at FROM chief_habits WHERE state='active' AND created_at>?1 ORDER BY created_at DESC,rowid DESC LIMIT ?2").map_err(storage_error)?
+        .query_map(params![since_ms, DIGEST_HABIT_LINES as i64], |row| Ok(DigestHabit { text: row.get(0)?, project: row.get(1)?, created_at_ms: row.get(2)? })).map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
     Ok(ChiefDigest {
         answered,
         escalated,
@@ -1233,19 +1317,22 @@ pub fn open_read_only(path: &std::path::Path) -> Result<Connection, TeamError> {
     let connection = Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    connection.busy_timeout(std::time::Duration::from_millis(250))?;
+    )
+    .map_err(storage_error)?;
+    connection
+        .busy_timeout(std::time::Duration::from_millis(250))
+        .map_err(storage_error)?;
     Ok(connection)
 }
 
 pub(crate) fn upgrade_launches(connection: &Connection) -> Result<(), TeamError> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS legacy_launches(token TEXT PRIMARY KEY,project TEXT NOT NULL,task_id TEXT NOT NULL,worker TEXT,
         state TEXT NOT NULL CHECK(state IN ('manual','reserved','submitting','uncertain','submitted','released')),revision INTEGER NOT NULL,created_at INTEGER NOT NULL);
-        INSERT OR IGNORE INTO legacy_launches SELECT token,project,task_id,nullif(worker,''),'uncertain',1,0 FROM scheduling_reservations WHERE owner='legacy';")?;
+        INSERT OR IGNORE INTO legacy_launches SELECT token,project,task_id,nullif(worker,''),'uncertain',1,0 FROM scheduling_reservations WHERE owner='legacy';").map_err(storage_error)?;
     connection.execute_batch("UPDATE chief_summary_requests SET state='queued',deadline=created_at+900000 WHERE state='pending' AND NOT EXISTS(
-        SELECT 1 FROM chief_turns t JOIN chief_delivery_attempts a ON a.id=t.dispatch_id,json_each(a.envelope,'$.summary_requests') r WHERE t.epoch=chief_summary_requests.epoch AND r.value=chief_summary_requests.id);")?;
+        SELECT 1 FROM chief_turns t JOIN chief_delivery_attempts a ON a.id=t.dispatch_id,json_each(a.envelope,'$.summary_requests') r WHERE t.epoch=chief_summary_requests.epoch AND r.value=chief_summary_requests.id);").map_err(storage_error)?;
     for operation in ["INSERT", "UPDATE", "DELETE"] {
-        connection.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS review_legacy_launches_{operation} AFTER {operation} ON legacy_launches BEGIN UPDATE chief_review_generation SET revision=revision+1 WHERE id=1; END;"))?;
+        connection.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS review_legacy_launches_{operation} AFTER {operation} ON legacy_launches BEGIN UPDATE chief_review_generation SET revision=revision+1 WHERE id=1; END;")).map_err(storage_error)?;
     }
     Ok(())
 }
@@ -1258,7 +1345,7 @@ fn coordination_event(
 ) -> Result<(), TeamError> {
     let id = crate::teams::store::identifier()?;
     connection.execute("INSERT INTO chief_events(id,source,submission_key,fingerprint,kind,body,created_at) VALUES (?1,'host',?1,?2,?3,?4,?5)",
-        params![id,crate::audit::sha256_hex(&serde_json::to_vec(body)?),kind,body.to_string(),now_ms])?;
+        params![id,crate::audit::sha256_hex(&serde_json::to_vec(body)?),kind,body.to_string(),now_ms]).map_err(storage_error)?;
     Ok(())
 }
 
@@ -1268,11 +1355,13 @@ pub fn stop_recorded(
     session_id: &str,
     boundary: &str,
 ) -> Result<bool, TeamError> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM chief_stops WHERE session_id=?1 AND boundary=?2)",
-        [session_id, boundary],
-        |row| row.get(0),
-    )?)
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM chief_stops WHERE session_id=?1 AND boundary=?2)",
+            [session_id, boundary],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)
 }
 
 /// Sessions that still have an open or escalated stop, or an answered one whose answer has not gone
@@ -1280,10 +1369,12 @@ pub fn stop_recorded(
 pub fn sessions_with_open_stops(connection: &Connection) -> Result<Vec<String>, TeamError> {
     let mut statement = connection.prepare("SELECT DISTINCT session_id FROM chief_stops WHERE state IN ('open','escalated')
         OR (state='answered' AND id IN (SELECT json_extract(envelope,'$.stop') FROM chief_inbox WHERE state='queued' AND json_extract(envelope,'$.kind') IN ('chief_answer','chief_form_reply')))
-        ORDER BY session_id")?;
-    Ok(statement
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<Vec<_>, _>>()?)
+        ORDER BY session_id").map_err(storage_error)?;
+    statement
+        .query_map([], |row| row.get(0))
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)
 }
 
 /// Closes every open or escalated stop of the session except the one at `current_boundary`; `None`
@@ -1298,19 +1389,21 @@ pub fn supersede_stops(
     current_boundary: Option<&str>,
 ) -> Result<(), TeamError> {
     for message in queued_replies_of(connection, session_id, current_boundary)? {
-        let kind: Option<String> = connection.query_row(
-            "SELECT json_extract(envelope,'$.kind') FROM chief_inbox WHERE id=?1",
-            [&message],
-            |row| row.get(0),
-        )?;
+        let kind: Option<String> = connection
+            .query_row(
+                "SELECT json_extract(envelope,'$.kind') FROM chief_inbox WHERE id=?1",
+                [&message],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
         if kind.as_deref() == Some("chief_form_reply") {
             cancel_answer(connection, &message)?;
         }
     }
     connection.execute("UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open' AND stop_id IN
-        (SELECT id FROM chief_stops WHERE session_id=?1 AND state='escalated' AND (?2 IS NULL OR boundary<>?2))", params![session_id, current_boundary])?;
+        (SELECT id FROM chief_stops WHERE session_id=?1 AND state='escalated' AND (?2 IS NULL OR boundary<>?2))", params![session_id, current_boundary]).map_err(storage_error)?;
     connection.execute("UPDATE chief_stops SET state='superseded' WHERE session_id=?1 AND state IN ('open','escalated') AND (?2 IS NULL OR boundary<>?2)",
-        params![session_id, current_boundary])?;
+        params![session_id, current_boundary]).map_err(storage_error)?;
     Ok(())
 }
 
@@ -1332,10 +1425,10 @@ fn queued_replies_of(
     session_id: &str,
     except_boundary: Option<&str>,
 ) -> Result<Vec<String>, TeamError> {
-    Ok(connection.prepare("SELECT i.id FROM chief_inbox i JOIN chief_stops s ON s.id=json_extract(i.envelope,'$.stop')
+    connection.prepare("SELECT i.id FROM chief_inbox i JOIN chief_stops s ON s.id=json_extract(i.envelope,'$.stop')
         WHERE i.state='queued' AND json_extract(i.envelope,'$.kind') IN ('chief_answer','chief_form_reply') AND s.session_id=?1 AND s.state='answered'
-        AND (?2 IS NULL OR s.boundary<>?2) ORDER BY i.rowid")?
-        .query_map(params![session_id, except_boundary], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?)
+        AND (?2 IS NULL OR s.boundary<>?2) ORDER BY i.rowid").map_err(storage_error)?
+        .query_map(params![session_id, except_boundary], |row| row.get::<_, String>(0)).map_err(storage_error)?.collect::<Result<Vec<_>, _>>().map_err(storage_error)
 }
 
 /// Moves a chat answer still queued for an earlier stop of this runtime and task to its new stop, which
@@ -1351,14 +1444,16 @@ fn carry_queued_answers(
 ) -> Result<bool, TeamError> {
     let mut is_carried = false;
     for message in queued_replies_of(connection, &session.session_id, Some(boundary))? {
-        let envelope: String = connection.query_row(
-            "SELECT envelope FROM chief_inbox WHERE id=?1",
-            [&message],
-            |row| row.get(0),
-        )?;
+        let envelope: String = connection
+            .query_row(
+                "SELECT envelope FROM chief_inbox WHERE id=?1",
+                [&message],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
         let mut envelope: Value = serde_json::from_str(&envelope)?;
         let earlier: (String, String, String) = connection.query_row("SELECT s.runtime,s.task_id,a.question FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id WHERE a.id=?1",
-            [envelope["answer"].as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+            [envelope["answer"].as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(storage_error)?;
         let (runtime, earlier_task, question) = earlier;
         let is_carriable = envelope["kind"] == "chief_answer"
             && runtime == session.runtime
@@ -1373,45 +1468,59 @@ fn carry_queued_answers(
         if envelope.get("earlier_question").is_none() {
             envelope["earlier_question"] = json!(question);
         }
-        connection.execute(
-            "UPDATE chief_inbox SET envelope=?2 WHERE id=?1",
-            params![message, envelope.to_string()],
-        )?;
-        connection.execute(
-            "UPDATE chief_stops SET state='superseded' WHERE id=?1 AND state='answered'",
-            [earlier_stop],
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_inbox SET envelope=?2 WHERE id=?1",
+                params![message, envelope.to_string()],
+            )
+            .map_err(storage_error)?;
+        connection
+            .execute(
+                "UPDATE chief_stops SET state='superseded' WHERE id=?1 AND state='answered'",
+                [earlier_stop],
+            )
+            .map_err(storage_error)?;
         is_carried = true;
     }
     if is_carried {
-        connection.execute(
-            "UPDATE chief_stops SET state='answered' WHERE id=?1",
-            [stop],
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_stops SET state='answered' WHERE id=?1",
+                [stop],
+            )
+            .map_err(storage_error)?;
     }
     Ok(is_carried)
 }
 
 /// Withdraws a queued answer that can no longer reach the stop it answers, and that stop with it.
 fn cancel_answer(connection: &Connection, message_id: &str) -> Result<(), TeamError> {
-    let envelope: String = connection.query_row(
-        "SELECT envelope FROM chief_inbox WHERE id=?1",
-        [message_id],
-        |row| row.get(0),
-    )?;
+    let envelope: String = connection
+        .query_row(
+            "SELECT envelope FROM chief_inbox WHERE id=?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     let envelope: Value = serde_json::from_str(&envelope)?;
-    connection.execute(
-        "UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued'",
-        [message_id],
-    )?;
-    connection.execute(
-        "UPDATE chief_answers SET delivery='cancelled' WHERE id=?1 AND delivery='queued'",
-        [envelope["answer"].as_str()],
-    )?;
-    connection.execute(
-        "UPDATE chief_stops SET state='superseded' WHERE id=?1 AND state='answered'",
-        [envelope["stop"].as_str()],
-    )?;
+    connection
+        .execute(
+            "UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued'",
+            [message_id],
+        )
+        .map_err(storage_error)?;
+    connection
+        .execute(
+            "UPDATE chief_answers SET delivery='cancelled' WHERE id=?1 AND delivery='queued'",
+            [envelope["answer"].as_str()],
+        )
+        .map_err(storage_error)?;
+    connection
+        .execute(
+            "UPDATE chief_stops SET state='superseded' WHERE id=?1 AND state='answered'",
+            [envelope["stop"].as_str()],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -1422,12 +1531,13 @@ pub fn cancel_stranded_corrections(
     live: &[WorkerState],
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let queued = transaction.prepare("SELECT i.id,i.envelope,o.session_id,o.runtime FROM chief_inbox i JOIN chief_overrules o ON o.id=json_extract(i.envelope,'$.overrule')
-        WHERE i.state='queued' AND json_extract(i.envelope,'$.kind')='chief_correction' AND o.delivery='queued'")?
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?
-        .collect::<Result<Vec<_>, _>>()?;
+        WHERE i.state='queued' AND json_extract(i.envelope,'$.kind')='chief_correction' AND o.delivery='queued'").map_err(storage_error)?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))).map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
     for (message_id, envelope, session_id, runtime) in queued {
         let is_reachable = live.iter().any(|worker| {
             worker.session.session_id == session_id && worker.session.runtime == runtime
@@ -1441,7 +1551,7 @@ pub fn cancel_stranded_corrections(
             )?;
         }
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
@@ -1452,11 +1562,13 @@ fn cancel_correction(
     envelope: &Value,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    connection.execute(
-        "UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued'",
-        [message_id],
-    )?;
-    connection.execute("UPDATE chief_overrules SET delivery='cancelled',finished_at=?2 WHERE id=?1 AND delivery='queued'", params![envelope["overrule"].as_str(), now_ms])?;
+    connection
+        .execute(
+            "UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued'",
+            [message_id],
+        )
+        .map_err(storage_error)?;
+    connection.execute("UPDATE chief_overrules SET delivery='cancelled',finished_at=?2 WHERE id=?1 AND delivery='queued'", params![envelope["overrule"].as_str(), now_ms]).map_err(storage_error)?;
     Ok(())
 }
 
@@ -1504,7 +1616,8 @@ fn queue_answer(
             [stop],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let (session_id, runtime, state, bundle) =
         record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "stop not found"))?;
     if state != required_state {
@@ -1569,13 +1682,15 @@ fn queue_answer(
         }
     };
     connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
-        params![message_id, epoch, session_id, serde_json::to_string(&worker.session)?, envelope.to_string(), now_ms])?;
+        params![message_id, epoch, session_id, serde_json::to_string(&worker.session)?, envelope.to_string(), now_ms]).map_err(storage_error)?;
     connection.execute("INSERT INTO chief_answers(id,stop_id,session_id,question,answer,reason,source,delivery,created_at,habits) VALUES (?1,?2,?3,?4,?5,?6,?7,'queued',?8,?9)",
-        params![answer_id, stop, session_id, question, text, reason, source, now_ms, serde_json::to_string(habits)?])?;
-    connection.execute(
-        "UPDATE chief_stops SET state='answered' WHERE id=?1",
-        [stop],
-    )?;
+        params![answer_id, stop, session_id, question, text, reason, source, now_ms, serde_json::to_string(habits)?]).map_err(storage_error)?;
+    connection
+        .execute(
+            "UPDATE chief_stops SET state='answered' WHERE id=?1",
+            [stop],
+        )
+        .map_err(storage_error)?;
     Ok(json!({"answer":answer_id,"stop":stop,"delivery":"queued"}))
 }
 
@@ -1585,15 +1700,6 @@ pub fn answer_excerpt(answer: &str) -> String {
     excerpt(
         &answer.split_whitespace().collect::<Vec<_>>().join(" "),
         200,
-    )
-}
-
-pub const HABIT_TEXT_LIMIT: usize = 500;
-/// A habit's text: Theo's words on one line, at most 500 characters (cut with `…`).
-pub fn habit_text(correction: &str) -> String {
-    excerpt(
-        &correction.split_whitespace().collect::<Vec<_>>().join(" "),
-        HABIT_TEXT_LIMIT,
     )
 }
 
@@ -1612,7 +1718,8 @@ fn require_citable_habits(
             [stop],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let project = project.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "stop not found"))?;
     for habit in habits {
         let record: Option<(Option<String>, String)> = connection
@@ -1621,7 +1728,8 @@ fn require_citable_habits(
                 [habit],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()?;
+            .optional()
+            .map_err(storage_error)?;
         let Some((habit_project, state)) = record else {
             return Err(TeamError::new(
                 ErrorCode::Invalid,
@@ -1662,7 +1770,7 @@ fn add_habit(
     now_ms: i64,
 ) -> Result<Value, TeamError> {
     let answer_project: Option<String> = connection.query_row("SELECT s.project FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id WHERE a.id=?1 AND a.source='theo'",
-        [source_id], |row| row.get(0)).optional()?;
+        [source_id], |row| row.get(0)).optional().map_err(storage_error)?;
     let (source_project, source_kind) = match answer_project {
         Some(project) => (project, "theo_answer"),
         None => {
@@ -1672,7 +1780,8 @@ fn add_habit(
                     [source_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .optional()?;
+                .optional()
+                .map_err(storage_error)?;
             let (project, bundle) = stop.ok_or_else(|| {
                 TeamError::new(
                     ErrorCode::NotFound,
@@ -1720,7 +1829,7 @@ fn add_habit(
     }
     let id = crate::teams::store::identifier()?;
     connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,reason,state,created_at,changed_at) VALUES (?1,?2,?3,?4,'theo_answer',?5,?6,?7,'active',?8,?8)",
-        params![id, text, project, source_project, source_kind, source_id, reason, now_ms])?;
+        params![id, text, project, source_project, source_kind, source_id, reason, now_ms]).map_err(storage_error)?;
     coordination_event(
         connection,
         "habit_changed",
@@ -1737,7 +1846,8 @@ fn habits_like(
 ) -> Result<Vec<(String, Option<String>, String)>, TeamError> {
     let wanted = habit_key(text);
     Ok(connection
-        .prepare("SELECT id,text,project,state FROM chief_habits ORDER BY created_at,rowid")?
+        .prepare("SELECT id,text,project,state FROM chief_habits ORDER BY created_at,rowid")
+        .map_err(storage_error)?
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1745,8 +1855,10 @@ fn habits_like(
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, String>(3)?,
             ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?
+        })
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?
         .into_iter()
         .filter(|(_, habit, _, _)| habit_key(habit) == wanted)
         .map(|(id, _, habit_project, state)| (id, habit_project, state))
@@ -1782,7 +1894,8 @@ fn change_habit(
             [habit],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let (project, origin_project, state) =
         record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "habit not found"))?;
     let (new_project, new_state) = match change {
@@ -1794,10 +1907,12 @@ fn change_habit(
         ),
     };
     if (&new_project, &new_state) != (&project, &state) {
-        connection.execute(
-            "UPDATE chief_habits SET project=?2,state=?3,changed_at=?4 WHERE id=?1",
-            params![habit, new_project, new_state, now_ms],
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_habits SET project=?2,state=?3,changed_at=?4 WHERE id=?1",
+                params![habit, new_project, new_state, now_ms],
+            )
+            .map_err(storage_error)?;
         coordination_event(
             connection,
             "habit_changed",
@@ -1819,7 +1934,7 @@ fn queue_correction(
 ) -> Result<Value, TeamError> {
     let record: Option<(String, String, String, String, String, bool, String)> = connection.query_row("SELECT a.session_id,s.runtime,a.answer,a.delivery,a.source,
             EXISTS(SELECT 1 FROM chief_overrules o WHERE o.answer_id=a.id),s.project FROM chief_answers a JOIN chief_stops s ON s.id=a.stop_id WHERE a.id=?1", [answer],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))).optional()?;
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))).optional().map_err(storage_error)?;
     let (session_id, runtime, answer_text, delivery, source, is_overruled, project) =
         record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "answer not found"))?;
     if source != "chief" {
@@ -1858,13 +1973,13 @@ fn queue_correction(
     let envelope = json!({"message_id":message_id,"kind":"chief_correction","epoch":THEO_ANSWER_EPOCH,"source":"theo",
         "overrule":overrule_id,"answer_excerpt":answer_excerpt,"text":correction});
     connection.execute("INSERT INTO chief_overrules(id,answer_id,session_id,runtime,correction,delivery,created_at) VALUES (?1,?2,?3,?4,?5,'queued',?6)",
-        params![overrule_id, answer, session_id, runtime, correction, now_ms])?;
+        params![overrule_id, answer, session_id, runtime, correction, now_ms]).map_err(storage_error)?;
     connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
-        params![message_id, THEO_ANSWER_EPOCH, session_id, serde_json::to_string(&worker.session)?, envelope.to_string(), now_ms])?;
+        params![message_id, THEO_ANSWER_EPOCH, session_id, serde_json::to_string(&worker.session)?, envelope.to_string(), now_ms]).map_err(storage_error)?;
     let habit = habit_text(correction);
     if active_habit_in(&habits_like(connection, &habit)?, Some(&project)).is_none() {
         connection.execute("INSERT INTO chief_habits(id,text,project,origin_project,source,source_kind,source_id,state,created_at,changed_at) VALUES (?1,?2,?3,?3,'overrule','overrule',?4,'active',?5,?5)",
-            params![crate::teams::store::identifier()?, habit, project, overrule_id, now_ms])?;
+            params![crate::teams::store::identifier()?, habit, project, overrule_id, now_ms]).map_err(storage_error)?;
     }
     coordination_event(
         connection,
@@ -1935,17 +2050,20 @@ fn escalate_stop(
             [stop],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let (session_id, state, bundle) =
         record.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "stop not found"))?;
     if state != "open" {
         return Err(conflict("the stop is no longer open; the agent moved on"));
     }
-    let open: i64 = connection.query_row(
-        "SELECT count(*) FROM chief_decisions WHERE state='open'",
-        [],
-        |row| row.get(0),
-    )?;
+    let open: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM chief_decisions WHERE state='open'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     if open >= super::MAX_OPEN_DECISIONS as i64 {
         return Err(TeamError::new(
             ErrorCode::Limit,
@@ -1956,15 +2074,19 @@ fn escalate_stop(
     let id = crate::teams::store::identifier()?;
     connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at,session_id,stop_id,category,suggested_answer)
         VALUES (?1,?2,?3,?4,?5,'open',1,?6,?7,?8,?9,?10)",
-        params![id, format!("chief-{epoch}"), format!("stop-{stop}"), question, reason, now_ms, session_id, stop, category.as_str(), suggested_answer])?;
-    connection.execute(
-        "INSERT INTO chief_attention(decision,created_at) VALUES (?1,?2)",
-        params![id, now_ms],
-    )?;
-    connection.execute(
-        "UPDATE chief_stops SET state='escalated' WHERE id=?1",
-        [stop],
-    )?;
+        params![id, format!("chief-{epoch}"), format!("stop-{stop}"), question, reason, now_ms, session_id, stop, category.as_str(), suggested_answer]).map_err(storage_error)?;
+    connection
+        .execute(
+            "INSERT INTO chief_attention(decision,created_at) VALUES (?1,?2)",
+            params![id, now_ms],
+        )
+        .map_err(storage_error)?;
+    connection
+        .execute(
+            "UPDATE chief_stops SET state='escalated' WHERE id=?1",
+            [stop],
+        )
+        .map_err(storage_error)?;
     Ok(json!({"decision":id,"revision":1,"stop":stop,"state":"escalated"}))
 }
 
@@ -2027,8 +2149,8 @@ fn require_no_waiting_request(
     now_ms: i64,
 ) -> Result<(), TeamError> {
     connection.execute("UPDATE chief_session_starts SET state='expired' WHERE state='requested' AND created_at<=?1",
-        [now_ms.saturating_sub(super::SESSION_START_OPEN_MS)])?;
-    if connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2)", params![project, todo], |row| row.get::<_, bool>(0))? {
+        [now_ms.saturating_sub(super::SESSION_START_OPEN_MS)]).map_err(storage_error)?;
+    if connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2)", params![project, todo], |row| row.get::<_, bool>(0)).map_err(storage_error)? {
         return Err(conflict("a session start already waits for this todo"));
     }
     Ok(())
@@ -2083,7 +2205,7 @@ fn request_session_start(
         return Err(conflict("the todo belongs to another project"));
     }
     require_no_waiting_request(connection, &canonical, todo, now_ms)?;
-    let recent: i64 = connection.query_row("SELECT count(*) FROM chief_session_starts WHERE created_at>?1 AND theo_queued=0 AND worker IS NULL", [now_ms.saturating_sub(3_600_000)], |row| row.get(0))?;
+    let recent: i64 = connection.query_row("SELECT count(*) FROM chief_session_starts WHERE created_at>?1 AND theo_queued=0 AND worker IS NULL", [now_ms.saturating_sub(3_600_000)], |row| row.get(0)).map_err(storage_error)?;
     if !is_theo_queued && recent >= starts_per_hour {
         return Err(TeamError::new(
             ErrorCode::Limit,
@@ -2094,7 +2216,7 @@ fn request_session_start(
     }
     let id = crate::teams::store::identifier()?;
     connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at,theo_queued) VALUES (?1,?2,?3,?4,?5,'requested',?6,?7)",
-        params![id, epoch, canonical, todo, reason, now_ms, is_theo_queued])?;
+        params![id, epoch, canonical, todo, reason, now_ms, is_theo_queued]).map_err(storage_error)?;
     coordination_event(
         connection,
         "session_start_requested",
@@ -2140,7 +2262,7 @@ fn request_todo_gift(
         "SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND worker=?1)",
         [session],
         |row| row.get::<_, bool>(0),
-    )? {
+    ).map_err(storage_error)? {
         return Err(conflict(
             "a todo the Chief gave already waits for this session",
         ));
@@ -2155,7 +2277,7 @@ fn request_todo_gift(
         },
     )?;
     connection.execute("INSERT INTO chief_session_starts(id,epoch,project,task_id,reason,state,created_at,theo_queued,worker,worker_runtime) VALUES (?1,?2,?3,?4,?5,'requested',?6,?7,?8,?9)",
-        params![id, epoch, canonical, todo, reason, now_ms, is_theo_queued, session, worker.session.runtime])?;
+        params![id, epoch, canonical, todo, reason, now_ms, is_theo_queued, session, worker.session.runtime]).map_err(storage_error)?;
     coordination_event(
         connection,
         "todo_gift_requested",
@@ -2174,8 +2296,8 @@ pub fn open_session_start(
     task_id: &str,
     now_ms: i64,
 ) -> Result<Option<(String, String)>, TeamError> {
-    Ok(connection.query_row("SELECT id,reason FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2 AND worker IS NULL AND created_at>?3",
-        params![project, task_id, now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
+    connection.query_row("SELECT id,reason FROM chief_session_starts WHERE state='requested' AND project=?1 AND task_id=?2 AND worker IS NULL AND created_at>?3",
+        params![project, task_id, now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(storage_error)
 }
 
 /// The todo ids the Chief asked a fresh session for that the queue has not acted on yet: the queue
@@ -2184,9 +2306,9 @@ pub fn open_session_start_tasks(
     connection: &Connection,
     now_ms: i64,
 ) -> Result<std::collections::HashSet<String>, TeamError> {
-    Ok(connection.prepare("SELECT task_id FROM chief_session_starts WHERE state='requested' AND worker IS NULL AND created_at>?1")?
-        .query_map([now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| row.get(0))?
-        .collect::<Result<_, _>>()?)
+    connection.prepare("SELECT task_id FROM chief_session_starts WHERE state='requested' AND worker IS NULL AND created_at>?1").map_err(storage_error)?
+        .query_map([now_ms.saturating_sub(super::SESSION_START_OPEN_MS)], |row| row.get(0)).map_err(storage_error)?
+        .collect::<Result<_, _>>().map_err(storage_error)
 }
 
 /// Retire gifts that can no longer be admitted, before checking exclusivity or native delivery.
@@ -2196,18 +2318,20 @@ pub fn expire_todo_gifts(
     now_ms: i64,
 ) -> Result<(), TeamError> {
     connection.execute("UPDATE chief_session_starts SET state='expired' WHERE state='requested' AND worker IS NOT NULL
-        AND (created_at<=?1 OR epoch IN (SELECT epoch FROM chief_grants WHERE state='disabled'))",[now_ms.saturating_sub(super::SESSION_START_OPEN_MS)])?;
-    let gifts=connection.prepare("SELECT id,worker,worker_runtime FROM chief_session_starts WHERE state='requested' AND worker IS NOT NULL")?
-        .query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+        AND (created_at<=?1 OR epoch IN (SELECT epoch FROM chief_grants WHERE state='disabled'))",[now_ms.saturating_sub(super::SESSION_START_OPEN_MS)]).map_err(storage_error)?;
+    let gifts=connection.prepare("SELECT id,worker,worker_runtime FROM chief_session_starts WHERE state='requested' AND worker IS NOT NULL").map_err(storage_error)?
+        .query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     for (id, worker, runtime) in gifts {
         if !live
             .iter()
             .any(|session| session.session_id == worker && session.runtime == runtime)
         {
-            connection.execute(
-                "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
-                [id],
-            )?;
+            connection
+                .execute(
+                    "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
+                    [id],
+                )
+                .map_err(storage_error)?;
         }
     }
     Ok(())
@@ -2225,7 +2349,7 @@ pub fn claim_todo_gift(
         return Err(super::invalid("missing verified idle turn"));
     }
     let pending: bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE state='requested' AND worker=?1 AND worker_runtime=?2)",
-        params![recipient.session_id,recipient.runtime],|row|row.get(0))?;
+        params![recipient.session_id,recipient.runtime],|row|row.get(0)).map_err(storage_error)?;
     if !pending {
         return Ok(None);
     }
@@ -2233,8 +2357,9 @@ pub fn claim_todo_gift(
     // conditional todo -> doing transition is durable, so a concurrent completion cannot be reopened.
     let guard = crate::todo::lock_mutations()
         .map_err(|error| TeamError::new(ErrorCode::Storage, error.to_string()))?;
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let live = observed(&transaction)?;
     expire_todo_gifts(
         &transaction,
@@ -2245,7 +2370,7 @@ pub fn claim_todo_gift(
         now_ms,
     )?;
     if !crate::teams::store::inbox_available(&transaction, recipient, Some(idle_turn))? {
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(None);
     }
     let ready = live.iter().any(|worker| {
@@ -2259,14 +2384,14 @@ pub fn claim_todo_gift(
                 .all(|reason| reason == "live_queued_admission_verification_required")
     });
     if !ready {
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(None);
     }
     let gift: Option<(String,String,String,String)> = transaction.query_row("SELECT s.id,s.task_id,s.epoch,g.project FROM chief_session_starts s JOIN chief_grants g ON g.epoch=s.epoch
         WHERE s.state='requested' AND s.worker=?1 AND s.worker_runtime=?2 AND g.state='active'",params![recipient.session_id,recipient.runtime],
-        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(storage_error)?;
     let Some((request, todo, epoch, chief_project)) = gift else {
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(None);
     };
     let mut todos = crate::todo::TodoList::load_checked()
@@ -2277,31 +2402,37 @@ pub fn claim_todo_gift(
         Some(crate::teams::Role::Designer | crate::teams::Role::Qa)
     ) || crate::sessions::role_of(&recipient.session_id) == "designer"
     {
-        transaction.execute(
-            "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
-            [request],
-        )?;
-        transaction.commit()?;
+        transaction
+            .execute(
+                "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
+                [request],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(None);
     }
     let project = match chief_startable_todo(&todos, &chief_project, &todo) {
         Ok(eligible) => eligible.project,
         Err(error) if matches!(error.code, ErrorCode::NotFound | ErrorCode::Conflict) => {
-            transaction.execute(
-                "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
-                [request],
-            )?;
-            transaction.commit()?;
+            transaction
+                .execute(
+                    "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
+                    [request],
+                )
+                .map_err(storage_error)?;
+            transaction.commit().map_err(storage_error)?;
             return Ok(None);
         }
         Err(error) => return Err(error),
     };
     if project != recipient.project {
-        transaction.execute(
-            "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
-            [request],
-        )?;
-        transaction.commit()?;
+        transaction
+            .execute(
+                "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
+                [request],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(None);
     }
     let task = crate::teams::TaskKey {
@@ -2312,11 +2443,13 @@ pub fn claim_todo_gift(
         .and_then(|()| require_unreserved(&transaction, &task, Some(&recipient.session_id)))
     {
         if matches!(error.code, ErrorCode::Unauthorized | ErrorCode::Conflict) {
-            transaction.execute(
-                "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
-                [request],
-            )?;
-            transaction.commit()?;
+            transaction
+                .execute(
+                    "UPDATE chief_session_starts SET state='expired' WHERE id=?1",
+                    [request],
+                )
+                .map_err(storage_error)?;
+            transaction.commit().map_err(storage_error)?;
             return Ok(None);
         }
         return Err(error);
@@ -2342,12 +2475,12 @@ pub fn claim_todo_gift(
     let id = format!("chief_{}", crate::teams::store::identifier()?);
     let envelope = json!({"message_id":message_id,"kind":"chief_todo","epoch":epoch,"text":prompt,"todo":todo,"reservation":token});
     transaction.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at,attempts)
-        VALUES (?1,?2,?3,?4,?2,'null',?5,'submitting',?6,1)",params![message_id,epoch,recipient.session_id,serde_json::to_string(recipient)?,envelope.to_string(),now_ms])?;
+        VALUES (?1,?2,?3,?4,?2,'null',?5,'submitting',?6,1)",params![message_id,epoch,recipient.session_id,serde_json::to_string(recipient)?,envelope.to_string(),now_ms]).map_err(storage_error)?;
     transaction.execute("INSERT INTO chief_delivery_attempts(id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at)
-        VALUES (?1,?2,?3,?4,'chief_todo',?5,?6,'submitting',?7)",params![id,recipient.session_id,recipient.runtime,epoch,envelope.to_string(),idle_turn,now_ms])?;
+        VALUES (?1,?2,?3,?4,'chief_todo',?5,?6,'submitting',?7)",params![id,recipient.session_id,recipient.runtime,epoch,envelope.to_string(),idle_turn,now_ms]).map_err(storage_error)?;
     crate::teams::store::record_inbox_turn(&transaction, recipient, idle_turn)?;
     mark_session_started(&transaction, &request, &token, now_ms)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     let item = todos
         .items
         .iter_mut()
@@ -2399,9 +2532,9 @@ fn request_message(
 ) -> Result<Value, TeamError> {
     let worker = chief_target(live, chief, session)?;
     connection.execute(&format!("UPDATE chief_inbox SET state='cancelled',{CHIEF_MESSAGE_CANCELLATION} WHERE state='queued' AND json_extract(envelope,'$.kind')='chief_message'
-        AND json_extract(envelope,'$.expires_at')<=?3"), params![MESSAGE_EXPIRED, now_ms, now_ms])?;
+        AND json_extract(envelope,'$.expires_at')<=?3"), params![MESSAGE_EXPIRED, now_ms, now_ms]).map_err(crate::teams::store::storage_error)?;
     let waiting: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?1 AND state IN ('queued','submitting','uncertain')
-        AND json_extract(envelope,'$.kind')='chief_message')", [session], |row|row.get(0))?;
+        AND json_extract(envelope,'$.kind')='chief_message')", [session], |row|row.get(0)).map_err(storage_error)?;
     if waiting {
         return Err(conflict("a Chief message already waits for this session"));
     }
@@ -2409,7 +2542,7 @@ fn request_message(
         "SELECT count(*) FROM chief_events WHERE kind='chief_message_requested' AND created_at>?1",
         [now_ms.saturating_sub(3_600_000)],
         |row| row.get(0),
-    )?;
+    ).map_err(storage_error)?;
     if recent >= super::CHIEF_MESSAGES_PER_HOUR {
         return Err(TeamError::new(
             ErrorCode::Limit,
@@ -2421,7 +2554,7 @@ fn request_message(
         "expires_at":now_ms.saturating_add(super::SESSION_START_OPEN_MS)});
     connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at)
         VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
-        params![id,epoch,session,serde_json::to_string(&worker.session)?,envelope.to_string(),now_ms])?;
+        params![id,epoch,session,serde_json::to_string(&worker.session)?,envelope.to_string(),now_ms]).map_err(storage_error)?;
     coordination_event(
         connection,
         "chief_message_requested",
@@ -2447,7 +2580,7 @@ pub fn mark_session_started(
     token: &str,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    let changed = connection.execute("UPDATE chief_session_starts SET state='started',token=?2,started_at=?3 WHERE id=?1 AND state='requested'", params![request, token, now_ms])?;
+    let changed = connection.execute("UPDATE chief_session_starts SET state='started',token=?2,started_at=?3 WHERE id=?1 AND state='requested'", params![request, token, now_ms]).map_err(storage_error)?;
     if changed != 1 {
         return Err(conflict(
             "the Chief's session start request is no longer open",
@@ -2459,15 +2592,6 @@ pub fn mark_session_started(
         &json!({"source":"host","request":request,"reservation":token}),
         now_ms,
     )
-}
-
-fn excerpt(text: &str, maximum: usize) -> String {
-    if text.chars().count() <= maximum {
-        return text.to_string();
-    }
-    let mut shortened: String = text.chars().take(maximum - 1).collect();
-    shortened.push('…');
-    shortened
 }
 
 /// Stores a stop and wakes the Chief for it. `None` when this boundary was already recorded.
@@ -2484,15 +2608,16 @@ pub fn record_stop(
     bundle: &super::bundle::StopBundle,
     now_ms: i64,
 ) -> Result<Option<String>, TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     if stop_recorded(&transaction, &session.session_id, boundary)? {
         return Ok(None);
     }
     supersede_stops(&transaction, &session.session_id, Some(boundary))?;
     let id = crate::teams::store::identifier()?;
     transaction.execute("INSERT INTO chief_stops(id,session_id,runtime,boundary,project,task_id,bundle,state,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'open',?8)",
-        params![id, session.session_id, session.runtime, boundary, task.project, task.task_id, serde_json::to_string(bundle)?, now_ms])?;
+        params![id, session.session_id, session.runtime, boundary, task.project, task.task_id, serde_json::to_string(bundle)?, now_ms]).map_err(storage_error)?;
     if !carry_queued_answers(&transaction, &id, session, boundary, &task.task_id)? {
         coordination_event(
             &transaction,
@@ -2502,7 +2627,7 @@ pub fn record_stop(
         )?;
         schedule_wake(&transaction, now_ms)?;
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(Some(id))
 }
 
@@ -2515,7 +2640,7 @@ fn decision_record(
     now_ms: i64,
 ) -> Result<Value, TeamError> {
     let previous: Option<(String,i64,String,String,String)> = connection.query_row("SELECT id,revision,question,recommendation,state FROM chief_decisions WHERE scope_key=?1 AND decision_key=?2 ORDER BY created_at DESC,rowid DESC LIMIT 1",
-        params![scope,key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?;
+        params![scope,key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional().map_err(storage_error)?;
     if let Some((id, revision, old_question, old_recommendation, _)) = &previous {
         // A resolved blocker stays answered until genuinely new evidence changes its record.
         if old_question == question && old_recommendation == recommendation {
@@ -2526,11 +2651,13 @@ fn decision_record(
         .as_ref()
         .is_none_or(|(_, _, _, _, state)| state != "open")
     {
-        let count: i64 = connection.query_row(
-            "SELECT count(*) FROM chief_decisions WHERE state='open'",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM chief_decisions WHERE state='open'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
         if count >= super::MAX_OPEN_DECISIONS as i64 {
             return Err(TeamError::new(
                 ErrorCode::Limit,
@@ -2539,16 +2666,18 @@ fn decision_record(
         }
     }
     if let Some((id, revision, _, _, _)) = previous {
-        connection.execute("UPDATE chief_decisions SET question=?2,recommendation=?3,revision=revision+1,state='open',resolution=NULL,resolved_at=NULL WHERE id=?1",params![id,question,recommendation])?;
+        connection.execute("UPDATE chief_decisions SET question=?2,recommendation=?3,revision=revision+1,state='open',resolution=NULL,resolved_at=NULL WHERE id=?1",params![id,question,recommendation]).map_err(storage_error)?;
         return Ok(json!({"decision":id,"revision":revision+1}));
     }
     let id = crate::teams::store::identifier()?;
     connection.execute("INSERT INTO chief_decisions(id,scope_key,decision_key,question,recommendation,state,revision,created_at) VALUES (?1,?2,?3,?4,?5,'open',1,?6)",
-        params![id,scope,key,question,recommendation,now_ms])?;
-    connection.execute(
-        "INSERT INTO chief_attention(decision,created_at) VALUES (?1,?2)",
-        params![id, now_ms],
-    )?;
+        params![id,scope,key,question,recommendation,now_ms]).map_err(storage_error)?;
+    connection
+        .execute(
+            "INSERT INTO chief_attention(decision,created_at) VALUES (?1,?2)",
+            params![id, now_ms],
+        )
+        .map_err(storage_error)?;
     Ok(json!({"decision":id,"revision":1}))
 }
 
@@ -2592,7 +2721,7 @@ fn wake_ready(
 fn schedule_wake(connection: &Connection, now_ms: i64) -> Result<(), TeamError> {
     let grant: Option<(String,VerifiedSession,i64,Option<i64>,bool)> = connection.query_row("SELECT g.epoch,g.session_id,g.agent,g.project,g.runtime,c.delivered_seq,c.last_admitted_at,c.failed
         FROM chief_grants g JOIN chief_coordination c ON c.epoch=g.epoch WHERE g.state='active'",[],|row|Ok((row.get(0)?,VerifiedSession {
-            session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?},row.get(5)?,row.get(6)?,row.get(7)?))).optional()?;
+            session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?},row.get(5)?,row.get(6)?,row.get(7)?))).optional().map_err(storage_error)?;
     let Some((epoch, chief, delivered, last_admitted, failed)) = grant else {
         return Ok(());
     };
@@ -2603,19 +2732,19 @@ fn schedule_wake(connection: &Connection, now_ms: i64) -> Result<(), TeamError> 
     if !material_pending(connection, delivered)? && !needs_unread_retry(connection, &epoch)? {
         return Ok(());
     }
-    let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE chief_epoch=?1 AND json_extract(envelope,'$.kind')='chief_wake' AND state IN ('queued','submitting','uncertain'))",[&epoch],|row|row.get(0))?;
+    let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE chief_epoch=?1 AND json_extract(envelope,'$.kind')='chief_wake' AND state IN ('queued','submitting','uncertain'))",[&epoch],|row|row.get(0)).map_err(storage_error)?;
     if exists {
         return Ok(());
     }
     let id = crate::teams::store::identifier()?;
     let envelope = json!({"message_id":id,"kind":"chief_wake","epoch":epoch,"body":"Material coordination work is pending. Read bounded chief Context. No tools or permissions are granted."});
     connection.execute("INSERT INTO chief_inbox(id,chief_epoch,recipient,recipient_identity,recipient_epoch,work,envelope,state,next_at) VALUES (?1,?2,?3,?4,?2,'null',?5,'queued',?6)",
-        params![id,epoch,chief.session_id,serde_json::to_string(&chief)?,envelope.to_string(),now_ms])?;
+        params![id,epoch,chief.session_id,serde_json::to_string(&chief)?,envelope.to_string(),now_ms]).map_err(storage_error)?;
     Ok(())
 }
 
 fn material_pending(connection: &Connection, delivered: i64) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed','session_start_requested','session_started'))",[delivered],|row|row.get(0))?)
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_events WHERE seq>?1 AND kind NOT IN ('status','coordinate','reprioritized','habit_changed','session_start_requested','session_started'))",[delivered],|row|row.get(0)).map_err(crate::teams::store::storage_error)?)
 }
 
 fn needs_unread_retry(connection: &Connection, epoch: &str) -> Result<bool, TeamError> {
@@ -2661,8 +2790,8 @@ fn observe_coordination(
     now_ms: i64,
 ) -> Result<(), TeamError> {
     observe_supervision(connection, live, now_ms)?;
-    let grants = connection.prepare("SELECT epoch,session_id,agent,project,runtime,observation FROM chief_grants JOIN chief_coordination USING(epoch) WHERE state IN ('active','paused')")?
-        .query_map([],|row|Ok((row.get::<_,String>(0)?,VerifiedSession {session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?},row.get::<_,String>(5)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let grants = connection.prepare("SELECT epoch,session_id,agent,project,runtime,observation FROM chief_grants JOIN chief_coordination USING(epoch) WHERE state IN ('active','paused')").map_err(crate::teams::store::storage_error)?
+        .query_map([],|row|Ok((row.get::<_,String>(0)?,VerifiedSession {session_id:row.get(1)?,agent:row.get(2)?,project:row.get(3)?,runtime:row.get(4)?},row.get::<_,String>(5)?))).map_err(crate::teams::store::storage_error)?.collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?;
     for (epoch, chief, old) in grants {
         // The chief's own native execution/idle transitions must not manufacture its next LLM turn.
         let product_workers = live
@@ -2672,10 +2801,12 @@ fn observe_coordination(
             .collect::<Vec<_>>();
         let material = material_workers(&product_workers, now_ms).to_string();
         if old != material {
-            connection.execute(
-                "UPDATE chief_coordination SET observation=?2 WHERE epoch=?1",
-                params![epoch, material],
-            )?;
+            connection
+                .execute(
+                    "UPDATE chief_coordination SET observation=?2 WHERE epoch=?1",
+                    params![epoch, material],
+                )
+                .map_err(storage_error)?;
             coordination_event(
                 connection,
                 "availability_changed",
@@ -2706,18 +2837,23 @@ fn observe_coordination(
             )?;
         }
     }
-    let failed_wakes = connection.prepare("SELECT DISTINCT chief_epoch FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_wake' AND state='uncertain'")?
-        .query_map([],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+    let failed_wakes = connection.prepare("SELECT DISTINCT chief_epoch FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_wake' AND state='uncertain'").map_err(storage_error)?
+        .query_map([],|row|row.get::<_,String>(0)).map_err(storage_error)?.collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
     for epoch in failed_wakes {
-        connection.execute(
-            "UPDATE chief_coordination SET failed=1 WHERE epoch=?1",
-            [&epoch],
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_coordination SET failed=1 WHERE epoch=?1",
+                [&epoch],
+            )
+            .map_err(storage_error)?;
     }
     let unresolved = connection
-        .prepare("SELECT id FROM chief_inbox WHERE state IN ('uncertain','failed')")?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+        .prepare("SELECT id FROM chief_inbox WHERE state IN ('uncertain','failed')")
+        .map_err(storage_error)?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     for message in unresolved {
         decision_record(
             connection,
@@ -2728,12 +2864,15 @@ fn observe_coordination(
             now_ms,
         )?;
     }
-    connection.execute("UPDATE chief_summary_requests SET state='failed' WHERE state IN ('queued','pending') AND deadline<=?1",[now_ms])?;
-    connection.execute("UPDATE legacy_launches SET state='uncertain',revision=revision+1 WHERE state IN ('reserved','submitting') AND created_at<=?1",[now_ms.saturating_sub(30_000)])?;
+    connection.execute("UPDATE chief_summary_requests SET state='failed' WHERE state IN ('queued','pending') AND deadline<=?1",[now_ms]).map_err(storage_error)?;
+    connection.execute("UPDATE legacy_launches SET state='uncertain',revision=revision+1 WHERE state IN ('reserved','submitting') AND created_at<=?1",[now_ms.saturating_sub(30_000)]).map_err(storage_error)?;
     let launches = connection
-        .prepare("SELECT token FROM legacy_launches WHERE state='uncertain'")?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+        .prepare("SELECT token FROM legacy_launches WHERE state='uncertain'")
+        .map_err(storage_error)?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     for token in launches {
         decision_record(
             connection,
@@ -2760,7 +2899,8 @@ fn observe_coordination(
                 ))
             },
         )
-        .optional()?;
+        .optional()
+        .map_err(crate::teams::store::storage_error)?;
     if let Some((epoch, chief)) = active {
         notice_unread_context(connection, &epoch, &chief, live, now_ms)?;
     }
@@ -2771,15 +2911,18 @@ fn current_turn(
     connection: &Connection,
     epoch: &str,
 ) -> Result<Option<(String, i64, i64, i64)>, TeamError> {
-    Ok(connection.query_row("SELECT dispatch_id,through_seq,mutations,records FROM chief_turns WHERE epoch=?1 ORDER BY rowid DESC LIMIT 1",[epoch],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?)
+    connection.query_row("SELECT dispatch_id,through_seq,mutations,records FROM chief_turns WHERE epoch=?1 ORDER BY rowid DESC LIMIT 1",[epoch],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(storage_error)
 }
 
 fn charge_mutation(connection: &Connection, epoch: &str) -> Result<String, TeamError> {
-    if connection.query_row(
-        "SELECT failed FROM chief_coordination WHERE epoch=?1",
-        [epoch],
-        |row| row.get::<_, bool>(0),
-    )? {
+    if connection
+        .query_row(
+            "SELECT failed FROM chief_coordination WHERE epoch=?1",
+            [epoch],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(storage_error)?
+    {
         return Err(TeamError::new(
             ErrorCode::Unavailable,
             "chief native coordination delivery requires host review; previous allowance is closed",
@@ -2797,20 +2940,25 @@ fn charge_mutation(connection: &Connection, epoch: &str) -> Result<String, TeamE
             "chief turn mutation budget exhausted; wait for eligible material work at a new safe idle boundary",
         ));
     }
-    connection.execute(
-        "UPDATE chief_turns SET mutations=mutations+1 WHERE dispatch_id=?1",
-        [&dispatch],
-    )?;
+    connection
+        .execute(
+            "UPDATE chief_turns SET mutations=mutations+1 WHERE dispatch_id=?1",
+            [&dispatch],
+        )
+        .map_err(storage_error)?;
     Ok(dispatch)
 }
 
 /// Charged before the read, like a mutation, so a failing inspection still spends its allowance.
 fn charge_inspection(connection: &Connection, epoch: &str) -> Result<String, TeamError> {
-    if connection.query_row(
-        "SELECT failed FROM chief_coordination WHERE epoch=?1",
-        [epoch],
-        |row| row.get::<_, bool>(0),
-    )? {
+    if connection
+        .query_row(
+            "SELECT failed FROM chief_coordination WHERE epoch=?1",
+            [epoch],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(crate::teams::store::storage_error)?
+    {
         return Err(TeamError::new(
             ErrorCode::Unavailable,
             "chief native coordination delivery requires host review; previous allowance is closed",
@@ -2822,29 +2970,35 @@ fn charge_inspection(connection: &Connection, epoch: &str) -> Result<String, Tea
             "chief inspections require the first admitted verified native coordination wake",
         ));
     };
-    let inspections: i64 = connection.query_row(
-        "SELECT inspections FROM chief_turns WHERE dispatch_id=?1",
-        [&dispatch],
-        |row| row.get(0),
-    )?;
+    let inspections: i64 = connection
+        .query_row(
+            "SELECT inspections FROM chief_turns WHERE dispatch_id=?1",
+            [&dispatch],
+            |row| row.get(0),
+        )
+        .map_err(crate::teams::store::storage_error)?;
     if inspections >= super::INSPECTIONS_PER_TURN {
         return Err(TeamError::new(
             ErrorCode::Limit,
             "chief turn inspection budget exhausted; wait for the next admitted wake",
         ));
     }
-    connection.execute(
-        "UPDATE chief_turns SET inspections=inspections+1 WHERE dispatch_id=?1",
-        [&dispatch],
-    )?;
+    connection
+        .execute(
+            "UPDATE chief_turns SET inspections=inspections+1 WHERE dispatch_id=?1",
+            [&dispatch],
+        )
+        .map_err(crate::teams::store::storage_error)?;
     Ok(dispatch)
 }
 
 pub(crate) fn ensure_turn_inspections(connection: &Connection) -> Result<(), TeamError> {
     if !has_column(connection, "chief_turns", "inspections")? {
-        connection.execute_batch(
-            "ALTER TABLE chief_turns ADD COLUMN inspections INTEGER NOT NULL DEFAULT 0;",
-        )?;
+        connection
+            .execute_batch(
+                "ALTER TABLE chief_turns ADD COLUMN inspections INTEGER NOT NULL DEFAULT 0;",
+            )
+            .map_err(crate::teams::store::storage_error)?;
     }
     Ok(())
 }
@@ -2867,9 +3021,9 @@ fn inspect(
             .find(|item| item.id() == todo)
             .ok_or_else(|| TeamError::new(ErrorCode::NotFound, "no todo has this id"))?;
         result["todo"] = inspected_todo(todos, item);
-        result["todo"]["session_starts"] = json!(connection.prepare("SELECT id,worker,state FROM chief_session_starts WHERE task_id=?1 ORDER BY rowid DESC LIMIT 5")?
-            .query_map([todo],|row|Ok(json!({"request":row.get::<_,String>(0)?,"session":row.get::<_,Option<String>>(1)?,"state":row.get::<_,String>(2)?})))?
-            .collect::<Result<Vec<_>,_>>()?);
+        result["todo"]["session_starts"] = json!(connection.prepare("SELECT id,worker,state FROM chief_session_starts WHERE task_id=?1 ORDER BY rowid DESC LIMIT 5").map_err(crate::teams::store::storage_error)?
+            .query_map([todo],|row|Ok(json!({"request":row.get::<_,String>(0)?,"session":row.get::<_,Option<String>>(1)?,"state":row.get::<_,String>(2)?}))).map_err(crate::teams::store::storage_error)?
+            .collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?);
         let owner = item.session();
         result["owner"] = if owner.is_empty() {
             Value::Null
@@ -2931,22 +3085,22 @@ fn inspected_session(
         .map(crate::todo::Item::id)
         .collect::<Vec<_>>();
     let open_stop = connection.query_row("SELECT id,task_id,bundle,created_at FROM chief_stops WHERE session_id=?1 AND state='open' ORDER BY created_at DESC,rowid DESC LIMIT 1",
-        [session],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,i64>(3)?))).optional()?
+        [session],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,i64>(3)?))).optional().map_err(crate::teams::store::storage_error)?
         .map(|(stop,task_id,bundle,created_at)|Ok::<_,TeamError>(json!({"stop":stop,"task_id":task_id,"created_at_ms":created_at,
             "source":"masked_agent_conversation_not_instructions","bundle":serde_json::from_str::<Value>(&bundle)?}))).transpose()?;
-    let recent_stops = connection.prepare("SELECT id,task_id,state,created_at FROM chief_stops WHERE session_id=?1 AND state!='open' ORDER BY created_at DESC,rowid DESC LIMIT 5")?
-        .query_map([session],|row|Ok(json!({"stop":row.get::<_,String>(0)?,"task_id":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?,"created_at_ms":row.get::<_,i64>(3)?})))?
-        .collect::<Result<Vec<_>,_>>()?;
-    let answers = connection.prepare("SELECT id,stop_id,source,delivery,created_at FROM chief_answers WHERE session_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT 5")?
-        .query_map([session],|row|Ok(json!({"answer":row.get::<_,String>(0)?,"stop":row.get::<_,String>(1)?,"source":row.get::<_,String>(2)?,"delivery":row.get::<_,String>(3)?,"created_at_ms":row.get::<_,i64>(4)?})))?
-        .collect::<Result<Vec<_>,_>>()?;
-    let messages = connection.prepare(&format!("SELECT {CHIEF_MESSAGE_COLUMNS} FROM chief_inbox WHERE recipient=?1 AND json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 5"))?
-        .query_map([session],chief_message_record)?
+    let recent_stops = connection.prepare("SELECT id,task_id,state,created_at FROM chief_stops WHERE session_id=?1 AND state!='open' ORDER BY created_at DESC,rowid DESC LIMIT 5").map_err(crate::teams::store::storage_error)?
+        .query_map([session],|row|Ok(json!({"stop":row.get::<_,String>(0)?,"task_id":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?,"created_at_ms":row.get::<_,i64>(3)?}))).map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?;
+    let answers = connection.prepare("SELECT id,stop_id,source,delivery,created_at FROM chief_answers WHERE session_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT 5").map_err(crate::teams::store::storage_error)?
+        .query_map([session],|row|Ok(json!({"answer":row.get::<_,String>(0)?,"stop":row.get::<_,String>(1)?,"source":row.get::<_,String>(2)?,"delivery":row.get::<_,String>(3)?,"created_at_ms":row.get::<_,i64>(4)?}))).map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?;
+    let messages = connection.prepare(&format!("SELECT {CHIEF_MESSAGE_COLUMNS} FROM chief_inbox WHERE recipient=?1 AND json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 5")).map_err(crate::teams::store::storage_error)?
+        .query_map([session],chief_message_record).map_err(crate::teams::store::storage_error)?
         .map(|record|record.map(|record|json!({"message":record["id"],"state":record["state"],"cancellation":record["cancellation"]})))
-        .collect::<Result<Vec<_>,_>>()?;
-    let gifts = connection.prepare("SELECT id,task_id,state FROM chief_session_starts WHERE worker=?1 ORDER BY rowid DESC LIMIT 5")?
-        .query_map([session],|row|Ok(json!({"request":row.get::<_,String>(0)?,"todo":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?})))?
-        .collect::<Result<Vec<_>,_>>()?;
+        .collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?;
+    let gifts = connection.prepare("SELECT id,task_id,state FROM chief_session_starts WHERE worker=?1 ORDER BY rowid DESC LIMIT 5").map_err(crate::teams::store::storage_error)?
+        .query_map([session],|row|Ok(json!({"request":row.get::<_,String>(0)?,"todo":row.get::<_,String>(1)?,"state":row.get::<_,String>(2)?}))).map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?;
     Ok(
         json!({"session_id":session,"live":availability.is_some(),"availability":availability,"doing_todos":doing,"open_stop":open_stop,
         "recent_stops":recent_stops,"answers":answers,"messages":messages,"todo_gifts":gifts}),
@@ -2997,8 +3151,9 @@ pub fn claim(
             "missing verified idle turn",
         ));
     }
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     if !crate::teams::store::inbox_available(&transaction, recipient, Some(idle_turn))? {
         return Ok(None);
     }
@@ -3007,9 +3162,9 @@ pub fn claim(
         let candidate: Option<(String, String, String, String, String)> = transaction.query_row(
             "SELECT id,recipient_identity,recipient_epoch,chief_epoch,envelope FROM chief_inbox WHERE recipient=?1 AND state='queued' AND next_at<=?2
                 AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ('chief_answer','chief_form_reply','chief_correction','chief_check') ORDER BY rowid LIMIT 1",
-            params![recipient.session_id,now_ms], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?;
+            params![recipient.session_id,now_ms], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional().map_err(storage_error)?;
         let Some((message_id, identity, epoch, chief_epoch, envelope)) = candidate else {
-            transaction.commit()?;
+            transaction.commit().map_err(storage_error)?;
             return Ok(None);
         };
         let identity = serde_json::from_str::<VerifiedSession>(&identity)?;
@@ -3032,9 +3187,9 @@ pub fn claim(
                     "SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active')",
                     [&chief_epoch],
                     |row| row.get(0),
-                )?;
+                ).map_err(storage_error)?;
                 let launching: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM scheduling_reservations r JOIN legacy_launches l ON l.token=r.token
-                    WHERE r.worker=?1 AND l.state IN ('reserved','submitting','uncertain'))",[&recipient.session_id],|row|row.get(0))?;
+                    WHERE r.worker=?1 AND l.state IN ('reserved','submitting','uncertain'))",[&recipient.session_id],|row|row.get(0)).map_err(storage_error)?;
                 // Coordination can resume the current task, but cannot overtake a launch or another native turn.
                 let ready = live.iter().any(|worker| {
                     worker.session == identity
@@ -3055,19 +3210,22 @@ pub fn claim(
                 }
             }
         } else if envelope["kind"] == "chief_wake" {
-            let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active' AND session_id=?2 AND runtime=?3)",params![chief_epoch,identity.session_id,identity.runtime],|row|row.get(0))?;
-            let used_boundary: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM chief_turns WHERE epoch=?1 AND idle_turn=?2)",
-                params![chief_epoch, idle_turn],
-                |row| row.get(0),
-            )?;
+            let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active' AND session_id=?2 AND runtime=?3)",params![chief_epoch,identity.session_id,identity.runtime],|row|row.get(0)).map_err(crate::teams::store::storage_error)?;
+            let used_boundary: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chief_turns WHERE epoch=?1 AND idle_turn=?2)",
+                    params![chief_epoch, idle_turn],
+                    |row| row.get(0),
+                )
+                .map_err(crate::teams::store::storage_error)?;
             let delivered: Option<i64> = transaction
                 .query_row(
                     "SELECT delivered_seq FROM chief_coordination WHERE epoch=?1",
                     [&chief_epoch],
                     |row| row.get(0),
                 )
-                .optional()?;
+                .optional()
+                .map_err(crate::teams::store::storage_error)?;
             // A re-wake the Chief no longer needs, because it read on before the wake reached it.
             let needed = active
                 && (material_pending(&transaction, delivered.unwrap_or(0))?
@@ -3077,13 +3235,13 @@ pub fn claim(
             } else if !active || used_boundary {
                 InboxValidation::Deferred
             } else if wake_ready(&transaction, &identity, &live, now_ms)? {
-                let through: i64 = transaction.query_row(
-                    "SELECT coalesce(max(seq),0) FROM chief_events",
-                    [],
-                    |row| row.get(0),
-                )?;
+                let through: i64 = transaction
+                    .query_row("SELECT coalesce(max(seq),0) FROM chief_events", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(storage_error)?;
                 envelope["through_seq"] = json!(through);
-                let continuation: Option<String> = transaction.query_row("SELECT body FROM chief_events WHERE source='host' AND kind='context_backlog' AND json_extract(body,'$.epoch')=?1 AND seq>(SELECT delivered_seq FROM chief_coordination WHERE epoch=?1) ORDER BY seq DESC LIMIT 1",[&chief_epoch],|row|row.get(0)).optional()?;
+                let continuation: Option<String> = transaction.query_row("SELECT body FROM chief_events WHERE source='host' AND kind='context_backlog' AND json_extract(body,'$.epoch')=?1 AND seq>(SELECT delivered_seq FROM chief_coordination WHERE epoch=?1) ORDER BY seq DESC LIMIT 1",[&chief_epoch],|row|row.get(0)).optional().map_err(crate::teams::store::storage_error)?;
                 let position = unread_context(&transaction, &chief_epoch)?
                     .0
                     .filter(|position| *position > 0 && *position < through);
@@ -3093,12 +3251,14 @@ pub fn claim(
                     (None, Some(position)) => json!({"resume_after":position,"epoch":chief_epoch}),
                     (None, None) => Value::Null,
                 };
-                envelope["summary_requests"] = json!(transaction.prepare("SELECT id FROM chief_summary_requests WHERE state='queued' AND epoch=?1 ORDER BY created_at LIMIT 1")?
-                    .query_map([&chief_epoch],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?);
-                transaction.execute(
-                    "UPDATE chief_inbox SET envelope=?2 WHERE id=?1",
-                    params![message_id, envelope.to_string()],
-                )?;
+                envelope["summary_requests"] = json!(transaction.prepare("SELECT id FROM chief_summary_requests WHERE state='queued' AND epoch=?1 ORDER BY created_at LIMIT 1").map_err(crate::teams::store::storage_error)?
+                    .query_map([&chief_epoch],|row|row.get::<_,String>(0)).map_err(crate::teams::store::storage_error)?.collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?);
+                transaction
+                    .execute(
+                        "UPDATE chief_inbox SET envelope=?2 WHERE id=?1",
+                        params![message_id, envelope.to_string()],
+                    )
+                    .map_err(crate::teams::store::storage_error)?;
                 InboxValidation::Ready
             } else {
                 InboxValidation::Deferred
@@ -3113,34 +3273,36 @@ pub fn claim(
                 let unattempted = "AND NOT EXISTS(SELECT 1 FROM chief_delivery_attempts a WHERE json_extract(a.envelope,'$.message_id')=chief_inbox.id AND a.state<>'not_submitted')";
                 let cancelled = match cancellation {
                     Some(reason) => transaction.execute(&format!("UPDATE chief_inbox SET state='cancelled',{CHIEF_MESSAGE_CANCELLATION} WHERE id=?3 AND state='queued' {unattempted}"),
-                        params![reason, now_ms, &message_id])?,
-                    None => transaction.execute(&format!("UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued' {unattempted}"), [&message_id])?,
+                        params![reason, now_ms, &message_id]).map_err(crate::teams::store::storage_error)?,
+                    None => transaction.execute(&format!("UPDATE chief_inbox SET state='cancelled' WHERE id=?1 AND state='queued' {unattempted}"), [&message_id]).map_err(crate::teams::store::storage_error)?,
                 };
                 if cancelled > 0 {
                     continue;
                 }
-                transaction.commit()?;
+                transaction.commit().map_err(storage_error)?;
                 return Ok(None);
             }
             InboxValidation::Deferred => {
-                transaction.commit()?;
+                transaction.commit().map_err(storage_error)?;
                 return Ok(None);
             }
             InboxValidation::Ready if identity != *recipient => {
-                transaction.commit()?;
+                transaction.commit().map_err(storage_error)?;
                 return Ok(None);
             }
             InboxValidation::Ready => {}
         }
         let id = format!("chief_{}", crate::teams::store::identifier()?);
-        transaction.execute(
-            "UPDATE chief_inbox SET state='submitting',attempts=attempts+1 WHERE id=?1",
-            [&message_id],
-        )?;
+        transaction
+            .execute(
+                "UPDATE chief_inbox SET state='submitting',attempts=attempts+1 WHERE id=?1",
+                [&message_id],
+            )
+            .map_err(storage_error)?;
         transaction.execute("INSERT INTO chief_delivery_attempts (id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'submitting',?8)",
-            params![id,recipient.session_id,recipient.runtime,epoch,envelope["kind"].as_str(),envelope.to_string(),idle_turn,now_ms])?;
+            params![id,recipient.session_id,recipient.runtime,epoch,envelope["kind"].as_str(),envelope.to_string(),idle_turn,now_ms]).map_err(storage_error)?;
         crate::teams::store::record_inbox_turn(&transaction, recipient, idle_turn)?;
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(Some(crate::teams::Dispatch {
             id,
             message_id,
@@ -3163,40 +3325,45 @@ pub fn claim_check(
             "missing verified idle turn",
         ));
     }
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     if !crate::teams::store::inbox_available(&transaction, recipient, Some(idle_turn))? {
         return Ok(None);
     }
     let candidate: Option<(String, String, String)> = transaction.query_row(
         "SELECT id,recipient_identity,envelope FROM chief_inbox WHERE recipient=?1 AND state='queued' AND json_extract(envelope,'$.kind')='chief_check' ORDER BY rowid LIMIT 1",
-        [&recipient.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+        [&recipient.session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(storage_error)?;
     let Some((message_id, identity, envelope)) = candidate else {
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(None);
     };
     let envelope: Value = serde_json::from_str(&envelope)?;
     // A recovery check names the retained grant, and only a new runtime of its own conversation takes it.
     let is_current: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_startup WHERE id=?1 AND state='checking')
         OR EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state IN ('active','paused') AND session_id=?2 AND agent=?3 AND project=?4 AND runtime<>?5)",
-        params![envelope["attempt"].as_str(), recipient.session_id, recipient.agent, recipient.project, recipient.runtime], |row| row.get(0))?;
+        params![envelope["attempt"].as_str(), recipient.session_id, recipient.agent, recipient.project, recipient.runtime], |row| row.get(0)).map_err(crate::teams::store::storage_error)?;
     if serde_json::from_str::<VerifiedSession>(&identity)? != *recipient || !is_current {
-        transaction.execute(
-            "UPDATE chief_inbox SET state='cancelled' WHERE id=?1",
-            [&message_id],
-        )?;
-        transaction.commit()?;
+        transaction
+            .execute(
+                "UPDATE chief_inbox SET state='cancelled' WHERE id=?1",
+                [&message_id],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(None);
     }
     let id = format!("chief_{}", crate::teams::store::identifier()?);
-    transaction.execute(
-        "UPDATE chief_inbox SET state='submitting',attempts=attempts+1 WHERE id=?1",
-        [&message_id],
-    )?;
+    transaction
+        .execute(
+            "UPDATE chief_inbox SET state='submitting',attempts=attempts+1 WHERE id=?1",
+            [&message_id],
+        )
+        .map_err(storage_error)?;
     transaction.execute("INSERT INTO chief_delivery_attempts (id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at) VALUES (?1,?2,?3,?4,'chief_check',?5,?6,'submitting',?7)",
-        params![id, recipient.session_id, recipient.runtime, envelope["attempt"].as_str(), envelope.to_string(), idle_turn, now_ms])?;
+        params![id, recipient.session_id, recipient.runtime, envelope["attempt"].as_str(), envelope.to_string(), idle_turn, now_ms]).map_err(storage_error)?;
     crate::teams::store::record_inbox_turn(&transaction, recipient, idle_turn)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(Some(crate::teams::Dispatch {
         id,
         message_id,
@@ -3305,8 +3472,9 @@ fn claim_reply(
             "missing verified idle turn",
         ));
     }
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     if !crate::teams::store::inbox_available(&transaction, recipient, Some(idle_turn))? {
         return Ok(None);
     }
@@ -3314,9 +3482,9 @@ fn claim_reply(
     loop {
         let candidate: Option<(String, String, String)> = transaction.query_row(
             "SELECT id,recipient_identity,envelope FROM chief_inbox WHERE recipient=?1 AND state='queued' AND json_extract(envelope,'$.kind')=?2 ORDER BY rowid LIMIT 1",
-            params![recipient.session_id, kind], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+            params![recipient.session_id, kind], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(storage_error)?;
         let Some((message_id, identity, envelope)) = candidate else {
-            transaction.commit()?;
+            transaction.commit().map_err(storage_error)?;
             return Ok(None);
         };
         let identity = serde_json::from_str::<VerifiedSession>(&identity)?;
@@ -3328,7 +3496,8 @@ fn claim_reply(
                     [envelope["overrule"].as_str()],
                     |row| row.get(0),
                 )
-                .optional()?;
+                .optional()
+                .map_err(storage_error)?;
             if identity != *recipient || runtime.as_ref() != Some(&recipient.runtime) {
                 cancel_correction(&transaction, &message_id, &envelope, now_ms)?;
                 continue;
@@ -3340,7 +3509,8 @@ fn claim_reply(
                     [envelope["stop"].as_str()],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
-                .optional()?;
+                .optional()
+                .map_err(storage_error)?;
             let is_answer_of_this_runtime = identity == *recipient
                 && stop.as_ref().is_some_and(|(runtime, _, state)| {
                     state == "answered" && *runtime == recipient.runtime
@@ -3352,7 +3522,7 @@ fn claim_reply(
                     .as_ref()
                     .is_some_and(|(_, stop_boundary, _)| stop_boundary != boundary)
             {
-                transaction.commit()?;
+                transaction.commit().map_err(storage_error)?;
                 return Ok(None);
             }
             let answers_this_stop = is_answer_of_this_runtime
@@ -3362,7 +3532,7 @@ fn claim_reply(
             // session would stay on its form.
             let is_overtaken: bool = kind == "chief_answer" && envelope["source"] != "theo" && transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_overrules o
                 JOIN chief_answers a ON a.id=?1 JOIN chief_stops s ON s.id=a.stop_id
-                WHERE o.session_id=s.session_id AND o.created_at>=s.created_at AND o.created_at>a.created_at)", [envelope["answer"].as_str()], |row| row.get(0))?;
+                WHERE o.session_id=s.session_id AND o.created_at>=s.created_at AND o.created_at>a.created_at)", [envelope["answer"].as_str()], |row| row.get(0)).map_err(storage_error)?;
             if !answers_this_stop || is_overtaken {
                 cancel_answer(&transaction, &message_id)?;
                 continue;
@@ -3377,18 +3547,20 @@ fn claim_reply(
             &live,
             now_ms,
         )? {
-            transaction.commit()?;
+            transaction.commit().map_err(storage_error)?;
             return Ok(None);
         }
         let id = format!("chief_{}", crate::teams::store::identifier()?);
-        transaction.execute(
-            "UPDATE chief_inbox SET state='submitting',attempts=attempts+1 WHERE id=?1",
-            [&message_id],
-        )?;
+        transaction
+            .execute(
+                "UPDATE chief_inbox SET state='submitting',attempts=attempts+1 WHERE id=?1",
+                [&message_id],
+            )
+            .map_err(storage_error)?;
         transaction.execute("INSERT INTO chief_delivery_attempts (id,recipient,recipient_runtime,recipient_epoch,kind,envelope,idle_turn,state,started_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'submitting',?8)",
-            params![id, recipient.session_id, recipient.runtime, envelope["epoch"].as_str(), kind, envelope.to_string(), idle_turn, now_ms])?;
+            params![id, recipient.session_id, recipient.runtime, envelope["epoch"].as_str(), kind, envelope.to_string(), idle_turn, now_ms]).map_err(storage_error)?;
         crate::teams::store::record_inbox_turn(&transaction, recipient, idle_turn)?;
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(Some(crate::teams::Dispatch {
             id,
             message_id,
@@ -3411,11 +3583,13 @@ fn answer_ready(
     now_ms: i64,
 ) -> Result<bool, TeamError> {
     if envelope["source"] != "theo" {
-        let is_chief_active: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active')",
-            [envelope["epoch"].as_str()],
-            |row| row.get(0),
-        )?;
+        let is_chief_active: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active')",
+                [envelope["epoch"].as_str()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
         if !is_chief_active {
             return Ok(false);
         }
@@ -3433,7 +3607,7 @@ fn answer_ready(
     }
     // A submitted launch keeps its reservation until the todo is done; only one still in flight counts.
     let is_launching: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM scheduling_reservations r JOIN legacy_launches l ON l.token=r.token
-        WHERE r.worker=?1 AND r.owner='legacy' AND l.state IN ('reserved','submitting','uncertain'))", [&recipient.session_id], |row| row.get(0))?;
+        WHERE r.worker=?1 AND r.owner='legacy' AND l.state IN ('reserved','submitting','uncertain'))", [&recipient.session_id], |row| row.get(0)).map_err(storage_error)?;
     if is_launching {
         return Ok(false);
     }
@@ -3449,11 +3623,13 @@ fn answer_ready(
 }
 
 pub fn owns_dispatch(connection: &Connection, dispatch_id: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM chief_delivery_attempts WHERE id=?1)",
-        [dispatch_id],
-        |row| row.get(0),
-    )?)
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM chief_delivery_attempts WHERE id=?1)",
+            [dispatch_id],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)
 }
 
 pub fn finish_for(
@@ -3464,11 +3640,12 @@ pub fn finish_for(
     now_ms: i64,
 ) -> Result<(), TeamError> {
     use crate::teams::TransportOutcome;
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let attempt: Option<(String, String, Option<String>, String, String)> = transaction.query_row(
         "SELECT a.state,a.envelope,a.native_id,a.idle_turn,i.recipient_identity FROM chief_delivery_attempts a JOIN chief_inbox i ON i.id=json_extract(a.envelope,'$.message_id') WHERE a.id=?1",
-        [dispatch_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?;
+        [dispatch_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional().map_err(storage_error)?;
     let (state, envelope, native_id, turn, identity) =
         attempt.ok_or_else(|| TeamError::new(ErrorCode::NotFound, "delivery attempt not found"))?;
     if serde_json::from_str::<VerifiedSession>(&identity)? != *recipient {
@@ -3497,13 +3674,15 @@ pub fn finish_for(
             TransportOutcome::Received { native_id }
                 if state == "submitting" && *native_id == format!("msg_cockpit{message_id}") =>
             {
-                transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms])?;
-                transaction.execute(
-                    "UPDATE chief_inbox SET state='received' WHERE id=?1",
-                    [message_id],
-                )?;
+                transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms]).map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE chief_inbox SET state='received' WHERE id=?1",
+                        [message_id],
+                    )
+                    .map_err(storage_error)?;
                 if envelope["kind"] == "chief_todo" {
-                    transaction.execute("UPDATE legacy_launches SET state='submitted',revision=revision+1 WHERE token=?1 AND state='submitting'",[envelope["reservation"].as_str()])?;
+                    transaction.execute("UPDATE legacy_launches SET state='submitted',revision=revision+1 WHERE token=?1 AND state='submitting'",[envelope["reservation"].as_str()]).map_err(storage_error)?;
                 }
                 coordination_event(
                     &transaction,
@@ -3513,13 +3692,15 @@ pub fn finish_for(
                 )?;
             }
             _ => {
-                transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms])?;
-                transaction.execute(
-                    "UPDATE chief_inbox SET state='uncertain' WHERE id=?1",
-                    [message_id],
-                )?;
+                transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms]).map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE chief_inbox SET state='uncertain' WHERE id=?1",
+                        [message_id],
+                    )
+                    .map_err(storage_error)?;
                 if envelope["kind"] == "chief_todo" {
-                    transaction.execute("UPDATE legacy_launches SET state='uncertain',revision=revision+1 WHERE token=?1 AND state='submitting'",[envelope["reservation"].as_str()])?;
+                    transaction.execute("UPDATE legacy_launches SET state='uncertain',revision=revision+1 WHERE token=?1 AND state='submitting'",[envelope["reservation"].as_str()]).map_err(storage_error)?;
                 }
                 decision_record(
                     &transaction,
@@ -3531,7 +3712,7 @@ pub fn finish_for(
                 )?;
             }
         }
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(());
     }
     if envelope["kind"] == "chief_answer"
@@ -3552,33 +3733,39 @@ pub fn finish_for(
             TransportOutcome::Received { native_id }
                 if state == "submitting" && is_proof(native_id) =>
             {
-                transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms])?;
-                transaction.execute(
-                    "UPDATE chief_inbox SET state='received' WHERE id=?1",
-                    [message_id],
-                )?;
+                transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms]).map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE chief_inbox SET state='received' WHERE id=?1",
+                        [message_id],
+                    )
+                    .map_err(storage_error)?;
                 if is_correction {
                     transaction.execute(
                         "UPDATE chief_overrules SET delivery='received',finished_at=?2 WHERE id=?1",
                         params![envelope["overrule"].as_str(), now_ms],
-                    )?;
+                    ).map_err(storage_error)?;
                 } else {
-                    transaction.execute(
-                        "UPDATE chief_answers SET delivery='received' WHERE id=?1",
-                        [envelope["answer"].as_str()],
-                    )?;
+                    transaction
+                        .execute(
+                            "UPDATE chief_answers SET delivery='received' WHERE id=?1",
+                            [envelope["answer"].as_str()],
+                        )
+                        .map_err(storage_error)?;
                 }
             }
             _ => {
-                transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms])?;
-                transaction.execute(
-                    "UPDATE chief_inbox SET state='uncertain' WHERE id=?1",
-                    [message_id],
-                )?;
+                transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms]).map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE chief_inbox SET state='uncertain' WHERE id=?1",
+                        [message_id],
+                    )
+                    .map_err(storage_error)?;
                 if is_correction {
-                    transaction.execute("UPDATE chief_overrules SET delivery='uncertain',finished_at=?2 WHERE id=?1 AND delivery<>'received'",params![envelope["overrule"].as_str(),now_ms])?;
+                    transaction.execute("UPDATE chief_overrules SET delivery='uncertain',finished_at=?2 WHERE id=?1 AND delivery<>'received'",params![envelope["overrule"].as_str(),now_ms]).map_err(storage_error)?;
                 } else {
-                    transaction.execute("UPDATE chief_answers SET delivery='uncertain' WHERE id=?1 AND delivery<>'received'",[envelope["answer"].as_str()])?;
+                    transaction.execute("UPDATE chief_answers SET delivery='uncertain' WHERE id=?1 AND delivery<>'received'",[envelope["answer"].as_str()]).map_err(storage_error)?;
                 }
                 decision_record(
                     &transaction,
@@ -3590,7 +3777,7 @@ pub fn finish_for(
                 )?;
             }
         }
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(());
     }
     if envelope["kind"] == "chief_check" {
@@ -3600,31 +3787,37 @@ pub fn finish_for(
             TransportOutcome::Received { native_id }
                 if state == "submitting" && *native_id == format!("msg_cockpit{message_id}") =>
             {
-                transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms])?;
-                transaction.execute(
-                    "UPDATE chief_inbox SET state='received' WHERE id=?1",
-                    [message_id],
-                )?;
+                transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms]).map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE chief_inbox SET state='received' WHERE id=?1",
+                        [message_id],
+                    )
+                    .map_err(storage_error)?;
             }
             _ => {
-                transaction.execute("UPDATE chief_delivery_attempts SET state='cancelled',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms])?;
-                transaction.execute(
-                    "UPDATE chief_inbox SET state='cancelled' WHERE id=?1",
-                    [message_id],
-                )?;
+                transaction.execute("UPDATE chief_delivery_attempts SET state='cancelled',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms]).map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE chief_inbox SET state='cancelled' WHERE id=?1",
+                        [message_id],
+                    )
+                    .map_err(storage_error)?;
             }
         }
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(());
     }
     if envelope["kind"] != "chief_wake" {
         // A leftover from the removed dispatch protocol: its delivery can no longer be acted on.
-        transaction.execute("UPDATE chief_delivery_attempts SET state='cancelled',receipt=?2,finished_at=?3 WHERE id=?1", params![dispatch_id,serde_json::to_string(outcome)?,now_ms])?;
-        transaction.execute(
-            "UPDATE chief_inbox SET state='cancelled' WHERE id=?1",
-            [message_id],
-        )?;
-        transaction.commit()?;
+        transaction.execute("UPDATE chief_delivery_attempts SET state='cancelled',receipt=?2,finished_at=?3 WHERE id=?1", params![dispatch_id,serde_json::to_string(outcome)?,now_ms]).map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE chief_inbox SET state='cancelled' WHERE id=?1",
+                [message_id],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
         return Ok(());
     }
     let epoch = envelope["epoch"]
@@ -3633,40 +3826,48 @@ pub fn finish_for(
     match outcome {
         TransportOutcome::Received { native_id }
             if state == "submitting"
-                && !transaction.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM chief_turns WHERE epoch=?1 AND native_id=?2)",
-                    params![epoch, native_id],
-                    |row| row.get::<_, bool>(0),
-                )? =>
+                && !transaction
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM chief_turns WHERE epoch=?1 AND native_id=?2)",
+                        params![epoch, native_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(storage_error)? =>
         {
-            let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active' AND session_id=?2 AND runtime=?3)",params![epoch,recipient.session_id,recipient.runtime],|row|row.get(0))?;
+            let active: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active' AND session_id=?2 AND runtime=?3)",params![epoch,recipient.session_id,recipient.runtime],|row|row.get(0)).map_err(storage_error)?;
             if active
                 && recipient.agent == "opencode"
                 && admission_verified(&transaction, recipient)?
             {
                 transaction.execute("INSERT OR IGNORE INTO chief_turns(dispatch_id,epoch,idle_turn,native_id,through_seq,admitted_at,read_through)
                     VALUES (?1,?2,?3,?4,?5,?6,(SELECT coalesce(max(read_through),0) FROM chief_turns WHERE epoch=?2))",
-                    params![dispatch_id,epoch,turn,native_id,envelope["through_seq"].as_i64(),now_ms])?;
-                transaction.execute("UPDATE chief_coordination SET delivered_seq=max(delivered_seq,?2),last_admitted_at=?3 WHERE epoch=?1",params![epoch,envelope["through_seq"].as_i64(),now_ms])?;
+                    params![dispatch_id,epoch,turn,native_id,envelope["through_seq"].as_i64(),now_ms]).map_err(crate::teams::store::storage_error)?;
+                transaction.execute("UPDATE chief_coordination SET delivered_seq=max(delivered_seq,?2),last_admitted_at=?3 WHERE epoch=?1",params![epoch,envelope["through_seq"].as_i64(),now_ms]).map_err(crate::teams::store::storage_error)?;
                 transaction.execute("UPDATE chief_summary_requests SET state='pending',deadline=?3 WHERE epoch=?1 AND state='queued' AND deadline>?4
-                    AND id IN (SELECT value FROM json_each(?2,'$.summary_requests'))",params![epoch,envelope.to_string(),now_ms.saturating_add(120_000),now_ms])?;
+                    AND id IN (SELECT value FROM json_each(?2,'$.summary_requests'))",params![epoch,envelope.to_string(),now_ms.saturating_add(120_000),now_ms]).map_err(storage_error)?;
             }
-            transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms])?;
-            transaction.execute(
-                "UPDATE chief_inbox SET state='received' WHERE id=?1",
-                [message_id],
-            )?;
+            transaction.execute("UPDATE chief_delivery_attempts SET state='received',native_id=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,native_id,now_ms]).map_err(storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE chief_inbox SET state='received' WHERE id=?1",
+                    [message_id],
+                )
+                .map_err(storage_error)?;
         }
         _ => {
-            transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms])?;
-            transaction.execute(
-                "UPDATE chief_inbox SET state='uncertain' WHERE id=?1",
-                [message_id],
-            )?;
-            transaction.execute(
-                "UPDATE chief_coordination SET failed=1 WHERE epoch=?1",
-                [epoch],
-            )?;
+            transaction.execute("UPDATE chief_delivery_attempts SET state='uncertain',receipt=?2,finished_at=?3 WHERE id=?1",params![dispatch_id,serde_json::to_string(outcome)?,now_ms]).map_err(storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE chief_inbox SET state='uncertain' WHERE id=?1",
+                    [message_id],
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE chief_coordination SET failed=1 WHERE epoch=?1",
+                    [epoch],
+                )
+                .map_err(storage_error)?;
             decision_record(
                 &transaction,
                 &format!("host-delivery-{message_id}"),
@@ -3677,7 +3878,7 @@ pub fn finish_for(
             )?;
         }
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(())
 }
 
@@ -3693,14 +3894,15 @@ pub fn agent(
         if !exact_live(sender, live) {
             return Err(unauthorized());
         }
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
         crate::teams::store::sleep::guard_sender(&transaction, &sender.session_id)?;
         if is_product_worker(&transaction, &sender.session_id)? {
             return Err(unauthorized());
         }
         let epoch: Option<String> = transaction.query_row("SELECT epoch FROM chief_grants WHERE session_id=?1 AND agent=?2 AND project=?3 AND runtime=?4 AND state='active'",
-            params![sender.session_id, sender.agent, sender.project, sender.runtime], |row| row.get(0)).optional()?;
+            params![sender.session_id, sender.agent, sender.project, sender.runtime], |row| row.get(0)).optional().map_err(storage_error)?;
         let epoch = epoch.ok_or_else(unauthorized)?;
         // A citation the host refuses is a malformed answer, refused like one before the budget is charged.
         if let ChiefAgentAction::Answer { stop, habits, .. }
@@ -3713,23 +3915,29 @@ pub fn agent(
             ChiefAgentAction::Inspect { .. } => Some(charge_inspection(&transaction, &epoch)?),
             _ => Some(charge_mutation(&transaction, &epoch)?),
         };
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         // Failed actions still consume their allowance, but never leave partially applied mutations.
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if !transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active')",
-            [&epoch],
-            |row| row.get::<_, bool>(0),
-        )? {
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        if !transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM chief_grants WHERE epoch=?1 AND state='active')",
+                [&epoch],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(storage_error)?
+        {
             return Err(unauthorized());
         }
         if let Some(expected_turn) = budget_turn {
-            let failed: bool = transaction.query_row(
-                "SELECT failed FROM chief_coordination WHERE epoch=?1",
-                [&epoch],
-                |row| row.get(0),
-            )?;
+            let failed: bool = transaction
+                .query_row(
+                    "SELECT failed FROM chief_coordination WHERE epoch=?1",
+                    [&epoch],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
             if failed
                 || current_turn(&transaction, &epoch)?
                     .as_ref()
@@ -3762,15 +3970,15 @@ pub fn agent(
                 request_id,
                 sections,
             } => {
-                let requested: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_summary_requests WHERE id=?1 AND epoch=?2 AND state='pending' AND deadline>?3)",params![request_id,epoch,now_ms],|row|row.get(0))?;
-                let linked: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_turns t JOIN chief_delivery_attempts a ON a.id=t.dispatch_id,json_each(a.envelope,'$.summary_requests') r WHERE t.epoch=?1 AND r.value=?2)",params![epoch,request_id],|row|row.get(0))?;
+                let requested: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_summary_requests WHERE id=?1 AND epoch=?2 AND state='pending' AND deadline>?3)",params![request_id,epoch,now_ms],|row|row.get(0)).map_err(storage_error)?;
+                let linked: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM chief_turns t JOIN chief_delivery_attempts a ON a.id=t.dispatch_id,json_each(a.envelope,'$.summary_requests') r WHERE t.epoch=?1 AND r.value=?2)",params![epoch,request_id],|row|row.get(0)).map_err(storage_error)?;
                 if !requested || !linked {
                     return Err(conflict(
                         "summary response requires an exact pending request admitted to this chief epoch",
                     ));
                 }
                 let response = json!({"sections":sections,"provenance":"chief_narrative_unverified","request_id":request_id});
-                transaction.execute("UPDATE chief_summary_requests SET state='completed',completed_at=?2,response=?3 WHERE id=?1",params![request_id,now_ms,response.to_string()])?;
+                transaction.execute("UPDATE chief_summary_requests SET state='completed',completed_at=?2,response=?3 WHERE id=?1",params![request_id,now_ms,response.to_string()]).map_err(storage_error)?;
                 json!({"request_id":request_id,"state":"completed"})
             }
             ChiefAgentAction::Decision {
@@ -3931,7 +4139,7 @@ pub fn agent(
                 )?
             }
         };
-        transaction.commit()?;
+        transaction.commit().map_err(storage_error)?;
         Ok(response)
     })();
     Ok(TeamReply {
@@ -3977,10 +4185,11 @@ fn event_context(
     now_ms: i64,
 ) -> Result<Value, TeamError> {
     super::validate_cursor(after, limit)?;
-    let head: i64 =
-        connection.query_row("SELECT coalesce(max(seq),0) FROM chief_events", [], |row| {
+    let head: i64 = connection
+        .query_row("SELECT coalesce(max(seq),0) FROM chief_events", [], |row| {
             row.get(0)
-        })?;
+        })
+        .map_err(storage_error)?;
     let turn = current_turn(connection, epoch)?;
     let through = turn.as_ref().map_or(head, |(_, through, _, _)| *through);
     let remaining = context_remaining(connection, epoch, turn.as_ref())?;
@@ -4013,9 +4222,9 @@ fn event_context(
             now_ms,
         )?
     } else {
-        let events = connection.prepare("SELECT seq,source,kind,body FROM chief_events WHERE seq>?1 AND seq<=?2 ORDER BY seq LIMIT ?3")?
-            .query_map(params![after,through,limit.min(remaining) as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)))?
-            .collect::<Result<Vec<_>,_>>()?;
+        let events = connection.prepare("SELECT seq,source,kind,body FROM chief_events WHERE seq>?1 AND seq<=?2 ORDER BY seq LIMIT ?3").map_err(storage_error)?
+            .query_map(params![after,through,limit.min(remaining) as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?))).map_err(storage_error)?
+            .collect::<Result<Vec<_>,_>>().map_err(storage_error)?;
         let mut records = Vec::new();
         let mut needs_snapshot = false;
         for (sequence, origin, kind, body) in events {
@@ -4172,10 +4381,12 @@ fn event_context(
     acknowledge_completions(connection, epoch, &result["records"], now_ms)?;
     if let Some((dispatch, _, _, _)) = turn {
         let count = result["records"].as_array().map_or(0, Vec::len);
-        connection.execute(
-            "UPDATE chief_turns SET records=records+?2 WHERE dispatch_id=?1",
-            params![dispatch, count as i64],
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_turns SET records=records+?2 WHERE dispatch_id=?1",
+                params![dispatch, count as i64],
+            )
+            .map_err(crate::teams::store::storage_error)?;
         let read = if result["has_more"] == false {
             Some(through)
         } else if result["snapshot_required"] == false {
@@ -4195,13 +4406,15 @@ fn event_context(
             context_continuation(connection, &dispatch, &continuation, now_ms)?;
         }
     } else {
-        connection.execute(
-            "UPDATE chief_coordination SET preview_records=preview_records+?2 WHERE epoch=?1",
-            params![
-                epoch,
-                result["records"].as_array().map_or(0, Vec::len) as i64
-            ],
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_coordination SET preview_records=preview_records+?2 WHERE epoch=?1",
+                params![
+                    epoch,
+                    result["records"].as_array().map_or(0, Vec::len) as i64
+                ],
+            )
+            .map_err(storage_error)?;
     }
     result["cursor_kind"] = json!("event_sequence");
     result["event_cursor"] = json!(through);
@@ -4231,11 +4444,13 @@ fn review_generation(
     live: &[WorkerState],
     now_ms: i64,
 ) -> Result<String, TeamError> {
-    let revision: i64 = connection.query_row(
-        "SELECT revision FROM chief_review_generation WHERE id=1",
-        [],
-        |row| row.get(0),
-    )?;
+    let revision: i64 = connection
+        .query_row(
+            "SELECT revision FROM chief_review_generation WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     Ok(crate::audit::sha256_hex(&serde_json::to_vec(&(
         revision,
         startup(connection)?,
@@ -4256,11 +4471,11 @@ fn bounded_chief_snapshot(
     let turn = current_turn(connection, epoch)?;
     let (generation, event_cursor, records) = match generation {
         None if after == 0 => {
-            let head: i64 = connection.query_row(
-                "SELECT coalesce(max(seq),0) FROM chief_events",
-                [],
-                |row| row.get(0),
-            )?;
+            let head: i64 = connection
+                .query_row("SELECT coalesce(max(seq),0) FROM chief_events", [], |row| {
+                    row.get(0)
+                })
+                .map_err(storage_error)?;
             let event_cursor = turn.as_ref().map_or(head, |(_, through, _, _)| *through);
             let (generation, records) =
                 freeze_context(connection, live, epoch, event_cursor, now_ms)?;
@@ -4269,7 +4484,7 @@ fn bounded_chief_snapshot(
         None => return Ok(invalidated_snapshot()),
         Some(expected) => {
             let frozen: Option<(i64,String)> = connection.query_row("SELECT event_cursor,records FROM chief_context_snapshots WHERE epoch=?1 AND generation=?2",
-                params![epoch,expected],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+                params![epoch,expected],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(storage_error)?;
             let Some((event_cursor, encoded)) = frozen else {
                 return Ok(invalidated_snapshot());
             };
@@ -4295,10 +4510,12 @@ fn bounded_chief_snapshot(
     acknowledge_completions(connection, epoch, &page["records"], now_ms)?;
     if let Some((dispatch, _, _, _)) = turn {
         let count = page["records"].as_array().map_or(0, Vec::len);
-        connection.execute(
-            "UPDATE chief_turns SET records=records+?2 WHERE dispatch_id=?1",
-            params![dispatch, count as i64],
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_turns SET records=records+?2 WHERE dispatch_id=?1",
+                params![dispatch, count as i64],
+            )
+            .map_err(crate::teams::store::storage_error)?;
         if page["has_more"] == false {
             record_read(connection, &dispatch, event_cursor)?;
         }
@@ -4311,10 +4528,12 @@ fn bounded_chief_snapshot(
             )?;
         }
     } else {
-        connection.execute(
-            "UPDATE chief_coordination SET preview_records=preview_records+?2 WHERE epoch=?1",
-            params![epoch, page["records"].as_array().map_or(0, Vec::len) as i64],
-        )?;
+        connection
+            .execute(
+                "UPDATE chief_coordination SET preview_records=preview_records+?2 WHERE epoch=?1",
+                params![epoch, page["records"].as_array().map_or(0, Vec::len) as i64],
+            )
+            .map_err(storage_error)?;
     }
     Ok(page)
 }
@@ -4327,11 +4546,13 @@ fn context_remaining(
     let records = if let Some((_, _, _, records)) = turn {
         *records
     } else {
-        connection.query_row(
-            "SELECT preview_records FROM chief_coordination WHERE epoch=?1",
-            [epoch],
-            |row| row.get::<_, i64>(0),
-        )?
+        connection
+            .query_row(
+                "SELECT preview_records FROM chief_coordination WHERE epoch=?1",
+                [epoch],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(storage_error)?
     };
     Ok((super::CONTEXT_RECORDS_PER_TURN as i64)
         .saturating_sub(records)
@@ -4346,7 +4567,7 @@ fn record_read(
     connection.execute(
         "UPDATE chief_turns SET read_through=max(coalesce(read_through,0),?2) WHERE dispatch_id=?1",
         params![dispatch, read_through],
-    )?;
+    ).map_err(crate::teams::store::storage_error)?;
     Ok(())
 }
 
@@ -4356,9 +4577,9 @@ const UNREAD_CONTEXT_TURNS: usize = 3;
 /// The Chief's read position, and how many of its latest turns in a row ended before it read the
 /// Context they admitted while record budget was left. A turn that spent its whole budget made progress.
 fn unread_context(connection: &Connection, epoch: &str) -> Result<(Option<i64>, usize), TeamError> {
-    let turns = connection.prepare("SELECT through_seq,records,read_through FROM chief_turns WHERE epoch=?1 ORDER BY rowid DESC LIMIT ?2")?
-        .query_map(params![epoch,UNREAD_CONTEXT_TURNS as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<i64>>(2)?)))?
-        .collect::<Result<Vec<_>,_>>()?;
+    let turns = connection.prepare("SELECT through_seq,records,read_through FROM chief_turns WHERE epoch=?1 ORDER BY rowid DESC LIMIT ?2").map_err(crate::teams::store::storage_error)?
+        .query_map(params![epoch,UNREAD_CONTEXT_TURNS as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<i64>>(2)?))).map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?;
     let position = turns.first().and_then(|(_, _, read)| *read);
     let stalled = turns
         .iter()
@@ -4372,7 +4593,7 @@ fn unread_context(connection: &Connection, epoch: &str) -> Result<(Option<i64>, 
 
 fn latest_turn_behind(connection: &Connection, epoch: &str) -> Result<bool, TeamError> {
     Ok(connection.query_row("SELECT read_through<through_seq FROM chief_turns WHERE epoch=?1 ORDER BY rowid DESC LIMIT 1",[epoch],
-        |row|row.get::<_,Option<bool>>(0)).optional()?.flatten().unwrap_or(false))
+        |row|row.get::<_,Option<bool>>(0)).optional().map_err(crate::teams::store::storage_error)?.flatten().unwrap_or(false))
 }
 
 fn context_continuation(
@@ -4381,15 +4602,17 @@ fn context_continuation(
     continuation: &Value,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    let epoch: String = connection.query_row(
-        "SELECT epoch FROM chief_turns WHERE dispatch_id=?1",
-        [dispatch],
-        |row| row.get(0),
-    )?;
+    let epoch: String = connection
+        .query_row(
+            "SELECT epoch FROM chief_turns WHERE dispatch_id=?1",
+            [dispatch],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
     let mut continuation = continuation.clone();
     continuation["epoch"] = json!(epoch);
     connection.execute("INSERT OR IGNORE INTO chief_events(id,source,submission_key,fingerprint,kind,body,created_at) VALUES (?1,'host',?2,?3,'context_backlog',?4,?5)",
-        params![crate::teams::store::identifier()?,format!("backlog-{dispatch}"),crate::audit::sha256_hex(&serde_json::to_vec(&continuation)?),continuation.to_string(),now_ms])?;
+        params![crate::teams::store::identifier()?,format!("backlog-{dispatch}"),crate::audit::sha256_hex(&serde_json::to_vec(&continuation)?),continuation.to_string(),now_ms]).map_err(storage_error)?;
     Ok(())
 }
 
@@ -4410,27 +4633,34 @@ fn freeze_context(
     let records = context_records(connection, live)?;
     let encoded = serde_json::to_string(&records)?;
     let generation = crate::teams::store::identifier()?;
-    connection.execute("DELETE FROM chief_context_snapshots", [])?;
+    connection
+        .execute("DELETE FROM chief_context_snapshots", [])
+        .map_err(storage_error)?;
     connection.execute("INSERT INTO chief_context_snapshots(epoch,generation,event_cursor,records,created_at) VALUES (?1,?2,?3,?4,?5)",
-        params![epoch,generation,event_cursor,encoded,now_ms])?;
+        params![epoch,generation,event_cursor,encoded,now_ms]).map_err(storage_error)?;
     Ok((generation, records))
 }
 
 pub(crate) fn ensure_context_snapshots(connection: &Connection) -> Result<(), TeamError> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_context_snapshots (
-        epoch TEXT PRIMARY KEY, generation TEXT NOT NULL, event_cursor INTEGER NOT NULL, records TEXT NOT NULL, created_at INTEGER NOT NULL);")?;
+        epoch TEXT PRIMARY KEY, generation TEXT NOT NULL, event_cursor INTEGER NOT NULL, records TEXT NOT NULL, created_at INTEGER NOT NULL);").map_err(crate::teams::store::storage_error)?;
     // `read_through`: the event sequence the Chief has read Context through, as of this turn. NULL only on
     // turns admitted before this column existed: their progress is unknown, so they never count as stalled.
     // Later turns start from the epoch's furthest read, or 0 when there is none.
     let columns = connection
-        .prepare("PRAGMA table_info(chief_turns)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?;
+        .prepare("PRAGMA table_info(chief_turns)")
+        .map_err(crate::teams::store::storage_error)?
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::teams::store::storage_error)?;
     if !columns.iter().any(|name| name == "read_through") {
-        connection.execute(
-            "ALTER TABLE chief_turns ADD COLUMN read_through INTEGER",
-            [],
-        )?;
+        connection
+            .execute(
+                "ALTER TABLE chief_turns ADD COLUMN read_through INTEGER",
+                [],
+            )
+            .map_err(crate::teams::store::storage_error)?;
     }
     Ok(())
 }
@@ -4442,7 +4672,7 @@ pub(crate) fn ensure_todo_completions(connection: &Connection) -> Result<(), Tea
     connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_todo_completions (
         id TEXT PRIMARY KEY, todo_id TEXT NOT NULL, result_hash TEXT NOT NULL, project TEXT NOT NULL, title TEXT NOT NULL,
         result TEXT NOT NULL, blocked_report INTEGER NOT NULL, filed_epoch TEXT NOT NULL, created_at INTEGER NOT NULL,
-        delivered_epoch TEXT, delivered_at INTEGER, UNIQUE(todo_id,result_hash));")?;
+        delivered_epoch TEXT, delivered_at INTEGER, UNIQUE(todo_id,result_hash));").map_err(crate::teams::store::storage_error)?;
     Ok(())
 }
 
@@ -4457,12 +4687,15 @@ pub fn record_todo_completions(
     todos: &crate::todo::TodoList,
     now_ms: i64,
 ) -> Result<usize, TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    transaction.execute(
-        "DELETE FROM chief_todo_completions WHERE created_at<?1",
-        [now_ms.saturating_sub(TODO_COMPLETIONS_KEPT_MS)],
-    )?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(crate::teams::store::storage_error)?;
+    transaction
+        .execute(
+            "DELETE FROM chief_todo_completions WHERE created_at<?1",
+            [now_ms.saturating_sub(TODO_COMPLETIONS_KEPT_MS)],
+        )
+        .map_err(crate::teams::store::storage_error)?;
     let mut recorded = 0;
     for item in todos
         .items
@@ -4470,7 +4703,7 @@ pub fn record_todo_completions(
         .filter(|item| item.status() != "done" && !item.chief_epoch().is_empty())
     {
         // Reopened: its next done is news again, even with the same result.
-        transaction.execute("UPDATE chief_todo_completions SET result_hash=result_hash||':'||id WHERE todo_id=?1 AND instr(result_hash,':')=0", [item.id()])?;
+        transaction.execute("UPDATE chief_todo_completions SET result_hash=result_hash||':'||id WHERE todo_id=?1 AND instr(result_hash,':')=0", [item.id()]).map_err(crate::teams::store::storage_error)?;
     }
     for item in todos
         .items
@@ -4481,7 +4714,7 @@ pub fn record_todo_completions(
         let id = crate::teams::store::identifier()?;
         let inserted = transaction.execute("INSERT OR IGNORE INTO chief_todo_completions(id,todo_id,result_hash,project,title,result,blocked_report,filed_epoch,created_at)
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![id,item.id(),crate::audit::sha256_hex(result.as_bytes()),item.project(),item.text(),result,item.is_blocked_report(),item.chief_epoch(),now_ms])?;
+            params![id,item.id(),crate::audit::sha256_hex(result.as_bytes()),item.project(),item.text(),result,item.is_blocked_report(),item.chief_epoch(),now_ms]).map_err(crate::teams::store::storage_error)?;
         if inserted == 1 {
             coordination_event(
                 &transaction,
@@ -4495,7 +4728,9 @@ pub fn record_todo_completions(
     if recorded > 0 {
         schedule_wake(&transaction, now_ms)?;
     }
-    transaction.commit()?;
+    transaction
+        .commit()
+        .map_err(crate::teams::store::storage_error)?;
     Ok(recorded)
 }
 
@@ -4511,7 +4746,7 @@ fn todo_completion_record(
             "title":crate::approval::escape_hiding(&row.get::<_,String>(3)?,"",""),
             "has_summary":!result.is_empty(),"result":crate::approval::escape_hiding(&result,"",""),
             "blocked_report":row.get::<_,bool>(5)?,"delivered":row.get::<_,bool>(6)?}))
-    }).optional()?)
+    }).optional().map_err(crate::teams::store::storage_error)?)
 }
 
 /// The receipt: completions this Context page returned reached the Chief of `epoch`.
@@ -4528,7 +4763,7 @@ fn acknowledge_completions(
         .filter(|record| record["kind"] == "todo_completed")
         .filter_map(|record| record["completion"].as_str())
     {
-        connection.execute("UPDATE chief_todo_completions SET delivered_epoch=?2,delivered_at=?3 WHERE id=?1 AND delivered_at IS NULL", params![completion,epoch,now_ms])?;
+        connection.execute("UPDATE chief_todo_completions SET delivered_epoch=?2,delivered_at=?3 WHERE id=?1 AND delivered_at IS NULL", params![completion,epoch,now_ms]).map_err(crate::teams::store::storage_error)?;
     }
     Ok(())
 }
@@ -4537,7 +4772,7 @@ fn acknowledge_completions(
 /// `reconcile_todos`. Only Context reads it; nothing dispatches or reserves from it.
 pub(crate) fn ensure_supervised_tasks(connection: &Connection) -> Result<(), TeamError> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS chief_supervised_tasks (
-        project TEXT NOT NULL, task_id TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(project,task_id));")?;
+        project TEXT NOT NULL, task_id TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY(project,task_id));").map_err(crate::teams::store::storage_error)?;
     Ok(())
 }
 
@@ -4548,7 +4783,7 @@ fn observe_supervision(
 ) -> Result<(), TeamError> {
     let record = supervised_tasks_record(connection, live)?;
     let previous: Option<String> = connection.query_row("SELECT body FROM chief_events WHERE source='host' AND kind='supervision_changed' ORDER BY seq DESC LIMIT 1",
-        [], |row| row.get(0)).optional()?;
+        [], |row| row.get(0)).optional().map_err(crate::teams::store::storage_error)?;
     if record.is_none() && previous.is_none() {
         return Ok(());
     }
@@ -4560,7 +4795,8 @@ fn observe_supervision(
             [],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(crate::teams::store::storage_error)?;
     let material = |mut record: Value| {
         if let Some(tasks) = record["tasks"].as_array_mut() {
             for task in tasks
@@ -4706,7 +4942,7 @@ fn event_snapshot_records(
                 return Ok(None);
             };
             let found: Option<(String,String,String,String,String,String)> = connection.query_row("SELECT id,session_id,project,task_id,bundle,state FROM chief_stops WHERE id=?1",[stop],
-                |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional()?;
+                |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional().map_err(crate::teams::store::storage_error)?;
             let Some((stop, session, project, task_id, bundle, state)) = found else {
                 return Ok(None);
             };
@@ -4727,7 +4963,7 @@ fn event_snapshot_records(
             };
             let Some(record) = connection.query_row("SELECT d.id,d.state,d.revision,d.resolution,a.id,a.delivery FROM chief_decisions d
                 LEFT JOIN chief_answers a ON a.id=(SELECT id FROM chief_answers WHERE stop_id=d.stop_id AND source='theo' ORDER BY created_at DESC,rowid DESC LIMIT 1)
-                WHERE d.id=?1",[decision],decision_context_record).optional()? else { return Ok(None) };
+                WHERE d.id=?1",[decision],decision_context_record).optional().map_err(crate::teams::store::storage_error)? else { return Ok(None) };
             vec![record]
         }
         "chief_message_requested" | "chief_message_received" => {
@@ -4741,7 +4977,7 @@ fn event_snapshot_records(
             };
             // A todo gift's delivery has no message record of its own: the snapshot shows it in the dispatch ledger.
             let Some(record) = connection.query_row(&format!("SELECT {CHIEF_MESSAGE_COLUMNS} FROM chief_inbox WHERE id=?1 AND json_extract(envelope,'$.kind')='chief_message'"),
-                [message],chief_message_record).optional()? else { return Ok(None) };
+                [message],chief_message_record).optional().map_err(crate::teams::store::storage_error)? else { return Ok(None) };
             vec![record]
         }
         _ => return Ok(None),
@@ -4751,14 +4987,16 @@ fn event_snapshot_records(
 
 fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<Value>, TeamError> {
     let mut records = Vec::new();
-    let mut statement = connection.prepare(
-        "SELECT session_id,epoch,state FROM chief_grants WHERE state!='disabled' ORDER BY id",
-    )?;
-    records.extend(statement.query_map([], |row| Ok(json!({"kind": "chief", "session_id": row.get::<_, String>(0)?, "epoch": row.get::<_, String>(1)?, "state": row.get::<_, String>(2)?})))?.collect::<Result<Vec<_>, _>>()?);
+    let mut statement = connection
+        .prepare(
+            "SELECT session_id,epoch,state FROM chief_grants WHERE state!='disabled' ORDER BY id",
+        )
+        .map_err(crate::teams::store::storage_error)?;
+    records.extend(statement.query_map([], |row| Ok(json!({"kind": "chief", "session_id": row.get::<_, String>(0)?, "epoch": row.get::<_, String>(1)?, "state": row.get::<_, String>(2)?}))).map_err(crate::teams::store::storage_error)?.collect::<Result<Vec<_>, _>>().map_err(crate::teams::store::storage_error)?);
     // Right after the chief record: a turn reads at most CONTEXT_RECORDS_PER_TURN records and a stop is what it is woken for.
-    let stops = connection.prepare("SELECT id,session_id,project,task_id,bundle FROM chief_stops WHERE state='open' ORDER BY created_at,id")?
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let stops = connection.prepare("SELECT id,session_id,project,task_id,bundle FROM chief_stops WHERE state='open' ORDER BY created_at,id").map_err(crate::teams::store::storage_error)?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?))).map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(crate::teams::store::storage_error)?;
     if !stops.is_empty() {
         records.push(habits_record(connection)?);
     }
@@ -4783,9 +5021,9 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
                 ORDER BY resolved_at DESC,created_at DESC,id DESC LIMIT 20))
             SELECT l.id,l.state,l.revision,l.resolution,l.answer,(SELECT delivery FROM chief_answers WHERE id=l.answer) FROM latest l
             ORDER BY (l.state='open') DESC,
-                CASE WHEN l.state='open' THEN l.created_at ELSE l.resolved_at END DESC,l.created_at DESC,l.id DESC")?
-        .query_map([],decision_context_record)?
-        .collect::<Result<Vec<_>,_>>()?);
+                CASE WHEN l.state='open' THEN l.created_at ELSE l.resolved_at END DESC,l.created_at DESC,l.id DESC").map_err(crate::teams::store::storage_error)?
+        .query_map([],decision_context_record).map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?);
     for record in &mut records {
         if record.get("source").is_none() {
             record["source"] = json!(if record["kind"] == "worker" {
@@ -4797,8 +5035,8 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
     }
     // Every unread one, uncapped: the snapshot's event cursor passes their events, so one left out
     // here would wait for the next snapshot with nothing to wake the Chief for it.
-    let pending = connection.prepare("SELECT id FROM chief_todo_completions WHERE delivered_at IS NULL ORDER BY created_at,rowid")?
-        .query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    let pending = connection.prepare("SELECT id FROM chief_todo_completions WHERE delivered_at IS NULL ORDER BY created_at,rowid").map_err(crate::teams::store::storage_error)?
+        .query_map([], |row| row.get::<_, String>(0)).map_err(crate::teams::store::storage_error)?.collect::<Result<Vec<_>, _>>().map_err(crate::teams::store::storage_error)?;
     for completion in pending {
         if let Some(mut record) = todo_completion_record(connection, &completion)? {
             record
@@ -4809,13 +5047,13 @@ fn context_records(connection: &Connection, live: &[WorkerState]) -> Result<Vec<
         }
     }
     records.extend(connection.prepare(&format!("SELECT {CHIEF_MESSAGE_COLUMNS} FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message'
-        AND (state IN ('queued','submitting','uncertain','failed') OR rowid IN (SELECT rowid FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid"))?
-        .query_map([],chief_message_record)?
-        .collect::<Result<Vec<_>,_>>()?);
+        AND (state IN ('queued','submitting','uncertain','failed') OR rowid IN (SELECT rowid FROM chief_inbox WHERE json_extract(envelope,'$.kind')='chief_message' ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid")).map_err(crate::teams::store::storage_error)?
+        .query_map([],chief_message_record).map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(crate::teams::store::storage_error)?);
     records.extend(connection.prepare("SELECT id,task_id,worker,state FROM chief_session_starts WHERE worker IS NOT NULL
-        AND (state='requested' OR rowid IN (SELECT rowid FROM chief_session_starts WHERE worker IS NOT NULL ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid")?
-        .query_map([],|row|Ok(json!({"kind":"todo_gift","source":"protected_dispatch_ledger","id":row.get::<_,String>(0)?,"todo":row.get::<_,String>(1)?,"session":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?})))?
-        .collect::<Result<Vec<_>,_>>()?);
+        AND (state='requested' OR rowid IN (SELECT rowid FROM chief_session_starts WHERE worker IS NOT NULL ORDER BY rowid DESC LIMIT 20)) ORDER BY rowid").map_err(storage_error)?
+        .query_map([],|row|Ok(json!({"kind":"todo_gift","source":"protected_dispatch_ledger","id":row.get::<_,String>(0)?,"todo":row.get::<_,String>(1)?,"session":row.get::<_,String>(2)?,"state":row.get::<_,String>(3)?}))).map_err(storage_error)?
+        .collect::<Result<Vec<_>,_>>().map_err(storage_error)?);
     Ok(records)
 }
 
@@ -4840,15 +5078,18 @@ fn supervised_tasks_record(
     live: &[WorkerState],
 ) -> Result<Option<Value>, TeamError> {
     let rows = connection
-        .prepare("SELECT project,task_id,session FROM chief_supervised_tasks")?
+        .prepare("SELECT project,task_id,session FROM chief_supervised_tasks")
+        .map_err(crate::teams::store::storage_error)?
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
             ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        })
+        .map_err(crate::teams::store::storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::teams::store::storage_error)?;
     if rows.is_empty() {
         return Ok(None);
     }
@@ -4858,7 +5099,8 @@ fn supervised_tasks_record(
             [],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(crate::teams::store::storage_error)?;
     let mut ranked = Vec::new();
     for (project, task, owner) in rows {
         let owner = Some(owner).filter(|owner| {
@@ -4870,7 +5112,7 @@ fn supervised_tasks_record(
         let stop: Option<(String, String)> = match &owner {
             None => None,
             Some(owner) => connection.query_row("SELECT id,state FROM chief_stops WHERE session_id=?1 AND state<>'superseded' AND task_id IN (?2,'')
-                ORDER BY created_at DESC,rowid DESC LIMIT 1", params![owner, task], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
+                ORDER BY created_at DESC,rowid DESC LIMIT 1", params![owner, task], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(crate::teams::store::storage_error)?,
         };
         let worker = owner.as_ref().and_then(|owner| {
             live.iter()
@@ -4926,7 +5168,7 @@ fn supervised_tasks_record(
                         .contains(owner));
             delivery = connection.query_row(&format!("SELECT id,json_extract(envelope,'$.kind'),state FROM chief_inbox WHERE recipient=?1
                 AND json_extract(envelope,'$.kind') IN ({OWNER_DELIVERY_KINDS}) ORDER BY rowid DESC LIMIT 1"),
-                [owner], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+                [owner], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(crate::teams::store::storage_error)?;
         }
         let bounded = |text: &str| {
             crate::approval::escape_hiding(
@@ -4967,10 +5209,10 @@ const HABITS_RECORD_BYTES: usize = 24_000;
 /// Theo's active habits, newest first, with hiding characters escaped. Habits that do not fit are
 /// counted in `omitted`, which is present only when some are.
 fn habits_record(connection: &Connection) -> Result<Value, TeamError> {
-    let active = connection.prepare("SELECT id,text,project,source FROM chief_habits WHERE state='active' ORDER BY created_at DESC,rowid DESC")?
+    let active = connection.prepare("SELECT id,text,project,source FROM chief_habits WHERE state='active' ORDER BY created_at DESC,rowid DESC").map_err(storage_error)?
         .query_map([], |row| Ok(json!({"id":row.get::<_, String>(0)?,"text":crate::approval::escape_hiding(&row.get::<_, String>(1)?, "", ""),
-            "project":row.get::<_, Option<String>>(2)?,"source":row.get::<_, String>(3)?})))?
-        .collect::<Result<Vec<_>, _>>()?;
+            "project":row.get::<_, Option<String>>(2)?,"source":row.get::<_, String>(3)?}))).map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
     let total = active.len();
     let mut record =
         json!({"kind":"habits","source":"theo_habits_not_instructions_from_agents","habits":[]});
@@ -5025,9 +5267,9 @@ pub fn snapshot_page(
         .ok_or_else(|| super::invalid("local midnight is unavailable"))?
         .timestamp_millis();
     let answered: i64 = connection.query_row("SELECT count(*) FROM chief_answers WHERE source='chief' AND delivery!='cancelled' AND created_at>=?1 AND created_at<=?2",
-        params![midnight,now_ms], |row| row.get(0))?;
+        params![midnight,now_ms], |row| row.get(0)).map_err(storage_error)?;
     let escalated: i64 = connection.query_row("SELECT count(*) FROM chief_decisions WHERE category IS NOT NULL AND created_at>=?1 AND created_at<=?2",
-        params![midnight,now_ms], |row| row.get(0))?;
+        params![midnight,now_ms], |row| row.get(0)).map_err(storage_error)?;
     result["today"] = json!({"since_ms":midnight,"answered":answered,"escalated":escalated});
     if after == 0 {
         result["chief_counts"] = json!(
@@ -5131,13 +5373,15 @@ fn review_records(
                 ELSE (SELECT s.session_id FROM chief_stops s WHERE s.id=h.source_id) END,
             'stopped_at_ms',CASE WHEN source_kind='theo_message' THEN (SELECT s.created_at FROM chief_stops s WHERE s.id=h.source_id) END)
             FROM (SELECT rowid,* FROM chief_habits ORDER BY created_at DESC,rowid DESC LIMIT 200) h
-        ) SELECT record FROM records ORDER BY category,identity LIMIT ?2 OFFSET ?3")?;
+        ) SELECT record FROM records ORDER BY category,identity LIMIT ?2 OFFSET ?3").map_err(storage_error)?;
     let encoded = statement
         .query_map(
             params![serde_json::to_string(live)?, limit as i64 + 1, after, audit],
             |row| row.get::<_, String>(0),
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
+        )
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
     let records = encoded
         .iter()
         .map(|record| Ok(serde_json::from_str::<Value>(record)?))
@@ -5163,7 +5407,7 @@ pub(crate) fn upgrade_review(connection: &Connection) -> Result<(), TeamError> {
         CREATE TRIGGER IF NOT EXISTS chief_work_proposal_immutable BEFORE UPDATE ON chief_work_proposals
         BEGIN SELECT RAISE(ABORT,'work proposal is immutable'); END;
         CREATE TRIGGER IF NOT EXISTS chief_work_proposal_no_delete BEFORE DELETE ON chief_work_proposals
-        BEGIN SELECT RAISE(ABORT,'work proposal is immutable'); END;")?;
+        BEGIN SELECT RAISE(ABORT,'work proposal is immutable'); END;").map_err(storage_error)?;
     Ok(())
 }
 
@@ -5175,7 +5419,7 @@ pub(crate) fn upgrade_scheduling(connection: &Connection) -> Result<(), TeamErro
         INSERT INTO scheduling_reservations SELECT project,task_id,worker,id,'chief' FROM chief_assignments
             WHERE state NOT IN ('completed','cancelled');
         CREATE TABLE chief_admission_verifications (
-            identity TEXT PRIMARY KEY, adapter TEXT NOT NULL, evidence TEXT NOT NULL, verified_at INTEGER NOT NULL);")?;
+            identity TEXT PRIMARY KEY, adapter TEXT NOT NULL, evidence TEXT NOT NULL, verified_at INTEGER NOT NULL);").map_err(storage_error)?;
     Ok(())
 }
 
@@ -5187,22 +5431,26 @@ pub(crate) fn upgrade_scheduling(connection: &Connection) -> Result<(), TeamErro
 const CURRENT_DELIVERY_KINDS: &str = "'chief_wake','chief_answer','chief_form_reply','chief_correction','chief_message','chief_todo','chief_check'";
 
 pub fn clear_dispatch_leftovers(transaction: &rusqlite::Transaction<'_>) -> Result<(), TeamError> {
-    transaction.execute(
-        "DELETE FROM scheduling_reservations WHERE owner='chief'",
-        [],
-    )?;
-    transaction.execute(
-        "UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open'
+    transaction
+        .execute(
+            "DELETE FROM scheduling_reservations WHERE owner='chief'",
+            [],
+        )
+        .map_err(storage_error)?;
+    transaction
+        .execute(
+            "UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open'
         AND (work IS NOT NULL OR assignment IS NOT NULL OR scope_key LIKE 'host-assignment-%')",
-        [],
-    )?;
+            [],
+        )
+        .map_err(crate::teams::store::storage_error)?;
     transaction.execute(&format!("UPDATE chief_decisions SET state='superseded',revision=revision+1 WHERE state='open'
         AND scope_key IN (SELECT 'host-delivery-'||id FROM chief_inbox WHERE state IN ('queued','submitting','uncertain')
-            AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ({CURRENT_DELIVERY_KINDS}))"), [])?;
+            AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ({CURRENT_DELIVERY_KINDS}))"), []).map_err(crate::teams::store::storage_error)?;
     transaction.execute(&format!("UPDATE chief_inbox SET state='cancelled' WHERE state IN ('queued','submitting','uncertain')
-        AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ({CURRENT_DELIVERY_KINDS})"), [])?;
+        AND coalesce(json_extract(envelope,'$.kind'),'') NOT IN ({CURRENT_DELIVERY_KINDS})"), []).map_err(crate::teams::store::storage_error)?;
     transaction.execute(&format!("UPDATE chief_delivery_attempts SET state='cancelled' WHERE state IN ('submitting','uncertain')
-        AND coalesce(kind,'') NOT IN ({CURRENT_DELIVERY_KINDS})"), [])?;
+        AND coalesce(kind,'') NOT IN ({CURRENT_DELIVERY_KINDS})"), []).map_err(crate::teams::store::storage_error)?;
     Ok(())
 }
 
@@ -5213,10 +5461,12 @@ pub fn verify_admission(
     evidence: &str,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    connection.execute(
-        "INSERT OR REPLACE INTO chief_admission_verifications VALUES (?1,?2,?3,?4)",
-        params![serde_json::to_string(session)?, adapter, evidence, now_ms],
-    )?;
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO chief_admission_verifications VALUES (?1,?2,?3,?4)",
+            params![serde_json::to_string(session)?, adapter, evidence, now_ms],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -5224,24 +5474,24 @@ pub fn admission_verified(
     connection: &Connection,
     session: &VerifiedSession,
 ) -> Result<bool, TeamError> {
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_admission_verifications WHERE identity=?1 AND adapter='opencode-queued-v1')",
-        [serde_json::to_string(session)?], |row| row.get(0))?)
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM chief_admission_verifications WHERE identity=?1 AND adapter='opencode-queued-v1')",
+        [serde_json::to_string(session)?], |row| row.get(0)).map_err(storage_error)
 }
 
 pub fn legacy_worker_busy(connection: &Connection, worker: &str) -> Result<bool, TeamError> {
-    Ok(connection.query_row(
+    connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM scheduling_reservations WHERE worker=?1 AND owner<>'chief')",
         [worker],
         |row| row.get(0),
-    )?)
+    ).map_err(storage_error)
 }
 
 pub fn observe_resumed(connection: &Connection, live: &[VerifiedSession]) -> Result<(), TeamError> {
     for session in live {
         connection.execute("UPDATE legacy_launches SET state='released',revision=revision+1 WHERE token IN (SELECT token FROM scheduling_reservations WHERE owner='legacy' AND project=?1 AND task_id=?2 AND worker=?3)",
-            params![session.project,format!("resume:{}",session.session_id),session.session_id])?;
+            params![session.project,format!("resume:{}",session.session_id),session.session_id]).map_err(storage_error)?;
         connection.execute("DELETE FROM scheduling_reservations WHERE owner='legacy' AND project=?1 AND task_id=?2 AND worker=?3",
-            params![session.project,format!("resume:{}",session.session_id),session.session_id])?;
+            params![session.project,format!("resume:{}",session.session_id),session.session_id]).map_err(storage_error)?;
     }
     Ok(())
 }
@@ -5257,7 +5507,8 @@ pub fn require_task_mapping(
             [&session.session_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     if let Some((key, runtime, agent)) = member {
         if runtime != session.runtime || agent != session.agent {
             return Err(unauthorized());
@@ -5282,7 +5533,7 @@ fn require_unreserved(
     let owner: Option<(String, String)> = connection.query_row(
         "SELECT owner,worker FROM scheduling_reservations WHERE ((project=?1 OR project='') AND task_id=?2)
             OR (worker<>'' AND worker=?3) OR ((project=?1 OR project='') AND worker='' AND owner='legacy') LIMIT 1",
-        params![task.project, task.task_id, worker.unwrap_or("")], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+        params![task.project, task.task_id, worker.unwrap_or("")], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(storage_error)?;
     if let Some((owner, worker)) = owner {
         return Err(conflict(&format!(
             "work already reserved by {owner}: {worker}"
@@ -5301,7 +5552,7 @@ fn require_resumable(
     let owner: Option<(String, String)> = connection.query_row(
         "SELECT owner,worker FROM scheduling_reservations WHERE ((project=?1 OR project='') AND task_id=?2)
             OR (worker=?3 AND owner<>'observed') OR ((project=?1 OR project='') AND worker='' AND owner='legacy') LIMIT 1",
-        params![task.project, task.task_id, session], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+        params![task.project, task.task_id, session], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(storage_error)?;
     if let Some((owner, worker)) = owner {
         return Err(conflict(&format!(
             "work already reserved by {owner}: {worker}"
@@ -5318,14 +5569,18 @@ fn insert_launch(
     now_ms: i64,
 ) -> Result<String, TeamError> {
     let token = crate::teams::store::identifier()?;
-    connection.execute(
-        "INSERT INTO scheduling_reservations VALUES (?1,?2,?3,?4,'legacy')",
-        params![task.project, task.task_id, worker.unwrap_or(""), token],
-    )?;
-    connection.execute(
-        "INSERT INTO legacy_launches VALUES (?1,?2,?3,?4,?5,1,?6)",
-        params![token, task.project, task.task_id, worker, state, now_ms],
-    )?;
+    connection
+        .execute(
+            "INSERT INTO scheduling_reservations VALUES (?1,?2,?3,?4,'legacy')",
+            params![task.project, task.task_id, worker.unwrap_or(""), token],
+        )
+        .map_err(storage_error)?;
+    connection
+        .execute(
+            "INSERT INTO legacy_launches VALUES (?1,?2,?3,?4,?5,1,?6)",
+            params![token, task.project, task.task_id, worker, state, now_ms],
+        )
+        .map_err(storage_error)?;
     Ok(token)
 }
 
@@ -5346,8 +5601,9 @@ pub fn reserve_legacy_kind(
     manual: bool,
     now_ms: i64,
 ) -> Result<String, TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     require_unreserved(&transaction, task, worker)?;
     let token = insert_launch(
         &transaction,
@@ -5356,7 +5612,7 @@ pub fn reserve_legacy_kind(
         if manual { "manual" } else { "reserved" },
         now_ms,
     )?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(token)
 }
 
@@ -5367,11 +5623,12 @@ pub fn reserve_resume(
     session: &str,
     now_ms: i64,
 ) -> Result<String, TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     require_resumable(&transaction, task, session)?;
     let token = insert_launch(&transaction, task, Some(session), "reserved", now_ms)?;
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(token)
 }
 
@@ -5381,15 +5638,17 @@ pub fn settle_launch(
     expected_revision: i64,
     outcome: &str,
 ) -> Result<Value, TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
     let state: Option<String> = transaction
         .query_row(
             "SELECT state FROM legacy_launches WHERE token=?1 AND revision=?2",
             params![token, expected_revision],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(storage_error)?;
     let next = match (state.as_deref(), outcome) {
         (Some("reserved"), "begin") => "submitting",
         (Some("submitting"), "submitted") => "submitted",
@@ -5398,17 +5657,21 @@ pub fn settle_launch(
         (Some("manual"), "undo_manual") => "released",
         _ => return Err(conflict("invalid or stale exact launch transition")),
     };
-    transaction.execute(
-        "UPDATE legacy_launches SET state=?2,revision=revision+1 WHERE token=?1",
-        params![token, next],
-    )?;
+    transaction
+        .execute(
+            "UPDATE legacy_launches SET state=?2,revision=revision+1 WHERE token=?1",
+            params![token, next],
+        )
+        .map_err(storage_error)?;
     if next == "released" {
-        transaction.execute(
-            "DELETE FROM scheduling_reservations WHERE token=?1 AND owner='legacy'",
-            [token],
-        )?;
+        transaction
+            .execute(
+                "DELETE FROM scheduling_reservations WHERE token=?1 AND owner='legacy'",
+                [token],
+            )
+            .map_err(storage_error)?;
     }
-    transaction.commit()?;
+    transaction.commit().map_err(storage_error)?;
     Ok(json!({"token":token,"state":next,"revision":expected_revision+1}))
 }
 
@@ -5418,7 +5681,7 @@ pub fn release_manual(
     task: &str,
     expected_token: &str,
 ) -> Result<(), TeamError> {
-    let manual:Option<(String,i64)>=connection.query_row("SELECT token,revision FROM legacy_launches WHERE project=?1 AND task_id=?2 AND token=?3 AND state='manual'",params![project,task,expected_token],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+    let manual:Option<(String,i64)>=connection.query_row("SELECT token,revision FROM legacy_launches WHERE project=?1 AND task_id=?2 AND token=?3 AND state='manual'",params![project,task,expected_token],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(storage_error)?;
     if let Some((token, revision)) = manual {
         settle_launch(connection, &token, revision, "undo_manual")?;
     }
@@ -5437,67 +5700,82 @@ pub fn reconcile_todos(
     todos: &crate::todo::TodoList,
     now_ms: i64,
 ) -> Result<(), TeamError> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(crate::teams::store::storage_error)?;
     // The reservations keep their first worker for dispatch; the supervision mirror always names the
     // session the todo itself names now.
-    transaction.execute("DELETE FROM chief_supervised_tasks", [])?;
+    transaction
+        .execute("DELETE FROM chief_supervised_tasks", [])
+        .map_err(crate::teams::store::storage_error)?;
     for item in &todos.items {
         // Match team admission for clones/subdirectories; retain literal keys for removed checkouts.
         let project = crate::teams::canonical_project(&item.cwd())
             .unwrap_or_else(|_| format!("path:{}", item.cwd()));
         let task = item.id();
         if item.status() == "doing" {
-            transaction.execute(
-                "INSERT OR REPLACE INTO chief_supervised_tasks VALUES (?1,?2,?3)",
-                params![project, task, item.session()],
-            )?;
-            transaction.execute(
-                "INSERT OR IGNORE INTO scheduling_reservations VALUES (?1,?2,?3,?4,'observed')",
-                params![
-                    project,
-                    task,
-                    item.session(),
-                    crate::teams::store::identifier()?
-                ],
-            )?;
-            transaction.execute("UPDATE scheduling_reservations SET worker=?3 WHERE project=?1 AND task_id=?2 AND worker=''", params![project,task,item.session()])?;
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO chief_supervised_tasks VALUES (?1,?2,?3)",
+                    params![project, task, item.session()],
+                )
+                .map_err(crate::teams::store::storage_error)?;
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO scheduling_reservations VALUES (?1,?2,?3,?4,'observed')",
+                    params![
+                        project,
+                        task,
+                        item.session(),
+                        crate::teams::store::identifier()?
+                    ],
+                )
+                .map_err(crate::teams::store::storage_error)?;
+            transaction.execute("UPDATE scheduling_reservations SET worker=?3 WHERE project=?1 AND task_id=?2 AND worker=''", params![project,task,item.session()]).map_err(crate::teams::store::storage_error)?;
         } else if item.status() == "done" {
             crate::teams::store::release_completed_task(&transaction, Some(&project), &task)?;
-            transaction.execute("DELETE FROM scheduling_reservations WHERE project=?1 AND task_id=?2 AND token NOT IN (SELECT token FROM legacy_launches WHERE state IN ('reserved','submitting','uncertain'))", params![project,task])?;
+            transaction.execute("DELETE FROM scheduling_reservations WHERE project=?1 AND task_id=?2 AND token NOT IN (SELECT token FROM legacy_launches WHERE state IN ('reserved','submitting','uncertain'))", params![project,task]).map_err(storage_error)?;
         } else if item.status() == "todo" {
             transaction.execute("DELETE FROM scheduling_reservations WHERE project=?1 AND task_id=?2 AND (owner='observed'
                 OR token IN (SELECT token FROM legacy_launches WHERE state='submitted' AND created_at<=?3))",
-                params![project,task,now_ms.saturating_sub(SUBMITTED_LAUNCH_GRACE_MS)])?;
+                params![project,task,now_ms.saturating_sub(SUBMITTED_LAUNCH_GRACE_MS)]).map_err(storage_error)?;
         }
     }
     for (task, issue) in &todos.issues {
         if issue["status"] == "doing" {
-            transaction.execute(
-                "INSERT OR REPLACE INTO chief_supervised_tasks VALUES ('',?1,?2)",
-                params![task, issue["session"].as_str().unwrap_or("")],
-            )?;
-            transaction.execute(
-                "INSERT INTO scheduling_reservations SELECT '',?1,?2,?3,'observed'
+            transaction
+                .execute(
+                    "INSERT OR REPLACE INTO chief_supervised_tasks VALUES ('',?1,?2)",
+                    params![task, issue["session"].as_str().unwrap_or("")],
+                )
+                .map_err(crate::teams::store::storage_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO scheduling_reservations SELECT '',?1,?2,?3,'observed'
                 WHERE NOT EXISTS(SELECT 1 FROM scheduling_reservations WHERE task_id=?1)",
-                params![
-                    task,
-                    issue["session"].as_str().unwrap_or(""),
-                    crate::teams::store::identifier()?
-                ],
-            )?;
-            transaction.execute(
-                "UPDATE scheduling_reservations SET worker=?2 WHERE task_id=?1 AND worker=''",
-                params![task, issue["session"].as_str().unwrap_or("")],
-            )?;
+                    params![
+                        task,
+                        issue["session"].as_str().unwrap_or(""),
+                        crate::teams::store::identifier()?
+                    ],
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE scheduling_reservations SET worker=?2 WHERE task_id=?1 AND worker=''",
+                    params![task, issue["session"].as_str().unwrap_or("")],
+                )
+                .map_err(storage_error)?;
         } else if issue["status"] == "done" {
             crate::teams::store::release_completed_task(&transaction, None, task)?;
-            transaction.execute("DELETE FROM scheduling_reservations WHERE task_id=?1 AND token NOT IN (SELECT token FROM legacy_launches WHERE state IN ('reserved','submitting','uncertain'))", [task])?;
+            transaction.execute("DELETE FROM scheduling_reservations WHERE task_id=?1 AND token NOT IN (SELECT token FROM legacy_launches WHERE state IN ('reserved','submitting','uncertain'))", [task]).map_err(storage_error)?;
         }
     }
-    transaction.execute("UPDATE legacy_launches SET state='released',revision=revision+1 WHERE state IN ('manual','submitted') AND NOT EXISTS(SELECT 1 FROM scheduling_reservations r WHERE r.token=legacy_launches.token)",[])?;
+    transaction.execute("UPDATE legacy_launches SET state='released',revision=revision+1 WHERE state IN ('manual','submitted') AND NOT EXISTS(SELECT 1 FROM scheduling_reservations r WHERE r.token=legacy_launches.token)",[]).map_err(crate::teams::store::storage_error)?;
     observe_supervision(&transaction, &observed(&transaction)?, now_ms)?;
-    transaction.commit()?;
+    transaction
+        .commit()
+        .map_err(crate::teams::store::storage_error)?;
     Ok(())
 }
 
@@ -5512,7 +5790,7 @@ pub(crate) fn upgrade_worker_history(connection: &Connection) -> Result<(), Team
         DROP TABLE chief_worker_bindings_v3;
         CREATE UNIQUE INDEX chief_one_bound_worker ON chief_worker_bindings(session_id) WHERE state='bound';
         CREATE TRIGGER chief_worker_approval_immutable BEFORE UPDATE OF session_id,agent,project,runtime,epoch,role,revision,approval_hash ON chief_worker_bindings
-            BEGIN SELECT RAISE(ABORT,'chief worker identity and approval are immutable'); END;")?;
+            BEGIN SELECT RAISE(ABORT,'chief worker identity and approval are immutable'); END;").map_err(storage_error)?;
     Ok(())
 }
 
@@ -5578,7 +5856,7 @@ pub(crate) fn create_schema(connection: &Connection) -> Result<(), TeamError> {
         CREATE TRIGGER chief_grant_immutable BEFORE UPDATE OF session_id,agent,project,runtime,epoch,approval_hash ON chief_grants
             BEGIN SELECT RAISE(ABORT,'chief grant identity and approval are immutable'); END;
         CREATE TRIGGER chief_worker_approval_immutable BEFORE UPDATE OF session_id,agent,project,runtime,epoch,role,revision,approval_hash ON chief_worker_bindings
-            BEGIN SELECT RAISE(ABORT,'chief worker approval hash is immutable'); END;")?;
+            BEGIN SELECT RAISE(ABORT,'chief worker approval hash is immutable'); END;").map_err(storage_error)?;
     // Both inserts and reactivation count: closing an item must not allow reopening beyond the cap.
     for (table, state, maximum) in [
         ("chief_work_revisions", "approved", 256),
@@ -5589,7 +5867,7 @@ pub(crate) fn create_schema(connection: &Connection) -> Result<(), TeamError> {
                 BEGIN SELECT RAISE(ABORT,'chief active record limit reached'); END;
             CREATE TRIGGER {table}_capacity_update BEFORE UPDATE OF state ON {table}
                 WHEN NEW.state='{state}' AND OLD.state<>'{state}' AND (SELECT count(*) FROM {table} WHERE state='{state}') >= {maximum}
-                BEGIN SELECT RAISE(ABORT,'chief active record limit reached'); END;"))?;
+                BEGIN SELECT RAISE(ABORT,'chief active record limit reached'); END;")).map_err(storage_error)?;
     }
     Ok(())
 }

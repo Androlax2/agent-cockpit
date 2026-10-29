@@ -405,14 +405,32 @@ fn a_command_without_why_is_refused_before_anything_is_filed() {
 
 #[test]
 fn a_command_fish_cannot_parse_is_refused_before_theo_is_asked() {
-    for command in ["cat <<EOF\nhello\nEOF", "if [ -f x ]; then echo y; fi", "for f in a b; do echo $f; done"] {
+    for command in [
+        "cat <<EOF\nhello\nEOF",
+        "if [ -f x ]; then echo y; fi",
+        "for f in a b; do echo $f; done",
+    ] {
         let fixture = AskToRun::new();
-        let output = finish(fixture.ask(&["--why", "Bash syntax.", command], "5"), TIMEOUT);
+        let output = finish(
+            fixture.ask(&["--why", "Bash syntax.", command], "5"),
+            TIMEOUT,
+        );
         let refusal = stderr(&output);
         assert_eq!(output.status.code(), Some(2), "{command}: {refusal}");
-        assert!(refusal.contains("fish cannot parse"), "{command}: {refusal}");
+        assert!(
+            refusal.contains("fish cannot parse"),
+            "{command}: {refusal}"
+        );
         assert!(refusal.contains("bash script.sh"), "{command}: {refusal}");
-        assert!(fixture.daemon.as_ref().unwrap().received(Duration::from_millis(200)).is_empty(), "{command}: a request was filed");
+        assert!(
+            fixture
+                .daemon
+                .as_ref()
+                .unwrap()
+                .received(Duration::from_millis(200))
+                .is_empty(),
+            "{command}: a request was filed"
+        );
     }
 }
 

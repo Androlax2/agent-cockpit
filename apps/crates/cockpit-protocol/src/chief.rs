@@ -1,0 +1,686 @@
+//! Chief wire contracts and pure validation; host authorization stays in the daemon.
+
+use crate::teams::{ErrorCode, Role, TeamError, VerifiedSession};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const HABIT_TEXT_LIMIT: usize = 500;
+
+/// A habit's text: Theo's words on one line, at most 500 characters (cut with `…`).
+pub fn habit_text(correction: &str) -> String {
+    excerpt(
+        &correction.split_whitespace().collect::<Vec<_>>().join(" "),
+        HABIT_TEXT_LIMIT,
+    )
+}
+
+/// Preserve short text; shorten longer text to the character limit with an ellipsis.
+pub fn excerpt(text: &str, maximum: usize) -> String {
+    if text.chars().count() <= maximum {
+        return text.to_string();
+    }
+    let mut shortened: String = text.chars().take(maximum - 1).collect();
+    shortened.push('…');
+    shortened
+}
+
+pub const MAX_OPEN_DECISIONS: usize = 100;
+pub const MAX_CONTEXT_RECORDS: usize = 50;
+/// How many Context records one admitted Chief turn may read, across its pages.
+pub const CONTEXT_RECORDS_PER_TURN: usize = 100;
+/// How many habits one answer may name as the ones it relied on.
+pub const MAX_CITED_HABITS: usize = 5;
+/// The limit of a Chief answer, in the words Theo approved. Told to the Chief in its wake text and
+/// appended by the host to every answer the agent receives.
+pub const CHIEF_ANSWER_BOUNDARY: &str = "Chief answer on Theo's behalf. It authorises edits, builds, tests and commits inside your current task only. Installs, dependency changes, pushes, merges, default-branch or other Git writes your project does not already allow, anything outside the task, and anything security-related still need Theo. Permission prompts, ask-to-run and cockpit apply are always Theo's.";
+/// What the host appends to Theo's own answer to an escalation, in place of the Chief's boundary.
+pub const THEO_ANSWER_LABEL: &str = "Answer from Theo, sent through the cockpit Chief view.";
+/// What the host appends to Theo's correction of an earlier Chief answer.
+pub const CORRECTION_LABEL: &str = "Correction from Theo, sent through the cockpit Chief view. Treat it as a new instruction inside your current task. If following it means undoing work or changing the task's scope, stop and ask Theo.";
+/// Why a started Chief waits: its exact session has no recorded native admission verification yet.
+pub const ADMISSION_REQUIRED: &str =
+    "host live OpenCode draft/queue verification is required before chief activation";
+/// The adapter Theo's confirmed delivery check verifies.
+pub const ADMISSION_ADAPTER: &str = "opencode-queued-v1";
+/// How long a stopped agent keeps its stop to itself (or to Theo) before a Chief answer may reach it.
+pub const CHIEF_ANSWER_GRACE_S: i64 = 30;
+/// Maximum time an eligible question may wait for Chief triage before it asks Theo.
+pub const QUESTION_GRACE_S: i64 = 60;
+/// How long `l` later hides an escalated question, on the desktop and the phone alike.
+pub const CHIEF_LATER_MS: i64 = 20 * 60 * 1000;
+// Reserve space for the TeamReply wrapper and cursors beneath the agent transport's 65,536 bytes.
+pub const CONTEXT_BYTES: usize = 60_000;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerState {
+    pub session: VerifiedSession,
+    pub role: Option<Role>,
+    pub ready: bool,
+    pub blocked_by: Vec<String>,
+    pub observed_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ChiefAgentAction {
+    Context {
+        after: i64,
+        limit: usize,
+    },
+    ContextSnapshot {
+        after: i64,
+        limit: usize,
+        #[serde(default)]
+        generation: Option<String>,
+    },
+    SummaryResponse {
+        request_id: String,
+        sections: SummarySections,
+    },
+    Status {
+        summary: String,
+    },
+    Decision {
+        key: String,
+        question: String,
+        recommendation: String,
+    },
+    /// Reply to an open stop; the host delivers it to the stopped agent with `CHIEF_ANSWER_BOUNDARY`.
+    /// `habits` names the habits the answer relied on.
+    Answer {
+        stop: String,
+        text: String,
+        reason: String,
+        #[serde(default)]
+        habits: Vec<String>,
+    },
+    /// Settle an open single-question form with one of its options, named by label or value; the
+    /// agent's plugin replies through OpenCode's form API.
+    AnswerForm {
+        stop: String,
+        choice: String,
+        reason: String,
+        #[serde(default)]
+        habits: Vec<String>,
+    },
+    /// Record a lasting preference Theo showed in his own answer (`source_id`: his answer or the stop
+    /// whose bundle shows it), for one project or, with no project, everywhere.
+    AddHabit {
+        text: String,
+        project: Option<String>,
+        source_id: String,
+        reason: String,
+    },
+    /// Hand an open stop to Theo, who answers it from the Chief view.
+    Escalate {
+        stop: String,
+        category: EscalationCategory,
+        reason: String,
+        #[serde(default)]
+        suggested_answer: Option<String>,
+    },
+    /// Ask the host to start a fresh session for an open todo of `project` (its folder name), queued
+    /// or not; one the Chief's own project filed only once Theo queued it. Grants the session no
+    /// extra permission.
+    StartSession {
+        todo: String,
+        project: String,
+        reason: String,
+    },
+    /// Ask the host to give an open todo to an idle live session of the todo's project, the way the
+    /// queue gives a queued item: same prompt, same idle checks. Same todo rules as `StartSession`.
+    GiveTodo {
+        todo: String,
+        session: String,
+        reason: String,
+    },
+    /// Ask the host to send `text` to an idle live session of any project once the queue's idle checks
+    /// pass. The host frames it as the Chief's and adds `CHIEF_MESSAGE_BOUNDARY`; it grants nothing.
+    Message {
+        session: String,
+        text: String,
+        reason: String,
+    },
+    /// Read-only look at one known session or todo, named by exactly one of the two: its owner, open
+    /// stop, and the delivery state of what the Chief sent it. Outside the `CONTEXT_RECORDS_PER_TURN` Context budget,
+    /// at most `INSPECTIONS_PER_TURN` per admitted turn.
+    Inspect {
+        #[serde(default)]
+        session: Option<String>,
+        #[serde(default)]
+        todo: Option<String>,
+    },
+}
+
+/// How many `inspect` reads one admitted Chief turn may make, beside its Context records.
+pub const INSPECTIONS_PER_TURN: i64 = 5;
+
+/// What the host appends to every Chief message to a session: the message is no permission.
+pub const CHIEF_MESSAGE_BOUNDARY: &str = "Message from the cockpit Chief, Theo's coordinating agent, not from Theo. It grants no permission: your project's rules and Theo's approvals apply as before. Anything outside your current task, and anything security-related, still needs Theo. Permission prompts, ask-to-run and cockpit apply are always Theo's.";
+/// How many messages the Chief may ask the host to send in any rolling hour, across all sessions.
+pub const CHIEF_MESSAGES_PER_HOUR: i64 = 20;
+
+/// How long a Chief's session start request stays open for the queue to act on.
+pub const SESSION_START_OPEN_MS: i64 = 10 * 60 * 1000;
+/// How many session starts the Chief may request in any rolling hour, across all projects, unless
+/// Theo's chief-starts-per-hour setting says otherwise. Todos Theo queued himself do not count.
+pub const DEFAULT_SESSION_STARTS_PER_HOUR: i64 = 6;
+pub const MAX_SESSION_STARTS_PER_HOUR: i64 = 60;
+
+/// Why the Chief did not answer a stop itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationCategory {
+    Security,
+    Scope,
+    NotSure,
+}
+
+impl EscalationCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Security => "security",
+            Self::Scope => "scope",
+            Self::NotSure => "not_sure",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SummarySections {
+    pub completed: String,
+    pub active: String,
+    pub decisions: String,
+    pub idle: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReconciliationEvidence {
+    Handled {
+        note: String,
+    },
+    SafeStop {
+        note: String,
+        confirmed_stopped: bool,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ChiefHostAction {
+    Start {
+        request_id: String,
+        previous_attempt: Option<String>,
+    },
+    /// Theo's confirmation, after checking, that no session remains for an unresolved startup attempt.
+    SettleStartup {
+        request_id: String,
+        attempt: String,
+        expected_revision: i64,
+        evidence: ReconciliationEvidence,
+    },
+    /// Theo's test message to the exact live session of an unresolved startup attempt, which he then
+    /// confirms he saw arrive (VerifyChiefAdmission). Never a launch.
+    SendCheck {
+        request_id: String,
+        attempt: String,
+    },
+    Enable {
+        request_id: String,
+        session: VerifiedSession,
+    },
+    /// Explicit host approval for a fresh runtime of the same conversation; never a continuation grant.
+    Recover {
+        request_id: String,
+        expected_epoch: String,
+        expected_revision: i64,
+        session: VerifiedSession,
+    },
+    Pause {
+        request_id: String,
+        expected_epoch: String,
+    },
+    Resume {
+        request_id: String,
+        expected_epoch: String,
+    },
+    Disable {
+        request_id: String,
+        expected_epoch: String,
+    },
+    ReconcileDelivery {
+        request_id: String,
+        message: String,
+        expected_revision: i64,
+        evidence: ReconciliationEvidence,
+    },
+    ReconcileLaunch {
+        request_id: String,
+        token: String,
+        expected_revision: i64,
+        evidence: ReconciliationEvidence,
+    },
+    Resolve {
+        request_id: String,
+        decision: String,
+        expected_revision: i64,
+        resolution: String,
+    },
+    /// Theo's answer to an escalated stop: resolves the decision and queues the text for the stopped agent.
+    AnswerDecision {
+        request_id: String,
+        decision: String,
+        expected_revision: i64,
+        answer: String,
+    },
+    /// Theo puts an escalated question off for `CHIEF_LATER_MS`; it stays open and comes back.
+    LaterDecision {
+        request_id: String,
+        decision: String,
+        expected_revision: i64,
+    },
+    /// Theo's correction of a sent answer: queued for the session that got the answer, once per answer.
+    Overrule {
+        request_id: String,
+        answer: String,
+        correction: String,
+    },
+    /// Theo deletes a habit; the Chief stops using it and never adds it back by itself.
+    DeleteHabit {
+        request_id: String,
+        habit: String,
+    },
+    RestoreHabit {
+        request_id: String,
+        habit: String,
+    },
+    /// Theo widens a habit to every project, or narrows it back to the project it came from.
+    RescopeHabit {
+        request_id: String,
+        habit: String,
+        everywhere: bool,
+    },
+    RequestSummary {
+        request_id: String,
+    },
+}
+
+pub fn invalid(message: &str) -> TeamError {
+    TeamError::new(ErrorCode::Invalid, message)
+}
+
+pub fn text(value: &str, maximum: usize) -> Result<(), TeamError> {
+    if value.trim().is_empty()
+        || value.chars().count() > maximum
+        || value
+            .chars()
+            .any(|character| character.is_control() && character != '\n')
+    {
+        return Err(invalid(
+            "chief text is empty, oversized or contains controls",
+        ));
+    }
+    Ok(())
+}
+
+pub fn key(value: &str) -> Result<(), TeamError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid("chief key must be 1–128 letters, digits, - or _"));
+    }
+    Ok(())
+}
+
+fn positive(revision: i64) -> Result<(), TeamError> {
+    if revision < 1 {
+        return Err(invalid("chief revision must be positive"));
+    }
+    Ok(())
+}
+
+fn session(value: &VerifiedSession) -> Result<(), TeamError> {
+    text(&value.session_id, 256)?;
+    text(&value.project, 300)?;
+    text(&value.runtime, 1000)?;
+    if crate::agents::of_session_id(&value.session_id).map(|agent| agent.name)
+        != Some(value.agent.as_str())
+    {
+        return Err(invalid("chief session id and agent disagree"));
+    }
+    Ok(())
+}
+
+/// The host adds these labels itself; text that already carries one could pass a Chief answer off as
+/// Theo's, or hide where the host's boundary starts.
+fn without_host_labels(value: &str) -> Result<(), TeamError> {
+    if value.contains(CHIEF_ANSWER_BOUNDARY)
+        || value.contains(THEO_ANSWER_LABEL)
+        || value.contains(CORRECTION_LABEL)
+        || value.contains(CHIEF_MESSAGE_BOUNDARY)
+    {
+        return Err(invalid("the host adds the answer labels itself"));
+    }
+    Ok(())
+}
+
+fn cited_habits(habits: &[String]) -> Result<(), TeamError> {
+    if habits.len() > MAX_CITED_HABITS {
+        return Err(invalid("an answer names at most 5 habits"));
+    }
+    for (index, habit) in habits.iter().enumerate() {
+        key(habit)?;
+        if habits[..index].contains(habit) {
+            return Err(invalid("an answer names each habit once"));
+        }
+    }
+    Ok(())
+}
+
+impl ChiefAgentAction {
+    pub fn validate(&self) -> Result<(), TeamError> {
+        match self {
+            Self::Context { after, limit } => validate_cursor(*after, *limit),
+            Self::ContextSnapshot {
+                after,
+                limit,
+                generation,
+            } => {
+                validate_cursor(*after, *limit)?;
+                if let Some(generation) = generation {
+                    text(generation, 64)?;
+                }
+                Ok(())
+            }
+            Self::SummaryResponse {
+                request_id,
+                sections,
+            } => {
+                key(request_id)?;
+                for section in [
+                    &sections.completed,
+                    &sections.active,
+                    &sections.decisions,
+                    &sections.idle,
+                ] {
+                    text(section, 1000)?;
+                }
+                Ok(())
+            }
+            Self::Status { summary } => text(summary, 4000),
+            Self::Decision {
+                key: decision_key,
+                question,
+                recommendation,
+            } => {
+                key(decision_key)?;
+                // `escalate` files its decision under `stop-<stop>`; a plain decision must not rewrite or collide with it.
+                if decision_key.starts_with("stop-") {
+                    return Err(invalid(
+                        "decision keys starting with stop- are reserved for escalations",
+                    ));
+                }
+                text(question, 1000)?;
+                text(recommendation, 1000)
+            }
+            Self::Answer {
+                stop,
+                text: answer,
+                reason,
+                habits,
+            } => {
+                key(stop)?;
+                text(answer, 4000)?;
+                without_host_labels(answer)?;
+                text(reason, 300)?;
+                cited_habits(habits)
+            }
+            Self::AnswerForm {
+                stop,
+                choice,
+                reason,
+                habits,
+            } => {
+                key(stop)?;
+                text(choice, 200)?;
+                text(reason, 300)?;
+                cited_habits(habits)
+            }
+            Self::AddHabit {
+                text: habit,
+                project,
+                source_id,
+                reason,
+            } => {
+                text(habit, 500)?;
+                if habit.contains('\n') {
+                    return Err(invalid("a habit is a single line"));
+                }
+                // The host stores the habit with its whitespace collapsed: check what it would store.
+                without_host_labels(&habit_text(habit))?;
+                if let Some(project) = project {
+                    text(project, 300)?;
+                    if project.contains('\n') {
+                        return Err(invalid("a project key is a single line"));
+                    }
+                }
+                key(source_id)?;
+                text(reason, 300)
+            }
+            Self::Escalate {
+                stop,
+                reason,
+                suggested_answer,
+                ..
+            } => {
+                key(stop)?;
+                text(reason, 300)?;
+                if let Some(suggestion) = suggested_answer {
+                    text(suggestion, 2000)?;
+                    without_host_labels(suggestion)?;
+                }
+                Ok(())
+            }
+            Self::StartSession {
+                todo,
+                project,
+                reason,
+            } => {
+                todo_id(todo)?;
+                if project.is_empty()
+                    || project.len() > 128
+                    || project.starts_with('.')
+                    || !project.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                    })
+                {
+                    return Err(invalid(
+                        "a project is its folder name: letters, digits, -, _ or .",
+                    ));
+                }
+                text(reason, 300)
+            }
+            Self::GiveTodo {
+                todo,
+                session,
+                reason,
+            } => {
+                todo_id(todo)?;
+                key(session)?;
+                text(reason, 300)
+            }
+            Self::Message {
+                session,
+                text: message,
+                reason,
+            } => {
+                key(session)?;
+                text(message, 2000)?;
+                without_host_labels(message)?;
+                text(reason, 300)
+            }
+            Self::Inspect { session, todo } => match (session, todo) {
+                (Some(session), None) => key(session),
+                (None, Some(todo)) => todo_id(todo),
+                _ => Err(invalid("inspect names exactly one session or one todo")),
+            },
+        }
+    }
+}
+
+fn todo_id(todo: &str) -> Result<(), TeamError> {
+    if todo.len() != 8 || !todo.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid("a todo id is 8 hex characters"));
+    }
+    Ok(())
+}
+
+impl ChiefHostAction {
+    pub fn validate(&self) -> Result<(), TeamError> {
+        let request_id = match self {
+            Self::Start { request_id, .. }
+            | Self::SettleStartup { request_id, .. }
+            | Self::SendCheck { request_id, .. }
+            | Self::Enable { request_id, .. }
+            | Self::Recover { request_id, .. }
+            | Self::Pause { request_id, .. }
+            | Self::Resume { request_id, .. }
+            | Self::Disable { request_id, .. }
+            | Self::Resolve { request_id, .. }
+            | Self::AnswerDecision { request_id, .. }
+            | Self::LaterDecision { request_id, .. }
+            | Self::RequestSummary { request_id }
+            | Self::ReconcileDelivery { request_id, .. }
+            | Self::ReconcileLaunch { request_id, .. }
+            | Self::Overrule { request_id, .. }
+            | Self::DeleteHabit { request_id, .. }
+            | Self::RestoreHabit { request_id, .. }
+            | Self::RescopeHabit { request_id, .. } => request_id,
+        };
+        key(request_id)?;
+        match self {
+            Self::Start {
+                previous_attempt, ..
+            } => previous_attempt.as_deref().map_or(Ok(()), key),
+            Self::SendCheck { attempt, .. } => key(attempt),
+            Self::Enable {
+                session: verified, ..
+            } => session(verified),
+            Self::Recover {
+                expected_epoch,
+                expected_revision,
+                session: verified,
+                ..
+            } => {
+                key(expected_epoch)?;
+                positive(*expected_revision)?;
+                session(verified)
+            }
+            Self::Pause { expected_epoch, .. }
+            | Self::Resume { expected_epoch, .. }
+            | Self::Disable { expected_epoch, .. } => key(expected_epoch),
+            Self::ReconcileDelivery {
+                message: target,
+                expected_revision,
+                evidence,
+                ..
+            }
+            | Self::ReconcileLaunch {
+                token: target,
+                expected_revision,
+                evidence,
+                ..
+            }
+            | Self::SettleStartup {
+                attempt: target,
+                expected_revision,
+                evidence,
+                ..
+            } => {
+                key(target)?;
+                positive(*expected_revision)?;
+                match evidence {
+                    ReconciliationEvidence::Handled { note }
+                    | ReconciliationEvidence::SafeStop { note, .. } => text(note, 1000),
+                }
+            }
+            Self::Resolve {
+                decision,
+                expected_revision,
+                resolution,
+                ..
+            } => {
+                key(decision)?;
+                positive(*expected_revision)?;
+                text(resolution, 1000)
+            }
+            Self::AnswerDecision {
+                decision,
+                expected_revision,
+                answer,
+                ..
+            } => {
+                key(decision)?;
+                positive(*expected_revision)?;
+                text(answer, 4000)
+            }
+            Self::LaterDecision {
+                decision,
+                expected_revision,
+                ..
+            } => {
+                key(decision)?;
+                positive(*expected_revision)
+            }
+            Self::Overrule {
+                answer, correction, ..
+            } => {
+                key(answer)?;
+                text(correction, 2000)?;
+                if correction.contains('\n') {
+                    return Err(invalid("a correction is a single line"));
+                }
+                without_host_labels(correction)
+            }
+            Self::DeleteHabit { habit, .. }
+            | Self::RestoreHabit { habit, .. }
+            | Self::RescopeHabit { habit, .. } => key(habit),
+            Self::RequestSummary { .. } => Ok(()),
+        }
+    }
+}
+
+pub fn validate_cursor(after: i64, limit: usize) -> Result<(), TeamError> {
+    if after < 0 || !(1..=MAX_CONTEXT_RECORDS).contains(&limit) {
+        return Err(invalid("chief cursor needs after >= 0 and limit 1–50"));
+    }
+    Ok(())
+}
+
+/// Return only whole records; the caller advances its cursor through the returned records alone.
+pub fn context_page(records: &[Value], limit: usize) -> Result<Value, TeamError> {
+    validate_cursor(0, limit)?;
+    let mut page = Vec::new();
+    let mut bytes = 2;
+    for record in records.iter().take(limit) {
+        let size = serde_json::to_vec(record)?.len();
+        if size + 2 >= CONTEXT_BYTES {
+            return Err(TeamError::new(
+                ErrorCode::Limit,
+                "chief context record exceeds reply bound",
+            ));
+        }
+        if bytes + size + 1 >= CONTEXT_BYTES {
+            break;
+        }
+        bytes += size + 1;
+        page.push(record.clone());
+    }
+    Ok(Value::Array(page))
+}

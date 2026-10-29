@@ -3109,12 +3109,14 @@ fn lifecycle_checks_reject_old_approvals_and_missing_history() {
     assert!(todos.set_status(&task.task_id, "done", ""));
     assert!(todos.set_status(&task.task_id, "todo", ""));
     let approve_old_proposal = |connection: &mut Connection| {
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(teams::store::storage_error)?;
         links::require_open_work(&transaction, &task, 4)?;
         transaction.execute("INSERT INTO links SELECT 'old-approval',id,revision,mapping_hash,task_key,work_generation,'a','b','old-epoch','active',NULL,30,NULL
-            FROM link_proposals WHERE id=?1", [format!("{}-pending", task.task_id)])?;
-        transaction.commit().map_err(teams::TeamError::from)
+            FROM link_proposals WHERE id=?1", [format!("{}-pending", task.task_id)])
+            .map_err(teams::store::storage_error)?;
+        transaction.commit().map_err(teams::store::storage_error)
     };
     assert!(approve_old_proposal(&mut connection).is_err());
     assert_eq!(link_fixture::state(&connection, &task.task_id), "closed");
