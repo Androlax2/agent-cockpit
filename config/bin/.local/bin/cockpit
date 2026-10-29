@@ -1813,7 +1813,7 @@ restart_stale_osd() {
 # never closed.
 start_detached() (
     local descriptor
-    for descriptor in /proc/$BASHPID/fd/*; do
+    for descriptor in /proc/"$BASHPID"/fd/*; do
         descriptor=${descriptor##*/}
         if ((descriptor > 2 && descriptor != 255)); then exec {descriptor}>&-; fi
     done

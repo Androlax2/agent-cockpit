@@ -92,7 +92,9 @@ def read_gate(path):
         return None, "the game guard status is not valid JSON"
     if not isinstance(gate, dict) or gate.get("version") != GATE_VERSION:
         return None, "the game guard status has an unknown format"
-    if not isinstance(gate.get("state"), str) or gate["state"] not in RUNNING_STATES | HOLDING_STATES | {"off"}:
+    if not isinstance(gate.get("state"), str) or gate[
+        "state"
+    ] not in RUNNING_STATES | HOLDING_STATES | {"off"}:
         return None, "the game guard status has an unknown state"
     if not all(is_time(gate.get(key)) for key in ("updated_at", "since")):
         return None, "the game guard status has no valid times"
@@ -108,7 +110,11 @@ def admission(gate, problem, now, current_boot):
     if gate is None:
         return False, problem, None
     if gate["state"] == "off":
-        return True, None, "the game guard admission is off: this job is not held for games or memory"
+        return (
+            True,
+            None,
+            "the game guard admission is off: this job is not held for games or memory",
+        )
     same_boot = current_boot is not None and gate.get("boot_id") == current_boot
     release_until = gate.get("manual_release_until")
     if same_boot and is_time(release_until) and now < release_until <= now + 24 * 3600:
@@ -127,7 +133,9 @@ def is_cheap(arguments):
     tool, rest = Path(arguments[0]).name, arguments[1:]
     if len(rest) == 1 and rest[0] in CHEAP_FLAGS:
         return True
-    return (tool == "make" and rest == ["help"]) or (tool == "cargo" and rest[:1] in (["fmt"], ["metadata"]))
+    return (tool == "make" and rest == ["help"]) or (
+        tool == "cargo" and rest[:1] in (["fmt"], ["metadata"])
+    )
 
 
 def take_release_turn():
@@ -166,20 +174,28 @@ def wait_for_admission(label, read=read_gate, clock=time.time, sleep=time.sleep,
             if warning:
                 print(f"agent-build: warning: {warning}", file=out, flush=True)
             if reported_at is not None:
-                print(f"agent-build: {label} starts after {int(clock() - started)} s", file=out, flush=True)
+                print(
+                    f"agent-build: {label} starts after {int(clock() - started)} s",
+                    file=out,
+                    flush=True,
+                )
             return reported_at is not None
         now = clock()
         if reported_at is None or now - reported_at >= WAIT_REPORT_EVERY_S:
-            print(f"agent-build: {label} waits ({int(now - started)} s so far): {why}. It starts by itself "
-                  "when that ends; nothing has run yet. Theo can release held jobs on the host: "
-                  "cockpit-game-guard release", file=out, flush=True)
+            print(
+                f"agent-build: {label} waits ({int(now - started)} s so far): {why}. It starts by itself "
+                "when that ends; nothing has run yet. Theo can release held jobs on the host: "
+                "cockpit-game-guard release",
+                file=out,
+                flush=True,
+            )
             reported_at = now
         sleep(GATE_POLL_S)
 
 
 def stat_fields(pid):
     text = Path(f"/proc/{pid}/stat").read_text()
-    return text[text.rindex(")") + 2:].split()
+    return text[text.rindex(")") + 2 :].split()
 
 
 def admission_marker(pid=None):

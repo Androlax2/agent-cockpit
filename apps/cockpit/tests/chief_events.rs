@@ -6028,16 +6028,16 @@ fn the_chief_view_reviews_the_exact_text_the_host_stores_for_a_correction() {
     );
 }
 
-fn habit_rows(
-    connection: &Connection,
-) -> Vec<(
+type HabitRow = (
     String,
     Option<String>,
     Option<String>,
     String,
     String,
     String,
-)> {
+);
+
+fn habit_rows(connection: &Connection) -> Vec<HabitRow> {
     let mut statement = connection.prepare("SELECT text,project,origin_project,source,source_id,state FROM chief_habits ORDER BY created_at,rowid").unwrap();
     statement
         .query_map([], |row| {
@@ -7496,8 +7496,9 @@ fn a_snapshot_read_across_full_budget_turns_is_progress_not_an_unread_notice() {
     .unwrap()
     .result
     .unwrap();
-    let mut after = page["next"].as_i64().unwrap();
-    for (turn, now) in [("snapshot-2", 30_100)] {
+    let after = page["next"].as_i64().unwrap();
+    {
+        let (turn, now) = ("snapshot-2", 30_100);
         observed_at(&mut live, now);
         let wake = admit_events(&mut connection, &live, turn, now);
         assert_eq!(
@@ -7518,7 +7519,7 @@ fn a_snapshot_read_across_full_budget_turns_is_progress_not_an_unread_notice() {
         .unwrap()
         .result
         .unwrap();
-        after = page["next"].as_i64().unwrap();
+        assert!(page["next"].as_i64().is_some());
         assert!(unread_notices(&connection).is_empty());
     }
     assert_eq!(page["has_more"], false);
