@@ -1899,7 +1899,7 @@ impl TodoList {
         Ok((pending, inputs))
     }
 
-    /// cockpit-todo unwait <id> <other>… (host only): the item stops waiting on the named items.
+    /// `cockpit-todo unwait <id> <other>…` (host only): the item stops waiting on the named items.
     /// Its status and queue place stay as they are: queueing it remains Theo's Q.
     fn stop_waiting(&mut self, update: &Map<String, Value>) -> Result<(), String> {
         let id = update
