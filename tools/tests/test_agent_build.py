@@ -530,18 +530,34 @@ class AccountHomeTests(unittest.TestCase):
             write_gate(Path(folder.name), state)
             forged[state] = folder.name
         real_status = self.expected_home() / ".cache/agent-shims/heavy-gate.json"
-        def real_state():
+        def decision_inputs():
+            """Everything the real decision depends on, apart from the forged HOMEs: the state,
+            boot, manual release and whether the status is fresh. Read only."""
             try:
-                return json.loads(real_status.read_text()).get("state")
+                gate = json.loads(real_status.read_text())
             except (OSError, ValueError):
                 return None
+            if not isinstance(gate, dict):
+                return None
+            age = time.time() - gate.get("updated_at", 0) if isinstance(gate.get("updated_at"), (int, float)) else None
+            fresh = age is not None and -5 <= age <= agent_build.GATE_FRESH_S - 5
+            stale = age is None or age > agent_build.GATE_FRESH_S + 5 or age < -10
+            return (gate.get("state"), gate.get("boot_id"), gate.get("manual_release_until"),
+                    "fresh" if fresh else "stale" if stale else "near the edge")
         environment = fresh_environment(os.environ)
-        for _ in range(5):
-            before = real_state()
-            answers = [subprocess.run([sys.executable, str(RUNNER), "--check-gate"], timeout=10,
-                                      env=environment | {"HOME": forged[state]}).returncode for state in ("clear", "held")]
-            if real_state() == before:
+        answers = None
+        for _ in range(10):
+            before = decision_inputs()
+            if before is not None and before[3] == "near the edge":
+                time.sleep(1)
+                continue
+            pair = [subprocess.run([sys.executable, str(RUNNER), "--check-gate"], timeout=10,
+                                   env=environment | {"HOME": forged[state]}).returncode for state in ("clear", "held")]
+            if decision_inputs() == before:
+                answers = pair
                 break
+        if answers is None:
+            self.skipTest("the real status kept changing while sampled; no HOME conclusion either way")
         self.assertIn(answers[0], (0, 75))
         self.assertEqual(answers[0], answers[1], f"answers differ under forged homes: {answers}")
 
