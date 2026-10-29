@@ -21,6 +21,13 @@ determine cleanup batch sizes. Later crate extractions require reviewed move map
 
 ## Global constraints
 
+Implementation checkpoint (2026-10-29): integrated source is committed through
+`2c5ef2b`, based on `bb98448`. Independent reviews found no remaining code issues;
+host receipt `0f9a4cc2a2f3` passed 220 Python and 3,262 Rust tests (zero skipped).
+Clippy, Rustdoc and dependency-policy checks passed separately. Final Markdown
+whitespace ownership, aggregate CI, GitHub publication and reviewed live application
+remain open; these results do not establish deployment or GitHub runner execution.
+
 - No product behavior, wire-format, database-schema or approval-policy changes.
 - Manifest edits and tool installations require explicit approval before execution.
 - Pushes, workflow activation and host application retain existing approval requirements.
@@ -95,18 +102,18 @@ and aggregate `ci`. Formatting writes are explicit separate commands.
   lints only with reviewed fixes. Do not enable all pedantic lints then blanket-allow them.
 - [x] Add `--locked` to existing Cargo build/test recipes as well as new checks,
   preserving the build wrapper and the OSD build prerequisite in `make test`.
-- [ ] Configure Ruff for Python, including extensionless Python entry points; use
+- [x] Configure Ruff for Python, including extensionless Python entry points; use
   ShellCheck/shfmt only for supported shell dialects and fish's own checks for fish.
-- [ ] Select and approve pinned JavaScript/TypeScript tooling without downloading through `npx`;
+- [x] Select and approve pinned JavaScript/TypeScript tooling without downloading through `npx`;
   configure browser versus Node environments explicitly. Inventory Lua checking needs
   against its actual host runtime before choosing another dependency.
-- [ ] Add Markdown style and local links/anchors checks, preserving valid intentional
+- [x] Add Markdown style and local links/anchors checks, preserving valid intentional
   HTML and code examples. Add typos and cargo-deny policies fitted to Cockpit's graph.
 - [ ] Fix each language's findings in separate reviewable batches. Keep mechanical
   formatting separate from behavior-sensitive error/unsafe-code changes.
 - [x] Add meaningful discovery tests: extensionless Python/Bash included, fish not sent
   to ShellCheck, filenames with spaces handled, missing tools return nonzero.
-- [ ] Add Linux CI jobs calling these exact Make targets, read-only repository
+- [x] Add Linux CI jobs calling these exact Make targets, read-only repository
   permissions, immutable action revisions and superseded-run cancellation. Document
   explicit system/tool prerequisites; no dependency on Theo's live desktop or secrets.
 - [ ] Run each job's command locally on the final tree, then `make ci` once when
@@ -119,16 +126,16 @@ and aggregate `ci`. Formatting writes are explicit separate commands.
 `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `.agents/rules/{rust,scripts,protocol,ci}.md`,
 `.agents/skills/verify-cockpit/SKILL.md`, `.agents/skills/apply-cockpit/SKILL.md`.
 
-- [ ] Write the current architecture and boundary map, including host versus sandbox,
+- [x] Write the current architecture and boundary map, including host versus sandbox,
   trusted request handling, SQLite ownership and binary/test paths.
-- [ ] Make `AGENTS.md` the cross-client engineering index. Preserve existing
+- [x] Make `AGENTS.md` the cross-client engineering index. Preserve existing
   `CLAUDE.md` Git authorization and apply policy verbatim; link canonical guidance.
-- [ ] Put path-scoped guidance in `.agents/rules/`; explicitly index it for clients
+- [x] Put path-scoped guidance in `.agents/rules/`; explicitly index it for clients
   that do not auto-load scoped files. Do not assume identical client skill discovery.
-- [ ] Create only two focused skills: selecting verification and executing the approved
+- [x] Create only two focused skills: selecting verification and executing the approved
   apply workflow. Load skill-creator before authoring; validate with scenarios for a
   shell-only edit, daemon change, missing prerequisite and absent host approval.
-- [ ] Link the actual Make commands, environment prerequisites, focused/full test
+- [x] Link the actual Make commands, environment prerequisites, focused/full test
   selection, and review workflow from developer docs. Label planned architecture as
   proposed until implemented. Coordinate README additions with todo `a3fea48f`.
 - [ ] Verify relative links, Markdown checks and command definitions; check that no
@@ -139,11 +146,11 @@ and aggregate `ci`. Formatting writes are explicit separate commands.
 **Files:** `apps/Cargo.toml`, `apps/osd/Cargo.toml`, `apps/osd/src/lib.rs`,
 `apps/osd/src/bin/osd.rs`; proposed `apps/crates/cockpit-daemon/{Cargo.toml,src/}`.
 
-- [ ] Produce and review an exact import/test move map for `registry`, `chief`, `teams`
+- [x] Produce and review an exact import/test move map for `registry`, `chief`, `teams`
   and their helper dependencies. Inspect `fifo` ownership; do not create a crate for it.
-- [ ] With manifest approval, move the engine and its existing tests together. Keep
+- [x] With manifest approval, move the engine and its existing tests together. Keep
   GTK binaries in `osd`, and retain cross-layer tests with explicit dev dependencies.
-- [ ] Add a dependency regression check proving the daemon library has no GTK runtime
+- [x] Add a dependency regression check proving the daemon library has no GTK runtime
   dependency. Preserve existing public behavior and fixture coverage.
 - [ ] Run focused registry/chief/team tests, executable integration tests, then the
   approved full gate. Verify wrappers still resolve `apps/target/release/osd`.
@@ -153,15 +160,15 @@ and aggregate `ci`. Formatting writes are explicit separate commands.
 **Files:** `apps/cockpit/src/{teams,chief}.rs`, their consumers in both packages;
 proposed `apps/crates/cockpit-protocol/{Cargo.toml,src/}`.
 
-- [ ] Map mutually referencing team/chief wire types into one cohesive protocol crate.
+- [x] Map mutually referencing team/chief wire types into one cohesive protocol crate.
   Keep persistence, authorization decisions and shared SQLite transactions with their
   current owners. Avoid separate team/chief crates that would depend on each other.
-- [ ] Preserve and run hostile-payload, serialization and CLI/daemon roundtrip tests.
+- [x] Preserve and run hostile-payload, serialization and CLI/daemon roundtrip tests.
   Add a dependency guard against protocol dependencies on GTK, terminal UI or SQLite.
-- [ ] Review `status`, `costs`, `app::refresh`, todo drafts and approval terminal code
+- [x] Review `status`, `costs`, `app::refresh`, todo drafts and approval terminal code
   for ownership changes needed before UI extraction; write a separate concrete move
   plan only if the reduction in coupling justifies it.
-- [ ] Keep executables and integration test ownership stable. Do not move the whole
+- [x] Keep executables and integration test ownership stable. Do not move the whole
   workspace to root `crates/` merely to match the reference repositories.
 
 ## Completion and handoff
