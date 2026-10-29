@@ -657,7 +657,7 @@ class AccountHomeTests(unittest.TestCase):
         real_status = self.expected_home() / ".cache/agent-shims/heavy-gate.json"
 
         def decision_inputs():
-            """Everything the real decision depends on, apart from the forged HOMEs: the state,
+            """Everything the real decision depends on, apart from the forged HOME values: the state,
             boot, manual release and whether the status is fresh. Read only."""
             try:
                 gate = json.loads(real_status.read_text())
