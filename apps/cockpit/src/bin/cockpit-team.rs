@@ -6,7 +6,7 @@ use std::io::{self, Read};
 
 const HELP: &str = r#"cockpit-team context            your task, your role and your teammates' session ids
 cockpit-team <action> < action.json   propose, recruit, send, assess or handoff; the JSON's "action" names the same one
-cockpit-team chief < action.json      nested {"action":"chief","request":{...}} agent request
+cockpit-team chief < action.json      the Chief's own session only: nested {"action":"chief","request":{...}} agent request
 cockpit-team chief-host < request.json   host only: {"request":"chief","action":{...}} or chief_snapshot
 cockpit-team recovery-review <session-id>   host only: print an exact recovery request; never submit or verify
 

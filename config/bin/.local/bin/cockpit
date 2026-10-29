@@ -877,9 +877,10 @@ say_to_session() { # id message
         return 0
     fi
     # A sandboxed session has neither the list nor the tmux server: typing into another session's
-    # pane stays host-only. Its supported route to the Chief is the team socket.
+    # pane stays host-only. `cockpit-team chief` is the Chief's own route, refused to every other
+    # session, so the hint names what does reach the Chief instead.
     if [[ ! -r $SNAPSHOT ]]; then
-        echo "cockpit: cannot read the session list ($SNAPSHOT): cockpit say runs on the host; from a sandbox, report to the Chief with cockpit-team chief (cockpit-team --help)" >&2
+        echo "cockpit: cannot read the session list ($SNAPSHOT): cockpit say runs on the host only. From a sandbox no command messages the Chief: it sees an OpenCode session's question (cockpit-needs-input) or its turn ending on a doing todo. Otherwise ask Theo to run this cockpit say with ask-to-run." >&2
         return 1
     fi
     pane=$(session_field "$id" tmux_pane)

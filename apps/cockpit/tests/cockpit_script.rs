@@ -1353,7 +1353,9 @@ fn say_without_the_session_snapshot_fails_with_a_reason_instead_of_a_silent_exit
     let result = manager.run(&["say", SESSION_A, "the snapshot is ready"], &[]);
     assert_eq!(result.status.code(), Some(1));
     let reason = stderr(&result);
-    assert!(reason.contains("cannot read the session list") && reason.contains("cockpit-team chief"), "{reason}");
+    assert!(reason.contains("cannot read the session list") && reason.contains("runs on the host only"), "{reason}");
+    assert!(!reason.contains("cockpit-team chief"), "only the Chief's own session may use cockpit-team chief: {reason}");
+    assert!(reason.contains("cockpit-needs-input") && reason.contains("ask-to-run"), "{reason}");
     assert!(manager.tmux_calls("send-keys").is_empty());
 }
 

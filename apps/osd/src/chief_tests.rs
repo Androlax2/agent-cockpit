@@ -641,6 +641,16 @@ fn a_restarted_chiefs_new_runtime_is_verified_by_theos_test_message_and_then_rec
     assert!(context(&mut bench,20).unwrap().result.is_ok());
 }
 
+/// `cockpit say` stays host-only and its sandbox hint no longer points here: only the Chief may use it.
+#[test]
+fn another_session_cannot_report_to_the_chief_through_cockpit_team_chief() {
+    let mut bench=team_bench();
+    enable(&mut bench,OPENCODE_SESSION);
+    let report=ChiefAgentAction::Status {summary:"Snapshot repair is verified.".into()};
+    let refused=crate::teams::request(&mut bench.registry,10,AgentAction::Chief {request:report}).and_then(|reply|reply.result).unwrap_err();
+    assert_eq!(refused.code,ErrorCode::Unauthorized);
+}
+
 /// Files `count` adds in project-b through the report socket as `peer`; returns how many were saved
 /// and the receipt of the first refused one.
 fn file_handoffs_in_project_b(bench: &mut Bench, peer: u32, count: usize, forged: serde_json::Value) -> (usize, serde_json::Value) {
