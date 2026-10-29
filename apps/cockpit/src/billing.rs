@@ -25,14 +25,23 @@ fn decode(bytes: &[u8]) -> io::Result<Evidence> {
         return Err(io::Error::other("billing record exceeds 4096 bytes"));
     }
     let record: Evidence = serde_json::from_slice(bytes)?;
-    if record.key.is_empty() || record.key.len() > 512 || !record.key.bytes().all(|byte| byte.is_ascii_alphanumeric() || b":_-".contains(&byte)) {
+    if record.key.is_empty()
+        || record.key.len() > 512
+        || !record
+            .key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b":_-".contains(&byte))
+    {
         return Err(io::Error::other("billing reply key is empty or invalid"));
     }
     Ok(record)
 }
 
 fn open_directory(path: &Path) -> io::Result<fs::File> {
-    fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
 }
 
 fn directory_path(directory: &fs::File) -> PathBuf {
@@ -41,9 +50,16 @@ fn directory_path(directory: &fs::File) -> PathBuf {
 }
 
 fn record_evidence(archive: &Connection, record: Evidence) -> rusqlite::Result<usize> {
-    let mode = match record.billing { Billing::Api => "api", Billing::Subscription => "subscription", Billing::Unknown => "unknown" };
-    archive.execute("insert into reply_billing values (?, ?) on conflict(key) do update
-        set billing = 'unknown' where reply_billing.billing != excluded.billing", params![record.key, mode])
+    let mode = match record.billing {
+        Billing::Api => "api",
+        Billing::Subscription => "subscription",
+        Billing::Unknown => "unknown",
+    };
+    archive.execute(
+        "insert into reply_billing values (?, ?) on conflict(key) do update
+        set billing = 'unknown' where reply_billing.billing != excluded.billing",
+        params![record.key, mode],
+    )
 }
 
 fn retain(source: &Path, destination: &Path) -> io::Result<()> {
@@ -51,7 +67,9 @@ fn retain(source: &Path, destination: &Path) -> io::Result<()> {
         Ok(_) => {
             let original = util::read_untrusted(source, MAX_RECORD_BYTES + 1)?;
             if util::read_untrusted(destination, MAX_RECORD_BYTES + 1)? != original {
-                return Err(io::Error::other("retained billing record conflicts with its filename"));
+                return Err(io::Error::other(
+                    "retained billing record conflicts with its filename",
+                ));
             }
             fs::remove_file(source)
         }
@@ -70,15 +88,19 @@ pub fn import(archive: &mut Connection) -> io::Result<usize> {
     // Keep the lock through post-commit moves; another importer must not claim those files again.
     if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         let error = io::Error::last_os_error();
-        return if error.kind() == io::ErrorKind::WouldBlock { Ok(0) } else { Err(error) };
+        return if error.kind() == io::ErrorKind::WouldBlock {
+            Ok(0)
+        } else {
+            Err(error)
+        };
     }
     let pending = directory_path(&directory);
     let mut folders = Vec::new();
     for name in ["processing", "processed", "rejected"] {
         let path = pending.join(name);
         match fs::create_dir(&path) {
-            Ok(()) => {},
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
         folders.push(open_directory(&path)?);
@@ -86,32 +108,53 @@ pub fn import(archive: &mut Connection) -> io::Result<usize> {
     let processing = directory_path(&folders[0]);
     let processed = directory_path(&folders[1]);
     let rejected = directory_path(&folders[2]);
-    let transaction = archive.transaction_with_behavior(TransactionBehavior::Immediate).map_err(io::Error::other)?;
+    let transaction = archive
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(io::Error::other)?;
     transaction.execute_batch("create table if not exists billing_import_state (id integer primary key check (id = 1));").map_err(io::Error::other)?;
     let mut changed = 0;
     let mut errors = Vec::new();
     let mut completed = Vec::new();
-    let recovered: bool = transaction.query_row("select exists(select 1 from billing_import_state)", [], |row| row.get(0)).map_err(io::Error::other)?;
+    let recovered: bool = transaction
+        .query_row(
+            "select exists(select 1 from billing_import_state)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)?;
     if !recovered {
         // A fresh archive pays for one full replay; ordinary refreshes never enumerate retained history.
         for entry in fs::read_dir(&processed)? {
             let path = entry?.path();
-            match util::read_untrusted(&path, MAX_RECORD_BYTES + 1).and_then(|bytes| decode(&bytes)) {
-                Ok(record) => changed += record_evidence(&transaction, record).map_err(io::Error::other)?,
+            match util::read_untrusted(&path, MAX_RECORD_BYTES + 1).and_then(|bytes| decode(&bytes))
+            {
+                Ok(record) => {
+                    changed += record_evidence(&transaction, record).map_err(io::Error::other)?
+                }
                 Err(error) => {
                     errors.push(format!("{}: {error}", path.display()));
                     completed.push((path, rejected.join(format!("{}.json", util::token_hex(16)))));
                 }
             }
         }
-        transaction.execute("insert into billing_import_state values (1)", []).map_err(io::Error::other)?;
+        transaction
+            .execute("insert into billing_import_state values (1)", [])
+            .map_err(io::Error::other)?;
     }
     let mut remaining = MAX_PENDING_ENTRIES;
     for source in [&processing, &pending] {
         for entry in fs::read_dir(source)?.take(remaining) {
             remaining -= 1;
-            let path = match entry { Ok(entry) => entry.path(), Err(error) => { errors.push(error.to_string()); continue; } };
-            if path.extension().is_none_or(|extension| extension != "json") { continue; }
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(error) => {
+                    errors.push(error.to_string());
+                    continue;
+                }
+            };
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
             let claimed = if source == &pending {
                 let claimed = processing.join(format!("{}.json", util::token_hex(16)));
                 if let Err(error) = fs::rename(&path, &claimed) {
@@ -119,23 +162,34 @@ pub fn import(archive: &mut Connection) -> io::Result<usize> {
                     continue;
                 }
                 claimed
-            } else { path };
+            } else {
+                path
+            };
             let bytes = match util::read_untrusted(&claimed, MAX_RECORD_BYTES + 1) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     errors.push(format!("{}: {error}", claimed.display()));
-                    completed.push((claimed, rejected.join(format!("{}.json", util::token_hex(16)))));
+                    completed.push((
+                        claimed,
+                        rejected.join(format!("{}.json", util::token_hex(16))),
+                    ));
                     continue;
                 }
             };
             match decode(&bytes) {
                 Ok(record) => {
                     changed += record_evidence(&transaction, record).map_err(io::Error::other)?;
-                    completed.push((claimed, processed.join(format!("{:x}.json", Sha256::digest(&bytes)))));
+                    completed.push((
+                        claimed,
+                        processed.join(format!("{:x}.json", Sha256::digest(&bytes))),
+                    ));
                 }
                 Err(error) => {
                     errors.push(format!("{}: {error}", claimed.display()));
-                    completed.push((claimed, rejected.join(format!("{}.json", util::token_hex(16)))));
+                    completed.push((
+                        claimed,
+                        rejected.join(format!("{}.json", util::token_hex(16))),
+                    ));
                 }
             }
         }
@@ -146,6 +200,11 @@ pub fn import(archive: &mut Connection) -> io::Result<usize> {
             errors.push(format!("{}: {error}", source.display()));
         }
     }
-    if !errors.is_empty() { return Err(io::Error::other(format!("billing metadata: {}", errors.join("; ")))); }
+    if !errors.is_empty() {
+        return Err(io::Error::other(format!(
+            "billing metadata: {}",
+            errors.join("; ")
+        )));
+    }
     Ok(changed)
 }

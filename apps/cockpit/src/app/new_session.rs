@@ -3,9 +3,22 @@
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Field { StartFrom, Project, Agent, Message, Clone, CanvasLink }
+enum Field {
+    StartFrom,
+    Project,
+    Agent,
+    Message,
+    Clone,
+    CanvasLink,
+}
 
-const FIELDS: [Field; 5] = [Field::StartFrom, Field::Project, Field::Agent, Field::Message, Field::Clone];
+const FIELDS: [Field; 5] = [
+    Field::StartFrom,
+    Field::Project,
+    Field::Agent,
+    Field::Message,
+    Field::Clone,
+];
 const CANVAS_FIELDS: [Field; 3] = [Field::StartFrom, Field::Project, Field::CanvasLink];
 const VISIBLE_PROJECTS: usize = 6;
 
@@ -23,35 +36,65 @@ pub(crate) struct NewSession {
 
 impl NewSession {
     pub(crate) fn new(projects: Vec<String>, default_agent: &str) -> Self {
-        let agent = agents::AGENTS.iter().position(|agent| agent.name == default_agent).unwrap_or(0);
-        Self { projects, filter: String::new(), selected: 0, agent, message: String::new(), own_clone: true,
-            canvas_mode: false, canvas_link: String::new(), field: Field::Project }
+        let agent = agents::AGENTS
+            .iter()
+            .position(|agent| agent.name == default_agent)
+            .unwrap_or(0);
+        Self {
+            projects,
+            filter: String::new(),
+            selected: 0,
+            agent,
+            message: String::new(),
+            own_clone: true,
+            canvas_mode: false,
+            canvas_link: String::new(),
+            field: Field::Project,
+        }
     }
 
     fn matching(&self) -> Vec<&String> {
         let filter = self.filter.to_lowercase();
-        self.projects.iter().filter(|project| project_name(project).to_lowercase().contains(&filter)).collect()
+        self.projects
+            .iter()
+            .filter(|project| project_name(project).to_lowercase().contains(&filter))
+            .collect()
     }
 
     fn move_field(&mut self, step: isize) {
-        let fields = if self.canvas_mode { &CANVAS_FIELDS[..] } else { &FIELDS[..] };
-        let index = fields.iter().position(|field| *field == self.field).unwrap() as isize;
+        let fields = if self.canvas_mode {
+            &CANVAS_FIELDS[..]
+        } else {
+            &FIELDS[..]
+        };
+        let index = fields
+            .iter()
+            .position(|field| *field == self.field)
+            .unwrap() as isize;
         self.field = fields[(index + step).rem_euclid(fields.len() as isize) as usize];
     }
 
     pub(crate) fn draw(&self, buffer: &mut Buffer) {
         let (width, height) = (buffer.area.width, buffer.area.height);
-        if width < 20 || height < 18 { return; }
+        if width < 20 || height < 18 {
+            return;
+        }
         let content_height = height.max(100);
         let mut content = Buffer::empty(ratatui::layout::Rect::new(0, 0, width, content_height));
         let active_row = self.draw_content(&mut content);
         let (top, bottom) = (HEADER_LINES, height - 2);
         let offset = active_row.saturating_sub(bottom - 3);
         for row in top..=bottom {
-            let source = if row <= top + 1 { row }
-                else if row >= bottom - 1 { row + content_height - height }
-                else { row + offset };
-            for column in 1..width - 1 { buffer[(column, row)] = content[(column, source)].clone(); }
+            let source = if row <= top + 1 {
+                row
+            } else if row >= bottom - 1 {
+                row + content_height - height
+            } else {
+                row + offset
+            };
+            for column in 1..width - 1 {
+                buffer[(column, row)] = content[(column, source)].clone();
+            }
         }
     }
 
@@ -65,9 +108,27 @@ impl NewSession {
             put(buffer, row, 1, "│", style(BLUE));
             put(buffer, row, width - 2, "│", style(BLUE));
         }
-        put(buffer, top, 1, &format!("┌{}┐", "─".repeat(inner)), style(BLUE));
-        put(buffer, bottom, 1, &format!("└{}┘", "─".repeat(inner)), style(BLUE));
-        let heading = |field: Field| if self.field == field { bold(BLUE) } else { bold(FG_DARK) };
+        put(
+            buffer,
+            top,
+            1,
+            &format!("┌{}┐", "─".repeat(inner)),
+            style(BLUE),
+        );
+        put(
+            buffer,
+            bottom,
+            1,
+            &format!("└{}┘", "─".repeat(inner)),
+            style(BLUE),
+        );
+        let heading = |field: Field| {
+            if self.field == field {
+                bold(BLUE)
+            } else {
+                bold(FG_DARK)
+            }
+        };
         let mut row = top + 1;
         let mut active_row = row;
         put(buffer, row, 3, "New session", bold(FG));
@@ -76,42 +137,110 @@ impl NewSession {
             put(buffer, row, 3, &line, dim(FG_DARK));
         }
         row += 2;
-        put(buffer, row, 3, "START FROM  (←/→ change)", heading(Field::StartFrom));
-        for (selected, label) in [(!self.canvas_mode, "Blank session"), (self.canvas_mode, "Claude Design canvas")] {
+        put(
+            buffer,
+            row,
+            3,
+            "START FROM  (←/→ change)",
+            heading(Field::StartFrom),
+        );
+        for (selected, label) in [
+            (!self.canvas_mode, "Blank session"),
+            (self.canvas_mode, "Claude Design canvas"),
+        ] {
             row += 1;
-            put(buffer, row, 3, &format!("({}) {label}", if selected { "●" } else { " " }), if selected { bold(FG) } else { style(FG_DARK) });
+            put(
+                buffer,
+                row,
+                3,
+                &format!("({}) {label}", if selected { "●" } else { " " }),
+                if selected { bold(FG) } else { style(FG_DARK) },
+            );
         }
-        if self.field == Field::StartFrom { active_row = row; }
+        if self.field == Field::StartFrom {
+            active_row = row;
+        }
         row += 2;
-        put(buffer, row, 3, "PROJECT  (recent first)", heading(Field::Project));
+        put(
+            buffer,
+            row,
+            3,
+            "PROJECT  (recent first)",
+            heading(Field::Project),
+        );
         let matching = self.matching();
         let first = self.selected.saturating_sub(VISIBLE_PROJECTS - 1);
-        for (index, project) in matching.iter().enumerate().skip(first).take(VISIBLE_PROJECTS) {
+        for (index, project) in matching
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(VISIBLE_PROJECTS)
+        {
             row += 1;
             if index == self.selected {
-                if self.field == Field::Project { active_row = row; }
-                put(buffer, row, 3, &format!("{:<body$}", format!("▶ {}", project_name(project))), on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD));
+                if self.field == Field::Project {
+                    active_row = row;
+                }
+                put(
+                    buffer,
+                    row,
+                    3,
+                    &format!("{:<body$}", format!("▶ {}", project_name(project))),
+                    on(FG, BG_HIGHLIGHT).add_modifier(Modifier::BOLD),
+                );
             } else {
-                put(buffer, row, 3, &format!("  {}", project_name(project)), style(FG));
+                put(
+                    buffer,
+                    row,
+                    3,
+                    &format!("  {}", project_name(project)),
+                    style(FG),
+                );
             }
         }
         row += 1;
-        let filter = if self.filter.is_empty() { "  … type to filter".to_string() }
-            else if matching.is_empty() { format!("  no project matches “{}”", self.filter) } else { format!("  filter: {}", self.filter) };
+        let filter = if self.filter.is_empty() {
+            "  … type to filter".to_string()
+        } else if matching.is_empty() {
+            format!("  no project matches “{}”", self.filter)
+        } else {
+            format!("  filter: {}", self.filter)
+        };
         put(buffer, row, 3, &filter, dim(FG_DARK));
-        if self.field == Field::Project && matching.is_empty() { active_row = row; }
+        if self.field == Field::Project && matching.is_empty() {
+            active_row = row;
+        }
         if self.canvas_mode {
             row += 2;
-            for line in approval::wrap("Uses the default agent in this project, without a new clone.", body) {
+            for line in approval::wrap(
+                "Uses the default agent in this project, without a new clone.",
+                body,
+            ) {
                 put(buffer, row, 3, &line, dim(FG_DARK));
                 row += 1;
             }
             put(buffer, row, 3, "Canvas link", heading(Field::CanvasLink));
             row += 1;
-            if self.field == Field::CanvasLink { active_row = row; }
-            let tail: String = self.canvas_link.chars().rev().take(body).collect::<Vec<_>>().into_iter().rev().collect();
+            if self.field == Field::CanvasLink {
+                active_row = row;
+            }
+            let tail: String = self
+                .canvas_link
+                .chars()
+                .rev()
+                .take(body)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
             put(buffer, row, 3, &tail, on(FG, BG_HIGHLIGHT));
-            put(buffer, bottom - 1, 3, &fit("Tab next field   ⌘S start   esc cancel", body), dim(FG_DARK));
+            put(
+                buffer,
+                bottom - 1,
+                3,
+                &fit("Tab next field   ⌘S start   esc cancel", body),
+                dim(FG_DARK),
+            );
             return active_row;
         }
         row += 2;
@@ -119,52 +248,132 @@ impl NewSession {
         row += 1;
         let mut column = 3;
         for (index, agent) in agents::AGENTS.iter().enumerate() {
-            let choice = format!("({}) {}", if index == self.agent { "●" } else { " " }, agent.label);
-            if column as usize + width_of(&choice) > width as usize - 3 { row += 1; column = 3; }
-            if self.field == Field::Agent && index == self.agent { active_row = row; }
-            put(buffer, row, column, &choice, if index == self.agent { bold(FG) } else { style(FG_DARK) });
+            let choice = format!(
+                "({}) {}",
+                if index == self.agent { "●" } else { " " },
+                agent.label
+            );
+            if column as usize + width_of(&choice) > width as usize - 3 {
+                row += 1;
+                column = 3;
+            }
+            if self.field == Field::Agent && index == self.agent {
+                active_row = row;
+            }
+            put(
+                buffer,
+                row,
+                column,
+                &choice,
+                if index == self.agent {
+                    bold(FG)
+                } else {
+                    style(FG_DARK)
+                },
+            );
             column += width_of(&choice) as u16 + 4;
         }
         row += 2;
         put(buffer, row, 3, "FIRST MESSAGE", heading(Field::Message));
         row += 1;
-        if self.field == Field::Message { active_row = row; }
-        let cursor = if self.field == Field::Message { "▏" } else { "" };
+        if self.field == Field::Message {
+            active_row = row;
+        }
+        let cursor = if self.field == Field::Message {
+            "▏"
+        } else {
+            ""
+        };
         let shown = format!("{}{cursor}", self.message);
-        let tail: String = shown.chars().rev().take(body.saturating_sub(2)).collect::<Vec<_>>().into_iter().rev().collect();
-        put(buffer, row, 3, &format!("{tail:<width$}", width = body.saturating_sub(2)), on(FG, BG_HIGHLIGHT));
+        let tail: String = shown
+            .chars()
+            .rev()
+            .take(body.saturating_sub(2))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        put(
+            buffer,
+            row,
+            3,
+            &format!("{tail:<width$}", width = body.saturating_sub(2)),
+            on(FG, BG_HIGHLIGHT),
+        );
         row += 2;
-        if self.field == Field::Clone { active_row = row; }
-        put(buffer, row, 3, &format!("[{}] in its own clone (recommended)", if self.own_clone { "x" } else { " " }), heading(Field::Clone));
-        put(buffer, bottom - 1, 3, &fit("Tab next field   ⌘S start   esc cancel", body), dim(FG_DARK));
+        if self.field == Field::Clone {
+            active_row = row;
+        }
+        put(
+            buffer,
+            row,
+            3,
+            &format!(
+                "[{}] in its own clone (recommended)",
+                if self.own_clone { "x" } else { " " }
+            ),
+            heading(Field::Clone),
+        );
+        put(
+            buffer,
+            bottom - 1,
+            3,
+            &fit("Tab next field   ⌘S start   esc cancel", body),
+            dim(FG_DARK),
+        );
         active_row
     }
 }
 
 impl App {
     pub(super) fn open_new_session(&mut self) {
-        let default_agent = settings::launch_agent().unwrap_or_else(|_| agents::AGENTS[0].name.to_string());
+        let default_agent =
+            settings::launch_agent().unwrap_or_else(|_| agents::AGENTS[0].name.to_string());
         self.new_session = Some(NewSession::new(sessions::project_choices(), &default_agent));
     }
 
     pub(super) fn handle_new_session(&mut self, key: Key) -> String {
-        let Some(form) = self.new_session.as_mut() else { return String::new() };
+        let Some(form) = self.new_session.as_mut() else {
+            return String::new();
+        };
         match (key, form.field) {
-            (Key::Esc, _) => { self.new_session = None; }
+            (Key::Esc, _) => {
+                self.new_session = None;
+            }
             (Key::Ctrl('s'), _) => return self.start_new_session(),
             (Key::Tab | Key::Enter, _) => form.move_field(1),
             (Key::BackTab, _) => form.move_field(-1),
-            (Key::Left | Key::Right | Key::Char(' '), Field::StartFrom) => form.canvas_mode = !form.canvas_mode,
+            (Key::Left | Key::Right | Key::Char(' '), Field::StartFrom) => {
+                form.canvas_mode = !form.canvas_mode
+            }
             (Key::Char(character), Field::CanvasLink) => form.canvas_link.push(character),
-            (Key::Backspace, Field::CanvasLink) => { form.canvas_link.pop(); }
-            (Key::Paste(text), Field::CanvasLink) => form.canvas_link.push_str(&util::collapse(&text)),
-            (Key::Down, Field::Project) => form.selected = (form.selected + 1).min(form.matching().len().saturating_sub(1)),
+            (Key::Backspace, Field::CanvasLink) => {
+                form.canvas_link.pop();
+            }
+            (Key::Paste(text), Field::CanvasLink) => {
+                form.canvas_link.push_str(&util::collapse(&text))
+            }
+            (Key::Down, Field::Project) => {
+                form.selected = (form.selected + 1).min(form.matching().len().saturating_sub(1))
+            }
             (Key::Up, Field::Project) => form.selected = form.selected.saturating_sub(1),
-            (Key::Backspace, Field::Project) => { form.filter.pop(); form.selected = 0; }
-            (Key::Char(character), Field::Project) => { form.filter.push(character); form.selected = 0; }
-            (Key::Left, Field::Agent) => form.agent = (form.agent + agents::AGENTS.len() - 1) % agents::AGENTS.len(),
-            (Key::Right | Key::Char(' '), Field::Agent) => form.agent = (form.agent + 1) % agents::AGENTS.len(),
-            (Key::Backspace, Field::Message) => { form.message.pop(); }
+            (Key::Backspace, Field::Project) => {
+                form.filter.pop();
+                form.selected = 0;
+            }
+            (Key::Char(character), Field::Project) => {
+                form.filter.push(character);
+                form.selected = 0;
+            }
+            (Key::Left, Field::Agent) => {
+                form.agent = (form.agent + agents::AGENTS.len() - 1) % agents::AGENTS.len()
+            }
+            (Key::Right | Key::Char(' '), Field::Agent) => {
+                form.agent = (form.agent + 1) % agents::AGENTS.len()
+            }
+            (Key::Backspace, Field::Message) => {
+                form.message.pop();
+            }
             (Key::Char(character), Field::Message) => form.message.push(character),
             (Key::Paste(text), Field::Message) => form.message.push_str(&util::collapse(&text)),
             (Key::Char(' '), Field::Clone) => form.own_clone = !form.own_clone,
@@ -175,13 +384,20 @@ impl App {
 
     fn start_new_session(&mut self) -> String {
         let form = self.new_session.as_ref().unwrap();
-        let Some(directory) = form.matching().get(form.selected).map(|project| project.to_string()) else {
+        let Some(directory) = form
+            .matching()
+            .get(form.selected)
+            .map(|project| project.to_string())
+        else {
             return "no project matches: change the filter".into();
         };
         if form.canvas_mode {
             let link = form.canvas_link.clone();
             return match self.launch_design_session(&directory, &link) {
-                Ok(message) => { self.new_session = None; message }
+                Ok(message) => {
+                    self.new_session = None;
+                    message
+                }
                 Err(error) => error,
             };
         }
@@ -192,12 +408,16 @@ impl App {
         if own_clone {
             let branch = chrono::Local::now().format("parallel-%H%M").to_string();
             let mut arguments = vec!["--agent", agent, "parallel", &directory, &branch];
-            if !message.is_empty() { arguments.push(&message); }
+            if !message.is_empty() {
+                arguments.push(&message);
+            }
             manager_in_background(&arguments);
             return format!("cloning {} for {branch} …", project_name(&directory));
         }
         let mut arguments = vec!["--agent", agent, "new", &directory];
-        if !message.is_empty() { arguments.push(&message); }
+        if !message.is_empty() {
+            arguments.push(&message);
+        }
         self.manager_async(&arguments)
     }
 }

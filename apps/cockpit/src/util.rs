@@ -16,7 +16,10 @@ pub const LOG_MAX_BYTES: u64 = 1_048_576;
 pub const LOG_LINE_MAX: usize = 300;
 
 pub fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 pub fn now_secs() -> i64 {
@@ -41,14 +44,21 @@ pub fn log_as(component: &str, level: &str, message: &str) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        if fs::metadata(&path).map(|m| m.len() > LOG_MAX_BYTES).unwrap_or(false) {
+        if fs::metadata(&path)
+            .map(|m| m.len() > LOG_MAX_BYTES)
+            .unwrap_or(false)
+        {
             let mut rotated = path.clone().into_os_string();
             rotated.push(".1");
             fs::rename(&path, rotated)?;
         }
         // No control character reaches the log: a session's text in it could carry escape codes to
         // the terminal `cockpit logs` prints to (security audit 2026-10-19, M6).
-        let line: String = collapse(message).chars().filter(|c| !c.is_control()).take(LOG_LINE_MAX).collect();
+        let line: String = collapse(message)
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(LOG_LINE_MAX)
+            .collect();
         let stamp = Local::now().format("%Y-%m-%dT%H:%M:%S%:z");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         writeln!(file, "{stamp} {level} {component}: {line}")
@@ -57,7 +67,10 @@ pub fn log_as(component: &str, level: &str, message: &str) {
 
 /// Runs the manager command; its last error line, empty on success.
 pub fn manager(arguments: &[&str]) -> String {
-    let output = Command::new("cockpit").args(arguments).stdin(Stdio::null()).output();
+    let output = Command::new("cockpit")
+        .args(arguments)
+        .stdin(Stdio::null())
+        .output();
     match output {
         Ok(output) if output.status.success() => String::new(),
         Ok(output) => {
@@ -88,7 +101,11 @@ pub fn reap_in_background(mut child: std::process::Child) {
 
 /// A command started and not waited for: its output is dropped and it is reaped once it ends.
 pub fn spawn_detached(command: &mut Command) -> std::io::Result<()> {
-    command.stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(reap_in_background)
+    command
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(reap_in_background)
 }
 
 /// The manager running in the background, for a caller that wants to know how it ended.
@@ -104,8 +121,16 @@ pub fn manager_child(arguments: &[&str]) -> std::io::Result<std::process::Child>
 
 /// A command's stdout when it succeeds.
 pub fn output_of(program: &str, arguments: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(arguments).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    let output = Command::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 pub fn read_json(path: &Path) -> Option<Value> {
@@ -120,9 +145,15 @@ pub fn open_untrusted(path: &Path) -> std::io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     const O_NOFOLLOW: i32 = 0o400000;
     const O_NONBLOCK: i32 = 0o4000;
-    let file = fs::OpenOptions::new().read(true).custom_flags(O_NOFOLLOW | O_NONBLOCK).open(path)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
+        .open(path)?;
     if !file.metadata()?.is_file() {
-        return Err(std::io::Error::other(format!("{} is not a regular file", path.display())));
+        return Err(std::io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
     }
     Ok(file)
 }
@@ -157,7 +188,10 @@ pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     }
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(format!(".tmp-{}", token_hex(6)));
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
     file.write_all(value.to_string().as_bytes())?;
     drop(file);
     fs::rename(&temporary, path).inspect_err(|_| {
@@ -171,12 +205,17 @@ pub const CLAUDE_WORKSPACE: i64 = 6;
 /// Whether Theo is on the Claude workspace right now.
 pub fn claude_workspace_active() -> bool {
     refresh_hyprland_instance();
-    output_of("hyprctl", &["-j", "activeworkspace"]).and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .is_some_and(|workspace| workspace.get("id").and_then(Value::as_i64) == Some(CLAUDE_WORKSPACE))
+    output_of("hyprctl", &["-j", "activeworkspace"])
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .is_some_and(|workspace| {
+            workspace.get("id").and_then(Value::as_i64) == Some(CLAUDE_WORKSPACE)
+        })
 }
 
 pub fn current_session() -> String {
-    fs::read_to_string(paths::current()).map(|text| text.trim().to_string()).unwrap_or_default()
+    fs::read_to_string(paths::current())
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default()
 }
 
 /// The git checkout holding `path` (Claude often works in a subdirectory), or `path` itself.
@@ -195,12 +234,16 @@ pub fn repository_root(path: &str) -> String {
     }
 }
 
-/// The repository a cockpit clone (<clones>/<repository>/<name>) was made from, or "".
+/// The repository a cockpit clone (`<clones>/<repository>/<name>`) was made from, or "".
 pub fn parallel_clone_repository(cwd: &str) -> String {
     match Path::new(cwd).strip_prefix(paths::clones_dir()) {
         Ok(relative) => {
             let parts: Vec<_> = relative.components().collect();
-            if parts.len() >= 2 { parts[0].as_os_str().to_string_lossy().into_owned() } else { String::new() }
+            if parts.len() >= 2 {
+                parts[0].as_os_str().to_string_lossy().into_owned()
+            } else {
+                String::new()
+            }
         }
         Err(_) => String::new(),
     }
@@ -209,7 +252,9 @@ pub fn parallel_clone_repository(cwd: &str) -> String {
 /// A directory's project: the repository for a cockpit clone, else the directory's own name.
 pub fn project_name(path: &str) -> String {
     let repository = parallel_clone_repository(path);
-    if !repository.is_empty() { return repository; }
+    if !repository.is_empty() {
+        return repository;
+    }
     let trimmed = path.trim_end_matches('/');
     match Path::new(trimmed).file_name() {
         Some(name) => name.to_string_lossy().into_owned(),
@@ -219,15 +264,20 @@ pub fn project_name(path: &str) -> String {
 
 /// Where a session for an item filed in `directory` starts. A finished clone is deleted and the
 /// manager refuses a folder that is gone, so an item filed in one starts from its repository's
-/// own checkout (~/IdeaProjects/<repository>, the projects the picker lists).
+/// own checkout (`~/IdeaProjects/<repository>`, the projects the picker lists).
 pub fn start_directory(directory: &str) -> Result<String, String> {
     let path = Path::new(directory);
     if path.is_dir() || !path.starts_with(paths::clones_dir()) {
         return Ok(directory.to_string());
     }
-    let checkout = paths::home().join("IdeaProjects").join(project_name(directory));
+    let checkout = paths::home()
+        .join("IdeaProjects")
+        .join(project_name(directory));
     if !checkout.is_dir() {
-        return Err(format!("its clone is gone and there is no {} to start from", checkout.display()));
+        return Err(format!(
+            "its clone is gone and there is no {} to start from",
+            checkout.display()
+        ));
     }
     Ok(checkout.to_string_lossy().into_owned())
 }
@@ -242,9 +292,19 @@ fn git_head_path(cwd: &str) -> Option<PathBuf> {
         return Some(dot_git.join("HEAD"));
     }
     let first = read_untrusted_text(&dot_git, GIT_FILE_MAX).ok()?;
-    let gitdir = first.lines().next()?.trim().strip_prefix("gitdir:")?.trim().to_string();
+    let gitdir = first
+        .lines()
+        .next()?
+        .trim()
+        .strip_prefix("gitdir:")?
+        .trim()
+        .to_string();
     let gitdir = Path::new(&gitdir);
-    Some(if gitdir.is_absolute() { gitdir.join("HEAD") } else { Path::new(cwd).join(gitdir).join("HEAD") })
+    Some(if gitdir.is_absolute() {
+        gitdir.join("HEAD")
+    } else {
+        Path::new(cwd).join(gitdir).join("HEAD")
+    })
 }
 
 static BRANCHES: Mutex<Option<HashMap<String, (SystemTime, String)>>> = Mutex::new(None);
@@ -255,16 +315,22 @@ pub fn git_branch(cwd: &str) -> String {
     if cwd.is_empty() {
         return String::new();
     }
-    let Some(head) = git_head_path(cwd) else { return String::new() };
-    let Ok(mtime) = fs::metadata(&head).and_then(|m| m.modified()) else { return String::new() };
+    let Some(head) = git_head_path(cwd) else {
+        return String::new();
+    };
+    let Ok(mtime) = fs::metadata(&head).and_then(|m| m.modified()) else {
+        return String::new();
+    };
     let mut cache = BRANCHES.lock().unwrap();
     let cache = cache.get_or_insert_with(HashMap::new);
-    if let Some((cached_mtime, branch)) = cache.get(cwd) {
-        if *cached_mtime == mtime {
-            return branch.clone();
-        }
+    if let Some((cached_mtime, branch)) = cache.get(cwd)
+        && *cached_mtime == mtime
+    {
+        return branch.clone();
     }
-    let Ok(content) = read_untrusted_text(&head, GIT_FILE_MAX) else { return String::new() };
+    let Ok(content) = read_untrusted_text(&head, GIT_FILE_MAX) else {
+        return String::new();
+    };
     let content = content.trim();
     let branch = match content.strip_prefix("ref: refs/heads/") {
         Some(branch) => branch.to_string(),
@@ -301,7 +367,7 @@ pub fn money(amount: f64) -> String {
         let digits = whole.to_string();
         let mut grouped = String::new();
         for (index, digit) in digits.chars().enumerate() {
-            if index > 0 && (digits.len() - index) % 3 == 0 {
+            if index > 0 && (digits.len() - index).is_multiple_of(3) {
                 grouped.push(',');
             }
             grouped.push(digit);
@@ -312,7 +378,9 @@ pub fn money(amount: f64) -> String {
 }
 
 pub fn parse_time(stamp: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(stamp).ok().map(|moment| moment.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(stamp)
+        .ok()
+        .map(|moment| moment.with_timezone(&Utc))
 }
 
 /// 4 random bytes as 8 hex characters, for todo ids and report names.
@@ -327,7 +395,7 @@ pub fn token_hex(bytes: usize) -> String {
 
 /// hyprctl finds Hyprland through HYPRLAND_INSTANCE_SIGNATURE. Processes that outlive a Hyprland
 /// restart, or start outside it, hold a stale or no value: take the running instance, the newest
-/// $XDG_RUNTIME_DIR/hypr/<id> with a socket.
+/// `$XDG_RUNTIME_DIR/hypr/<id>` with a socket.
 pub fn refresh_hyprland_instance() {
     if let Some(instance) = running_hyprland_instance() {
         // SAFETY: the column is single-threaded when it refreshes this (before spawning hyprctl).
@@ -336,15 +404,17 @@ pub fn refresh_hyprland_instance() {
 }
 
 /// The signature hyprctl needs: this process's own when its Hyprland still runs, else the newest
-/// $XDG_RUNTIME_DIR/hypr/<id> with a socket; None when no Hyprland runs.
+/// `$XDG_RUNTIME_DIR/hypr/<id>` with a socket; None when no Hyprland runs.
 pub fn running_hyprland_instance() -> Option<std::ffi::OsString> {
     let base = paths::runtime_dir().join("hypr");
-    if let Some(current) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE") {
-        if !current.is_empty() && base.join(&current).join(".socket.sock").exists() {
-            return Some(current);
-        }
+    if let Some(current) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")
+        && !current.is_empty()
+        && base.join(&current).join(".socket.sock").exists()
+    {
+        return Some(current);
     }
-    fs::read_dir(&base).ok()?
+    fs::read_dir(&base)
+        .ok()?
         .flatten()
         .filter(|entry| entry.path().join(".socket.sock").exists())
         .max_by_key(|entry| entry.metadata().and_then(|m| m.modified()).ok())
@@ -360,22 +430,35 @@ pub fn gaming() -> bool {
 
 /// The focused window's title (its class when untitled) when that window is a game.
 pub fn active_game() -> Option<String> {
-    static GAME_CLASS: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$").unwrap());
+    static GAME_CLASS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$").unwrap()
+    });
     let game_class = &*GAME_CLASS;
-    let window: Value = serde_json::from_str(&output_of("hyprctl", &["-j", "activewindow"])?).ok()?;
+    let window: Value =
+        serde_json::from_str(&output_of("hyprctl", &["-j", "activewindow"])?).ok()?;
     let class = window.get("class").and_then(Value::as_str)?;
-    let title = window.get("title").and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty());
-    game_class.is_match(class).then(|| title.unwrap_or(class).to_string())
+    let title = window
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty());
+    game_class
+        .is_match(class)
+        .then(|| title.unwrap_or(class).to_string())
 }
 
 /// The fullest of paths::disk_mounts as (mount, percent used); the first wins a tie, so a single
 /// filesystem reads as /. None when none could be measured.
 pub fn fullest_disk() -> Option<(String, f64)> {
-    paths::disk_mounts().into_iter()
+    paths::disk_mounts()
+        .into_iter()
         .filter_map(|mount| disk_used_percent(&mount).map(|used| (mount, used)))
         .fold(None, |fullest, (mount, used)| {
-            if fullest.as_ref().is_some_and(|(_, top)| *top >= used) { fullest } else { Some((mount, used)) }
+            if fullest.as_ref().is_some_and(|(_, top)| *top >= used) {
+                fullest
+            } else {
+                Some((mount, used))
+            }
         })
 }
 
@@ -386,7 +469,11 @@ fn disk_used_percent(mount: &str) -> Option<f64> {
     if unsafe { libc::statvfs(path.as_ptr(), &mut stats) } != 0 {
         return None;
     }
-    used_percent(stats.f_blocks as u64, stats.f_bfree as u64, stats.f_bavail as u64)
+    used_percent(
+        stats.f_blocks as u64,
+        stats.f_bfree as u64,
+        stats.f_bavail as u64,
+    )
 }
 
 /// df's Use%: the blocks reserved for root count as neither used nor available.
@@ -399,10 +486,15 @@ pub fn used_percent(blocks: u64, free: u64, available: u64) -> Option<f64> {
 /// One banner through the OSD daemon's FIFO; false when the daemon is not reading it.
 pub fn send_notice(notice: &Value) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
-    let Ok(mut fifo) = OpenOptions::new().write(true).custom_flags(libc_nonblock()).open(paths::osd_host_fifo()) else {
+    let Ok(mut fifo) = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc_nonblock())
+        .open(paths::osd_host_fifo())
+    else {
         return false;
     };
-    fifo.write_all(format!("notice {notice}\n").as_bytes()).is_ok()
+    fifo.write_all(format!("notice {notice}\n").as_bytes())
+        .is_ok()
 }
 
 const fn libc_nonblock() -> i32 {

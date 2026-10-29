@@ -1,38 +1,42 @@
 # Shared host-side discovery; invoked with Bash by the POSIX launchers, sourced by craft-open.
+# shellcheck shell=bash
 # Reservations are never recycled: a sandbox retains its forward after the app exits.
 figcraft_home="$HOME/.config/greywall-agents/figcraft"
 
 figcraft_arguments() {
     process_arguments=()
     [[ -r /proc/$1/cmdline ]] || return 1
-    mapfile -d '' -t process_arguments < "/proc/$1/cmdline" 2>/dev/null
+    mapfile -d '' -t process_arguments <"/proc/$1/cmdline" 2>/dev/null
 }
 
 figcraft_confined_port() { # pid root
     local index argument control="" read_count=0 write_count=0 control_count=0 environment_entry has_private_config=false
     figcraft_arguments "$1" || return 1
-    for (( index=0; index < ${#process_arguments[@]}; index++ )); do
+    for ((index = 0; index < ${#process_arguments[@]}; index++)); do
         argument=${process_arguments[index]}
         case "$argument" in
-            --control)
-                control=${process_arguments[index+1]:-}
-                (( control_count+=1 )) ;;
-            --automation-read-root)
-                [[ ${process_arguments[index+1]:-} == "$2" ]] || return 1
-                (( read_count+=1 )) ;;
-            --automation-write-root)
-                [[ ${process_arguments[index+1]:-} == "$2" ]] || return 1
-                (( write_count+=1 )) ;;
-            --automation-*=*|--control=*) return 1 ;;
+        --control)
+            control=${process_arguments[index + 1]:-}
+            ((control_count += 1))
+            ;;
+        --automation-read-root)
+            [[ ${process_arguments[index + 1]:-} == "$2" ]] || return 1
+            ((read_count += 1))
+            ;;
+        --automation-write-root)
+            [[ ${process_arguments[index + 1]:-} == "$2" ]] || return 1
+            ((write_count += 1))
+            ;;
+        --automation-*=* | --control=*) return 1 ;;
         esac
     done
     [[ $control_count == 1 && $read_count == 1 && $write_count == 1 ]] || return 1
-    [[ $control =~ ^[1-9][0-9]{0,4}$ ]] && (( control <= 65535 )) || return 1
+    [[ $control =~ ^[1-9][0-9]{0,4}$ ]] && ((control <= 65535)) || return 1
     # Matching file roots alone are insufficient: startup recovers documents before applying them.
     [[ -r /proc/$1/environ ]] || return 1
     while IFS= read -r -d '' environment_entry; do
         [[ $environment_entry == "XDG_CONFIG_HOME=$figcraft_home/instances/$control/config" ]] && has_private_config=true
-    done < "/proc/$1/environ"
+    done <"/proc/$1/environ"
     [[ $has_private_config == true ]] || return 1
     printf '%s\n' "$control"
 }
@@ -62,12 +66,12 @@ figcraft_foreign_holders() { # port root
     local process_id index directory repository
     for process_id in $(pgrep -x greywall || true); do
         figcraft_arguments "$process_id" || continue
-        for (( index=0; index < ${#process_arguments[@]}; index++ )); do
+        for ((index = 0; index < ${#process_arguments[@]}; index++)); do
             case "${process_arguments[index]}" in
-                --) break ;;
-                --forward|-f) [[ ${process_arguments[index+1]:-} == "$1" ]] || continue ;;
-                --forward="$1"|-f="$1"|-f"$1") ;;
-                *) continue ;;
+            --) break ;;
+            --forward | -f) [[ ${process_arguments[index + 1]:-} == "$1" ]] || continue ;;
+            --forward="$1" | -f="$1" | -f"$1") ;;
+            *) continue ;;
             esac
             directory=$(readlink -e "/proc/$process_id/cwd") || {
                 echo "unknown folder (sandbox $process_id)"

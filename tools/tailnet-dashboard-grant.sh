@@ -9,19 +9,34 @@ set -euo pipefail
 
 phone=${1:?usage: tailnet-dashboard-grant.sh <phone name> <port>}
 port=${2:?usage: tailnet-dashboard-grant.sh <phone name> <port>}
-[[ $port =~ ^[0-9]+$ ]] && (( port > 1 && port < 65535 )) || { echo "not a port between 2 and 65534: $port" >&2; exit 2; }
+if ! [[ $port =~ ^[0-9]+$ ]] || ! ((port > 1 && port < 65535)); then
+    echo "not a port between 2 and 65534: $port" >&2
+    exit 2
+fi
 
-status=$(tailscale status --json) || { echo "tailscale status failed: is Tailscale up?" >&2; exit 1; }
-own_addresses=$(jq -c '.Self.TailscaleIPs // []' <<< "$status")
+status=$(tailscale status --json) || {
+    echo "tailscale status failed: is Tailscale up?" >&2
+    exit 1
+}
+own_addresses=$(jq -c '.Self.TailscaleIPs // []' <<<"$status")
 phone_addresses=$(jq -c --arg phone "$phone" '
     [.Peer // {} | .[] | select(.HostName == $phone or ((.DNSName // "") | split(".")[0]) == ($phone | ascii_downcase))]
-    | if length == 1 then .[0].TailscaleIPs else length end' <<< "$status")
+    | if length == 1 then .[0].TailscaleIPs else length end' <<<"$status")
 case $phone_addresses in
-    0) echo "no device named $phone in tailscale status" >&2; exit 1 ;;
-    \[*) ;;
-    *) echo "$phone_addresses devices named $phone in tailscale status: use the MagicDNS name" >&2; exit 1 ;;
+0)
+    echo "no device named $phone in tailscale status" >&2
+    exit 1
+    ;;
+\[*) ;;
+*)
+    echo "$phone_addresses devices named $phone in tailscale status: use the MagicDNS name" >&2
+    exit 1
+    ;;
 esac
-[[ $own_addresses != "[]" ]] || { echo "tailscale status gives no address for this machine" >&2; exit 1; }
+[[ $own_addresses != "[]" ]] || {
+    echo "tailscale status gives no address for this machine" >&2
+    exit 1
+}
 
 jq -n --argjson own "$own_addresses" --argjson phone "$phone_addresses" --argjson port "$port" '
     {grants: [

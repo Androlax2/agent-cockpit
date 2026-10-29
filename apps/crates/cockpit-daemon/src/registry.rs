@@ -45,7 +45,7 @@ const FULL_REQUEST_MAX_LENGTH: usize = 16384;
 const DIALOG_CAPTURE_LINES: usize = 2000;
 const FINISHED_MESSAGE: &str = "Finished, waiting for you"; // the hook's Stop message
 const RUN_PHASES: [&str; 4] = ["asking", "running", "input", "done"];
-/// ask-to-run touches <id>.waiting every few seconds while it waits; this long without it, nobody
+/// ask-to-run touches `<id>.waiting` every few seconds while it waits; this long without it, nobody
 /// waits for the answer any more (the session gave up, timed out without --wait, or died). Long
 /// enough for a session that timed out to do something else before it waits again.
 const ABANDONED_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -56,36 +56,54 @@ fn regex(pattern: &str) -> Regex {
 
 // What Claude Code prints at the bottom of its pane: while busy, while a dialog is open, and the
 // input prompt line it shows when idle (also shown while busy, so busy wins over it).
-static BUSY_SPINNER: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^\s*\S{0,2}\s*[A-Z][a-z]+… \(\d+[smh]"));
-static BUSY_INTERRUPT: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^\s*(?:esc|enter) to interrupt(?: and send)?(?:\s*·.*)?$"));
+static BUSY_SPINNER: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?m)^\s*\S{0,2}\s*[A-Z][a-z]+… \(\d+[smh]"));
+static BUSY_INTERRUPT: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?m)^\s*(?:esc|enter) to interrupt(?: and send)?(?:\s*·.*)?$"));
 /// The permission dialog: its question alone on a line, then its first option within a few lines.
-static PERMISSION_DIALOG: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^[\s│]*Do you want to proceed\?[\s│]*$(?:\n.*){0,3}?\n[\s│❯]*1\.\s*Yes"));
+static PERMISSION_DIALOG: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"(?m)^[\s│]*Do you want to proceed\?[\s│]*$(?:\n.*){0,3}?\n[\s│❯]*1\.\s*Yes")
+});
 /// Any of Claude's numbered choice menus with the cursor on an option: "❯ 2. Option". Like the
 /// idle prompt it starts with ❯, so it is checked first.
 static CHOICE_MENU: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^[\s│]*❯[\s\x{a0}]*\d+\.\s+\S"));
 /// Claude pads its prompt with a no-break space.
 static PROMPT_LINE: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^\s*❯[ \x{a0}]"));
-static UPDATE_READY: LazyLock<Regex> = LazyLock::new(|| regex(r"Update installed\s*·\s*Restart to update"));
+static UPDATE_READY: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"Update installed\s*·\s*Restart to update"));
 /// The session binary's process name: Claude Code's version.
 static CLAUDE_VERSION_NAME: LazyLock<Regex> = LazyLock::new(|| regex(r"^\d+\.\d+\.\d+$"));
 static TMUX_PANE: LazyLock<Regex> = LazyLock::new(|| regex(r"^%[0-9]{1,10}$"));
-static KITTY_LISTEN: LazyLock<Regex> = LazyLock::new(|| regex(r"^unix:[@/][A-Za-z0-9_./@-]{1,200}$"));
+static KITTY_LISTEN: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"^unix:[@/][A-Za-z0-9_./@-]{1,200}$"));
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9]{1,10}$"));
 pub static NOTICE_ID: LazyLock<Regex> = LazyLock::new(|| regex(r"^[a-z][a-z0-9:-]{0,63}$"));
 static CRAFT_APP: LazyLock<Regex> = LazyLock::new(|| regex(r"^[a-z]{1,20}craft:(on|off)$"));
 pub static RUN_ID: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9a-f]{12}$"));
-static PROCEED_LINE: LazyLock<Regex> = LazyLock::new(|| regex(r"^[\s│]*Do you want to proceed\?[\s│]*$"));
+static PROCEED_LINE: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"^[\s│]*Do you want to proceed\?[\s│]*$"));
 static BOX_LINE: LazyLock<Regex> = LazyLock::new(|| regex(r"^[\s│]*[╭╰─┌└━]"));
-static KHAL_EVENT: LazyLock<Regex> = LazyLock::new(|| regex(r"^(\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2})\|(\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2})\|"));
+static KHAL_EVENT: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"^(\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2})\|(\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2})\|")
+});
 /// Games, as in hypr/scripts/is-gaming.sh (GAME_CLASS_REGEX): keep both lists the same.
-static GAME_CLASS: LazyLock<Regex> = LazyLock::new(|| regex(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$"));
+static GAME_CLASS: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$"));
 
 fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 fn urgency(state: &str) -> i32 {
-    match state { "working" => 0, "waiting" => 1, "needs-you" => 2, _ => -1 }
+    match state {
+        "working" => 0,
+        "waiting" => 1,
+        "needs-you" => 2,
+        _ => -1,
+    }
 }
 
 /// To the journal (osd.service), and to the log the session manager shares with the column.
@@ -98,7 +116,12 @@ pub fn log(message: &str) {
 
 /// The focus fields end up in shell arguments and a Lua string, so they are strict.
 fn validate_focus_target(fields: &Map<String, Value>) -> Result<(), String> {
-    let text = |key: &str| fields.get(key).map(|value| match value { Value::String(s) => s.clone(), other => other.to_string() });
+    let text = |key: &str| {
+        fields.get(key).map(|value| match value {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+    };
     for key in ["kitty_pid", "kitty_window"] {
         if text(key).is_some_and(|value| !NUMBER.is_match(&value)) {
             return Err(format!("{key} is not a number"));
@@ -184,7 +207,10 @@ fn native_thread_of(report: &Map<String, Value>) -> Result<Option<String>, Strin
         if report.get("agent").and_then(Value::as_str) != Some("codex") {
             return Err("native Codex reports require an explicit codex agent".into());
         }
-        let native = report.get("native_thread").and_then(Value::as_str).ok_or("native Codex report has no native thread")?;
+        let native = report
+            .get("native_thread")
+            .and_then(Value::as_str)
+            .ok_or("native Codex report has no native thread")?;
         if cockpit::codex::cockpit_id(native)? != session {
             return Err("native Codex thread does not match its cockpit id".into());
         }
@@ -200,7 +226,11 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     let value: Value = serde_json::from_str(raw).map_err(|error| error.to_string())?;
     let report = value.as_object().ok_or("session report is not an object")?;
     for key in ["session", "project"] {
-        if !report.get(key).and_then(Value::as_str).is_some_and(|text| !text.is_empty()) {
+        if !report
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty())
+        {
             return Err(format!("session.{key} missing"));
         }
     }
@@ -211,37 +241,61 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         }
     }
     if let Some(apps) = report.get("apps") {
-        let valid = apps.as_str().is_some_and(|apps| apps.len() <= 200 && apps.split_whitespace().all(|app| CRAFT_APP.is_match(app)));
+        let valid = apps.as_str().is_some_and(|apps| {
+            apps.len() <= 200 && apps.split_whitespace().all(|app| CRAFT_APP.is_match(app))
+        });
         if !valid {
             return Err("session.apps is not a list of app:on|off".into());
         }
     }
-    if report.get("credits").is_some_and(|value| !value.is_boolean()) {
+    if report
+        .get("credits")
+        .is_some_and(|value| !value.is_boolean())
+    {
         return Err("session.credits is not true or false".into());
     }
-    if report.get("needs_input").is_some_and(|value| !value.is_boolean()) {
+    if report
+        .get("needs_input")
+        .is_some_and(|value| !value.is_boolean())
+    {
         return Err("session.needs_input is not true or false".into());
     }
-    if report.get("question_form").is_some_and(|value| !value.is_boolean()) {
+    if report
+        .get("question_form")
+        .is_some_and(|value| !value.is_boolean())
+    {
         return Err("session.question_form is not true or false".into());
     }
-    if report.get("turn_complete").is_some_and(|value| !value.is_boolean()) {
+    if report
+        .get("turn_complete")
+        .is_some_and(|value| !value.is_boolean())
+    {
         return Err("session.turn_complete is not true or false".into());
     }
-    if let Some(id) = report.get("turn_id") {
-        if !id.as_str().is_some_and(cockpit::sessions::valid_turn_id) {
-            return Err("session.turn_id is not a 32-character hexadecimal id".into());
-        }
+    if let Some(id) = report.get("turn_id")
+        && !id.as_str().is_some_and(cockpit::sessions::valid_turn_id)
+    {
+        return Err("session.turn_id is not a 32-character hexadecimal id".into());
     }
-    let turn_complete = report.get("turn_complete").and_then(Value::as_bool).unwrap_or(false);
+    let turn_complete = report
+        .get("turn_complete")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if turn_complete && !report.contains_key("turn_id") {
         return Err("session completion requires turn_id".into());
     }
-    if report.get("repository").is_some_and(|value| !value.as_str().is_some_and(|repository|
-        repository.is_empty() || cockpit::sessions::valid_repository(repository))) {
+    if report.get("repository").is_some_and(|value| {
+        !value.as_str().is_some_and(|repository| {
+            repository.is_empty() || cockpit::sessions::valid_repository(repository)
+        })
+    }) {
         return Err("session.repository is not a canonical GitHub repository".into());
     }
-    if report.get("agent").is_some_and(|agent| !agent.as_str().is_some_and(|agent| agents::find(agent).is_some())) {
+    if report.get("agent").is_some_and(|agent| {
+        !agent
+            .as_str()
+            .is_some_and(|agent| agents::find(agent).is_some())
+    }) {
         return Err(format!("session.agent is not one of {:?}", agents::names()));
     }
     for key in ["unpushed", "agents", "background"] {
@@ -249,16 +303,30 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
             return Err(format!("session.{key} is not a count"));
         }
     }
-    for key in ["cwd", "task", "message", "outcome", "label", "branch", "doing", "last_tool"] {
+    for key in [
+        "cwd",
+        "task",
+        "message",
+        "outcome",
+        "label",
+        "branch",
+        "doing",
+        "last_tool",
+    ] {
         if report.get(key).is_some_and(|value| !value.is_string()) {
             return Err(format!("session.{key} is not a string"));
         }
     }
     let session = report["session"].as_str().unwrap().to_string();
     if !agents::is_session_id(&session) {
-        return Err(format!("session is not an id of one of the agents {:?}", agents::names()));
+        return Err(format!(
+            "session is not an id of one of the agents {:?}",
+            agents::names()
+        ));
     }
-    for key in ["session", "project", "cwd", "task", "message", "outcome", "label", "branch"] {
+    for key in [
+        "session", "project", "cwd", "task", "message", "outcome", "label", "branch",
+    ] {
         if let Some(text) = report.get(key).and_then(Value::as_str) {
             validate_text(key, text)?;
         }
@@ -266,17 +334,48 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
     validate_focus_target(report)?;
     let native_thread = native_thread_of(report)?;
     let text = |key: &str| report.get(key).and_then(Value::as_str).map(str::to_string);
-    let target = TARGET_FIELDS.iter().filter_map(|key| {
-        report.get(*key).map(|value| (key.to_string(), match value { Value::String(s) => s.clone(), other => other.to_string() }))
-    }).collect();
+    let target = TARGET_FIELDS
+        .iter()
+        .filter_map(|key| {
+            report.get(*key).map(|value| {
+                (
+                    key.to_string(),
+                    match value {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    },
+                )
+            })
+        })
+        .collect();
     Ok(Report {
-        session, project: report["project"].as_str().unwrap().to_string(), state: text("state"), cwd: text("cwd"),
-        task: text("task"), message: text("message"), outcome: text("outcome"), sticky: report.get("sticky").is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
-        repository: text("repository"), branch: text("branch"), turn_id: text("turn_id"), turn_complete,
-        label: text("label").map(|label| cockpit::sessions::validate_task_label(&label)).transpose()?,
-        doing: text("doing").map(|doing| cockpit::sessions::validate_doing(&doing)).transpose()?,
-        last_tool: text("last_tool").map(|tool| cockpit::sessions::validate_last_tool(&tool)).transpose()?,
-        terminal: report.get("terminal").and_then(Value::as_bool).unwrap_or(false),
+        session,
+        project: report["project"].as_str().unwrap().to_string(),
+        state: text("state"),
+        cwd: text("cwd"),
+        task: text("task"),
+        message: text("message"),
+        outcome: text("outcome"),
+        sticky: report
+            .get("sticky")
+            .is_some_and(|s| s.as_bool().unwrap_or(!s.is_null())),
+        repository: text("repository"),
+        branch: text("branch"),
+        turn_id: text("turn_id"),
+        turn_complete,
+        label: text("label")
+            .map(|label| cockpit::sessions::validate_task_label(&label))
+            .transpose()?,
+        doing: text("doing")
+            .map(|doing| cockpit::sessions::validate_doing(&doing))
+            .transpose()?,
+        last_tool: text("last_tool")
+            .map(|tool| cockpit::sessions::validate_last_tool(&tool))
+            .transpose()?,
+        terminal: report
+            .get("terminal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         credits: report.get("credits").and_then(Value::as_bool),
         needs_input: report.get("needs_input").and_then(Value::as_bool),
         question_form: report.get("question_form").and_then(Value::as_bool),
@@ -284,8 +383,20 @@ pub fn parse_session(raw: &str) -> Result<Report, String> {
         unpushed: report.get("unpushed").and_then(Value::as_u64),
         agents: report.get("agents").and_then(Value::as_u64),
         background: report.get("background").and_then(Value::as_u64),
-        apps: report.get("apps").and_then(Value::as_str).map(str::to_string),
-        agent: report.get("agent").and_then(Value::as_str).map(str::to_string), native_thread, runtime: None, spawn_token: None, resume_token: None, subscription_token: None, target,
+        apps: report
+            .get("apps")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        agent: report
+            .get("agent")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        native_thread,
+        runtime: None,
+        spawn_token: None,
+        resume_token: None,
+        subscription_token: None,
+        target,
     })
 }
 
@@ -300,14 +411,26 @@ pub struct Notice {
 pub fn parse_notice(raw: &str) -> Result<Notice, String> {
     let value: Value = serde_json::from_str(raw).map_err(|error| format!("not JSON: {error}"))?;
     let notice = value.as_object().ok_or("not an object")?;
-    let id = notice.get("id").and_then(Value::as_str).filter(|id| NOTICE_ID.is_match(id)).ok_or("bad id")?;
+    let id = notice
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| NOTICE_ID.is_match(id))
+        .ok_or("bad id")?;
     let mut texts = Vec::new();
     for key in ["title", "message"] {
-        let text = notice.get(key).and_then(Value::as_str).filter(|t| !t.is_empty()).ok_or(format!("bad {key}"))?;
+        let text = notice
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .ok_or(format!("bad {key}"))?;
         validate_text(key, text)?;
         texts.push(text.to_string());
     }
-    Ok(Notice { id: id.into(), title: texts[0].clone(), message: texts[1].clone() })
+    Ok(Notice {
+        id: id.into(),
+        title: texts[0].clone(),
+        message: texts[1].clone(),
+    })
 }
 
 // ---- Panes ----
@@ -330,7 +453,12 @@ pub fn pane_state(tail: &str) -> Option<&'static str> {
 /// the dialog's top edge, such as "Bash command · npm test". Empty when there is no dialog.
 pub fn permission_request(tail: &str) -> String {
     let lines: Vec<&str> = tail.lines().collect();
-    let Some(ask) = (0..lines.len()).rev().find(|index| PROCEED_LINE.is_match(lines[*index])) else { return String::new() };
+    let Some(ask) = (0..lines.len())
+        .rev()
+        .find(|index| PROCEED_LINE.is_match(lines[*index]))
+    else {
+        return String::new();
+    };
     let mut block: Vec<String> = Vec::new();
     for line in lines[ask.saturating_sub(10)..ask].iter().rev() {
         if BOX_LINE.is_match(line) {
@@ -341,29 +469,63 @@ pub fn permission_request(tail: &str) -> String {
             block.insert(0, text.to_string());
         }
     }
-    let request: String = block.iter().take(2).cloned().collect::<Vec<_>>().join(" · ")
-        .chars().filter(|c| *c as u32 >= 32 && *c as u32 != 127).collect();
-    request.replace("#{", "#\u{200b}{").replace("#(", "#\u{200b}(").chars().take(REQUEST_MAX_LENGTH).collect()
+    let request: String = block
+        .iter()
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" · ")
+        .chars()
+        .filter(|c| *c as u32 >= 32 && *c as u32 != 127)
+        .collect();
+    request
+        .replace("#{", "#\u{200b}{")
+        .replace("#(", "#\u{200b}(")
+        .chars()
+        .take(REQUEST_MAX_LENGTH)
+        .collect()
 }
 
 fn permission_request_full(tail: &str) -> String {
     let lines: Vec<_> = tail.lines().collect();
-    let Some(ask) = (0..lines.len()).rev().find(|index| PROCEED_LINE.is_match(lines[*index])) else { return String::new() };
-    let edge = (0..ask).rev().find(|index| lines[*index].trim_start().starts_with(['╭', '┌']));
-    let mut request = if edge.is_none() { "Captured dialog context (the opening boundary was not found):\n".into() } else { String::new() };
+    let Some(ask) = (0..lines.len())
+        .rev()
+        .find(|index| PROCEED_LINE.is_match(lines[*index]))
+    else {
+        return String::new();
+    };
+    let edge = (0..ask)
+        .rev()
+        .find(|index| lines[*index].trim_start().starts_with(['╭', '┌']));
+    let mut request = if edge.is_none() {
+        "Captured dialog context (the opening boundary was not found):\n".into()
+    } else {
+        String::new()
+    };
     for line in &lines[edge.map_or(0, |edge| edge + 1)..ask] {
         let frame = line.trim_start();
         let text = if let Some(content) = frame.strip_prefix('│') {
-            let content = content.trim_end().strip_suffix('│').unwrap_or(content.trim_end());
+            let content = content
+                .trim_end()
+                .strip_suffix('│')
+                .unwrap_or(content.trim_end());
             content.strip_prefix(' ').unwrap_or(content)
-        } else { line };
+        } else {
+            line
+        };
         request.extend(text.chars().filter(|character| !character.is_control()));
         request.push('\n');
     }
-    request = request.replace("#{", "#\u{200b}{").replace("#(", "#\u{200b}(");
+    request = request
+        .replace("#{", "#\u{200b}{")
+        .replace("#(", "#\u{200b}(");
     if request.chars().count() > FULL_REQUEST_MAX_LENGTH {
         let note = "\n[Capture limit reached; inspect the session for the remaining request.]";
-        request = request.chars().take(FULL_REQUEST_MAX_LENGTH - note.chars().count()).collect::<String>() + note;
+        request = request
+            .chars()
+            .take(FULL_REQUEST_MAX_LENGTH - note.chars().count())
+            .collect::<String>()
+            + note;
     }
     request.trim_end().into()
 }
@@ -372,15 +534,29 @@ fn permission_request_full(tail: &str) -> String {
 /// do not count: a holiday is not a meeting. khal prints dd/mm/yyyy.
 pub fn events_now(khal_output: &str, now: f64) -> bool {
     use chrono::{Local, TimeZone};
-    khal_output.lines().filter_map(|line| KHAL_EVENT.captures(line)).any(|found| {
-        let number = |index: usize| found[index].parse::<u32>().unwrap_or(0);
-        let moment = |day: usize| Local.with_ymd_and_hms(number(day + 2) as i32, number(day + 1), number(day), number(day + 3), number(day + 4), 0)
-            .single().map(|t| t.timestamp() as f64);
-        match (moment(1), moment(6)) {
-            (Some(start), Some(end)) => start <= now + 60.0 && end > now,
-            _ => false,
-        }
-    })
+    khal_output
+        .lines()
+        .filter_map(|line| KHAL_EVENT.captures(line))
+        .any(|found| {
+            let number = |index: usize| found[index].parse::<u32>().unwrap_or(0);
+            let moment = |day: usize| {
+                Local
+                    .with_ymd_and_hms(
+                        number(day + 2) as i32,
+                        number(day + 1),
+                        number(day),
+                        number(day + 3),
+                        number(day + 4),
+                        0,
+                    )
+                    .single()
+                    .map(|t| t.timestamp() as f64)
+            };
+            match (moment(1), moment(6)) {
+                (Some(start), Some(end)) => start <= now + 60.0 && end > now,
+                _ => false,
+            }
+        })
 }
 
 // ---- What the registry asks of the system ----
@@ -424,21 +600,43 @@ pub trait System {
     fn sender_target(&mut self, sender: u32) -> Option<BTreeMap<String, String>>;
     /// sandbox_directory for the process that sent a report.
     fn sender_directory(&mut self, sender: u32) -> Option<String>;
-    fn sender_runtime(&mut self, _sender: u32) -> Option<String> { None }
-    fn runtime_is_live(&mut self, _runtime: &str) -> bool { false }
-    fn runtime_subscription_account(&mut self, _runtime: &str) -> Option<String> { None }
-    fn native_input_clear(&mut self, _session: &cockpit::sessions::Session) -> bool { false }
+    fn sender_runtime(&mut self, _sender: u32) -> Option<String> {
+        None
+    }
+    fn runtime_is_live(&mut self, _runtime: &str) -> bool {
+        false
+    }
+    fn runtime_subscription_account(&mut self, _runtime: &str) -> Option<String> {
+        None
+    }
+    fn native_input_clear(&mut self, _session: &cockpit::sessions::Session) -> bool {
+        false
+    }
     /// The cockpit's default agent for new sessions (Settings, `default-agent`): "claude" without a
     /// settings file, None when it cannot be read or names no known agent.
-    fn default_agent(&mut self) -> Option<String> { None }
+    fn default_agent(&mut self) -> Option<String> {
+        None
+    }
     /// trusted_spawn_token for the process that sent a report.
-    fn sender_spawn_token(&mut self, _sender: u32) -> Option<String> { None }
-    fn sender_resume_token(&mut self, _sender: u32) -> Option<String> { None }
-    fn sender_subscription_token(&mut self, _sender: u32) -> Option<String> { None }
+    fn sender_spawn_token(&mut self, _sender: u32) -> Option<String> {
+        None
+    }
+    fn sender_resume_token(&mut self, _sender: u32) -> Option<String> {
+        None
+    }
+    fn sender_subscription_token(&mut self, _sender: u32) -> Option<String> {
+        None
+    }
     /// Starts a command and does not wait for it: false when it could not start.
-    fn start_detached(&mut self, _command: &[&str]) -> bool { false }
-    fn start_chief(&mut self, _session: &str, _directory: &str) -> Result<(), String> { Err("Chief launcher unavailable".into()) }
-    fn chief_launch_result(&mut self, _session: &str) -> Option<Result<(i32, String), String>> { None }
+    fn start_detached(&mut self, _command: &[&str]) -> bool {
+        false
+    }
+    fn start_chief(&mut self, _session: &str, _directory: &str) -> Result<(), String> {
+        Err("Chief launcher unavailable".into())
+    }
+    fn chief_launch_result(&mut self, _session: &str) -> Option<Result<(i32, String), String>> {
+        None
+    }
     fn quiet(&mut self) -> bool {
         self.in_meeting() || self.gaming()
     }
@@ -461,7 +659,10 @@ pub struct Banner {
 }
 
 fn basename(path: &str) -> String {
-    Path::new(path.trim_end_matches('/')).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    Path::new(path.trim_end_matches('/'))
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 // ---- The run and guide queues ----
@@ -472,16 +673,30 @@ pub fn runs_dir() -> PathBuf {
 
 /// The project of a held request: the daemon set it from the folder the sender's sandbox started in.
 fn project_from_request(path: &Path) -> String {
-    fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|request| request.get("project").and_then(Value::as_str).map(str::to_string)).unwrap_or_else(|| "?".into())
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|request| {
+            request
+                .get("project")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "?".into())
 }
 
 /// The answers folder name of a sandbox started in `started_in`: the launcher's CLAUDE_ANSWERS_KEY,
 /// the path of the repository's top folder (or of the folder itself, outside one) with every
 /// character but a letter or a digit turned into "-". The .git entry is only looked at, never run.
 pub fn answers_key_of(started_in: &Path) -> String {
-    let root = started_in.ancestors().find(|folder| fs::symlink_metadata(folder.join(".git")).is_ok()).unwrap_or(started_in);
-    root.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+    let root = started_in
+        .ancestors()
+        .find(|folder| fs::symlink_metadata(folder.join(".git")).is_ok())
+        .unwrap_or(started_in);
+    root.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// Requests one sandbox folder can have waiting for Theo: more is a flood (security audit M5).
@@ -493,7 +708,11 @@ const TODO_UPDATE_MAX_BYTES: usize = 65_536;
 /// folder its sandbox started in: that folder, never one the update names, decides the project
 /// (security audit 2026-10-19, M4). The queue has a size cap: a session cannot flood the list.
 /// `chief_epoch` is the active grant the daemon verified for the sender, never one the update names.
-pub fn queue_todo_update(raw: &str, started_in: &str, chief_epoch: Option<&str>) -> Result<(), String> {
+pub fn queue_todo_update(
+    raw: &str,
+    started_in: &str,
+    chief_epoch: Option<&str>,
+) -> Result<(), String> {
     if raw.len() > TODO_UPDATE_MAX_BYTES {
         return Err(format!("longer than {TODO_UPDATE_MAX_BYTES} bytes"));
     }
@@ -501,18 +720,31 @@ pub fn queue_todo_update(raw: &str, started_in: &str, chief_epoch: Option<&str>)
         Ok(Value::Object(update)) => update,
         _ => return Err("not a JSON object".into()),
     };
+    if update.get("action").and_then(Value::as_str) == Some("unwait") {
+        return Err(
+            "unwait is host only: ask Theo to run cockpit-todo unwait through ask-to-run".into(),
+        );
+    }
     update.remove("chief_epoch");
     if let Some(epoch) = chief_epoch {
         update.insert("chief_epoch".into(), json!(epoch));
     }
-    if matches!(update.get("action").and_then(Value::as_str), Some("add" | "propose")) {
-        if let Some(target) = update.get("project").and_then(Value::as_str) {
-            if cockpit::todo::project_checkout(target).is_none() {
-                return Err(format!("no project checkout named {:?}", target.chars().take(60).collect::<String>()));
-            }
-        }
+    if matches!(
+        update.get("action").and_then(Value::as_str),
+        Some("add" | "propose")
+    ) && let Some(target) = update.get("project").and_then(Value::as_str)
+        && cockpit::todo::project_checkout(target).is_none()
+    {
+        return Err(format!(
+            "no project checkout named {:?}",
+            target.chars().take(60).collect::<String>()
+        ));
     }
-    cockpit::todo_requests::hold(&mut update, started_in, &answers_key_of(Path::new(started_in)))?;
+    cockpit::todo_requests::hold(
+        &mut update,
+        started_in,
+        &answers_key_of(Path::new(started_in)),
+    )?;
     cockpit::todo_requests::append_update(&Value::Object(update))
 }
 
@@ -522,7 +754,13 @@ pub fn queue_todo_update(raw: &str, started_in: &str, chief_epoch: Option<&str>)
 /// session can rewrite it before Theo reads it (security audit 2026-10-19, H3). The copy carries
 /// what the sandbox cannot choose: the folder its sandbox started in, that folder's project, and the
 /// answers folder of that project.
-pub fn hold_request(cache: &mut HashMap<String, String>, kind: &str, raw: &str, started_in: &str, verified_session: Option<&str>) -> Result<String, String> {
+pub fn hold_request(
+    cache: &mut HashMap<String, String>,
+    kind: &str,
+    raw: &str,
+    started_in: &str,
+    verified_session: Option<&str>,
+) -> Result<String, String> {
     let extension = match kind {
         "run-request" => "request",
         "guide-request" => "guide",
@@ -532,11 +770,18 @@ pub fn hold_request(cache: &mut HashMap<String, String>, kind: &str, raw: &str, 
         Ok(Value::Object(request)) => request,
         _ => return Err("not a JSON object".into()),
     };
-    let id = request.get("id").and_then(Value::as_str).filter(|id| RUN_ID.is_match(id)).ok_or("no valid id")?.to_string();
+    let id = request
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| RUN_ID.is_match(id))
+        .ok_or("no valid id")?
+        .to_string();
     let answers = answers_key_of(Path::new(started_in));
     // ask-to-run waits on the folder the launcher named: a different one here would leave it waiting.
     if request.get("answers").and_then(Value::as_str) != Some(answers.as_str()) {
-        return Err(format!("its answers folder is not {answers}, the one of the folder its sandbox started in (restart the session)"));
+        return Err(format!(
+            "its answers folder is not {answers}, the one of the folder its sandbox started in (restart the session)"
+        ));
     }
     let path = cockpit::approval::held_request(&id, extension);
     if path.exists() {
@@ -546,8 +791,11 @@ pub fn hold_request(cache: &mut HashMap<String, String>, kind: &str, raw: &str, 
     request.insert("project".into(), json!(project_of(cache, started_in, "?")));
     request.insert("answers".into(), json!(answers));
     request.remove("verified_session");
-    if let Some(session) = verified_session { request.insert("verified_session".into(), json!(session)); }
-    cockpit::util::write_json(&path, &Value::Object(request)).map_err(|error| format!("cannot keep {}: {error}", path.display()))?;
+    if let Some(session) = verified_session {
+        request.insert("verified_session".into(), json!(session));
+    }
+    cockpit::util::write_json(&path, &Value::Object(request))
+        .map_err(|error| format!("cannot keep {}: {error}", path.display()))?;
     Ok(id)
 }
 
@@ -558,17 +806,21 @@ pub fn hold_request(cache: &mut HashMap<String, String>, kind: &str, raw: &str, 
 fn common_git_dir(directory: &Path) -> Option<PathBuf> {
     for folder in directory.ancestors() {
         let entry = folder.join(".git");
-        let Ok(metadata) = fs::symlink_metadata(&entry) else { continue };
+        let Ok(metadata) = fs::symlink_metadata(&entry) else {
+            continue;
+        };
         if metadata.is_dir() {
             return Some(entry);
         }
         let text = cockpit::util::read_untrusted_text(&entry, 4096).ok()?;
         let pointed = folder.join(text.trim().strip_prefix("gitdir:")?.trim());
         // A worktree's own git directory names the shared one in its commondir file.
-        return Some(match cockpit::util::read_untrusted_text(&pointed.join("commondir"), 4096) {
-            Ok(common) => pointed.join(common.trim()),
-            Err(_) => pointed,
-        });
+        return Some(
+            match cockpit::util::read_untrusted_text(&pointed.join("commondir"), 4096) {
+                Ok(common) => pointed.join(common.trim()),
+                Err(_) => pointed,
+            },
+        );
     }
     None
 }
@@ -577,7 +829,9 @@ fn normalized(path: &Path) -> PathBuf {
     let mut clean = PathBuf::new();
     for part in path.components() {
         match part {
-            std::path::Component::ParentDir => { clean.pop(); }
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
             std::path::Component::CurDir => {}
             other => clean.push(other),
         }
@@ -600,13 +854,21 @@ pub fn project_of(cache: &mut HashMap<String, String>, cwd: &str, fallback: &str
         return known.clone();
     }
     let project = match common_git_dir(Path::new(cwd)).map(|common| normalized(&common)) {
-        Some(common) if common.file_name().is_some_and(|name| name == ".git") => common.parent().map(|main| basename(&main.to_string_lossy())).unwrap_or_default(),
-        Some(common) => basename(&common.to_string_lossy()).trim_end_matches(".git").to_string(),
+        Some(common) if common.file_name().is_some_and(|name| name == ".git") => common
+            .parent()
+            .map(|main| basename(&main.to_string_lossy()))
+            .unwrap_or_default(),
+        Some(common) => basename(&common.to_string_lossy())
+            .trim_end_matches(".git")
+            .to_string(),
         None => basename(cwd),
     };
     // The name comes from files a session writes (its .git file can point anywhere): it reaches
     // banners, the column, tmux options and prompts, so it obeys the rules of reported text.
-    let project = if project.is_empty() || validate_text("project", &project).is_err() || project.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)) {
+    let project = if project.is_empty()
+        || validate_text("project", &project).is_err()
+        || project.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c))
+    {
         fallback.to_string()
     } else {
         project
@@ -617,7 +879,7 @@ pub fn project_of(cache: &mut HashMap<String, String>, cwd: &str, fallback: &str
 
 /// Commands Claude asks Theo to run outside the sandbox (ask-to-run). The daemon runs nothing
 /// itself: each request immediately gets claude-run-approve in a tmux session of its own
-/// (claude-run-<id>), shown in a pane under the cockpit's session pane. Floating windows take turns
+/// (`claude-run-<id>`), shown in a pane under the cockpit's session pane. Floating windows take turns
 /// on the current workspace while a request needs Theo: before he answers, and again when the command he approved
 /// waits for input (sudo, a passphrase), then until it ends (what the answer does, the next prompt);
 /// closed while a command that never asked for input runs, and never while he games.
@@ -651,8 +913,13 @@ fn run_session(id: &str) -> String {
 /// its filing when ask-to-run has not written one yet; with neither file there is nothing to judge
 /// by, and the request is kept.
 fn is_abandoned(id: &str) -> bool {
-    let touched = |path: PathBuf| fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
-    touched(runs_dir().join(format!("{id}.waiting"))).or_else(|| touched(cockpit::approval::held_request(id, "request")))
+    let touched = |path: PathBuf| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    };
+    touched(runs_dir().join(format!("{id}.waiting")))
+        .or_else(|| touched(cockpit::approval::held_request(id, "request")))
         .and_then(|time| time.elapsed().ok())
         .is_some_and(|age| age > ABANDONED_AFTER)
 }
@@ -660,25 +927,44 @@ fn is_abandoned(id: &str) -> bool {
 /// The answers folder a held run or guide request names (cockpit::approval::request_answers_dir);
 /// None when the request is gone.
 fn answers_named_by(request: &Path, kind: &str) -> Option<PathBuf> {
-    let request: Value = fs::read_to_string(request).ok().and_then(|text| serde_json::from_str(&text).ok())?;
+    let request: Value = fs::read_to_string(request)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())?;
     cockpit::approval::request_answers_dir(&request, kind)
 }
 
 fn run_result(id: &str) -> Option<PathBuf> {
-    answers_named_by(&cockpit::approval::held_request(id, "request"), "runs").map(|answers| answers.join(format!("{id}.result")))
+    answers_named_by(&cockpit::approval::held_request(id, "request"), "runs")
+        .map(|answers| answers.join(format!("{id}.result")))
 }
 
 /// A report the daemon refused or corrected; `reason` says why.
 fn audit_report(report: &Report, sender: u32, event: &str, outcome: &str, reason: &str) {
-    cockpit::audit::record("daemon", event, outcome, json!({"claimed_session": report.session, "claimed_project": report.project,
-                                                           "sender_pid": sender, "reason": reason}));
+    cockpit::audit::record(
+        "daemon",
+        event,
+        outcome,
+        json!({"claimed_session": report.session, "claimed_project": report.project,
+                                                           "sender_pid": sender, "reason": reason}),
+    );
 }
 
 /// A run or guide request or a todo update from the report socket, held or refused. What the
 /// sandbox wrote goes in as claimed_* or as a fingerprint (the command, a title, a todo text).
-fn audit_request(kind: &str, raw: &str, started_in: Option<&str>, sender: u32, result: &Result<(), String>) {
+fn audit_request(
+    kind: &str,
+    raw: &str,
+    started_in: Option<&str>,
+    sender: u32,
+    result: &Result<(), String>,
+) {
     let request: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-    let text = |key: &str| request.get(key).and_then(Value::as_str).map(cockpit::audit::fingerprint);
+    let text = |key: &str| {
+        request
+            .get(key)
+            .and_then(Value::as_str)
+            .map(cockpit::audit::fingerprint)
+    };
     let (event, held) = match kind {
         "run-request" => ("run", "held"),
         "guide-request" => ("guide", "held"),
@@ -686,7 +972,11 @@ fn audit_request(kind: &str, raw: &str, started_in: Option<&str>, sender: u32, r
     };
     let mut fields = json!({"started_in": started_in, "sender_pid": sender, "request": cockpit::audit::fingerprint(raw),
                             "claimed_id": request.get("id"), "claimed_session": request.get("session"), "claimed_cwd": request.get("cwd")});
-    for (key, value) in [("command", text("command")), ("title", text("title")), ("text", text("text"))] {
+    for (key, value) in [
+        ("command", text("command")),
+        ("title", text("title")),
+        ("text", text("text")),
+    ] {
         if let Some(value) = value {
             fields[key] = value;
         }
@@ -705,9 +995,16 @@ fn audit_request(kind: &str, raw: &str, started_in: Option<&str>, sender: u32, r
 
 /// The answer ask-to-run --wait finds for a dropped request.
 fn write_abandoned(id: &str) {
-    cockpit::audit::record("daemon", "run.abandoned", "dropped", json!({"id": id, "reason": "nobody waited for its answer any more"}));
+    cockpit::audit::record(
+        "daemon",
+        "run.abandoned",
+        "dropped",
+        json!({"id": id, "reason": "nobody waited for its answer any more"}),
+    );
     let Some(path) = run_result(id) else {
-        log(&format!("run request {id} dropped without an answer: it names no answers folder"));
+        log(&format!(
+            "run request {id} dropped without an answer: it names no answers folder"
+        ));
         return;
     };
     if path.exists() {
@@ -720,7 +1017,9 @@ fn write_abandoned(id: &str) {
 
 fn write_lost_result(id: &str) -> bool {
     let Some(path) = run_result(id) else {
-        log(&format!("cannot report lost result for {id}: it names no answers folder"));
+        log(&format!(
+            "cannot report lost result for {id}: it names no answers folder"
+        ));
         return false;
     };
     if path.exists() {
@@ -730,8 +1029,12 @@ fn write_lost_result(id: &str) -> bool {
         log(&format!("cannot report lost result for {id}: {error}"));
         return false;
     }
-    if let Err(error) = cockpit::util::write_json(&path.with_extension("phase"), &json!({"phase": "done"})) {
-        log(&format!("cannot clear lost command status for {id}: {error}"));
+    if let Err(error) =
+        cockpit::util::write_json(&path.with_extension("phase"), &json!({"phase": "done"}))
+    {
+        log(&format!(
+            "cannot clear lost command status for {id}: {error}"
+        ));
     }
     cockpit::audit::record("daemon", "run.result_lost", "unknown", json!({"id": id}));
     true
@@ -739,7 +1042,10 @@ fn write_lost_result(id: &str) -> bool {
 
 fn saved_run_phase(id: &str) -> Option<String> {
     cockpit::util::read_json(&run_result(id)?.with_extension("phase"))?
-        .get("phase")?.as_str().filter(|phase| RUN_PHASES.contains(phase)).map(str::to_string)
+        .get("phase")?
+        .as_str()
+        .filter(|phase| RUN_PHASES.contains(phase))
+        .map(str::to_string)
 }
 
 impl RunRequests {
@@ -749,7 +1055,10 @@ impl RunRequests {
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-            Err(error) => { log(&format!("cannot recover approval requests: {error}")); return; }
+            Err(error) => {
+                log(&format!("cannot recover approval requests: {error}"));
+                return;
+            }
         };
         let Some(terminals) = system.approval_terminals() else {
             self.recovery_pending = true;
@@ -759,20 +1068,43 @@ impl RunRequests {
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(error) => { log(&format!("cannot read held approval request: {error}")); continue; }
+                Err(error) => {
+                    log(&format!("cannot read held approval request: {error}"));
+                    continue;
+                }
             };
             let name = entry.file_name();
-            let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".request"))
-                .filter(|id| cockpit::approval::valid_id(id)) else { continue };
-            if self.current == id || self.queue.iter().chain(&self.running).any(|known| known == id) { continue; }
-            if run_result(id).is_none_or(|path| path.exists()) { continue; }
+            let Some(id) = name
+                .to_str()
+                .and_then(|name| name.strip_suffix(".request"))
+                .filter(|id| cockpit::approval::valid_id(id))
+            else {
+                continue;
+            };
+            if self.current == id
+                || self
+                    .queue
+                    .iter()
+                    .chain(&self.running)
+                    .any(|known| known == id)
+            {
+                continue;
+            }
+            if run_result(id).is_none_or(|path| path.exists()) {
+                continue;
+            }
             if !terminals.contains(&run_session(id)) {
-                if !write_lost_result(id) { self.running.push(id.into()); }
+                if !write_lost_result(id) {
+                    self.running.push(id.into());
+                }
                 continue;
             }
             match saved_run_phase(id).as_deref() {
                 Some("asking") => self.queue.push(id.into()),
-                Some("input") => { self.running.push(id.into()); self.waiting_input.push(id.into()); }
+                Some("input") => {
+                    self.running.push(id.into());
+                    self.waiting_input.push(id.into());
+                }
                 _ => self.running.push(id.into()),
             }
         }
@@ -788,28 +1120,48 @@ impl RunRequests {
             _ => "",
         };
         // Later entries win: input and approval need Theo before a command running on does.
-        let requests = self.running.iter().map(|id| (id, "running"))
+        let requests = self
+            .running
+            .iter()
+            .map(|id| (id, "running"))
             .chain((current_phase == "running").then_some((&self.current, current_phase)))
             .chain(self.queue.iter().map(|id| (id, "approval")))
-            .chain((!self.current.is_empty() && current_phase != "running").then_some((&self.current, current_phase)))
+            .chain(
+                (!self.current.is_empty() && current_phase != "running")
+                    .then_some((&self.current, current_phase)),
+            )
             .chain(self.waiting_input.iter().map(|id| (id, "input")));
         for (id, phase) in requests {
-            let Some(session) = cockpit::util::read_json(&cockpit::approval::held_request(id, "request"))
-                .and_then(|request| request.get("session")?.as_str().map(str::to_string)) else { continue };
+            let Some(session) =
+                cockpit::util::read_json(&cockpit::approval::held_request(id, "request"))
+                    .and_then(|request| request.get("session")?.as_str().map(str::to_string))
+            else {
+                continue;
+            };
             phases.insert(session, phase);
         }
         phases
     }
 
-    pub fn request(&mut self, system: &mut dyn System, banners: &mut dyn Banners, id: &str) -> Result<(), String> {
+    pub fn request(
+        &mut self,
+        system: &mut dyn System,
+        banners: &mut dyn Banners,
+        id: &str,
+    ) -> Result<(), String> {
         if !RUN_ID.is_match(id) {
             return Err("not a request id".into());
         }
-        if self.queue.iter().any(|queued| queued == id) || self.current == id || self.running.iter().any(|run| run == id) {
+        if self.queue.iter().any(|queued| queued == id)
+            || self.current == id
+            || self.running.iter().any(|run| run == id)
+        {
             return Ok(());
         }
         let Some(result) = run_result(id) else {
-            log(&format!("run request {id} dropped: it names no answers folder (its session started before answers went per project)"));
+            log(&format!(
+                "run request {id} dropped: it names no answers folder (its session started before answers went per project)"
+            ));
             return Ok(());
         };
         if result.exists() {
@@ -819,14 +1171,36 @@ impl RunRequests {
             write_abandoned(id);
             return Ok(());
         }
-        let approve = paths::home().join(".local/bin/cockpit-run-approve").to_string_lossy().into_owned();
-        if !system.run(&["tmux", "new-session", "-d", "-s", &run_session(id), "-x", "180", "-y", "45", &approve, id], &[0]) {
+        let approve = paths::home()
+            .join(".local/bin/cockpit-run-approve")
+            .to_string_lossy()
+            .into_owned();
+        if !system.run(
+            &[
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                &run_session(id),
+                "-x",
+                "180",
+                "-y",
+                "45",
+                &approve,
+                id,
+            ],
+            &[0],
+        ) {
             return Err(format!("cannot start the approval for {id}"));
         }
         system.run(&["cockpit", "approval-pane", id], &[0]);
         let project = project_from_request(&cockpit::approval::held_request(id, "request"));
         if !system.quiet() {
-            banners.raise_notice(&Notice { id: format!("run-{id}"), title: format!("Claude · {project}"), message: "asks you to run a command".into() });
+            banners.raise_notice(&Notice {
+                id: format!("run-{id}"),
+                title: format!("Claude · {project}"),
+                message: "asks you to run a command".into(),
+            });
         }
         log(&format!("run request {id} from {project}"));
         self.queue.push(id.into());
@@ -850,7 +1224,10 @@ impl RunRequests {
                     self.running.push(id);
                     continue;
                 }
-                Some("input") => { self.attend(system, &id, "input"); return; }
+                Some("input") => {
+                    self.attend(system, &id, "input");
+                    return;
+                }
                 _ => {}
             }
             let abandoned = is_abandoned(&id);
@@ -858,7 +1235,15 @@ impl RunRequests {
                 if abandoned {
                     write_abandoned(&id);
                 }
-                system.run(&["tmux", "kill-session", "-t", &format!("={}", run_session(&id))], &[0, 1]);
+                system.run(
+                    &[
+                        "tmux",
+                        "kill-session",
+                        "-t",
+                        &format!("={}", run_session(&id)),
+                    ],
+                    &[0, 1],
+                );
                 system.run(&["cockpit", "approval-pane", "close", &id], &[0]);
                 continue;
             }
@@ -881,16 +1266,26 @@ impl RunRequests {
         self.show(system);
     }
 
-    pub fn phase_changed(&mut self, system: &mut dyn System, banners: &mut dyn Banners, id: &str, phase: &str) {
+    pub fn phase_changed(
+        &mut self,
+        system: &mut dyn System,
+        banners: &mut dyn Banners,
+        id: &str,
+        phase: &str,
+    ) {
         if !RUN_PHASES.contains(&phase) {
             return;
         }
-        let is_known = self.current == id || self.queue.iter().any(|queued| queued == id) || self.running.iter().any(|run| run == id);
+        let is_known = self.current == id
+            || self.queue.iter().any(|queued| queued == id)
+            || self.running.iter().any(|run| run == id);
         if phase == "done" && is_known && run_result(id).is_some_and(|path| !path.exists()) {
             // A notification is not the result: the wrapper may still fail to save its receipt.
             self.queue.retain(|queued| queued != id);
             self.waiting_input.retain(|run| run != id);
-            if !self.running.iter().any(|run| run == id) { self.running.push(id.into()); }
+            if !self.running.iter().any(|run| run == id) {
+                self.running.push(id.into());
+            }
             if self.current == id {
                 self.finish(system, banners);
             } else {
@@ -904,13 +1299,19 @@ impl RunRequests {
                     self.waiting_input.retain(|run| run != id);
                     system.run(&["cockpit", "approval-pane", "close", id], &[0]);
                 }
-                "input" => { system.run(&["cockpit", "approval-pane", id], &[0]); }
+                "input" => {
+                    system.run(&["cockpit", "approval-pane", id], &[0]);
+                }
                 _ => {}
             }
         }
         let input_notice = format!("run-input-{id}");
         if phase == "input" && !system.quiet() {
-            banners.raise_notice(&Notice { id: input_notice.clone(), title: "Command waiting".into(), message: "it asks for your input".into() });
+            banners.raise_notice(&Notice {
+                id: input_notice.clone(),
+                title: "Command waiting".into(),
+                message: "it asks for your input".into(),
+            });
         } else {
             banners.drop_banner(&format!("notice:{input_notice}"));
         }
@@ -944,7 +1345,9 @@ impl RunRequests {
                     system.run(&["cockpit", "approval-pane", "close", id], &[0]);
                 }
                 "input" if self.current.is_empty() => self.attend(system, id, "input"),
-                "input" if !self.waiting_input.iter().any(|run| run == id) => self.waiting_input.push(id.into()),
+                "input" if !self.waiting_input.iter().any(|run| run == id) => {
+                    self.waiting_input.push(id.into())
+                }
                 _ => {}
             }
             return;
@@ -962,10 +1365,10 @@ impl RunRequests {
             // Approved and running without needing Theo: the next request is shown now, this one
             // runs on unseen. One that asked for input keeps his floating window to its end.
             "running" if !self.asked_input => {
-                if let Some(mut window) = self.window.take() {
-                    if window.running() {
-                        window.terminate();
-                    }
+                if let Some(mut window) = self.window.take()
+                    && window.running()
+                {
+                    window.terminate();
                 }
                 banners.drop_banner(&format!("notice:run-{id}"));
                 self.running.push(std::mem::take(&mut self.current));
@@ -990,26 +1393,41 @@ impl RunRequests {
             self.dismissed = true;
         }
         let asks_now = self.phase == "asking" || self.phase == "input";
-        let needs_theo = if open_now { asks_now || self.asked_input } else { asks_now && !self.dismissed };
+        let needs_theo = if open_now {
+            asks_now || self.asked_input
+        } else {
+            asks_now && !self.dismissed
+        };
         let wanted = needs_theo && !system.claude_workspace_active() && !system.quiet();
         if wanted && !open_now {
             let target = format!("={}", run_session(&self.current));
-            self.window = system.open_window(&["kitty", "--class", "claude-run", "-T", "Claude asks to run a command", "tmux", "attach-session", "-t", &target]);
+            self.window = system.open_window(&[
+                "kitty",
+                "--class",
+                "claude-run",
+                "-T",
+                "Claude asks to run a command",
+                "tmux",
+                "attach-session",
+                "-t",
+                &target,
+            ]);
             if self.window.is_none() {
                 log("cannot open the approval window");
             }
-        } else if !wanted && open_now {
-            if let Some(mut window) = self.window.take() {
-                window.terminate();
-            }
+        } else if !wanted
+            && open_now
+            && let Some(mut window) = self.window.take()
+        {
+            window.terminate();
         }
     }
 
     fn finish(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
-        if let Some(mut window) = self.window.take() {
-            if window.running() {
-                window.terminate();
-            }
+        if let Some(mut window) = self.window.take()
+            && window.running()
+        {
+            window.terminate();
         }
         banners.drop_banner(&format!("notice:run-{}", self.current));
         system.run(&["cockpit", "approval-pane", "close", &self.current], &[0]);
@@ -1023,11 +1441,20 @@ impl RunRequests {
     /// Every second: the window follows the workspace and the games, and an approval whose tmux
     /// session ended (closed by hand, crashed) is cleared.
     pub fn tick(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
-        if self.recovery_pending { self.recover(system); }
-        let terminals = if self.current.is_empty() && self.queue.is_empty() && self.running.is_empty() {
-            None
-        } else { system.approval_terminals() };
-        let gone = |id: &str| terminals.as_ref().is_some_and(|sessions| !sessions.contains(&run_session(id)));
+        if self.recovery_pending {
+            self.recover(system);
+        }
+        let terminals =
+            if self.current.is_empty() && self.queue.is_empty() && self.running.is_empty() {
+                None
+            } else {
+                system.approval_terminals()
+            };
+        let gone = |id: &str| {
+            terminals
+                .as_ref()
+                .is_some_and(|sessions| !sessions.contains(&run_session(id)))
+        };
         for id in self.queue.clone() {
             if let Some(phase) = saved_run_phase(&id).filter(|phase| phase != "asking") {
                 self.phase_changed(system, banners, &id, &phase);
@@ -1058,28 +1485,35 @@ impl RunRequests {
                 continue;
             }
             if gone(&id) {
-                if !write_lost_result(&id) { continue; }
+                if !write_lost_result(&id) {
+                    continue;
+                }
                 self.running.retain(|run| *run != id);
                 self.waiting_input.retain(|run| *run != id);
                 system.run(&["cockpit", "approval-pane", "close", &id], &[0]);
             }
         }
-        if !self.current.is_empty() {
-            if let Some(phase) = saved_run_phase(&self.current).filter(|phase| *phase != self.phase) {
-                let id = self.current.clone();
-                self.phase_changed(system, banners, &id, &phase);
-            }
+        if !self.current.is_empty()
+            && let Some(phase) = saved_run_phase(&self.current).filter(|phase| *phase != self.phase)
+        {
+            let id = self.current.clone();
+            self.phase_changed(system, banners, &id, &phase);
         }
         if !self.current.is_empty() {
             let target = format!("={}", run_session(&self.current));
             // Only while it asks: a command already running is never cut off.
             if self.phase == "asking" && is_abandoned(&self.current) {
-                log(&format!("run request {} dropped: nobody waits for its answer any more", self.current));
+                log(&format!(
+                    "run request {} dropped: nobody waits for its answer any more",
+                    self.current
+                ));
                 write_abandoned(&self.current);
                 system.run(&["tmux", "kill-session", "-t", &target], &[0, 1]);
                 self.finish(system, banners);
             } else if gone(&self.current) {
-                if write_lost_result(&self.current) { self.finish(system, banners); }
+                if write_lost_result(&self.current) {
+                    self.finish(system, banners);
+                }
             } else {
                 self.show(system);
             }
@@ -1104,7 +1538,12 @@ pub struct GuideRequests {
 }
 
 impl GuideRequests {
-    pub fn request(&mut self, system: &mut dyn System, banners: &mut dyn Banners, id: &str) -> Result<(), String> {
+    pub fn request(
+        &mut self,
+        system: &mut dyn System,
+        banners: &mut dyn Banners,
+        id: &str,
+    ) -> Result<(), String> {
         if !RUN_ID.is_match(id) {
             return Err("not a guide id".into());
         }
@@ -1113,7 +1552,11 @@ impl GuideRequests {
         }
         let project = project_from_request(&cockpit::approval::held_request(id, "guide"));
         if !system.gaming() {
-            banners.raise_notice(&Notice { id: format!("guide-{id}"), title: format!("Claude · {project}"), message: "steps for you to do by hand".into() });
+            banners.raise_notice(&Notice {
+                id: format!("guide-{id}"),
+                title: format!("Claude · {project}"),
+                message: "steps for you to do by hand".into(),
+            });
         }
         log(&format!("guide {id} from {project}"));
         self.queue.push(id.into());
@@ -1127,15 +1570,30 @@ impl GuideRequests {
         }
         while !self.queue.is_empty() {
             let id = self.queue.remove(0);
-            let Some(answers) = answers_named_by(&cockpit::approval::held_request(&id, "guide"), "guides") else {
-                log(&format!("guide {id} dropped: it names no answers folder (its session started before answers went per project)"));
+            let Some(answers) =
+                answers_named_by(&cockpit::approval::held_request(&id, "guide"), "guides")
+            else {
+                log(&format!(
+                    "guide {id} dropped: it names no answers folder (its session started before answers went per project)"
+                ));
                 continue;
             };
             if answers.join(format!("{id}.result")).exists() {
                 continue;
             }
-            let guide = paths::home().join(".local/bin/cockpit-guide").to_string_lossy().into_owned();
-            match system.open_window(&["kitty", "--class", "cockpit-guide", "-T", "Cockpit · steps for you", &guide, &id]) {
+            let guide = paths::home()
+                .join(".local/bin/cockpit-guide")
+                .to_string_lossy()
+                .into_owned();
+            match system.open_window(&[
+                "kitty",
+                "--class",
+                "cockpit-guide",
+                "-T",
+                "Cockpit · steps for you",
+                &guide,
+                &id,
+            ]) {
                 Some(window) => {
                     self.window = Some(window);
                     self.current = id;
@@ -1149,11 +1607,18 @@ impl GuideRequests {
 
     fn finish(&mut self, system: &mut dyn System, banners: &mut dyn Banners) {
         banners.drop_banner(&format!("notice:guide-{}", self.current));
-        let result = self.current_answers.join(format!("{}.result", self.current));
+        let result = self
+            .current_answers
+            .join(format!("{}.result", self.current));
         if !result.exists() {
             // The window was closed: Claude must not wait on it, and learns where Theo stopped.
-            let progress = fs::read_to_string(self.current_answers.join(format!("{}.progress", self.current))).ok()
-                .and_then(|text| serde_json::from_str::<Value>(&text).ok()).unwrap_or(json!({}));
+            let progress = fs::read_to_string(
+                self.current_answers
+                    .join(format!("{}.progress", self.current)),
+            )
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .unwrap_or(json!({}));
             let closed = json!({"status": "closed", "step": progress.get("step").cloned().unwrap_or(json!("?")),
                                 "total": progress.get("total").cloned().unwrap_or(json!("?"))});
             if let Err(error) = cockpit::util::write_json(&result, &closed) {
@@ -1257,13 +1722,28 @@ pub fn snapshot_path() -> PathBuf {
 
 impl Registry {
     pub fn subscription_runtime(&mut self, generation: &str) -> Result<Value, String> {
-        if generation.len() != 32 || !generation.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+        if generation.len() != 32
+            || !generation
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
             return Err("invalid subscription routing generation".into());
         }
-        let candidates: Vec<_> = self.sessions.iter().filter(|(_, entry)| entry.subscription_token == generation
-            && !entry.runtime.is_empty() && !entry.subscription_directory.is_empty() && matches!(entry.agent.as_str(), "claude" | "codex"))
-            .map(|(session, entry)| (session.clone(), entry.clone())).collect();
-        let live: Vec<_> = candidates.into_iter().filter(|(_, entry)| self.system.runtime_is_live(&entry.runtime)).collect();
+        let candidates: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| {
+                entry.subscription_token == generation
+                    && !entry.runtime.is_empty()
+                    && !entry.subscription_directory.is_empty()
+                    && matches!(entry.agent.as_str(), "claude" | "codex")
+            })
+            .map(|(session, entry)| (session.clone(), entry.clone()))
+            .collect();
+        let live: Vec<_> = candidates
+            .into_iter()
+            .filter(|(_, entry)| self.system.runtime_is_live(&entry.runtime))
+            .collect();
         match live.as_slice() {
             [] => Ok(Value::Null),
             [(session, entry)] => Ok(json!({"session":session,"agent":entry.agent,"runtime":entry.runtime,
@@ -1273,10 +1753,28 @@ impl Registry {
     }
 
     pub fn new(system: Box<dyn System>, banners: Box<dyn Banners>) -> Self {
-        let mut registry = Registry { system, banners, sessions: BTreeMap::new(), held: BTreeMap::new(), runs: RunRequests::default(),
-                                      guides: GuideRequests::default(), recent_written: (0.0, Vec::new()), project_cache: HashMap::new(), teams: None,
-                                      chief_focus: None, chief_fault: None, chief_attention_presentations: HashMap::new(), chief_question_deadlines: HashMap::new(), chief_question_banners: HashMap::new(), chief_native: HashMap::new(), chief_telemetry: HashMap::new(),
-                                      chief_stop_failures: HashMap::new(), resolved_todos: Default::default(), live_session_passes: 0, live_session_cache: None };
+        let mut registry = Registry {
+            system,
+            banners,
+            sessions: BTreeMap::new(),
+            held: BTreeMap::new(),
+            runs: RunRequests::default(),
+            guides: GuideRequests::default(),
+            recent_written: (0.0, Vec::new()),
+            project_cache: HashMap::new(),
+            teams: None,
+            chief_focus: None,
+            chief_fault: None,
+            chief_attention_presentations: HashMap::new(),
+            chief_question_deadlines: HashMap::new(),
+            chief_question_banners: HashMap::new(),
+            chief_native: HashMap::new(),
+            chief_telemetry: HashMap::new(),
+            chief_stop_failures: HashMap::new(),
+            resolved_todos: Default::default(),
+            live_session_passes: 0,
+            live_session_cache: None,
+        };
         registry.load_snapshot();
         registry.runs.recover(registry.system.as_mut());
         registry
@@ -1287,44 +1785,87 @@ impl Registry {
     }
 
     pub fn run_request(&mut self, id: &str) -> Result<(), String> {
-        self.runs.request(self.system.as_mut(), self.banners.as_mut(), id)?;
+        self.runs
+            .request(self.system.as_mut(), self.banners.as_mut(), id)?;
         self.publish();
         Ok(())
     }
 
     /// Pending host work that belongs to this worker, or cannot be proved unrelated to its project.
     pub(crate) fn pending_host_request_for(&self, session: Option<&str>, project: &str) -> bool {
-        let runs = self.runs.queue.iter().chain(&self.runs.running).chain(&self.runs.waiting_input)
-            .chain(std::iter::once(&self.runs.current)).map(|id|(id,"request"));
-        let guides = self.guides.queue.iter().chain(std::iter::once(&self.guides.current)).map(|id|(id,"guide"));
-        runs.chain(guides).filter(|(id,_)|!id.is_empty()).any(|(id,extension)| {
-            let Some(request) = cockpit::util::read_json(&cockpit::approval::held_request(id,extension)) else { return true };
-            // Only the daemon's verified owner is authoritative; the caller's `session` is not.
-            if let Some(target) = session
-                && let Some(owner) = request["verified_session"].as_str().filter(|owner|agents::is_session_id(owner)) {
-                return owner==target;
-            }
-            let Some(started_in) = request["started_in"].as_str().filter(|directory|!directory.is_empty()) else { return true };
-            // Without an exact owner, only a proven different project is unrelated.
-            crate::teams::canonical_project(started_in).map_or(true,|owner_project|owner_project==project)
-        })
+        let runs = self
+            .runs
+            .queue
+            .iter()
+            .chain(&self.runs.running)
+            .chain(&self.runs.waiting_input)
+            .chain(std::iter::once(&self.runs.current))
+            .map(|id| (id, "request"));
+        let guides = self
+            .guides
+            .queue
+            .iter()
+            .chain(std::iter::once(&self.guides.current))
+            .map(|id| (id, "guide"));
+        runs.chain(guides)
+            .filter(|(id, _)| !id.is_empty())
+            .any(|(id, extension)| {
+                let Some(request) =
+                    cockpit::util::read_json(&cockpit::approval::held_request(id, extension))
+                else {
+                    return true;
+                };
+                // Only the daemon's verified owner is authoritative; the caller's `session` is not.
+                if let Some(target) = session
+                    && let Some(owner) = request["verified_session"]
+                        .as_str()
+                        .filter(|owner| agents::is_session_id(owner))
+                {
+                    return owner == target;
+                }
+                let Some(started_in) = request["started_in"]
+                    .as_str()
+                    .filter(|directory| !directory.is_empty())
+                else {
+                    return true;
+                };
+                // Without an exact owner, only a proven different project is unrelated.
+                crate::teams::canonical_project(started_in)
+                    .map_or(true, |owner_project| owner_project == project)
+            })
     }
 
     /// The run and guide requests waiting (queued or shown) from sandboxes started in `started_in`.
     fn waiting_from(&self, started_in: &str) -> usize {
-        let runs = self.runs.queue.iter().chain(std::iter::once(&self.runs.current)).map(|id| cockpit::approval::held_request(id, "request"));
-        let guides = self.guides.queue.iter().chain(std::iter::once(&self.guides.current)).map(|id| cockpit::approval::held_request(id, "guide"));
-        runs.chain(guides).filter(|path| {
-            fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok())
-                .is_some_and(|request| request.get("started_in").and_then(Value::as_str) == Some(started_in))
-        }).count()
+        let runs = self
+            .runs
+            .queue
+            .iter()
+            .chain(std::iter::once(&self.runs.current))
+            .map(|id| cockpit::approval::held_request(id, "request"));
+        let guides = self
+            .guides
+            .queue
+            .iter()
+            .chain(std::iter::once(&self.guides.current))
+            .map(|id| cockpit::approval::held_request(id, "guide"));
+        runs.chain(guides)
+            .filter(|path| {
+                fs::read_to_string(path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                    .is_some_and(|request| {
+                        request.get("started_in").and_then(Value::as_str) == Some(started_in)
+                    })
+            })
+            .count()
     }
 
     /// A run or guide request, or a todo update, from the report socket: held (hold_request) or
     /// queued (queue_todo_update) with the folder the sender's sandbox started in.
     pub fn request_from(&mut self, kind: &str, raw: &str, sender: u32) -> Result<(), String> {
-        if matches!(kind,"subscription-gate" | "subscription-initial-gate") {
-            return self.subscription_gate(raw, sender,kind == "subscription-initial-gate");
+        if matches!(kind, "subscription-gate" | "subscription-initial-gate") {
+            return self.subscription_gate(raw, sender, kind == "subscription-initial-gate");
         }
         if kind == "session-request" {
             return self.report_from(parse_session(raw)?, sender);
@@ -1338,118 +1879,205 @@ impl Registry {
         result
     }
 
-    fn subscription_gate(&mut self, raw: &str, sender: u32,initial: bool) -> Result<(), String> {
-        let request: Value = serde_json::from_str(raw).map_err(|_| "invalid subscription admission request")?;
-        if !request.as_object().is_some_and(|request| request.len() == 1) {
+    fn subscription_gate(&mut self, raw: &str, sender: u32, initial: bool) -> Result<(), String> {
+        let request: Value =
+            serde_json::from_str(raw).map_err(|_| "invalid subscription admission request")?;
+        if !request
+            .as_object()
+            .is_some_and(|request| request.len() == 1)
+        {
             return Err("subscription admission takes only a routing generation".into());
         }
-        let generation = request["generation"].as_str().ok_or("missing subscription routing generation")?;
+        let generation = request["generation"]
+            .as_str()
+            .ok_or("missing subscription routing generation")?;
         if self.system.sender_subscription_token(sender).as_deref() != Some(generation) {
             return Err("this launch has no matching subscription routing generation".into());
         }
-        let runtime = self.system.sender_runtime(sender).ok_or("subscription sender has no verified runtime")?;
+        let runtime = self
+            .system
+            .sender_runtime(sender)
+            .ok_or("subscription sender has no verified runtime")?;
         let receipt = self.subscription_runtime(generation)?;
-        let session = receipt["session"].as_str().ok_or("subscription replacement has not reported yet")?;
+        let session = receipt["session"]
+            .as_str()
+            .ok_or("subscription replacement has not reported yet")?;
         if receipt["runtime"].as_str() != Some(&runtime) {
             return Err("subscription admission belongs to another runtime".into());
         }
-        let mut routes = cockpit::subscription_fallback::RoutingStore::load(&paths::subscription_routes())?;
+        let mut routes =
+            cockpit::subscription_fallback::RoutingStore::load(&paths::subscription_routes())?;
         if !routes.execution_allowed(generation, session, &runtime) {
-            return Err("subscription replacement waits for verified task ownership binding".into());
+            return Err(
+                "subscription replacement waits for verified task ownership binding".into(),
+            );
         }
-        let route = routes.routes().find(|route| route.admitted_generation.as_deref() == Some(generation))
-            .cloned().ok_or("subscription admission route disappeared")?;
-        let _task_writer = if !route.is_session_task() && (!route.initial_admitted || initial && !route.initial_started) {
-            Some(cockpit::todo::lock_mutations().map_err(|error| format!("cannot serialize subscription task admission: {error}"))?)
-        } else {None};
+        let route = routes
+            .routes()
+            .find(|route| route.admitted_generation.as_deref() == Some(generation))
+            .cloned()
+            .ok_or("subscription admission route disappeared")?;
+        let _task_writer = if !route.is_session_task()
+            && (!route.initial_admitted || initial && !route.initial_started)
+        {
+            Some(cockpit::todo::lock_mutations().map_err(|error| {
+                format!("cannot serialize subscription task admission: {error}")
+            })?)
+        } else {
+            None
+        };
         if !route.initial_admitted || initial && !route.initial_started {
-            if !route.is_session_task() && cockpit::todo::TodoList::load_checked()?.status_of(&route.task) != "doing" {
+            if !route.is_session_task()
+                && cockpit::todo::TodoList::load_checked()?.status_of(&route.task) != "doing"
+            {
                 return Err("subscription task is missing or no longer in progress".into());
             }
             routes.confirm_initial_admission(&route.original.session, generation)?;
         }
         if initial && !route.initial_started {
             cockpit::subscription_fallback::prepare_admission_inbox(&route, generation)?;
-            routes.start_initial_turn(&route.original.session,generation)?;
+            routes.start_initial_turn(&route.original.session, generation)?;
         }
         Ok(())
     }
 
-    fn take_request(&mut self, kind: &str, raw: &str, started_in: &str, sender: u32) -> Result<(), String> {
+    fn take_request(
+        &mut self,
+        kind: &str,
+        raw: &str,
+        started_in: &str,
+        sender: u32,
+    ) -> Result<(), String> {
         let started_in = started_in.to_string();
         if kind == "todo-update" {
             let chief_epoch = crate::chief::active_epoch_of(self, sender);
             return queue_todo_update(raw, &started_in, chief_epoch.as_deref());
         }
         if self.waiting_from(&started_in) >= WAITING_PER_FOLDER_MAX {
-            return Err(format!("{WAITING_PER_FOLDER_MAX} requests from this session's folder already wait for Theo"));
+            return Err(format!(
+                "{WAITING_PER_FOLDER_MAX} requests from this session's folder already wait for Theo"
+            ));
         }
-        let claimed = serde_json::from_str::<Value>(raw).ok()
-            .and_then(|request| request.get("session").and_then(Value::as_str).map(str::to_string));
+        let claimed = serde_json::from_str::<Value>(raw).ok().and_then(|request| {
+            request
+                .get("session")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
         let verified_session = self.system.sender_target(sender).and_then(|target| {
             let pane = target.get("tmux_pane").filter(|pane| !pane.is_empty())?;
             let session = claimed.as_deref()?;
             let entry = self.sessions.get(session)?;
-            (entry.state != "gone" && entry.target.get("tmux_pane") == Some(pane)).then_some(session)
+            (entry.state != "gone" && entry.target.get("tmux_pane") == Some(pane))
+                .then_some(session)
         });
-        let id = hold_request(&mut self.project_cache, kind, raw, &started_in, verified_session)?;
-        log(&format!("{kind} {id} held, from a sandbox started in {started_in}"));
-        if kind == "run-request" { self.run_request(&id) } else { self.guide_request(&id) }
+        let id = hold_request(
+            &mut self.project_cache,
+            kind,
+            raw,
+            &started_in,
+            verified_session,
+        )?;
+        log(&format!(
+            "{kind} {id} held, from a sandbox started in {started_in}"
+        ));
+        if kind == "run-request" {
+            self.run_request(&id)
+        } else {
+            self.guide_request(&id)
+        }
     }
 
     pub fn run_phase(&mut self, id: &str, phase: &str) {
-        self.runs.phase_changed(self.system.as_mut(), self.banners.as_mut(), id, phase);
+        self.runs
+            .phase_changed(self.system.as_mut(), self.banners.as_mut(), id, phase);
         self.publish();
     }
 
     pub fn guide_request(&mut self, id: &str) -> Result<(), String> {
-        self.guides.request(self.system.as_mut(), self.banners.as_mut(), id)
+        self.guides
+            .request(self.system.as_mut(), self.banners.as_mut(), id)
     }
 
     /// Every second: the run and guide queues follow the workspace, the games and closed windows.
     pub fn tick_queues(&mut self) {
-        match crate::chief::tick(self,crate::teams::now_ms()) {
-            Ok(()) => {self.chief_fault=None;},
+        match crate::chief::tick(self, crate::teams::now_ms()) {
+            Ok(()) => {
+                self.chief_fault = None;
+            }
             Err(error) => {
-                let message = format!("Chief coordination failed: {}. Review protected storage/delivery; scheduling must not fall back.",error.message);
-                if self.chief_fault.as_ref()!=Some(&message) {
-                    self.banners.raise_notice(&Notice {id:"chief-host-fault".into(),title:"Chief · host intervention needed".into(),message:message.clone()});
+                let message = format!(
+                    "Chief coordination failed: {}. Review protected storage/delivery; scheduling must not fall back.",
+                    error.message
+                );
+                if self.chief_fault.as_ref() != Some(&message) {
+                    self.banners.raise_notice(&Notice {
+                        id: "chief-host-fault".into(),
+                        title: "Chief · host intervention needed".into(),
+                        message: message.clone(),
+                    });
                     log(&message);
-                    self.chief_fault=Some(message);
+                    self.chief_fault = Some(message);
                 }
-            },
+            }
         }
         let attention_changed = self.refresh_chief_questions(crate::teams::now_ms());
         let phases = self.runs.session_phases();
         self.runs.tick(self.system.as_mut(), self.banners.as_mut());
-        self.guides.tick(self.system.as_mut(), self.banners.as_mut());
+        self.guides
+            .tick(self.system.as_mut(), self.banners.as_mut());
         if attention_changed || phases != self.runs.session_phases() {
             self.publish();
         }
     }
 
     pub(crate) fn refresh_chief_questions(&mut self, now_ms: i64) -> bool {
-        let deadlines = crate::chief::question_grace_deadlines(self, now_ms).unwrap_or_else(|error| {
-            log(&format!("Chief question triage unavailable; showing questions: {}", error.message));
-            HashMap::new()
-        });
+        let deadlines =
+            crate::chief::question_grace_deadlines(self, now_ms).unwrap_or_else(|error| {
+                log(&format!(
+                    "Chief question triage unavailable; showing questions: {}",
+                    error.message
+                ));
+                HashMap::new()
+            });
         let changed = deadlines != self.chief_question_deadlines;
-        for session in deadlines.keys().filter(|session| !self.chief_question_deadlines.contains_key(*session)) {
+        for session in deadlines
+            .keys()
+            .filter(|session| !self.chief_question_deadlines.contains_key(*session))
+        {
             let entry = &self.sessions[session];
             if !entry.request.is_empty() {
-                let banner = Banner { session: session.clone(), title: format!("Claude · {}", entry.project), message: entry.request.clone(), sticky: true };
-                self.chief_question_banners.insert(session.clone(), (entry.runtime.clone(), entry.since as i64, banner));
+                let banner = Banner {
+                    session: session.clone(),
+                    title: format!("Claude · {}", entry.project),
+                    message: entry.request.clone(),
+                    sticky: true,
+                };
+                self.chief_question_banners.insert(
+                    session.clone(),
+                    (entry.runtime.clone(), entry.since as i64, banner),
+                );
                 self.held.remove(session);
-                if self.banners.showing(session) { self.banners.drop_banner(session); }
+                if self.banners.showing(session) {
+                    self.banners.drop_banner(session);
+                }
             }
         }
         self.chief_question_deadlines = deadlines;
-        for (session, (runtime, since, banner)) in std::mem::take(&mut self.chief_question_banners) {
-            let is_same_question = self.sessions.get(&session).is_some_and(|entry| entry.state == "needs-you"
-                && entry.runtime == runtime && entry.since as i64 == since && entry.request == banner.message);
-            if !is_same_question { continue; }
+        for (session, (runtime, since, banner)) in std::mem::take(&mut self.chief_question_banners)
+        {
+            let is_same_question = self.sessions.get(&session).is_some_and(|entry| {
+                entry.state == "needs-you"
+                    && entry.runtime == runtime
+                    && entry.since as i64 == since
+                    && entry.request == banner.message
+            });
+            if !is_same_question {
+                continue;
+            }
             if self.chief_question_deadlines.contains_key(&session) {
-                self.chief_question_banners.insert(session, (runtime, since, banner));
+                self.chief_question_banners
+                    .insert(session, (runtime, since, banner));
             } else {
                 self.show_session_banner(banner);
             }
@@ -1458,13 +2086,23 @@ impl Registry {
     }
 
     fn show_session_banner(&mut self, banner: Banner) {
-        if self.system.claude_workspace_active() { return; }
+        if self.system.claude_workspace_active() {
+            return;
+        }
         let short: String = banner.session.chars().take(8).collect();
         if self.system.quiet() {
-            log(&format!("banner held (meeting or game) for {short} ({}): {}", banner.title, banner.message));
+            log(&format!(
+                "banner held (meeting or game) for {short} ({}): {}",
+                banner.title, banner.message
+            ));
             self.held.insert(banner.session.clone(), banner);
         } else {
-            log(&format!("banner {}for {short} ({}): {}", if banner.sticky { "sticky " } else { "" }, banner.title, banner.message));
+            log(&format!(
+                "banner {}for {short} ({}): {}",
+                if banner.sticky { "sticky " } else { "" },
+                banner.title,
+                banner.message
+            ));
             self.banners.raise_banner(&banner);
         }
     }
@@ -1473,57 +2111,122 @@ impl Registry {
     /// never from the report, and a session cannot be moved off a pane where its Claude still runs.
     pub fn report_from(&mut self, mut report: Report, sender: u32) -> Result<(), String> {
         let Some(target) = self.system.sender_target(sender) else {
-            log(&format!("report for {} refused: its sender (pid {sender}) has no process outside the sandbox", &report.session[..8]));
-            audit_report(&report, sender, "report.rejected", "refused", "its sender has no process outside the sandbox");
+            log(&format!(
+                "report for {} refused: its sender (pid {sender}) has no process outside the sandbox",
+                &report.session[..8]
+            ));
+            audit_report(
+                &report,
+                sender,
+                "report.rejected",
+                "refused",
+                "its sender has no process outside the sandbox",
+            );
             return Err("sender has no process outside the sandbox".into());
         };
-        if let Some(known) = self.sessions.get(&report.session).and_then(|entry| entry.target.get("tmux_pane")).cloned() {
-            if target.get("tmux_pane") != Some(&known) && self.system.claude_panes().contains(&known) {
-                log(&format!("report for {} refused: it claims a pane other than {known}, where that session still runs", &report.session[..8]));
-                audit_report(&report, sender, "report.rejected", "refused", &format!("it claims a pane other than {known}, where that session still runs"));
-                return Err(format!("session already runs in pane {known}"));
-            }
+        if let Some(known) = self
+            .sessions
+            .get(&report.session)
+            .and_then(|entry| entry.target.get("tmux_pane"))
+            .cloned()
+            && target.get("tmux_pane") != Some(&known)
+            && self.system.claude_panes().contains(&known)
+        {
+            log(&format!(
+                "report for {} refused: it claims a pane other than {known}, where that session still runs",
+                &report.session[..8]
+            ));
+            audit_report(
+                &report,
+                sender,
+                "report.rejected",
+                "refused",
+                &format!("it claims a pane other than {known}, where that session still runs"),
+            );
+            return Err(format!("session already runs in pane {known}"));
         }
         report.target = target;
         let runtime = self.system.sender_runtime(sender);
         // A session's identity belongs to the launch that reported it while that launch still runs:
         // another sandbox cannot take it over (and with it, a team membership).
-        let held_by = self.sessions.get(&report.session).map(|entry| entry.runtime.clone()).filter(|held| !held.is_empty());
-        if let Some(held) = held_by.filter(|held| runtime.as_deref() != Some(held.as_str())) {
-            if self.system.runtime_is_live(&held) {
-                log(&format!("report for {} refused: another live launch holds that session", &report.session[..8]));
-                audit_report(&report, sender, "report.rejected", "refused", "another live launch holds that session");
-                return Err("session belongs to another live launch".into());
-            }
+        let held_by = self
+            .sessions
+            .get(&report.session)
+            .map(|entry| entry.runtime.clone())
+            .filter(|held| !held.is_empty());
+        if let Some(held) = held_by.filter(|held| runtime.as_deref() != Some(held.as_str()))
+            && self.system.runtime_is_live(&held)
+        {
+            log(&format!(
+                "report for {} refused: another live launch holds that session",
+                &report.session[..8]
+            ));
+            audit_report(
+                &report,
+                sender,
+                "report.rejected",
+                "refused",
+                "another live launch holds that session",
+            );
+            return Err("session belongs to another live launch".into());
         }
         report.runtime = runtime;
         report.spawn_token = self.system.sender_spawn_token(sender);
         report.resume_token = self.system.sender_resume_token(sender);
-        report.subscription_token = Some(self.system.sender_subscription_token(sender).unwrap_or_default());
-        if report.subscription_token.as_ref().is_some_and(|token| !token.is_empty()) {
+        report.subscription_token = Some(
+            self.system
+                .sender_subscription_token(sender)
+                .unwrap_or_default(),
+        );
+        if report
+            .subscription_token
+            .as_ref()
+            .is_some_and(|token| !token.is_empty())
+        {
             // A replacement must not inherit a retired launch's checkout when its report omits cwd.
-            report.cwd = Some(self.system.sender_directory(sender).filter(|directory| !directory.is_empty())
-                .ok_or("subscription launch has no verified working directory")?);
+            report.cwd = Some(
+                self.system
+                    .sender_directory(sender)
+                    .filter(|directory| !directory.is_empty())
+                    .ok_or("subscription launch has no verified working directory")?,
+            );
         }
         // The session's folder is where its sandbox started, never the one the report claims: a
         // claimed folder of another project would make a restart resume the session there, in that
         // project's sandbox with its token (security audit 2026-10-19, M1).
         if let Some(claimed) = report.cwd.take().filter(|cwd| !cwd.is_empty()) {
             let started_in = self.system.sender_directory(sender);
-            if !started_in.as_ref().is_some_and(|started_in| Path::new(&claimed).starts_with(started_in)) {
-                log(&format!("report for {} claims the folder {claimed:?}, outside {started_in:?} where its sandbox started: that one is kept",
-                             &report.session[..8]));
-                audit_report(&report, sender, "report.folder_corrected", "corrected",
-                             &format!("claimed {claimed:?}, outside {started_in:?} where its sandbox started"));
+            if !started_in
+                .as_ref()
+                .is_some_and(|started_in| Path::new(&claimed).starts_with(started_in))
+            {
+                log(&format!(
+                    "report for {} claims the folder {claimed:?}, outside {started_in:?} where its sandbox started: that one is kept",
+                    &report.session[..8]
+                ));
+                audit_report(
+                    &report,
+                    sender,
+                    "report.folder_corrected",
+                    "corrected",
+                    &format!(
+                        "claimed {claimed:?}, outside {started_in:?} where its sandbox started"
+                    ),
+                );
             }
             report.cwd = started_in;
         } else {
             report.cwd = self.system.sender_directory(sender);
         }
         if !self.sessions.contains_key(&report.session) {
-            cockpit::audit::record("daemon", "session.first_report", "ok", json!({
+            cockpit::audit::record(
+                "daemon",
+                "session.first_report",
+                "ok",
+                json!({
                 "session": report.session, "claimed_project": report.project, "started_in": report.cwd, "sender_pid": sender,
-                "tmux_pane": report.target.get("tmux_pane")}));
+                "tmux_pane": report.target.get("tmux_pane")}),
+            );
         }
         self.update(report);
         Ok(())
@@ -1540,12 +2243,25 @@ impl Registry {
         let mut changed = false;
         if previous_state.is_none() {
             let time = now();
-            self.sessions.insert(session.clone(), Entry { state: report.state.clone().unwrap_or("waiting".into()), project: report.project.clone(),
-                                                          since: time, started: time, agent: agents::DEFAULT.into(), ..Entry::default() });
+            self.sessions.insert(
+                session.clone(),
+                Entry {
+                    state: report.state.clone().unwrap_or("waiting".into()),
+                    project: report.project.clone(),
+                    since: time,
+                    started: time,
+                    agent: agents::DEFAULT.into(),
+                    ..Entry::default()
+                },
+            );
             changed = true;
         }
         let mut entry = self.sessions.remove(&session).unwrap();
-        if let Some(runtime) = report.runtime.as_ref().filter(|runtime| **runtime != entry.runtime) {
+        if let Some(runtime) = report
+            .runtime
+            .as_ref()
+            .filter(|runtime| **runtime != entry.runtime)
+        {
             entry.runtime = runtime.clone();
             entry.resume_token.clear();
             // A new launch must establish its own host checkout, not inherit the old one's proof.
@@ -1559,14 +2275,27 @@ impl Registry {
         }
         if let Some(token) = report.subscription_token.as_ref() {
             entry.subscription_token = token.clone();
-            entry.subscription_directory = if token.is_empty() { String::new() } else { report.cwd.clone().unwrap_or_default() };
+            entry.subscription_directory = if token.is_empty() {
+                String::new()
+            } else {
+                report.cwd.clone().unwrap_or_default()
+            };
         }
-        if let Some(native) = report.native_thread.as_ref().filter(|native| **native != entry.native_thread) {
+        if let Some(native) = report
+            .native_thread
+            .as_ref()
+            .filter(|native| **native != entry.native_thread)
+        {
             entry.native_thread = native.clone();
             changed = true;
         }
-        if let Some(quota_stopped) = report.quota_stopped { entry.quota_stopped = quota_stopped; }
-        if let Some(needs_input) = report.needs_input.filter(|needs_input| *needs_input != entry.needs_input) {
+        if let Some(quota_stopped) = report.quota_stopped {
+            entry.quota_stopped = quota_stopped;
+        }
+        if let Some(needs_input) = report
+            .needs_input
+            .filter(|needs_input| *needs_input != entry.needs_input)
+        {
             entry.needs_input = needs_input;
             changed = true;
         }
@@ -1575,21 +2304,28 @@ impl Registry {
             entry.full_request.clear();
             changed = true;
         }
-        if let Some(state) = &report.state {
-            if &entry.state != state {
-                entry.state = state.clone();
-                changed = true;
-            }
+        if let Some(state) = &report.state
+            && &entry.state != state
+        {
+            entry.state = state.clone();
+            changed = true;
         }
         let question_form = if entry.state == "needs-you" {
-            report.question_form.unwrap_or(entry.question_form && report.needs_input.is_none())
-        } else { false };
-        if entry.question_form != question_form { entry.question_form = question_form; changed = true; }
-        if let Some(task) = &report.task {
-            if &entry.task != task {
-                entry.task = task.clone();
-                changed = true;
-            }
+            report
+                .question_form
+                .unwrap_or(entry.question_form && report.needs_input.is_none())
+        } else {
+            false
+        };
+        if entry.question_form != question_form {
+            entry.question_form = question_form;
+            changed = true;
+        }
+        if let Some(task) = &report.task
+            && &entry.task != task
+        {
+            entry.task = task.clone();
+            changed = true;
         }
         if let Some(label) = report.label.as_ref().filter(|label| **label != entry.label) {
             entry.label = label.clone();
@@ -1597,12 +2333,21 @@ impl Registry {
         }
         // What a session waiting on you asks: the hook's sentence, and the pane's detail once the
         // next reconcile reads the dialog. Gone with the wait.
-        if entry.state == "needs-you" && report.message.as_ref().is_some_and(|m| !m.is_empty() && *m != entry.request) {
+        if entry.state == "needs-you"
+            && report
+                .message
+                .as_ref()
+                .is_some_and(|m| !m.is_empty() && *m != entry.request)
+        {
             entry.request = report.message.clone().unwrap();
             entry.detail.clear();
             entry.full_request.clear();
             changed = true;
-        } else if entry.state != "needs-you" && (!entry.request.is_empty() || !entry.detail.is_empty() || !entry.full_request.is_empty()) {
+        } else if entry.state != "needs-you"
+            && (!entry.request.is_empty()
+                || !entry.detail.is_empty()
+                || !entry.full_request.is_empty())
+        {
             entry.request.clear();
             entry.detail.clear();
             entry.full_request.clear();
@@ -1610,12 +2355,12 @@ impl Registry {
         }
         // The directory the session started in, and its project: later reports carry Claude's
         // current directory, which wanders into subfolders.
-        if let Some(cwd) = report.cwd.as_ref().filter(|cwd| !cwd.is_empty()) {
-            if entry.cwd.is_empty() {
-                entry.cwd = cwd.clone();
-                entry.project = self.project_of(cwd, &report.project);
-                changed = true;
-            }
+        if let Some(cwd) = report.cwd.as_ref().filter(|cwd| !cwd.is_empty())
+            && entry.cwd.is_empty()
+        {
+            entry.cwd = cwd.clone();
+            entry.project = self.project_of(cwd, &report.project);
+            changed = true;
         }
         if let Some(apps) = report.apps.as_ref().filter(|apps| **apps != entry.apps) {
             entry.apps = apps.clone();
@@ -1663,7 +2408,10 @@ impl Registry {
         }
         // A new turn after a finished one starts without the old step's "doing now"; a session
         // back from needs-you is still in the same turn and keeps it.
-        if entry.state == "working" && previous_state.as_deref() == Some("waiting") && (!entry.doing.is_empty() || !entry.last_tool.is_empty()) {
+        if entry.state == "working"
+            && previous_state.as_deref() == Some("waiting")
+            && (!entry.doing.is_empty() || !entry.last_tool.is_empty())
+        {
             entry.doing.clear();
             entry.doing_at = 0.0;
             entry.last_tool.clear();
@@ -1684,24 +2432,43 @@ impl Registry {
             entry.reports_turns = true;
             changed = true;
         }
-        if let Some(repository) = report.repository.as_ref().filter(|repository| **repository != entry.repository) {
+        if let Some(repository) = report
+            .repository
+            .as_ref()
+            .filter(|repository| **repository != entry.repository)
+        {
             entry.repository = repository.clone();
             changed = true;
         }
-        if let Some(branch) = report.branch.as_ref().filter(|branch| **branch != entry.branch) {
+        if let Some(branch) = report
+            .branch
+            .as_ref()
+            .filter(|branch| **branch != entry.branch)
+        {
             entry.branch = branch.clone();
             changed = true;
         }
-        if report.turn_complete && report.outcome.as_ref().is_some_and(|outcome| !outcome.is_empty()) {
-            if let Some(id) = report.turn_id.as_ref().filter(|id| entry.last_result.as_ref().is_none_or(|result| result.id != **id)) {
-                entry.last_result = Some(cockpit::sessions::TurnResult {
-                    id: id.clone(), completed_at: now() as i64,
-                    outcome: report.outcome.clone().unwrap_or_default(),
-                    repository: entry.repository.clone(), branch: entry.branch.clone(),
-                    extra: Default::default(),
-                });
-                changed = true;
-            }
+        if report.turn_complete
+            && report
+                .outcome
+                .as_ref()
+                .is_some_and(|outcome| !outcome.is_empty())
+            && let Some(id) = report.turn_id.as_ref().filter(|id| {
+                entry
+                    .last_result
+                    .as_ref()
+                    .is_none_or(|result| result.id != **id)
+            })
+        {
+            entry.last_result = Some(cockpit::sessions::TurnResult {
+                id: id.clone(),
+                completed_at: now() as i64,
+                outcome: report.outcome.clone().unwrap_or_default(),
+                repository: entry.repository.clone(),
+                branch: entry.branch.clone(),
+                extra: Default::default(),
+            });
+            changed = true;
         }
         let mut message = report.message.clone();
         if message.as_deref() == Some(FINISHED_MESSAGE) {
@@ -1720,16 +2487,25 @@ impl Registry {
 
         match message {
             None if report.label.is_some() || report.doing.is_some() => {}
-            None if report.state.is_none() && (report.agents.is_some() || report.background.is_some()) => {}
+            None if report.state.is_none()
+                && (report.agents.is_some() || report.background.is_some()) => {}
             None => {
                 self.banners.drop_banner(&session);
                 self.held.remove(&session);
             }
             Some(message) => {
-                let banner = Banner { session: session.clone(), title: format!("Claude · {project}"), message: message.clone(), sticky: report.sticky };
+                let banner = Banner {
+                    session: session.clone(),
+                    title: format!("Claude · {project}"),
+                    message: message.clone(),
+                    sticky: report.sticky,
+                };
                 if self.chief_question_deadlines.contains_key(&session) {
                     let entry = &self.sessions[&session];
-                    self.chief_question_banners.insert(session.clone(), (entry.runtime.clone(), entry.since as i64, banner));
+                    self.chief_question_banners.insert(
+                        session.clone(),
+                        (entry.runtime.clone(), entry.since as i64, banner),
+                    );
                 } else {
                     self.show_session_banner(banner);
                 }
@@ -1738,15 +2514,13 @@ impl Registry {
         // The window a session moved away from loses its tag unless another session still lives
         // there; the new one is tagged.
         let window_changed = kitty_pid != previous_pid;
-        if window_changed {
-            if let Some(previous) = &previous_pid {
-                self.apply_window_state(previous);
-            }
+        if window_changed && let Some(previous) = &previous_pid {
+            self.apply_window_state(previous);
         }
-        if let Some(pid) = &kitty_pid {
-            if window_changed || previous_state.as_deref() != Some(state.as_str()) {
-                self.apply_window_state(pid);
-            }
+        if let Some(pid) = &kitty_pid
+            && (window_changed || previous_state.as_deref() != Some(state.as_str()))
+        {
+            self.apply_window_state(pid);
         }
         if changed || window_changed {
             self.publish();
@@ -1755,24 +2529,54 @@ impl Registry {
 
     /// The kitty window currently attached to the session's tmux pane, or the reported one.
     pub fn resolve_target(&mut self, target: BTreeMap<String, String>) -> BTreeMap<String, String> {
-        let Some(tmux_pane) = target.get("tmux_pane").cloned() else { return self.without_dead_kitty(target) };
-        let Some(session_name) = self.system.tmux(&["display-message", "-p", "-t", &tmux_pane, "#{session_name}"]).filter(|n| !n.trim().is_empty()) else {
+        let Some(tmux_pane) = target.get("tmux_pane").cloned() else {
             return self.without_dead_kitty(target);
         };
-        let clients = self.system.tmux(&["list-clients", "-t", session_name.trim(), "-F", "#{client_pid}"]).unwrap_or_default();
+        let Some(session_name) = self
+            .system
+            .tmux(&["display-message", "-p", "-t", &tmux_pane, "#{session_name}"])
+            .filter(|n| !n.trim().is_empty())
+        else {
+            return self.without_dead_kitty(target);
+        };
+        let clients = self
+            .system
+            .tmux(&[
+                "list-clients",
+                "-t",
+                session_name.trim(),
+                "-F",
+                "#{client_pid}",
+            ])
+            .unwrap_or_default();
         for client in clients.split_whitespace() {
             let environment = self.system.process_environment(client);
-            let Some(kitty_pid) = environment.get("KITTY_PID").filter(|pid| !pid.is_empty()).cloned() else { continue };
+            let Some(kitty_pid) = environment
+                .get("KITTY_PID")
+                .filter(|pid| !pid.is_empty())
+                .cloned()
+            else {
+                continue;
+            };
             if !self.system.process_alive(&kitty_pid) {
                 continue;
             }
-            let mut resolved = BTreeMap::from([("tmux_pane".to_string(), tmux_pane.clone()), ("kitty_pid".to_string(), kitty_pid)]);
-            for (key, variable) in [("kitty_window", "KITTY_WINDOW_ID"), ("kitty_listen", "KITTY_LISTEN_ON")] {
+            let mut resolved = BTreeMap::from([
+                ("tmux_pane".to_string(), tmux_pane.clone()),
+                ("kitty_pid".to_string(), kitty_pid),
+            ]);
+            for (key, variable) in [
+                ("kitty_window", "KITTY_WINDOW_ID"),
+                ("kitty_listen", "KITTY_LISTEN_ON"),
+            ] {
                 if let Some(value) = environment.get(variable).filter(|v| !v.is_empty()) {
                     resolved.insert(key.into(), value.clone());
                 }
             }
-            let fields: Map<String, Value> = resolved.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+            let fields: Map<String, Value> = resolved
+                .iter()
+                .map(|(k, v)| (k.clone(), json!(v)))
+                .collect();
             if let Err(error) = validate_focus_target(&fields) {
                 log(&format!("ignoring tmux client {client}: {error}"));
                 continue;
@@ -1785,7 +2589,10 @@ impl Registry {
     /// A KITTY_PID inherited from a tmux server's environment can name a long closed terminal.
     fn without_dead_kitty(&mut self, target: BTreeMap<String, String>) -> BTreeMap<String, String> {
         match target.get("kitty_pid") {
-            Some(pid) if !self.system.process_alive(pid) => target.into_iter().filter(|(key, _)| !key.starts_with("kitty_")).collect(),
+            Some(pid) if !self.system.process_alive(pid) => target
+                .into_iter()
+                .filter(|(key, _)| !key.starts_with("kitty_"))
+                .collect(),
             _ => target,
         }
     }
@@ -1794,11 +2601,19 @@ impl Registry {
     /// without a SessionEnd for the old one: the previous ids of the same pane are gone.
     fn drop_pane_predecessors(&mut self, session: &str, tmux_pane: Option<&str>) {
         let Some(tmux_pane) = tmux_pane else { return };
-        let others: Vec<(String, String)> = self.sessions.iter()
-            .filter(|(other, entry)| other.as_str() != session && entry.target.get("tmux_pane").map(String::as_str) == Some(tmux_pane))
-            .map(|(other, entry)| (other.clone(), entry.project.clone())).collect();
+        let others: Vec<(String, String)> = self
+            .sessions
+            .iter()
+            .filter(|(other, entry)| {
+                other.as_str() != session
+                    && entry.target.get("tmux_pane").map(String::as_str) == Some(tmux_pane)
+            })
+            .map(|(other, entry)| (other.clone(), entry.project.clone()))
+            .collect();
         for (other, project) in others {
-            log(&format!("session {other} ({project}) replaced in {tmux_pane} by {session}"));
+            log(&format!(
+                "session {other} ({project}) replaced in {tmux_pane} by {session}"
+            ));
             self.remove(&other);
         }
     }
@@ -1810,7 +2625,11 @@ impl Registry {
             return;
         }
         let mut changed = false;
-        for entry in self.sessions.values_mut().filter(|entry| entry.cwd == directory && entry.unpushed > 0) {
+        for entry in self
+            .sessions
+            .values_mut()
+            .filter(|entry| entry.cwd == directory && entry.unpushed > 0)
+        {
             entry.unpushed = 0;
             changed = true;
         }
@@ -1833,7 +2652,9 @@ impl Registry {
     pub fn remove(&mut self, session: &str) {
         self.live_session_cache = None;
         self.held.remove(session);
-        let Some(entry) = self.sessions.remove(session) else { return };
+        let Some(entry) = self.sessions.remove(session) else {
+            return;
+        };
         self.banners.drop_banner(session);
         if let Some(pid) = entry.target.get("kitty_pid") {
             self.apply_window_state(pid);
@@ -1843,13 +2664,26 @@ impl Registry {
 
     /// Most urgent state among the sessions sharing one kitty window (several tmux windows).
     fn window_state(&self, kitty_pid: &str) -> Option<String> {
-        self.sessions.values().filter(|entry| entry.target.get("kitty_pid").map(String::as_str) == Some(kitty_pid))
-            .map(|entry| entry.state.clone()).max_by_key(|state| urgency(state))
+        self.sessions
+            .values()
+            .filter(|entry| entry.target.get("kitty_pid").map(String::as_str) == Some(kitty_pid))
+            .map(|entry| entry.state.clone())
+            .max_by_key(|state| urgency(state))
     }
 
     fn apply_window_state(&mut self, kitty_pid: &str) {
-        let state = self.window_state(kitty_pid).map(|state| format!("\"{state}\"")).unwrap_or_else(|| "nil".into());
-        self.system.run(&["hyprctl", "eval", &format!("CLAUDE_WINDOW_STATE({kitty_pid}, {state})")], &[0]);
+        let state = self
+            .window_state(kitty_pid)
+            .map(|state| format!("\"{state}\""))
+            .unwrap_or_else(|| "nil".into());
+        self.system.run(
+            &[
+                "hyprctl",
+                "eval",
+                &format!("CLAUDE_WINDOW_STATE({kitty_pid}, {state})"),
+            ],
+            &[0],
+        );
     }
 
     pub fn snapshot_rows(&self) -> Vec<Value> {
@@ -1878,7 +2712,12 @@ impl Registry {
             row
         }).collect();
         rows.sort_by(|a, b| {
-            let key = |row: &Value| (-urgency(row["state"].as_str().unwrap_or("")), row["since"].as_i64().unwrap_or(0));
+            let key = |row: &Value| {
+                (
+                    -urgency(row["state"].as_str().unwrap_or("")),
+                    row["since"].as_i64().unwrap_or(0),
+                )
+            };
             key(a).cmp(&key(b))
         });
         rows
@@ -1895,14 +2734,22 @@ impl Registry {
     /// recent-sessions.json for the column's "bring them back" after a reboot: refreshed when the
     /// set of sessions changes, else once a minute; entries age out after a week.
     fn remember_sessions(&mut self) {
-        let mut ids: Vec<String> = self.sessions.iter().filter(|(_, entry)| !entry.cwd.is_empty()).map(|(id, _)| id.clone()).collect();
+        let mut ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| !entry.cwd.is_empty())
+            .map(|(id, _)| id.clone())
+            .collect();
         ids.sort();
         let (written_at, written_ids) = &self.recent_written;
         if ids == *written_ids && now() - written_at < RECENT_SESSIONS_WRITE_S {
             return;
         }
         let path = paths::recent_sessions();
-        let mut recent = match cockpit::util::read_json(&path) { Some(Value::Object(map)) => map, _ => Map::new() };
+        let mut recent = match cockpit::util::read_json(&path) {
+            Some(Value::Object(map)) => map,
+            _ => Map::new(),
+        };
         let time = now();
         for id in &ids {
             let entry = &self.sessions[id];
@@ -1913,7 +2760,8 @@ impl Registry {
             }
         }
         let oldest = time - RECENT_SESSIONS_DAYS * 86400.0;
-        recent.retain(|_, row| row.get("last_seen").and_then(Value::as_f64).unwrap_or(0.0) >= oldest);
+        recent
+            .retain(|_, row| row.get("last_seen").and_then(Value::as_f64).unwrap_or(0.0) >= oldest);
         if let Err(error) = cockpit::util::write_json(&path, &Value::Object(recent)) {
             log(&format!("cannot write {}: {error}", path.display()));
         }
@@ -1923,87 +2771,209 @@ impl Registry {
     /// A daemon restart keeps the sessions; the next hook event refreshes their state.
     fn load_snapshot(&mut self) {
         let path = snapshot_path();
-        let Ok(text) = fs::read_to_string(&path) else { return };
-        let Some(rows) = serde_json::from_str::<Value>(&text).ok().and_then(|snapshot| snapshot.get("sessions").and_then(Value::as_array).cloned()) else {
-            log(&format!("ignoring snapshot {}: not a session list", path.display()));
+        let Ok(text) = fs::read_to_string(&path) else {
+            return;
+        };
+        let Some(rows) = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|snapshot| snapshot.get("sessions").and_then(Value::as_array).cloned())
+        else {
+            log(&format!(
+                "ignoring snapshot {}: not a session list",
+                path.display()
+            ));
             return;
         };
         for row in rows {
             let loaded = (|| -> Result<(String, Entry), String> {
-                let session = row.get("session").and_then(Value::as_str).ok_or("no session")?.to_string();
-                let native_thread = native_thread_of(row.as_object().ok_or("snapshot row is not an object")?)?.unwrap_or_default();
-                let state = row.get("state").and_then(Value::as_str).ok_or("no state")?.to_string();
+                let session = row
+                    .get("session")
+                    .and_then(Value::as_str)
+                    .ok_or("no session")?
+                    .to_string();
+                let native_thread =
+                    native_thread_of(row.as_object().ok_or("snapshot row is not an object")?)?
+                        .unwrap_or_default();
+                let state = row
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .ok_or("no state")?
+                    .to_string();
                 if urgency(&state) < 0 {
                     return Err(format!("state {state:?} unknown"));
                 }
-                let target: Map<String, Value> = TARGET_FIELDS.iter()
-                    .filter_map(|key| row.get(*key).filter(|v| !v.is_null() && v.as_str() != Some("")).map(|v| (key.to_string(), json!(match v { Value::String(s) => s.clone(), other => other.to_string() }))))
+                let target: Map<String, Value> = TARGET_FIELDS
+                    .iter()
+                    .filter_map(|key| {
+                        row.get(*key)
+                            .filter(|v| !v.is_null() && v.as_str() != Some(""))
+                            .map(|v| {
+                                (
+                                    key.to_string(),
+                                    json!(match v {
+                                        Value::String(s) => s.clone(),
+                                        other => other.to_string(),
+                                    }),
+                                )
+                            })
+                    })
                     .collect();
                 validate_focus_target(&target)?;
-                let cwd = row.get("cwd").and_then(Value::as_str).unwrap_or("").to_string();
-                let project = row.get("project").and_then(Value::as_str).ok_or("no project")?;
+                let cwd = row
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let project = row
+                    .get("project")
+                    .and_then(Value::as_str)
+                    .ok_or("no project")?;
                 let since = row.get("since").and_then(Value::as_f64).unwrap_or_else(now);
                 let request = row.get("request").and_then(Value::as_str).unwrap_or("");
                 validate_text("request", request)?;
-                let full_request = row.get("full_request").and_then(Value::as_str).unwrap_or("");
-                if full_request.chars().count() > FULL_REQUEST_MAX_LENGTH || full_request.chars().any(|character| character.is_control() && character != '\n')
-                    || full_request.contains("#(") || full_request.contains("#{") {
+                let full_request = row
+                    .get("full_request")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if full_request.chars().count() > FULL_REQUEST_MAX_LENGTH
+                    || full_request
+                        .chars()
+                        .any(|character| character.is_control() && character != '\n')
+                    || full_request.contains("#(")
+                    || full_request.contains("#{")
+                {
                     return Err("invalid full request in snapshot".into());
                 }
-                let label = row.get("label").and_then(Value::as_str).filter(|label| !label.is_empty())
-                    .map(cockpit::sessions::validate_task_label).transpose()?.unwrap_or_default();
-                let doing = row.get("doing").and_then(Value::as_str).filter(|doing| !doing.is_empty())
-                    .map(cockpit::sessions::validate_doing).transpose()?.unwrap_or_default();
-                let last_tool = row.get("last_tool").and_then(Value::as_str).filter(|tool| !tool.is_empty())
-                    .map(cockpit::sessions::validate_last_tool).transpose()?.unwrap_or_default();
+                let label = row
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .filter(|label| !label.is_empty())
+                    .map(cockpit::sessions::validate_task_label)
+                    .transpose()?
+                    .unwrap_or_default();
+                let doing = row
+                    .get("doing")
+                    .and_then(Value::as_str)
+                    .filter(|doing| !doing.is_empty())
+                    .map(cockpit::sessions::validate_doing)
+                    .transpose()?
+                    .unwrap_or_default();
+                let last_tool = row
+                    .get("last_tool")
+                    .and_then(Value::as_str)
+                    .filter(|tool| !tool.is_empty())
+                    .map(cockpit::sessions::validate_last_tool)
+                    .transpose()?
+                    .unwrap_or_default();
                 let repository = row.get("repository").and_then(Value::as_str).unwrap_or("");
                 if !repository.is_empty() && !cockpit::sessions::valid_repository(repository) {
                     return Err("invalid repository in snapshot".into());
                 }
                 let branch = row.get("branch").and_then(Value::as_str).unwrap_or("");
                 validate_text("branch", branch)?;
-                let last_result = row.get("last_result").filter(|value| !value.is_null())
-                    .map(cockpit::sessions::TurnResult::from_value).transpose()?;
-                Ok((session, Entry {
-                    state, project: project.into(), cwd, task: row.get("task").and_then(Value::as_str).unwrap_or("").into(), since,
-                    needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
-                    question_form: row.get("question_form").and_then(Value::as_bool).unwrap_or(false),
-                    quota_stopped: row.get("quota_stopped").and_then(Value::as_bool).unwrap_or(false),
-                    label,
-                    doing_at: if doing.is_empty() { 0.0 } else { row.get("doing_at").and_then(Value::as_f64).unwrap_or(0.0) },
-                    doing,
-                    last_tool_at: if last_tool.is_empty() { 0.0 } else { row.get("last_tool_at").and_then(Value::as_f64).unwrap_or(0.0) },
-                    last_tool,
-                    repository: repository.into(), branch: branch.into(), last_result,
-                    reports_turns: row.get("reports_turns").and_then(Value::as_bool).unwrap_or(false),
-                    native_thread,
-                    request: request.into(),
-                    full_request: full_request.into(),
-                    started: row.get("started").and_then(Value::as_f64).unwrap_or(since),
-                    target: target.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect(),
-                    update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
-                    terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
-                    credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),
-                    unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
-                    agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
-                    background: row.get("background").and_then(Value::as_u64).unwrap_or(0),
-                    agent: row.get("agent").and_then(Value::as_str).filter(|agent| agents::find(agent).is_some()).unwrap_or(agents::DEFAULT).into(),
-                    ..Entry::default()
-                }))
+                let last_result = row
+                    .get("last_result")
+                    .filter(|value| !value.is_null())
+                    .map(cockpit::sessions::TurnResult::from_value)
+                    .transpose()?;
+                Ok((
+                    session,
+                    Entry {
+                        state,
+                        project: project.into(),
+                        cwd,
+                        task: row.get("task").and_then(Value::as_str).unwrap_or("").into(),
+                        since,
+                        needs_input: row
+                            .get("needs_input")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        question_form: row
+                            .get("question_form")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        quota_stopped: row
+                            .get("quota_stopped")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        label,
+                        doing_at: if doing.is_empty() {
+                            0.0
+                        } else {
+                            row.get("doing_at").and_then(Value::as_f64).unwrap_or(0.0)
+                        },
+                        doing,
+                        last_tool_at: if last_tool.is_empty() {
+                            0.0
+                        } else {
+                            row.get("last_tool_at")
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0)
+                        },
+                        last_tool,
+                        repository: repository.into(),
+                        branch: branch.into(),
+                        last_result,
+                        reports_turns: row
+                            .get("reports_turns")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        native_thread,
+                        request: request.into(),
+                        full_request: full_request.into(),
+                        started: row.get("started").and_then(Value::as_f64).unwrap_or(since),
+                        target: target
+                            .into_iter()
+                            .map(|(k, v)| (k, v.as_str().unwrap_or("").to_string()))
+                            .collect(),
+                        update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
+                        terminal: row
+                            .get("terminal")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),
+                        unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
+                        agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
+                        background: row.get("background").and_then(Value::as_u64).unwrap_or(0),
+                        agent: row
+                            .get("agent")
+                            .and_then(Value::as_str)
+                            .filter(|agent| agents::find(agent).is_some())
+                            .unwrap_or(agents::DEFAULT)
+                            .into(),
+                        ..Entry::default()
+                    },
+                ))
             })();
             match loaded {
                 Ok((session, mut entry)) => {
                     // The launch proof survives a daemon restart only while that very launch (boot,
                     // pid, start time) still runs: idle sessions stay pickable for a team.
-                    if let Some(runtime) = row.get("runtime").and_then(Value::as_str) {
-                        if self.system.runtime_is_live(runtime) { entry.runtime = runtime.to_string(); }
+                    if let Some(runtime) = row.get("runtime").and_then(Value::as_str)
+                        && self.system.runtime_is_live(runtime)
+                    {
+                        entry.runtime = runtime.to_string();
                     }
                     entry.project = self.project_of(&entry.cwd.clone(), &entry.project.clone());
                     entry.target = self.resolve_target(entry.target.clone());
                     // A deferred banner survives a daemon crash, but its original stop clock does not restart.
-                    if row.get("chief_question_until").and_then(Value::as_i64).is_some() && entry.state == "needs-you" && !entry.request.is_empty() {
-                        let banner = Banner { session: session.clone(), title: format!("Claude · {}", entry.project), message: entry.request.clone(), sticky: true };
-                        self.chief_question_banners.insert(session.clone(), (entry.runtime.clone(), entry.since as i64, banner));
+                    if row
+                        .get("chief_question_until")
+                        .and_then(Value::as_i64)
+                        .is_some()
+                        && entry.state == "needs-you"
+                        && !entry.request.is_empty()
+                    {
+                        let banner = Banner {
+                            session: session.clone(),
+                            title: format!("Claude · {}", entry.project),
+                            message: entry.request.clone(),
+                            sticky: true,
+                        };
+                        self.chief_question_banners.insert(
+                            session.clone(),
+                            (entry.runtime.clone(), entry.since as i64, banner),
+                        );
                     }
                     self.sessions.insert(session, entry);
                 }
@@ -2011,7 +2981,11 @@ impl Registry {
             }
         }
         self.prune_dead();
-        let pids: HashSet<String> = self.sessions.values().filter_map(|entry| entry.target.get("kitty_pid").cloned()).collect();
+        let pids: HashSet<String> = self
+            .sessions
+            .values()
+            .filter_map(|entry| entry.target.get("kitty_pid").cloned())
+            .collect();
         for pid in pids {
             self.apply_window_state(&pid);
         }
@@ -2020,7 +2994,13 @@ impl Registry {
 
     /// Alive while a session binary carries the id. A session without one (an older Claude) is
     /// alive while a Claude process runs in its pane; without a pane the terminal decides.
-    pub fn is_dead(&mut self, session: &str, target: &BTreeMap<String, String>, live_ids: &HashSet<String>, live_panes: &HashSet<String>) -> bool {
+    pub fn is_dead(
+        &mut self,
+        session: &str,
+        target: &BTreeMap<String, String>,
+        live_ids: &HashSet<String>,
+        live_panes: &HashSet<String>,
+    ) -> bool {
         if live_ids.contains(session) {
             return false;
         }
@@ -2050,10 +3030,16 @@ impl Registry {
     pub fn prune_dead(&mut self) {
         let live_ids = self.system.live_session_ids();
         let live_panes = self.system.claude_panes();
-        let sessions: Vec<(String, BTreeMap<String, String>, String)> = self.sessions.iter().map(|(id, entry)| (id.clone(), entry.target.clone(), entry.project.clone())).collect();
+        let sessions: Vec<(String, BTreeMap<String, String>, String)> = self
+            .sessions
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.target.clone(), entry.project.clone()))
+            .collect();
         for (session, target, project) in sessions {
             if self.is_dead(&session, &target, &live_ids, &live_panes) {
-                log(&format!("session {session} ({project}) is gone, dropping it"));
+                log(&format!(
+                    "session {session} ({project}) is gone, dropping it"
+                ));
                 self.remove(&session);
             }
         }
@@ -2065,10 +3051,18 @@ impl Registry {
     /// A working session asks for nothing: its banner goes, even if the report that should have
     /// removed it was missed.
     fn drop_stale_banners(&mut self) {
-        let working: Vec<(String, String)> = self.sessions.iter().filter(|(_, entry)| entry.state == "working").map(|(id, entry)| (id.clone(), entry.project.clone())).collect();
+        let working: Vec<(String, String)> = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| entry.state == "working")
+            .map(|(id, entry)| (id.clone(), entry.project.clone()))
+            .collect();
         for (session, project) in working {
             if self.banners.showing(&session) {
-                log(&format!("banner for {} ({project}) still up while it works: removed", &session[..8.min(session.len())]));
+                log(&format!(
+                    "banner for {} ({project}) still up while it works: removed",
+                    &session[..8.min(session.len())]
+                ));
                 self.banners.drop_banner(&session);
             }
         }
@@ -2077,27 +3071,75 @@ impl Registry {
     /// The pane's last lines say what Claude is doing now; they win over stale hook states. Only
     /// for the agents whose screen the patterns know (Feature::ScreenStates): Claude Code's.
     pub fn reconcile_with_panes(&mut self) {
-        let sessions: Vec<(String, String)> = self.sessions.iter().filter(|(_, entry)| agents::get(&entry.agent).can(Feature::ScreenStates))
-            .filter_map(|(id, entry)| entry.target.get("tmux_pane").map(|pane| (id.clone(), pane.clone()))).collect();
+        let sessions: Vec<(String, String)> = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| agents::get(&entry.agent).can(Feature::ScreenStates))
+            .filter_map(|(id, entry)| {
+                entry
+                    .target
+                    .get("tmux_pane")
+                    .map(|pane| (id.clone(), pane.clone()))
+            })
+            .collect();
         for (session, pane) in sessions {
-            let capture_lines = if self.sessions.get(&session).is_some_and(|entry| entry.state == "needs-you" && !entry.needs_input) { DIALOG_CAPTURE_LINES } else { PANE_TAIL_LINES };
-            let tail = self.system.tmux(&["capture-pane", "-p", "-t", &pane, "-S", &format!("-{capture_lines}")]).unwrap_or_default();
+            let capture_lines = if self
+                .sessions
+                .get(&session)
+                .is_some_and(|entry| entry.state == "needs-you" && !entry.needs_input)
+            {
+                DIALOG_CAPTURE_LINES
+            } else {
+                PANE_TAIL_LINES
+            };
+            let tail = self
+                .system
+                .tmux(&[
+                    "capture-pane",
+                    "-p",
+                    "-t",
+                    &pane,
+                    "-S",
+                    &format!("-{capture_lines}"),
+                ])
+                .unwrap_or_default();
             let update_ready = UPDATE_READY.is_match(&tail);
-            let Some(entry) = self.sessions.get_mut(&session) else { continue };
+            let Some(entry) = self.sessions.get_mut(&session) else {
+                continue;
+            };
             if update_ready != entry.update {
                 entry.update = update_ready;
                 self.publish();
             }
-            let Some(entry) = self.sessions.get(&session) else { continue };
+            let Some(entry) = self.sessions.get(&session) else {
+                continue;
+            };
             // Plain chat questions have no dialog on screen; only the next prompt releases them.
-            if entry.needs_input { continue; }
+            if entry.needs_input {
+                continue;
+            }
             if let Some(observed) = pane_state(&tail).filter(|observed| *observed != entry.state) {
                 let project = entry.project.clone();
-                self.update(Report { session: session.clone(), project, state: Some(observed.into()), ..Report::default() });
+                self.update(Report {
+                    session: session.clone(),
+                    project,
+                    state: Some(observed.into()),
+                    ..Report::default()
+                });
             }
-            let Some(entry) = self.sessions.get_mut(&session) else { continue };
-            let detail = if entry.state == "needs-you" { permission_request(&tail) } else { String::new() };
-            let full_request = if entry.state == "needs-you" { permission_request_full(&tail) } else { String::new() };
+            let Some(entry) = self.sessions.get_mut(&session) else {
+                continue;
+            };
+            let detail = if entry.state == "needs-you" {
+                permission_request(&tail)
+            } else {
+                String::new()
+            };
+            let full_request = if entry.state == "needs-you" {
+                permission_request_full(&tail)
+            } else {
+                String::new()
+            };
             if detail != entry.detail || full_request != entry.full_request {
                 entry.detail = detail;
                 entry.full_request = full_request;
@@ -2115,11 +3157,22 @@ impl Registry {
 
     /// Shows the most urgent session in the manager; with none, just opens the manager.
     pub fn focus_most_urgent(&mut self) {
-        let best = self.sessions.iter().filter(|(_, entry)| entry.target.contains_key("tmux_pane"))
-            .max_by(|(a_id, a), (b_id, b)| (urgency(&a.state), -a.since as i64, a_id.as_str()).cmp(&(urgency(&b.state), -b.since as i64, b_id.as_str())))
+        let best = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| entry.target.contains_key("tmux_pane"))
+            .max_by(|(a_id, a), (b_id, b)| {
+                (urgency(&a.state), -a.since as i64, a_id.as_str()).cmp(&(
+                    urgency(&b.state),
+                    -b.since as i64,
+                    b_id.as_str(),
+                ))
+            })
             .map(|(id, _)| id.clone());
         match best {
-            None => { self.system.run(&["cockpit", "show"], &[0]); }
+            None => {
+                self.system.run(&["cockpit", "show"], &[0]);
+            }
             Some(session) => {
                 self.system.run(&["cockpit", "show", &session], &[0]);
                 self.banners.drop_banner(&session);
@@ -2130,12 +3183,17 @@ impl Registry {
 
 // ---- The real system ----
 
+type ChiefLaunchResult = std::sync::mpsc::Receiver<Result<(i32, String), String>>;
+
 pub struct RealSystem {
-    chief_launches: HashMap<String, std::sync::mpsc::Receiver<Result<(i32, String), String>>>,
+    chief_launches: HashMap<String, ChiefLaunchResult>,
     gaming_cache: (Option<Instant>, bool),
     /// When khal was last asked, and its answer so far: khal runs on a thread of its own, never on
     /// the GTK loop (it takes a few hundred ms to start; security audit 2026-10-19, performance 4).
-    meeting_cache: (Option<Instant>, std::sync::Arc<std::sync::atomic::AtomicBool>),
+    meeting_cache: (
+        Option<Instant>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ),
     /// One /proc scan for both live_session_ids and claude_panes within PROCESS_SCAN_FRESH: each
     /// walked every process on its own, twice every PRUNE_INTERVAL_S.
     process_scan: Option<(Instant, HashSet<String>, HashSet<String>)>,
@@ -2154,10 +3212,17 @@ impl WaybarPids {
     /// The remembered pids while each is still named waybar; else every process is walked again,
     /// at most every WAYBAR_ABSENT_FRESH while none runs.
     pub fn current(&mut self, table: &dyn Processes) -> Vec<String> {
-        let is_still_waybar = !self.pids.is_empty() && self.pids.iter().all(|pid| table.comm(pid) == "waybar");
-        let is_absence_fresh = self.pids.is_empty() && self.scanned.is_some_and(|at| at.elapsed() < WAYBAR_ABSENT_FRESH);
+        let is_still_waybar =
+            !self.pids.is_empty() && self.pids.iter().all(|pid| table.comm(pid) == "waybar");
+        let is_absence_fresh = self.pids.is_empty()
+            && self
+                .scanned
+                .is_some_and(|at| at.elapsed() < WAYBAR_ABSENT_FRESH);
         if !is_still_waybar && !is_absence_fresh {
-            *self = WaybarPids { scanned: Some(Instant::now()), pids: waybar_pids_in(table) };
+            *self = WaybarPids {
+                scanned: Some(Instant::now()),
+                pids: waybar_pids_in(table),
+            };
         }
         self.pids.clone()
     }
@@ -2173,27 +3238,45 @@ const WAYBAR_ABSENT_FRESH: Duration = Duration::from_secs(30);
 
 impl RealSystem {
     pub fn new() -> Self {
-        RealSystem { chief_launches: HashMap::new(), gaming_cache: (None, false), meeting_cache: (None, Default::default()), process_scan: None,
-                     waybar: WaybarPids::default() }
+        RealSystem {
+            chief_launches: HashMap::new(),
+            gaming_cache: (None, false),
+            meeting_cache: (None, Default::default()),
+            process_scan: None,
+            waybar: WaybarPids::default(),
+        }
     }
 
     /// The live session ids and the Claude panes, from one /proc scan.
     fn scanned(&mut self) -> (HashSet<String>, HashSet<String>) {
-        if let Some((at, ids, panes)) = &self.process_scan {
-            if at.elapsed() < PROCESS_SCAN_FRESH {
-                return (ids.clone(), panes.clone());
-            }
+        if let Some((at, ids, panes)) = &self.process_scan
+            && at.elapsed() < PROCESS_SCAN_FRESH
+        {
+            return (ids.clone(), panes.clone());
         }
         let processes = claude_processes(&Proc);
-        let (ids, panes) = (session_ids_of(&Proc, &processes), panes_of(&Proc, &processes));
+        let (ids, panes) = (
+            session_ids_of(&Proc, &processes),
+            panes_of(&Proc, &processes),
+        );
         self.process_scan = Some((Instant::now(), ids.clone(), panes.clone()));
         (ids, panes)
     }
 }
 
+impl Default for RealSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The processes named exactly waybar, as `pkill -x waybar` picks them.
 pub fn waybar_pids_in(table: &dyn Processes) -> Vec<String> {
-    table.pids().into_iter().filter(|pid| table.comm(pid) == "waybar").collect()
+    table
+        .pids()
+        .into_iter()
+        .filter(|pid| table.comm(pid) == "waybar")
+        .collect()
 }
 
 /// A command's exit code, stdout and stderr, or None when it cannot start or outlives `timeout`.
@@ -2207,8 +3290,18 @@ pub fn output_within(command: &[&str], timeout: Duration) -> Option<(i32, String
     output
 }
 
-fn wait_for_output(command: &[&str], timeout: Duration, started: Instant) -> Option<(i32, String, String)> {
-    let mut child = Command::new(command[0]).args(&command[1..]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+fn wait_for_output(
+    command: &[&str],
+    timeout: Duration,
+    started: Instant,
+) -> Option<(i32, String, String)> {
+    let mut child = Command::new(command[0])
+        .args(&command[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
@@ -2222,7 +3315,11 @@ fn wait_for_output(command: &[&str], timeout: Duration, started: Instant) -> Opt
         }
     }
     let output = child.wait_with_output().ok()?;
-    Some((output.status.code().unwrap_or(-1), String::from_utf8_lossy(&output.stdout).into_owned(), String::from_utf8_lossy(&output.stderr).into_owned()))
+    Some((
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
 /// The process table: /proc for real, a made-up tree in tests.
@@ -2246,53 +3343,94 @@ pub trait Processes {
         let _ = pid;
         None
     }
-    fn start_time(&self, _pid: &str) -> Option<String> { None }
-    fn boot_id(&self) -> Option<String> { None }
+    fn start_time(&self, _pid: &str) -> Option<String> {
+        None
+    }
+    fn boot_id(&self) -> Option<String> {
+        None
+    }
 }
 
 pub(crate) fn parse_process_start_time(stat: &str) -> Option<String> {
     let (_, fields) = stat.rsplit_once(')')?;
-    fields.split_whitespace().nth(19)?.parse::<u64>().ok().map(|ticks| ticks.to_string())
+    fields
+        .split_whitespace()
+        .nth(19)?
+        .parse::<u64>()
+        .ok()
+        .map(|ticks| ticks.to_string())
 }
 
 fn runtime_of_process(table: &dyn Processes, pid: &str) -> Option<String> {
-    if pid.parse::<u32>().ok()? == 0 || table.pid_namespace(pid)? != table.pid_namespace("self")? { return None; }
+    if pid.parse::<u32>().ok()? == 0 || table.pid_namespace(pid)? != table.pid_namespace("self")? {
+        return None;
+    }
     let boot = table.boot_id()?;
-    if boot.is_empty() || boot.len() > 64 || !boot.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') { return None; }
+    if boot.is_empty()
+        || boot.len() > 64
+        || !boot
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return None;
+    }
     let started = table.start_time(pid)?.parse::<u64>().ok()?;
     Some(format!("{boot}:{pid}:{started}"))
 }
 
 /// Bind a sandbox peer to its host launch incarnation, not a PID that can later be reused.
 pub fn trusted_runtime(table: &dyn Processes, sender: &str) -> Option<String> {
-    if table.pid_namespace(sender)? == table.pid_namespace("self")? { return None; }
+    if table.pid_namespace(sender)? == table.pid_namespace("self")? {
+        return None;
+    }
     runtime_of_process(table, &first_process_outside(table, sender)?)
 }
 
 pub fn default_agent_in(settings: &std::path::Path) -> Option<String> {
     let text = match fs::read_to_string(settings) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(agents::DEFAULT.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Some(agents::DEFAULT.to_string());
+        }
         Err(_) => return None,
     };
     // The same rules as cockpit' launch_setting_value: an object, a string when present.
-    let Value::Object(settings) = serde_json::from_str::<Value>(&text).ok()? else { return None };
-    let name = match settings.get("default-agent") { None => agents::DEFAULT, Some(name) => name.as_str()? };
+    let Value::Object(settings) = serde_json::from_str::<Value>(&text).ok()? else {
+        return None;
+    };
+    let name = match settings.get("default-agent") {
+        None => agents::DEFAULT,
+        Some(name) => name.as_str()?,
+    };
     agents::find(name).map(|agent| agent.name.to_string())
 }
 
 pub fn runtime_is_live(table: &dyn Processes, runtime: &str) -> bool {
     let mut parts = runtime.split(':');
-    let (Some(_boot), Some(pid), Some(_started), None) = (parts.next(),parts.next(),parts.next(),parts.next()) else { return false };
+    let (Some(_boot), Some(pid), Some(_started), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
     runtime_of_process(table, pid).as_deref() == Some(runtime)
 }
 
 pub fn runtime_subscription_account(table: &dyn Processes, runtime: &str) -> Option<String> {
-    if !runtime_is_live(table, runtime) { return None; }
+    if !runtime_is_live(table, runtime) {
+        return None;
+    }
     let pid = runtime.split(':').nth(1)?;
-    if table.pid_namespace(pid)? != table.pid_namespace("self")? { return None; }
-    let account = table.environment(pid).remove("COCKPIT_SUBSCRIPTION_ACCOUNT")?;
-    (account.len() == 64 && account.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(account)
+    if table.pid_namespace(pid)? != table.pid_namespace("self")? {
+        return None;
+    }
+    let account = table
+        .environment(pid)
+        .remove("COCKPIT_SUBSCRIPTION_ACCOUNT")?;
+    (account.len() == 64
+        && account
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(account)
 }
 
 /// Where a session report really comes from: the focus target (tmux pane, kitty window) in the
@@ -2316,29 +3454,61 @@ fn first_process_outside(table: &dyn Processes, sender: &str) -> Option<String> 
 
 pub fn trusted_target(table: &dyn Processes, sender: &str) -> Option<BTreeMap<String, String>> {
     let environment = table.environment(&first_process_outside(table, sender)?);
-    let target: BTreeMap<String, String> = [("tmux_pane", "TMUX_PANE"), ("kitty_pid", "KITTY_PID"), ("kitty_window", "KITTY_WINDOW_ID"), ("kitty_listen", "KITTY_LISTEN_ON")]
-        .iter().filter_map(|(key, variable)| environment.get(*variable).filter(|value| !value.is_empty()).map(|value| (key.to_string(), value.clone())))
+    let target: BTreeMap<String, String> = [
+        ("tmux_pane", "TMUX_PANE"),
+        ("kitty_pid", "KITTY_PID"),
+        ("kitty_window", "KITTY_WINDOW_ID"),
+        ("kitty_listen", "KITTY_LISTEN_ON"),
+    ]
+    .iter()
+    .filter_map(|(key, variable)| {
+        environment
+            .get(*variable)
+            .filter(|value| !value.is_empty())
+            .map(|value| (key.to_string(), value.clone()))
+    })
+    .collect();
+    let fields: Map<String, Value> = target
+        .iter()
+        .map(|(key, value)| (key.clone(), json!(value)))
         .collect();
-    let fields: Map<String, Value> = target.iter().map(|(key, value)| (key.clone(), json!(value))).collect();
     validate_focus_target(&fields).ok().map(|_| target)
 }
 
 /// The one-time token a team start put in the launch's environment (cockpit team-spawn),
 /// read outside the sandbox like the focus target: a session cannot claim one in its report.
 pub fn trusted_spawn_token(table: &dyn Processes, sender: &str) -> Option<String> {
-    let token = table.environment(&first_process_outside(table, sender)?).remove("COCKPIT_TEAM_SPAWN")?;
-    (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
+    let token = table
+        .environment(&first_process_outside(table, sender)?)
+        .remove("COCKPIT_TEAM_SPAWN")?;
+    (token.len() == 32
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(token)
 }
 
 pub fn trusted_resume_token(table: &dyn Processes, sender: &str) -> Option<String> {
-    let token = table.environment(&first_process_outside(table, sender)?).remove("COCKPIT_TEAM_RESUME")?;
-    (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
+    let token = table
+        .environment(&first_process_outside(table, sender)?)
+        .remove("COCKPIT_TEAM_RESUME")?;
+    (token.len() == 32
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(token)
 }
 
 /// A routing generation belongs to the host launch, never to a sandbox's report or environment.
 pub fn trusted_subscription_token(table: &dyn Processes, sender: &str) -> Option<String> {
-    let token = table.environment(&first_process_outside(table, sender)?).remove("COCKPIT_SUBSCRIPTION_ROUTE")?;
-    (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(token)
+    let token = table
+        .environment(&first_process_outside(table, sender)?)
+        .remove("COCKPIT_SUBSCRIPTION_ROUTE")?;
+    (token.len() == 32
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(token)
 }
 
 /// The folder the sender's sandbox started in: the working directory of its first process outside
@@ -2351,43 +3521,78 @@ pub struct Proc;
 
 impl Processes for Proc {
     fn pids(&self) -> Vec<String> {
-        fs::read_dir("/proc").map(|entries| entries.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.chars().all(|c| c.is_ascii_digit())).collect()).unwrap_or_default()
+        fs::read_dir("/proc")
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.chars().all(|c| c.is_ascii_digit()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn comm(&self, pid: &str) -> String {
-        fs::read_to_string(format!("/proc/{pid}/comm")).map(|name| name.trim().to_string()).unwrap_or_default()
+        fs::read_to_string(format!("/proc/{pid}/comm"))
+            .map(|name| name.trim().to_string())
+            .unwrap_or_default()
     }
 
     fn command(&self, pid: &str) -> Vec<String> {
-        fs::read(format!("/proc/{pid}/cmdline")).map(|bytes| bytes.split(|b| *b == 0).filter(|part| !part.is_empty())
-            .map(|part| String::from_utf8_lossy(part).into_owned()).collect()).unwrap_or_default()
+        fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|bytes| {
+                bytes
+                    .split(|b| *b == 0)
+                    .filter(|part| !part.is_empty())
+                    .map(|part| String::from_utf8_lossy(part).into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn environment(&self, pid: &str) -> HashMap<String, String> {
-        fs::read(format!("/proc/{pid}/environ")).map(|bytes| bytes.split(|b| *b == 0).filter(|e| !e.is_empty()).filter_map(|entry| {
-            let text = String::from_utf8_lossy(entry);
-            text.split_once('=').map(|(name, value)| (name.to_string(), value.to_string()))
-        }).collect()).unwrap_or_default()
+        fs::read(format!("/proc/{pid}/environ"))
+            .map(|bytes| {
+                bytes
+                    .split(|b| *b == 0)
+                    .filter(|e| !e.is_empty())
+                    .filter_map(|entry| {
+                        let text = String::from_utf8_lossy(entry);
+                        text.split_once('=')
+                            .map(|(name, value)| (name.to_string(), value.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn cwd(&self, pid: &str) -> Option<String> {
-        fs::read_link(format!("/proc/{pid}/cwd")).ok().map(|path| path.to_string_lossy().into_owned())
+        fs::read_link(format!("/proc/{pid}/cwd"))
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
     }
 
     fn parent(&self, pid: &str) -> Option<String> {
         let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-        status.lines().find_map(|line| line.strip_prefix("PPid:")).map(|parent| parent.trim().to_string()).filter(|parent| parent != "0")
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("PPid:"))
+            .map(|parent| parent.trim().to_string())
+            .filter(|parent| parent != "0")
     }
 
     fn pid_namespace(&self, pid: &str) -> Option<String> {
-        fs::read_link(format!("/proc/{pid}/ns/pid")).ok().map(|link| link.to_string_lossy().into_owned())
+        fs::read_link(format!("/proc/{pid}/ns/pid"))
+            .ok()
+            .map(|link| link.to_string_lossy().into_owned())
     }
     fn start_time(&self, pid: &str) -> Option<String> {
         parse_process_start_time(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
     }
     fn boot_id(&self) -> Option<String> {
-        fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|boot| boot.trim().to_string())
+        fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .ok()
+            .map(|boot| boot.trim().to_string())
     }
 }
 
@@ -2399,22 +3604,40 @@ impl Processes for Proc {
 pub fn claude_processes(table: &dyn Processes) -> Vec<String> {
     let version = &*CLAUDE_VERSION_NAME;
     let infrastructure = ["daemon", "bg-pty-host", "bg-spare"];
-    let mut found: Vec<String> = table.pids().into_iter().filter(|pid| {
-        let name = table.comm(pid);
-        if agents::AGENTS.iter().any(|agent| agent.process == Some(name.as_str())) {
-            // `opencode serve` holds no conversation. The shared `serve --service` outlives the pane
-            // it was started from, and its stale TMUX_PANE pinned a session to that dead pane.
-            return table.command(pid).get(1).map(String::as_str) != Some("serve");
-        }
-        if name != "claude" && !version.is_match(&name) {
-            return false;
-        }
-        let command = table.command(pid);
-        // The pty host's argv[0] is the two words "claude bg-pty-host"; the daemon's role is argv[1].
-        let mut leading: Vec<String> = command.first().map(|first| first.split_whitespace().skip(1).map(str::to_string).collect()).unwrap_or_default();
-        leading.extend(command.get(1).cloned());
-        !leading.iter().any(|word| infrastructure.contains(&word.as_str()))
-    }).collect();
+    let mut found: Vec<String> = table
+        .pids()
+        .into_iter()
+        .filter(|pid| {
+            let name = table.comm(pid);
+            if agents::AGENTS
+                .iter()
+                .any(|agent| agent.process == Some(name.as_str()))
+            {
+                // `opencode serve` holds no conversation. The shared `serve --service` outlives the pane
+                // it was started from, and its stale TMUX_PANE pinned a session to that dead pane.
+                return table.command(pid).get(1).map(String::as_str) != Some("serve");
+            }
+            if name != "claude" && !version.is_match(&name) {
+                return false;
+            }
+            let command = table.command(pid);
+            // The pty host's argv[0] is the two words "claude bg-pty-host"; the daemon's role is argv[1].
+            let mut leading: Vec<String> = command
+                .first()
+                .map(|first| {
+                    first
+                        .split_whitespace()
+                        .skip(1)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            leading.extend(command.get(1).cloned());
+            !leading
+                .iter()
+                .any(|word| infrastructure.contains(&word.as_str()))
+        })
+        .collect();
     found.sort_by_key(|pid| pid.parse::<u64>().unwrap_or(0));
     found
 }
@@ -2425,10 +3648,17 @@ pub fn live_session_ids_in(table: &dyn Processes) -> HashSet<String> {
 }
 
 fn session_ids_of(table: &dyn Processes, processes: &[String]) -> HashSet<String> {
-    processes.iter().flat_map(|pid| {
-        let command = table.command(pid);
-        command.windows(2).filter(|pair| pair[0] == "--session-id" && agents::is_session_id(&pair[1])).map(|pair| pair[1].clone()).collect::<Vec<_>>()
-    }).collect()
+    processes
+        .iter()
+        .flat_map(|pid| {
+            let command = table.command(pid);
+            command
+                .windows(2)
+                .filter(|pair| pair[0] == "--session-id" && agents::is_session_id(&pair[1]))
+                .map(|pair| pair[1].clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// The tmux panes in which a Claude process runs, from its environment: the rule for sessions
@@ -2438,7 +3668,10 @@ pub fn claude_panes_in(table: &dyn Processes) -> HashSet<String> {
 }
 
 fn panes_of(table: &dyn Processes, processes: &[String]) -> HashSet<String> {
-    processes.iter().filter_map(|pid| table.environment(pid).get("TMUX_PANE").cloned()).collect()
+    processes
+        .iter()
+        .filter_map(|pid| table.environment(pid).get("TMUX_PANE").cloned())
+        .collect()
 }
 
 pub fn live_session_ids() -> HashSet<String> {
@@ -2446,24 +3679,39 @@ pub fn live_session_ids() -> HashSet<String> {
 }
 
 /// Bind a live conversation to its launcher's pane and tmux server, not a recyclable pane ID.
-pub fn session_owns_pane_in(table: &dyn Processes, session: &str, pane: &str, server: &str) -> bool {
+pub fn session_owns_pane_in(
+    table: &dyn Processes,
+    session: &str,
+    pane: &str,
+    server: &str,
+) -> bool {
     if !agents::is_session_id(session) {
         return false;
     }
     claude_processes(table).iter().any(|pid| {
         let command = table.command(pid);
         let environment = table.environment(pid);
-        let identity = command.windows(2)
+        let identity = command
+            .windows(2)
             .find(|pair| matches!(pair[0].as_str(), "--session-id" | "--session"))
             .map(|pair| pair[1].as_str())
-            .or_else(|| environment.get("CLAUDE_CODE_SESSION_ID").map(String::as_str));
+            .or_else(|| {
+                environment
+                    .get("CLAUDE_CODE_SESSION_ID")
+                    .map(String::as_str)
+            });
         if identity != Some(session) {
             return false;
         }
-        let Some(launcher) = first_process_outside(table, pid) else { return false };
+        let Some(launcher) = first_process_outside(table, pid) else {
+            return false;
+        };
         let trusted = table.environment(&launcher);
         trusted.get("TMUX_PANE").map(String::as_str) == Some(pane)
-            && trusted.get("TMUX").and_then(|value| value.rsplit(',').nth(1)) == Some(server)
+            && trusted
+                .get("TMUX")
+                .and_then(|value| value.rsplit(',').nth(1))
+                == Some(server)
     })
 }
 
@@ -2478,8 +3726,11 @@ pub fn is_game(submap: &str, window_class: &str) -> bool {
 
 pub(crate) fn tmux_server_absent(code: i32, stderr: &str) -> bool {
     let message = stderr.trim();
-    code == 1 && (message == "no sessions" || message.starts_with("no server running on ")
-        || (message.starts_with("error connecting to ") && message.ends_with(" (No such file or directory)")))
+    code == 1
+        && (message == "no sessions"
+            || message.starts_with("no server running on ")
+            || (message.starts_with("error connecting to ")
+                && message.ends_with(" (No such file or directory)")))
 }
 
 impl System for RealSystem {
@@ -2490,7 +3741,11 @@ impl System for RealSystem {
                 false
             }
             Some((code, stdout, stderr)) if !ok.contains(&code) => {
-                log(&format!("{} exited {code}: {}", command.join(" "), (stdout + &stderr).trim()));
+                log(&format!(
+                    "{} exited {code}: {}",
+                    command.join(" "),
+                    (stdout + &stderr).trim()
+                ));
                 false
             }
             Some(_) => true,
@@ -2499,21 +3754,37 @@ impl System for RealSystem {
 
     fn signal_waybar(&mut self) {
         let pids = self.waybar.current(&Proc);
-        if pids.is_empty() { return; }
+        if pids.is_empty() {
+            return;
+        }
         let mut command = vec!["kill", "-s", "RTMIN+16"];
         command.extend(pids.iter().map(String::as_str));
         // Exit 1: a waybar exited between the name check and the signal; the next publish rescans.
-        if !self.run(&command, &[0, 1]) { self.waybar.forget(); }
+        if !self.run(&command, &[0, 1]) {
+            self.waybar.forget();
+        }
     }
 
     fn tmux(&mut self, arguments: &[&str]) -> Option<String> {
         let mut command = vec!["tmux"];
         command.extend_from_slice(arguments);
-        output_within(&command, COMMAND_TIMEOUT).filter(|(code, _, _)| *code == 0).map(|(_, stdout, _)| stdout)
+        output_within(&command, COMMAND_TIMEOUT)
+            .filter(|(code, _, _)| *code == 0)
+            .map(|(_, stdout, _)| stdout)
     }
 
     fn approval_terminals(&mut self) -> Option<HashSet<String>> {
-        match output_within(&["env", "LC_ALL=C", "tmux", "list-sessions", "-F", "#{session_name}"], COMMAND_TIMEOUT) {
+        match output_within(
+            &[
+                "env",
+                "LC_ALL=C",
+                "tmux",
+                "list-sessions",
+                "-F",
+                "#{session_name}",
+            ],
+            COMMAND_TIMEOUT,
+        ) {
             Some((0, stdout, _)) => Some(stdout.lines().map(str::to_string).collect()),
             Some((code, _, stderr)) if tmux_server_absent(code, &stderr) => Some(HashSet::new()),
             _ => None,
@@ -2523,7 +3794,12 @@ impl System for RealSystem {
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>> {
         use std::os::unix::process::CommandExt;
         let mut process = Command::new(command[0]);
-        process.args(&command[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+        process
+            .args(&command[1..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
         match process.spawn() {
             Ok(child) => Some(Box::new(child)),
             Err(error) => {
@@ -2534,23 +3810,43 @@ impl System for RealSystem {
     }
 
     fn claude_workspace_active(&mut self) -> bool {
-        output_within(&["hyprctl", "-j", "activeworkspace"], COMMAND_TIMEOUT).filter(|(code, _, _)| *code == 0)
+        output_within(&["hyprctl", "-j", "activeworkspace"], COMMAND_TIMEOUT)
+            .filter(|(code, _, _)| *code == 0)
             .and_then(|(_, stdout, _)| serde_json::from_str::<Value>(&stdout).ok())
-            .is_some_and(|workspace| workspace.get("id").and_then(Value::as_i64) == Some(CLAUDE_WORKSPACE))
+            .is_some_and(|workspace| {
+                workspace.get("id").and_then(Value::as_i64) == Some(CLAUDE_WORKSPACE)
+            })
     }
 
     /// Game mode on (the gamemode submap) or a game window focused: banners and approval windows
     /// wait. A fullscreen video is not a game. Asked at most every 2 seconds.
     fn gaming(&mut self) -> bool {
-        if self.gaming_cache.0.is_some_and(|checked| checked.elapsed() < Duration::from_secs(2)) {
+        if self
+            .gaming_cache
+            .0
+            .is_some_and(|checked| checked.elapsed() < Duration::from_secs(2))
+        {
             return self.gaming_cache.1;
         }
-        let submap = output_within(&["hyprctl", "submap"], COMMAND_TIMEOUT).map(|(_, out, _)| out.trim().to_string()).unwrap_or_default();
-        let class = output_within(&["hyprctl", "-j", "activewindow"], COMMAND_TIMEOUT).and_then(|(_, out, _)| serde_json::from_str::<Value>(&out).ok())
-            .and_then(|window| window.get("class").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
+        let submap = output_within(&["hyprctl", "submap"], COMMAND_TIMEOUT)
+            .map(|(_, out, _)| out.trim().to_string())
+            .unwrap_or_default();
+        let class = output_within(&["hyprctl", "-j", "activewindow"], COMMAND_TIMEOUT)
+            .and_then(|(_, out, _)| serde_json::from_str::<Value>(&out).ok())
+            .and_then(|window| {
+                window
+                    .get("class")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
         let now = is_game(&submap, &class);
         if now != self.gaming_cache.1 {
-            log(if now { "gaming: banners and approval windows wait" } else { "no game: banners and approval windows shown again" });
+            log(if now {
+                "gaming: banners and approval windows wait"
+            } else {
+                "no game: banners and approval windows shown again"
+            });
         }
         self.gaming_cache = (Some(Instant::now()), now);
         now
@@ -2561,14 +3857,33 @@ impl System for RealSystem {
     fn in_meeting(&mut self) -> bool {
         use std::sync::atomic::Ordering;
         let answer = self.meeting_cache.1.clone();
-        if self.meeting_cache.0.is_none_or(|checked| checked.elapsed() >= Duration::from_secs(60)) {
+        if self
+            .meeting_cache
+            .0
+            .is_none_or(|checked| checked.elapsed() >= Duration::from_secs(60))
+        {
             self.meeting_cache.0 = Some(Instant::now());
             let answer = answer.clone();
             std::thread::spawn(move || {
-                let now = output_within(&["khal", "list", "now", "1m", "--format", "{start}|{end}|{title}"], COMMAND_TIMEOUT)
-                    .filter(|(code, _, _)| *code == 0).is_some_and(|(_, out, _)| events_now(&out, self::now()));
+                let now = output_within(
+                    &[
+                        "khal",
+                        "list",
+                        "now",
+                        "1m",
+                        "--format",
+                        "{start}|{end}|{title}",
+                    ],
+                    COMMAND_TIMEOUT,
+                )
+                .filter(|(code, _, _)| *code == 0)
+                .is_some_and(|(_, out, _)| events_now(&out, self::now()));
                 if answer.swap(now, Ordering::SeqCst) != now {
-                    log(if now { "meeting under way: Claude banners held until it ends" } else { "no meeting: banners shown again" });
+                    log(if now {
+                        "meeting under way: Claude banners held until it ends"
+                    } else {
+                        "no meeting: banners shown again"
+                    });
                 }
             });
         }
@@ -2610,7 +3925,13 @@ impl System for RealSystem {
     fn native_input_clear(&mut self, session: &cockpit::sessions::Session) -> bool {
         match cockpit::subscription_fallback::native::input_boundary(session) {
             Ok(target) => target.is_some(),
-            Err(error) => { cockpit::util::log_event("WARN",&format!("native subscription inbox input check failed: {error}")); false },
+            Err(error) => {
+                cockpit::util::log_event(
+                    "WARN",
+                    &format!("native subscription inbox input check failed: {error}"),
+                );
+                false
+            }
         }
     }
     fn default_agent(&mut self) -> Option<String> {
@@ -2626,16 +3947,35 @@ impl System for RealSystem {
         trusted_subscription_token(&Proc, &sender.to_string())
     }
     fn start_detached(&mut self, command: &[&str]) -> bool {
-        let Some((program, arguments)) = command.split_first() else { return false };
-        match Command::new(program).args(arguments).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        let Some((program, arguments)) = command.split_first() else {
+            return false;
+        };
+        match Command::new(program)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             // Reaped on a thread of its own: the daemon never waits for a session to start.
-            Ok(mut child) => { std::thread::spawn(move || child.wait()); true },
-            Err(error) => { log(&format!("could not start {program}: {error}")); false },
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+                true
+            }
+            Err(error) => {
+                log(&format!("could not start {program}: {error}"));
+                false
+            }
         }
     }
     fn start_chief(&mut self, session: &str, directory: &str) -> Result<(), String> {
-        let mut child = Command::new("cockpit").args(["--agent", "opencode", "chief-start", session, directory])
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|error|error.to_string())?;
+        let mut child = Command::new("cockpit")
+            .args(["--agent", "opencode", "chief-start", session, directory])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| error.to_string())?;
         let (sender, receiver) = std::sync::mpsc::channel();
         self.chief_launches.insert(session.into(), receiver);
         std::thread::spawn(move || {
@@ -2643,10 +3983,18 @@ impl System for RealSystem {
             let mut stderr = child.stderr.take().expect("piped launcher stderr");
             let mut bytes = Vec::new();
             let result = (|| {
-                stderr.by_ref().take(8192).read_to_end(&mut bytes).map_err(|error|error.to_string())?;
-                std::io::copy(&mut stderr, &mut std::io::sink()).map_err(|error|error.to_string())?;
-                let status = child.wait().map_err(|error|error.to_string())?;
-                Ok((status.code().unwrap_or(-1), String::from_utf8_lossy(&bytes).trim().to_string()))
+                stderr
+                    .by_ref()
+                    .take(8192)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| error.to_string())?;
+                std::io::copy(&mut stderr, &mut std::io::sink())
+                    .map_err(|error| error.to_string())?;
+                let status = child.wait().map_err(|error| error.to_string())?;
+                Ok((
+                    status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&bytes).trim().to_string(),
+                ))
             })();
             let _ = sender.send(result);
         });

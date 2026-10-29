@@ -1,8 +1,8 @@
 //! The bar's Claude pieces: the sessions chip, the usage reader and the bar visibility keeper.
 
-mod common;
 #[path = "common/codex_quota.rs"]
 mod codex_quota;
+mod common;
 use common::sandbox::*;
 
 use serde_json::{Value, json};
@@ -11,14 +11,21 @@ use std::fs;
 fn chip(sandbox: &Sandbox, snapshot: Value) -> Value {
     let path = sandbox.root.join("snapshot.json");
     fs::write(&path, snapshot.to_string()).unwrap();
-    let output = sandbox.run(waybar_scripts().join("cockpit.sh"), &[], &[("COCKPIT_SNAPSHOT", path.to_str().unwrap())]);
+    let output = sandbox.run(
+        waybar_scripts().join("cockpit.sh"),
+        &[],
+        &[("COCKPIT_SNAPSHOT", path.to_str().unwrap())],
+    );
     serde_json::from_str(&stdout(&output)).unwrap()
 }
 
 #[test]
 fn chip_counts_by_state_with_the_most_urgent_class() {
     let sandbox = Sandbox::new();
-    let chip = chip(&sandbox, json!({"sessions": [{"state": "needs-you", "project": "a", "since": 1}, {"state": "working", "project": "b", "since": 1}]}));
+    let chip = chip(
+        &sandbox,
+        json!({"sessions": [{"state": "needs-you", "project": "a", "since": 1}, {"state": "working", "project": "b", "since": 1}]}),
+    );
     let text = chip["text"].as_str().unwrap();
     assert!(text.contains("● 1"), "{text}");
     assert!(text.contains("! 1"), "{text}");
@@ -36,7 +43,10 @@ fn chip_shows_the_idle_glyph_with_no_session() {
 #[test]
 fn chip_tooltip_escapes_markup() {
     let sandbox = Sandbox::new();
-    let chip = chip(&sandbox, json!({"sessions": [{"state": "working", "project": "a", "task": "fix <totals>", "since": 1}]}));
+    let chip = chip(
+        &sandbox,
+        json!({"sessions": [{"state": "working", "project": "a", "task": "fix <totals>", "since": 1}]}),
+    );
     let tooltip = chip["tooltip"].as_str().unwrap();
     assert!(tooltip.contains("&lt;totals&gt;"), "{tooltip}");
 }
@@ -44,19 +54,41 @@ fn chip_tooltip_escapes_markup() {
 #[test]
 fn chip_tooltip_is_titled_agent_cockpit_not_claude_sessions() {
     let sandbox = Sandbox::new();
-    let busy = chip(&sandbox, json!({"sessions": [{"state": "working", "project": "a", "since": 1}]}));
+    let busy = chip(
+        &sandbox,
+        json!({"sessions": [{"state": "working", "project": "a", "since": 1}]}),
+    );
     let idle = chip(&sandbox, json!({"sessions": []}));
-    for tooltip in [busy["tooltip"].as_str().unwrap(), idle["tooltip"].as_str().unwrap()] {
+    for tooltip in [
+        busy["tooltip"].as_str().unwrap(),
+        idle["tooltip"].as_str().unwrap(),
+    ] {
         assert!(!tooltip.contains("Claude session"), "{tooltip}");
     }
-    assert!(busy["tooltip"].as_str().unwrap().contains("<b>Agent Cockpit</b>"), "{busy}");
-    assert!(idle["tooltip"].as_str().unwrap().starts_with("No agent session"), "{idle}");
+    assert!(
+        busy["tooltip"]
+            .as_str()
+            .unwrap()
+            .contains("<b>Agent Cockpit</b>"),
+        "{busy}"
+    );
+    assert!(
+        idle["tooltip"]
+            .as_str()
+            .unwrap()
+            .starts_with("No agent session"),
+        "{idle}"
+    );
 }
 
 fn usage(sandbox: &Sandbox, window: &str, fixture: &Value) -> Value {
     let path = sandbox.root.join("usage.json");
     fs::write(&path, fixture.to_string()).unwrap();
-    let output = sandbox.run(waybar_scripts().join("claude-usage.sh"), &[window], &[("CLAUDE_USAGE_FIXTURE", path.to_str().unwrap())]);
+    let output = sandbox.run(
+        waybar_scripts().join("claude-usage.sh"),
+        &[window],
+        &[("CLAUDE_USAGE_FIXTURE", path.to_str().unwrap())],
+    );
     serde_json::from_str(&stdout(&output)).unwrap()
 }
 
@@ -78,7 +110,14 @@ fn each_usage_window_carries_its_glyph_and_threshold_class() {
 #[test]
 fn unknown_usage_values_render_a_dash() {
     let sandbox = Sandbox::new();
-    assert_eq!(usage(&sandbox, "five_hour", &json!({"five_hour": null, "seven_day": null}))["class"], "unknown");
+    assert_eq!(
+        usage(
+            &sandbox,
+            "five_hour",
+            &json!({"five_hour": null, "seven_day": null})
+        )["class"],
+        "unknown"
+    );
 }
 
 fn codex_sandbox() -> Sandbox {
@@ -88,7 +127,9 @@ fn codex_sandbox() -> Sandbox {
 fn fetch_codex(sandbox: &Sandbox, force: bool) -> std::process::Output {
     let script = waybar_scripts().join("codex-usage.sh");
     let mut arguments = vec![script.to_str().unwrap()];
-    if force { arguments.push("--force"); }
+    if force {
+        arguments.push("--force");
+    }
     sandbox.run("bash", &arguments, &[])
 }
 
@@ -101,7 +142,12 @@ fn codex_quota_is_cached_without_persisting_or_printing_credentials() {
     let quota: Value = serde_json::from_str(&cached).unwrap();
     assert_eq!(quota["rate_limit"]["primary_window"]["used_percent"], 28);
     assert_eq!(quota["rate_limit"]["secondary_window"]["used_percent"], 86);
-    for exposed in [cached, stdout(&output), stderr(&output), fs::read_to_string(&sandbox.log).unwrap()] {
+    for exposed in [
+        cached,
+        stdout(&output),
+        stderr(&output),
+        fs::read_to_string(&sandbox.log).unwrap(),
+    ] {
         assert!(!exposed.contains("private@example.test"));
     }
 }
@@ -111,37 +157,71 @@ fn codex_quota_reuses_recent_cache_unless_forced() {
     let sandbox = codex_sandbox();
     assert!(fetch_codex(&sandbox, false).status.success());
     assert!(fetch_codex(&sandbox, false).status.success());
-    assert_eq!(fs::read_to_string(&sandbox.log).unwrap().matches("account/rateLimits/read").count(), 1);
+    assert_eq!(
+        fs::read_to_string(&sandbox.log)
+            .unwrap()
+            .matches("account/rateLimits/read")
+            .count(),
+        1
+    );
     assert!(fetch_codex(&sandbox, true).status.success());
-    assert_eq!(fs::read_to_string(&sandbox.log).unwrap().matches("account/rateLimits/read").count(), 2);
+    assert_eq!(
+        fs::read_to_string(&sandbox.log)
+            .unwrap()
+            .matches("account/rateLimits/read")
+            .count(),
+        2
+    );
 }
 
 #[test]
 fn codex_quota_reports_missing_auth_without_using_another_account() {
     for account in [Value::Null, json!({"type":"apiKey"})] {
         let sandbox = codex_sandbox();
-        let other_accounts = [sandbox.home.join(".local/share/opencode/auth.json"), sandbox.home.join("normal-codex/auth.json"), sandbox.home.join(".local/share/opencode/opencode.db")];
+        let other_accounts = [
+            sandbox.home.join(".local/share/opencode/auth.json"),
+            sandbox.home.join("normal-codex/auth.json"),
+            sandbox.home.join(".local/share/opencode/opencode.db"),
+        ];
         for path in &other_accounts {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "unrelated-secret-credentials").unwrap();
         }
-        fs::write(sandbox.home.join("account-response.json"), json!({"account":account,"requiresOpenaiAuth":true}).to_string()).unwrap();
+        fs::write(
+            sandbox.home.join("account-response.json"),
+            json!({"account":account,"requiresOpenaiAuth":true}).to_string(),
+        )
+        .unwrap();
         let output = fetch_codex(&sandbox, false);
         assert!(output.status.success(), "{}", stderr(&output));
         assert!(sandbox.calls("curl").is_empty());
-        let error: Value = serde_json::from_str(&fs::read_to_string(sandbox.runtime.join("codex-usage-error.json")).unwrap()).unwrap();
+        let error: Value = serde_json::from_str(
+            &fs::read_to_string(sandbox.runtime.join("codex-usage-error.json")).unwrap(),
+        )
+        .unwrap();
         assert!(!error["error"].as_str().unwrap().is_empty());
         assert!(!sandbox.runtime.join("codex-usage.json").exists());
         for path in other_accounts {
-            assert_eq!(fs::read_to_string(path).unwrap(), "unrelated-secret-credentials");
+            assert_eq!(
+                fs::read_to_string(path).unwrap(),
+                "unrelated-secret-credentials"
+            );
         }
-        assert!(!fs::read_to_string(&sandbox.log).unwrap().contains("account/login/start"));
+        assert!(
+            !fs::read_to_string(&sandbox.log)
+                .unwrap()
+                .contains("account/login/start")
+        );
     }
 }
 
 #[test]
 fn failed_codex_refresh_keeps_the_last_successful_quota_and_timestamp() {
-    for body in ["raise SystemExit(22)", "print('not-json', flush=True)", "print('{}', flush=True)"] {
+    for body in [
+        "raise SystemExit(22)",
+        "print('not-json', flush=True)",
+        "print('{}', flush=True)",
+    ] {
         let sandbox = codex_sandbox();
         assert!(fetch_codex(&sandbox, false).status.success());
         let cache = sandbox.runtime.join("codex-usage.json");
@@ -158,7 +238,11 @@ fn failed_codex_refresh_keeps_the_last_successful_quota_and_timestamp() {
 #[test]
 fn successful_codex_refresh_clears_the_previous_error() {
     let sandbox = codex_sandbox();
-    fs::write(sandbox.runtime.join("codex-usage-error.json"), r#"{"error":"request failed"}"#).unwrap();
+    fs::write(
+        sandbox.runtime.join("codex-usage-error.json"),
+        r#"{"error":"request failed"}"#,
+    )
+    .unwrap();
     assert!(fetch_codex(&sandbox, true).status.success());
     assert!(!sandbox.runtime.join("codex-usage-error.json").exists());
 }
@@ -166,12 +250,19 @@ fn successful_codex_refresh_clears_the_previous_error() {
 #[test]
 fn codex_login_refreshes_a_recent_cache_without_using_the_old_account() {
     let sandbox = codex_sandbox();
-    fs::write(sandbox.runtime.join("codex-usage.json"), r#"{"rate_limit":{"primary_window":{"used_percent":99}}}"#).unwrap();
+    fs::write(
+        sandbox.runtime.join("codex-usage.json"),
+        r#"{"rate_limit":{"primary_window":{"used_percent":99}}}"#,
+    )
+    .unwrap();
     let script = waybar_scripts().join("codex-usage.sh");
     let output = sandbox.run("bash", &[script.to_str().unwrap(), "--login"], &[]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stdout(&output).contains("https://auth.openai.com/test-login"));
-    let cached: Value = serde_json::from_str(&fs::read_to_string(sandbox.runtime.join("codex-usage.json")).unwrap()).unwrap();
+    let cached: Value = serde_json::from_str(
+        &fs::read_to_string(sandbox.runtime.join("codex-usage.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(cached["rate_limit"]["primary_window"]["used_percent"], 28);
 }
 
@@ -179,32 +270,68 @@ fn codex_login_refreshes_a_recent_cache_without_using_the_old_account() {
 fn claude_forced_refresh_updates_recent_cache_and_clears_the_error() {
     let sandbox = Sandbox::new();
     fs::create_dir_all(sandbox.home.join(".claude")).unwrap();
-    fs::write(sandbox.home.join(".claude/.credentials.json"),
-        r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#).unwrap();
-    fs::write(sandbox.runtime.join("claude-usage.json"), r#"{"five_hour":{"utilization":28}}"#).unwrap();
-    fs::write(sandbox.runtime.join("claude-usage-error.json"), r#"{"error":"unknown"}"#).unwrap();
-    sandbox.shim("curl", r#"cat >/dev/null; printf '{"five_hour":{"utilization":86}}'"#);
-    let output = sandbox.run(waybar_scripts().join("claude-usage.sh"), &["five_hour", "--force"], &[]);
+    fs::write(
+        sandbox.home.join(".claude/.credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#,
+    )
+    .unwrap();
+    fs::write(
+        sandbox.runtime.join("claude-usage.json"),
+        r#"{"five_hour":{"utilization":28}}"#,
+    )
+    .unwrap();
+    fs::write(
+        sandbox.runtime.join("claude-usage-error.json"),
+        r#"{"error":"unknown"}"#,
+    )
+    .unwrap();
+    sandbox.shim(
+        "curl",
+        r#"cat >/dev/null; printf '{"five_hour":{"utilization":86}}'"#,
+    );
+    let output = sandbox.run(
+        waybar_scripts().join("claude-usage.sh"),
+        &["five_hour", "--force"],
+        &[],
+    );
     assert!(output.status.success());
-    let cached: Value = serde_json::from_str(&fs::read_to_string(sandbox.runtime.join("claude-usage.json")).unwrap()).unwrap();
+    let cached: Value = serde_json::from_str(
+        &fs::read_to_string(sandbox.runtime.join("claude-usage.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(cached["five_hour"]["utilization"], 86);
     assert!(!sandbox.runtime.join("claude-usage-error.json").exists());
-    assert!(!fs::read_to_string(&sandbox.log).unwrap().contains("claude-test-token"));
+    assert!(
+        !fs::read_to_string(&sandbox.log)
+            .unwrap()
+            .contains("claude-test-token")
+    );
 }
 
 #[test]
 fn claude_forced_refresh_preserves_its_cache_when_the_request_fails() {
     let sandbox = Sandbox::new();
     fs::create_dir_all(sandbox.home.join(".claude")).unwrap();
-    fs::write(sandbox.home.join(".claude/.credentials.json"),
-        r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#).unwrap();
+    fs::write(
+        sandbox.home.join(".claude/.credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#,
+    )
+    .unwrap();
     let cache = sandbox.runtime.join("claude-usage.json");
     let original = r#"{"five_hour":{"utilization":28}}"#;
     fs::write(&cache, original).unwrap();
     sandbox.shim("curl", "exit 22");
-    let output = sandbox.run(waybar_scripts().join("claude-usage.sh"), &["five_hour", "--force"], &[]);
+    let output = sandbox.run(
+        waybar_scripts().join("claude-usage.sh"),
+        &["five_hour", "--force"],
+        &[],
+    );
     assert!(output.status.success());
-    assert_eq!(sandbox.calls("curl").len(), 1, "a forced refresh must bypass the recent cache");
+    assert_eq!(
+        sandbox.calls("curl").len(),
+        1,
+        "a forced refresh must bypass the recent cache"
+    );
     assert_eq!(fs::read_to_string(cache).unwrap(), original);
 }
 
@@ -213,15 +340,22 @@ fn invalid_claude_refresh_preserves_the_last_successful_quota_and_timestamp() {
     for response in ["not-json", r#"{"error":{"message":"try later"}}"#, "{}"] {
         let sandbox = Sandbox::new();
         fs::create_dir_all(sandbox.home.join(".claude")).unwrap();
-        fs::write(sandbox.home.join(".claude/.credentials.json"),
-            r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#).unwrap();
+        fs::write(
+            sandbox.home.join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"claude-test-token","expiresAt":4102444800000}}"#,
+        )
+        .unwrap();
         let cache = sandbox.runtime.join("claude-usage.json");
         let original = r#"{"five_hour":{"utilization":28}}"#;
         fs::write(&cache, original).unwrap();
         let modified = fs::metadata(&cache).unwrap().modified().unwrap();
         fs::write(sandbox.home.join("response.json"), response).unwrap();
         sandbox.shim("curl", r#"cat >/dev/null; cat "$HOME/response.json""#);
-        let output = sandbox.run(waybar_scripts().join("claude-usage.sh"), &["five_hour", "--force"], &[]);
+        let output = sandbox.run(
+            waybar_scripts().join("claude-usage.sh"),
+            &["five_hour", "--force"],
+            &[],
+        );
         assert!(output.status.success());
         assert_eq!(fs::read_to_string(&cache).unwrap(), original);
         assert_eq!(fs::metadata(&cache).unwrap().modified().unwrap(), modified);
@@ -250,7 +384,10 @@ exit 0"#);
     }
 
     fn layer(&self) -> String {
-        fs::read_to_string(self.sandbox.root.join("layer")).unwrap().trim().to_string()
+        fs::read_to_string(self.sandbox.root.join("layer"))
+            .unwrap()
+            .trim()
+            .to_string()
     }
 
     fn set_layer(&self, level: &str) {
@@ -263,9 +400,19 @@ exit 0"#);
 
     fn visibility(&self, command: &str) {
         let layer = self.sandbox.root.join("layer");
-        let output = self.sandbox.run(waybar_scripts().join("waybar-visibility.sh"), &[command],
-                                      &[("SHIM_WS_FILE", self.workspace.to_str().unwrap()), ("SHIM_LAYER_FILE", layer.to_str().unwrap())]);
-        assert!(output.status.success(), "waybar-visibility.sh {command}: {}", stderr(&output));
+        let output = self.sandbox.run(
+            waybar_scripts().join("waybar-visibility.sh"),
+            &[command],
+            &[
+                ("SHIM_WS_FILE", self.workspace.to_str().unwrap()),
+                ("SHIM_LAYER_FILE", layer.to_str().unwrap()),
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "waybar-visibility.sh {command}: {}",
+            stderr(&output)
+        );
     }
 
     fn toggles(&self) -> usize {

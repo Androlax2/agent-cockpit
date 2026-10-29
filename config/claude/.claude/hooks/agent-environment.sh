@@ -88,7 +88,10 @@ describe_design() {
 # that cannot finds out now, with the reason and its fix, not when a command is waiting.
 describe_ask_to_run() {
     local check
-    command -v ask-to-run >/dev/null || { echo "- ask-to-run: not on PATH. Tell Theo; give him commands as fish blocks meanwhile."; return; }
+    command -v ask-to-run >/dev/null || {
+        echo "- ask-to-run: not on PATH. Tell Theo; give him commands as fish blocks meanwhile."
+        return
+    }
     if check=$(timeout 5 ask-to-run --check 2>&1); then
         echo "- ask-to-run: ready."
     else

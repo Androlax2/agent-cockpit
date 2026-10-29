@@ -1,17 +1,20 @@
 //! Ask Theo to run a command outside the sandbox, and get its output back.
 //!
+//! ```text
 //!     ask-to-run [--cwd DIR] --why '<what it does and why>' '<command>'
 //!     ask-to-run --wait <id>          keep waiting for an earlier request
 //!     ask-to-run --check              whether it can reach Theo now; if not, why and what fixes it
+//! ```
 //!
 //! Run by Claude inside greywall. The request goes whole to the OSD daemon on its report socket; the
 //! daemon keeps a copy out of the sandbox's reach and opens an approval terminal outside the sandbox
 //! (claude-run-approve). Nothing runs until
 //! Theo reads the command there and answers y. --why is required: a few plain sentences shown under
-//! the command, saying what it does, why it is needed and what to expect. Prints the command's
+//! the command, saying what it does, why it is needed and what to expect. A command fish cannot
+//! parse (Bash heredocs, `if …; then … fi`) is refused with exit 2 before Theo is asked. Prints the command's
 //! output and exits with its status; 125 when Theo declines, 124 when the wait runs out (9 minutes,
 //! under the Bash tool's 10), 126 when no daemon reads the requests (fall back to a fish block).
-//! While it waits it touches <id>.waiting every few seconds: the daemon drops an approval nobody
+//! While it waits it touches `<id>.waiting` every few seconds: the daemon drops an approval nobody
 //! waits for any more, and --wait on it then says so.
 //! CLAUDE_RUNS_DIR and ASK_TO_RUN_WAIT_S override the folder and the wait (tests).
 
@@ -30,7 +33,10 @@ const NO_DAEMON: i32 = 126;
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 
 fn wait_seconds() -> u64 {
-    std::env::var("ASK_TO_RUN_WAIT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(540)
+    std::env::var("ASK_TO_RUN_WAIT_S")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(540)
 }
 
 fn touch(path: &std::path::Path) {
@@ -50,14 +56,27 @@ fn wait_for_result(answers_key: &str, id: &str) -> i32 {
     let mut last_beat: Option<Instant> = None;
     while !path.exists() {
         if Instant::now() >= deadline {
-            let status: Option<Value> = std::fs::read(answers.join(format!("{id}.phase"))).ok()
+            let status: Option<Value> = std::fs::read(answers.join(format!("{id}.phase")))
+                .ok()
                 .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-            match status.as_ref().and_then(|status| status.get("phase")).and_then(Value::as_str) {
-                Some("asking") => println!("Still awaiting Theo's approval. Keep waiting within 5 minutes, or the request may be dropped."),
-                Some("running") => println!("Command approved; last reported running. No final result yet; do not request approval again."),
-                Some("input") => println!("Command approved; waiting for terminal input, not another approval."),
+            match status
+                .as_ref()
+                .and_then(|status| status.get("phase"))
+                .and_then(Value::as_str)
+            {
+                Some("asking") => println!(
+                    "Still awaiting Theo's approval. Keep waiting within 5 minutes, or the request may be dropped."
+                ),
+                Some("running") => println!(
+                    "Command approved; last reported running. No final result yet; do not request approval again."
+                ),
+                Some("input") => {
+                    println!("Command approved; waiting for terminal input, not another approval.")
+                }
                 Some("done") => println!("Host request finished; waiting for the final result."),
-                _ => println!("No final result yet; host status unavailable. Approval may already have happened; do not submit a duplicate request."),
+                _ => println!(
+                    "No final result yet; host status unavailable. Approval may already have happened; do not submit a duplicate request."
+                ),
             }
             println!("Keep waiting with: ask-to-run --wait {id}");
             return TIMED_OUT;
@@ -69,32 +88,54 @@ fn wait_for_result(answers_key: &str, id: &str) -> i32 {
         std::thread::sleep(Duration::from_millis(500));
     }
     let _ = std::fs::remove_file(&heartbeat);
-    let result: Value = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(json!({}));
+    let result: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(json!({}));
     if result.get("status").and_then(Value::as_str) == Some("result_lost") {
-        println!("The approval terminal ended without a final result; command outcome unknown. Do not retry automatically: inspect what already ran with Theo first.");
+        println!(
+            "The approval terminal ended without a final result; command outcome unknown. Do not retry automatically: inspect what already ran with Theo first."
+        );
         return 1;
     }
     if result.get("status").and_then(Value::as_str) == Some("abandoned") {
-        println!("The request was dropped: nobody waited for its answer for a while, so Theo's approval window closed. Ask again if it is still needed.");
+        println!(
+            "The request was dropped: nobody waited for its answer for a while, so Theo's approval window closed. Ask again if it is still needed."
+        );
         return TIMED_OUT;
     }
     if result.get("status").and_then(Value::as_str) == Some("declined") {
         println!("Theo declined to run it.");
         return DECLINED;
     }
-    if let Some(edited) = result.get("edited_command").and_then(Value::as_str).filter(|e| !e.is_empty()) {
+    if let Some(edited) = result
+        .get("edited_command")
+        .and_then(Value::as_str)
+        .filter(|e| !e.is_empty())
+    {
         println!("Theo edited the command before running it:\n  {edited}\n");
     }
     let output = approval::strip_ansi(result.get("output").and_then(Value::as_str).unwrap_or(""));
     let lines: Vec<&str> = output.lines().collect();
     if lines.len() > OUTPUT_LINES {
         match result.get("output_file").and_then(Value::as_str) {
-            Some(file) => println!("[first {} of {} lines left out; the whole output is in {file}]", lines.len() - OUTPUT_LINES, lines.len()),
+            Some(file) => println!(
+                "[first {} of {} lines left out; the whole output is in {file}]",
+                lines.len() - OUTPUT_LINES,
+                lines.len()
+            ),
             None => println!("[first {} lines left out]", lines.len() - OUTPUT_LINES),
         }
     }
-    println!("{}", lines[lines.len().saturating_sub(OUTPUT_LINES)..].join("\n"));
-    if let Some(redacted) = result.get("redacted").and_then(Value::as_u64).filter(|count| *count > 0) {
+    println!(
+        "{}",
+        lines[lines.len().saturating_sub(OUTPUT_LINES)..].join("\n")
+    );
+    if let Some(redacted) = result
+        .get("redacted")
+        .and_then(Value::as_u64)
+        .filter(|count| *count > 0)
+    {
         println!("[{redacted} secret-looking value(s) shown as [redacted]]");
     }
     let exit = result.get("exit").and_then(Value::as_i64).unwrap_or(1) as i32;
@@ -105,9 +146,40 @@ fn wait_for_result(answers_key: &str, id: &str) -> i32 {
     exit
 }
 
+/// The approval terminal runs the command with fish: a Bash heredoc or `if …; then … fi` would
+/// only fail there, after Theo was interrupted. fish parses it here without running it.
+fn refuse_what_fish_cannot_parse(command: &str) {
+    let parsed = std::process::Command::new("fish")
+        .args(["--no-config", "--no-execute", "-c", command])
+        .stdin(std::process::Stdio::null())
+        .output();
+    let parsed = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!(
+                "ask-to-run: cannot check the command with fish ({error}); asking Theo unchecked."
+            );
+            return;
+        }
+    };
+    if parsed.status.success() {
+        return;
+    }
+    eprintln!(
+        "ask-to-run: the approval terminal runs fish, and fish cannot parse this command:\n{}\n\
+               Nothing was sent to Theo. Write the commands to a script file in the project or .handoff/ and \
+               ask to run it with its interpreter (bash script.sh), or use fish syntax.",
+        String::from_utf8_lossy(&parsed.stderr).trim_end()
+    );
+    std::process::exit(2);
+}
+
 fn main() {
     let Some(answers_key) = approval::own_answers_key() else {
-        println!("{} Give Theo the command as a fish block meanwhile.", approval::NO_ANSWERS_KEY);
+        println!(
+            "{} Give Theo the command as a fish block meanwhile.",
+            approval::NO_ANSWERS_KEY
+        );
         std::process::exit(NO_DAEMON);
     };
     let mut arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -124,12 +196,22 @@ fn main() {
     if arguments.len() == 2 && arguments[0] == "--wait" && approval::valid_id(&arguments[1]) {
         std::process::exit(wait_for_result(&answers_key, &arguments[1]));
     }
-    let mut cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut cwd = std::env::current_dir()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut why = String::new();
     while arguments.len() >= 3 && matches!(arguments[0].as_str(), "--cwd" | "--why") {
         if arguments[0] == "--cwd" {
             let path = std::path::Path::new(&arguments[1]);
-            cwd = if path.is_absolute() { arguments[1].clone() } else { std::env::current_dir().unwrap_or_default().join(path).to_string_lossy().into_owned() };
+            cwd = if path.is_absolute() {
+                arguments[1].clone()
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned()
+            };
         } else {
             why = cockpit::util::collapse(&arguments[1]);
         }
@@ -140,10 +222,13 @@ fn main() {
         std::process::exit(2);
     }
     if why.is_empty() || why.chars().count() > WHY_MAX {
-        eprintln!("--why is required (at most {WHY_MAX} characters): what the command does, why it is needed and what \
-                   Theo should expect. It is shown under the command in his approval window.\n{USAGE}");
+        eprintln!(
+            "--why is required (at most {WHY_MAX} characters): what the command does, why it is needed and what \
+                   Theo should expect. It is shown under the command in his approval window.\n{USAGE}"
+        );
         std::process::exit(2);
     }
+    refuse_what_fish_cannot_parse(&arguments[0]);
     let id = token_hex(6);
     let session = cockpit::agents::current_session_id().unwrap_or_else(|error| {
         eprintln!("ask-to-run: {error}");
@@ -158,7 +243,9 @@ fn main() {
         Ok(()) => {}
         Err(approval::Refusal::Unreachable(reason)) => {
             let _ = std::fs::remove_file(&heartbeat);
-            println!("ask-to-run cannot reach Theo: {reason}\nMeanwhile give Theo the command as a fish block.");
+            println!(
+                "ask-to-run cannot reach Theo: {reason}\nMeanwhile give Theo the command as a fish block."
+            );
             std::process::exit(NO_DAEMON);
         }
         Err(approval::Refusal::Refused(reason)) => {

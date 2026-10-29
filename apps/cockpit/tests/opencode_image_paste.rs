@@ -123,34 +123,54 @@ assert.equal((await readdir(process.env.TMPDIR)).length, 0, 'staged images must 
 fn run(scenario: &str) {
     let sandbox = Sandbox::new();
     let plugin = repo().join("config/opencode/.config/opencode/plugins/clipboard-image/tui.ts");
-    assert!(plugin.exists(), "the image-paste TUI plugin has not been implemented");
+    assert!(
+        plugin.exists(),
+        "the image-paste TUI plugin has not been implemented"
+    );
     let harness = sandbox.root.join("image-paste.mjs");
     let temporary = sandbox.root.join("private-tmp");
     fs::create_dir(&temporary).unwrap();
     fs::write(&harness, HARNESS).unwrap();
-    let output = sandbox.command("node", &[]).env("TMPDIR", &temporary)
-        .arg(harness).arg(plugin).arg(scenario).output().unwrap();
+    let output = sandbox
+        .command("node", &[])
+        .env("TMPDIR", &temporary)
+        .arg(harness)
+        .arg(plugin)
+        .arg(scenario)
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{scenario}: {}", stderr(&output));
 }
 
 macro_rules! paste_test {
     ($name:ident, $scenario:literal) => {
         #[test]
-        fn $name() { run($scenario); }
+        fn $name() {
+            run($scenario);
+        }
     };
 }
 
-paste_test!(an_image_is_staged_privately_and_pasted_without_submitting, "png");
+paste_test!(
+    an_image_is_staged_privately_and_pasted_without_submitting,
+    "png"
+);
 paste_test!(an_empty_clipboard_is_reported_without_pasting, "empty");
 paste_test!(non_png_data_never_reaches_the_prompt, "invalid");
 paste_test!(oversized_images_are_rejected, "oversized");
 paste_test!(a_stalled_bridge_has_a_bounded_deadline, "timeout");
 paste_test!(an_unavailable_bridge_is_reported, "unavailable");
 paste_test!(a_focus_change_cancels_the_pending_image, "focus-changed");
-paste_test!(newly_typed_input_cancels_the_pending_image, "prompt-changed");
+paste_test!(
+    newly_typed_input_cancels_the_pending_image,
+    "prompt-changed"
+);
 paste_test!(a_session_change_cancels_the_pending_image, "route-changed");
 paste_test!(shell_mode_does_not_read_the_clipboard, "shell");
 paste_test!(modal_dialogs_do_not_read_the_clipboard, "modal");
 paste_test!(a_non_prompt_input_does_not_read_the_clipboard, "no-prompt");
-paste_test!(unloading_cancels_a_pending_read_without_late_pastes, "unload-pending");
+paste_test!(
+    unloading_cancels_a_pending_read_without_late_pastes,
+    "unload-pending"
+);
 paste_test!(repeated_keys_share_one_pending_read, "repeat");

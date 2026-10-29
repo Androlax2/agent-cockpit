@@ -35,12 +35,14 @@
 ### Task 1: Fetch Codex quota without modifying authentication
 
 **Files:**
+
 - Create: `config/waybar/.config/waybar/scripts/codex-usage.sh`
 - Modify: `config/waybar/.config/waybar/scripts/claude-usage.sh` (explicit forced refresh)
 - Test: `apps/cockpit/tests/waybar_claude_scripts.rs`
 - Modify: `apps/cockpit/src/usage.rs` (`Refresher::tick`)
 
 **Interfaces:**
+
 - Consumes: OpenCode OAuth `openai` entry (`type`, `access`, `expires`, `accountId`) from `$XDG_DATA_HOME/opencode/auth.json`, defaulting to `~/.local/share/opencode/auth.json`; Codex fallback `$CODEX_HOME/auth.json`, defaulting to `~/.codex/auth.json`, with `tokens.access_token` and `tokens.account_id`.
 - Produces: `$XDG_RUNTIME_DIR/codex-usage.json`, containing the successful response from `https://chatgpt.com/backend-api/wham/usage`. File modification time is the successful fetch time.
 - Produces: a separately timestamped `codex-usage-error.json` with a fixed, sanitized reason when fetching fails; successful fetching clears that error.
@@ -55,12 +57,14 @@
 ### Task 2: Render compact remaining-capacity rows in Status
 
 **Files:**
+
 - Modify: `apps/cockpit/src/usage.rs`
 - Modify: `apps/cockpit/src/paths.rs`
 - Modify: `apps/cockpit/src/app.rs`
 - Test: `apps/cockpit/src/tests.rs`
 
 **Interfaces:**
+
 - Consumes: existing `usage::Window` values for Claude; Codex `rate_limit.primary_window` and `secondary_window` with `used_percent`, `limit_window_seconds`, `reset_at` (Unix seconds), plus `allowed`/`limit_reached` flags when supplied.
 - Produces: `usage::QuotaRow { label: String, state: String, remaining: Option<i64>, resets: String }` and `usage::quota_rows() -> Vec<QuotaRow>`; App stores the returned snapshot alongside its existing Claude windows.
 - Labels identify provider and duration, e.g. `Claude · 5h`, `Claude · week`, `Codex · 5h`, `Codex · week`. Preserve scoped Claude limits and actual Codex durations rather than assuming every window is five hours or a week.

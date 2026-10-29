@@ -2,11 +2,11 @@
 """Read bounded visible native Codex history through its local read-only RPCs."""
 
 import json
-from pathlib import Path
 import re
 import runpy
 import signal
 import sys
+from pathlib import Path
 
 protocol = runpy.run_path(str(Path(__file__).with_name("codex-quota.py")))
 QuotaError = protocol["QuotaError"]
@@ -17,9 +17,13 @@ MESSAGES_MAX = 100
 
 def read_session(native):
     with protocol["app_server"](execution=True) as process:
-        protocol["request"](process, 1, "initialize", {"clientInfo": {"name": "cockpit_history", "version": "1"}})
+        protocol["request"](
+            process, 1, "initialize", {"clientInfo": {"name": "cockpit_history", "version": "1"}}
+        )
         protocol["send"](process, {"method": "initialized", "params": {}})
-        thread = protocol["request"](process, 2, "thread/read", {"threadId": native, "includeTurns": False}).get("thread")
+        thread = protocol["request"](
+            process, 2, "thread/read", {"threadId": native, "includeTurns": False}
+        ).get("thread")
         if not isinstance(thread, dict) or thread.get("id") != native:
             raise QuotaError("Codex thread identity does not match the requested conversation")
         history_mode = thread.get("historyMode", "legacy")
@@ -28,17 +32,28 @@ def read_session(native):
         legacy_entries = None
         quota_stopped = False
         if history_mode == "legacy":
-            legacy = protocol["request"](process, 3, "thread/read", {"threadId": native, "includeTurns": True}).get("thread")
+            legacy = protocol["request"](
+                process, 3, "thread/read", {"threadId": native, "includeTurns": True}
+            ).get("thread")
             if not isinstance(legacy, dict) or legacy.get("id") != native:
                 raise QuotaError("Codex thread identity does not match the requested conversation")
             turns = legacy.get("turns")
-            if not isinstance(turns, list) or any(not isinstance(turn, dict) or not isinstance(turn.get("items"), list) for turn in turns):
+            if not isinstance(turns, list) or any(
+                not isinstance(turn, dict) or not isinstance(turn.get("items"), list)
+                for turn in turns
+            ):
                 raise QuotaError("Codex conversation history format is unavailable")
-            legacy_entries = [{"item": item} for turn in reversed(turns) for item in reversed(turn["items"])]
+            legacy_entries = [
+                {"item": item} for turn in reversed(turns) for item in reversed(turn["items"])
+            ]
             if turns:
                 last = turns[-1]
                 error = last.get("error")
-                quota_stopped = last.get("status") == "failed" and isinstance(error, dict) and error.get("codexErrorInfo") in ("usageLimitExceeded", "rateLimitExceeded")
+                quota_stopped = (
+                    last.get("status") == "failed"
+                    and isinstance(error, dict)
+                    and error.get("codexErrorInfo") in ("usageLimitExceeded", "rateLimitExceeded")
+                )
         messages = []
         latest_user = None
         consumed = 0
@@ -49,7 +64,11 @@ def read_session(native):
             parameters = {"threadId": native, "limit": 20, "sortDirection": "desc"}
             if cursor is not None:
                 parameters["cursor"] = cursor
-            result = {"data": legacy_entries} if legacy_entries is not None else protocol["request"](process, page + 3, "thread/items/list", parameters)
+            result = (
+                {"data": legacy_entries}
+                if legacy_entries is not None
+                else protocol["request"](process, page + 3, "thread/items/list", parameters)
+            )
             consumed += len(json.dumps(result).encode())
             if consumed > SOURCE_MAX:
                 truncated = True
@@ -68,8 +87,13 @@ def read_session(native):
                     content = item.get("content")
                     if not isinstance(content, list):
                         raise QuotaError("Codex conversation contains an invalid user message")
-                    text = "\n\n".join(block["text"] for block in content
-                        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str))
+                    text = "\n\n".join(
+                        block["text"]
+                        for block in content
+                        if isinstance(block, dict)
+                        and block.get("type") == "text"
+                        and isinstance(block.get("text"), str)
+                    )
                     role = "user"
                 else:
                     continue
@@ -105,15 +129,30 @@ def read_session(native):
         size -= len(messages.pop(0)["text"].encode())
         truncated = True
     if size > TEXT_MAX:
-        messages[0]["text"] = messages[0]["text"].encode()[-TEXT_MAX:].decode("utf-8", errors="ignore")
+        messages[0]["text"] = (
+            messages[0]["text"].encode()[-TEXT_MAX:].decode("utf-8", errors="ignore")
+        )
         truncated = True
-    return {"thread": native, "model": thread.get("model"), "provider": thread.get("modelProvider"),
-            "effort": thread.get("reasoningEffort"), "messages": messages, "latest_user": latest_user, "truncated": truncated,
-            "quota_stopped": quota_stopped}
+    return {
+        "thread": native,
+        "model": thread.get("model"),
+        "provider": thread.get("modelProvider"),
+        "effort": thread.get("reasoningEffort"),
+        "messages": messages,
+        "latest_user": latest_user,
+        "truncated": truncated,
+        "quota_stopped": quota_stopped,
+    }
 
 
 def main():
-    if len(sys.argv) != 2 or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sys.argv[1]) is None:
+    if (
+        len(sys.argv) != 2
+        or re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", sys.argv[1]
+        )
+        is None
+    ):
         print("invalid native thread", file=sys.stderr)
         return 1
     signal.signal(signal.SIGALRM, protocol["timeout_handler"])

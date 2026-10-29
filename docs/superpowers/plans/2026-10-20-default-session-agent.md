@@ -74,6 +74,7 @@ An earlier package-only test also failed `a_message_said_to_a_session_is_audited
 ### Task 1: Persist and apply launch defaults
 
 **Files:**
+
 - Modify: config/bin/.local/bin/claude-sessions
 - Modify: config/bin/.local/bin/claude-sessions-agents/opencode.sh
 - Test: apps/cockpit/tests/claude_sessions_script.rs
@@ -92,6 +93,7 @@ An earlier package-only test also failed `a_message_said_to_a_session_is_audited
 ### Task 2: Expose defaults in Settings and honor them in creation flows
 
 **Files:**
+
 - Modify: apps/cockpit/src/settings.rs
 - Modify: apps/cockpit/src/app.rs
 - Modify: apps/cockpit/src/tests.rs

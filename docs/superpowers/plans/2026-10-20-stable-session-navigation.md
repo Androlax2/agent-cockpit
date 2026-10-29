@@ -77,6 +77,7 @@ Existing tests such as `cards_keep_their_place_when_states_change`, `grouped_tod
 - [ ] **Write failing table-driven tests.** Snapshot a session with each relevant combination and assert its rendered label/text. Classify in this order: approval → input → `needs-you` → running command → working → waiting → unknown. `waiting` with a running command must say `Command running`, not `Ready`.
 
   Use `activity_labels_follow_reported_state_without_guessing` for the helper boundary:
+
   ```rust
   for (state, phase, expected) in [
       ("working", "approval", "Approval needed"),
@@ -93,6 +94,7 @@ Existing tests such as `cards_keep_their_place_when_states_change`, `grouped_tod
       assert_eq!(sessions::activity_label(&reported), expected);
   }
   ```
+
 - [ ] **Pin attention navigation through real keys.** With ready A, working B carrying approval, working C, needs-you D, and external E, pressing `n` selects/previews B then D then B. Assert no preview of A/C/E and no change to session ID ordering. With no requests, assert message `nothing needs you` and no manager command. A single request wraps to itself.
 - [ ] **Run the new tests and observe the expected failures.** From `apps/`: `cargo test -p cockpit --lib attention`, then `cargo test -p cockpit --lib activity`.
 - [ ] **Implement the helpers and narrow the candidate predicate** to `!session.is_external() && session.needs_attention()`. Labels must use the exact values in decision 1. `activity_text` uses collapsed request detail only while `state == "needs-you"`; otherwise use neutral phase/state copy. Never display a stale request/outcome as current work.
@@ -108,10 +110,12 @@ Existing tests such as `cards_keep_their_place_when_states_change`, `grouped_tod
 - [ ] **Write failing fixture/render tests.** Cover a long linked to-do and shorter native title (native wins); empty native title (to-do wins); no title/to-do (branch/project wins); short reply `Yes` (never becomes the identity); and both single-session and grouped projects (same task-first hierarchy).
 
   Name the precedence test `native_titles_identify_tasks_before_long_todo_prompts`; with a native title `Free disk space` and a longer linked to-do, assert:
+
   ```rust
   assert_eq!(app.session_task_titles[SESSION_A], "Free disk space");
   assert!(!app.panels[1].lines.iter().any(|line| line.texts() == "Yes"));
   ```
+
 - [ ] **Test compact-row guarantees.** Each card has exactly two content rows: bold task title and muted activity. Need-for-input markers and labels remain distinguishable when selected. Unselected rows do not reserve space for agent/effort/git/restart badge trains. Complete technical data stays available to the selected-details builder rather than being dropped.
 - [ ] **Run `cargo test -p cockpit --lib title` and the new compact-card tests; observe failures.**
 - [ ] **Implement title precedence and the two-line card rendering.** Use the existing `fit`/`width_of` cell-width functions, not byte slicing or automatic word deletion. Do not add a second generated-title cache or alter native titles in storage. Carry both complete title and complete activity in selected details when clipping occurs.
@@ -128,10 +132,12 @@ Existing tests such as `cards_keep_their_place_when_states_change`, `grouped_tod
 - [ ] **Test counts.** Fixture categories must produce `2 need you`, `4 working`, `3 ready`. Count each visible session once; approval/input takes precedence over working. Keep unknowns visible with an explicit unknown count. Zero requests says `Nothing needs you`; an empty list has zero counts and no stale detail.
 
   Name the fixed-region test `attention_summary_stays_visible_while_session_cards_scroll`. After selecting the final session and rendering its short viewport, assert:
+
   ```rust
   assert!(app.panels[1].scroll > 0);
   assert!(app.panels[1].fixed_top.iter().any(|line| line.texts().contains("2 need you")));
   ```
+
   Also assert the corresponding buffer row remains at the same screen coordinate before/after scrolling; a field-only assertion is insufficient.
 - [ ] **Test click mappings.** Summary `Next needing me` invokes the same action as `n` and never activates the selected session's `Enter` action. Selected effort remains clickable in its new detail position. Blank fixed regions do not select or open rows.
 - [ ] **Run `cargo test -p cockpit --lib` and observe the new failures.**
@@ -149,10 +155,12 @@ Existing tests such as `cards_keep_their_place_when_states_change`, `grouped_tod
 - [ ] **Write failing navigation tests.** `/` opens a picker with project and task text; choosing a duplicate-titled session selects the correct ID. Cancel leaves selection and order unchanged. It must not run `open`, `view`, or any approval command just by selecting a search match.
 
   Name the duplicate-title test `finding_a_session_selects_its_id_without_opening_it`; after the fixture's fzf shim chooses `SESSION_B`, assert:
+
   ```rust
   assert_eq!(app.sessions[app.panels[1].selected].session, SESSION_B);
   assert!(fixture.calls("claude-sessions").is_empty());
   ```
+
 - [ ] **Write selection-lifecycle tests.** Attention changes, new sessions, pin changes, and redraws keep the selected ID when it still exists. If it exits, clamp to a remaining item and clear old details/hit targets; no automatic manager command is sent. Stable means state changes do not sort sessions; explicit pinning may still reorder them.
 - [ ] **Run the new tests through `cargo test -p cockpit --lib`; observe failures.**
 - [ ] **Implement search and identity retention.** Bind `/` only in Sessions and preserve the other panels' keys. Use cached branch/title presentation, not a fresh git lookup on the keypress. After selecting, let the normal keep-selected-visible path scroll to the item. Update footer/help/palette copy: `n` is `Next needing me`, not `peek` at any idle session.

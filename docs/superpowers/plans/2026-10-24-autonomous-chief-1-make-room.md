@@ -34,6 +34,7 @@
 ### Task 1: The todo queue runs while the Chief is on
 
 **Files:**
+
 - Modify: `apps/cockpit/src/chief/store.rs` (`reserve_legacy_kind` ~1713-1720, `require_unreserved` ~1698-1707, `reconcile_todos` ~1779, remove `scheduling_owned` ~528-531 and `owned_work` ~1785-1801 callers outside assignment code)
 - Modify: `apps/osd/src/teams.rs` (`host_snapshot` ~400-401: drop `chief_scheduling_owner`, `chief_owned_work`)
 - Modify: `apps/cockpit/src/queue.rs` (field `chief_scheduling_owner`, `QueueBlock::ChiefOwned`, `OwnershipUnknown`)
@@ -41,6 +42,7 @@
 - Test: `apps/cockpit/tests/chief_dispatch.rs`, `apps/cockpit/src/tests.rs`, `apps/osd/src/chief_tests.rs`
 
 **Interfaces:**
+
 - Produces: `QueueContext` without `chief_scheduling_owner`; `QueueBlock` without `ChiefOwned`/`OwnershipUnknown`; `reserve_legacy_kind(connection, task, worker, manual, now_ms)` no longer consults the grant or `chief_work_revisions`; queue blocks with new `QueueBlock::HostUnavailable` when the team host cannot be reached.
 
 - [ ] **Step 1: Write the failing tests**
@@ -55,10 +57,12 @@
 ### Task 2: A simpler Chief view
 
 **Files:**
+
 - Modify: `apps/cockpit/src/chief/view.rs` (pages ~34-36, `Intent::Attest`, `selected_proposals`, rows ~210-271, handler ~331-340, ~300-312, ~450-458, ~130-132, ~233-242), `apps/cockpit/src/app.rs:95` palette text
 - Test: `apps/cockpit/tests/chief_ui.rs`
 
 **Interfaces:**
+
 - Produces: root rows exactly `Decisions`, `Workers`, `Chief controls`, `Request summary`; `Page` without `Work, Pending, Approved, WorkActions, Gates, GateActions, Sources, WorkerActions, Roles`; Workers is read-only (Enter shows detail, no actions).
 
 - [ ] **Step 1: Write the failing test** — `the_chief_root_offers_only_decisions_workers_controls_and_summary`: render root, assert rows equal `["Decisions","Workers","Chief controls","Request summary"]` and no text contains "Work" as a row, "Approve", "Attest" or "Bind role".
@@ -70,11 +74,13 @@
 ### Task 3: Remove evidence producers and QA-result evidence
 
 **Files:**
+
 - Delete: `apps/cockpit/src/chief/evidence.rs`, `apps/cockpit/tests/chief_evidence.rs`
 - Modify: `apps/cockpit/src/bin/ask-to-run.rs` (`--evidence` ~26, ~125-133, ~155), `apps/cockpit/src/bin/cockpit-run-approve.rs` (~77-98, ~118-124, ~151-158, ~187-191), `apps/cockpit/src/bin/cockpit-team.rs` (HELP 9-14/34-36, `qa-result` 42/55, `evidence-apply-*` 166-184, confirm list 214-215 keeps ReconcileDelivery/ReconcileLaunch), `apps/cockpit/src/teams.rs` (`AgentAction::QaResult`, `QaResult`, `QaVerdict`, `qa_brief_text` structured branch), `apps/cockpit/src/teams/store.rs` (`bind_handoff` 718, `complete_ready_in` 721/760, `qa_result` 726-763, `structured_qa_required` 792-793), `config/bin/.local/bin/cockpit` (`apply_reviewed` second argument, ~2504-2509, ~2541-2548, ~2571-2573, dispatch ~2785)
 - Test: `apps/cockpit/tests/cockpit_script.rs`, `apps/cockpit/tests/team_store.rs`, `apps/osd/src/chief_workflow_tests.rs`
 
 **Interfaces:**
+
 - Produces: `ask-to-run` rejects `--evidence` as an unknown option; `cockpit apply <clone>` takes one argument; `cockpit-team` has no `qa-result` or `evidence-apply-*` verbs; spawned QA reports findings only.
 
 - [ ] **Step 1: Write the failing tests** — `cockpit_script.rs`: `apply_takes_only_the_clone` (`cockpit apply <clone> extra` exits non-zero with usage); `approval_terminal.rs` or `run_requests.rs`: `ask_to_run_rejects_the_removed_evidence_option`; `chief_workflow_tests.rs`: keep `ordinary_spawned_qa_keeps_findings_only_reporting_and_automatic_exit` and add `a_chief_never_requires_structured_qa` (generated QA brief contains no `qa-result`).
@@ -86,6 +92,7 @@
 ### Task 4: Remove the dispatch protocol and store code
 
 **Files:**
+
 - Modify: `apps/cockpit/src/chief.rs` (remove `WorkRef`, `WorkBrief`, `WorkProposal`, `GateKind`, `GateRequirement`, `Evidence`, `source()`, `review_payload()`, `MAX_ACTIVE_WORK`; variants listed in Global Constraints; `Decision.work` field; `SummaryResponse.evidence_ids`; `Status.assignment`)
 - Modify: `apps/cockpit/src/chief/store.rs` (functions listed in the inventory §1; strip `observe`, `recover`, `observe_coordination`, `claim`, `finish_for`, `agent`, `event_context`, `context_snapshot`, `context_records`, `review_records`, `is_product_worker`, `runtime`, `worker_role`, `decision_record` callers pass no work/assignment; `schedule_wake` text without "evidence")
 - Modify: `apps/cockpit/src/teams.rs` (`envelope_text`: drop `host_stop_notice` and `chief_assignment`/`chief_coordinate` branches; reword `chief_wake` text), `apps/osd/src/chief.rs` (drop ProposeWork/ApproveWork checks; `host_role_unbound` no longer added to `blocked_by`), `apps/osd/src/teams.rs` (drop `replay_sources`/`complete_ready` on open 41-44; task-id validation at ~422 and ~446)
@@ -93,6 +100,7 @@
 - Test: `chief_protocol.rs`, `chief_store.rs`, `chief_events.rs`, `chief_dispatch.rs`, `common/chief.rs`, `osd/src/chief_tests.rs`, `osd/src/chief_workflow_tests.rs`
 
 **Interfaces:**
+
 - Consumes: Task 1's queue without ownership.
 - Produces: `ChiefAgentAction = Context | ContextSnapshot | SummaryResponse{request_id, sections} | Decision{key, question, recommendation} | Status{summary}`; `ChiefHostAction = Enable | Pause | Resume | Disable | Resolve | RequestSummary | ReconcileDelivery | ReconcileLaunch`; `TaskKey::validate`.
 
@@ -108,11 +116,13 @@
 ### Task 5: Clean leftover data and rewrite the docs
 
 **Files:**
+
 - Modify: `apps/cockpit/src/chief/store.rs` (new `pub fn clear_dispatch_leftovers(transaction: &rusqlite::Transaction) -> Result<(), TeamError>` called from `teams::store::migrate` on every open)
 - Modify: `apps/cockpit/src/todo.rs` (loading drops a `chief_assignment` field), `README.md` (rewrite the "Global dispatcher Chief" section ~181-368 to ~60 lines: what the Chief does now, enable/disable, readiness, summaries, decisions; link the design)
 - Test: `apps/cockpit/tests/chief_store.rs`
 
 **Interfaces:**
+
 - Produces: `clear_dispatch_leftovers` deletes `scheduling_reservations` rows with owner `chief`; marks open `chief_decisions` whose `work` or `assignment` is non-null, or whose key starts with `host-assignment-`, as `superseded`; marks `chief_inbox` rows of kinds other than `chief_wake` in states queued/submitting/uncertain as `cancelled`. Idempotent.
 
 - [ ] **Step 1: Write the failing test** — `upgrading_clears_dispatch_leftovers`: seed a migrated DB with a chief-owned reservation, an open `missing_evidence` decision with `work` set, and a queued `chief_assignment` inbox row; run `teams::store::migrate`; assert no chief reservation, the decision state `superseded`, the inbox row `cancelled`, and `store::reserve_legacy` for that task `Ok`; running migrate twice changes nothing.

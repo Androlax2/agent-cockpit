@@ -39,6 +39,7 @@
 **Files:** Modify `apps/cockpit/src/chief/store.rs` (migration after the v13 block ~line 350; `review_records` ~1057; new `answer_counts`), `apps/osd/src/teams.rs` (`host_snapshot` ~408), `apps/osd/src/chief.rs` (`snapshot`: add `session_names`). Tests: `apps/cockpit/tests/chief_store.rs`, `apps/cockpit/tests/chief_events.rs`, `apps/osd/src/chief_tests.rs`.
 
 **Interfaces:**
+
 - v14: `chief_overrules(id TEXT PRIMARY KEY, answer_id TEXT NOT NULL UNIQUE REFERENCES chief_answers(id), session_id TEXT NOT NULL, runtime TEXT NOT NULL, correction TEXT NOT NULL, delivery TEXT NOT NULL CHECK(delivery IN ('queued','received','uncertain','cancelled')), created_at INTEGER NOT NULL, finished_at INTEGER)`; index `chief_answers(session_id, created_at)`.
 - Review record kind `answer` (newest 200 only, all states): `{kind:"answer", id, stop_id, session_id, project, task_id, question, answer, reason, source, delivery, created_at_ms, overrule: null | {id, correction, delivery, created_at_ms}}`.
 - Summary record gains `previous_completed_at_ms` (second-latest completed summary, or null).
@@ -56,6 +57,7 @@
 **Files:** Modify `apps/cockpit/src/chief.rs` (`ChiefHostAction::Overrule`, its `request_id` arm and validation; `CORRECTION_LABEL` next to `THEO_ANSWER_LABEL`), `apps/cockpit/src/chief/store.rs` (`host_action`, new claim branch, receipt handling in `finish_for`, cancel rule in `claim_reply`), `apps/cockpit/src/teams.rs` (`envelope_text` branch for `chief_correction`), `apps/osd/src/teams.rs` (Receive gate: claim corrections on `answer_turn`), `config/opencode/.config/opencode/plugins/cockpit.ts` (row label only). Tests: `apps/cockpit/tests/chief_events.rs`, `apps/cockpit/tests/opencode_team.rs`, `apps/osd/src/chief_workflow_tests.rs`.
 
 **Interfaces:**
+
 - Consumes: Task 1 `chief_overrules`.
 - `ChiefHostAction::Overrule { request_id: String, answer: String, correction: String }` (host only; `correction` 1–2,000 chars, single line, rejected if it contains `THEO_ANSWER_LABEL`, `CHIEF_ANSWER_BOUNDARY` or `CORRECTION_LABEL`).
 - In one transaction: answer must exist with delivery `received` or `uncertain` and no overrule (else `Conflict` with a plain reason: "not sent yet", "cancelled", "already overruled"); the session must be live with the answer's stop runtime (else `Conflict`); insert `chief_overrules` (`queued`) and a `chief_inbox` row of kind `chief_correction`, epoch `THEO_ANSWER_EPOCH`, envelope `{kind:"chief_correction", source:"theo", overrule, answer_excerpt, text}`; emit an event.
@@ -73,6 +75,7 @@
 **Files:** Modify `apps/cockpit/src/app.rs` (`check_team` ~4112: keep `chief_answers` in an `App` map; independent card line 1 ~1891 before the age, or line-2 prefix ~1910 when line 1 has no room; selected-card badges ~2068; `open_session_details` ~2292; `handle_sessions`: `c`), `apps/cockpit/src/app/chief_ui.rs` (open the Chief view at the answers page for one session). Test: `apps/cockpit/src/tests.rs`.
 
 **Interfaces:**
+
 - Consumes: Task 1 `host_snapshot.chief_answers`; Task 4 `pub(super) fn open_chief_answers(&mut self, session_id: Option<&str>) -> String` (Task 4 runs before Task 3).
 - Card: `Chief ✓N · <age>` on line 1, dim; hidden at 0; same text in the selected-card badges.
 - `i` details: a "Chief answers" block with the ≤ 3 recent rows (line 1 and 2 of the answer row format) and `c all answers`; absent when N = 0.
@@ -89,6 +92,7 @@
 **Files:** Modify `apps/cockpit/src/chief/view.rs` (`Page::Answers(Option<String>)`, `Intent::Overrule(Value)`, root rows, answer rows, Detail, Note/Review for overrule, session names), `apps/cockpit/src/app/chief_ui.rs` (`open_chief_answers`), `README.md` (Chief section: counts, answers list, overrule, keys). Test: `apps/cockpit/tests/chief_ui.rs`.
 
 **Interfaces:**
+
 - Consumes: Task 1 `answer` records and `session_names`; Task 2 `ChiefHostAction::Overrule`, `CORRECTION_LABEL`.
 - Root rows in order: `Needs you · N` (today's open decisions: escalations and delivery recoveries), `Answers · N`, `Chief controls`, `Workers`, `Request summary`.
 - Answers page: rows per Global Constraints, filtered to one session when opened with a session id (title `Answers · <session name>`); footer `o overrule · ⏎ reason · esc back`. Overruled answers add `overruled · <correction delivery>` to line 3.
@@ -106,6 +110,7 @@
 **Files:** Modify `apps/cockpit/src/costs.rs` (`digest_lines` ~768 gets a `chief: &ChiefDigest` input; `print_digest` ~863 opens the team database read-only, reads the since-time, prints, then writes the new since-time), `apps/cockpit/src/chief/store.rs` (`answers_since`), `apps/cockpit/src/chief/view.rs` (Summary frame ~414 appends the host answer list), `README.md` (digest). Tests: `apps/cockpit/src/tests.rs` (digest tests ~5971), `apps/cockpit/tests/chief_ui.rs`.
 
 **Interfaces:**
+
 - `pub fn answers_since(connection: &Connection, since_ms: i64) -> Result<ChiefDigest, TeamError>`; `pub struct ChiefDigest { pub answered: u32, pub escalated: u32, pub overruled: u32, pub lines: Vec<DigestAnswer>, pub more: u32 }`; `pub struct DigestAnswer { pub session_id: String, pub question: String, pub answer: String }` (≤ 5 newest; `more` = the rest).
 - Since-time: file `chief-digest-at` (epoch ms) in the same cockpit state directory as `digest-day`, written by `print_digest` only after the digest printed; missing or unreadable → last 24 h.
 - Digest section, after the existing lines: `Chief answered N, escalated M, overruled K since <HH:MM or "yesterday HH:MM">`, then up to 5 lines `<session name> · <question> → <answer>` (each ≤ the digest width, `…`), then `+K more`. N = M = K = 0 → `Chief: nothing answered since <time>`. Database missing or error → `Chief: unavailable (<reason>)`, rest of the digest unchanged.

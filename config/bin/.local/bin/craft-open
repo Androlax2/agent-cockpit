@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# craft-open figcraft --workspace <n> [--session <id>]: FigCraft for the project of the current
+# craft-open figcraft [--workspace <n>] [--session <id>]: FigCraft for the project of the current
 # folder, driven by the session's figcraft-app MCP server, on a port reserved for this checkout.
 # Run outside the sandbox, through ask-to-run, when Theo asks a session to connect to FigCraft.
 #
 # Existing windows are never closed. Each checkout has separate preferences/recovery storage,
 # and its port is never reassigned to another checkout (old sandboxes retain their forwards).
 #
-# --workspace <n>: the workspace Theo picked for a new window. Approving from the cockpit would
-# otherwise open it on the cockpit's workspace (6), which is refused. An already open window stays
-# where it is. On a workspace already showing another checkout's FigCraft, the new window joins it
+# --workspace <n>: the workspace for a new window, 7 (shared with games) by default. Approving from
+# the cockpit would otherwise open it on the cockpit's workspace (6), which is refused. An already
+# open window stays where it is. On a workspace already showing another checkout's FigCraft, the new window joins it
 # as a Hyprland tab (hypr/apps/craft.lua); each tab stays its own confined process.
 #
 # --session <id>: reconnect that session even if its tools are still listed: its sandbox and MCP
@@ -18,7 +18,8 @@ set -euo pipefail
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit"
 WAIT_S=${CRAFT_OPEN_WAIT_S:-15}
-CLAUDE_WORKSPACE=6  # the same number as WORKSPACE in hypr/apps/claude.lua
+CLAUDE_WORKSPACE=6   # the same number as WORKSPACE in hypr/apps/claude.lua
+FIGCRAFT_WORKSPACE=7 # the same number as FIGCRAFT_WORKSPACE in hypr/apps/craft.lua
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/greywall-agents/figcraft.sh"
 
 # hyprctl finds Hyprland through HYPRLAND_INSTANCE_SIGNATURE. The ask-to-run terminal this runs in
@@ -35,7 +36,7 @@ refresh_hyprland_instance() {
 }
 
 usage() {
-    echo "usage: craft-open figcraft --workspace <number> [--session <session-id>]" >&2
+    echo "usage: craft-open figcraft [--workspace <number>] [--session <session-id>]" >&2
     exit 2
 }
 
@@ -55,15 +56,22 @@ is_agent_session_id() { # id
 [[ ${1:-} == figcraft ]] || usage
 shift
 unset workspace session
-while (( $# >= 2 )); do
+while (($# >= 2)); do
     case "$1" in
-        --workspace) [[ ! -v workspace ]] || usage; workspace=$2 ;;
-        --session) [[ ! -v session ]] || usage; session=$2 ;;
-        *) usage ;;
+    --workspace)
+        [[ ! -v workspace ]] || usage
+        workspace=$2
+        ;;
+    --session)
+        [[ ! -v session ]] || usage
+        session=$2
+        ;;
+    *) usage ;;
     esac
     shift 2
 done
-(( $# == 0 )) && [[ -v workspace ]] || usage
+(($# == 0)) || usage
+workspace=${workspace-$FIGCRAFT_WORKSPACE}
 if [[ ! $workspace =~ ^[1-9][0-9]?$ ]]; then
     echo "craft-open: not a workspace number: $workspace" >&2
     exit 2
@@ -121,12 +129,14 @@ PY
 
 # Serialise allocation and startup, including the readiness check. The child must not inherit
 # the lock, or its whole lifetime would block the next checkout's window.
+# Only the ports leaf gets this mode; ancestor permissions are not changed here.
+# shellcheck disable=SC2174
 mkdir -p -m 700 "$figcraft_home/ports"
 exec 9>"$figcraft_home/lock"
 flock 9
 PORT=$(figcraft_reserved_port "$root" || true)
 if [[ -n ${CRAFT_OPEN_PORT:-} ]]; then
-    if [[ ! $CRAFT_OPEN_PORT =~ ^[1-9][0-9]{0,4}$ ]] || (( CRAFT_OPEN_PORT > 65535 )); then
+    if [[ ! $CRAFT_OPEN_PORT =~ ^[1-9][0-9]{0,4}$ ]] || ((CRAFT_OPEN_PORT > 65535)); then
         echo "craft-open: invalid control port: $CRAFT_OPEN_PORT" >&2
         exit 2
     fi
@@ -137,22 +147,28 @@ if [[ -n ${CRAFT_OPEN_PORT:-} ]]; then
     PORT=$CRAFT_OPEN_PORT
 fi
 if [[ -z $PORT ]]; then
-    read -r ephemeral_first ephemeral_last < /proc/sys/net/ipv4/ip_local_port_range
-    for (( attempt=0; attempt < 200; attempt++ )); do
+    read -r ephemeral_first ephemeral_last </proc/sys/net/ipv4/ip_local_port_range
+    for ((attempt = 0; attempt < 200; attempt++)); do
         PORT=$(shuf -i 20000-60000 -n 1)
         # Outgoing readiness probes must not claim a candidate between its bind check and startup.
-        if (( PORT >= ephemeral_first && PORT <= ephemeral_last )); then
+        if ((PORT >= ephemeral_first && PORT <= ephemeral_last)); then
             PORT=""
             continue
         fi
-        [[ ! -e $figcraft_home/ports/$PORT ]] || { PORT=""; continue; }
+        [[ ! -e $figcraft_home/ports/$PORT ]] || {
+            PORT=""
+            continue
+        }
         if ! can_bind || [[ -n $(figcraft_foreign_holders "$PORT" "$root") ]]; then
             PORT=""
             continue
         fi
         break
     done
-    [[ -n $PORT ]] || { echo "craft-open: no safe control port available" >&2; exit 3; }
+    [[ -n $PORT ]] || {
+        echo "craft-open: no safe control port available" >&2
+        exit 3
+    }
 fi
 if [[ -e $figcraft_home/ports/$PORT && $(cat "$figcraft_home/ports/$PORT") != "$root" ]]; then
     echo "craft-open: port $PORT is permanently reserved for another checkout" >&2
@@ -163,7 +179,7 @@ if [[ -n $holders ]]; then
     printf 'Other checkouts still reach port %s:\n%s\nRestart those sessions before reusing this port.\n' "$PORT" "$holders" >&2
     exit 3
 fi
-printf '%s\n' "$root" > "$figcraft_home/ports/$PORT"
+printf '%s\n' "$root" >"$figcraft_home/ports/$PORT"
 if [[ $(figcraft_port_for_root "$root") == "$PORT" ]] && answers; then
     echo "FigCraft already serves $root on port $PORT."
 else
@@ -176,13 +192,20 @@ else
         exit 3
     fi
     config_home="$figcraft_home/instances/$PORT/config"
+    # Private instance config leaf, without changing the shared instance ancestors.
+    # shellcheck disable=SC2174
     mkdir -p -m 700 "$config_home"
     # A new instance starts dark; FigCraft fills the other preferences with its defaults, and a
     # theme picked later in the window is kept.
     preferences="$config_home/FigCraft/state.json"
     if [[ ! -e $preferences ]]; then
+        # config_home is already private; this sets the new preferences leaf's mode.
+        # shellcheck disable=SC2174
         mkdir -p -m 700 "$config_home/FigCraft"
-        (umask 077; printf '%s\n' '{"prefs":{"theme":"dark"}}' > "$preferences")
+        (
+            umask 077
+            printf '%s\n' '{"prefs":{"theme":"dark"}}' >"$preferences"
+        )
     fi
     refresh_hyprland_instance
     if ! hyprctl eval "FIGCRAFT_OPEN_ON_WORKSPACE($workspace)" >/dev/null; then
@@ -191,7 +214,7 @@ else
         exit 1
     fi
     XDG_CONFIG_HOME="$config_home" setsid -f figcraft --control "$PORT" --automation-read-root "$root" --automation-write-root "$root" 9>&- >"$config_home/startup.log" 2>&1
-    for (( waited = 0; waited < WAIT_S * 10; waited++ )); do
+    for ((waited = 0; waited < WAIT_S * 10; waited++)); do
         [[ $(figcraft_port_for_root "$root") == "$PORT" ]] && answers && break
         sleep 0.1
     done
@@ -238,11 +261,11 @@ exec 9>&-
 
 if [[ -n $session ]]; then
     mkdir -p "$STATE_DIR/restart-when-idle" "$STATE_DIR/prompt-queue/$session"
-    : > "$STATE_DIR/restart-when-idle/$session"
+    : >"$STATE_DIR/restart-when-idle/$session"
     printf '%s' "FigCraft is connected now (figcraft-app). Carry on with what you were doing." \
-        > "$STATE_DIR/prompt-queue/$session/$(date +%s%N).txt"
+        >"$STATE_DIR/prompt-queue/$session/$(date +%s%N).txt"
     echo "The session restarts when its turn ends (its conversation is kept), then carries on."
 else
     echo "Existing sessions were not reconnected: their sandbox forwards and MCP connections are unchanged."
-    echo "To reconnect a cockpit session, run: craft-open figcraft --workspace <number> --session <session-id>"
+    echo "To reconnect a cockpit session, run: craft-open figcraft --session <session-id>"
 fi

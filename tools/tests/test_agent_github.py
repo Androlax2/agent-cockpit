@@ -1,10 +1,9 @@
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools/agent-github.sh"
@@ -26,10 +25,12 @@ class AgentGithubTokenTests(unittest.TestCase):
             "OPENED_URL": str(self.url_file),
         }
         self.environment.pop("ALLOW_WORKFLOWS", None)
-        self.shim("git", 'echo https://github.com/example/shop.git')
+        self.shim("git", "echo https://github.com/example/shop.git")
         self.shim("xdg-open", 'printf "%s" "$1" > "$OPENED_URL"')
         self.shim("secret-tool", '[ "$1" != lookup ] || echo fake-test-token')
-        self.shim("curl", '''
+        self.shim(
+            "curl",
+            """
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -o) body=$2; shift 2 ;;
@@ -44,7 +45,8 @@ if [ -n "${body:-}" ]; then
 else
     printf '[]'
 fi
-''')
+""",
+        )
 
     def tearDown(self):
         self.directory.cleanup()
@@ -79,8 +81,11 @@ fi
         self.assertEqual(result.returncode, 0, result.stderr)
         permissions = self.token_parameters()
         for permission, expected in {
-            "contents": ["write"], "issues": ["write"], "pull_requests": ["write"],
-            "actions": ["read"], "metadata": ["read"],
+            "contents": ["write"],
+            "issues": ["write"],
+            "pull_requests": ["write"],
+            "actions": ["read"],
+            "metadata": ["read"],
         }.items():
             with self.subTest(permission=permission):
                 self.assertEqual(permissions[permission], expected)

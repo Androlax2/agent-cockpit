@@ -4,13 +4,19 @@
 
 use crate::paths;
 use crate::util::{self, collapse, now, now_secs, project_name, read_json};
-use serde_json::{Value, json};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const GLYPHS: [(&str, &str); 5] = [("working", "●"), ("waiting", "○"), ("needs-you", "!"), ("unknown", "·"), ("recent", "↻")];
+pub const GLYPHS: [(&str, &str); 5] = [
+    ("working", "●"),
+    ("waiting", "○"),
+    ("needs-you", "!"),
+    ("unknown", "·"),
+    ("recent", "↻"),
+];
 pub const CONTEXT_COMPACT_AT: f64 = 90.0;
 const TITLE_SCAN_BYTES: u64 = 2 * 1024 * 1024;
 /// ~/.claude/history.jsonl is Claude's, which every sandbox writes: read up to this much.
@@ -23,20 +29,37 @@ const GREYPROXY_RECENT_MINUTES: i64 = 10;
 /// on the old version until they restart. Label -> path (a missing file is skipped). Each agent
 /// lists the ones it reads (agents::Agent::start_files).
 pub const START_FILES: [(&str, &str); 17] = [
-    ("CLAUDE.md", "~/.claude/CLAUDE.md"), ("settings", "~/.claude/settings.json"),
-    ("plugins", "~/.claude/plugins/installed_plugins.json"), ("ADHD mode", "~/.claude/.i-have-adhd-always"),
-    ("session hook", "~/.claude/hooks/agent-environment.sh"), ("sandbox", "~/.config/greywall/greywall.json"),
+    ("CLAUDE.md", "~/.claude/CLAUDE.md"),
+    ("settings", "~/.claude/settings.json"),
+    ("plugins", "~/.claude/plugins/installed_plugins.json"),
+    ("ADHD mode", "~/.claude/.i-have-adhd-always"),
+    ("session hook", "~/.claude/hooks/agent-environment.sh"),
+    ("sandbox", "~/.config/greywall/greywall.json"),
     ("greywall", "~/.local/bin/greywall"),
-    ("sandbox profile", "~/.config/greywall/learned/claude.json"), ("launcher", "~/.local/bin/greywall-agents/claude"),
-    ("shared launcher", "~/.local/bin/greywall-agents/launcher-common.sh"),
-    ("opencode config", "~/.config/opencode/opencode.jsonc"), ("opencode plugin", "~/.config/opencode/plugins/cockpit.ts"),
-    ("opencode profile", "~/.config/greywall/learned/opencode.json"), ("opencode launcher", "~/.local/bin/greywall-agents/opencode"),
-    ("codex hooks", "~/.codex/hooks.json"), ("codex profile", "~/.config/greywall/learned/codex.json"),
+    ("sandbox profile", "~/.config/greywall/learned/claude.json"),
+    ("launcher", "~/.local/bin/greywall-agents/claude"),
+    (
+        "shared launcher",
+        "~/.local/bin/greywall-agents/launcher-common.sh",
+    ),
+    ("opencode config", "~/.config/opencode/opencode.jsonc"),
+    ("opencode plugin", "~/.config/opencode/plugins/cockpit.ts"),
+    (
+        "opencode profile",
+        "~/.config/greywall/learned/opencode.json",
+    ),
+    ("opencode launcher", "~/.local/bin/greywall-agents/opencode"),
+    ("codex hooks", "~/.codex/hooks.json"),
+    ("codex profile", "~/.config/greywall/learned/codex.json"),
     ("codex launcher", "~/.local/bin/greywall-agents/codex"),
 ];
 
 pub fn glyph(state: &str) -> &'static str {
-    GLYPHS.iter().find(|(name, _)| *name == state).map(|(_, glyph)| *glyph).unwrap_or("·")
+    GLYPHS
+        .iter()
+        .find(|(name, _)| *name == state)
+        .map(|(_, glyph)| *glyph)
+        .unwrap_or("·")
 }
 
 /// The Claude Design canvas a session works on (claude-design link, from inside the session).
@@ -46,27 +69,40 @@ pub struct Design {
     pub title: String,
 }
 
-/// https://claude.ai/artifact/<id> from a canvas address or a chat address with ?artifact=<id>;
+/// `https://claude.ai/artifact/<id>` from a canvas address or a chat address with `?artifact=<id>`;
 /// None for anything else. Same rule as claude-design.
 pub fn canvas_address(text: &str) -> Option<String> {
     let text = text.trim();
-    static CANVAS: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"^https://claude\.ai/(?:code/)?artifact/([A-Za-z0-9-]{8,64})/?$").unwrap());
-    static CHAT: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"^https://claude\.ai/chat/[A-Za-z0-9-]+\?(?:.*&)?artifact=([A-Za-z0-9-]{8,64})(?:&.*)?$").unwrap());
-    let id = CANVAS.captures(text).or_else(|| CHAT.captures(text))?.get(1)?.as_str().to_string();
+    static CANVAS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^https://claude\.ai/(?:code/)?artifact/([A-Za-z0-9-]{8,64})/?$")
+            .unwrap()
+    });
+    static CHAT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^https://claude\.ai/chat/[A-Za-z0-9-]+\?(?:.*&)?artifact=([A-Za-z0-9-]{8,64})(?:&.*)?$").unwrap()
+    });
+    let id = CANVAS
+        .captures(text)
+        .or_else(|| CHAT.captures(text))?
+        .get(1)?
+        .as_str()
+        .to_string();
     Some(format!("https://claude.ai/artifact/{id}"))
 }
 
 pub fn design_of(session_id: &str) -> Option<Design> {
     let link = util::read_untrusted_json(&paths::designs().join(format!("{session_id}.json")))?;
     let url = canvas_address(link.get("url")?.as_str()?)?;
-    let title = link.get("title").and_then(Value::as_str).unwrap_or("canvas").to_string();
+    let title = link
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("canvas")
+        .to_string();
     Some(Design { url, title })
 }
 
 pub fn role_of(session_id: &str) -> String {
-    let role = util::read_untrusted_text(&paths::designs().join(format!("{session_id}.role")), 64).unwrap_or_default();
+    let role = util::read_untrusted_text(&paths::designs().join(format!("{session_id}.role")), 64)
+        .unwrap_or_default();
     match role.trim() {
         role @ ("designer" | "developer") => role.to_string(),
         _ => String::new(),
@@ -75,10 +111,12 @@ pub fn role_of(session_id: &str) -> String {
 
 /// The first message of a design session: link the card, watch the comments, then wait.
 pub fn design_prompt(url: &str) -> String {
-    format!("This is a design session for the Claude Design canvas {url}. First read it with the Artifact tool, then run \
+    format!(
+        "This is a design session for the Claude Design canvas {url}. First read it with the Artifact tool, then run \
              cockpit-design link {url} '<the canvas title>' so the cockpit's card shows it, and watch the canvas's comments \
              with ArtifactComments so the comments I leave there reach you. Then tell me in one line what the canvas holds and wait \
-             for what I want changed; after each change, say in one line what changed.")
+             for what I want changed; after each change, say in one line what changed."
+    )
 }
 
 /// The status line's last report for a session.
@@ -91,26 +129,45 @@ pub struct Facts {
 }
 
 pub fn github_repository(remote: &str) -> Option<String> {
-    let repository = remote.strip_prefix("https://github.com/")
+    let repository = remote
+        .strip_prefix("https://github.com/")
         .or_else(|| remote.strip_prefix("git@github.com:"))
         .or_else(|| remote.strip_prefix("ssh://git@github.com/"))?;
-    let repository = repository.strip_suffix(".git").unwrap_or(repository).to_lowercase();
+    let repository = repository
+        .strip_suffix(".git")
+        .unwrap_or(repository)
+        .to_lowercase();
     valid_repository(&repository).then_some(repository)
 }
 
 pub fn valid_repository(repository: &str) -> bool {
     let parts: Vec<_> = repository.split('/').collect();
-    repository.len() <= 200 && parts.len() == 2 && parts.iter().all(|part| !part.is_empty()
-        && *part != "." && *part != ".." && part.bytes().all(|character| character.is_ascii_lowercase()
-            || character.is_ascii_digit() || b"_.-".contains(&character)))
+    repository.len() <= 200
+        && parts.len() == 2
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && *part != "."
+                && *part != ".."
+                && part.bytes().all(|character| {
+                    character.is_ascii_lowercase()
+                        || character.is_ascii_digit()
+                        || b"_.-".contains(&character)
+                })
+        })
 }
 
 pub fn valid_turn_id(id: &str) -> bool {
-    id.len() == 32 && id.bytes().all(|character| character.is_ascii_digit() || (b'a'..=b'f').contains(&character))
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|character| character.is_ascii_digit() || (b'a'..=b'f').contains(&character))
 }
 
 pub fn valid_metadata_text(text: &str, limit: usize) -> bool {
-    text.chars().count() <= limit && !text.chars().any(char::is_control) && !text.contains("#(") && !text.contains("#{")
+    text.chars().count() <= limit
+        && !text.chars().any(char::is_control)
+        && !text.contains("#(")
+        && !text.contains("#{")
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -126,16 +183,20 @@ pub struct TurnResult {
 
 impl TurnResult {
     pub fn validate(&self) -> Result<(), String> {
-        if !valid_turn_id(&self.id) || self.completed_at <= 0
-            || !valid_metadata_text(&self.outcome, 300) || !valid_metadata_text(&self.branch, 300)
-            || !(self.repository.is_empty() || valid_repository(&self.repository)) {
+        if !valid_turn_id(&self.id)
+            || self.completed_at <= 0
+            || !valid_metadata_text(&self.outcome, 300)
+            || !valid_metadata_text(&self.branch, 300)
+            || !(self.repository.is_empty() || valid_repository(&self.repository))
+        {
             return Err("invalid turn result metadata".into());
         }
         Ok(())
     }
 
     pub fn from_value(value: &Value) -> Result<Self, String> {
-        let result: Self = serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+        let result: Self =
+            serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
         result.validate()?;
         Ok(result)
     }
@@ -215,13 +276,18 @@ fn text(row: &Value, key: &str) -> String {
 impl Session {
     pub fn needs_attention(&self) -> bool {
         matches!(self.ask_to_run.as_str(), "approval" | "input")
-            || (!self.chief_is_reviewing(now_secs()) && (self.needs_input || self.state == "needs-you"))
+            || (!self.chief_is_reviewing(now_secs())
+                && (self.needs_input || self.state == "needs-you"))
     }
 
     pub fn chief_is_reviewing(&self, now: i64) -> bool {
-        self.state == "needs-you" && !matches!(self.ask_to_run.as_str(), "approval" | "input")
-            && self.chief_question_until.is_some_and(|until| now >= self.since && now < until
-                && until <= self.since.saturating_add(crate::chief::QUESTION_GRACE_S))
+        self.state == "needs-you"
+            && !matches!(self.ask_to_run.as_str(), "approval" | "input")
+            && self.chief_question_until.is_some_and(|until| {
+                now >= self.since
+                    && now < until
+                    && until <= self.since.saturating_add(crate::chief::QUESTION_GRACE_S)
+            })
     }
 
     pub fn is_external(&self) -> bool {
@@ -232,19 +298,43 @@ impl Session {
         let session = row.get("session")?.as_str()?.to_string();
         Some(Session {
             session,
-            state: row.get("state").and_then(Value::as_str).unwrap_or("waiting").into(),
-            needs_input: row.get("needs_input").and_then(Value::as_bool).unwrap_or(false),
+            state: row
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("waiting")
+                .into(),
+            needs_input: row
+                .get("needs_input")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             chief_question_until: row.get("chief_question_until").and_then(Value::as_i64),
-            project: row.get("project").and_then(Value::as_str).unwrap_or("?").into(),
+            project: row
+                .get("project")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .into(),
             cwd: text(row, "cwd"),
             task: text(row, "task"),
             label: text(row, "label"),
             doing: text(row, "doing"),
-            doing_at: row.get("doing_at").and_then(Value::as_i64).filter(|at| *at > 0),
+            doing_at: row
+                .get("doing_at")
+                .and_then(Value::as_i64)
+                .filter(|at| *at > 0),
             last_tool: text(row, "last_tool"),
-            last_tool_at: row.get("last_tool_at").and_then(Value::as_i64).filter(|at| *at > 0),
-            since: row.get("since").and_then(Value::as_f64).map(|since| since as i64).unwrap_or_else(now_secs),
-            started: row.get("started").and_then(Value::as_f64).map(|started| started as i64),
+            last_tool_at: row
+                .get("last_tool_at")
+                .and_then(Value::as_i64)
+                .filter(|at| *at > 0),
+            since: row
+                .get("since")
+                .and_then(Value::as_f64)
+                .map(|since| since as i64)
+                .unwrap_or_else(now_secs),
+            started: row
+                .get("started")
+                .and_then(Value::as_f64)
+                .map(|started| started as i64),
             tmux_pane: text(row, "tmux_pane"),
             kitty_pid: text(row, "kitty_pid"),
             request: text(row, "request"),
@@ -253,18 +343,34 @@ impl Session {
             outcome: text(row, "outcome"),
             repository: text(row, "repository"),
             branch: text(row, "branch"),
-            last_result: row.get("last_result").filter(|value| !value.is_null())
-                .and_then(|value| TurnResult::from_value(value).map_err(|error| util::log_event("WARN", &error)).ok()),
-            reports_turns: row.get("reports_turns").and_then(Value::as_bool).unwrap_or(false),
+            last_result: row
+                .get("last_result")
+                .filter(|value| !value.is_null())
+                .and_then(|value| {
+                    TurnResult::from_value(value)
+                        .map_err(|error| util::log_event("WARN", &error))
+                        .ok()
+                }),
+            reports_turns: row
+                .get("reports_turns")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             update: row.get("update").and_then(Value::as_bool).unwrap_or(false),
-            terminal: row.get("terminal").and_then(Value::as_bool).unwrap_or(false),
+            terminal: row
+                .get("terminal")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             credits: row.get("credits").and_then(Value::as_bool).unwrap_or(false),
             unpushed: row.get("unpushed").and_then(Value::as_u64).unwrap_or(0),
             agents: row.get("agents").and_then(Value::as_u64).unwrap_or(0),
             background: row.get("background").and_then(Value::as_u64).unwrap_or(0),
             ask_to_run: text(row, "ask_to_run"),
             apps: text(row, "apps"),
-            agent: row.get("agent").and_then(Value::as_str).unwrap_or(crate::agents::DEFAULT).into(),
+            agent: row
+                .get("agent")
+                .and_then(Value::as_str)
+                .unwrap_or(crate::agents::DEFAULT)
+                .into(),
             ..Session::default()
         })
     }
@@ -292,8 +398,14 @@ fn tmux_claude_panes() -> Vec<[String; 6]> {
         .lines()
         .filter_map(|line| {
             let mut parts = line.split('\t').map(str::to_string);
-            let row = [parts.next()?, parts.next().unwrap_or_default(), parts.next().unwrap_or_default(),
-                        parts.next().unwrap_or_default(), parts.next().unwrap_or_default(), parts.next().unwrap_or_default()];
+            let row = [
+                parts.next()?,
+                parts.next().unwrap_or_default(),
+                parts.next().unwrap_or_default(),
+                parts.next().unwrap_or_default(),
+                parts.next().unwrap_or_default(),
+                parts.next().unwrap_or_default(),
+            ];
             row[0].starts_with("claude-retry-").then_some(row)
         })
         .collect()
@@ -303,7 +415,10 @@ fn tmux_claude_panes() -> Vec<[String; 6]> {
 /// known terminal target stay visible; their cards cannot control them.
 pub fn running() -> Vec<Session> {
     let mut sessions = reported();
-    let known: HashSet<String> = sessions.iter().map(|session| session.tmux_pane.clone()).collect();
+    let known: HashSet<String> = sessions
+        .iter()
+        .map(|session| session.tmux_pane.clone())
+        .collect();
     let panes = tmux_claude_panes();
     let current_panes: HashSet<String> = panes.iter().map(|row| row[1].clone()).collect();
     for [name, pane, path, title, created, conversation] in panes {
@@ -311,21 +426,37 @@ pub fn running() -> Vec<Session> {
             continue;
         }
         let created = created.parse::<i64>().unwrap_or_else(|_| now_secs());
-        let agent = crate::agents::of_tmux_session(&name).map_or(crate::agents::DEFAULT, |agent| agent.name);
+        let agent = crate::agents::of_tmux_session(&name)
+            .map_or(crate::agents::DEFAULT, |agent| agent.name);
         // OpenCode knows its conversation before the plugin reports, so a restart can keep
         // its title instead of briefly showing the clone's branch.
-        let conversation = if agent == "opencode" && crate::agents::of_session_id(&conversation).is_some_and(|agent| agent.name == "opencode") {
+        let conversation = if agent == "opencode"
+            && crate::agents::of_session_id(&conversation)
+                .is_some_and(|agent| agent.name == "opencode")
+        {
             Some(conversation)
         } else {
             None
         };
         if let Some(conversation) = &conversation {
-            sessions.retain(|session| session.session != *conversation || session.tmux_pane.is_empty() || current_panes.contains(&session.tmux_pane));
+            sessions.retain(|session| {
+                session.session != *conversation
+                    || session.tmux_pane.is_empty()
+                    || current_panes.contains(&session.tmux_pane)
+            });
         }
         sessions.push(Session {
-            session: name, conversation, state: "unknown".into(), project: project_name(&path),
-            task: title.trim_start_matches(['✳', '◐', '◑', ' ']).to_string(), since: created, started: Some(created),
-            agent: agent.into(), tmux_pane: pane, cwd: path, ..Session::default()
+            session: name,
+            conversation,
+            state: "unknown".into(),
+            project: project_name(&path),
+            task: title.trim_start_matches(['✳', '◐', '◑', ' ']).to_string(),
+            since: created,
+            started: Some(created),
+            agent: agent.into(),
+            tmux_pane: pane,
+            cwd: path,
+            ..Session::default()
         });
     }
     sessions
@@ -343,14 +474,24 @@ pub struct Restart {
 }
 
 pub fn restarts() -> Vec<Restart> {
-    let Ok(entries) = fs::read_dir(paths::restarting_dir()) else { return vec![] };
-    entries.flatten().filter_map(|entry| {
-        let session = entry.file_name().to_str()?.to_string();
-        let text = fs::read_to_string(entry.path()).ok()?;
-        let mut lines = text.lines();
-        let since = lines.next()?.trim().parse().ok()?;
-        Some(Restart { session, since, project: lines.next().unwrap_or("").into(), cwd: lines.next().unwrap_or("").into() })
-    }).collect()
+    let Ok(entries) = fs::read_dir(paths::restarting_dir()) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let session = entry.file_name().to_str()?.to_string();
+            let text = fs::read_to_string(entry.path()).ok()?;
+            let mut lines = text.lines();
+            let since = lines.next()?.trim().parse().ok()?;
+            Some(Restart {
+                session,
+                since,
+                project: lines.next().unwrap_or("").into(),
+                cwd: lines.next().unwrap_or("").into(),
+            })
+        })
+        .collect()
 }
 
 pub fn end_restart(session: &str) {
@@ -362,29 +503,52 @@ impl Restart {
     /// started after the restart, or comes from another pane), or, when it had no conversation to
     /// resume, a fresh one in its folder.
     pub fn replacement<'a>(&self, running: &'a [Session], old_pane: &str) -> Option<&'a Session> {
-        running.iter().filter(|session| crate::agents::is_session_id(&session.session)).find(|session| {
-            let is_new = session.started.is_some_and(|started| started >= self.since);
-            if session.session == self.session {
-                is_new || (!old_pane.is_empty() && !session.tmux_pane.is_empty() && session.tmux_pane != old_pane)
-            } else {
-                is_new && !self.cwd.is_empty() && session.cwd == self.cwd
-            }
-        })
+        running
+            .iter()
+            .filter(|session| crate::agents::is_session_id(&session.session))
+            .find(|session| {
+                let is_new = session.started.is_some_and(|started| started >= self.since);
+                if session.session == self.session {
+                    is_new
+                        || (!old_pane.is_empty()
+                            && !session.tmux_pane.is_empty()
+                            && session.tmux_pane != old_pane)
+                } else {
+                    is_new && !self.cwd.is_empty() && session.cwd == self.cwd
+                }
+            })
     }
 
     /// The new process's tmux session, before it reports: a card of its own until then.
     pub fn is_unreported_launch(&self, session: &Session) -> bool {
-        !crate::agents::is_session_id(&session.session) && session.cwd == self.cwd && session.started.is_some_and(|started| started >= self.since)
+        !crate::agents::is_session_id(&session.session)
+            && session.cwd == self.cwd
+            && session.started.is_some_and(|started| started >= self.since)
     }
 }
 
 pub fn statusline_facts(session_id: &str) -> Facts {
-    let Some(facts) = read_json(&paths::statusline_dir().join(format!("statusline-{session_id}.json"))) else { return Facts::default() };
+    let Some(facts) =
+        read_json(&paths::statusline_dir().join(format!("statusline-{session_id}.json")))
+    else {
+        return Facts::default();
+    };
     Facts {
-        model: facts.get("model").and_then(Value::as_str).unwrap_or("").into(),
-        effort: facts.get("effort").and_then(Value::as_str).unwrap_or("").into(),
+        model: facts
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        effort: facts
+            .get("effort")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
         context: facts.get("context").and_then(Value::as_f64),
-        remote: facts.get("remote").map(|remote| remote.as_bool().unwrap_or(!remote.is_null())).unwrap_or(false),
+        remote: facts
+            .get("remote")
+            .map(|remote| remote.as_bool().unwrap_or(!remote.is_null()))
+            .unwrap_or(false),
     }
 }
 
@@ -392,7 +556,11 @@ pub fn statusline_facts(session_id: &str) -> Facts {
 /// of its first session, its other sessions (parallel clones, a second session) right under it.
 pub fn grouped_by_project(mut sessions: Vec<Session>) -> Vec<Session> {
     sessions.sort_by(|a, b| {
-        (!a.pinned, a.started.unwrap_or(a.since), &a.session).cmp(&(!b.pinned, b.started.unwrap_or(b.since), &b.session))
+        (!a.pinned, a.started.unwrap_or(a.since), &a.session).cmp(&(
+            !b.pinned,
+            b.started.unwrap_or(b.since),
+            &b.session,
+        ))
     });
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<Session>> = HashMap::new();
@@ -400,7 +568,10 @@ pub fn grouped_by_project(mut sessions: Vec<Session>) -> Vec<Session> {
         if !groups.contains_key(&session.project) {
             order.push(session.project.clone());
         }
-        groups.entry(session.project.clone()).or_default().push(session);
+        groups
+            .entry(session.project.clone())
+            .or_default()
+            .push(session);
     }
     let mut result = Vec::new();
     for project in order {
@@ -417,12 +588,16 @@ pub fn grouped_by_project(mut sessions: Vec<Session>) -> Vec<Session> {
 
 /// The task line, unless it is one of Claude's internal messages (<agent-message …>).
 /// The running copy a reviewed clone applies to (paths::REVIEWED_REPOSITORIES; the work clone, or
-/// <clones>/<repository>/<name>): its commits reach it through cockpit apply, never a push, so its
+/// `<clones>/<repository>/<name>`): its commits reach it through cockpit apply, never a push, so its
 /// count is of commits not applied yet (the hook). None for any other folder.
 pub fn running_copy_of(cwd: &str) -> Option<PathBuf> {
     let cwd = Path::new(cwd);
-    paths::REVIEWED_REPOSITORIES.iter()
-        .find(|repository| cwd.starts_with(paths::work_clone(repository)) || cwd.starts_with(paths::clones_dir().join(repository)))
+    paths::REVIEWED_REPOSITORIES
+        .iter()
+        .find(|repository| {
+            cwd.starts_with(paths::work_clone(repository))
+                || cwd.starts_with(paths::clones_dir().join(repository))
+        })
         .map(|repository| paths::running_copy(repository))
 }
 
@@ -434,14 +609,22 @@ pub fn is_reviewed_clone(cwd: &str) -> bool {
 /// a card of its clones pushes after the apply. 0 when it tracks no upstream.
 pub fn running_copy_unpushed(live: &Path) -> usize {
     let live = live.to_string_lossy().into_owned();
-    util::output_of("git", &["-C", &live, "rev-list", "--count", "@{upstream}..HEAD"]).and_then(|count| count.trim().parse().ok()).unwrap_or(0)
+    util::output_of(
+        "git",
+        &["-C", &live, "rev-list", "--count", "@{upstream}..HEAD"],
+    )
+    .and_then(|count| count.trim().parse().ok())
+    .unwrap_or(0)
 }
 
 /// The card's "◷ 3 agents + background": its background work, agents counted; None without any.
 /// The clone a session works in (`~/IdeaProjects/.parallel/<repository>/<clone>`), by its folder name.
 pub fn clone_name(cwd: &str) -> Option<String> {
     let inside = Path::new(cwd).strip_prefix(paths::clones_dir()).ok()?;
-    inside.components().nth(1).map(|clone| clone.as_os_str().to_string_lossy().into_owned())
+    inside
+        .components()
+        .nth(1)
+        .map(|clone| clone.as_os_str().to_string_lossy().into_owned())
 }
 
 pub fn background_badge(session: &Session) -> Option<String> {
@@ -461,7 +644,11 @@ pub fn background_badge(session: &Session) -> Option<String> {
 
 pub fn visible_task(session: &Session) -> String {
     let task = session.task.trim();
-    if task.starts_with('<') { String::new() } else { task.to_string() }
+    if task.starts_with('<') {
+        String::new()
+    } else {
+        task.to_string()
+    }
 }
 
 pub fn validate_task_label(label: &str) -> Result<String, String> {
@@ -490,15 +677,21 @@ pub fn validate_doing(doing: &str) -> Result<String, String> {
     let words: Vec<_> = doing.split_whitespace().collect();
     let normalized = words.join(" ");
     if !(2..=12).contains(&words.len()) || normalized.chars().count() > DOING_MAX_CHARS {
-        return Err(format!("doing-now status must be 2–12 words and at most {DOING_MAX_CHARS} characters"));
+        return Err(format!(
+            "doing-now status must be 2–12 words and at most {DOING_MAX_CHARS} characters"
+        ));
     }
     Ok(normalized)
 }
 
 /// A hook's last-tool summary, checked at the daemon's boundary (the hook already made it safe).
 pub fn validate_last_tool(summary: &str) -> Result<String, String> {
-    if summary.trim().is_empty() || summary.chars().count() > LAST_TOOL_MAX_CHARS || summary.chars().any(char::is_control)
-        || summary.contains("#(") || summary.contains("#{") {
+    if summary.trim().is_empty()
+        || summary.chars().count() > LAST_TOOL_MAX_CHARS
+        || summary.chars().any(char::is_control)
+        || summary.contains("#(")
+        || summary.contains("#{")
+    {
         return Err("last tool is not a short single line without tmux formats".into());
     }
     Ok(summary.to_string())
@@ -511,17 +704,44 @@ pub fn tool_summary(tool: &str, input: Option<&Value>) -> Option<String> {
     if tool.is_empty() {
         return None;
     }
-    let field = |key: &str| input.and_then(|input| input.get(key)).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
-    let detail = field("command").or_else(|| field("file_path")).or_else(|| field("pattern")).or_else(|| field("url"))
-        .or_else(|| field("query")).or_else(|| field("description"))
+    let field = |key: &str| {
+        input
+            .and_then(|input| input.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    };
+    let detail = field("command")
+        .or_else(|| field("file_path"))
+        .or_else(|| field("pattern"))
+        .or_else(|| field("url"))
+        .or_else(|| field("query"))
+        .or_else(|| field("description"))
         .map(|detail| detail.lines().next().unwrap_or(""));
-    let raw = match detail { Some(detail) => format!("{tool}  {detail}"), None => tool.to_string() };
-    let safe: String = raw.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
+    let raw = match detail {
+        Some(detail) => format!("{tool}  {detail}"),
+        None => tool.to_string(),
+    };
+    let safe: String = raw
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
     let safe = safe.replace("#(", "# (").replace("#{", "# {");
     let safe = safe.trim();
     Some(if safe.chars().count() > LAST_TOOL_MAX_CHARS {
-        safe.chars().take(LAST_TOOL_MAX_CHARS - 1).collect::<String>() + "…"
-    } else { safe.to_string() })
+        safe.chars()
+            .take(LAST_TOOL_MAX_CHARS - 1)
+            .collect::<String>()
+            + "…"
+    } else {
+        safe.to_string()
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -537,16 +757,33 @@ pub struct DoingNow {
 /// stale, the last tool used after it (or the old status), marked stale; with no status at all,
 /// the last tool.
 pub fn doing_now(session: &Session, now: i64) -> Option<DoingNow> {
-    let tool = session.last_tool_at.filter(|_| !session.last_tool.is_empty()).map(|at| (session.last_tool.clone(), at));
+    let tool = session
+        .last_tool_at
+        .filter(|_| !session.last_tool.is_empty())
+        .map(|at| (session.last_tool.clone(), at));
     let Some(doing_at) = session.doing_at.filter(|_| !session.doing.is_empty()) else {
-        return tool.map(|(text, at)| DoingNow { text, at, stale_for: None });
+        return tool.map(|(text, at)| DoingNow {
+            text,
+            at,
+            stale_for: None,
+        });
     };
     let age = now - doing_at;
     if age < DOING_STALE_AFTER_S {
-        return Some(DoingNow { text: session.doing.clone(), at: doing_at, stale_for: None });
+        return Some(DoingNow {
+            text: session.doing.clone(),
+            at: doing_at,
+            stale_for: None,
+        });
     }
-    let (text, at) = tool.filter(|(_, at)| *at > doing_at).unwrap_or((session.doing.clone(), doing_at));
-    Some(DoingNow { text, at, stale_for: Some(age) })
+    let (text, at) = tool
+        .filter(|(_, at)| *at > doing_at)
+        .unwrap_or((session.doing.clone(), doing_at));
+    Some(DoingNow {
+        text,
+        at,
+        stale_for: Some(age),
+    })
 }
 
 /// What a session needing you asks: the dialog's lines from its pane, else the hook's sentence.
@@ -554,7 +791,11 @@ pub fn waiting_request(session: &Session) -> String {
     if session.state != "needs-you" {
         return String::new();
     }
-    if !session.detail.is_empty() { session.detail.clone() } else { session.request.clone() }
+    if !session.detail.is_empty() {
+        session.detail.clone()
+    } else {
+        session.request.clone()
+    }
 }
 
 pub fn activity_label(session: &Session) -> &'static str {
@@ -566,7 +807,9 @@ pub fn activity_label(session: &Session) -> &'static str {
         "input" => return "Input needed",
         _ => {}
     }
-    if session.chief_is_reviewing(now_secs()) { return "Chief is reviewing"; }
+    if session.chief_is_reviewing(now_secs()) {
+        return "Chief is reviewing";
+    }
     if session.state == "needs-you" {
         return "Needs you";
     }
@@ -585,7 +828,9 @@ pub fn activity_label(session: &Session) -> &'static str {
 pub const IDLE_AFTER_S: i64 = 30 * 60;
 
 pub fn is_idle(session: &Session, now: i64) -> bool {
-    session.asleep.is_none() && activity_label(session) == "Ready" && now - session.since >= IDLE_AFTER_S
+    session.asleep.is_none()
+        && activity_label(session) == "Ready"
+        && now - session.since >= IDLE_AFTER_S
 }
 
 pub fn activity_text(session: &Session) -> String {
@@ -603,7 +848,8 @@ pub fn activity_text(session: &Session) -> String {
         "Command running" => "An approved command is running",
         "Working" if session.state == "working" => return doing_now_text(session, now_secs()),
         _ => "",
-    }.into()
+    }
+    .into()
 }
 
 /// The session list's group, shared by the column and the phone: "needs-you", "working" or "quiet".
@@ -623,18 +869,28 @@ pub fn attention_group(session: &Session) -> &'static str {
 /// The doing-now line of the card, "no update 18m" appended once the agent stopped updating it.
 pub fn doing_now_text(session: &Session, now: i64) -> String {
     match doing_now(session, now) {
-        Some(DoingNow { text, stale_for: Some(age), .. }) => format!("{text} · no update {}", util::duration(age)),
+        Some(DoingNow {
+            text,
+            stale_for: Some(age),
+            ..
+        }) => format!("{text} · no update {}", util::duration(age)),
         Some(DoingNow { text, .. }) => text,
         None => String::new(),
     }
 }
 
 pub fn next_attention_index(sessions: &[Session], selected: usize) -> Option<usize> {
-    let candidates: Vec<usize> = sessions.iter().enumerate()
+    let candidates: Vec<usize> = sessions
+        .iter()
+        .enumerate()
         .filter(|(_, session)| !session.is_external() && session.needs_attention())
         .map(|(index, _)| index)
         .collect();
-    candidates.iter().find(|index| **index > selected).or(candidates.first()).copied()
+    candidates
+        .iter()
+        .find(|index| **index > selected)
+        .or(candidates.first())
+        .copied()
 }
 
 /// The agent's session title, or empty when none has been written yet.
@@ -643,24 +899,33 @@ pub fn read_title(session_id: &str) -> String {
         return match opencode_title(session_id) {
             Ok(title) => title,
             Err(error) => {
-                util::log_event("WARN", &format!("cannot read opencode title for {session_id}: {error}"));
+                util::log_event(
+                    "WARN",
+                    &format!("cannot read opencode title for {session_id}: {error}"),
+                );
                 String::new()
             }
         };
     }
-    let Some(path) = transcript_of(session_id) else { return String::new() };
-    let Ok(head) = util::read_untrusted(&path, TITLE_SCAN_BYTES) else { return String::new() };
+    let Some(path) = transcript_of(session_id) else {
+        return String::new();
+    };
+    let Ok(head) = util::read_untrusted(&path, TITLE_SCAN_BYTES) else {
+        return String::new();
+    };
     let mut title = String::new();
     for line in head.split(|byte| *byte == b'\n') {
         if !line.windows(8).any(|window| window == b"ai-title") {
             continue;
         }
-        if let Ok(record) = serde_json::from_slice::<Value>(line) {
-            if record.get("type").and_then(Value::as_str) == Some("ai-title") {
-                if let Some(found) = record.get("aiTitle").and_then(Value::as_str).filter(|found| !found.is_empty()) {
-                    title = found.to_string();
-                }
-            }
+        if let Ok(record) = serde_json::from_slice::<Value>(line)
+            && record.get("type").and_then(Value::as_str) == Some("ai-title")
+            && let Some(found) = record
+                .get("aiTitle")
+                .and_then(Value::as_str)
+                .filter(|found| !found.is_empty())
+        {
+            title = found.to_string();
         }
     }
     title
@@ -674,14 +939,20 @@ fn opencode_title(session_id: &str) -> rusqlite::Result<String> {
     }
     let source = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     source.busy_timeout(std::time::Duration::from_secs(1))?;
-    let title: Option<String> = source.query_row(
-        "select coalesce(title, '') from session_v2 where id = ?1 and parent_id is null",
-        [session_id], |row| row.get(0)).optional()?;
+    let title: Option<String> = source
+        .query_row(
+            "select coalesce(title, '') from session_v2 where id = ?1 and parent_id is null",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
     Ok(title.map(|title| collapse(&title)).unwrap_or_default())
 }
 
 fn transcript_of(session_id: &str) -> Option<std::path::PathBuf> {
-    fs::read_dir(paths::transcripts()).ok()?.flatten()
+    fs::read_dir(paths::transcripts())
+        .ok()?
+        .flatten()
         .map(|project| project.path().join(format!("{session_id}.jsonl")))
         .find(|path| path.exists())
 }
@@ -711,10 +982,21 @@ pub fn opencode_past_sessions(database: &Path) -> rusqlite::Result<Vec<(PastSess
     source.busy_timeout(std::time::Duration::from_secs(1))?;
     let mut statement = source.prepare(
         "select id, directory, coalesce(title, ''), time_updated from session_v2
-         where parent_id is null and time_archived is null order by time_updated desc limit ?1")?;
+         where parent_id is null and time_archived is null order by time_updated desc limit ?1",
+    )?;
     let rows = statement.query_map([OPENCODE_PAST_MAX as i64], |row| {
-        let (session, cwd, title, updated_ms): (String, String, String, i64) = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
-        Ok((PastSession { project: project_name(&cwd), session, cwd, since: updated_ms / 1000, prompt: String::new() }, collapse(&title)))
+        let (session, cwd, title, updated_ms): (String, String, String, i64) =
+            (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+        Ok((
+            PastSession {
+                project: project_name(&cwd),
+                session,
+                cwd,
+                since: updated_ms / 1000,
+                prompt: String::new(),
+            },
+            collapse(&title),
+        ))
     })?;
     rows.collect()
 }
@@ -739,25 +1021,42 @@ impl History {
         }
         self.mtime = Some(mtime);
         let mut latest: HashMap<String, PastSession> = HashMap::new();
-        for line in util::read_untrusted_text(&paths::history(), HISTORY_MAX).unwrap_or_default().lines() {
-            let Ok(row) = serde_json::from_str::<Value>(line) else { continue };
-            let (Some(session), Some(project)) = (row.get("sessionId").and_then(Value::as_str), row.get("project").and_then(Value::as_str)) else { continue };
+        for line in util::read_untrusted_text(&paths::history(), HISTORY_MAX)
+            .unwrap_or_default()
+            .lines()
+        {
+            let Ok(row) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let (Some(session), Some(project)) = (
+                row.get("sessionId").and_then(Value::as_str),
+                row.get("project").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
             if session.is_empty() || project.is_empty() {
                 continue;
             }
             let since = row.get("timestamp").and_then(Value::as_i64).unwrap_or(0) / 1000;
             let prompt = collapse(row.get("display").and_then(Value::as_str).unwrap_or(""));
-            let entry = latest.entry(session.to_string()).or_insert_with(|| PastSession {
-                session: session.into(), cwd: project.into(), project: project_name(project), since: 0, prompt: String::new(),
-            });
+            let entry = latest
+                .entry(session.to_string())
+                .or_insert_with(|| PastSession {
+                    session: session.into(),
+                    cwd: project.into(),
+                    project: project_name(project),
+                    since: 0,
+                    prompt: String::new(),
+                });
             entry.since = entry.since.max(since);
             // Slash commands and paste placeholders say nothing about the session: keep the last real prompt.
-            if !prompt.is_empty() && !prompt.starts_with('/') && !prompt.starts_with("[Pasted text") {
+            if !prompt.is_empty() && !prompt.starts_with('/') && !prompt.starts_with("[Pasted text")
+            {
                 entry.prompt = prompt;
             }
         }
         let mut entries: Vec<_> = latest.into_values().collect();
-        entries.sort_by(|a, b| b.since.cmp(&a.since));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.since));
         self.entries = entries;
     }
 
@@ -773,11 +1072,17 @@ impl History {
             if budget == 0 {
                 return;
             }
-            let known = self.titles.get(session_id).is_some_and(|title| !title.is_empty());
-            if known || time - self.title_checked.get(session_id).copied().unwrap_or(0.0) < TITLE_RETRY_S {
+            let known = self
+                .titles
+                .get(session_id)
+                .is_some_and(|title| !title.is_empty());
+            if known
+                || time - self.title_checked.get(session_id).copied().unwrap_or(0.0) < TITLE_RETRY_S
+            {
                 continue;
             }
-            self.titles.insert(session_id.clone(), read_title(session_id));
+            self.titles
+                .insert(session_id.clone(), read_title(session_id));
             self.title_checked.insert(session_id.clone(), time);
             budget -= 1;
         }
@@ -794,10 +1099,29 @@ pub struct ViewState {
 
 impl ViewState {
     pub fn load() -> Self {
-        let saved = match read_json(&paths::view_state()) { Some(value @ Value::Object(_)) => value, _ => json!({}) };
-        let pinned = saved.get("pinned").and_then(Value::as_array).map(|items| items.iter().filter_map(|i| i.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        let restored_boot = saved.get("restored_boot").and_then(Value::as_i64).unwrap_or(0);
-        Self { saved, pinned, restored_boot }
+        let saved = match read_json(&paths::view_state()) {
+            Some(value @ Value::Object(_)) => value,
+            _ => json!({}),
+        };
+        let pinned = saved
+            .get("pinned")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let restored_boot = saved
+            .get("restored_boot")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        Self {
+            saved,
+            pinned,
+            restored_boot,
+        }
     }
 
     pub fn save(&mut self) {
@@ -808,7 +1132,9 @@ impl ViewState {
 
     pub fn toggle_pin(&mut self, session: &str) {
         match self.pinned.iter().position(|pinned| pinned == session) {
-            Some(index) => { self.pinned.remove(index); }
+            Some(index) => {
+                self.pinned.remove(index);
+            }
             None => self.pinned.push(session.to_string()),
         }
         self.save();
@@ -817,8 +1143,14 @@ impl ViewState {
 
 pub fn boot_time() -> i64 {
     // A test cannot make the machine boot recently.
-    if let Some(boot) = std::env::var("COCKPIT_BOOT_TIME").ok().and_then(|text| text.parse().ok()) { return boot; }
-    fs::read_to_string("/proc/uptime").ok()
+    if let Some(boot) = std::env::var("COCKPIT_BOOT_TIME")
+        .ok()
+        .and_then(|text| text.parse().ok())
+    {
+        return boot;
+    }
+    fs::read_to_string("/proc/uptime")
+        .ok()
         .and_then(|uptime| uptime.split_whitespace().next()?.parse::<f64>().ok())
         .map(|uptime| (now() - uptime) as i64)
         .unwrap_or(0)
@@ -837,20 +1169,51 @@ pub struct Restorable {
 /// yet comes back too, as a fresh session in its folder (cockpit restore): leaving it out
 /// made sessions opened and not used yet vanish at each reboot. One started in a terminal of its
 /// own ("this terminal") is that terminal's to bring back, not the cockpit's.
-pub fn sessions_to_restore(recent: &Value, ended: &HashSet<String>, running: &HashSet<String>, boot: i64) -> Vec<Restorable> {
-    let Some(recent) = recent.as_object() else { return Vec::new() };
-    let before: Vec<(&String, &Value)> = recent.iter()
-        .filter(|(_, row)| row.get("last_seen").and_then(Value::as_i64).unwrap_or(0) < boot && row.get("cwd").and_then(Value::as_str).is_some_and(|cwd| !cwd.is_empty()))
+pub fn sessions_to_restore(
+    recent: &Value,
+    ended: &HashSet<String>,
+    running: &HashSet<String>,
+    boot: i64,
+) -> Vec<Restorable> {
+    let Some(recent) = recent.as_object() else {
+        return Vec::new();
+    };
+    let before: Vec<(&String, &Value)> = recent
+        .iter()
+        .filter(|(_, row)| {
+            row.get("last_seen").and_then(Value::as_i64).unwrap_or(0) < boot
+                && row
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .is_some_and(|cwd| !cwd.is_empty())
+        })
         .collect();
-    let Some(last) = before.iter().filter_map(|(_, row)| row.get("last_seen").and_then(Value::as_i64)).max() else { return Vec::new() };
-    let mut rows: Vec<Restorable> = before.into_iter()
-        .filter(|(session, row)| row.get("last_seen").and_then(Value::as_i64).unwrap_or(0) >= last - RESTORE_WINDOW_S
-                && !ended.contains(*session) && !running.contains(*session)
-                && !row.get("terminal").and_then(Value::as_bool).unwrap_or(false))
+    let Some(last) = before
+        .iter()
+        .filter_map(|(_, row)| row.get("last_seen").and_then(Value::as_i64))
+        .max()
+    else {
+        return Vec::new();
+    };
+    let mut rows: Vec<Restorable> = before
+        .into_iter()
+        .filter(|(session, row)| {
+            row.get("last_seen").and_then(Value::as_i64).unwrap_or(0) >= last - RESTORE_WINDOW_S
+                && !ended.contains(*session)
+                && !running.contains(*session)
+                && !row
+                    .get("terminal")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
         .map(|(session, row)| Restorable {
             session: session.clone(),
             cwd: row.get("cwd").and_then(Value::as_str).unwrap_or("").into(),
-            project: row.get("project").and_then(Value::as_str).unwrap_or("").into(),
+            project: row
+                .get("project")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .into(),
         })
         .collect();
     rows.sort_by(|a, b| a.project.cmp(&b.project));
@@ -862,49 +1225,91 @@ pub fn restore_offer(view: &ViewState, running: &HashSet<String>) -> Vec<Restora
     if boot == 0 || view.restored_boot == boot || now_secs() - boot > RESTORE_OFFER_HOURS * 3600 {
         return Vec::new();
     }
-    let Some(recent) = read_json(&paths::recent_sessions()) else { return Vec::new() };
-    let ended: HashSet<String> = fs::read_to_string(paths::ended_sessions()).unwrap_or_default().split_whitespace().map(str::to_string).collect();
+    let Some(recent) = read_json(&paths::recent_sessions()) else {
+        return Vec::new();
+    };
+    let ended: HashSet<String> = fs::read_to_string(paths::ended_sessions())
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
     sessions_to_restore(&recent, &ended, running, boot)
 }
 
-/// "<sandbox> → host:port" of the requests greyproxy holds for approval, retried in the last few
-/// minutes. The sandbox is greyproxy's name for it (the launcher's <agent>-<project> login).
+/// `<sandbox> → host:port` of the requests greyproxy holds for approval, retried in the last few
+/// minutes. The sandbox is greyproxy's name for it (the launcher's `<agent>-<project>` login).
 pub fn greyproxy_held(database: &Path) -> Vec<String> {
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI;
-    let Ok(connection) = rusqlite::Connection::open_with_flags(database, flags) else { return Vec::new() };
+    let Ok(connection) = rusqlite::Connection::open_with_flags(database, flags) else {
+        return Vec::new();
+    };
     let _ = connection.busy_timeout(std::time::Duration::from_secs(1));
     let query = "select destination_host, destination_port, container_name from pending_requests where last_seen >= datetime('now', ?) order by last_seen desc";
-    let Ok(mut statement) = connection.prepare(query) else { return Vec::new() };
+    let Ok(mut statement) = connection.prepare(query) else {
+        return Vec::new();
+    };
     let rows = statement.query_map([format!("-{GREYPROXY_RECENT_MINUTES} minutes")], |row| {
-        Ok(format!("{} → {}:{}", row.get::<_, String>(2)?, row.get::<_, String>(0)?, row.get::<_, rusqlite::types::Value>(1).map(|port| match port {
-            rusqlite::types::Value::Integer(port) => port.to_string(),
-            rusqlite::types::Value::Text(port) => port,
-            _ => String::new(),
-        })?))
+        Ok(format!(
+            "{} → {}:{}",
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(0)?,
+            row.get::<_, rusqlite::types::Value>(1)
+                .map(|port| match port {
+                    rusqlite::types::Value::Integer(port) => port.to_string(),
+                    rusqlite::types::Value::Text(port) => port,
+                    _ => String::new(),
+                })?
+        ))
     });
-    rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    rows.map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
 }
 
 pub fn start_file_mtimes() -> Vec<(&'static str, f64)> {
-    START_FILES.iter().filter_map(|(label, path)| {
-        let modified = fs::metadata(paths::expand(path)).and_then(|m| m.modified()).ok()?;
-        Some((*label, modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64()))
-    }).collect()
+    START_FILES
+        .iter()
+        .filter_map(|(label, path)| {
+            let modified = fs::metadata(paths::expand(path))
+                .and_then(|m| m.modified())
+                .ok()?;
+            Some((
+                *label,
+                modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_secs_f64(),
+            ))
+        })
+        .collect()
 }
 
 /// What changed after the session started, so it does not have it yet; none without a start time.
 pub fn changed_since_start(session: &Session, mtimes: &[(&'static str, f64)]) -> Vec<&'static str> {
-    let Some(started) = session.started.filter(|_| session.asleep.is_none()) else { return Vec::new() };
+    let Some(started) = session.started.filter(|_| session.asleep.is_none()) else {
+        return Vec::new();
+    };
     let reads = |label: &str| session.agent().start_files.contains(&label);
-    mtimes.iter().filter(|(label, mtime)| *mtime > started as f64 && reads(label)).map(|(label, _)| *label).collect()
+    mtimes
+        .iter()
+        .filter(|(label, mtime)| *mtime > started as f64 && reads(label))
+        .map(|(label, _)| *label)
+        .collect()
 }
 
 /// Project directories from Claude's history, most recently used first.
 fn recent_projects() -> Vec<String> {
     let mut last_used: HashMap<String, f64> = HashMap::new();
-    for line in util::read_untrusted_text(&paths::history(), HISTORY_MAX).unwrap_or_default().lines() {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
-        if let (Some(project), Some(stamp)) = (entry.get("project").and_then(Value::as_str), entry.get("timestamp").and_then(Value::as_f64)) {
+    for line in util::read_untrusted_text(&paths::history(), HISTORY_MAX)
+        .unwrap_or_default()
+        .lines()
+    {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let (Some(project), Some(stamp)) = (
+            entry.get("project").and_then(Value::as_str),
+            entry.get("timestamp").and_then(Value::as_f64),
+        ) {
             let used = last_used.entry(project.to_string()).or_insert(0.0);
             *used = used.max(stamp);
         }
@@ -917,22 +1322,59 @@ fn recent_projects() -> Vec<String> {
 /// The picker's list: the project directories (~/IdeaProjects/*, ~/dotfiles), the ones used with
 /// Claude most recently first (a session in a subfolder counts for its project), the rest by name.
 pub fn project_choices() -> Vec<String> {
-    let mut known: Vec<String> = fs::read_dir(paths::home().join("IdeaProjects")).into_iter().flatten().flatten()
-        .filter(|entry| entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.'))
+    let mut known: Vec<String> = fs::read_dir(paths::home().join("IdeaProjects"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.')
+        })
         .map(|entry| entry.path().to_string_lossy().into_owned())
         .collect();
     known.sort();
     let mut ranked: Vec<String> = Vec::new();
     for used in recent_projects() {
-        if let Some(owner) = known.iter().find(|project| used == **project || used.starts_with(&format!("{project}/"))) {
-            if !ranked.contains(owner) {
-                ranked.push(owner.clone());
-            }
+        if let Some(owner) = known
+            .iter()
+            .find(|project| used == **project || used.starts_with(&format!("{project}/")))
+            && !ranked.contains(owner)
+        {
+            ranked.push(owner.clone());
         }
     }
-    let rest: Vec<String> = known.into_iter().filter(|project| !ranked.contains(project)).collect();
+    let rest: Vec<String> = known
+        .into_iter()
+        .filter(|project| !ranked.contains(project))
+        .collect();
     ranked.extend(rest);
     ranked
+}
+
+/// All checkout roots served by the running instances. /proc preserves argument boundaries,
+/// unlike pgrep -a, where a root containing spaces is indistinguishable from extra arguments.
+pub fn craft_roots(app: &str) -> Option<HashSet<String>> {
+    let processes = util::output_of("pgrep", &["-x", app])?;
+    Some(
+        processes
+            .split_whitespace()
+            .filter_map(|pid| {
+                let pid = pid.parse::<u32>().ok()?;
+                write_root(&fs::read(format!("/proc/{pid}/cmdline")).ok()?)
+            })
+            .collect(),
+    )
+}
+
+fn write_root(command_line: &[u8]) -> Option<String> {
+    let arguments: Vec<_> = command_line.split(|byte| *byte == 0).collect();
+    let mut roots = arguments
+        .windows(2)
+        .filter(|pair| pair[0] == b"--automation-write-root");
+    let root = std::str::from_utf8(roots.next()?[1]).ok()?;
+    if root.is_empty() || roots.next().is_some() {
+        return None;
+    }
+    Some(root.to_string())
 }
 
 #[cfg(test)]
@@ -940,53 +1382,143 @@ mod tests {
     use super::*;
 
     fn session(id: &str, project: &str, started: i64, pinned: bool) -> Session {
-        Session { session: id.into(), project: project.into(), started: Some(started), pinned, ..Session::default() }
+        Session {
+            session: id.into(),
+            project: project.into(),
+            started: Some(started),
+            pinned,
+            ..Session::default()
+        }
     }
 
-    fn doing(doing: &str, doing_at: Option<i64>, last_tool: &str, last_tool_at: Option<i64>) -> Session {
-        Session { state: "working".into(), doing: doing.into(), doing_at, last_tool: last_tool.into(), last_tool_at, ..Session::default() }
+    fn doing(
+        doing: &str,
+        doing_at: Option<i64>,
+        last_tool: &str,
+        last_tool_at: Option<i64>,
+    ) -> Session {
+        Session {
+            state: "working".into(),
+            doing: doing.into(),
+            doing_at,
+            last_tool: last_tool.into(),
+            last_tool_at,
+            ..Session::default()
+        }
     }
 
     #[test]
     fn a_fresh_doing_now_status_wins_over_a_newer_tool() {
-        let session = doing("Running the Rust tests", Some(1000), "Bash  cargo nextest run", Some(1100));
-        assert_eq!(doing_now(&session, 1200), Some(DoingNow { text: "Running the Rust tests".into(), at: 1000, stale_for: None }));
+        let session = doing(
+            "Running the Rust tests",
+            Some(1000),
+            "Bash  cargo nextest run",
+            Some(1100),
+        );
+        assert_eq!(
+            doing_now(&session, 1200),
+            Some(DoingNow {
+                text: "Running the Rust tests".into(),
+                at: 1000,
+                stale_for: None
+            })
+        );
     }
 
     #[test]
     fn a_stale_status_falls_back_to_the_last_tool_used_after_it() {
-        let session = doing("Running the Rust tests", Some(1000), "Bash  cargo nextest run", Some(1500));
+        let session = doing(
+            "Running the Rust tests",
+            Some(1000),
+            "Bash  cargo nextest run",
+            Some(1500),
+        );
         let now = 1000 + 18 * 60;
-        assert_eq!(doing_now(&session, now), Some(DoingNow { text: "Bash  cargo nextest run".into(), at: 1500, stale_for: Some(18 * 60) }));
-        assert_eq!(doing_now_text(&session, now), "Bash  cargo nextest run · no update 18m");
+        assert_eq!(
+            doing_now(&session, now),
+            Some(DoingNow {
+                text: "Bash  cargo nextest run".into(),
+                at: 1500,
+                stale_for: Some(18 * 60)
+            })
+        );
+        assert_eq!(
+            doing_now_text(&session, now),
+            "Bash  cargo nextest run · no update 18m"
+        );
     }
 
     #[test]
     fn a_stale_status_with_no_newer_tool_keeps_its_own_text() {
-        let session = doing("Running the Rust tests", Some(1000), "Read  app.rs", Some(900));
-        assert_eq!(doing_now(&session, 1000 + DOING_STALE_AFTER_S).unwrap().text, "Running the Rust tests");
+        let session = doing(
+            "Running the Rust tests",
+            Some(1000),
+            "Read  app.rs",
+            Some(900),
+        );
+        assert_eq!(
+            doing_now(&session, 1000 + DOING_STALE_AFTER_S)
+                .unwrap()
+                .text,
+            "Running the Rust tests"
+        );
     }
 
     #[test]
     fn without_a_status_the_last_tool_is_shown_unmarked() {
-        assert_eq!(doing_now(&doing("", None, "Edit  src/app.rs", Some(50)), 5000), Some(DoingNow { text: "Edit  src/app.rs".into(), at: 50, stale_for: None }));
+        assert_eq!(
+            doing_now(&doing("", None, "Edit  src/app.rs", Some(50)), 5000),
+            Some(DoingNow {
+                text: "Edit  src/app.rs".into(),
+                at: 50,
+                stale_for: None
+            })
+        );
         assert_eq!(doing_now(&doing("", None, "", None), 5000), None);
     }
 
     #[test]
     fn doing_now_statuses_are_normalized_or_rejected_never_clipped() {
-        assert_eq!(validate_doing("  Running   the tests ").unwrap(), "Running the tests");
-        for invalid in ["Testing".to_string(), "a ".repeat(13), format!("Running {}", "x".repeat(80)), "Running\nthe tests".into(), "Reading #{pane} now".into(), "Reading #(id) now".into()] {
+        assert_eq!(
+            validate_doing("  Running   the tests ").unwrap(),
+            "Running the tests"
+        );
+        for invalid in [
+            "Testing".to_string(),
+            "a ".repeat(13),
+            format!("Running {}", "x".repeat(80)),
+            "Running\nthe tests".into(),
+            "Reading #{pane} now".into(),
+            "Reading #(id) now".into(),
+        ] {
             assert!(validate_doing(&invalid).is_err(), "accepted {invalid:?}");
         }
     }
 
     #[test]
     fn tool_summaries_are_one_safe_line_that_fits() {
-        assert_eq!(tool_summary("Bash", Some(&json!({"command": "cargo nextest run\necho done", "description": "Run tests"}))).unwrap(), "Bash  cargo nextest run");
-        assert_eq!(tool_summary("Edit", Some(&json!({"file_path": "/r/app.rs"}))).unwrap(), "Edit  /r/app.rs");
-        assert_eq!(tool_summary("mcp__figcraft__get_node", None).unwrap(), "mcp__figcraft__get_node");
-        assert_eq!(tool_summary("Bash", Some(&json!({"command": "echo #{x} #(y)\tz"}))).unwrap(), "Bash  echo # {x} # (y) z");
+        assert_eq!(
+            tool_summary(
+                "Bash",
+                Some(
+                    &json!({"command": "cargo nextest run\necho done", "description": "Run tests"})
+                )
+            )
+            .unwrap(),
+            "Bash  cargo nextest run"
+        );
+        assert_eq!(
+            tool_summary("Edit", Some(&json!({"file_path": "/r/app.rs"}))).unwrap(),
+            "Edit  /r/app.rs"
+        );
+        assert_eq!(
+            tool_summary("mcp__figcraft__get_node", None).unwrap(),
+            "mcp__figcraft__get_node"
+        );
+        assert_eq!(
+            tool_summary("Bash", Some(&json!({"command": "echo #{x} #(y)\tz"}))).unwrap(),
+            "Bash  echo # {x} # (y) z"
+        );
         let long = tool_summary("Bash", Some(&json!({"command": "x".repeat(300)}))).unwrap();
         assert_eq!(long.chars().count(), LAST_TOOL_MAX_CHARS);
         assert!(long.ends_with('…'));
@@ -998,16 +1530,29 @@ mod tests {
     fn a_working_card_says_what_the_agent_is_doing_now() {
         let session = doing("Drawing the phone states", Some(now_secs()), "", None);
         assert_eq!(activity_text(&session), "Drawing the phone states");
-        let waiting = Session { state: "waiting".into(), ..session };
+        let waiting = Session {
+            state: "waiting".into(),
+            ..session
+        };
         assert_eq!(activity_text(&waiting), "");
     }
 
     #[test]
-    fn a_repositorys_sessions_are_grouped_under_its_first_card() {
-        let grouped = grouped_by_project(vec![session("a", "opusline", 1, false), session("b", "runway", 2, false),
-                                              session("c", "opusline", 3, false), session("d", "dotfiles", 4, true)]);
-        let order: Vec<_> = grouped.iter().map(|s| (s.session.as_str(), s.group_size, s.group_position)).collect();
-        assert_eq!(order, vec![("d", 1, 0), ("a", 2, 0), ("c", 2, 1), ("b", 1, 0)]);
+    fn repository_sessions_are_grouped_under_the_first_card() {
+        let grouped = grouped_by_project(vec![
+            session("a", "opusline", 1, false),
+            session("b", "runway", 2, false),
+            session("c", "opusline", 3, false),
+            session("d", "dotfiles", 4, true),
+        ]);
+        let order: Vec<_> = grouped
+            .iter()
+            .map(|s| (s.session.as_str(), s.group_size, s.group_position))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("d", 1, 0), ("a", 2, 0), ("c", 2, 1), ("b", 1, 0)]
+        );
     }
 
     #[test]
@@ -1017,39 +1562,39 @@ mod tests {
                             "e": {"cwd": "/e", "project": "e", "last_seen": 998, "terminal": true}});
         let ended: HashSet<String> = ["c".to_string()].into();
         let offered = sessions_to_restore(&recent, &ended, &HashSet::new(), 2000);
-        assert_eq!(offered.iter().map(|r| r.session.as_str()).collect::<Vec<_>>(), vec!["a", "d"]);
+        assert_eq!(
+            offered
+                .iter()
+                .map(|r| r.session.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "d"]
+        );
     }
 
     #[test]
     fn next_attention_wraps_to_the_only_request() {
-        let rows: Vec<Session> = ["working", "waiting", "working", "needs-you"].iter()
-            .map(|state| Session { state: state.to_string(), tmux_pane: "%1".into(), ..Session::default() }).collect();
+        let rows: Vec<Session> = ["working", "waiting", "working", "needs-you"]
+            .iter()
+            .map(|state| Session {
+                state: state.to_string(),
+                tmux_pane: "%1".into(),
+                ..Session::default()
+            })
+            .collect();
         assert_eq!(next_attention_index(&rows, 1), Some(3));
         assert_eq!(next_attention_index(&rows, 3), Some(3));
     }
 
     #[test]
     fn changes_after_the_start_are_named() {
-        let started = Session { started: Some(900), ..Session::default() };
-        assert_eq!(changed_since_start(&started, &[("CLAUDE.md", 1000.0), ("settings", 800.0)]), vec!["CLAUDE.md"]);
+        let started = Session {
+            started: Some(900),
+            ..Session::default()
+        };
+        assert_eq!(
+            changed_since_start(&started, &[("CLAUDE.md", 1000.0), ("settings", 800.0)]),
+            vec!["CLAUDE.md"]
+        );
         assert!(changed_since_start(&Session::default(), &[("CLAUDE.md", 1000.0)]).is_empty());
     }
-}
-
-/// All checkout roots served by the running instances. /proc preserves argument boundaries,
-/// unlike pgrep -a, where a root containing spaces is indistinguishable from extra arguments.
-pub fn craft_roots(app: &str) -> Option<HashSet<String>> {
-    let processes = util::output_of("pgrep", &["-x", app])?;
-    Some(processes.split_whitespace().filter_map(|pid| {
-        let pid = pid.parse::<u32>().ok()?;
-        write_root(&fs::read(format!("/proc/{pid}/cmdline")).ok()?)
-    }).collect())
-}
-
-fn write_root(command_line: &[u8]) -> Option<String> {
-    let arguments: Vec<_> = command_line.split(|byte| *byte == 0).collect();
-    let mut roots = arguments.windows(2).filter(|pair| pair[0] == b"--automation-write-root");
-    let root = std::str::from_utf8(roots.next()?[1]).ok()?;
-    if root.is_empty() || roots.next().is_some() { return None; }
-    Some(root.to_string())
 }

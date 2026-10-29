@@ -1,0 +1,9 @@
+{
+  "config": {
+    "default": true,
+    // Existing prose uses semantic lines and wide tables; wrapping is an editor concern.
+    "MD013": false,
+    // Component/task sections may each have an Overview or Verification subsection.
+    "MD024": { "siblings_only": true }
+  }
+}

@@ -45,7 +45,7 @@ if [[ $newest == "$before" || $(printf '%s\n%s\n' "$before" "$newest" | sort -V 
     exit 0
 fi
 if ! output=$(timeout 300 "$opencode" upgrade "$newest" 2>&1); then
-    cockpit log update WARN "opencode upgrade failed: $(tail -1 <<< "$output")" 2>/dev/null || true
+    cockpit log update WARN "opencode upgrade failed: $(tail -1 <<<"$output")" 2>/dev/null || true
     echo "$output" >&2
     exit 1
 fi

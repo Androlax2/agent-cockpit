@@ -1,0 +1,22 @@
+[files]
+# Binary previews and FigCraft archives are not prose or source code.
+extend-exclude = ["*.png", "*.figcraft"]
+
+[default]
+locale = "en"
+# The fixed Web Push public-key fixture is encoded data, not English.
+extend-ignore-re = [
+    'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4',
+    '\bjq -nce\b', # Combined jq command-line flags.
+]
+
+[default.extend-words]
+ratatui = "ratatui"
+
+[default.extend-identifiers]
+PNGs = "PNGs"
+# Expected clipped UI text in a narrow terminal fixture.
+Cach = "Cach"
+# A request fixture ID and a historical todo ID.
+ba9876543210 = "ba9876543210"
+ba07e97c = "ba07e97c"

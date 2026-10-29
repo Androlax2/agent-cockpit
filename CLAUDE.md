@@ -1,5 +1,7 @@
 # Agent Cockpit
 
+Engineering guidance: [AGENTS.md](AGENTS.md). Read its scoped rules before editing.
+
 ## Git authorization
 
 Claude may create feature branches, stage and commit completed, requested agent-cockpit
@@ -19,7 +21,7 @@ apply runs `make after-apply` (relink, rebuild, `cockpit reload`); then run
 ## Tests
 
 `make test` from the repository root: the scripts, hooks and programs through fake commands on
-PATH (apps/cockpit/tests), the daemon's registry (apps/osd), and the Python tools (tools/tests).
+PATH (apps/cockpit/tests), the daemon's registry (apps/crates/cockpit-daemon), and the Python tools (tools/tests).
 The Rust tests run under `cargo nextest` (Arch package `cargo-nextest`), one process per test, all
 in parallel; a single file still runs with `cargo nextest run --release --manifest-path apps/Cargo.toml --test <name>`.
 

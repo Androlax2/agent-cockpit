@@ -4,7 +4,6 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
@@ -13,176 +12,206 @@ import ssl
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
-
-TRUST_ROOT = '/run/agent-build-trust'
+TRUST_ROOT = "/run/agent-build-trust"
 SECRET_TARGETS = {
-    'agent-build-ca': f'{TRUST_ROOT}/ca.pem',
-    'agent-build-apt': f'{TRUST_ROOT}/apt.conf',
-    'agent-build-php': f'{TRUST_ROOT}/php/99-agent-ca.ini',
+    "agent-build-ca": f"{TRUST_ROOT}/ca.pem",
+    "agent-build-apt": f"{TRUST_ROOT}/apt.conf",
+    "agent-build-php": f"{TRUST_ROOT}/php/99-agent-ca.ini",
 }
 TRUST_ENV = {
-    'SSL_CERT_FILE': SECRET_TARGETS['agent-build-ca'],
-    'CURL_CA_BUNDLE': SECRET_TARGETS['agent-build-ca'],
-    'GIT_SSL_CAINFO': SECRET_TARGETS['agent-build-ca'],
-    'NODE_EXTRA_CA_CERTS': SECRET_TARGETS['agent-build-ca'],
-    'NODE_USE_ENV_PROXY': '1',
-    'REQUESTS_CA_BUNDLE': SECRET_TARGETS['agent-build-ca'],
-    'APT_CONFIG': SECRET_TARGETS['agent-build-apt'],
+    "SSL_CERT_FILE": SECRET_TARGETS["agent-build-ca"],
+    "CURL_CA_BUNDLE": SECRET_TARGETS["agent-build-ca"],
+    "GIT_SSL_CAINFO": SECRET_TARGETS["agent-build-ca"],
+    "NODE_EXTRA_CA_CERTS": SECRET_TARGETS["agent-build-ca"],
+    "NODE_USE_ENV_PROXY": "1",
+    "REQUESTS_CA_BUNDLE": SECRET_TARGETS["agent-build-ca"],
+    "APT_CONFIG": SECRET_TARGETS["agent-build-apt"],
 }
 BUILD_FIELDS = {
-    'context', 'dockerfile', 'args', 'target', 'secrets', 'ssh', 'labels',
-    'cache_from', 'cache_to', 'extra_hosts', 'network', 'platforms', 'tags',
-    'no_cache', 'pull', 'shm_size', 'ulimits',
+    "context",
+    "dockerfile",
+    "args",
+    "target",
+    "secrets",
+    "ssh",
+    "labels",
+    "cache_from",
+    "cache_to",
+    "extra_hosts",
+    "network",
+    "platforms",
+    "tags",
+    "no_cache",
+    "pull",
+    "shm_size",
+    "ulimits",
 }
 
 
 def docker_command():
-    root = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()).resolve()
-    projects = Path.home() / 'IdeaProjects'
+    root = Path(
+        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    ).resolve()
+    projects = Path.home() / "IdeaProjects"
     relative = root.relative_to(projects)
     if len(relative.parts) == 1:
-        socket = root / '.agent-docker.sock'
-    elif len(relative.parts) == 3 and relative.parts[0] == '.parallel':
-        socket = root.parent / '.agent-docker/docker.sock'
+        socket = root / ".agent-docker.sock"
+    elif len(relative.parts) == 3 and relative.parts[0] == ".parallel":
+        socket = root.parent / ".agent-docker/docker.sock"
     else:
-        raise ValueError('run from an IdeaProjects checkout or its parallel clone')
-    endpoint = f'unix://{socket}'
-    if os.environ.get('DOCKER_HOST') != endpoint or not socket.is_socket():
-        raise ValueError(f'DOCKER_HOST must be the current project socket: {endpoint}')
-    config = os.environ.get('DOCKER_CONFIG')
-    if not config or not (Path(config) / 'config.json').is_file():
-        raise ValueError('DOCKER_CONFIG must name the launcher-generated Docker configuration')
-    for name in ('DOCKER_CONTEXT', 'BUILDX_BUILDER', 'BUILDKIT_HOST'):
+        raise ValueError("run from an IdeaProjects checkout or its parallel clone")
+    endpoint = f"unix://{socket}"
+    if os.environ.get("DOCKER_HOST") != endpoint or not socket.is_socket():
+        raise ValueError(f"DOCKER_HOST must be the current project socket: {endpoint}")
+    config = os.environ.get("DOCKER_CONFIG")
+    if not config or not (Path(config) / "config.json").is_file():
+        raise ValueError("DOCKER_CONFIG must name the launcher-generated Docker configuration")
+    for name in ("DOCKER_CONTEXT", "BUILDX_BUILDER", "BUILDKIT_HOST"):
         os.environ.pop(name, None)
-    os.environ['DOCKER_BUILDKIT'] = '1'
-    return ['docker', '--host', endpoint]
+    os.environ["DOCKER_BUILDKIT"] = "1"
+    return ["docker", "--host", endpoint]
 
 
 def transform_dockerfile(source):
     # These are public trust inputs; apt drops to _apt when fetching HTTPS indexes.
-    mounts = ' '.join(f'--mount=type=secret,id={name},target={target},mode=0444,required=true'
-                      for name, target in SECRET_TARGETS.items())
-    assignments = [f'{name}={value}' for name, value in TRUST_ENV.items()]
+    mounts = " ".join(
+        f"--mount=type=secret,id={name},target={target},mode=0444,required=true"
+        for name, target in SECRET_TARGETS.items()
+    )
+    assignments = [f"{name}={value}" for name, value in TRUST_ENV.items()]
     # An unset scan path means PHP's compiled default; an explicitly empty one means none.
-    exports = (f'export {shlex.join(assignments)} '
-               f'PHP_INI_SCAN_DIR="${{PHP_INI_SCAN_DIR-:}}${{PHP_INI_SCAN_DIR:+:}}{TRUST_ROOT}/php"; ')
+    exports = (
+        f"export {shlex.join(assignments)} "
+        f'PHP_INI_SCAN_DIR="${{PHP_INI_SCAN_DIR-:}}${{PHP_INI_SCAN_DIR:+:}}{TRUST_ROOT}/php"; '
+    )
     output = []
-    pending = ''
+    pending = ""
     start = 0
     for number, line in enumerate(source.read_text().splitlines(), 1):
         stripped = line.lstrip()
         if not pending:
             start = number
-        location = f'{source}:{start}'
+        location = f"{source}:{start}"
         if TRUST_ROOT in line or any(name in line for name in SECRET_TARGETS):
-            raise ValueError(f'{location}: reserved build-trust path or secret ID')
-        if stripped.startswith('#') or not stripped:
-            directive = re.match(r'#\s*(syntax|escape)\s*=\s*(.*)', stripped, re.IGNORECASE)
+            raise ValueError(f"{location}: reserved build-trust path or secret ID")
+        if stripped.startswith("#") or not stripped:
+            directive = re.match(r"#\s*(syntax|escape)\s*=\s*(.*)", stripped, re.IGNORECASE)
             if directive:
                 name, value = directive.groups()
-                if name.lower() == 'escape' and value != '\\':
-                    raise ValueError(f'{location}: unsupported escape directive')
-                if name.lower() == 'syntax' and not re.fullmatch(r'docker/dockerfile:1(?:\.\d+)*', value):
-                    raise ValueError(f'{location}: unsupported Dockerfile frontend')
+                if name.lower() == "escape" and value != "\\":
+                    raise ValueError(f"{location}: unsupported escape directive")
+                if name.lower() == "syntax" and not re.fullmatch(
+                    r"docker/dockerfile:1(?:\.\d+)*", value
+                ):
+                    raise ValueError(f"{location}: unsupported Dockerfile frontend")
             if not pending:
                 output.append(line)
             continue
         trimmed = line.rstrip()
         # Match BuildKit: an escape token preceded by another is not a continuation.
-        continued = trimmed.endswith('\\') and not trimmed.endswith('\\\\')
+        continued = trimmed.endswith("\\") and not trimmed.endswith("\\\\")
         pending += line.rstrip()[:-1] if continued else line
         if continued:
             continue
         instruction = pending.lstrip()
-        pending = ''
-        match = re.match(r'(\w+)\s+(.*)', instruction)
+        pending = ""
+        match = re.match(r"(\w+)\s+(.*)", instruction)
         if not match:
-            raise ValueError(f'{location}: invalid Dockerfile instruction')
+            raise ValueError(f"{location}: invalid Dockerfile instruction")
         name, body = match.groups()
         name = name.upper()
-        if name in ('SHELL', 'ONBUILD') or '<<' in body:
-            raise ValueError(f'{location}: unsupported {name}/heredoc syntax')
-        if name != 'RUN':
+        if name in ("SHELL", "ONBUILD") or "<<" in body:
+            raise ValueError(f"{location}: unsupported {name}/heredoc syntax")
+        if name != "RUN":
             output.append(instruction)
             continue
         flags = []
-        while body.startswith('--'):
-            flag = re.match(r'(--(?:mount|network|security)=[^\s]+)\s+(.*)', body)
-            if not flag or any(character in flag[1] for character in ('"', "'", '\\')):
-                raise ValueError(f'{location}: unsupported RUN flag syntax')
+        while body.startswith("--"):
+            flag = re.match(r"(--(?:mount|network|security)=[^\s]+)\s+(.*)", body)
+            if not flag or any(character in flag[1] for character in ('"', "'", "\\")):
+                raise ValueError(f"{location}: unsupported RUN flag syntax")
             flags.append(flag[1])
             body = flag[2]
         command = None
-        if body.startswith('['):
+        if body.startswith("["):
             try:
                 command = json.loads(body)
             except json.JSONDecodeError:
                 pass  # BuildKit treats non-JSON bracket expressions as shell form.
         if command is not None:
-            if not isinstance(command, list) or not command or not all(isinstance(arg, str) for arg in command):
-                raise ValueError(f'{location}: invalid exec RUN')
-            body = json.dumps(['/bin/sh', '-c', exports + 'exec "$@"', 'agent-docker-build', *command])
+            if (
+                not isinstance(command, list)
+                or not command
+                or not all(isinstance(arg, str) for arg in command)
+            ):
+                raise ValueError(f"{location}: invalid exec RUN")
+            body = json.dumps(
+                ["/bin/sh", "-c", exports + 'exec "$@"', "agent-docker-build", *command]
+            )
         else:
             body = exports + body
-        output.append(' '.join(['RUN', *flags, mounts, body]))
+        output.append(" ".join(["RUN", *flags, mounts, body]))
     if pending:
-        raise ValueError(f'{source}:{start}: unfinished continuation')
-    return '\n'.join(output) + '\n'
+        raise ValueError(f"{source}:{start}: unfinished continuation")
+    return "\n".join(output) + "\n"
 
 
 def local_context(value):
-    if '://' in value or value == '-' or value.startswith('git@'):
-        raise ValueError('only local directory build contexts are supported')
+    if "://" in value or value == "-" or value.startswith("git@"):
+        raise ValueError("only local directory build contexts are supported")
     context = Path(value).resolve(strict=True)
     if not context.is_dir():
-        raise ValueError('build context must be a directory')
+        raise ValueError("build context must be a directory")
     return context
 
 
 def write_inputs(directory, source, transformed, bundle):
-    dockerfile = directory / 'Dockerfile'
+    dockerfile = directory / "Dockerfile"
     dockerfile.write_text(transformed)
-    ignore = Path(str(source) + '.dockerignore')
+    ignore = Path(str(source) + ".dockerignore")
     if ignore.exists():
-        shutil.copyfile(ignore, Path(str(dockerfile) + '.dockerignore'))
-    ca_file = directory / 'ca.pem'
+        shutil.copyfile(ignore, Path(str(dockerfile) + ".dockerignore"))
+    ca_file = directory / "ca.pem"
     shutil.copyfile(bundle, ca_file)
-    apt_file = directory / 'apt.conf'
+    apt_file = directory / "apt.conf"
     apt_file.write_text(f'Acquire::https::CaInfo "{SECRET_TARGETS["agent-build-ca"]}";\n')
-    php_file = directory / 'php.ini'
-    php_file.write_text(f'openssl.cafile={SECRET_TARGETS["agent-build-ca"]}\n'
-                        f'curl.cainfo={SECRET_TARGETS["agent-build-ca"]}\n')
-    return dockerfile, dict(zip(SECRET_TARGETS, (ca_file, apt_file, php_file)))
+    php_file = directory / "php.ini"
+    php_file.write_text(
+        f"openssl.cafile={SECRET_TARGETS['agent-build-ca']}\n"
+        f"curl.cainfo={SECRET_TARGETS['agent-build-ca']}\n"
+    )
+    return dockerfile, dict(zip(SECRET_TARGETS, (ca_file, apt_file, php_file), strict=True))
 
 
 def compose_build(docker, arguments):
-    command = [*docker, 'compose']
+    command = [*docker, "compose"]
     for filename in arguments.file:
-        command.extend(['-f', filename])
-    model = json.loads(subprocess.check_output([*command, 'config', '--format', 'json'], text=True))
-    service = model.get('services', {}).get(arguments.service)
-    if service is None or not isinstance(service.get('build'), dict):
-        raise ValueError(f'{arguments.service}: no local Compose build service')
-    build = service['build']
+        command.extend(["-f", filename])
+    model = json.loads(subprocess.check_output([*command, "config", "--format", "json"], text=True))
+    service = model.get("services", {}).get(arguments.service)
+    if service is None or not isinstance(service.get("build"), dict):
+        raise ValueError(f"{arguments.service}: no local Compose build service")
+    build = service["build"]
     unsupported = build.keys() - BUILD_FIELDS
     if unsupported:
-        raise ValueError(f'unsupported Compose build fields: {", ".join(sorted(unsupported))}')
+        raise ValueError(f"unsupported Compose build fields: {', '.join(sorted(unsupported))}")
     secrets = {}
-    for secret in build.get('secrets', []):
-        name = secret if isinstance(secret, str) else secret['source']
-        target = name if isinstance(secret, str) else secret.get('target', name)
+    for secret in build.get("secrets", []):
+        name = secret if isinstance(secret, str) else secret["source"]
+        target = name if isinstance(secret, str) else secret.get("target", name)
         if name in SECRET_TARGETS or target in SECRET_TARGETS:
-            raise ValueError('Compose build uses a reserved secret ID')
-        secrets[name] = model['secrets'][name]
-    selected = {key: service[key] for key in ('build', 'image', 'platform') if key in service}
-    return {'name': model['name'], 'services': {arguments.service: selected}, 'secrets': secrets}
+            raise ValueError("Compose build uses a reserved secret ID")
+        secrets[name] = model["secrets"][name]
+    selected = {key: service[key] for key in ("build", "image", "platform") if key in service}
+    return {"name": model["name"], "services": {arguments.service: selected}, "secrets": secrets}
 
 
 def escape_compose(value):
     # Resolved config has already interpolated variables; Compose must not expand them twice.
     if isinstance(value, str):
-        return value.replace('$', '$$')
+        return value.replace("$", "$$")
     if isinstance(value, list):
         return [escape_compose(entry) for entry in value]
     if isinstance(value, dict):
@@ -192,65 +221,93 @@ def escape_compose(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest='command', required=True)
-    build = commands.add_parser('build')
-    build.add_argument('-f', '--file')
-    build.add_argument('-t', '--tag', action='append', default=[])
-    build.add_argument('--build-arg', action='append', default=[])
-    build.add_argument('--no-cache', action='store_true')
-    build.add_argument('context')
-    compose = commands.add_parser('compose')
-    compose.add_argument('-f', '--file', action='append', default=[])
-    compose.add_argument('--no-cache', action='store_true')
-    compose.add_argument('service')
+    commands = parser.add_subparsers(dest="command", required=True)
+    build = commands.add_parser("build")
+    build.add_argument("-f", "--file")
+    build.add_argument("-t", "--tag", action="append", default=[])
+    build.add_argument("--build-arg", action="append", default=[])
+    build.add_argument("--no-cache", action="store_true")
+    build.add_argument("context")
+    compose = commands.add_parser("compose")
+    compose.add_argument("-f", "--file", action="append", default=[])
+    compose.add_argument("--no-cache", action="store_true")
+    compose.add_argument("service")
     arguments = parser.parse_args()
     docker = docker_command()
-    bundle_value = os.environ.get('AGENT_DOCKER_CA_BUNDLE')
+    bundle_value = os.environ.get("AGENT_DOCKER_CA_BUNDLE")
     if not bundle_value:
-        raise ValueError('AGENT_DOCKER_CA_BUNDLE is missing; restart the agent launcher')
+        raise ValueError("AGENT_DOCKER_CA_BUNDLE is missing; restart the agent launcher")
     bundle = Path(bundle_value).resolve(strict=True)
     ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cafile=str(bundle))
     model = None
-    if arguments.command == 'compose':
+    if arguments.command == "compose":
         model = compose_build(docker, arguments)
-        settings = model['services'][arguments.service]['build']
-        context = local_context(settings['context'])
-        source = (context / settings.get('dockerfile', 'Dockerfile')).resolve(strict=True)
+        settings = model["services"][arguments.service]["build"]
+        context = local_context(settings["context"])
+        source = (context / settings.get("dockerfile", "Dockerfile")).resolve(strict=True)
     else:
         context = local_context(arguments.context)
-        source = Path(arguments.file).resolve(strict=True) if arguments.file else context / 'Dockerfile'
+        source = (
+            Path(arguments.file).resolve(strict=True) if arguments.file else context / "Dockerfile"
+        )
     transformed = transform_dockerfile(source)
-    temporary_root = Path('/tmp/opencode') if Path('/tmp/opencode').is_dir() else Path(tempfile.gettempdir())
+    temporary_root = (
+        Path("/tmp/opencode") if Path("/tmp/opencode").is_dir() else Path(tempfile.gettempdir())
+    )
     if temporary_root.resolve().is_relative_to(context):
-        raise ValueError('temporary directory must be outside the build context')
-    with tempfile.TemporaryDirectory(prefix='agent-docker-build-', dir=temporary_root) as temporary:
+        raise ValueError("temporary directory must be outside the build context")
+    with tempfile.TemporaryDirectory(prefix="agent-docker-build-", dir=temporary_root) as temporary:
         directory = Path(temporary)
         dockerfile, secrets = write_inputs(directory, source, transformed, bundle)
         if model is not None:
-            settings['context'] = str(context)
-            settings['dockerfile'] = str(dockerfile)
-            settings.setdefault('secrets', []).extend({'source': name, 'target': name} for name in secrets)
-            model['secrets'].update({name: {'file': str(path)} for name, path in secrets.items()})
-            override = directory / 'compose.json'
+            settings["context"] = str(context)
+            settings["dockerfile"] = str(dockerfile)
+            settings.setdefault("secrets", []).extend(
+                {"source": name, "target": name} for name in secrets
+            )
+            model["secrets"].update({name: {"file": str(path)} for name, path in secrets.items()})
+            override = directory / "compose.json"
             override.write_text(json.dumps(escape_compose(model)))
-            definition = subprocess.check_output([*docker, 'compose', '-f', str(override),
-                                                  'build', '--print', arguments.service], text=True)
-            bake = directory / 'bake.json'
+            definition = subprocess.check_output(
+                [*docker, "compose", "-f", str(override), "build", "--print", arguments.service],
+                text=True,
+            )
+            bake = directory / "bake.json"
             bake.write_text(definition)
-            command = [*docker, 'buildx', 'bake', '--builder', 'default', '--progress', 'plain',
-                       '-f', str(bake), f'--allow=fs.read={directory}', '--load']
+            command = [
+                *docker,
+                "buildx",
+                "bake",
+                "--builder",
+                "default",
+                "--progress",
+                "plain",
+                "-f",
+                str(bake),
+                f"--allow=fs.read={directory}",
+                "--load",
+            ]
             if arguments.no_cache:
-                command.append('--no-cache')
+                command.append("--no-cache")
         else:
-            command = [*docker, 'build', '--builder', 'default', '--progress', 'plain', '-f', str(dockerfile)]
+            command = [
+                *docker,
+                "build",
+                "--builder",
+                "default",
+                "--progress",
+                "plain",
+                "-f",
+                str(dockerfile),
+            ]
             for name, path in secrets.items():
-                command.extend(['--secret', f'id={name},src={path}'])
+                command.extend(["--secret", f"id={name},src={path}"])
             for tag in arguments.tag:
-                command.extend(['-t', tag])
+                command.extend(["-t", tag])
             for argument in arguments.build_arg:
-                command.extend(['--build-arg', argument])
+                command.extend(["--build-arg", argument])
             if arguments.no_cache:
-                command.append('--no-cache')
+                command.append("--no-cache")
             command.append(str(context))
         return subprocess.call(command)
 
@@ -259,7 +316,7 @@ def interrupted(signum, frame):
     raise KeyboardInterrupt
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     signal.signal(signal.SIGTERM, interrupted)
     try:
         sys.exit(main())
@@ -268,5 +325,5 @@ if __name__ == '__main__':
     except subprocess.CalledProcessError as error:
         sys.exit(error.returncode)
     except (OSError, ValueError, KeyError) as error:
-        print(f'agent-docker-build: {error}', file=sys.stderr)
+        print(f"agent-docker-build: {error}", file=sys.stderr)
         sys.exit(1)

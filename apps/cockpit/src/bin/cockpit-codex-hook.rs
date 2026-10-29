@@ -7,18 +7,28 @@ use std::io::{self, Read};
 
 const HOOK_MAX_BYTES: u64 = 65536;
 
-enum HookOutcome { Idle, TeamDelivery(Value), Paused(Value) }
+enum HookOutcome {
+    Idle,
+    TeamDelivery(Value),
+    Paused(Value),
+}
 
 fn question(text: &str) -> Result<&str, String> {
-    if text.trim().is_empty() || text.chars().count() > 300 || text.chars().any(char::is_control)
-        || text.contains("#(") || text.contains("#{") {
+    if text.trim().is_empty()
+        || text.chars().count() > 300
+        || text.chars().any(char::is_control)
+        || text.contains("#(")
+        || text.contains("#{")
+    {
         return Err("question must be 1–300 characters without controls or tmux formats".into());
     }
     Ok(text)
 }
 
 fn update_question(payload: &Value, report: &mut Value) -> Result<(), String> {
-    let session = report["session"].as_str().ok_or("missing translated session")?;
+    let session = report["session"]
+        .as_str()
+        .ok_or("missing translated session")?;
     let cache = paths::statusline_dir();
     let pending = cache.join(format!("input-{session}.question.pending"));
     let current = cache.join(format!("input-{session}.question"));
@@ -28,25 +38,25 @@ fn update_question(payload: &Value, report: &mut Value) -> Result<(), String> {
             fs::create_dir_all(&cache).map_err(|error| error.to_string())?;
             fs::write(&pending, text).map_err(|error| error.to_string())?;
             match fs::remove_file(current) {
-                Ok(()) => {},
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.to_string()),
             }
-        },
+        }
         Some("SessionStart" | "UserPromptSubmit" | "SessionEnd") => {
             for path in [pending, current] {
                 match fs::remove_file(path) {
-                    Ok(()) => {},
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.to_string()),
                 }
             }
             report["needs_input"] = json!(false);
-        },
+        }
         Some("Stop") if report["state"] == "waiting" => {
             match fs::rename(pending, &current) {
-                Ok(()) => {},
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.to_string()),
             }
             match fs::read_to_string(current) {
@@ -55,12 +65,12 @@ fn update_question(payload: &Value, report: &mut Value) -> Result<(), String> {
                     report["state"] = json!("needs-you");
                     report["needs_input"] = json!(true);
                     report["sticky"] = json!(true);
-                },
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.to_string()),
             }
-        },
-        _ => {},
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -69,34 +79,51 @@ fn update_question(payload: &Value, report: &mut Value) -> Result<(), String> {
 /// Team messaging being unavailable never breaks lifecycle reporting.
 fn team_delivery() -> Option<Value> {
     match teams::client::request(&teams::AgentAction::Receive).and_then(|reply| reply.result) {
-        Ok(delivery) if delivery.get("dispatch_id").and_then(Value::as_str).is_some() => Some(delivery),
+        Ok(delivery)
+            if delivery
+                .get("dispatch_id")
+                .and_then(Value::as_str)
+                .is_some() =>
+        {
+            Some(delivery)
+        }
         Ok(_) => None,
         Err(error) => {
             eprintln!("cockpit-codex-hook: no team delivery: {error}");
             None
-        },
+        }
     }
 }
 
 fn report() -> Result<HookOutcome, String> {
     let mut input = Vec::new();
-    io::stdin().take(HOOK_MAX_BYTES + 1).read_to_end(&mut input).map_err(|error| error.to_string())?;
+    io::stdin()
+        .take(HOOK_MAX_BYTES + 1)
+        .read_to_end(&mut input)
+        .map_err(|error| error.to_string())?;
     if input.len() as u64 > HOOK_MAX_BYTES {
         return Err("Codex hook payload exceeds 64 KiB".into());
     }
-    let payload = serde_json::from_slice(&input).map_err(|error| format!("invalid Codex hook JSON: {error}"))?;
-    let Some(mut report) = codex::translate_hook(&payload)? else { return Ok(HookOutcome::Idle) };
-    if payload["hook_event_name"] == "UserPromptSubmit" {
-        if let Ok(generation) = std::env::var("COCKPIT_SUBSCRIPTION_ROUTE") {
-            let gate = cockpit::subscription_fallback::prompt_gate(&generation);
-            if gate["continue"] == false { return Ok(HookOutcome::Paused(gate)); }
+    let payload = serde_json::from_slice(&input)
+        .map_err(|error| format!("invalid Codex hook JSON: {error}"))?;
+    let Some(mut report) = codex::translate_hook(&payload)? else {
+        return Ok(HookOutcome::Idle);
+    };
+    if payload["hook_event_name"] == "UserPromptSubmit"
+        && let Ok(generation) = std::env::var("COCKPIT_SUBSCRIPTION_ROUTE")
+    {
+        let gate = cockpit::subscription_fallback::prompt_gate(&generation);
+        if gate["continue"] == false {
+            return Ok(HookOutcome::Paused(gate));
         }
     }
     update_question(&payload, &mut report)?;
     report["terminal"] = json!(std::env::var("COCKPIT_TERMINAL").is_ok_and(|value| value == "1"));
     file(&report)?;
     // The daemon hands out a message only to a session it sees idle: the turn end goes first.
-    let delivery = (payload["hook_event_name"] == "Stop" && report["state"] == "waiting").then(team_delivery).flatten();
+    let delivery = (payload["hook_event_name"] == "Stop" && report["state"] == "waiting")
+        .then(team_delivery)
+        .flatten();
     if delivery.is_some() {
         report["state"] = json!("working");
         file(&report)?;
@@ -117,24 +144,40 @@ fn main() {
         Ok(HookOutcome::Paused(gate)) => println!("{gate}"),
         Ok(HookOutcome::TeamDelivery(delivery)) => {
             // Output is not proof of native continuation acceptance; chief scheduling keeps Codex unavailable.
-            let dispatch_id = delivery["dispatch_id"].as_str().unwrap_or_default().to_string();
-            let text = format!("{}\n", json!({"decision": "block", "reason": delivery["text"]}));
+            let dispatch_id = delivery["dispatch_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let text = format!(
+                "{}\n",
+                json!({"decision": "block", "reason": delivery["text"]})
+            );
             let mut stdout = io::stdout();
-            let output = io::Write::write_all(&mut stdout, text.as_bytes()).and_then(|_| io::Write::flush(&mut stdout));
+            let output = io::Write::write_all(&mut stdout, text.as_bytes())
+                .and_then(|_| io::Write::flush(&mut stdout));
             if let Err(error) = output {
-                let receipt = teams::AgentAction::Receipt { dispatch_id,
-                    outcome:teams::TransportOutcome::Uncertain { reason:format!("native continuation output failed: {error}") } };
-                if let Err(error) = teams::client::request(&receipt).and_then(|reply| reply.result) {
+                let receipt = teams::AgentAction::Receipt {
+                    dispatch_id,
+                    outcome: teams::TransportOutcome::Uncertain {
+                        reason: format!("native continuation output failed: {error}"),
+                    },
+                };
+                if let Err(error) = teams::client::request(&receipt).and_then(|reply| reply.result)
+                {
                     eprintln!("cockpit-codex-hook: uncertain receipt not recorded: {error}");
                 }
                 std::process::exit(1);
             }
-            let receipt = teams::AgentAction::Receipt { dispatch_id: dispatch_id.clone(),
-                outcome: teams::TransportOutcome::Received { native_id: format!("codex-stop:{dispatch_id}") } };
+            let receipt = teams::AgentAction::Receipt {
+                dispatch_id: dispatch_id.clone(),
+                outcome: teams::TransportOutcome::Received {
+                    native_id: format!("codex-stop:{dispatch_id}"),
+                },
+            };
             if let Err(error) = teams::client::request(&receipt).and_then(|reply| reply.result) {
                 eprintln!("cockpit-codex-hook: team receipt not recorded: {error}");
             }
-        },
+        }
         Err(error) => {
             eprintln!("cockpit-codex-hook: {error}");
             std::process::exit(1);

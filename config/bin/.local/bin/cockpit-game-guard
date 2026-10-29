@@ -1,0 +1,859 @@
+#!/usr/bin/env python3
+"""While a game window is open, agent builds share two CPU cores; afterwards they get theirs back.
+
+CPU-only step 1 of gaming protection (todo d021dc46), not full protection: no CPU-time quota, no
+disk, memory or Docker limits, and new heavy jobs still start (they are pinned within one scan).
+
+usage: cockpit-game-guard run | restore | status | topology | hold | release [MINUTES] | off | on
+
+A game is any open Hyprland window whose class is a game (focused or not, so alt-tab keeps it) or
+the gamemode submap; it is over 30 s after the last one closed. Heavy work is every thread that
+agent-build put at SCHED_IDLE (its children inherit it) inside an agent session's
+app.slice/tmux-spawn-*.scope, owned by this user. Nothing is frozen, stopped or killed: only CPU
+affinity changes, each thread's original set is recorded with its start time, and the record is
+restored when the game ends, on stop, and on the next start after a crash.
+
+Step 2 (admission): it also writes ~/.cache/agent-shims/heavy-gate.json every 5 s, which
+agent-build reads before a new heavy job starts: gaming while a game is open, memory while memory
+is low (hold under 3 GiB available or memory PSI some avg10 >= 5 %; release only after 60 s at
+>= 5 GiB and PSI avg60 < 1 %), held while Theo holds jobs, otherwise clear. A crashed guard leaves
+the status stale, which holds new jobs until Theo releases them (his choice, policy C). Theo's host
+commands: hold, release [MINUTES] (default 60, works with no guard running), off (admission off:
+jobs are not held), on.
+"""
+
+import errno
+import json
+import os
+import pwd
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# Same list as apps/osd/src/registry.rs GAME_CLASS (a test keeps them equal).
+GAME_CLASS = re.compile(r"^(steam_app_[0-9]+|Star Citizen|Dofus\.x64|retroarch)$")
+AGENT_SCOPE = re.compile(
+    r"^/user\.slice/user-[0-9]+\.slice/user@[0-9]+\.service/app\.slice/tmux-spawn-[^/]+\.scope(/|$)"
+)
+SCHED_IDLE = 5
+GAME_OVER_AFTER_S = 30
+DETECT_EVERY_S = 5
+PIN_EVERY_S = 2
+COMMAND_TIMEOUT_S = 2
+# hyprctl failing while Hyprland's socket exists: keep protecting, but not forever.
+UNKNOWN_RELEASE_AFTER_S = 600
+BUILD_CORES = 2
+MIN_PHYSICAL_CORES = 6
+# Over one core between two scans while not pinned: named in the status as untracked work.
+UNTRACKED_CORES = 1.0
+CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
+USAGE = "usage: cockpit-game-guard run | restore | status | topology | hold | release [MINUTES] | off | on"
+GATE_VERSION = 1
+GIB_KB = 1024 * 1024
+MEMORY_HOLD_BELOW_KB = 3 * GIB_KB
+MEMORY_RELEASE_FROM_KB = 5 * GIB_KB
+PSI_HOLD_AVG10 = 5.0
+PSI_RELEASE_AVG60 = 1.0
+MEMORY_CALM_S = 60
+DEFAULT_RELEASE_MINUTES = 60
+
+
+def log(level, message):
+    print(f"{level} {message}", file=sys.stderr, flush=True)
+
+
+def parse_cpu_list(text):
+    cpus = set()
+    for part in text.strip().split(","):
+        if not part:
+            continue
+        first, _, last = part.partition("-")
+        cpus.update(range(int(first), int(last or first) + 1))
+    return cpus
+
+
+def read_text(path):
+    return Path(path).read_text().strip()
+
+
+class UnsupportedTopology(Exception):
+    pass
+
+
+def choose_build_cpus(sys_cpu="/sys/devices/system/cpu"):
+    """The CPU threads builds share during a game, with why; UnsupportedTopology when the machine
+    is not one the two-core choice was checked for (one package, one L3, uniform SMT)."""
+    root = Path(sys_cpu)
+    if (root.parent / "cpu_core").exists() or (root.parent.parent / "cpu_core").exists():
+        raise UnsupportedTopology("hybrid CPU (performance and efficiency cores)")
+    online = sorted(parse_cpu_list(read_text(root / "online")))
+    packages, l3_domains, cores, ranks = set(), set(), {}, {}
+    for cpu in online:
+        topology = root / f"cpu{cpu}" / "topology"
+        try:
+            packages.add(read_text(topology / "physical_package_id"))
+            siblings = frozenset(parse_cpu_list(read_text(topology / "thread_siblings_list")))
+        except (OSError, ValueError) as error:
+            raise UnsupportedTopology(f"cpu{cpu} topology unreadable: {error}") from error
+        cores[siblings] = siblings
+        caches = root / f"cpu{cpu}" / "cache"
+        for index in sorted(caches.glob("index*")) if caches.exists() else []:
+            try:
+                if read_text(index / "level") == "3":
+                    l3_domains.add(read_text(index / "shared_cpu_list"))
+            except OSError:
+                pass
+        try:
+            ranks[siblings] = min(
+                ranks.get(siblings, 1 << 30),
+                int(read_text(root / f"cpu{cpu}" / "acpi_cppc" / "highest_perf")),
+            )
+        except (OSError, ValueError):
+            pass
+    if len(packages) != 1:
+        raise UnsupportedTopology(f"{len(packages)} CPU packages")
+    if len(l3_domains) > 1:
+        raise UnsupportedTopology(
+            f"{len(l3_domains)} L3 cache domains (e.g. two CCDs): which one games use is not known"
+        )
+    if len({len(core) for core in cores}) != 1:
+        raise UnsupportedTopology("cores with different thread counts")
+    if not set().union(*cores) == set(online):
+        raise UnsupportedTopology("SMT siblings outside the online CPUs")
+    if len(cores) < MIN_PHYSICAL_CORES:
+        raise UnsupportedTopology(f"{len(cores)} physical cores, fewer than {MIN_PHYSICAL_CORES}")
+    # The core holding CPU 0 takes most interrupts; the others are ranked by CPPC so games keep the
+    # fastest cores. Without CPPC ranks, the highest-numbered cores.
+    candidates = [core for core in cores if 0 not in core]
+    if len(ranks) == len(cores):
+        candidates.sort(key=lambda core: (ranks[core], -min(core)))
+        why = "lowest-ranked cores by ACPI CPPC highest_perf, excluding CPU 0's core"
+    else:
+        candidates.sort(key=lambda core: -min(core))
+        why = "highest-numbered cores (no CPPC ranking), excluding CPU 0's core"
+    chosen = set().union(*candidates[:BUILD_CORES])
+    return sorted(chosen), why
+
+
+def hyprland_instance(runtime_dir):
+    base = Path(runtime_dir) / "hypr"
+    current = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    if current and (base / current / ".socket.sock").exists():
+        return current
+    try:
+        live = [entry for entry in base.iterdir() if (entry / ".socket.sock").exists()]
+        return max(live, key=lambda entry: entry.stat().st_mtime).name if live else None
+    except OSError:
+        return None
+
+
+def game_seen(runtime_dir, run=subprocess.run):
+    """True or False, or None when Hyprland runs but could not be asked (keep the current state)."""
+    instance = hyprland_instance(runtime_dir)
+    if instance is None:
+        return False
+    environment = os.environ | {"HYPRLAND_INSTANCE_SIGNATURE": instance}
+    try:
+        clients = run(
+            ["hyprctl", "-j", "clients"],
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT_S,
+            env=environment,
+        )
+        submap = run(
+            ["hyprctl", "submap"],
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT_S,
+            env=environment,
+        )
+        if clients.returncode != 0:
+            return None
+        windows = json.loads(clients.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    if not isinstance(windows, list):
+        return None
+    if submap.returncode == 0 and submap.stdout.strip() == "gamemode":
+        return True
+    return any(
+        GAME_CLASS.match(str(window.get("class", "")))
+        for window in windows
+        if isinstance(window, dict)
+    )
+
+
+def next_protecting(state, seen, now):
+    """Updates state's game lifetime from one detection; returns whether to protect now. The game
+    is over GAME_OVER_AFTER_S after the first detection that saw no game window."""
+    if seen is True:
+        state.setdefault("since", now)
+        state.pop("gone_since", None)
+        state.pop("unknown_since", None)
+    elif state.get("since") is None:
+        return False
+    elif seen is None:
+        state.setdefault("unknown_since", now)
+        if now - state["unknown_since"] >= UNKNOWN_RELEASE_AFTER_S:
+            log("ERROR", f"hyprctl failed for {UNKNOWN_RELEASE_AFTER_S} s: releasing the builds")
+            for key in ("since", "gone_since", "unknown_since"):
+                state.pop(key, None)
+    else:
+        state.pop("unknown_since", None)
+        state.setdefault("gone_since", now)
+        if now - state["gone_since"] >= GAME_OVER_AFTER_S:
+            state.pop("since", None)
+            state.pop("gone_since", None)
+    return state.get("since") is not None
+
+
+def stat_fields(proc, tid):
+    """Fields 3 onwards of /proc/<tid>/stat (index 0 is field 3), or None when it is gone."""
+    try:
+        text = (Path(proc) / str(tid) / "stat").read_text()
+        fields = text[text.rindex(")") + 2 :].split()
+        int(fields[38])
+    except (OSError, ValueError, IndexError):
+        return None
+    return fields
+
+
+def start_time(fields):
+    return int(fields[19])
+
+
+def policy(fields):
+    return int(fields[38])
+
+
+def cpu_ticks(fields):
+    return int(fields[11]) + int(fields[12])
+
+
+def process_cgroup(proc, pid):
+    try:
+        for line in (Path(proc) / str(pid) / "cgroup").read_text().splitlines():
+            if line.startswith("0::"):
+                return line[3:]
+    except OSError:
+        pass
+    return None
+
+
+def scan(proc, uid):
+    """The heavy threads of agent sessions [(tid, start time)] and per-process CPU ticks of the
+    rest of this user's processes {pid: (comm, ticks, why)} for untracked-work reports."""
+    heavy, others = [], {}
+    for entry in os.scandir(proc):
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat(follow_symlinks=False).st_uid != uid:
+                continue
+        except OSError:
+            continue
+        pid = int(entry.name)
+        cgroup = process_cgroup(proc, pid)
+        if cgroup is None:
+            continue
+        in_agent_scope = bool(AGENT_SCOPE.match(cgroup))
+        # Outside agent sessions only /proc/<pid>/stat is read: it is reported, never pinned, and
+        # reading every thread of every desktop process would cost more than the scan is worth.
+        try:
+            tids = (
+                [int(name) for name in os.listdir(Path(proc) / entry.name / "task")]
+                if in_agent_scope
+                else [pid]
+            )
+        except OSError:
+            continue
+        unpinned_ticks, why = 0, None
+        for tid in tids:
+            fields = stat_fields(Path(proc) / entry.name / "task" if in_agent_scope else proc, tid)
+            if fields is None:
+                continue
+            is_idle = policy(fields) == SCHED_IDLE
+            if in_agent_scope and is_idle:
+                heavy.append((tid, start_time(fields)))
+            elif in_agent_scope or is_idle:
+                unpinned_ticks += cpu_ticks(fields)
+                why = (
+                    "not started through agent-build"
+                    if in_agent_scope
+                    else "SCHED_IDLE outside agent sessions"
+                )
+        if why:
+            try:
+                comm = read_text(Path(proc) / entry.name / "comm")
+            except OSError:
+                comm = "?"
+            others[pid] = (comm, unpinned_ticks, why)
+    return sorted(heavy), others
+
+
+def untracked_report(before, after, seconds):
+    if not before or seconds <= 0:
+        return []
+    report = []
+    for pid, (comm, ticks, why) in after.items():
+        previous = before.get(pid)
+        if previous is None:
+            continue
+        cores = (ticks - previous[1]) / CLOCK_TICKS / seconds
+        if cores >= UNTRACKED_CORES:
+            report.append({"pid": pid, "comm": comm, "cores": round(cores, 1), "why": why})
+    return report
+
+
+def pin(
+    state,
+    heavy,
+    build_cpus,
+    proc,
+    setaffinity=os.sched_setaffinity,
+    getaffinity=os.sched_getaffinity,
+):
+    """Pins every heavy thread to build_cpus, recording its first-seen affinity. A thread already
+    on exactly build_cpus when first seen was born pinned (a child of a pinned thread): its
+    original is None, restored to the default set."""
+    tasks = state.setdefault("tasks", {})
+    pinned, failed = 0, []
+    wanted = set(build_cpus)
+    # Short-lived compilers would otherwise grow the record for the whole game. A thread still
+    # alive but no longer heavy keeps its record: it still needs its CPUs back.
+    current_heavy = {str(tid) for tid, _ in heavy}
+    for key, record in list(tasks.items()):
+        if key in current_heavy:
+            continue
+        fields = stat_fields(proc, key)
+        if fields is None or start_time(fields) != record["start"]:
+            tasks.pop(key)
+    for tid, started in heavy:
+        key = str(tid)
+        record = tasks.get(key)
+        if record is not None and record["start"] != started:
+            record = None
+        try:
+            current = getaffinity(tid)
+            if record is None:
+                tasks[key] = {
+                    "start": started,
+                    "original": None if current == wanted else sorted(current),
+                }
+            if current != wanted:
+                setaffinity(tid, wanted)
+                if getaffinity(tid) != wanted:
+                    raise OSError(f"affinity reads back as {sorted(getaffinity(tid))}")
+            pinned += 1
+        except ProcessLookupError:
+            tasks.pop(key, None)
+        except OSError as error:
+            failed.append({"tid": tid, "error": str(error)})
+    return pinned, failed
+
+
+def restore(
+    state,
+    heavy,
+    build_cpus,
+    default_cpus,
+    proc,
+    setaffinity=os.sched_setaffinity,
+    getaffinity=os.sched_getaffinity,
+):
+    """Gives every recorded thread its original set back (when its start time still matches) and
+    every heavy thread still on exactly build_cpus the default set. Returns what could not be restored."""
+    tasks = state.get("tasks", {})
+    wanted_default = set(default_cpus)
+    stuck = []
+    for key, record in list(tasks.items()):
+        fields = stat_fields(proc, key)
+        if fields is None or start_time(fields) != record["start"]:
+            tasks.pop(key)
+            continue
+        target = set(record["original"]) if record["original"] is not None else wanted_default
+        try:
+            try:
+                setaffinity(int(key), target)
+            except OSError as error:
+                # EINVAL: none of its original CPUs is online any more.
+                if error.errno != errno.EINVAL or target == wanted_default:
+                    raise
+                setaffinity(int(key), wanted_default)
+            tasks.pop(key)
+        except ProcessLookupError:
+            tasks.pop(key)
+        except OSError as error:
+            stuck.append({"tid": int(key), "error": str(error)})
+    for tid, _ in heavy:
+        if str(tid) in tasks:
+            continue
+        try:
+            if getaffinity(tid) == set(build_cpus):
+                setaffinity(tid, wanted_default)
+        except ProcessLookupError:
+            pass
+        except OSError as error:
+            stuck.append({"tid": tid, "error": str(error)})
+    return stuck
+
+
+def state_path(runtime_dir):
+    return Path(runtime_dir) / "cockpit-game-guard.json"
+
+
+def valid_record(record):
+    original = record.get("original") if isinstance(record, dict) else None
+    return (
+        isinstance(record, dict)
+        and isinstance(record.get("start"), int)
+        and (
+            original is None
+            or (isinstance(original, list) and all(isinstance(cpu, int) for cpu in original))
+        )
+    )
+
+
+def load_state(path):
+    try:
+        state = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        log("WARN", f"{path} unreadable ({error}); starting from an empty state")
+        return {}
+    if not isinstance(state, dict):
+        log("WARN", f"{path} is not a state object; starting from an empty state")
+        return {}
+    tasks = state.get("tasks") if isinstance(state.get("tasks"), dict) else {}
+    invalid = [
+        key for key, record in tasks.items() if not key.isdigit() or not valid_record(record)
+    ]
+    if invalid:
+        log("WARN", f"{path}: dropped {len(invalid)} malformed thread records")
+    state["tasks"] = {key: record for key, record in tasks.items() if key not in invalid}
+    return state
+
+
+def save_state(path, state):
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as file:
+        json.dump(state, file, indent=1, sort_keys=True)
+    os.replace(temporary, path)
+
+
+def read_memory(proc="/proc"):
+    """{available_kb, psi_some_avg10, psi_some_avg60}, or None when either file is unreadable."""
+    try:
+        available = next(
+            int(line.split()[1])
+            for line in (Path(proc) / "meminfo").read_text().splitlines()
+            if line.startswith("MemAvailable:")
+        )
+        some = next(
+            line
+            for line in (Path(proc) / "pressure/memory").read_text().splitlines()
+            if line.startswith("some ")
+        )
+        values = dict(part.split("=") for part in some.split()[1:])
+        return {
+            "available_kb": available,
+            "psi_some_avg10": float(values["avg10"]),
+            "psi_some_avg60": float(values["avg60"]),
+        }
+    except (OSError, StopIteration, ValueError, KeyError, IndexError):
+        return None
+
+
+def next_memory_hold(state, sample, now):
+    """Whether low memory holds new heavy jobs, with hysteresis; an unreadable sample holds."""
+    if sample is None:
+        state["memory_hold"] = True
+        state.pop("memory_calm_since", None)
+        return True
+    if not state.get("memory_hold"):
+        if (
+            sample["available_kb"] < MEMORY_HOLD_BELOW_KB
+            or sample["psi_some_avg10"] >= PSI_HOLD_AVG10
+        ):
+            state["memory_hold"] = True
+            state.pop("memory_calm_since", None)
+        return bool(state.get("memory_hold"))
+    if (
+        sample["available_kb"] >= MEMORY_RELEASE_FROM_KB
+        and sample["psi_some_avg60"] < PSI_RELEASE_AVG60
+    ):
+        state.setdefault("memory_calm_since", now)
+        if now - state["memory_calm_since"] >= MEMORY_CALM_S:
+            state["memory_hold"] = False
+            state.pop("memory_calm_since", None)
+    else:
+        state.pop("memory_calm_since", None)
+    return bool(state.get("memory_hold"))
+
+
+def memory_reason(sample):
+    if sample is None:
+        return "memory: /proc/meminfo or /proc/pressure/memory unreadable"
+    return (
+        f"memory is low: {sample['available_kb'] // 1024} MiB available, pressure "
+        f"{sample['psi_some_avg10']:.1f} % (10 s); new heavy jobs wait until 5 GiB are free for a minute"
+    )
+
+
+def gate_state(manual, protecting, memory_hold, sample, now):
+    """(state, reason) for the gate; Theo's off and hold come first."""
+    if manual.get("off"):
+        return "off", "admission is off (cockpit-game-guard off)"
+    if manual.get("hold"):
+        return "held", "Theo holds new heavy jobs (cockpit-game-guard hold)"
+    if protecting:
+        return "gaming", "a game is open; new heavy jobs wait until 30 s after it closes"
+    if memory_hold:
+        return "memory", memory_reason(sample)
+    return "clear", ""
+
+
+def account_home():
+    """The account's home from the password database, never $HOME or XDG_*: a command run with
+    another HOME must still write the status agent-build reads, with its manual file."""
+    uid = os.getuid()
+    try:
+        home = pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        raise OSError(f"no password entry for uid {uid}") from None
+    if not os.path.isabs(home):
+        raise OSError(f"the home of uid {uid} is not an absolute path: {home!r}")
+    return Path(home)
+
+
+def gate_file(home=None):
+    return Path(home or account_home()) / ".cache/agent-shims/heavy-gate.json"
+
+
+def manual_dir():
+    """Theo's hold and off survive a reboot, like the gate's off state does. Same account home as
+    gate_file(), so a command under another HOME never splits the two."""
+    return account_home() / ".local/state/cockpit"
+
+
+def manual_path(directory):
+    return Path(directory) / "game-guard-manual.json"
+
+
+def load_manual(directory):
+    try:
+        manual = json.loads(manual_path(directory).read_text())
+    except (OSError, ValueError):
+        return {}
+    return manual if isinstance(manual, dict) else {}
+
+
+def current_boot_id():
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return None
+
+
+def write_gate(path, gate):
+    """Atomic and world-readable (sandboxes read it; the folder is read-only for them)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(descriptor, "w") as file:
+        os.fchmod(file.fileno(), 0o644)
+        json.dump(gate, file, sort_keys=True)
+    os.replace(temporary, path)
+
+
+class Guard:
+    def __init__(
+        self,
+        runtime_dir,
+        proc="/proc",
+        topology=choose_build_cpus,
+        scanner=None,
+        detect=None,
+        clock=time.monotonic,
+        wall=time.time,
+        sleep=time.sleep,
+        memory=None,
+        gate_path=None,
+        manual_directory=None,
+    ):
+        self.runtime_dir = runtime_dir
+        self.manual_dir = manual_directory or manual_dir()
+        self.memory = memory or (lambda: read_memory(proc))
+        self.gate_path = gate_path or gate_file()
+        self.proc = proc
+        uid = os.getuid()
+        self.scan = scanner or (lambda: scan(proc, uid))
+        self.path = state_path(runtime_dir)
+        self.detect = detect or (lambda: game_seen(runtime_dir))
+        self.clock, self.wall, self.sleep = clock, wall, sleep
+        self.build_cpus, self.why = topology()
+        self.default_cpus = sorted(os.sched_getaffinity(0))
+        if not set(self.build_cpus) < set(self.default_cpus):
+            raise UnsupportedTopology(
+                f"build CPUs {self.build_cpus} are not a strict subset of this service's {self.default_cpus}"
+            )
+        self.state = load_state(self.path)
+        self.stopping = False
+        self.scans = 0
+        self.detections = 0
+
+    def publish_gate(self):
+        """Writes the admission status agent-build reads; called at least every 5 s."""
+        sample = self.memory()
+        now = self.wall()
+        memory_hold = next_memory_hold(self.state, sample, now)
+        manual = load_manual(self.manual_dir)
+        state, reason = gate_state(
+            manual, bool(self.state.get("protecting")), memory_hold, sample, now
+        )
+        previous = self.state.get("gate") or {}
+        if previous.get("state") != state:
+            log(
+                "INFO",
+                f"admission {previous.get('state', 'unset')} -> {state}: {reason or 'new heavy jobs start'}; memory {sample}",
+            )
+            previous = {"state": state, "since": now}
+        self.state["gate"] = previous
+        self.state["gate_sequence"] = self.state.get("gate_sequence", 0) + 1
+        release_until = manual.get("release_until")
+        write_gate(
+            self.gate_path,
+            {
+                "version": GATE_VERSION,
+                "state": state,
+                "reason": reason,
+                "since": previous["since"],
+                "updated_at": now,
+                "sequence": self.state["gate_sequence"],
+                "boot_id": current_boot_id(),
+                "writer": "guard",
+                "guard_pid": os.getpid(),
+                "memory": sample,
+                "manual_release_until": release_until
+                if isinstance(release_until, (int, float))
+                else None,
+            },
+        )
+
+    def save(self, publish=False):
+        """Saves the pin records first: they must survive a failing gate write. Only the detection
+        loop publishes the gate: a stop or restore must never write a fresh status (a dead guard
+        would look alive, and mid-game it would say clear)."""
+        self.state["build_cpus"] = self.build_cpus
+        self.state["default_cpus"] = self.default_cpus
+        self.state["updated_at"] = int(self.wall())
+        save_state(self.path, self.state)
+        if not publish:
+            return
+        try:
+            self.publish_gate()
+        except OSError as error:
+            log(
+                "ERROR",
+                f"could not write the admission status {self.gate_path}: {error}; new heavy jobs hold once it is stale",
+            )
+            return
+        save_state(self.path, self.state)
+
+    def release(self, reason):
+        heavy, _ = self.scan()
+        stuck = restore(self.state, heavy, self.build_cpus, self.default_cpus, self.proc)
+        for key in ("since", "gone_since", "unknown_since", "untracked", "failed"):
+            self.state.pop(key, None)
+        self.state["protecting"] = False
+        self.state["stuck"] = stuck
+        if stuck:
+            log("ERROR", f"{reason}: {len(stuck)} threads keep the build CPUs: {stuck[:5]}")
+        else:
+            log("INFO", f"{reason}: agent builds have their CPUs back")
+        self.save()
+        return stuck
+
+    def tick(self):
+        """One detection and, while a game is open, pin scans until the next detection."""
+        self.detections += 1
+        was_protecting = bool(self.state.get("protecting"))
+        protecting = next_protecting(self.state, self.detect(), self.clock())
+        if not protecting:
+            if was_protecting:
+                self.release("game over")
+            self.save(publish=True)
+            return DETECT_EVERY_S
+        if not was_protecting:
+            log("INFO", f"game open: agent builds share CPUs {self.build_cpus} ({self.why})")
+        self.state["protecting"] = True
+        before, started = None, self.clock()
+        for _ in range(DETECT_EVERY_S // PIN_EVERY_S or 1):
+            self.scans += 1
+            heavy, others = self.scan()
+            pinned, failed = pin(self.state, heavy, self.build_cpus, self.proc)
+            untracked = untracked_report(before, others, self.clock() - started)
+            self.state.update(pinned=pinned, failed=failed[:20], untracked=untracked[:20])
+            for report in untracked:
+                if report["pid"] not in self.state.setdefault("reported", []):
+                    self.state["reported"] = (self.state["reported"] + [report["pid"]])[-200:]
+                    log("WARN", f"untracked heavy work not pinned: {report}")
+            if failed:
+                log("WARN", f"{len(failed)} heavy threads could not be pinned: {failed[:3]}")
+            self.save(publish=True)
+            before, started = others, self.clock()
+            if self.stopping:
+                break
+            self.sleep(PIN_EVERY_S)
+        return 0
+
+    def run(self):
+        if self.state.get("tasks"):
+            self.release("start after an unclean stop")
+        # Game times are monotonic: a previous run's are meaningless now.
+        for key in ("since", "gone_since", "unknown_since", "reported"):
+            self.state.pop(key, None)
+        self.state["protecting"] = False
+        self.save()
+        log("INFO", f"watching for games; builds would share CPUs {self.build_cpus} ({self.why})")
+        while not self.stopping:
+            wait = self.tick()
+            if wait and not self.stopping:
+                self.sleep(wait)
+        self.release("stopping")
+
+
+def main(arguments):
+    command = arguments[0] if arguments else ""
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    if command == "topology":
+        try:
+            cpus, why = choose_build_cpus()
+        except UnsupportedTopology as error:
+            print(f"unsupported CPU topology: {error}")
+            return 3
+        print(f"build CPUs during a game: {','.join(map(str, cpus))} ({why})")
+        return 0
+    if command == "status":
+        state = load_state(state_path(runtime_dir))
+        print(
+            json.dumps(state, indent=1, sort_keys=True)
+            if state
+            else "no state: the guard has not run"
+        )
+        try:
+            print("admission status (heavy-gate.json):", gate_file().read_text().strip())
+        except OSError as error:
+            print(f"admission status unreadable: {error}")
+        print("manual controls:", json.dumps(load_manual(manual_dir()), sort_keys=True))
+        return 0
+    if command in ("hold", "release", "off", "on"):
+        return manual_command(manual_dir(), command, arguments[1:])
+    if command not in ("run", "restore"):
+        print(USAGE, file=sys.stderr)
+        return 2
+    try:
+        guard = Guard(runtime_dir)
+    except UnsupportedTopology as error:
+        log("ERROR", f"unsupported CPU topology, nothing pinned: {error}")
+        if command == "restore":
+            return restore_without_topology(runtime_dir)
+        return 3
+    if command == "restore":
+        return 1 if guard.release("restore") else 0
+
+    def stop(signal_number, frame):
+        guard.stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    guard.run()
+    return 0
+
+
+def number(value, default):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+
+
+def manual_command(directory, command, arguments, home=None, wall=time.time):
+    """Theo's host-side controls. They take effect at once, also with no guard running: the gate
+    file is rewritten here too, so a dead guard cannot keep jobs held after a release."""
+    manual = load_manual(directory)
+    now = wall()
+    if command == "release":
+        try:
+            minutes = int(arguments[0]) if arguments else DEFAULT_RELEASE_MINUTES
+        except ValueError:
+            minutes = 0
+        if not 1 <= minutes <= 24 * 60:
+            print("usage: cockpit-game-guard release [MINUTES, 1 to 1440]", file=sys.stderr)
+            return 2
+        manual.update(hold=False, release_until=now + minutes * 60)
+        said = f"new heavy jobs may start for the next {minutes} min, whatever the guard says"
+    elif command == "hold":
+        manual.update(hold=True, off=False, release_until=None)
+        said = "new heavy jobs are held until cockpit-game-guard release (admission is on)"
+    elif command == "off":
+        manual.update(off=True, hold=False, release_until=None)
+        said = "admission is off: new heavy jobs start without waiting for games or memory"
+    else:
+        manual.update(off=False, release_until=None)
+        said = "admission is on again"
+    manual_path(directory).parent.mkdir(parents=True, exist_ok=True)
+    save_state(manual_path(directory), manual)
+    path = gate_file(home)
+    try:
+        gate = json.loads(path.read_text())
+        if not isinstance(gate, dict):
+            gate = {}
+    except (OSError, ValueError):
+        gate = {}
+    state = (
+        "off" if manual.get("off") else "held" if manual.get("hold") else gate.get("state", "held")
+    )
+    if state == "off" and not manual.get("off"):
+        state = "held"
+    write_gate(
+        path,
+        gate
+        | {
+            # updated_at stays the guard's: a manual command must never make a dead guard look alive.
+            "version": GATE_VERSION,
+            "state": state,
+            "since": number(gate.get("since"), now),
+            "updated_at": number(gate.get("updated_at"), 0),
+            "reason": gate.get("reason") if state == gate.get("state") else said,
+            "boot_id": current_boot_id(),
+            "writer": f"manual {command}",
+            "manual_release_until": manual.get("release_until"),
+        },
+    )
+    print(said)
+    return 0
+
+
+def restore_without_topology(runtime_dir):
+    """restore must still work if the topology check started failing after threads were pinned."""
+    path = state_path(runtime_dir)
+    state = load_state(path)
+    if not state.get("tasks"):
+        return 0
+    default_cpus = state.get("default_cpus") or sorted(os.sched_getaffinity(0))
+    stuck = restore(state, [], state.get("build_cpus", []), default_cpus, "/proc")
+    state["protecting"] = False
+    save_state(path, state)
+    return 1 if stuck else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except OSError as error:
+        log("ERROR", f"cockpit-game-guard: {error}")
+        sys.exit(1)

@@ -23,7 +23,10 @@ enum Escape {
     None,
     Started,
     /// A control sequence (ESC [): `is_private` for ESC [ < = > ?, whose final m is not a colour.
-    Control { is_first_byte: bool, is_private: bool },
+    Control {
+        is_first_byte: bool,
+        is_private: bool,
+    },
 }
 
 /// Adds dim after every colour sequence (CSI … m) while faded. The bytes go out as they come; an
@@ -35,7 +38,10 @@ struct Fader {
 
 impl Fader {
     fn new() -> Self {
-        Fader { is_faded: false, escape: Escape::None }
+        Fader {
+            is_faded: false,
+            escape: Escape::None,
+        }
     }
 
     fn filter(&mut self, chunk: &[u8]) -> Vec<u8> {
@@ -44,15 +50,30 @@ impl Fader {
             output.push(byte);
             self.escape = match (self.escape, byte) {
                 (_, 0x1b) => Escape::Started,
-                (Escape::Started, b'[') => Escape::Control { is_first_byte: true, is_private: false },
+                (Escape::Started, b'[') => Escape::Control {
+                    is_first_byte: true,
+                    is_private: false,
+                },
                 (Escape::Control { is_private, .. }, 0x40..=0x7e) => {
                     if byte == b'm' && !is_private && self.is_faded {
                         output.extend_from_slice(DIM);
                     }
                     Escape::None
                 }
-                (Escape::Control { is_first_byte: true, .. }, b'<'..=b'?') => Escape::Control { is_first_byte: false, is_private: true },
-                (Escape::Control { is_private, .. }, _) => Escape::Control { is_first_byte: false, is_private },
+                (
+                    Escape::Control {
+                        is_first_byte: true,
+                        ..
+                    },
+                    b'<'..=b'?',
+                ) => Escape::Control {
+                    is_first_byte: false,
+                    is_private: true,
+                },
+                (Escape::Control { is_private, .. }, _) => Escape::Control {
+                    is_first_byte: false,
+                    is_private,
+                },
                 _ => Escape::None,
             };
         }
@@ -137,14 +158,32 @@ fn window_size() -> Option<libc::winsize> {
 
 /// Starts the command on a new terminal; returns its pid and the terminal's master side.
 fn spawn(command: &[String]) -> std::io::Result<(i32, i32)> {
-    let arguments: Vec<CString> = command.iter().map(|argument| CString::new(argument.as_str())).collect::<Result<_, _>>()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "an argument holds a NUL byte"))?;
-    let mut pointers: Vec<*const libc::c_char> = arguments.iter().map(|argument| argument.as_ptr()).collect();
+    let arguments: Vec<CString> = command
+        .iter()
+        .map(|argument| CString::new(argument.as_str()))
+        .collect::<Result<_, _>>()
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "an argument holds a NUL byte",
+            )
+        })?;
+    let mut pointers: Vec<*const libc::c_char> =
+        arguments.iter().map(|argument| argument.as_ptr()).collect();
     pointers.push(std::ptr::null());
     let size = window_size();
-    let size_pointer = size.as_ref().map_or(std::ptr::null(), |size| size as *const libc::winsize);
+    let size_pointer = size
+        .as_ref()
+        .map_or(std::ptr::null(), |size| size as *const libc::winsize);
     let mut master = -1;
-    let pid = unsafe { libc::forkpty(&mut master, std::ptr::null_mut(), std::ptr::null(), size_pointer) };
+    let pid = unsafe {
+        libc::forkpty(
+            &mut master,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            size_pointer,
+        )
+    };
     if pid < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -164,15 +203,21 @@ fn terminal_name(master: i32) -> std::io::Result<String> {
     if unsafe { libc::ptsname_r(master, name.as_mut_ptr(), name.len()) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_string_lossy().into_owned())
+    Ok(unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// In the background: the relay keeps relaying while tmux redraws through it.
 fn redraw(terminal: &str) {
     let terminal = terminal.to_string();
     std::thread::spawn(move || {
-        let _ = std::process::Command::new("tmux").args(["refresh-client", "-t", &terminal])
-            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        let _ = std::process::Command::new("tmux")
+            .args(["refresh-client", "-t", &terminal])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     });
 }
 
@@ -202,9 +247,21 @@ fn relay(command: &[String]) -> std::io::Result<i32> {
     let mut is_stdin_open = true;
     loop {
         let mut polled = [
-            libc::pollfd { fd: if is_stdin_open { STDIN } else { -1 }, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: master, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: resizes, events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: if is_stdin_open { STDIN } else { -1 },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: master,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: resizes,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         if unsafe { libc::poll(polled.as_mut_ptr(), 3, -1) } < 0 {
             let error = std::io::Error::last_os_error();
@@ -220,12 +277,12 @@ fn relay(command: &[String]) -> std::io::Result<i32> {
             } else {
                 let keys = &buffer[..count as usize];
                 write_all(master, keys)?;
-                if let Some(is_focused) = focus.feed(keys) {
-                    if fader.is_faded == is_focused {
-                        fader.is_faded = !is_focused;
-                        write_all(STDOUT, if fader.is_faded { DIM } else { UNDIM })?;
-                        redraw(&terminal);
-                    }
+                if let Some(is_focused) = focus.feed(keys)
+                    && fader.is_faded == is_focused
+                {
+                    fader.is_faded = !is_focused;
+                    write_all(STDOUT, if fader.is_faded { DIM } else { UNDIM })?;
+                    redraw(&terminal);
                 }
             }
         }
@@ -245,7 +302,11 @@ fn relay(command: &[String]) -> std::io::Result<i32> {
     }
     let mut status = 0;
     unsafe { libc::waitpid(child, &mut status, 0) };
-    Ok(if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 1 })
+    Ok(if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else {
+        1
+    })
 }
 
 fn main() {
@@ -268,12 +329,18 @@ mod tests {
     use super::*;
 
     fn faded() -> Fader {
-        Fader { is_faded: true, escape: Escape::None }
+        Fader {
+            is_faded: true,
+            escape: Escape::None,
+        }
     }
 
     #[test]
     fn colours_pass_unchanged_while_focused() {
-        assert_eq!(Fader::new().filter(b"\x1b[31mred\x1b[0m"), b"\x1b[31mred\x1b[0m");
+        assert_eq!(
+            Fader::new().filter(b"\x1b[31mred\x1b[0m"),
+            b"\x1b[31mred\x1b[0m"
+        );
     }
 
     #[test]
@@ -281,11 +348,19 @@ mod tests {
         for (drawn, shown) in [
             (&b"\x1b[31mred"[..], &b"\x1b[31m\x1b[2mred"[..]),
             (b"\x1b[0m", b"\x1b[0m\x1b[2m"),
-            (b"\x1b[38;2;158;206;106mgreen", b"\x1b[38;2;158;206;106m\x1b[2mgreen"),
+            (
+                b"\x1b[38;2;158;206;106mgreen",
+                b"\x1b[38;2;158;206;106m\x1b[2mgreen",
+            ),
             (b"\x1b[m", b"\x1b[m\x1b[2m"),
             (b"plain", b"plain"),
         ] {
-            assert_eq!(faded().filter(drawn), shown, "{:?}", String::from_utf8_lossy(drawn));
+            assert_eq!(
+                faded().filter(drawn),
+                shown,
+                "{:?}",
+                String::from_utf8_lossy(drawn)
+            );
         }
     }
 
@@ -299,15 +374,36 @@ mod tests {
 
     #[test]
     fn other_sequences_ending_in_m_are_left_alone() {
-        for drawn in [&b"\x1b[>4;2m"[..], b"\x1b[?1004h", b"\x1b[2J", b"\x1b]0;title m\x07", b"\x1bm"] {
-            assert_eq!(faded().filter(drawn), drawn, "{:?}", String::from_utf8_lossy(drawn));
+        for drawn in [
+            &b"\x1b[>4;2m"[..],
+            b"\x1b[?1004h",
+            b"\x1b[2J",
+            b"\x1b]0;title m\x07",
+            b"\x1bm",
+        ] {
+            assert_eq!(
+                faded().filter(drawn),
+                drawn,
+                "{:?}",
+                String::from_utf8_lossy(drawn)
+            );
         }
     }
 
     #[test]
     fn the_last_focus_report_in_the_keys_wins() {
-        for (keys, focus) in [(&b"\x1b[O"[..], Some(false)), (b"\x1b[I", Some(true)), (b"\x1b[O\x1b[I", Some(true)), (b"abc", None)] {
-            assert_eq!(FocusWatcher::default().feed(keys), focus, "{:?}", String::from_utf8_lossy(keys));
+        for (keys, focus) in [
+            (&b"\x1b[O"[..], Some(false)),
+            (b"\x1b[I", Some(true)),
+            (b"\x1b[O\x1b[I", Some(true)),
+            (b"abc", None),
+        ] {
+            assert_eq!(
+                FocusWatcher::default().feed(keys),
+                focus,
+                "{:?}",
+                String::from_utf8_lossy(keys)
+            );
         }
     }
 

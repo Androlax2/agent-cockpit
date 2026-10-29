@@ -25,7 +25,10 @@ greyproxy_sha256=6e1932582a097cc665917b3177ff33dfe6f6eaef2f32047a05655082f63fd44
 # the builds apart.
 greyproxy_version=0.4.5
 
-[[ $(uname -m) == x86_64 ]] || { echo "greyproxy-patch: only x86_64 is pinned" >&2; exit 1; }
+[[ $(uname -m) == x86_64 ]] || {
+    echo "greyproxy-patch: only x86_64 is pinned" >&2
+    exit 1
+}
 
 rm -rf "$build_dir"
 mkdir -p "$build_dir/src"

@@ -27,7 +27,7 @@ Every name a file defines, verbs and helpers alike, carries the agent's name: th
 namespace. Each verb is `agent_<name>_<verb>`:
 
 | verb | arguments | does |
-|---|---|---|
+| --- | --- | --- |
 | `label` | | prints its name for messages ("Claude Code") |
 | `is_session_id` | id | true for an id it reports |
 | `tmux_prefix` | | prints the prefix of its tmux sessions' names (the longest matching prefix wins) |

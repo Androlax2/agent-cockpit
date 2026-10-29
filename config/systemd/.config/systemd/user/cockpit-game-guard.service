@@ -1,0 +1,16 @@
+[Unit]
+Description=Cockpit game guard, CPU-only step 1: while a game window is open, agent builds share two cores (~/.local/bin/cockpit-game-guard)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cockpit-game-guard run
+# Also after a crash or a kill: every pinned thread gets its CPUs back.
+ExecStopPost=%h/.local/bin/cockpit-game-guard restore
+Restart=on-failure
+RestartSec=5
+# 3: unsupported CPU topology, which a restart cannot fix.
+RestartPreventExitStatus=3
+
+[Install]
+WantedBy=default.target

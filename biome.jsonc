@@ -1,0 +1,58 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
+  "files": {
+    "includes": ["**/*.{js,mjs,cjs,ts,tsx,jsx}"]
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "rules": {
+      "preset": "recommended",
+      "correctness": { "noUndeclaredVariables": "error" }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["apps/cockpit/assets/remote/*.js"],
+      "linter": {
+        "rules": {
+          // These are classic browser scripts, not implicitly strict ES modules.
+          "suspicious": { "noRedundantUseStrict": "off" },
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "process": "This script runs in a browser, not Node.",
+                  "Buffer": "Use browser byte APIs here.",
+                  "require": "This script has no CommonJS loader."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["config/**/*.mjs", "config/**/*.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "document": "Agent integrations run in Node/Bun, without a browser DOM.",
+                  "window": "Agent integrations run in Node/Bun, without a browser window."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -36,6 +36,8 @@ OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode
 # Sessions started together (a restore after login) each start a standalone server on opencode's
 # one database, and a loser of that race exits at once ("database is locked"): a failure within
 # 10 s of the start is retried once, after 1 to 3 s; a second failure is reported as any other.
+# The launched shell expands its own arguments, status and pane environment.
+# shellcheck disable=SC2016
 OPENCODE_EPILOGUE='attempt=1; while :; do started=$(date +%s); "$@" && exit; code=$?; if [ "$code" = 255 ]; then [ "$(tmux show-options -pqv -t "$TMUX_PANE" @opencode_exit_requested 2>/dev/null)" = 1 ] || cockpit log manager WARN "opencode ended by a signal (status 255) in $PWD: a quit, or a crash"; exit 0; fi; if [ "$attempt" = 1 ] && [ $(( $(date +%s) - started )) -lt 10 ]; then attempt=2; cockpit log manager WARN "opencode failed to start (status $code) in $PWD, retrying once"; sleep "$(awk "BEGIN { srand(); printf \"%d\", 1 + rand() * 3 }")"; continue; fi; break; done; cockpit log manager ERROR "opencode exited with status $code in $PWD"; tmux set-option -p -t "$TMUX_PANE" @opencode_launch_failed 1 || exit "$code"; printf "\n  ✗ opencode exited with status %s\n  any key closes this pane " "$code"; read -r _'
 
 # The ID is stamped by start_opencode before a plugin can report; a snapshot can lag or name a
@@ -44,7 +46,7 @@ opencode_conversation_panes() { # session-id [include-failed]; target<TAB>pane
     local inventory target pane dead identity failed
     inventory=$(LC_ALL=C tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_dead}' 2>&1) || {
         case $inventory in
-            'error connecting to '*' (No such file or directory)'|'no server running on '*) return 0 ;;
+        'error connecting to '*' (No such file or directory)' | 'no server running on '*) return 0 ;;
         esac
         printf "cockpit: cannot inspect OpenCode's managed panes: %s\n" "$inventory" >&2
         return 1
@@ -61,7 +63,7 @@ opencode_conversation_panes() { # session-id [include-failed]; target<TAB>pane
             [[ $failed != 1 ]] || continue
         fi
         printf '%s\t%s\n' "$target" "$pane"
-    done <<< "$inventory"
+    done <<<"$inventory"
     return 0
 }
 
@@ -84,7 +86,10 @@ start_opencode() ( # dir session-id model-ref opencode-arguments...
     local -a terminal_environment=()
     shift 3
     require_plain_directory "$directory"
-    agent_opencode_is_session_id "$session" || { echo "cockpit: not an OpenCode session id" >&2; return 1; }
+    agent_opencode_is_session_id "$session" || {
+        echo "cockpit: not an OpenCode session id" >&2
+        return 1
+    }
     umask 077
     exec 8>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-opencode-session-$session.lock"
     flock 8 || return
@@ -115,7 +120,8 @@ opencode_default_model() {
     validate_launch_setting opencode-model "$model" || return
     validate_launch_setting opencode-effort "$effort" || return
     if [[ -z $model && -n $effort ]]; then
-        echo "cockpit: pick an opencode-model before its effort" >&2; return 1
+        echo "cockpit: pick an opencode-model before its effort" >&2
+        return 1
     fi
     printf '%s' "$model"
     [[ -z $effort ]] || printf '#%s' "$effort"
@@ -134,7 +140,7 @@ start_new_opencode() { # dir opencode-arguments...
 agent_opencode_terminal() ( # dir
     local directory=$1 name pane folder dead target="" choice index lock_key
     local -a matches=()
-    directory=$(CDPATH= cd -- "$directory" && pwd -P) || return
+    directory=$(CDPATH='' cd -- "$directory" && pwd -P) || return
     require_plain_directory "$directory"
     if [[ -n ${COCKPIT_INSIDE:-} ]]; then
         echo "cockpit: already inside a managed session" >&2
@@ -149,16 +155,16 @@ agent_opencode_terminal() ( # dir
         [[ " ${matches[*]} " == *" $name "* ]] || matches+=("$name")
     done < <(tmux list-panes -a -F '#{session_name}	#{pane_id}	#{pane_current_path}	#{pane_dead}' 9>&-)
     case ${#matches[@]} in
-        0) target=$(COCKPIT_TERMINAL=1 start_new_opencode "$directory" 9>&-) || return ;;
-        1) target=${matches[0]} ;;
-        *)
-            for index in "${!matches[@]}"; do printf '%s) %s\n' "$((index + 1))" "${matches[index]}" >&2; done
-            printf 'OpenCode session (number, Enter cancels): ' >&2
-            IFS= read -r choice || return 130
-            [[ $choice =~ ^[1-9][0-9]{0,5}$ ]] || return 1
-            (( choice <= ${#matches[@]} )) || return 1
-            target=${matches[choice-1]}
-            ;;
+    0) target=$(COCKPIT_TERMINAL=1 start_new_opencode "$directory" 9>&-) || return ;;
+    1) target=${matches[0]} ;;
+    *)
+        for index in "${!matches[@]}"; do printf '%s) %s\n' "$((index + 1))" "${matches[index]}" >&2; done
+        printf 'OpenCode session (number, Enter cancels): ' >&2
+        IFS= read -r choice || return 130
+        [[ $choice =~ ^[1-9][0-9]{0,5}$ ]] || return 1
+        ((choice <= ${#matches[@]})) || return 1
+        target=${matches[choice - 1]}
+        ;;
     esac
     flock -u 9
     exec 9>&-
@@ -172,8 +178,8 @@ agent_opencode_terminal() ( # dir
 # A new session id the way opencode makes them (packages/schema/src/identifier.ts): ses_, the time
 # counted down in 12 hex digits (newest first in its lists), then 14 random letters and digits.
 new_opencode_session_id() {
-    local countdown=$(( ~($(date +%s%3N) * 4096 + 1) & 0xFFFFFFFFFFFF )) letters
-    letters=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 14)
+    local countdown=$((~($(date +%s%3N) * 4096 + 1) & 0xFFFFFFFFFFFF)) letters
+    letters=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 14)
     printf 'ses_%012x%s\n' "$countdown" "$letters"
 }
 
@@ -227,14 +233,23 @@ agent_opencode_restore() { # dir id
 
 exit_opencode_conversation() ( # id
     local id=$1 copies target pane identity remaining failed=0
-    agent_opencode_is_session_id "$id" || { echo "cockpit: not an OpenCode session id" >&2; return 1; }
+    agent_opencode_is_session_id "$id" || {
+        echo "cockpit: not an OpenCode session id" >&2
+        return 1
+    }
     umask 077
     exec 8>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-opencode-session-$id.lock"
     flock 8 || return
     copies=$(opencode_conversation_panes "$id" include-failed) || return
-    [[ -n $copies ]] || { opencode_require_stopped "$id"; return; }
+    [[ -n $copies ]] || {
+        opencode_require_stopped "$id"
+        return
+    }
     while IFS=$'\t' read -r target pane; do
-        identity=$(tmux show-environment -t "=$target" CLAUDE_CODE_SESSION_ID) || { failed=1; continue; }
+        identity=$(tmux show-environment -t "=$target" CLAUDE_CODE_SESSION_ID) || {
+            failed=1
+            continue
+        }
         if [[ $identity != "CLAUDE_CODE_SESSION_ID=$id" ]]; then
             echo "cockpit: OpenCode pane $pane changed identity; it was not closed" >&2
             failed=1
@@ -242,7 +257,7 @@ exit_opencode_conversation() ( # id
         fi
         thaw_frozen_pane "$pane"
         agent_opencode_exit "$target" "$pane" "$id" || failed=1
-    done <<< "$copies"
+    done <<<"$copies"
     remaining=$(opencode_conversation_panes "$id" include-failed) || return
     if [[ -n $remaining ]]; then
         echo "cockpit: a managed copy of OpenCode conversation $id is still running" >&2
@@ -257,13 +272,27 @@ exit_opencode_conversation() ( # id
 agent_opencode_exit() { # tmux-session pane id
     local attempt error
     # The pane can close between any two calls; a failed call is only success if its session is gone.
-    error=$(tmux set-option -p -t "$2" @opencode_exit_requested 1 2>&1) || { opencode_exit_call_failed "$1" "$error"; return; }
+    error=$(tmux set-option -p -t "$2" @opencode_exit_requested 1 2>&1) || {
+        opencode_exit_call_failed "$1" "$error"
+        return
+    }
+    # The loop limits attempts; its value is deliberately unused.
+    # shellcheck disable=SC2034
     for attempt in 1 2; do
-        error=$(tmux send-keys -t "$2" Escape Escape 2>&1) || { opencode_exit_call_failed "$1" "$error"; return; }
+        error=$(tmux send-keys -t "$2" Escape Escape 2>&1) || {
+            opencode_exit_call_failed "$1" "$error"
+            return
+        }
         sleep 0.2
-        error=$(tmux send-keys -t "$2" C-c 2>&1) || { opencode_exit_call_failed "$1" "$error"; return; }
+        error=$(tmux send-keys -t "$2" C-c 2>&1) || {
+            opencode_exit_call_failed "$1" "$error"
+            return
+        }
         sleep 0.3
-        error=$(tmux send-keys -t "$2" C-c 2>&1) || { opencode_exit_call_failed "$1" "$error"; return; }
+        error=$(tmux send-keys -t "$2" C-c 2>&1) || {
+            opencode_exit_call_failed "$1" "$error"
+            return
+        }
         if claude_left "$1" "$2" 1; then
             # A failed exit leaves the start's epilogue waiting for a key.
             if tmux has-session -t "=$1" 2>/dev/null; then tmux kill-session -t "=$1" 2>/dev/null || true; fi
@@ -341,7 +370,7 @@ agent_opencode_doctor() {
     key=$(secret-tool lookup service agent-opencode-anthropic 2>/dev/null || true)
     if [[ -z $key ]]; then
         report fail "no Anthropic API key for opencode in the keyring" "make -C ~/agent-cockpit agent-opencode-key"
-    elif [[ $key =~ ^(sk-ant-[a-z]+[0-9]*)-[A-Za-z0-9_-]+$ ]] && (( ${#key} >= 80 )); then
+    elif [[ $key =~ ^(sk-ant-[a-z]+[0-9]*)-[A-Za-z0-9_-]+$ ]] && ((${#key} >= 80)); then
         key_kind=${BASH_REMATCH[1]}
         report ok "API key in the keyring: $key_kind-… (${#key} characters)"
     else
@@ -349,7 +378,9 @@ agent_opencode_doctor() {
     fi
     unset key
     # Its own folders, from its launcher, must have left denyRead in its newest settings file.
-    settings=$(ls -t "${XDG_RUNTIME_DIR:-/tmp}"/greywall-agents/*.opencode.json 2>/dev/null | head -1 || true)
+    IFS= read -r -d '' settings < <(
+        ls -t --zero "${XDG_RUNTIME_DIR:-/tmp}"/greywall-agents/*.opencode.json 2>/dev/null
+    ) || true
     local launcher
     launcher="$(dirname "$AGENTS_DIR")/greywall-agents/opencode"
     own_folders=$(sed -n 's/^own_folders="\(.*\)"$/\1/p' "$launcher" 2>/dev/null)
@@ -358,7 +389,7 @@ agent_opencode_doctor() {
     elif [[ -z $own_folders ]]; then
         report fail "no own_folders in $launcher" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"
     else
-        read -ra folders <<< "$own_folders" # no glob: the entries are greywall's patterns, ** included
+        read -ra folders <<<"$own_folders" # no glob: the entries are greywall's patterns, ** included
         for folder in "${folders[@]}"; do
             jq -e --arg folder "$folder" '.filesystem.denyRead | index($folder)' "$settings" >/dev/null 2>&1 && hidden+=" $folder"
         done

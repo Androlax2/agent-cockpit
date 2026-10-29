@@ -19,7 +19,7 @@
 - An answer cites at most 5 habits; each must be active and apply to the stop's project (its project or everywhere).
 - Context: one `habits` record with the active habits (newest 100); stopped_session bundles add the project's `AGENTS.md` and `CLAUDE.md` from the project root (masked with `approval::redact_secrets`, hiding characters escaped, ≤ 4,000 chars each).
 - "new" = created after the habits-seen time, a file `chief-habits-seen-at` (epoch ms) next to `chief-digest-at`; written when Theo opens the Habits page and after a digest that printed its habits section. Missing → every habit created in the last 24 h is new.
-- UI copy: root row `Habits · N` (+ ` · K new`); row line 1 `new ` (purple, bold) + text; line 2 dim `<project name in its project colour | everywhere> · from <your overrule | your answer> · HH:MM`; empty `No habits yet. The Chief learns them from your answers and overrules.`; footer `x delete · p project/everywhere · ⏎ source · esc back`; after `x`: `Deleted · u undo` until the next key.
+- UI copy: root row `Habits · N` (+ a space and `· K new`); row line 1 `new` and a space (purple, bold) + text; line 2 dim `<project name in its project colour | everywhere> · from <your overrule | your answer> · HH:MM`; empty `No habits yet. The Chief learns them from your answers and overrules.`; footer `x delete · p project/everywhere · ⏎ source · esc back`; after `x`: `Deleted · u undo` until the next key.
 - Never amber for habits. Purple = what the Chief learned.
 - Schema: one migration to version 15, idempotent, inside the existing Immediate transaction.
 - No phone changes; no habit text editing. No `Todo:` trailer (`b77a0881` stays open until plan 5). `make test` green and zero warnings after every task.
@@ -39,6 +39,7 @@
 **Files:** Modify `apps/cockpit/src/chief/store.rs` (v15 after the v14 block; `queue_correction` adds the habit; `host_action`; `review_records` category 17), `apps/cockpit/src/chief.rs` (`ChiefHostAction::{DeleteHabit, RestoreHabit, RescopeHabit}` + `request_id` arms + validation). Tests: `apps/cockpit/tests/chief_store.rs`, `apps/cockpit/tests/chief_events.rs`.
 
 **Interfaces:**
+
 - v15: `chief_habits(id TEXT PRIMARY KEY, text TEXT NOT NULL, project TEXT, origin_project TEXT, source TEXT NOT NULL CHECK(source IN ('overrule','theo_answer')), source_id TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','deleted')), created_at INTEGER NOT NULL, changed_at INTEGER NOT NULL)`; index `chief_habits(state, created_at)`; `chief_answers.habits TEXT NOT NULL DEFAULT '[]'` (JSON array of habit ids).
 - `pub fn habit_text(correction: &str) -> String` (single line, ≤ 500 chars with `…`), used by the host and by the Task 3 preview.
 - `Overrule` (plan 3) also inserts the habit (source `overrule`, project = origin_project = the stop's project) in its transaction.
@@ -56,6 +57,7 @@
 **Files:** Modify `apps/cockpit/src/chief.rs` (`ChiefAgentAction::AddHabit`; `habits: Vec<String>` with `#[serde(default)]` on `Answer` and `AnswerForm`; validation incl. `without_host_labels`), `apps/cockpit/src/chief/store.rs` (habits Context record next to `stopped_session` ~1198; AddHabit; cite check in `answer_stop`/`queue_answer`), `apps/cockpit/src/chief/bundle.rs` (`instructions: Vec<InstructionFile { path, text }>`), `apps/osd/src/chief.rs` (pass the project root to the bundle), `apps/cockpit/src/teams.rs` (chief_wake text ~273). Tests: `apps/cockpit/tests/chief_events.rs`, `apps/cockpit/tests/chief_bundle.rs`, `apps/osd/src/chief_tests.rs`.
 
 **Interfaces:**
+
 - Consumes: Task 1 `chief_habits`, `habit_text`.
 - `ChiefAgentAction::AddHabit { text: String, project: Option<String>, source_id: String, reason: String }` (text ≤ 500 single line, reason ≤ 300; one mutation). Source is `theo_answer`; `source_id` must name a `source='theo'` answer or a stop the Chief was shown. `project` must be NULL or the source's project. Same normalized text (trimmed, case-insensitive) already active for that scope → success, no new row; same text deleted for that scope → `Conflict` "Theo deleted this habit".
 - Cited habits are stored in `chief_answers.habits`; an inactive or out-of-project habit → `Invalid` before the budget is charged.
@@ -74,6 +76,7 @@
 **Files:** Modify `apps/cockpit/src/chief/view.rs` (`Page::Habits`, root row, `h` from root, rows, `x`/`u`/`p`/Enter, selection after delete, empty text; overrule review line; answer row line 3), `apps/cockpit/src/app/chief_ui.rs` (seen-at file read/write; submit the habit host actions), `README.md` (Chief section: habits). Test: `apps/cockpit/tests/chief_ui.rs`.
 
 **Interfaces:**
+
 - Consumes: Task 1 `habit` records, answer `habits`, host actions, `habit_text`; plan 3 session names / project colours.
 - Overrule review adds, under the exact text: `Adds a habit: <habit_text(correction)> · <project name | everywhere>`.
 - Answer row line 3: `<delivery> · <reason> · habits: <first habit text…> +N` (only when the answer cites habits).
@@ -91,6 +94,7 @@
 **Files:** Modify `apps/cockpit/src/chief/store.rs` (`answers_since` → also `habits: Vec<DigestHabit>`, `new_habits: u32`), `apps/cockpit/src/costs.rs` (digest section; write `chief-habits-seen-at` after a printed habits section), `README.md` (digest). Tests: `apps/cockpit/tests/chief_store.rs`, `apps/cockpit/tests/costs.rs`, `apps/cockpit/src/tests.rs`.
 
 **Interfaces:**
+
 - Consumes: Task 1 `chief_habits`; plan 3 `ChiefDigest`, `ChiefSection`, `chief-digest-at`.
 - `pub struct DigestHabit { pub text: String, pub project: Option<String> }`; habits created after the digest since-time, active only, newest 3; `new_habits` = all of them.
 - Digest lines after the Chief answers block: `New habits: N`, then up to 3 lines `<text> · <project name | everywhere>` (one line, `…`). Nothing when N = 0. Database unavailable → the existing `Chief: unavailable (…)` line only, and the seen-at file is not written.

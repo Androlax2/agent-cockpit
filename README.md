@@ -62,7 +62,7 @@ The Teams and Chief tab badges: amber for what needs you, otherwise the number o
 
 Todo's title-and-notes form supports `CMD+V` for clipboard images. PNGs are kept in `~/.local/state/cockpit/todo-images/`, readable but not writable by sessions. Deleting an image marker drops it; unreferenced images are removed after an hour. A handed-off session reads the images through `cockpit-todo show`.
 
-Cross-project work uses `cockpit-todo add … --project <name>` and appears queued with its originating project in the details. It is a collaborator request, never your authorization. `--after <id>` (or `cockpit-todo after <id> <other>…`) waits for prerequisites and forwards their completion summaries. `cockpit-todo propose … --project <name>` instead waits for approval. A reporting project keeps at most three such filings open per target project; the session holding the active Chief grant, which the daemon verifies, keeps ten (other sessions of its project still three). Handing work off starts a background card without changing the viewed session. The queue picks one item at a time by priority after five idle minutes, excluding the viewed session; design work routes to a Designer.
+Cross-project work uses `cockpit-todo add … --project <name>` and appears queued with its originating project in the details. It is a collaborator request, never your authorization. `--after <id>` (or `cockpit-todo after <id> <other>…`) waits for prerequisites and forwards their completion summaries. Only you remove a wait: `cockpit-todo unwait <id> <other>…` on the host (a session asks for it through `ask-to-run`; the daemon refuses it from any sandbox), audited as `todo.unwaited`; it does not queue the item. `cockpit-todo propose … --project <name>` instead waits for approval. A reporting project keeps at most three such filings open per target project; the session holding the active Chief grant, which the daemon verifies, keeps 100 (other sessions of its project still three). Handing work off starts a background card without changing the viewed session. The queue picks one item at a time by priority after five idle minutes, excluding the viewed session; design work routes to a Designer.
 
 Setup blocks use `cockpit-todo blocked '<what>' --why '<what stopped it>'`; problems in greywall or greyproxy's own code use `cockpit-todo stack <repo> '<title>' --why '<why>' --kind <kind>`. Reports retain their originating session and are framed as data. Duplicate open reports are coalesced, with caps of three open and five daily per reporting project. Finishing a report or cross-project item notifies its original session through the prompt queue; an ended session receives it when resumed. Unknown sessions or missing clones receive nothing (`cockpit logs` explains why).
 
@@ -145,11 +145,11 @@ the cockpit is closed. PR deferral requires a known head revision. NEEDS YOU, WO
 
 | Command (inside a session) | What happens outside |
 | --- | --- |
-| `ask-to-run --why '…' '<command>'` | An approval terminal shows the command and Claude's explanation, in a pane under the session in the cockpit and in a floating window elsewhere. Nothing runs without "Run it"; the output then goes back to Claude, with tokens, keys, passwords and credentials replaced by `[redacted]` first. Hidden characters are shown escaped |
+| `ask-to-run --why '…' '<command>'` | An approval terminal shows the command and Claude's explanation, in a pane under the session in the cockpit and in a floating window elsewhere. Nothing runs without "Run it"; the output then goes back to Claude, with tokens, keys, passwords and credentials replaced by `[redacted]` first. Hidden characters are shown escaped. The command runs in fish: one fish cannot parse (a Bash heredoc, `if …; then … fi`) is refused before you are asked |
 | `ask-to-guide` | Steps I do by hand (a browser, a console) in a floating window, one at a time, with links to open, values to copy and questions to answer; `⌘V` attaches a clipboard image to a step; the answers, images, or the step I got stuck on go back to Claude |
 | `claude-todo start/done/add` | Updates the Todo panel |
 | `claude-needs-input '<question>'` | Marks the session as needing your answer, with the question on its card. Claude and OpenCode keep it through tool completion, turn end and idle notifications; your next message clears it |
-| `craft-open figcraft --workspace <n> [--session <id>]` (through `ask-to-run`) | Starts an independent FigCraft per checkout (parallel clones included) on workspace `<n>`, which the agent asks you for first (6, the cockpit's, is refused; an already open window is not moved; on a workspace already showing one FigCraft, window or tab group, the new window joins it as a Hyprland tab instead of splitting the workspace, each tab still its own confined app; several separate FigCraft tiles there or a locked group leave it beside them, with a notification), with confined file access, private preferences/recovery storage, and a permanently reserved control port. Existing windows stay open. The launcher forwards only that checkout's verified port and connects its `figcraft-app` MCP server to it; occupied ports and foreign stale forwards fail closed. Reservations live in host-only `~/.config/greywall-agents/figcraft` and must not be recycled while old sandboxes exist. When connecting an agent, always pass `--session <id>`, even if its tools are listed: it restarts the session once its turn ends, then tells it to carry on. Without it, existing sessions keep their old forwards and MCP connections. Tell a session "connect to FigCraft" |
+| `craft-open figcraft [--workspace <n>] [--session <id>]` (through `ask-to-run`) | Starts an independent FigCraft per checkout (parallel clones included) on workspace `<n>`, 7 by default, shared with games (6, the cockpit's, is refused; an already open window is not moved; a FigCraft started directly, outside `craft-open`, opens on 7 too, while further windows of an open FigCraft stay beside it; on a workspace already showing one FigCraft, window or tab group, the new window joins it as a Hyprland tab instead of splitting the workspace, each tab still its own confined app; several separate FigCraft tiles there or a locked group leave it beside them, with a notification), with confined file access, private preferences/recovery storage, and a permanently reserved control port. Existing windows stay open. The launcher forwards only that checkout's verified port and connects its `figcraft-app` MCP server to it; occupied ports and foreign stale forwards fail closed. Reservations live in host-only `~/.config/greywall-agents/figcraft` and must not be recycled while old sandboxes exist. When connecting an agent, always pass `--session <id>`, even if its tools are listed: it restarts the session once its turn ends, then tells it to carry on. Without it, existing sessions keep their old forwards and MCP connections. Tell a session "connect to FigCraft" |
 
 TODO editing survives cockpit updates: `cockpit reload` waits until the editor closes and the item is saved. Editor buffers and their original project are kept in `~/.local/state/cockpit/todo-drafts/` until saving succeeds; interrupted drafts are recovered when the cockpit restarts (or once a still-open editor closes). Save or editor errors leave the draft intact and show a message instead of claiming success. Older untracked runtime drafts are left untouched because they have no project metadata.
 
@@ -166,6 +166,8 @@ What sessions can and cannot do to the machine (audits of 2026-10-18 and 2026-10
 - Theo's answers (run results, guide progress) go to `$XDG_RUNTIME_DIR/claude-answers/<project>`, written only outside the sandbox: each sandbox has its own project's folder mounted read-only and sees no other, so no session forges an approved output or reads another project's.
 - Both launchers, `greywall-agents/claude` and `greywall-agents/opencode`, source `launcher-common.sh`: an opencode session gets the same guards, answers folder, tokens, CA bundle, Docker and forwards as a Claude one, in its own greywall profile, and never the Console's API key. Its Anthropic API key comes from the keyring (`make agent-opencode-key`) and stays a greyproxy placeholder in the sandbox, since opencode's own credential store (`opencode.db`) is open to every opencode session; without one it uses `opencode auth login`. Its replies join Claude's in the usage archive (cost at API prices from their tokens, time spent per project), read-only from `~/.local/share/opencode/opencode.db`. The cockpit starts it with `--standalone` (a server of its own, not opencode 2's shared background one) and a session id it picks, exported as `CLAUDE_CODE_SESSION_ID`. Its plugin (`config/opencode/.config/opencode/plugins/cockpit.ts`, opencode 2's `{id, setup}` plugin API) sends its events through Claude's hook, `session-state.sh`, as the payloads Claude Code sends, with `agent: opencode`: the daemon keeps an opencode session alive while an `opencode` process runs in its pane, and reads its state from those reports only, never from Claude's screen patterns.
 - Background build tools (`cargo`, `make`, `npm`, `pnpm`, `go`, `composer`, `pytest`) resolve through CPU-guard shims in the launchers' existing read-only cache. They and their children run at the lowest priority (`SCHED_IDLE`, nice +19) on every available logical CPU; the cockpit and interactive agents keep their normal priority. Builds fill otherwise idle threads, and a waking interactive task preempts them, also across session cgroups, where nice alone has no effect. Nested tools inherit the same priority. `make build` and `make test` also guard host Cargo builds. Other tools can use `agent-build COMMAND [ARGUMENTS...]`. This trades build speed for responsiveness, not memory limits; it is a scheduling safeguard, not sandbox enforcement. Absolute tool paths and work in separate Docker daemons bypass it. Launcher setup affects new sessions; already-running shells use the shims only if their cache directory is visible and first on PATH.
+- While a game window is open (focused or not, so alt-tab keeps it; the same game list as the daemon, or the `gamemode` submap), `cockpit-game-guard.service` pins those build threads in agent sessions to two CPU cores (on this Ryzen 7800X3D CPUs 2,6,10,14: the two lowest-ranked by CPPC, not CPU 0's), and gives each thread its own CPUs back 30 s after the last game window closes, when the service stops, and on its next start after a crash (`$XDG_RUNTIME_DIR/cockpit-game-guard.json`, `cockpit-game-guard status`, `cockpit-game-guard restore`). CPU-only step 1 of todo d021dc46, not full gaming protection: no CPU-time quota, no disk, memory or Docker limits, new builds still start (pinned within 2 s). Nothing is frozen, stopped or killed. Work not started through the shims is not pinned; over one core, it is named in the status as untracked. An unsupported CPU layout (several packages or L3 domains, hybrid cores, fewer than six cores) stops the service with its reason (`cockpit-game-guard topology`). Not enabled by the install: `systemctl --user enable --now cockpit-game-guard.service`.
+- Step 2, admission: the guard also writes `~/.cache/agent-shims/heavy-gate.json` every 5 s (sandboxes read it, cannot write it). A new heavy job through the shims (and `make test`, before it takes the shared test lock) waits while it says a game is open, memory is low (under 3 GiB available or memory pressure 5 % over 10 s; it ends after a minute at 5 GiB and under 1 %) or Theo holds jobs, prints why once a minute, then starts unchanged with its own exit status. Nothing is cancelled, killed or replayed. Work inside an admitted job never waits again (it carries `AGENT_BUILD_ADMITTED` naming the admitted process, which must still be its ancestor; priority alone never counts), so a running build or test keeps going; a bare `--version`/`--help`, `make help`, `cargo fmt` and `cargo metadata` never wait, and admit nothing below them. The status and the release ticket are read from the account's home in the password database, never `$HOME`, so a tool run with another HOME neither hangs nor is admitted by a status file under that HOME; a missing account entry fails closed (exit 126). A missing, stale (over 30 s), earlier-boot, oversized, linked or malformed status holds too, until Theo acts on the host (his choice): `cockpit-game-guard release [MINUTES]` (default 60, works with no guard running), `hold`, `off` (admission off: nothing waits), `on`. After a hold, waiting jobs start one every 10 s. Cooperative scheduling, not enforcement: tools run by absolute path skip it.
 - `~/.claude/projects/<folder>` of every other project (memory, transcripts) is read-only in a session: the launcher writes a settings file of its own per project and agent (`$XDG_RUNTIME_DIR/greywall-agents`), greywall.json plus those folders in `denyWrite`; an opencode session's drops greywall.json's `denyRead` entries for opencode's own data and config, which hide them from Claude sessions. Memory found for a fresh parallel clone is set aside.
 - `.git/config` and `.git/hooks` are read-only in the folder a session starts in; every host git call in cockpit resets the settings that run a program, and a push redirected by a push URL or URL rewrite is refused.
 - A session's folder (and so where a restart resumes it, with which project's token) is the folder its sandbox started in, read from `/proc`, never the one a report claims.
@@ -305,7 +307,12 @@ folder name, a reason of at most 300 characters), most urgent first (higher prio
 older). The daemon accepts any todo still to do, queued or not, filed by you or by any session,
 except one that waits on other todos or is for the designer. A todo a session of the Chief's own
 project filed needs your Q first: the Chief cannot start work it gave itself. Such a todo arrives
-already queued, so press Q twice (out, then back in) to approve it. At most one request waits
+already queued, so press Q twice (out, then back in) to approve it. To let the Chief pick and
+dispatch the todos it filed itself, run `cockpit setting chief-dispatches-own-todos on` (off by
+default; `off` takes it back). Each such request still counts against the hourly cap, still skips
+todos that wait or are for the designer, and is audited with `dispatch_policy`
+`chief-dispatches-own-todos`; the setting change itself is audited as `setting.changed`. A
+pending gift is checked again before delivery, so turning it off stops it. At most one request waits
 per todo, so several todos of one project can start together. The Chief may ask 6 times an hour;
 change that with `cockpit setting chief-starts-per-hour <1-60>`. Todos you queued yourself with Q
 do not count against it: the Q is recorded by the host, so a Chief cannot claim it for you. An
@@ -313,8 +320,8 @@ invalid value refuses every request until you fix it. The queue's next pass then
 usual, with your default agent and the usual queue prompt; every other queue check still
 applies, and the session gets no extra permission. A request the queue does not act on within
 10 minutes lapses. Each request and start is logged and audited
-(`chief.session_start_requested`, `chief.session_started`), and a banner tells you when a
-session starts. A refused fresh start now names its reason in the log.
+(`chief.session_start_requested`, `chief.session_started`); a start raises no banner, the log
+and audit keep it. A refused fresh start now names its reason in the log.
 
 ### Giving an idle session a todo or a message
 
@@ -335,8 +342,25 @@ the host labels it as the Chief's, not Theo's, and appends that boundary itself.
 wait per session, at most 20 an hour across projects. The native inbox admits it only at an idle
 boundary, never over a permission or question form, a restart, or Theo's queued input. It can
 resume the session's existing task without reassigning it. A native receipt proves admission,
-not task completion; an uncertain delivery is never resent. Requests are audited, a banner says
-when a message is being sent, and Chief context records show its delivery state.
+not task completion; an uncertain delivery is never resent. Requests are logged and audited without a
+banner, and Chief context records show its delivery state.
+
+### Following a session or todo to completion
+
+The Chief can look at one known session or todo even after its 50 Context records for the turn are
+spent:
+
+```json
+{"action":"chief","request":{"action":"inspect","todo":"5779dac9"}}
+{"action":"chief","request":{"action":"inspect","session":"ses_worker"}}
+```
+
+It returns the todo's status, owner and what it waits on, and for the owner (or the named session):
+whether it is live, its readiness and blockers, its open stop with the masked bundle, and the
+delivery state of the Chief's recent answers, messages and todo gifts. Runtime identities stay out.
+It is read-only, grants nothing, needs an admitted wake, and allows five per turn beside the record
+and mutation budgets. A todo's title and result are what sessions wrote: a report, not evidence.
+The Chief treats a todo as complete only once its status is done.
 
 Gifts and unclaimed messages lapse after ten minutes and are bound to the session runtime they
 named: a restarted conversation does not inherit them. Neither action wakes a sleeping session.
@@ -382,8 +406,7 @@ host lists the newest 200 answers; the count reads `200+` when there may be olde
 
 Press `o` on a Chief answer that was sent (or whose delivery is not sure) to overrule it. You type
 one line of up to 2,000 characters, then a frozen review shows the exact message the agent will
-receive: "Correction from Theo to an earlier Chief answer ("<the first 200 characters of that
-answer>"): <your correction>" followed by the daemon-added label, and under it
+receive: `Correction from Theo to an earlier Chief answer ("<the first 200 characters of that answer>"): <your correction>` followed by the daemon-added label, and under it
 `Adds a habit: <your correction> · <project | everywhere>`: the exact habit it stores (your words on
 one line, cut to 500 characters with `…`). Enter, then `y`, sends it; if the
 answer changed meanwhile the review is invalidated. Each answer can be overruled once, so a
@@ -506,8 +529,7 @@ Polling reuses a successful runtime cache for four minutes. Missing CLI, sign-in
 | [`config/claude/.claude/hooks`](config/claude/.claude/hooks) | `session-state.sh` reports states; `agent-environment.sh` tells a session what its sandbox has |
 | [`config/bin/.local/bin`](config/bin/.local/bin) | `ask-to-run`, `claude-run-approve`, `ask-to-guide`, `claude-guide`, `claude-todo`, `claude-design`: wrappers of the Rust builds |
 | [`config/systemd/.config/systemd/user`](config/systemd/.config/systemd/user) | `osd`, `cockpit`, the health check, the version link |
-| [`apps/cockpit/tests`](apps/cockpit/tests), [`apps/osd/src/tests.rs`](apps/osd/src/tests.rs) | `make test`: the scripts, hooks and programs through fake commands on PATH, and the daemon's registry |
-
+| [`apps/cockpit/tests`](apps/cockpit/tests), [`apps/crates/cockpit-daemon/src/tests.rs`](apps/crates/cockpit-daemon/src/tests.rs) | `make test`: the scripts, hooks and programs through fake commands on PATH, and the daemon's registry |
 
 ## Install
 

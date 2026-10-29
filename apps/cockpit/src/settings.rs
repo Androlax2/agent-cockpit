@@ -46,17 +46,27 @@ pub fn explanation(name: &str) -> &'static str {
 }
 
 pub fn launch_value(name: &str) -> Result<String, String> {
-    let fallback = if name == "default-agent" { "claude" } else { "" };
+    let fallback = if name == "default-agent" {
+        "claude"
+    } else {
+        ""
+    };
     let content = match fs::read_to_string(paths::settings()) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(fallback.into()),
         Err(error) => return Err(format!("cannot read settings: {error}")),
     };
-    let settings: Value = serde_json::from_str(&content).map_err(|error| format!("invalid settings: {error}"))?;
-    let settings = settings.as_object().ok_or("invalid settings: expected an object")?;
+    let settings: Value =
+        serde_json::from_str(&content).map_err(|error| format!("invalid settings: {error}"))?;
+    let settings = settings
+        .as_object()
+        .ok_or("invalid settings: expected an object")?;
     match settings.get(name) {
         None => Ok(fallback.into()),
-        Some(value) => value.as_str().map(str::to_string).ok_or_else(|| format!("invalid {name}: expected a string")),
+        Some(value) => value
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("invalid {name}: expected a string")),
     }
 }
 
@@ -64,11 +74,31 @@ pub fn launch_value(name: &str) -> Result<String, String> {
 /// value is an error, never the default: it is a limit, so a typo must not silently change it.
 pub fn chief_starts_per_hour() -> Result<i64, String> {
     use crate::chief::{DEFAULT_SESSION_STARTS_PER_HOUR, MAX_SESSION_STARTS_PER_HOUR};
-    let value = launch_value("chief-starts-per-hour").map_err(|error| format!("chief-starts-per-hour: {error}"))?;
-    if value.is_empty() { return Ok(DEFAULT_SESSION_STARTS_PER_HOUR); }
+    let value = launch_value("chief-starts-per-hour")
+        .map_err(|error| format!("chief-starts-per-hour: {error}"))?;
+    if value.is_empty() {
+        return Ok(DEFAULT_SESSION_STARTS_PER_HOUR);
+    }
     match value.parse::<i64>() {
         Ok(count) if (1..=MAX_SESSION_STARTS_PER_HOUR).contains(&count) => Ok(count),
-        _ => Err(format!("invalid chief-starts-per-hour {value:?} in settings.json: expected 1 to {MAX_SESSION_STARTS_PER_HOUR}")),
+        _ => Err(format!(
+            "invalid chief-starts-per-hour {value:?} in settings.json: expected 1 to {MAX_SESSION_STARTS_PER_HOUR}"
+        )),
+    }
+}
+
+/// The chief-dispatches-own-todos setting, set with `cockpit setting` (not in the S menu): on lets
+/// the Chief start or give todos its own project filed without Theo's Q. Missing or empty is off;
+/// anything but on or off is an error, so a typo never widens what the Chief may start.
+pub fn chief_dispatches_own_todos() -> Result<bool, String> {
+    let value = launch_value("chief-dispatches-own-todos")
+        .map_err(|error| format!("chief-dispatches-own-todos: {error}"))?;
+    match value.as_str() {
+        "" | "off" => Ok(false),
+        "on" => Ok(true),
+        _ => Err(format!(
+            "invalid chief-dispatches-own-todos {value:?} in settings.json: expected on or off"
+        )),
     }
 }
 
@@ -99,27 +129,48 @@ impl ModelChoice {
 }
 
 pub fn load_models(directory: &str) -> Result<Vec<ModelChoice>, String> {
-    let output = Command::new("cockpit").args(["opencode-models", directory]).output().map_err(|error| error.to_string())?;
+    let output = Command::new("cockpit")
+        .args(["opencode-models", directory])
+        .output()
+        .map_err(|error| error.to_string())?;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
         return Err(format!("{}: {}", output.status, error.trim()));
     }
     #[derive(Deserialize)]
-    struct Catalog { data: Vec<ModelChoice> }
-    let catalog: Catalog = serde_json::from_slice(&output.stdout).map_err(|error| format!("invalid catalog: {error}"))?;
+    struct Catalog {
+        data: Vec<ModelChoice>,
+    }
+    let catalog: Catalog = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("invalid catalog: {error}"))?;
     let mut models = Vec::new();
     for model in catalog.data.into_iter().filter(|model| model.enabled) {
-        let invalid = |id: &str| id.is_empty() || id.chars().any(|character| character.is_whitespace() || character.is_control() || character == '#');
-        if invalid(&model.provider) || model.provider.contains('/') || invalid(&model.id)
-            || model.variants.iter().any(|variant| invalid(&variant.id) || variant.id.contains('/')) {
+        let invalid = |id: &str| {
+            id.is_empty()
+                || id.chars().any(|character| {
+                    character.is_whitespace() || character.is_control() || character == '#'
+                })
+        };
+        if invalid(&model.provider)
+            || model.provider.contains('/')
+            || invalid(&model.id)
+            || model
+                .variants
+                .iter()
+                .any(|variant| invalid(&variant.id) || variant.id.contains('/'))
+        {
             return Err("invalid catalog: malformed model or variant id".into());
         }
         models.push(model);
     }
-    if models.is_empty() { return Err("no enabled models in this project".into()); }
+    if models.is_empty() {
+        return Err("no enabled models in this project".into());
+    }
     Ok(models)
 }
 
 pub fn is_on(name: &str) -> bool {
-    read_json(&paths::settings()).and_then(|settings| settings.get(name)?.as_bool()).unwrap_or(true)
+    read_json(&paths::settings())
+        .and_then(|settings| settings.get(name)?.as_bool())
+        .unwrap_or(true)
 }

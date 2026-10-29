@@ -26,14 +26,14 @@ GLYPH_COLOR="#a9b1d6"
 
 print_unavailable() { # class reason
     if [[ -z ${CLAUDE_USAGE_FIXTURE:-} ]]; then
-        jq -cn --arg reason "$1" '{error: $reason}' > "$ERROR_CACHE.tmp" && mv "$ERROR_CACHE.tmp" "$ERROR_CACHE"
+        jq -cn --arg reason "$1" '{error: $reason}' >"$ERROR_CACHE.tmp" && mv "$ERROR_CACHE.tmp" "$ERROR_CACHE"
     fi
     jq -cn --arg class "$1" --arg reason "$2" \
         '{text: "–", tooltip: "<b>Claude usage</b>\n\($reason | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))", class: $class, alt: $class}'
 }
 
 cache_is_fresh() {
-    [[ ${1:-} != --force && -f $CACHE ]] && (( $(date +%s) - $(stat -c %Y "$CACHE") < CACHE_MAX_AGE_S ))
+    [[ ${1:-} != --force && -f $CACHE ]] && (($(date +%s) - $(stat -c %Y "$CACHE") < CACHE_MAX_AGE_S))
 }
 
 fetch_response() {
@@ -44,25 +44,25 @@ fetch_response() {
         print_unavailable unknown "no OAuth token in credentials (log in with claude)"
         return 1
     fi
-    if (( expires_at_ms <= $(date +%s%3N) )); then
+    if ((expires_at_ms <= $(date +%s%3N))); then
         print_unavailable stale "OAuth token expired; start a Claude session to refresh it"
         return 1
     fi
     local body
     if ! body=$(printf 'Authorization: Bearer %s\n' "$token" | curl -sS -f -m 15 \
-            --header @- \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "Accept: application/json" \
-            "$USAGE_URL" 2>"$errors"); then
+        --header @- \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        -H "Accept: application/json" \
+        "$USAGE_URL" 2>"$errors"); then
         print_unavailable unknown "request failed: $(head -c 200 "$errors")"
         return 1
     fi
     if ! jq -e 'type == "object" and (has("five_hour") or has("seven_day") or
-            (.limits | type == "array") or (.model_scoped | type == "array"))' <<< "$body" >/dev/null 2>&1; then
+            (.limits | type == "array") or (.model_scoped | type == "array"))' <<<"$body" >/dev/null 2>&1; then
         print_unavailable unknown "unexpected usage response"
         return 1
     fi
-    printf '%s\n' "$body" > "$CACHE.tmp" && mv "$CACHE.tmp" "$CACHE"
+    printf '%s\n' "$body" >"$CACHE.tmp" && mv "$CACHE.tmp" "$CACHE"
     rm -f "$ERROR_CACHE"
 }
 
@@ -132,9 +132,9 @@ def window_line($label):
 JQ
 
 if ! output=$(jq -c --arg window "$WINDOW" --arg plan "$plan" --argjson now "$(date +%s)" \
-        --arg glyph "${GLYPHS[$WINDOW]}" --arg glyph_color "$GLYPH_COLOR" \
-        --argjson warning_at "$WARNING_AT" --argjson critical_at "$CRITICAL_AT" \
-        "$PROGRAM" <<<"$response" 2>"$errors"); then
+    --arg glyph "${GLYPHS[$WINDOW]}" --arg glyph_color "$GLYPH_COLOR" \
+    --argjson warning_at "$WARNING_AT" --argjson critical_at "$CRITICAL_AT" \
+    "$PROGRAM" <<<"$response" 2>"$errors"); then
     print_unavailable unknown "unexpected response: $(head -c 300 "$errors")"
     exit 0
 fi

@@ -2,17 +2,16 @@
 """Read quota through Codex-managed authentication, independently of agent accounts."""
 
 import argparse
-from contextlib import contextmanager
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
+from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import urlsplit
-
 
 MAX_MESSAGE_BYTES = 1024 * 1024
 
@@ -104,9 +103,13 @@ def login(process):
     if not isinstance(authorization_url, str):
         raise QuotaError("Codex browser login unavailable; check the Codex CLI version")
     parsed_url = urlsplit(authorization_url)
-    if (parsed_url.scheme != "https" or parsed_url.hostname != "auth.openai.com"
-            or parsed_url.username or parsed_url.password
-            or any(ord(character) < 32 or ord(character) == 127 for character in authorization_url)):
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.hostname != "auth.openai.com"
+        or parsed_url.username
+        or parsed_url.password
+        or any(ord(character) < 32 or ord(character) == 127 for character in authorization_url)
+    ):
         raise QuotaError("Codex returned an unexpected sign-in URL")
     login_id = result.get("loginId")
     if not isinstance(login_id, str) or not login_id:
@@ -123,7 +126,9 @@ def login(process):
         if not isinstance(completion, dict) or completion.get("loginId") != login_id:
             continue
         if completion.get("success") is not True:
-            raise QuotaError("Codex sign-in failed or was cancelled; run codex-usage.sh --login again")
+            raise QuotaError(
+                "Codex sign-in failed or was cancelled; run codex-usage.sh --login again"
+            )
         print("Codex quota sign-in complete.", flush=True)
         return
 
@@ -140,9 +145,14 @@ def normalize_window(window):
     used = window.get("usedPercent")
     minutes = window.get("windowDurationMins")
     resets = window.get("resetsAt")
-    if (not is_number(used) or not 0 <= used <= 100
-            or not is_number(minutes) or minutes <= 0
-            or not is_number(resets) or resets < 0):
+    if (
+        not is_number(used)
+        or not 0 <= used <= 100
+        or not is_number(minutes)
+        or minutes <= 0
+        or not is_number(resets)
+        or resets < 0
+    ):
         raise QuotaError("Codex quota response unrecognized")
     return {"used_percent": used, "limit_window_seconds": minutes * 60, "reset_at": resets}
 
@@ -166,8 +176,14 @@ def normalize_quota(result):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--login", action="store_true", help="Sign in to the dedicated quota account")
-    parser.add_argument("--routing", action="store_true", help="Include private account-binding and included-usage evidence")
+    parser.add_argument(
+        "--login", action="store_true", help="Sign in to the dedicated quota account"
+    )
+    parser.add_argument(
+        "--routing",
+        action="store_true",
+        help="Include private account-binding and included-usage evidence",
+    )
     arguments = parser.parse_args()
     os.umask(0o077)
     signal.signal(signal.SIGALRM, timeout_handler)
@@ -175,7 +191,12 @@ def main():
     signal.setitimer(signal.ITIMER_REAL, 300 if arguments.login else 15)
     try:
         with app_server() as process:
-            request(process, 1, "initialize", {"clientInfo": {"name": "dotfiles_codex_quota", "version": "1"}})
+            request(
+                process,
+                1,
+                "initialize",
+                {"clientInfo": {"name": "dotfiles_codex_quota", "version": "1"}},
+            )
             send(process, {"method": "initialized", "params": {}})
             if arguments.login:
                 login(process)
@@ -187,10 +208,17 @@ def main():
             quota = normalize_quota(result)
             if arguments.routing:
                 account_id = result.get("accountId")
-                if (not isinstance(account_id, str) or not 0 < len(account_id) <= 256
-                        or any(ord(character) < 32 or ord(character) == 127 for character in account_id)):
+                if (
+                    not isinstance(account_id, str)
+                    or not 0 < len(account_id) <= 256
+                    or any(ord(character) < 32 or ord(character) == 127 for character in account_id)
+                ):
                     account_id = None
-                quota["account_fingerprint"] = hashlib.sha256(f"openai:{account_id}".encode()).hexdigest() if account_id else None
+                quota["account_fingerprint"] = (
+                    hashlib.sha256(f"openai:{account_id}".encode()).hexdigest()
+                    if account_id
+                    else None
+                )
                 allowed = result.get("ordinaryUsageAllowed")
                 quota["ordinary_usage_allowed"] = allowed if type(allowed) is bool else None
         print(json.dumps(quota, allow_nan=False))

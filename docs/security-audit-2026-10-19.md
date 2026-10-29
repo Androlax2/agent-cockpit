@@ -18,7 +18,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
 `~/.cache/claude` folders, and the log can neither prove what was approved nor resist injection.
 
 | # | Severity | Finding |
-|---|---|---|
+| --- | --- | --- |
 | C1 | Critical | The dotfiles session writes host-executed code with no review step |
 | H1 | High | `.git/config` is writable in every project; the host runs git there |
 | H2 | High | Every sandbox writes `~/.claude`: other projects' memory and transcripts |
@@ -34,6 +34,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
 ## Critical
 
 ### C1. The dotfiles session writes host-executed code with no review step
+
 - Evidence: `/home/theo/dotfiles` is mounted rw on top in the dotfiles sandbox. Writable and run by the
   host as Theo: `config/bin/.local/bin/*` (live through stow symlinks: `claude-sessions`, `osd-show`,
   `craft-open`, `claude-update`, `clipboard-image-serve`, and **`greywall-agents/claude`, the
@@ -56,6 +57,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
 ## High
 
 ### H1. `.git/config` is writable in every project
+
 - Evidence: greywall denies `.git/hooks` only (`greywall.json:88`); `claude-sessions:1204` says
   `.git/config` is read-only, which is not true.
 - Sinks on the host: `push_run` runs `git symbolic-ref` (1218) and `git log @{upstream}..HEAD`
@@ -71,6 +73,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   -c core.hooksPath=/dev/null`; fix the comment at 1204.
 
 ### H2. Every sandbox writes `~/.claude`
+
 - Evidence: `learned/claude.json:162` allowWrite `~/.claude`; denyWrite covers settings, hooks,
   skills, CLAUDE.md only. From the dotfiles sandbox,
   `~/.claude/projects/-home-theo-IdeaProjects-opusline/memory` is on an rw mount.
@@ -81,6 +84,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   `~/.claude/projects/*/memory` except the own one.
 
 ### H3. Run requests can be rewritten by another sandbox before they are shown
+
 - Evidence: all sandboxes write `~/.cache/claude/runs/`. `registry.rs:476-488` queues the id;
   `claude-run-approve.rs:22-38` reads `<id>.request` only when its turn comes. The project shown is
   derived from the request's `cwd`, also sandbox-written; the `session` field is neither checked nor
@@ -96,6 +100,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
 ## Medium
 
 ### M1. A restart can resume a session in another project's folder
+
 - `restart_session:695` / `restore_sessions:670` → `launch_detached:765 tmux new-session -c
   "$directory"` with the reported `cwd`, never through `require_plain_directory`; the daemon only
   checks the text. A session of A reporting `cwd=~/IdeaProjects/B` resumes, on r or ⌘R, in B's
@@ -104,16 +109,19 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   (taken from the pane's real path) and refuses a later one outside that repository.
 
 ### M2. FigCraft's control port reaches every project
+
 - Launcher 115-118 forwards 7979 to every sandbox; while FigCraft serves project X, any session can
   drive it (read and write X's design files).
 - Fix: craft-open records the served project; the launcher forwards 7979 only to that project.
 
 ### M3. Every sandbox reads every command output and guide answer
+
 - `~/.cache/claude-answers` is allowRead for all; `claude-run-approve.rs:119-123` writes full output,
   `claude-guide.rs:158-175` writes typed answers unredacted.
 - Fix: one answers subfolder per session id, only that one bound into its sandbox.
 
 ### M4. The todo channel accepts forged updates (`todo.rs:398-441`)
+
 - `add` lands straight in To do under any project chosen by `cwd` (dotfiles included); `session` is
   taken from the JSON; any session can mark any item done; the blocked-report cap counts per derived
   reporter (any folder outside a repository is a new reporter); no size or line cap.
@@ -122,6 +130,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   session; blocked reports capped per sender per day; cap lines per apply.
 
 ### M5. Untrusted files and sockets can freeze the column or the daemon
+
 - Column, every tick: `updates.jsonl`, `designs/<id>.{json,role}`, `statusline-<id>.json`, whole
   transcripts (`sessions.rs:259`). Daemon: `<id>.request`, the session folder's `.git`. A FIFO
   planted there blocks `open()` forever; a huge file or `/dev/zero` symlink exhausts memory.
@@ -132,6 +141,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   ids whose request file exists, cap per sender.
 
 ### M6. The log cannot support incident response
+
 - `~/.local/state/claude-sessions` is read-only but **readable** from every sandbox (log, todo.json,
   error reports, usage.sqlite); `hook.log` is sandbox-writable.
 - Injection: Rust `log_as` keeps ESC and C0/C1 controls (`util.rs:49`); bash `log_event` strips only
@@ -154,6 +164,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   successes dropped (3 224 of 8 157 lines).
 
 ## Low
+
 - L1 Design role and canvas forgery for another session's id (`designs/` shared): per-session dirs.
 - L2 A command taller than the 45-row window pushes its start off screen; `claude-guide` `run:` steps
   (2000 chars) have no length warning: pager or refusal past rows − 12.
@@ -165,6 +176,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   no admin/workflow scopes.
 
 ## What holds (verified)
+
 - Approval screen: control/bidi/zero-width/tag characters shown escaped in red, non-ASCII listed,
   Decline by default, keys in the first 500 ms dropped, the shown command is exactly what runs
   (`fish -c` quoted, test), cwd resolved before display.
@@ -179,6 +191,7 @@ without review, every sandbox can write `.git/config`, other projects' Claude me
   read-only; auto-update disabled.
 
 ## Performance (by felt latency)
+
 1. Every key press runs a full tick (`claude-sessions-sidebar.rs:73-76`): tmux, pgrep, snapshot
    parsed twice, per-card files — 15–40 ms per j/k. Rebuild from cached state on keys.
 2. Synchronous `manager()` in key handlers and in the tick (`open` p50 41 ms, max 500 ms; `say`

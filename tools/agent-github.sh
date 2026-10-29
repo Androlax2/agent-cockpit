@@ -15,7 +15,10 @@ AUTHORIZED_APPS_URL=https://github.com/settings/applications
 RULESET_NAME="agents: protect default branch"
 PROJECT_BOARD_SERVICE=agent-gh-projects
 
-die() { echo "agent-github: $*" >&2; exit 1; }
+die() {
+    echo "agent-github: $*" >&2
+    exit 1
+}
 
 require_valid_name() {
     [[ $1 =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "invalid project name: $1"
@@ -27,9 +30,9 @@ repository_of() {
     remote=$(git -C "$PROJECTS_DIR/$1" remote get-url origin 2>/dev/null) || die "$1 has no origin remote"
     remote=${remote%.git}
     case $remote in
-        https://github.com/*) echo "${remote#https://github.com/}" ;;
-        git@github.com:*) echo "${remote#git@github.com:}" ;;
-        *) die "the origin of $1 is not on github.com: $remote" ;;
+    https://github.com/*) echo "${remote#https://github.com/}" ;;
+    git@github.com:*) echo "${remote#git@github.com:}" ;;
+    *) die "the origin of $1 is not on github.com: $remote" ;;
     esac
 }
 
@@ -172,8 +175,8 @@ print_token_instructions() {
 token() {
     local name=$1 repository url
     case ${ALLOW_WORKFLOWS:-0} in
-        0|1) ;;
-        *) die "ALLOW_WORKFLOWS must be 0 or 1" ;;
+    0 | 1) ;;
+    *) die "ALLOW_WORKFLOWS must be 0 or 1" ;;
     esac
     require_valid_name "$name"
     repository=$(repository_of "$name")
@@ -262,10 +265,10 @@ usage() {
 }
 
 case ${1:-} in
-    token) token "${2:?usage: agent-github.sh token <project>}" ;;
-    project-board-token) project_board_token ;;
-    relogin) relogin ;;
-    protect) protect "${2:?usage: agent-github.sh protect <project>}" ;;
-    check) check ;;
-    *) usage ;;
+token) token "${2:?usage: agent-github.sh token <project>}" ;;
+project-board-token) project_board_token ;;
+relogin) relogin ;;
+protect) protect "${2:?usage: agent-github.sh protect <project>}" ;;
+check) check ;;
+*) usage ;;
 esac

@@ -5,6 +5,7 @@
 Theo cannot readily see which running sessions work together, what they are doing, or who is waiting on whom. He approved grouping sessions by shared task inside the existing project list, then approved the terminal-style FigCraft design for implementation on 2026-10-23.
 
 Authoritative visual reference: `team-visibility.figcraft`, page `02 Terminal design` (46):
+
 - Frame 47: `Desktop cockpit / Linked team active`.
 - Frame 119: `States / Honest status and narrow content`.
 

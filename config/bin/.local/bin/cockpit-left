@@ -18,9 +18,9 @@ shown_pane() {
     local shown snapshot="${XDG_RUNTIME_DIR:-/tmp}/cockpit.json"
     shown=$(cat "${XDG_RUNTIME_DIR:-/tmp}/cockpit.current" 2>/dev/null) || return 1
     case $shown in
-        claude-retry-*) tmux list-panes -t "=$shown" -F '#{pane_id}' 2>/dev/null | head -1 ;;
-        ?*) jq -r --arg id "$shown" 'first(.sessions[] | select(.session == $id) | .tmux_pane // empty)' "$snapshot" 2>/dev/null ;;
-        *) return 1 ;;
+    claude-retry-*) tmux list-panes -t "=$shown" -F '#{pane_id}' 2>/dev/null | head -1 ;;
+    ?*) jq -r --arg id "$shown" 'first(.sessions[] | select(.session == $id) | .tmux_pane // empty)' "$snapshot" 2>/dev/null ;;
+    *) return 1 ;;
     esac
 }
 read_from=$(shown_pane) || true

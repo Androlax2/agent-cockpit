@@ -32,11 +32,13 @@
 ### Task 1: Saved filing receipts and exact-task approval
 
 **Files:**
+
 - Modify: `apps/cockpit/src/todo.rs`, `apps/cockpit/src/approval.rs`, `apps/cockpit/src/bin/claude-todo.rs`
 - Modify: `apps/osd/src/registry.rs`
 - Test: `apps/cockpit/src/tests.rs`, `apps/cockpit/tests/claude_todo.rs`, `apps/osd/src/tests.rs`
 
 **Interfaces:**
+
 - Retain existing todo-update transport and existing add/propose syntax.
 - Add `cockpit-todo approve-request <12-hex-request-id>` for host execution through ask-to-run, and `cockpit-todo receipt <12-hex-request-id>` for checking delayed outcomes.
 - Requests carry a validated request ID; the daemon owns started_in, receipt destination and trusted approval metadata.
@@ -63,6 +65,7 @@
 ### Task 3: Review the pinned binary and saved profile
 
 **Files:**
+
 - Modify: `packages/greywall/build.sh` (pinned revision and verified source archive hash)
 - Modify: `config/greywall/.config/greywall/learned/claude.json` (exception only; reviewed grants unchanged)
 - Test: `apps/cockpit/tests/greywall_launcher.rs`

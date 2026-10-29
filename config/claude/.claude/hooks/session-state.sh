@@ -26,15 +26,15 @@ is_agent_process() { # pid
 }
 nested=0
 pid=$$
-while (( pid > 1 )); do
+while ((pid > 1)); do
     pid=$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null) || break
     [[ -n $pid ]] || break
-    if is_agent_process "$pid" && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxE 'CLAUDECODE=1|OPENCODE=1'; then
+    if is_agent_process "$pid" && tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -qxE 'CLAUDECODE=1|OPENCODE=1'; then
         nested=1
         break
     fi
 done
-if (( nested )); then
+if ((nested)); then
     cat >/dev/null
     exit 0
 fi
@@ -44,10 +44,10 @@ fi
 # Take them from the nearest ancestor that has them when this process does not.
 inherited() { # NAME
     local pid=$$ value
-    while (( pid > 1 )); do
+    while ((pid > 1)); do
         pid=$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null) || break
-        [[ -n $pid ]] && (( pid > 1 )) || break
-        value=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" | sed -n "s/^$1=//p" | head -1)
+        if [[ -z $pid ]] || ! ((pid > 1)); then break; fi
+        value=$(tr '\0' '\n' 2>/dev/null <"/proc/$pid/environ" | sed -n "s/^$1=//p" | head -1)
         if [[ -n $value ]]; then
             printf '%s' "$value"
             return
@@ -79,8 +79,8 @@ toast_id_file="$HOME/.cache/claude/toast-$session.id"
 if [[ $event == UserPromptSubmit && ${COCKPIT_AGENT:-claude} == claude ]]; then
     generation=${COCKPIT_SUBSCRIPTION_ROUTE:-$(inherited COCKPIT_SUBSCRIPTION_ROUTE || true)}
     if [[ -n $generation ]]; then
-        if ! gate=$(timeout 2 cockpit-subscription start-gate "$generation") \
-            || ! jq -e 'type == "object" and (length == 0)' <<<"$gate" >/dev/null 2>&1; then
+        if ! gate=$(timeout 2 cockpit-subscription start-gate "$generation") ||
+            ! jq -e 'type == "object" and (length == 0)' <<<"$gate" >/dev/null 2>&1; then
             printf '%s\n' '{"continue":false,"stopReason":"Subscription replacement ownership is not confirmed; the task remains paused."}'
             exit 0
         fi
@@ -94,7 +94,7 @@ turn_id_file="$HOME/.cache/claude/turn-$session.id"
 turn_done_file="$HOME/.cache/claude/turn-$session.done"
 start_turn() {
     mkdir -p "$(dirname "$turn_id_file")"
-    od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$turn_id_file"
+    od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >"$turn_id_file"
     rm -f "$turn_done_file"
 }
 outcome_of_turn() { # cwd: commits since the turn's start, uncommitted changes, or "no changes"
@@ -103,14 +103,14 @@ outcome_of_turn() { # cwd: commits since the turn's start, uncommitted changes, 
     start=$(cat "$turn_head_file" 2>/dev/null || true)
     count=0
     if [[ -n $start ]]; then count=$(git -C "$1" rev-list --count "$start..HEAD" 2>/dev/null || echo 0); fi
-    if (( count == 1 )); then summary="1 commit"; elif (( count > 1 )); then summary="$count commits"; fi
+    if ((count == 1)); then summary="1 commit"; elif ((count > 1)); then summary="$count commits"; fi
     stat=$(git -C "$1" diff --shortstat HEAD 2>/dev/null || true)
     files=$(grep -oE '[0-9]+ files? changed' <<<"$stat" | grep -oE '^[0-9]+' || echo 0)
     insertions=$(grep -oE '[0-9]+ insertions?' <<<"$stat" | grep -oE '^[0-9]+' || echo 0)
     deletions=$(grep -oE '[0-9]+ deletions?' <<<"$stat" | grep -oE '^[0-9]+' || echo 0)
-    if (( files > 0 )); then
+    if ((files > 0)); then
         local noun=files
-        if (( files == 1 )); then noun=file; fi
+        if ((files == 1)); then noun='file'; fi
         summary+="${summary:+ · }$files $noun changed, +$insertions −$deletions uncommitted"
     fi
     echo "${summary:-no changes}"
@@ -167,7 +167,10 @@ unapplied_of() { # cwd live
     local base
     base=$(git -C "$1" merge-base HEAD refs/remotes/origin/main 2>/dev/null) || return 0
     patch_ids() { git -C "$1" log -p --no-color --no-merges "$2" 2>/dev/null | git patch-id --stable | cut -d' ' -f1; }
-    patch_ids "$1" "$base..HEAD" | grep -cvxF -f <(patch_ids "$2" "$base..main"; echo none) || true
+    patch_ids "$1" "$base..HEAD" | grep -cvxF -f <(
+        patch_ids "$2" "$base..main"
+        echo none
+    ) || true
 }
 
 # The desktop apps this session drives through an MCP server attached to them (`figcraft-cli mcp
@@ -175,6 +178,8 @@ unapplied_of() { # cwd live
 # ps sees this sandbox's processes only, so these are this session's servers.
 craft_apps() {
     local line app port apps=""
+    # Parse the full command arguments for the MCP port, not just process IDs.
+    # shellcheck disable=SC2009
     while read -r line; do
         app=${line%%-cli *}
         app=${app##*/}
@@ -246,151 +251,161 @@ agent=${COCKPIT_AGENT:-}
 needs_input=
 question_form=
 case $event in
-    TaskLabel)
-        if ! label=$(jq -er '.label | select(type == "string")
+TaskLabel)
+    if ! label=$(jq -er '.label | select(type == "string")
             | select((test("[\\x00-\\x1f\\x7f-\\x9f]") | not) and (contains("#(") | not) and (contains("#{") | not))
             | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")
             | select(length <= 60 and (split(" ") | length >= 3 and length <= 6))' <<<"$payload"); then
-            echo "session-state.sh: task label must be 3–6 words, at most 60 characters, without controls or tmux formats" >&2
-            exit 2
-        fi
-        ;;
-    TaskStep)
-        if ! doing=$(jq -er '.doing | select(type == "string")
+        echo "session-state.sh: task label must be 3–6 words, at most 60 characters, without controls or tmux formats" >&2
+        exit 2
+    fi
+    ;;
+TaskStep)
+    if ! doing=$(jq -er '.doing | select(type == "string")
             | select((test("[\\x00-\\x1f\\x7f-\\x9f]") | not) and (contains("#(") | not) and (contains("#{") | not))
             | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")
             | select(length <= 80 and (split(" ") | length >= 2 and length <= 12))' <<<"$payload"); then
-            echo "session-state.sh: doing-now status must be 2–12 words, at most 80 characters, without controls or tmux formats" >&2
-            exit 2
-        fi
-        ;;
-    NeedsInput)
-        if ! jq -e '.message | type == "string" and (length > 0 and length <= 300) and test("\\S") and
+        echo "session-state.sh: doing-now status must be 2–12 words, at most 80 characters, without controls or tmux formats" >&2
+        exit 2
+    fi
+    ;;
+NeedsInput)
+    if ! jq -e '.message | type == "string" and (length > 0 and length <= 300) and test("\\S") and
             (test("[\\x00-\\x1f\\x7f]") | not) and (contains("#(") | not) and (contains("#{") | not)' <<<"$payload" >/dev/null; then
-            echo "session-state.sh: question must be 1–300 characters, not blank, without controls or tmux formats" >&2
-            exit 2
-        fi
-        mkdir -p "$(dirname "$input_file")"
-        jq -r '.message' <<<"$payload" > "$pending_input_file"
-        rm -f "$input_file"
-        state=working
-        ;;
-    SessionStart)
-        quota_stopped=false
-        rm -f "$turn_id_file" "$turn_done_file"
+        echo "session-state.sh: question must be 1–300 characters, not blank, without controls or tmux formats" >&2
+        exit 2
+    fi
+    mkdir -p "$(dirname "$input_file")"
+    jq -r '.message' <<<"$payload" >"$pending_input_file"
+    rm -f "$input_file"
+    state=working
+    ;;
+SessionStart)
+    quota_stopped=false
+    rm -f "$turn_id_file" "$turn_done_file"
+    rm -f "$input_file" "$pending_input_file"
+    needs_input=false
+    state=waiting
+    unpushed=$(unpushed_of "$cwd")
+    # Background work dies with the process: a new or resumed one has none. /clear and
+    # /compact keep the process, and its work.
+    case $(jq -r '.source // ""' <<<"$payload") in
+    startup | resume) agents=0 background=0 ;;
+    esac
+    ;;
+UserPromptSubmit)
+    quota_stopped=false
+    start_turn
+    state=working
+    # The commit the turn starts from, to tell what it did when it stops.
+    {
+        mkdir -p "$(dirname "$turn_head_file")"
+        git -C "$cwd" rev-parse HEAD >"$turn_head_file"
+    } 2>/dev/null || rm -f "$turn_head_file"
+    # Only what you typed names the task: prompts from the system (task notifications, loop
+    # wake-ups) say nothing about it.
+    if [[ $(jq -r '.source // "user"' <<<"$payload") == user ]]; then
         rm -f "$input_file" "$pending_input_file"
         needs_input=false
-        state=waiting
-        unpushed=$(unpushed_of "$cwd")
-        # Background work dies with the process: a new or resumed one has none. /clear and
-        # /compact keep the process, and its work.
-        case $(jq -r '.source // ""' <<<"$payload") in
-            startup | resume) agents=0 background=0 ;;
-        esac
+        task=$(jq -r '.prompt // "" | split("\n")[0] | gsub("\\s+"; " ") | .[:60]' <<<"$payload")
+    fi
+    # A delivered Chief answer replies to the saved question; one asked since then is still pending.
+    if [[ $(jq -r '.source // ""' <<<"$payload") == chief_answer ]]; then rm -f "$input_file"; fi
+    ;;
+PostToolUse)
+    if [[ -f $turn_done_file ]]; then start_turn; fi
+    state=working
+    last_tool=$(last_tool_of "$payload")
+    ;;
+Notification)
+    message=$(jq -r '.message | gsub("\\s+"; " ")' <<<"$payload")
+    # Requests for a human stick and turn the session red; turn-end notices leave it waiting;
+    # anything informational (auth, quota, computer use, plugins) shows its message and keeps the state.
+    case $(jq -r '.notification_type // ""' <<<"$payload") in
+    background_work) read -r agents background < <(background_of "$payload") || true ;;
+    permission_prompt | worker_permission_prompt | elicitation_dialog | elicitation_url_dialog | agent_needs_input)
+        state=needs-you
+        sticky=true
+        needs_input=false
+        question_form=false
+        if [[ $agent == opencode && $(jq -r '.notification_type' <<<"$payload") == elicitation_dialog ]]; then question_form=true; fi
         ;;
-    UserPromptSubmit)
-        quota_stopped=false
+    idle_prompt)
+        state=waiting
+        sticky=true
+        ;;
+    agent_completed | push_notification) state=waiting ;;
+    *) state= ;;
+    esac
+    ;;
+Stop)
+    quota_stopped=false
+    turn_id=$(cat "$turn_id_file" 2>/dev/null || true)
+    if [[ ! $turn_id =~ ^[0-9a-f]{32}$ ]]; then
         start_turn
-        state=working
-        # The commit the turn starts from, to tell what it did when it stops.
-        { mkdir -p "$(dirname "$turn_head_file")"; git -C "$cwd" rev-parse HEAD > "$turn_head_file"; } 2>/dev/null || rm -f "$turn_head_file"
-        # Only what you typed names the task: prompts from the system (task notifications, loop
-        # wake-ups) say nothing about it.
-        if [[ $(jq -r '.source // "user"' <<<"$payload") == user ]]; then
-            rm -f "$input_file" "$pending_input_file"
-            needs_input=false
-            task=$(jq -r '.prompt // "" | split("\n")[0] | gsub("\\s+"; " ") | .[:60]' <<<"$payload")
-        fi
-        # A delivered Chief answer replies to the saved question; one asked since then is still pending.
-        if [[ $(jq -r '.source // ""' <<<"$payload") == chief_answer ]]; then rm -f "$input_file"; fi
-        ;;
-    PostToolUse)
-        if [[ -f $turn_done_file ]]; then start_turn; fi
-        state=working
-        last_tool=$(last_tool_of "$payload")
-        ;;
-    Notification)
-        message=$(jq -r '.message | gsub("\\s+"; " ")' <<<"$payload")
-        # Requests for a human stick and turn the session red; turn-end notices leave it waiting;
-        # anything informational (auth, quota, computer use, plugins) shows its message and keeps the state.
-        case $(jq -r '.notification_type // ""' <<<"$payload") in
-            background_work) read -r agents background < <(background_of "$payload") || true ;;
-            permission_prompt | worker_permission_prompt | elicitation_dialog | elicitation_url_dialog | agent_needs_input)
-                state=needs-you; sticky=true; needs_input=false; question_form=false
-                if [[ $agent == opencode && $(jq -r '.notification_type' <<<"$payload") == elicitation_dialog ]]; then question_form=true; fi ;;
-            idle_prompt) state=waiting; sticky=true ;;
-            agent_completed | push_notification) state=waiting ;;
-            *) state= ;;
-        esac
-        ;;
-    Stop)
-        quota_stopped=false
-        turn_id=$(cat "$turn_id_file" 2>/dev/null || true)
-        if [[ ! $turn_id =~ ^[0-9a-f]{32}$ ]]; then
-            start_turn
-            turn_id=$(<"$turn_id_file")
-        fi
-        touch "$turn_done_file"
-        turn_complete=true
-        # The command runs before the final reply: only turn-end makes its question answerable.
-        if [[ -f $pending_input_file ]]; then mv -f "$pending_input_file" "$input_file"; fi
-        state=waiting
-        message="Finished, waiting for you"
-        outcome=$(outcome_of_turn "$cwd")
-        unpushed=$(unpushed_of "$cwd")
-        read -r agents background < <(background_of "$payload") || true
-        checks=$(checks_of_turn "$(jq -r '.transcript_path // ""' <<<"$payload")")
-        if [[ -n $checks ]]; then outcome="${outcome:+$outcome · }$checks"; fi
-        ;;
-    StopFailure)
-        state=waiting
-        message="Provider failure; task remains pending"
-        quota_stopped=false
-        if [[ $(jq -r '.error // ""' <<<"$payload") == rate_limit ]]; then
-            quota_stopped=true
-            message="Subscription limit; task remains pending"
-        fi
-        read -r agents background < <(background_of "$payload") || true
-        ;;
-    SessionEnd)
-        rm -f "$input_file" "$pending_input_file"
-        needs_input=false
-        state=gone
-        rm -f "$turn_head_file" "$turn_id_file" "$turn_done_file"
-        ;;
-    *)
-        echo "session-state.sh: unexpected hook event $event" >&2
-        exit 1
-        ;;
+        turn_id=$(<"$turn_id_file")
+    fi
+    touch "$turn_done_file"
+    turn_complete=true
+    # The command runs before the final reply: only turn-end makes its question answerable.
+    if [[ -f $pending_input_file ]]; then mv -f "$pending_input_file" "$input_file"; fi
+    state=waiting
+    message="Finished, waiting for you"
+    outcome=$(outcome_of_turn "$cwd")
+    unpushed=$(unpushed_of "$cwd")
+    read -r agents background < <(background_of "$payload") || true
+    checks=$(checks_of_turn "$(jq -r '.transcript_path // ""' <<<"$payload")")
+    if [[ -n $checks ]]; then outcome="${outcome:+$outcome · }$checks"; fi
+    ;;
+StopFailure)
+    state=waiting
+    message="Provider failure; task remains pending"
+    quota_stopped=false
+    if [[ $(jq -r '.error // ""' <<<"$payload") == rate_limit ]]; then
+        quota_stopped=true
+        message="Subscription limit; task remains pending"
+    fi
+    read -r agents background < <(background_of "$payload") || true
+    ;;
+SessionEnd)
+    rm -f "$input_file" "$pending_input_file"
+    needs_input=false
+    state=gone
+    rm -f "$turn_head_file" "$turn_id_file" "$turn_done_file"
+    ;;
+*)
+    echo "session-state.sh: unexpected hook event $event" >&2
+    exit 1
+    ;;
 esac
 
 if [[ $event == SessionStart || $event == Stop || $event == StopFailure ]]; then
     repository_reported=true
     origin=$(git -C "$cwd" remote get-url origin 2>/dev/null || true)
     origin=${origin%.git}
-    if [[ $origin =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]] \
-        && [[ ${BASH_REMATCH[2]} != . && ${BASH_REMATCH[2]} != .. && ${BASH_REMATCH[3]} != . && ${BASH_REMATCH[3]} != .. ]]; then
+    if [[ $origin =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$ ]] &&
+        [[ ${BASH_REMATCH[2]} != . && ${BASH_REMATCH[2]} != .. && ${BASH_REMATCH[3]} != . && ${BASH_REMATCH[3]} != .. ]]; then
         repository="${BASH_REMATCH[2],,}/${BASH_REMATCH[3],,}"
-        (( ${#repository} <= 200 )) || repository=
+        ((${#repository} <= 200)) || repository=
     fi
     branch=$(git -C "$cwd" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
     # Git allows names the daemon refuses as text; one would drop the whole report, Stop included.
-    if [[ $branch == *'#{'* || $branch == *'#('* ]] || (( ${#branch} > 300 )); then
+    if [[ $branch == *'#{'* || $branch == *'#('* ]] || ((${#branch} > 300)); then
         branch=
     fi
 fi
 
 case $event in
-    NeedsInput | PostToolUse | Stop | StopFailure | Notification | UserPromptSubmit)
-        [[ $event == Notification ]] || needs_input=false
-        # A real dialog supersedes a saved chat question; restore it after the dialog/turn ends.
-        if [[ -f $input_file && ! ( $event == Notification && $needs_input == false ) ]]; then
-            message=$(<"$input_file")
-            state=needs-you
-            sticky=true
-            needs_input=true
-        fi
-        ;;
+NeedsInput | PostToolUse | Stop | StopFailure | Notification | UserPromptSubmit)
+    [[ $event == Notification ]] || needs_input=false
+    # A real dialog supersedes a saved chat question; restore it after the dialog/turn ends.
+    if [[ -f $input_file && ! ($event == Notification && $needs_input == false) ]]; then
+        message=$(<"$input_file")
+        state=needs-you
+        sticky=true
+        needs_input=true
+    fi
+    ;;
 esac
 
 report=$(jq -cn \
@@ -421,16 +436,16 @@ hook_log() { # message
     local log="$HOME/.cache/claude/hook.log"
     {
         mkdir -p "$(dirname "$log")"
-        if (( $(stat -c %s "$log" 2>/dev/null || echo 0) > 524288 )); then mv -f "$log" "$log.1"; fi
-        printf '%s %s %s %s: %s\n' "$(date -Iseconds)" "$event" "${session:0:8}" "${state:-·}" "$1" >> "$log"
+        if (($(stat -c %s "$log" 2>/dev/null || echo 0) > 524288)); then mv -f "$log" "$log.1"; fi
+        printf '%s %s %s %s: %s\n' "$(date -Iseconds)" "$event" "${session:0:8}" "${state:-·}" "$1" >>"$log"
     } 2>/dev/null || true
 }
 
-if [[ $event == Stop && ( -z $agent || $agent == claude ) ]]; then
+if [[ $event == Stop && (-z $agent || $agent == claude) ]]; then
     billing=${COCKPIT_BILLING:-$(inherited COCKPIT_BILLING)}
     billing_started_at=${COCKPIT_BILLING_STARTED_AT:-$(inherited COCKPIT_BILLING_STARTED_AT)}
     transcript=$(jq -r '.transcript_path // ""' <<<"$payload")
-    if [[ ( $billing == api || $billing == subscription ) && -n $billing_started_at && -n $transcript ]]; then
+    if [[ ($billing == api || $billing == subscription) && -n $billing_started_at && -n $transcript ]]; then
         if ! python3 "$(dirname "${BASH_SOURCE[0]}")/billing-capture.py" record-transcript-billing "$billing" "$billing_started_at" "$transcript"; then
             hook_log "billing capture failed; usage remains visible with unknown billing"
         fi
@@ -447,12 +462,12 @@ send_to_osd() {
         return 1
     fi
     case $event in
-        NeedsInput | TaskLabel | TaskStep)
-            if [[ $reply != ok ]]; then
-                echo "session-state.sh: osd did not accept $event: ${reply:-no acknowledgement}" >&2
-                return 1
-            fi
-            ;;
+    NeedsInput | TaskLabel | TaskStep)
+        if [[ $reply != ok ]]; then
+            echo "session-state.sh: osd did not accept $event: ${reply:-no acknowledgement}" >&2
+            return 1
+        fi
+        ;;
     esac
 }
 
@@ -480,7 +495,7 @@ if [[ -n $message ]]; then
     mkdir -p "$(dirname "$toast_id_file")"
     urgency=normal
     [[ $sticky == true ]] && urgency=critical
-    notify-send --print-id -a "Claude Code" -u "$urgency" "Claude · $project" "$message" > "$toast_id_file"
+    notify-send --print-id -a "Claude Code" -u "$urgency" "Claude · $project" "$message" >"$toast_id_file"
 elif [[ -f $toast_id_file ]]; then
     toast_id=$(<"$toast_id_file")
     rm -f "$toast_id_file"

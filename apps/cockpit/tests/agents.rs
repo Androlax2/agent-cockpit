@@ -15,8 +15,17 @@ fn agents_dir() -> PathBuf {
 
 /// The names of the agent files, sorted.
 fn agent_files() -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(agents_dir()).unwrap().flatten()
-        .filter_map(|entry| entry.file_name().to_string_lossy().strip_suffix(".sh").map(str::to_string)).collect();
+    let mut names: Vec<String> = fs::read_dir(agents_dir())
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .strip_suffix(".sh")
+                .map(str::to_string)
+        })
+        .collect();
     names.sort();
     names
 }
@@ -37,22 +46,47 @@ fn ordinary_restore_does_not_forward_inherited_team_resume_permit() {
         sandbox.shim("tmux", r#"[[ $1 == new-session ]] || exit 0; while [[ $# -gt 0 && $1 != env ]]; do shift; done; exec "$@""#);
         sandbox.shim("fish", r#"env > "$HOME/restored-environment""#);
         sandbox.shim("opencode-launch", r#"env > "$HOME/restored-environment""#);
-        let output = sandbox.run(bin().join("cockpit"), &["restore", &project.display().to_string(), id], &[
-            ("COCKPIT_TEAM_RESUME", "must-not-be-forwarded"),
-            ("COCKPIT_OPENCODE", &sandbox.shims.join("opencode-launch").display().to_string()),
-        ]);
+        let output = sandbox.run(
+            bin().join("cockpit"),
+            &["restore", &project.display().to_string(), id],
+            &[
+                ("COCKPIT_TEAM_RESUME", "must-not-be-forwarded"),
+                (
+                    "COCKPIT_OPENCODE",
+                    &sandbox.shims.join("opencode-launch").display().to_string(),
+                ),
+            ],
+        );
         assert!(output.status.success(), "{agent}: {}", stderr(&output));
         let environment = fs::read_to_string(sandbox.home.join("restored-environment")).unwrap();
-        assert!(!environment.contains("must-not-be-forwarded"), "{agent}: inherited a resume permit");
-        assert!(!environment.lines().any(|line| line.starts_with("COCKPIT_TEAM_RESUME=")), "{agent}: ordinary restore has no resume authority");
+        assert!(
+            !environment.contains("must-not-be-forwarded"),
+            "{agent}: inherited a resume permit"
+        );
+        assert!(
+            !environment
+                .lines()
+                .any(|line| line.starts_with("COCKPIT_TEAM_RESUME=")),
+            "{agent}: ordinary restore has no resume authority"
+        );
     }
 }
 
 #[test]
 fn every_agent_runs_in_its_own_greywall_launcher_and_profile() {
     for name in agents::names() {
-        assert!(bin().join("greywall-agents").join(name).is_file(), "no launcher greywall-agents/{name}");
-        assert!(repo().join(format!("config/greywall/.config/greywall/learned/{name}.json")).is_file(), "no greywall profile for {name}");
+        assert!(
+            bin().join("greywall-agents").join(name).is_file(),
+            "no launcher greywall-agents/{name}"
+        );
+        assert!(
+            repo()
+                .join(format!(
+                    "config/greywall/.config/greywall/learned/{name}.json"
+                ))
+                .is_file(),
+            "no greywall profile for {name}"
+        );
     }
 }
 
@@ -60,11 +94,20 @@ fn every_agent_runs_in_its_own_greywall_launcher_and_profile() {
 fn every_start_file_is_read_by_an_agent_and_every_agent_reads_known_ones() {
     let labels: Vec<&str> = START_FILES.iter().map(|(label, _)| *label).collect();
     for label in &labels {
-        assert!(agents::AGENTS.iter().any(|agent| agent.start_files.contains(label)), "no agent reads {label}");
+        assert!(
+            agents::AGENTS
+                .iter()
+                .any(|agent| agent.start_files.contains(label)),
+            "no agent reads {label}"
+        );
     }
     for agent in &agents::AGENTS {
         for label in agent.start_files {
-            assert!(labels.contains(label), "{} reads {label}, which is not in START_FILES", agent.name);
+            assert!(
+                labels.contains(label),
+                "{} reads {label}, which is not in START_FILES",
+                agent.name
+            );
         }
     }
 }
@@ -73,7 +116,12 @@ fn every_start_file_is_read_by_an_agent_and_every_agent_reads_known_ones() {
 fn the_default_agent_has_a_row_and_no_badge() {
     let default = agents::find(agents::DEFAULT).expect("the default agent's row");
     assert!(default.badge.is_none());
-    assert!(agents::AGENTS.iter().filter(|agent| agent.name != agents::DEFAULT).all(|agent| agent.badge.is_some()));
+    assert!(
+        agents::AGENTS
+            .iter()
+            .filter(|agent| agent.name != agents::DEFAULT)
+            .all(|agent| agent.badge.is_some())
+    );
 }
 
 #[test]
@@ -82,23 +130,49 @@ fn a_session_id_belongs_to_its_agent_and_a_tmux_name_to_the_longest_prefix() {
     assert!(agents::is_session_id(OPENCODE_SESSION));
     assert!(!agents::is_session_id("claude-retry-opencode-1"));
     assert!(!agents::is_session_id("../etc"));
-    assert_eq!(agents::of_tmux_session("claude-retry-opencode-17").map(|agent| agent.name), Some("opencode"));
-    assert_eq!(agents::of_tmux_session("claude-retry-bg-17").map(|agent| agent.name), Some("claude"));
+    assert_eq!(
+        agents::of_tmux_session("claude-retry-opencode-17").map(|agent| agent.name),
+        Some("opencode")
+    );
+    assert_eq!(
+        agents::of_tmux_session("claude-retry-bg-17").map(|agent| agent.name),
+        Some("claude")
+    );
     assert!(agents::of_tmux_session("other").is_none());
 }
 
 #[test]
 fn claude_code_has_every_feature_and_opencode_only_dialogs_and_interrupt() {
-    let features = [Feature::Effort, Feature::Billing, Feature::Compact, Feature::RemoteControl, Feature::Dialogs, Feature::Interrupt, Feature::ScreenStates];
-    assert!(features.iter().all(|feature| agents::get("claude").can(*feature)));
-    let opencode: Vec<Feature> = features.into_iter().filter(|feature| agents::get("opencode").can(*feature)).collect();
+    let features = [
+        Feature::Effort,
+        Feature::Billing,
+        Feature::Compact,
+        Feature::RemoteControl,
+        Feature::Dialogs,
+        Feature::Interrupt,
+        Feature::ScreenStates,
+    ];
+    assert!(
+        features
+            .iter()
+            .all(|feature| agents::get("claude").can(*feature))
+    );
+    let opencode: Vec<Feature> = features
+        .into_iter()
+        .filter(|feature| agents::get("opencode").can(*feature))
+        .collect();
     assert_eq!(opencode, [Feature::Dialogs, Feature::Interrupt]);
 }
 
 #[test]
 fn an_agent_that_can_interrupt_says_with_which_keys() {
     for agent in &agents::AGENTS {
-        assert_eq!(agent.can(Feature::Interrupt), !agent.interrupt_keys.is_empty(), "{}", agent.name);
+        assert_eq!(
+            agent.can(Feature::Interrupt),
+            !agent.interrupt_keys.is_empty(),
+            "{}",
+            agent.name
+        );
     }
 }
 
@@ -107,7 +181,11 @@ fn agents_with(sandbox: &Sandbox, name: &str, extra: &str) -> String {
     let folder = sandbox.root.join("agents");
     fs::create_dir_all(&folder).unwrap();
     for file in agent_files() {
-        fs::copy(agents_dir().join(format!("{file}.sh")), folder.join(format!("{file}.sh"))).unwrap();
+        fs::copy(
+            agents_dir().join(format!("{file}.sh")),
+            folder.join(format!("{file}.sh")),
+        )
+        .unwrap();
     }
     fs::write(folder.join(format!("{name}.sh")), extra).unwrap();
     folder.display().to_string()
@@ -115,8 +193,10 @@ fn agents_with(sandbox: &Sandbox, name: &str, extra: &str) -> String {
 
 /// opencode's file as another agent's: every name in it its own (agent files share one namespace).
 fn opencode_as(name: &str) -> String {
-    fs::read_to_string(agents_dir().join("opencode.sh")).unwrap()
-        .replace("opencode", name).replace("OPENCODE", &name.to_uppercase())
+    fs::read_to_string(agents_dir().join("opencode.sh"))
+        .unwrap()
+        .replace("opencode", name)
+        .replace("OPENCODE", &name.to_uppercase())
 }
 
 #[test]
@@ -126,7 +206,10 @@ fn every_name_an_agent_file_defines_carries_its_agents_name() {
         let text = fs::read_to_string(agents_dir().join(format!("{name}.sh"))).unwrap();
         for found in definition.captures_iter(&text) {
             let defined = &found[1];
-            assert!(defined.to_lowercase().contains(&name), "{name}.sh defines {defined}, which does not carry its name");
+            assert!(
+                defined.to_lowercase().contains(&name),
+                "{name}.sh defines {defined}, which does not carry its name"
+            );
         }
     }
 }
@@ -134,10 +217,23 @@ fn every_name_an_agent_file_defines_carries_its_agents_name() {
 #[test]
 fn an_agent_file_missing_a_verb_stops_cockpit_and_names_it() {
     let sandbox = Sandbox::new();
-    let folder = agents_with(&sandbox, "fixtureagent", &opencode_as("fixtureagent").replace("agent_fixtureagent_say()", "unrelated_say()"));
-    let output = sandbox.run(bin().join("cockpit"), &["--agent", "fixtureagent", "background", "/tmp", "hi"], &[("COCKPIT_AGENTS_DIR", &folder)]);
+    let folder = agents_with(
+        &sandbox,
+        "fixtureagent",
+        &opencode_as("fixtureagent").replace("agent_fixtureagent_say()", "unrelated_say()"),
+    );
+    let output = sandbox.run(
+        bin().join("cockpit"),
+        &["--agent", "fixtureagent", "background", "/tmp", "hi"],
+        &[("COCKPIT_AGENTS_DIR", &folder)],
+    );
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("the agent fixtureagent") && stderr(&output).contains("does not define: say"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("the agent fixtureagent")
+            && stderr(&output).contains("does not define: say"),
+        "{}",
+        stderr(&output)
+    );
     assert!(sandbox.calls("tmux").is_empty());
 }
 
@@ -148,19 +244,43 @@ fn an_agent_added_as_a_file_starts_with_agent_and_its_sessions_go_to_it() {
     let folder = agents_with(&sandbox, "fixtureagent", &opencode_as("fixtureagent"));
     let project = sandbox.root.join("project");
     fs::create_dir_all(&project).unwrap();
-    let output = sandbox.run(bin().join("cockpit"), &["--agent", "fixtureagent", "background", &project.display().to_string(), "fix the chip"],
-                             &[("COCKPIT_AGENTS_DIR", &folder)]);
+    let output = sandbox.run(
+        bin().join("cockpit"),
+        &[
+            "--agent",
+            "fixtureagent",
+            "background",
+            &project.display().to_string(),
+            "fix the chip",
+        ],
+        &[("COCKPIT_AGENTS_DIR", &folder)],
+    );
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let start = sandbox.calls("tmux").into_iter().find(|call| call.contains("new-session")).expect("no start");
-    assert!(start.contains("-s claude-retry-fixtureagent-") && start.ends_with("--prompt fix the chip"), "{start}");
+    let start = sandbox
+        .calls("tmux")
+        .into_iter()
+        .find(|call| call.contains("new-session"))
+        .expect("no start");
+    assert!(
+        start.contains("-s claude-retry-fixtureagent-") && start.ends_with("--prompt fix the chip"),
+        "{start}"
+    );
 }
 
 #[test]
 fn an_unknown_agent_is_refused_with_the_known_ones_named() {
     let sandbox = Sandbox::new();
-    let output = sandbox.run(bin().join("cockpit"), &["--agent", "unknown-agent", "new", "/tmp"], &[]);
+    let output = sandbox.run(
+        bin().join("cockpit"),
+        &["--agent", "unknown-agent", "new", "/tmp"],
+        &[],
+    );
     assert_eq!(output.status.code(), Some(2));
-    assert!(stderr(&output).contains("--agent takes one of: claude codex opencode"), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("--agent takes one of: claude codex opencode"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -168,14 +288,33 @@ fn left_knows_the_prompt_of_an_agent_added_as_a_file() {
     let sandbox = Sandbox::new();
     let marker = "agent_fixtureagent_prompt_start() {\n    printf '%s\\n' '^ > $'\n}\n";
     let fixtureagent = opencode_as("fixtureagent");
-    let start = fixtureagent.find("agent_fixtureagent_prompt_start() {").unwrap();
+    let start = fixtureagent
+        .find("agent_fixtureagent_prompt_start() {")
+        .unwrap();
     let end = start + fixtureagent[start..].find("\n}\n").unwrap() + 3;
-    let folder = agents_with(&sandbox, "fixtureagent", &format!("{}{marker}{}", &fixtureagent[..start], &fixtureagent[end..]));
-    sandbox.shim("tmux", r#"case $1 in
+    let folder = agents_with(
+        &sandbox,
+        "fixtureagent",
+        &format!("{}{marker}{}", &fixtureagent[..start], &fixtureagent[end..]),
+    );
+    sandbox.shim(
+        "tmux",
+        r#"case $1 in
   display-message) echo "3 7" ;;
   capture-pane) printf '%s\n' ' > ' ;;
-esac"#);
-    let output = sandbox.run(bin().join("cockpit-left"), &["%11"], &[("COCKPIT_AGENTS_DIR", &folder)]);
+esac"#,
+    );
+    let output = sandbox.run(
+        bin().join("cockpit-left"),
+        &["%11"],
+        &[("COCKPIT_AGENTS_DIR", &folder)],
+    );
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(sandbox.calls("tmux").contains(&"tmux select-pane -L -t %11".to_string()), "{:?}", sandbox.calls("tmux"));
+    assert!(
+        sandbox
+            .calls("tmux")
+            .contains(&"tmux select-pane -L -t %11".to_string()),
+        "{:?}",
+        sandbox.calls("tmux")
+    );
 }

@@ -16,8 +16,8 @@ on_screen() {
     local level
     level=$(hyprctl layers 2>/dev/null | awk '/Layer level/ { level = $3 } /namespace: waybar/ { print level; exit }')
     case $level in
-        2 | 3) echo 1 ;;
-        0 | 1) echo 0 ;;
+    2 | 3) echo 1 ;;
+    0 | 1) echo 0 ;;
     esac
 }
 
@@ -34,9 +34,9 @@ set_visible() {
     if [[ $(current) != "$1" ]]; then
         # -x: the exact process name. Without it the pattern also matches this script's own name.
         pkill -x -USR1 waybar || true
-        printf '%s\n' "$1" > "$STATE"
+        printf '%s\n' "$1" >"$STATE"
         # Until the move shows, a quick next event would read the old layer and flip it back.
-        for (( tries = 0; tries < 10; tries++ )); do
+        for ((tries = 0; tries < 10; tries++)); do
             [[ -z $(on_screen) || $(on_screen) == "$1" ]] && break
             sleep 0.05
         done
@@ -44,9 +44,12 @@ set_visible() {
 }
 
 case ${1:-sync} in
-    sync) if "$on_claude_workspace"; then set_visible 0; else set_visible 1; fi ;;
-    hide) set_visible 0 ;;
-    show) set_visible 1 ;;
-    reset) printf '1\n' > "$STATE" ;;
-    *) echo "usage: waybar-visibility.sh sync|hide|show|reset" >&2; exit 2 ;;
+sync) if "$on_claude_workspace"; then set_visible 0; else set_visible 1; fi ;;
+hide) set_visible 0 ;;
+show) set_visible 1 ;;
+reset) printf '1\n' >"$STATE" ;;
+*)
+    echo "usage: waybar-visibility.sh sync|hide|show|reset" >&2
+    exit 2
+    ;;
 esac

@@ -84,6 +84,8 @@
 #                                (30 or more, default 60) is how long a session idles before it sleeps
 #                                chief-starts-per-hour <1-60> (default 6) caps the sessions the Chief may ask
 #                                for in an hour; todos you queued with Q do not count
+#                                chief-dispatches-own-todos on|off (default off): on lets the Chief start or
+#                                give todos it filed itself without your Q (still capped, logged and audited)
 #   cockpit remote <id>          toggle Remote Control for one session (the remote action of the sidebar's : list)
 #   cockpit restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
@@ -132,11 +134,11 @@ CURRENT="${XDG_RUNTIME_DIR:-/tmp}/cockpit.current"
 ATTENTION="${XDG_RUNTIME_DIR:-/tmp}/cockpit.attention"
 # The sandbox scopes game-performance froze for a game, one per line; its `off` thaws them.
 GAME_FROZEN="${XDG_RUNTIME_DIR:-/tmp}/game-performance.frozen"
-SIDEBAR_WIDTH=60   # columns; the rest is the session
+SIDEBAR_WIDTH=60 # columns; the rest is the session
 WINDOW_CLASS=cockpit
 KITTY_CONFIG="$HOME/.config/kitty/kitty.conf"
 KITTY_MANAGER_CONFIG="$HOME/.config/kitty/cockpit.conf"
-WORKSPACE=6  # apps/claude.lua routes the manager window there
+WORKSPACE=6 # apps/claude.lua routes the manager window there
 ON_CLAUDE_WORKSPACE="$HOME/.config/waybar/scripts/on-claude-workspace.sh"
 BAR_VISIBILITY="$HOME/.config/waybar/scripts/waybar-visibility.sh"
 
@@ -166,11 +168,11 @@ log_event() { # LEVEL component message
     stamp="${stamp:0:${#stamp}-2}:${stamp:${#stamp}-2}"
     {
         [[ -d ${LOG_FILE%/*} ]] || mkdir -p "${LOG_FILE%/*}"
-        if (( $(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0) > LOG_MAX_BYTES )); then
+        if (($(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0) > LOG_MAX_BYTES)); then
             mv -f "$LOG_FILE" "$LOG_FILE.1"
         fi
-        printf '%s %s %s: %s\n' "$stamp" "$1" "$2" "${message:0:$LOG_LINE_MAX}" >> "$LOG_FILE"
-    } 2>/dev/null || true  # a read-only state dir (inside greywall) must not break the command
+        printf '%s %s %s: %s\n' "$stamp" "$1" "$2" "${message:0:$LOG_LINE_MAX}" >>"$LOG_FILE"
+    } 2>/dev/null || true # a read-only state dir (inside greywall) must not break the command
 }
 
 # An event in the audit log (claude-audit; security audit 2026-10-19, M6): key=value fields, and
@@ -181,7 +183,10 @@ audit_event() { # component event outcome [key=value | fp:key=value]...
 
 show_logs() { # [lines]
     local lines=${1:-80}
-    [[ $lines =~ ^[0-9]+$ ]] || { echo "usage: cockpit logs [lines]" >&2; return 1; }
+    [[ $lines =~ ^[0-9]+$ ]] || {
+        echo "usage: cockpit logs [lines]" >&2
+        return 1
+    }
     echo "== $LOG_FILE"
     tail -n "$lines" "$LOG_FILE" 2>/dev/null || echo "(empty)"
     if [[ -f $HOOK_LOG_FILE ]]; then
@@ -218,11 +223,11 @@ read_manager_panes() {
     sidebar="" viewer="" approval="" approval_run="" sidebar_dead=""
     while read -r pane_id role dead run; do
         case $role in
-            sidebar) sidebar=$pane_id sidebar_dead=$dead ;;
-            viewer) viewer=$pane_id ;;
-            approval) approval=$pane_id approval_run=$run ;;
+        sidebar) sidebar=$pane_id sidebar_dead=$dead ;;
+        viewer) viewer=$pane_id ;;
+        approval) approval=$pane_id approval_run=$run ;;
         esac
-    done <<< "$(tmux list-panes -t "$MANAGER_WINDOW" -F '#{pane_id} #{@role} #{pane_dead} #{@run}' 2>/dev/null)"
+    done <<<"$(tmux list-panes -t "$MANAGER_WINDOW" -F '#{pane_id} #{@role} #{pane_dead} #{@run}' 2>/dev/null)"
 }
 
 sidebar_pane() { pane_by_role sidebar; }
@@ -275,7 +280,10 @@ ensure_manager() {
 view_session() {
     local id=$1 pane="" state="" started="" project="" target
     if [[ $id == claude-retry-* ]]; then
-        [[ $id == *"#"* ]] && { echo "cockpit: refusing session name $id" >&2; return 1; }
+        [[ $id == *"#"* ]] && {
+            echo "cockpit: refusing session name $id" >&2
+            return 1
+        }
         target=$id
     else
         # The session's fields in one jq pass, separated by \x1f: a tab would merge empty fields.
@@ -285,7 +293,7 @@ view_session() {
         if [[ -z $pane ]]; then
             if is_asleep "$id"; then
                 wake_session "$id" || return 1
-                printf '%s\n' "$id" > "$CURRENT"
+                printf '%s\n' "$id" >"$CURRENT"
                 show_restarting "$id"
                 return 0
             fi
@@ -307,7 +315,7 @@ view_session() {
     # fades it while the column has the focus.
     local commands=(respawn-pane -k -t "$viewer" cockpit-fade env -u TMUX tmux attach-session -t "=$target")
     # The pane shows this session's own approval: another session's goes, this one's comes.
-    if [[ -n $approval && ( -z $run || $approval_run != "$run" ) ]]; then
+    if [[ -n $approval && (-z $run || $approval_run != "$run") ]]; then
         # It can exit after read_manager_panes. Test membership inside tmux's command queue;
         # delimit IDs so %77 cannot match %775, and keep unrelated tmux errors visible.
         commands+=(";" if-shell -t "$viewer" -F "#{m:*|$approval|*,#{P:|#{pane_id}|}}" "kill-pane -t $approval")
@@ -321,7 +329,7 @@ view_session() {
         tag_approval_pane "$new_pane" "$run"
     fi
     redraw_if_stale "$target" "$size_before" "$id" "$state" "$started" "$viewer"
-    printf '%s\n' "$id" > "$CURRENT"
+    printf '%s\n' "$id" >"$CURRENT"
     # Its banner ("waiting for your input") has been read now that the session is on screen.
     osd-show session-seen "$id" 2>/dev/null || true
     label_panes "$project" "$sidebar" "$viewer"
@@ -345,11 +353,14 @@ redraw_if_stale() { # target size-before id state started viewer-pane
     size_after=$(tmux display-message -p -t "$6" '#{pane_width} #{pane_height}' 2>/dev/null || true)
     [[ -n $2 && $2 != "$size_after" ]] && is_stale=1
     if [[ -n $started ]] && ! grep -qxF "$id $started" "$VIEWED_STARTS" 2>/dev/null; then
-        printf '%s %s\n' "$id" "$started" >> "$VIEWED_STARTS"
+        printf '%s %s\n' "$id" "$started" >>"$VIEWED_STARTS"
         is_stale=1
     fi
     [[ -n $is_stale ]] || return 0
-    ( sleep "${COCKPIT_REDRAW_DELAY:-0.4}"; tmux send-keys -t "=$1:" C-l ) </dev/null >/dev/null 2>&1 &
+    (
+        sleep "${COCKPIT_REDRAW_DELAY:-0.4}"
+        tmux send-keys -t "=$1:" C-l
+    ) </dev/null >/dev/null 2>&1 &
     disown
 }
 
@@ -364,15 +375,18 @@ label_panes() { # project [sidebar-pane viewer-pane]
 label_state() {
     local state=$1
     case $state in
-        working|waiting|needs-you|unknown) ;;
-        *) echo "cockpit: unknown state $state" >&2; return 1 ;;
+    working | waiting | needs-you | unknown) ;;
+    *)
+        echo "cockpit: unknown state $state" >&2
+        return 1
+        ;;
     esac
     [[ -z ${2:-} || $2 == "$(cat "$CURRENT" 2>/dev/null)" ]] || return 0
     tmux set-option -p -t "$(viewer_pane)" @state "$state"
     local attended initial run
     if [[ -f $ATTENTION ]]; then
-        read -r attended initial run < "$ATTENTION"
-        if [[ -z $run && ( $state == working || ( $initial == needs-you && $state == waiting ) ) ]]; then
+        read -r attended initial run <"$ATTENTION"
+        if [[ -z $run && ($state == working || ($initial == needs-you && $state == waiting)) ]]; then
             finish_attention
         fi
     fi
@@ -393,14 +407,14 @@ attend_session() {
     [[ -n $pane ]] || pane=$(viewer_pane)
     state=$(session_field "$1" state)
     if [[ $(session_field "$1" needs_input) == true ]]; then state=needs-you; fi
-    printf '%s %s %s\n' "$1" "$state" "$run" > "$ATTENTION"
+    printf '%s %s %s\n' "$1" "$state" "$run" >"$ATTENTION"
     tmux select-pane -t "$pane"
 }
 
 finish_attention() {
     [[ -f $ATTENTION ]] || return 0
     local attended initial run pane="" sidebar active
-    read -r attended initial run < "$ATTENTION"
+    read -r attended initial run <"$ATTENTION"
     rm -f "$ATTENTION"
     [[ $attended == "$(cat "$CURRENT" 2>/dev/null)" ]] || return 0
     if [[ -n $run ]]; then pane=$(pane_by_role approval); fi
@@ -414,8 +428,8 @@ finish_attention() {
 attention_answered() { # run id (empty when all approvals close)
     [[ -f $ATTENTION ]] || return 0
     local attended initial run
-    read -r attended initial run < "$ATTENTION"
-    if [[ -n $run && ( -z $1 || $1 == "$run" ) ]]; then finish_attention; fi
+    read -r attended initial run <"$ATTENTION"
+    if [[ -n $run && (-z $1 || $1 == "$run") ]]; then finish_attention; fi
 }
 
 running_session_in() { # dir agent
@@ -428,11 +442,14 @@ running_session_in() { # dir agent
 agent_of_session() { # id
     local agent prefix best=$DEFAULT_AGENT best_length=0
     for agent in "${AGENTS[@]}"; do
-        if "agent_${agent}_is_session_id" "$1"; then echo "$agent"; return; fi
+        if "agent_${agent}_is_session_id" "$1"; then
+            echo "$agent"
+            return
+        fi
     done
     for agent in "${AGENTS[@]}"; do
         prefix=$("agent_${agent}_tmux_prefix")
-        if [[ $1 == "$prefix"* ]] && (( ${#prefix} > best_length )); then best=$agent best_length=${#prefix}; fi
+        if [[ $1 == "$prefix"* ]] && ((${#prefix} > best_length)); then best=$agent best_length=${#prefix}; fi
     done
     echo "$best"
 }
@@ -470,7 +487,7 @@ detached_size() {
     approval=$(pane_by_role approval)
     if [[ -n $approval ]]; then
         approval_height=$(tmux display-message -p -t "$approval" '#{pane_height}' 2>/dev/null || true)
-        [[ $approval_height =~ ^[0-9]+$ ]] && height=$(( height + approval_height + 1 ))
+        [[ $approval_height =~ ^[0-9]+$ ]] && height=$((height + approval_height + 1))
     fi
     echo "$width $height"
 }
@@ -486,7 +503,10 @@ launch_team_resume=
 
 subscription_route() ( # origin generation
     local origin=$1 generation=$2 helper folder status stage ticket directory agent attempt failure
-    [[ $generation =~ ^[0-9a-f]{32}$ ]] || { echo "cockpit: invalid subscription generation" >&2; return 1; }
+    [[ $generation =~ ^[0-9a-f]{32}$ ]] || {
+        echo "cockpit: invalid subscription generation" >&2
+        return 1
+    }
     helper="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription"
     folder="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/subscriptions"
     umask 077
@@ -505,19 +525,25 @@ subscription_route() ( # origin generation
         ticket=$("$helper" submit "$origin" "$generation" 9>&-) || return
         directory=$(jq -er '.directory' <<<"$ticket") || return
         agent=$(jq -er '.agent' <<<"$ticket") || return
+        # Dynamically sourced agent launchers consume these launch settings.
+        # shellcheck disable=SC2034
         launch_subscription_route=$generation
+        # shellcheck disable=SC2034
         launch_credits=0
         launch_team_spawn=
         case $agent in
-            claude) claude_launch_detached "$directory" 9>&- || return ;;
-            codex) codex_launch "$directory" 9>&- >/dev/null || return ;;
-            *) echo "cockpit: unsupported native subscription destination" >&2; return 1 ;;
+        claude) claude_launch_detached "$directory" 9>&- || return ;;
+        codex) codex_launch "$directory" 9>&- >/dev/null || return ;;
+        *)
+            echo "cockpit: unsupported native subscription destination" >&2
+            return 1
+            ;;
         esac
     elif [[ $stage != Submitted && $stage != Bound ]]; then
         echo "cockpit: subscription route is not launchable" >&2
         return 1
     fi
-    for ((attempt=0; attempt<120; attempt++)); do
+    for ((attempt = 0; attempt < 120; attempt++)); do
         if failure=$("$helper" bind "$origin" "$generation" 9>&- 2>&1); then return 0; fi
         sleep 0.25
     done
@@ -531,7 +557,7 @@ new_session() {
     require_plain_directory "$directory"
     audit_event manager session.start ok "directory=$directory" "agent=$launch_agent" "claude_arguments=$#"
     ensure_manager
-    if (( $# == 0 )); then
+    if (($# == 0)); then
         existing=$(running_session_in "$directory" "$launch_agent")
         if [[ -n $existing ]]; then
             view_session "$existing"
@@ -553,7 +579,10 @@ new_session_with_prompt() { # dir prompt
 # shows. It appears as a card once it reports in. The sidebar's error hand-off uses it.
 background_session() { # dir prompt
     require_plain_directory "$1"
-    [[ -n $2 ]] || { echo "cockpit: background needs a prompt" >&2; return 1; }
+    [[ -n $2 ]] || {
+        echo "cockpit: background needs a prompt" >&2
+        return 1
+    }
     local prompt=$2
     [[ $prompt == -* ]] && prompt="Task: $prompt" # never an option of the agent's
     "agent_${launch_agent}_background" "$1" "$prompt"
@@ -580,7 +609,7 @@ LOADING_TIMEOUT_S=${COCKPIT_LOADING_TIMEOUT_S:-60}
 
 loading_overlay() { # label directory [session-id] [start|gone]
     local client pane size
-    printf '%s\n%s\n%s\n%s\n%s\n' "$1" "$2" "${3:-}" "$(date +%s)" "${4:-start}" > "$LOADING_STATE"
+    printf '%s\n%s\n%s\n%s\n%s\n' "$1" "$2" "${3:-}" "$(date +%s)" "${4:-start}" >"$LOADING_STATE"
     client=$(tmux list-clients -t "=$MANAGER" -F '#{client_name}' 2>/dev/null | head -n 1)
     [[ -n $client ]] || return 0
     # One loading screen at a time, this cockpit's own (its runtime folder), not any on the machine.
@@ -596,6 +625,8 @@ loading_overlay() { # label directory [session-id] [start|gone]
 loading_ready() { # directory session-id since start|gone
     if [[ $4 == gone ]]; then
         # Closing: done once the daemon has dropped the session.
+        # Return the inverted status below, including a failed snapshot read.
+        # shellcheck disable=SC2251
         ! jq -e --arg session "$2" 'any(.sessions[]; .session == $session)' "$SNAPSHOT" >/dev/null 2>&1
         return
     fi
@@ -612,29 +643,35 @@ viewer_shows_prompt() {
 }
 
 show_loading() {
-    printf '%s\n' "$$" > "$LOADING_PID"
+    printf '%s\n' "$$" >"$LOADING_PID"
     local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 label directory session since mode rows columns
     # No TERM (the tests run from a systemd unit by the health check): no cursor to hide, and no
     # reason to stop.
     tput civis 2>/dev/null || true
-    while { read -r label; read -r directory; read -r session; read -r since; read -r mode; } < "$LOADING_STATE" 2>/dev/null; do
+    while {
+        read -r label
+        read -r directory
+        read -r session
+        read -r since
+        read -r mode
+    } <"$LOADING_STATE" 2>/dev/null; do
         if loading_ready "$directory" "$session" "$since" "$mode"; then
-            sleep 0.5  # the session reported in; give it a moment to draw its screen
+            sleep 0.5 # the session reported in; give it a moment to draw its screen
             break
         fi
         if viewer_shows_prompt; then
             log_event INFO sessions "loading screen yielded to a prompt: $label in $directory"
             break
         fi
-        if (( $(date +%s) - since > LOADING_TIMEOUT_S )); then
+        if (($(date +%s) - since > LOADING_TIMEOUT_S)); then
             log_event WARN sessions "loading screen timed out after ${LOADING_TIMEOUT_S}s: $label in $directory"
             break
         fi
         rows=$(tput lines 2>/dev/null || echo 24) columns=$(tput cols 2>/dev/null || echo 80)
         printf '\033[2J\033[%d;%dH\033[1;34m%s\033[0m  \033[1m%s\033[0m' \
-            $(( rows / 2 )) $(( (columns - ${#label} - 3) / 2 > 1 ? (columns - ${#label} - 3) / 2 : 1 )) "${frames[tick % 10]}" "$label"
-        printf '\033[%d;%dH\033[2m%s\033[0m' $(( rows / 2 + 2 )) $(( (columns - 20) / 2 > 1 ? (columns - 20) / 2 : 1 )) "Escape hides this"
-        tick=$(( tick + 1 ))
+            $((rows / 2)) $(((columns - ${#label} - 3) / 2 > 1 ? (columns - ${#label} - 3) / 2 : 1)) "${frames[tick % 10]}" "$label"
+        printf '\033[%d;%dH\033[2m%s\033[0m' $((rows / 2 + 2)) $(((columns - 20) / 2 > 1 ? (columns - 20) / 2 : 1)) "Escape hides this"
+        tick=$((tick + 1))
         sleep 0.15
     done
     rm -f "$LOADING_STATE" "$LOADING_PID"
@@ -650,13 +687,12 @@ session_field() { # id field
     jq -r --arg id "$1" --arg field "$2" '.sessions[] | select(.session == $id) | .[$field] // empty' "$SNAPSHOT" 2>/dev/null
 }
 
-
 # The session is over once its tmux session ended, or once no Claude runs in its pane any more:
 # claude-auto-retry keeps a shell after a non-zero exit, and that wait used to cost two rounds.
 # Bound each /proc scan too: checking the deadline only between scans cannot stop a stalled one.
 claude_left() { # tmux-session pane timeout-seconds
-    local deadline=$(( ${EPOCHREALTIME//[!0-9]/} + $3 * 1000000 ))
-    while (( ${EPOCHREALTIME//[!0-9]/} < deadline )); do
+    local deadline=$((${EPOCHREALTIME//[!0-9]/} + $3 * 1000000))
+    while ((${EPOCHREALTIME//[!0-9]/} < deadline)); do
         tmux has-session -t "=$1" 2>/dev/null || return 0
         [[ $(timeout --signal=KILL 0.5s osd liveness "" "$2" 2>/dev/null) == none ]] && return 0
         sleep 0.1
@@ -678,7 +714,7 @@ thaw_frozen_pane() { # pane
     fi
     log_event INFO manager "thawed $scope, frozen for a game, so its session can exit"
     remaining=$(grep -vxF "$scope" "$GAME_FROZEN" || true)
-    printf '%s' "${remaining:+$remaining$'\n'}" > "$GAME_FROZEN"
+    printf '%s' "${remaining:+$remaining$'\n'}" >"$GAME_FROZEN"
 }
 
 # What a session that ignores /exit and Ctrl-C looks like, saved just before it is killed: the
@@ -700,11 +736,13 @@ record_stuck_exit() { # tmux-session pane id
     local target=$1 pane=$2 id=$3 stamp file pane_pid cgroup started liveness elapsed_ms
     printf -v stamp '%(%Y%m%dT%H%M%S)T' -1
     file="$STUCK_EXITS_DIR/$stamp-${id:0:8}.txt"
+    # Private log leaf; shared state ancestors retain their normal permissions.
+    # shellcheck disable=SC2174
     mkdir -p -m 700 "$STUCK_EXITS_DIR" 2>/dev/null || return 0
     pane_pid=$(timeout 1 tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null) || pane_pid=
     started=${EPOCHREALTIME//[!0-9]/}
     liveness=$(timeout --signal=KILL 1s osd liveness "" "$pane" 2>/dev/null) || liveness=
-    elapsed_ms=$(( (${EPOCHREALTIME//[!0-9]/} - started) / 1000 ))
+    elapsed_ms=$(((${EPOCHREALTIME//[!0-9]/} - started) / 1000))
     {
         echo "session $id, tmux session $target, pane $pane, agent $(agent_of_session "$id" 2>/dev/null)"
         echo "osd liveness: ${liveness:-no answer} in ${elapsed_ms} ms"
@@ -725,9 +763,11 @@ record_stuck_exit() { # tmux-session pane id
         timeout 2 ps -eo pid=,stat=,wchan:32=,comm= 2>/dev/null | awk '$2 ~ /^D/'
         echo "== screen (last 40 lines)"
         timeout 1 tmux capture-pane -p -t "$pane" -S -40 2>&1
-    } > "$file" 2>/dev/null || true  # under set -e: a failed probe must not stop the kill
+    } >"$file" 2>/dev/null || true # under set -e: a failed probe must not stop the kill
     chmod 600 "$file" 2>/dev/null || true
-    ls -1t "$STUCK_EXITS_DIR"/*.txt 2>/dev/null | tail -n +$(( STUCK_EXITS_KEPT + 1 )) | xargs -r rm -f || true
+    # Keep ls's existing mtime ordering; NUL delimiters preserve each complete path.
+    # shellcheck disable=SC2012
+    ls -1t --zero "$STUCK_EXITS_DIR"/*.txt 2>/dev/null | tail -z -n +$((STUCK_EXITS_KEPT + 1)) | xargs -0 -r rm -f -- || true
     log_event WARN manager "$id did not exit: its state is in $file"
 }
 
@@ -739,7 +779,10 @@ exit_session() {
         return
     fi
     if [[ $id == claude-retry-* ]]; then
-        [[ $id == *"#"* ]] && { echo "cockpit: refusing session name $id" >&2; return 1; }
+        [[ $id == *"#"* ]] && {
+            echo "cockpit: refusing session name $id" >&2
+            return 1
+        }
         target=$id
         pane=$(tmux list-panes -t "=$target" -F '#{pane_id}' | head -1)
     else
@@ -761,7 +804,8 @@ type_into_pane() { # pane text
         tmux send-keys -t "$1" -l -- "$2"
         return
     fi
-    local buffer="cockpit-message-$$-$(date +%s%N)"
+    local buffer
+    printf -v buffer 'cockpit-message-%s-%s' "$$" "$(date +%s%N)"
     if ! printf '%s' "$2" | tmux load-buffer -b "$buffer" -; then
         tmux delete-buffer -b "$buffer" >/dev/null 2>&1 || true
         return 1
@@ -874,11 +918,21 @@ say_to_session() { # id message
         echo "queued until subscription ownership is bound"
         return 0
     fi
+    # A sandboxed session has neither the list nor the tmux server: typing into another session's
+    # pane stays host-only. `cockpit-team chief` is the Chief's own route, refused to every other
+    # session, so the hint names what does reach the Chief instead.
+    if [[ ! -r $SNAPSHOT ]]; then
+        echo "cockpit: cannot read the session list ($SNAPSHOT): cockpit say runs on the host only. From a sandbox no command messages the Chief: it sees an OpenCode session's question (cockpit-needs-input) or its turn ending on a doing todo. Otherwise ask Theo to run this cockpit say with ask-to-run." >&2
+        return 1
+    fi
     pane=$(session_field "$id" tmux_pane)
     if [[ -z $pane ]]; then
         # Asleep, or restarting with no pane yet: the message waits for the new process.
         if is_asleep "$id"; then waking=asleep; elif is_restarting "$id"; then waking=restarting; fi
-        [[ -n $waking ]] || { echo "cockpit: session $id has no tmux pane" >&2; return 1; }
+        [[ -n $waking ]] || {
+            echo "cockpit: session $id has no tmux pane" >&2
+            return 1
+        }
     fi
     if [[ -n $waking ]]; then
         if [[ $waking == asleep ]]; then
@@ -914,7 +968,7 @@ queue_prompt_ask() { # [pane]
     bind 'set keyseq-timeout 30' 2>/dev/null
     bind -x '"\e": exit 0' 2>/dev/null
     read -r -e -p "for $(session_field "$session" project), when its turn ends (Esc cancels)> " text || return 0
-    [[ -n ${text// } ]] || return 0
+    [[ -n ${text// /} ]] || return 0
     if [[ $text == *[[:cntrl:]]* || ${#text} -gt 4000 ]]; then
         read -r -p "One line, without control characters. Enter closes. " _ || true
         return 1
@@ -932,33 +986,41 @@ PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/cockpit-remote-away"
 # same names (apps/cockpit/src/settings.rs).
 SETTINGS_FILE="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/settings.json"
 KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest idle-sleep)
-LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort idle-sleep-after chief-starts-per-hour)
+LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort idle-sleep-after chief-starts-per-hour chief-dispatches-own-todos)
 
 launch_setting_value() { # name
     local fallback=""
     [[ $1 == default-agent ]] && fallback=claude
-    if [[ ! -e $SETTINGS_FILE ]]; then printf '%s\n' "$fallback"; return; fi
+    if [[ ! -e $SETTINGS_FILE ]]; then
+        printf '%s\n' "$fallback"
+        return
+    fi
     jq -er --arg name "$1" --arg fallback "$fallback" '
         if type != "object" then error("settings must be an object")
         elif has($name) then .[$name] | if type == "string" then . else error("setting must be a string") end
         else $fallback end' "$SETTINGS_FILE" || {
-        echo "cockpit: cannot read $1 from $SETTINGS_FILE" >&2; return 1;
+        echo "cockpit: cannot read $1 from $SETTINGS_FILE" >&2
+        return 1
     }
 }
 
 validate_launch_setting() { # name value
     case $1 in
-        default-agent) [[ -n $2 && " ${AGENTS[*]} " == *" $2 "* ]] ;;
-        opencode-model) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+/[^#[:space:][:cntrl:]]+$ ]] ;;
-        opencode-effort) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+$ ]] ;;
-        idle-sleep-after) [[ $2 =~ ^[1-9][0-9]{1,5}$ ]] && (( $2 >= 30 )) ;;
-        chief-starts-per-hour) [[ -z $2 || ( $2 =~ ^[1-9][0-9]?$ && $2 -le 60 ) ]] ;;
-    esac || { echo "cockpit: invalid $1: $2" >&2; return 1; }
+    default-agent) [[ -n $2 && " ${AGENTS[*]} " == *" $2 "* ]] ;;
+    opencode-model) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+/[^#[:space:][:cntrl:]]+$ ]] ;;
+    opencode-effort) [[ -z $2 || $2 =~ ^[^/#[:space:][:cntrl:]]+$ ]] ;;
+    idle-sleep-after) [[ $2 =~ ^[1-9][0-9]{1,5}$ ]] && (($2 >= 30)) ;;
+    chief-starts-per-hour) [[ -z $2 || ($2 =~ ^[1-9][0-9]?$ && $2 -le 60) ]] ;;
+    chief-dispatches-own-todos) [[ -z $2 || $2 == on || $2 == off ]] ;;
+    esac || {
+        echo "cockpit: invalid $1: $2" >&2
+        return 1
+    }
 }
 
 launch_setting() { # name [value]
     local name=$1 value current
-    if (( $# == 1 )); then
+    if (($# == 1)); then
         value=$(launch_setting_value "$name") || return
         printf '%s: %s\n' "$name" "$value"
         return
@@ -968,7 +1030,10 @@ launch_setting() { # name [value]
     if [[ $name == opencode-effort && -n $value ]]; then
         local model
         model=$(launch_setting_value opencode-model) || return
-        [[ -n $model ]] || { echo "cockpit: pick an opencode-model before its effort" >&2; return 1; }
+        [[ -n $model ]] || {
+            echo "cockpit: pick an opencode-model before its effort" >&2
+            return 1
+        }
     fi
     mkdir -p "$(dirname "$SETTINGS_FILE")"
     current='{}'
@@ -976,12 +1041,14 @@ launch_setting() { # name [value]
     if ! jq -e --arg name "$name" --arg value "$value" '
         if type != "object" then error("settings must be an object") else
             (if $name == "opencode-model" and .[$name] != $value then .["opencode-effort"] = "" else . end)
-            | .[$name] = $value end' <<< "$current" > "$SETTINGS_FILE.new"; then
+            | .[$name] = $value end' <<<"$current" >"$SETTINGS_FILE.new"; then
         rm -f "$SETTINGS_FILE.new"
-        echo "cockpit: $SETTINGS_FILE is not valid settings, left as it is" >&2; return 1
+        echo "cockpit: $SETTINGS_FILE is not valid settings, left as it is" >&2
+        return 1
     fi
     mv -f "$SETTINGS_FILE.new" "$SETTINGS_FILE"
     log_event INFO manager "setting $name $value"
+    audit_event manager setting.changed ok "name=$name" "value=$value"
     printf '%s: %s\n' "$name" "$value"
 }
 
@@ -996,24 +1063,38 @@ setting_is_on() { # name
 }
 
 setting() { # name [on|off]
-    if [[ " ${LAUNCH_SETTINGS[*]} " == *" $1 "* ]]; then launch_setting "$@"; return; fi
+    if [[ " ${LAUNCH_SETTINGS[*]} " == *" $1 "* ]]; then
+        launch_setting "$@"
+        return
+    fi
     local name=$1 wanted=${2:-} known current
-    for known in "${KNOWN_SETTINGS[@]}"; do [[ $known == "$name" ]] && break; known=; done
+    for known in "${KNOWN_SETTINGS[@]}"; do
+        [[ $known == "$name" ]] && break
+        known=
+    done
     if [[ -z $known ]]; then
-        echo "cockpit: unknown setting $name (known: ${KNOWN_SETTINGS[*]})" >&2; return 1
+        echo "cockpit: unknown setting $name (known: ${KNOWN_SETTINGS[*]})" >&2
+        return 1
     fi
     case $wanted in
-        '') if setting_is_on "$name"; then echo "$name: on"; else echo "$name: off"; fi; return 0 ;;
-        on|off) ;;
-        *) echo "usage: cockpit setting <name> [on|off]" >&2; return 1 ;;
+    '')
+        if setting_is_on "$name"; then echo "$name: on"; else echo "$name: off"; fi
+        return 0
+        ;;
+    on | off) ;;
+    *)
+        echo "usage: cockpit setting <name> [on|off]" >&2
+        return 1
+        ;;
     esac
     mkdir -p "$(dirname "$SETTINGS_FILE")"
     current='{}'
     [[ -s $SETTINGS_FILE ]] && current=$(<"$SETTINGS_FILE")
     if ! jq --arg name "$name" --argjson value "$([[ $wanted == on ]] && echo true || echo false)" '.[$name] = $value' \
-            <<< "$current" > "$SETTINGS_FILE.new" 2>/dev/null; then
+        <<<"$current" >"$SETTINGS_FILE.new" 2>/dev/null; then
         rm -f "$SETTINGS_FILE.new"
-        echo "cockpit: $SETTINGS_FILE is not valid JSON, left as it is" >&2; return 1
+        echo "cockpit: $SETTINGS_FILE is not valid JSON, left as it is" >&2
+        return 1
     fi
     mv -f "$SETTINGS_FILE.new" "$SETTINGS_FILE"
     log_event INFO manager "setting $name $wanted"
@@ -1023,15 +1104,21 @@ setting() { # name [on|off]
 # on / off: every session to Remote Control (Super+Shift+C), or back.
 handoff() { # on|off
     local wanted=${1:-on} id pane count=0
-    case $wanted in on|off) ;; *) echo "usage: cockpit handoff [on|off]" >&2; return 1 ;; esac
+    case $wanted in on | off) ;; *)
+        echo "usage: cockpit handoff [on|off]" >&2
+        return 1
+        ;;
+    esac
     audit_event manager session.handoff "$wanted"
     if [[ ! -s $SNAPSHOT ]]; then
-        echo "cockpit: no running session" >&2; return 1
+        echo "cockpit: no running session" >&2
+        return 1
     fi
     while IFS=$'\t' read -r id pane; do
         [[ -n $pane ]] || continue
         if [[ $wanted == on ]]; then session_is_remote "$id" && continue; else session_is_remote "$id" || continue; fi
-        send_remote_toggle "$pane"; count=$((count + 1))
+        send_remote_toggle "$pane"
+        count=$((count + 1))
     done < <(jq -r '.sessions[] | select((.agent // "claude") == "claude") | [.session, (.tmux_pane // "")] | @tsv' "$SNAPSHOT")
     echo "cockpit: remote control $wanted for $count session(s)"
 }
@@ -1040,16 +1127,20 @@ handoff() { # on|off
 # ask-to-run asks, a turn ends); at the desk it stays quiet. The setting phone-on-lock turns it off.
 away() { # on|off
     case ${1:-} in
-        on)
-            if ! setting_is_on phone-on-lock; then
-                rm -f "$PHONE_AWAY" "${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away"
-                log_event INFO lock "phone-on-lock is off: the phone stays quiet"
-                echo "cockpit: phone-on-lock is off, the phone stays quiet"
-                return 0
-            fi
-            : > "$PHONE_AWAY" ;;
-        off) rm -f "$PHONE_AWAY" "${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away" ;;
-        *) echo "usage: cockpit away on|off" >&2; return 1 ;;
+    on)
+        if ! setting_is_on phone-on-lock; then
+            rm -f "$PHONE_AWAY" "${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away"
+            log_event INFO lock "phone-on-lock is off: the phone stays quiet"
+            echo "cockpit: phone-on-lock is off, the phone stays quiet"
+            return 0
+        fi
+        : >"$PHONE_AWAY"
+        ;;
+    off) rm -f "$PHONE_AWAY" "${XDG_RUNTIME_DIR:-/tmp}/claude-remote-away" ;;
+    *)
+        echo "usage: cockpit away on|off" >&2
+        return 1
+        ;;
     esac
     audit_event manager phone.away "$1"
     echo "cockpit: away $1"
@@ -1071,13 +1162,19 @@ OPENCODE_DATABASE=${COCKPIT_OPENCODE_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/op
 opencode_session_state() { # id
     local count
     # The id goes into the SQL text: sqlite3's shell has no parameters for a one-shot query.
-    [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] && command -v sqlite3 >/dev/null && [[ -f $OPENCODE_DATABASE ]] || { echo unknown; return; }
+    [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] && command -v sqlite3 >/dev/null && [[ -f $OPENCODE_DATABASE ]] || {
+        echo unknown
+        return
+    }
     count=$(sqlite3 -readonly -batch -noheader -cmd '.timeout 1000' "$OPENCODE_DATABASE" \
-        "select count(*) from session_v2 where id = '$1'" 2>/dev/null) || { echo unknown; return; }
+        "select count(*) from session_v2 where id = '$1'" 2>/dev/null) || {
+        echo unknown
+        return
+    }
     case $count in
-        0) echo gone ;;
-        [1-9]*) echo present ;;
-        *) echo unknown ;;
+    0) echo gone ;;
+    [1-9]*) echo present ;;
+    *) echo unknown ;;
     esac
 }
 
@@ -1114,44 +1211,45 @@ forget_sleep_note() { # id
 # Whether anything sits in the prompt of the agent's pane. Only the cursor right after the agent's
 # prompt start, with nothing but blanks or dim text (a placeholder) after it, reads as empty:
 # anything else, or a screen that cannot be read, counts as a draft.
-prompt_has_draft() { # pane agent
+prompt_has_draft() {     # pane agent
     local LC_ALL=C.UTF-8 # ${#line} and ${line:i:1} count characters, not the bytes of ❯
     local pane=$1 agent=$2 cursor_x cursor_y line prompt_start
-    local plain= dim_flags= dim=0 index=0 char sequence params codes code step before_cursor after_cursor
+    local plain='' dim_flags='' dim=0 index=0 char sequence params codes code step before_cursor after_cursor
     read -r cursor_x cursor_y < <(tmux display-message -p -t "$pane" '#{cursor_x} #{cursor_y}' 2>/dev/null) || return 0
     [[ $cursor_x =~ ^[0-9]+$ && $cursor_y =~ ^[0-9]+$ ]] || return 0
     line=$(tmux capture-pane -p -e -N -t "$pane" -S "$cursor_y" -E "$cursor_y" 2>/dev/null) || return 0
     prompt_start=$("agent_${agent}_prompt_start") || return 0
     [[ -n $prompt_start ]] || return 0
     # The cursor is a column of the screen: read the line without the colour codes in it.
-    while (( index < ${#line} )); do
+    while ((index < ${#line})); do
         char=${line:index:1}
         if [[ $char != $'\e' ]]; then
-            plain+=$char dim_flags+=$dim index=$(( index + 1 ))
+            plain+="$char" dim_flags+="$dim" index=$((index + 1))
             continue
         fi
         sequence=${line:index+1}
         [[ $sequence =~ ^\[([0-9;]*)([@-~]) ]] || return 0
-        index=$(( index + ${#BASH_REMATCH[0]} + 1 ))
+        index=$((index + ${#BASH_REMATCH[0]} + 1))
         [[ ${BASH_REMATCH[2]} == m ]] || continue
         params=${BASH_REMATCH[1]}
-        IFS=';' read -ra codes <<< "${params:-0}"
-        for (( step = 0; step < ${#codes[@]}; step++ )); do
-            code=$(( 10#${codes[step]:-0} ))
+        IFS=';' read -ra codes <<<"${params:-0}"
+        for ((step = 0; step < ${#codes[@]}; step++)); do
+            code=$((10#${codes[step]:-0}))
             case $code in
-                2|90) dim=1 ;;
-                0|22|39|3[0-7]|9[1-7]) dim=0 ;;
-                38|48)
-                    [[ $code == 38 ]] && dim=0
-                    # 38;5;n and 38;2;r;g;b carry numbers that are no codes of their own.
-                    case ${codes[step+1]:-} in 5) step=$(( step + 2 )) ;; 2) step=$(( step + 4 )) ;; esac ;;
+            2 | 90) dim=1 ;;
+            0 | 22 | 39 | 3[0-7] | 9[1-7]) dim=0 ;;
+            38 | 48)
+                [[ $code == 38 ]] && dim=0
+                # 38;5;n and 38;2;r;g;b carry numbers that are no codes of their own.
+                case ${codes[step + 1]:-} in 5) step=$((step + 2)) ;; 2) step=$((step + 4)) ;; esac
+                ;;
             esac
         done
     done
     before_cursor=${plain:0:cursor_x}
     [[ $before_cursor =~ $prompt_start ]] || return 0
     after_cursor=${plain:cursor_x}
-    for (( index = 0; index < ${#after_cursor}; index++ )); do
+    for ((index = 0; index < ${#after_cursor}; index++)); do
         char=${after_cursor:index:1}
         [[ $char == " " || $char == $'\u00a0' || ${dim_flags:cursor_x+index:1} == 1 ]] || return 0
     done
@@ -1168,7 +1266,7 @@ background_shell_of() { # pane
     pane_pid=$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null) || return 1
     [[ $pane_pid =~ ^[0-9]+$ ]] || return 1
     table=$(timeout 2 ps -eo pid=,ppid=,comm= 2>/dev/null) || return 1
-    found=$(descendants_of "$pane_pid" <<< "$table" | awk -v root="$pane_pid" '
+    found=$(descendants_of "$pane_pid" <<<"$table" | awk -v root="$pane_pid" '
         { parent[$1] = $2; name[$1] = $3 }
         END { for (pid in parent) if (name[pid] == "bwrap" && name[parent[pid]] == "bwrap") sandbox_init = pid
               for (pid in parent) {
@@ -1182,17 +1280,35 @@ background_shell_of() { # pane
 # The first reason this session must stay awake, or nothing. Any doubt is a reason.
 sleep_blocker() { # id pane
     local id=$1 pane=$2 agent shell background_work
-    [[ $(session_field "$id" state) == waiting ]] || { echo "it is not waiting at its prompt"; return; }
-    [[ -z $(session_field "$id" needs_input) ]] || { echo "it needs an answer"; return; }
+    [[ $(session_field "$id" state) == waiting ]] || {
+        echo "it is not waiting at its prompt"
+        return
+    }
+    [[ -z $(session_field "$id" needs_input) ]] || {
+        echo "it needs an answer"
+        return
+    }
     agent=$(agent_of_session "$id")
     if [[ $agent == claude ]]; then
-        has_conversation "$id" || { echo "it has no conversation to resume yet"; return; }
+        has_conversation "$id" || {
+            echo "it has no conversation to resume yet"
+            return
+        }
         for background_work in background agents; do
-            [[ $(session_field "$id" "$background_work") =~ ^0?$ ]] || { echo "it has $background_work work running"; return; }
+            [[ $(session_field "$id" "$background_work") =~ ^0?$ ]] || {
+                echo "it has $background_work work running"
+                return
+            }
         done
     fi
-    if prompt_has_draft "$pane" "$agent"; then echo "its prompt holds a draft or cannot be read"; return; fi
-    shell=$(background_shell_of "$pane") || { echo "its processes cannot be read"; return; }
+    if prompt_has_draft "$pane" "$agent"; then
+        echo "its prompt holds a draft or cannot be read"
+        return
+    fi
+    shell=$(background_shell_of "$pane") || {
+        echo "its processes cannot be read"
+        return
+    }
     [[ -z $shell ]] || echo "it runs a background process ($shell)"
 }
 
@@ -1201,7 +1317,10 @@ sleep_blocker() { # id pane
 # exit that fails takes the note back.
 sleep_session() { # id
     local id=$1 pane project agent title since started slept_at remote=false reason note temporary target permit token
-    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id $id" >&2; return 1; }
+    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || {
+        echo "cockpit: invalid session id $id" >&2
+        return 1
+    }
     require_feature "$id" sleep "sleeping" || return 1
     project=$(session_field "$id" project)
     pane=$(session_field "$id" tmux_pane)
@@ -1217,105 +1336,124 @@ sleep_session() { # id
         return 3
     fi
     (
-    local operation_dir="${XDG_RUNTIME_DIR:-/tmp}/cockpit.sleep-operations" operation_guard
-    if ! (umask 077; mkdir -p -m 700 "$operation_dir") || [[ -L $operation_dir || ! -O $operation_dir ]] ||
-            ! chmod 700 "$operation_dir" || [[ -L $operation_dir/$id || ( -e $operation_dir/$id && ! -f $operation_dir/$id ) ]]; then
-        echo "cockpit: could not secure sleep operation" >&2
-        return 1
-    fi
-    # Never unlink these files: every holder must lock the same inode, including orphan helpers.
-    (umask 077; touch "$operation_dir/$id") || return 1
-    chmod 600 "$operation_dir/$id" || return 1
-    exec {operation_guard}<>"$operation_dir/$id"
-    flock -n "$operation_guard" || return 3
-    # Closing our reference must not unlock inherited helpers; the daemon checks their quiescence.
-    trap 'status=$?; exec {operation_guard}>&-
+        local operation_dir="${XDG_RUNTIME_DIR:-/tmp}/cockpit.sleep-operations" operation_guard
+        if ! (
+            umask 077
+            # umask above also restricts newly created ancestors.
+            # shellcheck disable=SC2174
+            mkdir -p -m 700 "$operation_dir"
+        ) || [[ -L $operation_dir || ! -O $operation_dir ]] ||
+            ! chmod 700 "$operation_dir" || [[ -L $operation_dir/$id || (-e $operation_dir/$id && ! -f $operation_dir/$id) ]]; then
+            echo "cockpit: could not secure sleep operation" >&2
+            return 1
+        fi
+        # Never unlink these files: every holder must lock the same inode, including orphan helpers.
+        (
+            umask 077
+            touch "$operation_dir/$id"
+        ) || return 1
+        chmod 600 "$operation_dir/$id" || return 1
+        exec {operation_guard}<>"$operation_dir/$id"
+        flock -n "$operation_guard" || return 3
+        # Closing our reference must not unlock inherited helpers; the daemon checks their quiescence.
+        trap 'status=$?; exec {operation_guard}>&-
     if (( status )) && [[ -n ${permit:-} ]]; then
         if [[ -z ${note:-} || ! -e $note ]]; then cancel_sleep_permit "$id" "$permit";
         else team_sleep_request sleep-status "$id" "$permit" >/dev/null || log_event WARN sleep "$project interrupted; daemon reconciliation unavailable"; fi
     fi' EXIT
-    if ! permit=$(cockpit-team sleep-prepare "$id" 2>/dev/null) ||
-            ! jq -e 'type == "object" and has("token") and (.token == null or (.token | type == "string" and length > 0))' >/dev/null 2>&1 <<< "$permit"; then
-        log_event WARN sleep "$project stays awake: team membership preparation unavailable or refused"
-        [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: team membership preparation unavailable or refused" >&2
-        return 3
-    fi
-    token=$(jq -r '.token // empty' <<< "$permit")
-    [[ -n $token ]] || permit=""
-    agent=$(agent_of_session "$id")
-    title=$(session_field "$id" task)
-    # Kept so the card holds its place in the column; without it the card sorts by its idle time.
-    started=$(session_field "$id" started)
-    [[ $started =~ ^[0-9]+(\.[0-9]+)?$ ]] || started=""
-    [[ $agent == claude ]] && session_is_remote "$id" && remote=true
-    printf -v slept_at '%(%s)T' -1
-    note="$ASLEEP_DIR/$id"
-    # Outside the folder: the column and `cockpit wake` read every file in it as a note.
-    if ! mkdir -p -m 700 "$ASLEEP_DIR" || [[ -L $ASLEEP_DIR || ! -O $ASLEEP_DIR ]] || ! chmod 700 "$ASLEEP_DIR"; then
-        cancel_sleep_permit "$id" "$permit"
-        echo "cockpit: could not secure sleep notes" >&2
-        return 1
-    fi
-    temporary=$(umask 077; mktemp "$(dirname "$ASLEEP_DIR")/.asleep-$id.XXXXXX") || { cancel_sleep_permit "$id" "$permit"; return 1; }
-    if ! (umask 077; printf '%s' "$token" | jq -Rs --arg session "$id" --arg agent "$agent" --arg project "$project" --arg cwd "$(session_field "$id" cwd)" \
-            --arg title "$title" --argjson since "$since" --arg started "$started" --argjson slept_at "$slept_at" --argjson remote "$remote" \
-            '. as $token | {session: $session, agent: $agent, project: $project, cwd: $cwd, title: $title, idle_since: ($since | floor),
+        if ! permit=$(cockpit-team sleep-prepare "$id" 2>/dev/null) ||
+            ! jq -e 'type == "object" and has("token") and (.token == null or (.token | type == "string" and length > 0))' >/dev/null 2>&1 <<<"$permit"; then
+            log_event WARN sleep "$project stays awake: team membership preparation unavailable or refused"
+            [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: team membership preparation unavailable or refused" >&2
+            return 3
+        fi
+        token=$(jq -r '.token // empty' <<<"$permit")
+        [[ -n $token ]] || permit=""
+        agent=$(agent_of_session "$id")
+        title=$(session_field "$id" task)
+        # Kept so the card holds its place in the column; without it the card sorts by its idle time.
+        started=$(session_field "$id" started)
+        [[ $started =~ ^[0-9]+(\.[0-9]+)?$ ]] || started=""
+        [[ $agent == claude ]] && session_is_remote "$id" && remote=true
+        printf -v slept_at '%(%s)T' -1
+        note="$ASLEEP_DIR/$id"
+        # Outside the folder: the column and `cockpit wake` read every file in it as a note.
+        # Only the notes leaf is private; shared state ancestors keep their modes.
+        # shellcheck disable=SC2174
+        if ! mkdir -p -m 700 "$ASLEEP_DIR" || [[ -L $ASLEEP_DIR || ! -O $ASLEEP_DIR ]] || ! chmod 700 "$ASLEEP_DIR"; then
+            cancel_sleep_permit "$id" "$permit"
+            echo "cockpit: could not secure sleep notes" >&2
+            return 1
+        fi
+        temporary=$(
+            umask 077
+            mktemp "$(dirname "$ASLEEP_DIR")/.asleep-$id.XXXXXX"
+        ) || {
+            cancel_sleep_permit "$id" "$permit"
+            return 1
+        }
+        if ! (
+            umask 077
+            printf '%s' "$token" | jq -Rs --arg session "$id" --arg agent "$agent" --arg project "$project" --arg cwd "$(session_field "$id" cwd)" \
+                --arg title "$title" --argjson since "$since" --arg started "$started" --argjson slept_at "$slept_at" --argjson remote "$remote" \
+                '. as $token | {session: $session, agent: $agent, project: $project, cwd: $cwd, title: $title, idle_since: ($since | floor),
               slept_at: $slept_at, remote: $remote} + (if $started == "" then {} else {started: ($started | tonumber | floor)} end)
-              + (if $token == "" then {} else {team_resume: $token} end)' > "$temporary"); then
-        rm -f "$temporary"
-        cancel_sleep_permit "$id" "$permit"
-        echo "cockpit: could not write the note for $id" >&2
-        return 1
-    fi
-    if ! chmod 600 "$temporary" || ! mv -fT -- "$temporary" "$note"; then
-        rm -f "$temporary"
-        cancel_sleep_permit "$id" "$permit"
-        return 1
-    fi
-    target=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null) || target=""
-    if [[ -n $permit ]] && ! team_sleep_request sleep-recorded "$id" "$permit" >/dev/null; then
-        if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
-            forget_sleep_note "$id"
-        else
+              + (if $token == "" then {} else {team_resume: $token} end)' >"$temporary"
+        ); then
+            rm -f "$temporary"
             cancel_sleep_permit "$id" "$permit"
-            log_event WARN sleep "$project vanished before recording; its sleep note is retained"
+            echo "cockpit: could not write the note for $id" >&2
+            return 1
         fi
-        log_event WARN sleep "$project stays awake: team sleep recording failed"
-        [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: team sleep recording failed" >&2
-        return 3
-    fi
-    reason=$(sleep_blocker "$id" "$pane")
-    if [[ -n $reason ]]; then
-        if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
-            forget_sleep_note "$id"
-        else
+        if ! chmod 600 "$temporary" || ! mv -fT -- "$temporary" "$note"; then
+            rm -f "$temporary"
             cancel_sleep_permit "$id" "$permit"
-            log_event WARN sleep "$project vanished before exit; its sleep note is retained"
-        fi
-        log_event INFO sleep "$project stays awake: $reason"
-        [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: $reason" >&2
-        return 3
-    fi
-    if ! exit_session "$id"; then
-        if [[ $agent == opencode ]]; then
-            log_event WARN sleep "$project conversation-wide exit failed; its sleep note is retained"
             return 1
         fi
-        # An exit that finished just before the last-resort kill fails it: the session is gone
-        # all the same, and only the note can wake it.
-        if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
-            forget_sleep_note "$id"
-            log_event WARN sleep "$project did not exit to sleep; its note is removed"
-            return 1
+        target=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null) || target=""
+        if [[ -n $permit ]] && ! team_sleep_request sleep-recorded "$id" "$permit" >/dev/null; then
+            if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
+                forget_sleep_note "$id"
+            else
+                cancel_sleep_permit "$id" "$permit"
+                log_event WARN sleep "$project vanished before recording; its sleep note is retained"
+            fi
+            log_event WARN sleep "$project stays awake: team sleep recording failed"
+            [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: team sleep recording failed" >&2
+            return 3
         fi
-        if [[ -z $target ]]; then
-            log_event WARN sleep "$project exit outcome unknown; its sleep note is retained"
-            return 1
+        reason=$(sleep_blocker "$id" "$pane")
+        if [[ -n $reason ]]; then
+            if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
+                forget_sleep_note "$id"
+            else
+                cancel_sleep_permit "$id" "$permit"
+                log_event WARN sleep "$project vanished before exit; its sleep note is retained"
+            fi
+            log_event INFO sleep "$project stays awake: $reason"
+            [[ -n ${COCKPIT_LOG_STDERR:-} ]] || echo "cockpit: $project stays awake: $reason" >&2
+            return 3
         fi
-        log_event INFO sleep "$project left while its exit was failing; it sleeps"
-    fi
-    clear_exited_viewer "$id"
-    log_event INFO sleep "$project asleep after $(( (slept_at - ${since%.*}) / 60 )) min idle"
+        if ! exit_session "$id"; then
+            if [[ $agent == opencode ]]; then
+                log_event WARN sleep "$project conversation-wide exit failed; its sleep note is retained"
+                return 1
+            fi
+            # An exit that finished just before the last-resort kill fails it: the session is gone
+            # all the same, and only the note can wake it.
+            if [[ -n $target ]] && tmux has-session -t "=$target" 2>/dev/null; then
+                forget_sleep_note "$id"
+                log_event WARN sleep "$project did not exit to sleep; its note is removed"
+                return 1
+            fi
+            if [[ -z $target ]]; then
+                log_event WARN sleep "$project exit outcome unknown; its sleep note is retained"
+                return 1
+            fi
+            log_event INFO sleep "$project left while its exit was failing; it sleeps"
+        fi
+        clear_exited_viewer "$id"
+        log_event INFO sleep "$project asleep after $(((slept_at - ${since%.*}) / 60)) min idle"
     )
 }
 
@@ -1323,14 +1461,19 @@ sleep_session() { # id
 ENDED_SESSIONS="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/ended-sessions"
 RESTORE_WAIT_S=${COCKPIT_RESTORE_WAIT:-25}
 # The OSD daemon's record of the sessions that ran, for the restore: their billing among the rest.
+# The dynamically sourced agent implementations read this path during restore.
+# shellcheck disable=SC2034
 RECENT_SESSIONS="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/recent-sessions.json"
 
 # Bring back each <dir> <id> pair, each in a tmux session of its own, so none depends on the viewer
 # pane (agent_*_restore). A folder that is gone is skipped.
 restore_sessions() { # dir id [dir id …]
-    (( $# % 2 == 0 && $# > 0 )) || { echo "usage: cockpit restore <dir> <id> [<dir> <id> …]" >&2; return 1; }
+    (($# % 2 == 0 && $# > 0)) || {
+        echo "usage: cockpit restore <dir> <id> [<dir> <id> …]" >&2
+        return 1
+    }
     local directory id
-    while (( $# )); do
+    while (($#)); do
         directory=$1 id=$2
         shift 2
         if [[ ! -d $directory ]]; then
@@ -1357,7 +1500,7 @@ is_restarting() { # id
 queue_for_wake() { # id message
     local folder="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$1"
     mkdir -p "$folder"
-    printf '%s' "$2" > "$folder/$(date +%s%N).txt"
+    printf '%s' "$2" >"$folder/$(date +%s%N).txt"
     log_event INFO sessions "prompt queued for $1 until it wakes"
     audit_event manager prompt.queued queued "session=$1" "fp:text=$2"
 }
@@ -1377,8 +1520,8 @@ check_wakeable() { # id
         reason="its conversation is gone"
     elif [[ $agent == opencode ]]; then
         case $(opencode_session_state "$id") in
-            gone) reason="its conversation is gone" ;;
-            unknown) log_event INFO sleep "$project wakes though opencode's database cannot tell whether its session is still there" ;;
+        gone) reason="its conversation is gone" ;;
+        unknown) log_event INFO sleep "$project wakes though opencode's database cannot tell whether its session is still there" ;;
         esac
     fi
     [[ -n $reason ]] || return 0
@@ -1393,10 +1536,18 @@ check_wakeable() { # id
 # note. Team launch permissions are never retried after an ambiguous launch.
 wake_session() { # id
     local id=$1 note="$ASLEEP_DIR/$1"
-    is_asleep "$id" || { echo "cockpit: $id is not asleep" >&2; return 1; }
+    is_asleep "$id" || {
+        echo "cockpit: $id is not asleep" >&2
+        return 1
+    }
     # The sleep note is the lock: a click and a message waking it together resume it once.
+    # fd 9 is read-only and only locks the inode; no pipeline writes into the note.
+    # shellcheck disable=SC2094
     (
-        flock -n 9 || { log_event INFO sleep "$id is already waking"; exit 0; }
+        flock -n 9 || {
+            log_event INFO sleep "$id is already waking"
+            exit 0
+        }
         [[ -f $note ]] || exit 0
         local project directory remote agent woke_at permit status launch_team_resume=
         check_wakeable "$id" || exit 1
@@ -1410,7 +1561,7 @@ wake_session() { # id
             if ! team_sleep_request sleep-begin-wake "$id" "$permit" >/dev/null; then
                 # The previous waiter may have died after binding committed but before cleanup.
                 if status=$(team_sleep_request sleep-status "$id" "$permit") &&
-                        jq -e '.state == "bound"' >/dev/null 2>&1 <<< "$status"; then
+                    jq -e '.state == "bound"' >/dev/null 2>&1 <<<"$status"; then
                     [[ ! $note -ef /dev/fd/9 ]] || rm -f "$note"
                     log_event INFO sleep "$id woke; team binding acknowledged"
                     exit 0
@@ -1419,11 +1570,11 @@ wake_session() { # id
                 echo "cockpit: $id team wake failed: host refused launch permission" >&2
                 exit 1
             fi
-            launch_team_resume=$(jq -r .token <<< "$permit")
+            launch_team_resume=$(jq -r .token <<<"$permit")
         fi
         printf -v woke_at '%(%s)T' -1
         mkdir -p "$RESTARTING_DIR"
-        printf '%s\n%s\n%s\n\n' "$woke_at" "$project" "$directory" > "$RESTARTING_DIR/$id"
+        printf '%s\n%s\n%s\n\n' "$woke_at" "$project" "$directory" >"$RESTARTING_DIR/$id"
         if [[ $(cat "$CURRENT" 2>/dev/null) == "$id" ]]; then show_restarting "$id"; fi
         if ! "agent_${agent}_restore" "$directory" "$id" 9<&-; then
             rm -f "$RESTARTING_DIR/$id"
@@ -1433,7 +1584,7 @@ wake_session() { # id
         fi
         if [[ -n $permit ]]; then
             # Keep the wake lock in the waiter, not in tmux or its long-lived agent.
-            ( wait_team_binding "$id" "$permit" "$woke_at" ) </dev/null >/dev/null 2>&1 &
+            (wait_team_binding "$id" "$permit" "$woke_at") </dev/null >/dev/null 2>&1 &
         else
             rm -f "$note"
             log_event INFO sleep "$project woke"
@@ -1445,18 +1596,31 @@ wake_session() { # id
 
 wait_team_binding() { # id token-object woke-at; inherits the sleep note's lock on fd 9
     local id=$1 permit=$2 woke_at=$3 status state reason="binding acknowledgement timed out" note="$ASLEEP_DIR/$1"
-    while (( $(date +%s) - woke_at < RESTART_TIMEOUT_S )); do
-        if [[ ! $note -ef /dev/fd/9 ]]; then reason="sleep note removed or replaced"; break; fi
-        if ! status=$(team_sleep_request sleep-status "$id" "$permit"); then reason="host status unavailable"; break; fi
-        state=$(jq -er '.state | select(type == "string")' <<< "$status" 2>/dev/null) || { reason="invalid host status"; break; }
+    while (($(date +%s) - woke_at < RESTART_TIMEOUT_S)); do
+        if [[ ! $note -ef /dev/fd/9 ]]; then
+            reason="sleep note removed or replaced"
+            break
+        fi
+        if ! status=$(team_sleep_request sleep-status "$id" "$permit"); then
+            reason="host status unavailable"
+            break
+        fi
+        state=$(jq -er '.state | select(type == "string")' <<<"$status" 2>/dev/null) || {
+            reason="invalid host status"
+            break
+        }
         case $state in
-            bound)
-                # A concurrent explicit exit may have deleted or replaced this note while IPC ran.
-                if [[ $note -ef /dev/fd/9 ]]; then rm -f "$note"; fi
-                log_event INFO sleep "$id woke; team binding acknowledged"
-                return 0 ;;
-            waking) sleep 1 ;;
-            *) reason="host did not acknowledge binding"; break ;;
+        bound)
+            # A concurrent explicit exit may have deleted or replaced this note while IPC ran.
+            if [[ $note -ef /dev/fd/9 ]]; then rm -f "$note"; fi
+            log_event INFO sleep "$id woke; team binding acknowledged"
+            return 0
+            ;;
+        waking) sleep 1 ;;
+        *)
+            reason="host did not acknowledge binding"
+            break
+            ;;
         esac
     done
     rm -f "$RESTARTING_DIR/$id"
@@ -1468,15 +1632,18 @@ wait_team_binding() { # id token-object woke-at; inherits the sleep note's lock 
 # prompt (a new process: started at or after the wake).
 restore_remote_control() { # id woke_at
     local id=$1 woke_at=$2 pane status_line
-    [[ $id =~ ^[A-Za-z0-9_-]+$ && $woke_at =~ ^[0-9]+$ ]] || { echo "usage: cockpit wake-remote <session-id> <woke-at>" >&2; return 1; }
-    while (( $(date +%s) - woke_at <= RESTART_TIMEOUT_S )); do
+    [[ $id =~ ^[A-Za-z0-9_-]+$ && $woke_at =~ ^[0-9]+$ ]] || {
+        echo "usage: cockpit wake-remote <session-id> <woke-at>" >&2
+        return 1
+    }
+    while (($(date +%s) - woke_at <= RESTART_TIMEOUT_S)); do
         pane=$(jq -r --arg id "$id" --argjson woke_at "$woke_at" \
             'first(.sessions[] | select(.session == $id and (.tmux_pane // "") != "" and .state == "waiting" and (.started // 0) >= $woke_at)) | .tmux_pane' \
             "$SNAPSHOT" 2>/dev/null || true)
         if [[ -n $pane ]]; then
             # The status line the sleeping process wrote still says remote: only a newer one counts.
             status_line="$HOME/.cache/claude/statusline-$id.json"
-            if (( $(stat -c %Y "$status_line" 2>/dev/null || echo 0) >= woke_at )) && session_is_remote "$id"; then return 0; fi
+            if (($(stat -c %Y "$status_line" 2>/dev/null || echo 0) >= woke_at)) && session_is_remote "$id"; then return 0; fi
             send_remote_toggle "$pane"
             return 0
         fi
@@ -1493,7 +1660,10 @@ restart_session() { # id [effort] [detached] [credits|subscription]
     "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "$id" || return
     # A live pane first: a note can outlive its process by the length of the sleep's exit.
     if [[ -z $(session_field "$id" tmux_pane) ]] && is_asleep "$id"; then
-        [[ -z $effort && -z $billing ]] || { echo "cockpit: $id is asleep; wake it before changing its effort or billing" >&2; return 1; }
+        [[ -z $effort && -z $billing ]] || {
+            echo "cockpit: $id is asleep; wake it before changing its effort or billing" >&2
+            return 1
+        }
         wake_session "$id"
         return
     fi
@@ -1505,20 +1675,23 @@ restart_session() { # id [effort] [detached] [credits|subscription]
     fi
     [[ -z $effort ]] || require_feature "$id" effort "effort" || return 1
     [[ -z $billing ]] || require_feature "$id" billing "billing" || return 1
-    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: refusing session id $id" >&2; return 1; }
+    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || {
+        echo "cockpit: refusing session id $id" >&2
+        return 1
+    }
     # A team member keeps its membership through this restart only: the host binds the permit to
     # the relaunch once the old process is gone, in the same folder. Agents that can sleep are the
     # ones whose launches carry it. Refused or unavailable, the restart goes ahead without it.
     if agent_can "$(agent_of_session "$id")" sleep; then
         if permit=$(cockpit-team restart-prepare "$id" 2>/dev/null); then
-            launch_team_resume=$(jq -r '.token | select(type == "string" and test("^[0-9a-f]{32}$"))' <<< "$permit" 2>/dev/null) || launch_team_resume=""
+            launch_team_resume=$(jq -r '.token | select(type == "string" and test("^[0-9a-f]{32}$"))' <<<"$permit" 2>/dev/null) || launch_team_resume=""
         else
             log_event WARN sessions "$(session_field "$id" project) restarts without its team membership: the host refused or could not be reached"
         fi
     fi
     note="$RESTARTING_DIR/$id"
     mkdir -p "$RESTARTING_DIR"
-    printf '%s\n%s\n%s\n%s\n' "$(date +%s)" "$(session_field "$id" project)" "$directory" "$(session_field "$id" tmux_pane)" > "$note"
+    printf '%s\n%s\n%s\n%s\n' "$(date +%s)" "$(session_field "$id" project)" "$directory" "$(session_field "$id" tmux_pane)" >"$note"
     # Detached, nothing else takes the session pane: it would show a dead client.
     if [[ $detached == detached && $(cat "$CURRENT" 2>/dev/null) == "$id" ]]; then
         show_restarting "$id"
@@ -1542,13 +1715,18 @@ show_restarting() { # id
 # the view in the background: the view replaces this pane.
 restarting_screen() { # id
     local id=$1 since project directory old_pane frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) tick=0 rows columns label back
-    if ! { read -r since; read -r project; read -r directory; read -r old_pane; } < "$RESTARTING_DIR/$id" 2>/dev/null; then
+    if ! {
+        read -r since
+        read -r project
+        read -r directory
+        read -r old_pane
+    } <"$RESTARTING_DIR/$id" 2>/dev/null; then
         printf '\n  No restart under way for %s.\n' "$id"
         exec sleep infinity
     fi
     label="Restarting $project …"
     tput civis 2>/dev/null || true
-    while (( $(date +%s) - since <= RESTART_TIMEOUT_S )); do
+    while (($(date +%s) - since <= RESTART_TIMEOUT_S)); do
         back=$(jq -r --arg session "$id" --arg directory "$directory" --arg pane "$old_pane" --argjson since "$since" \
             'first(.sessions[] | select(((.started // 0) >= $since and (.session == $session or .cwd == $directory))
                                         or (.session == $session and (.tmux_pane // "") != "" and .tmux_pane != $pane))) | .session' \
@@ -1559,8 +1737,8 @@ restarting_screen() { # id
         fi
         rows=$(tput lines 2>/dev/null || echo 24) columns=$(tput cols 2>/dev/null || echo 80)
         printf '\033[2J\033[%d;%dH\033[1;36m%s\033[0m  \033[1m%s\033[0m' \
-            $(( rows / 2 )) $(( (columns - ${#label} - 3) / 2 > 1 ? (columns - ${#label} - 3) / 2 : 1 )) "${frames[tick % 10]}" "$label"
-        tick=$(( tick + 1 ))
+            $((rows / 2)) $(((columns - ${#label} - 3) / 2 > 1 ? (columns - ${#label} - 3) / 2 : 1)) "${frames[tick % 10]}" "$label"
+        tick=$((tick + 1))
         sleep 0.15
     done
     log_event WARN sessions "restart of $project ($id) did not report within ${RESTART_TIMEOUT_S}s"
@@ -1574,14 +1752,17 @@ restarting_screen() { # id
 # claude-auto-retry has moved it out, and one restart-all lost a session that way.
 restart_sessions() { # [id...]
     local shown id waited sessions session_ids=()
-    if (( $# == 0 )); then
+    if (($# == 0)); then
         # Capture the list before restarting: the daemon replaces rows as sessions come back.
         if ! sessions=$(jq -er '[.sessions[] | select((.tmux_pane // "") != "" and (.terminal // false) == false) | .session] | unique | join("\n")' "$SNAPSHOT"); then
             echo "cockpit: cannot read running sessions from $SNAPSHOT" >&2
             return 1
         fi
-        [[ -n $sessions ]] || { echo "cockpit: no managed running sessions"; return 0; }
-        mapfile -t session_ids <<< "$sessions"
+        [[ -n $sessions ]] || {
+            echo "cockpit: no managed running sessions"
+            return 0
+        }
+        mapfile -t session_ids <<<"$sessions"
         set -- "${session_ids[@]}"
     fi
     shown=$(cat "$CURRENT" 2>/dev/null || true)
@@ -1590,7 +1771,7 @@ restart_sessions() { # [id...]
     done
     [[ -n $shown ]] || return 0
     # The session that was on screen comes back once it reports in again (it may be one of these).
-    for (( waited = 0; waited < RESTORE_WAIT_S; waited++ )); do
+    for ((waited = 0; waited < RESTORE_WAIT_S; waited++)); do
         [[ -n $(session_field "$shown" tmux_pane) ]] && break
         sleep 1
     done
@@ -1612,7 +1793,7 @@ unit_is_stale() {
     running_for=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
     built=$(stat -c %Y "$binary" 2>/dev/null)
     [[ $running_for =~ ^[0-9]+$ && $built =~ ^[0-9]+$ ]] || return 1
-    (( built > $(date +%s) - running_for ))
+    ((built > $(date +%s) - running_for))
 }
 
 osd_is_stale() {
@@ -1623,8 +1804,21 @@ restart_stale_osd() {
     osd_is_stale || return 0
     echo "The OSD daemon runs an older build: it restarts once no approval is open."
     log_event INFO manager "osd.service runs a build older than $OSD_BINARY: restart once no approval is open"
-    setsid -f "$0" restart-osd-when-idle >/dev/null 2>&1
+    start_detached "$0" restart-osd-when-idle
 }
+
+# start_detached <command…>: in its own session, holding none of the caller's descriptors. The OSD
+# waiter outlived the apply that reloaded and kept its install lock open (2026-10-28): the
+# approved installs queued behind that lock never ran, so the approvals the waiter waited on
+# never closed.
+start_detached() (
+    local descriptor
+    for descriptor in /proc/"$BASHPID"/fd/*; do
+        descriptor=${descriptor##*/}
+        if ((descriptor > 2 && descriptor != 255)); then exec {descriptor}>&-; fi
+    done
+    exec setsid -f "$@" </dev/null >/dev/null 2>&1
+)
 
 # The phone page (claude-remote.service) is compiled into its binary: after an apply the phone kept
 # the old page until a manual restart. It restarts at once: it shows no approval of its own (a
@@ -1662,7 +1856,7 @@ awaited_approvals() {
         id=${name#claude-run-}
         stamp="$RUNS_DIR/$id.waiting"
         [[ -e $stamp ]] || stamp="$REQUESTS_DIR/$id.request"
-        if touched=$(stat -c %Y "$stamp" 2>/dev/null) && (( $(date +%s) - touched > OSD_APPROVAL_ABANDONED_S )); then
+        if touched=$(stat -c %Y "$stamp" 2>/dev/null) && (($(date +%s) - touched > OSD_APPROVAL_ABANDONED_S)); then
             continue
         fi
         echo "$name"
@@ -1685,7 +1879,7 @@ restart_osd_when_idle() {
         fi
         [[ -n $awaited ]] || break
         if [[ $awaited != "$reported" ]]; then
-            log_event INFO manager "osd.service restart waits on $(paste -sd ' ' <<< "$awaited")"
+            log_event INFO manager "osd.service restart waits on $(paste -sd ' ' <<<"$awaited")"
             reported=$awaited
         fi
         sleep 2
@@ -1710,12 +1904,14 @@ show_digest() {
     ensure_manager
     local previous
     previous=$(cat "$CURRENT" 2>/dev/null || true)
+    # The new pane's shell expands its own positional parameters.
+    # shellcheck disable=SC2016
     tmux respawn-pane -k -t "$(viewer_pane)" bash -c 'cockpit-sidebar digest
         read -rsn 1 -p "  any key goes back " _
         if [[ -n $1 ]]; then exec cockpit view "$1"; else exec cockpit idle; fi' bash "$previous"
     tmux set-option -p -t "$(viewer_pane)" @project "digest"
     mkdir -p "$(dirname "$DIGEST_DAY")"
-    date +%F > "$DIGEST_DAY"
+    date +%F >"$DIGEST_DAY"
 }
 
 digest_due() {
@@ -1729,7 +1925,7 @@ CLONES_SWEEP_DAY="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/clones-sweep-day
 sweep_clones_once_a_day() {
     [[ $(cat "$CLONES_SWEEP_DAY" 2>/dev/null) != "$(date +%F)" ]] || return 0
     mkdir -p "$(dirname "$CLONES_SWEEP_DAY")"
-    date +%F > "$CLONES_SWEEP_DAY"
+    date +%F >"$CLONES_SWEEP_DAY"
     ("$0" clones-sweep >/dev/null 2>&1 &)
 }
 
@@ -1781,7 +1977,12 @@ doctor() {
     local daemon_pids holder=""
     daemon_pids=$(pgrep -x osd || true)
     for daemon_pid in $daemon_pids; do
-        if ls -l "/proc/$daemon_pid/fd" 2>/dev/null | grep -q osd.fifo; then holder=$daemon_pid; break; fi
+        # Descriptor names are numeric; inspect their symlink targets for this FIFO.
+        # shellcheck disable=SC2010
+        if ls -l "/proc/$daemon_pid/fd" 2>/dev/null | grep -q osd.fifo; then
+            holder=$daemon_pid
+            break
+        fi
     done
     if [[ -n $daemon_pids ]]; then report ok "osd running (pid ${daemon_pids//$'\n'/, })"; else report fail "osd not running" "systemctl --user restart osd.service"; fi
     if [[ -p $fifo ]]; then report ok "FIFO $fifo exists"; else report fail "FIFO $fifo missing" "restart the daemon, it creates it"; fi
@@ -1795,24 +1996,31 @@ doctor() {
     else
         report fail "${pin_check%%:*}" "make -C ~/agent-cockpit greywall-patch (sessions get flagged for a restart)"
     fi
+    # These are literal policy/display paths, not shell-expanded filesystem arguments.
+    # shellcheck disable=SC2088
     if jq -e '.filesystem.allowRead | index("~/agent-cockpit/config/claude")' "$greywall" >/dev/null 2>&1; then report ok "~/agent-cockpit/config/claude in allowRead"; else report fail "~/agent-cockpit/config/claude not in greywall allowRead" "add it, or hooks are unreachable from other projects"; fi
     echo "hooks"
+    # Display the familiar home-relative spelling; the actual check uses HOME.
+    # shellcheck disable=SC2088
     if [[ -x $(readlink -f "$HOME/.claude/hooks/session-state.sh") ]]; then report ok "~/.claude/hooks/session-state.sh resolves"; else report fail "~/.claude/hooks/session-state.sh does not resolve" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow claude"; fi
     local event missing_events=""
     for event in SessionStart UserPromptSubmit PostToolUse Notification Stop StopFailure SessionEnd; do
-        jq -e --arg event "$event" '[.hooks[$event][]?.hooks[]?.command] | any(test("session-state.sh"))' "$HOME/.claude/settings.json" >/dev/null 2>&1 \
-            || missing_events="$missing_events $event"
+        jq -e --arg event "$event" '[.hooks[$event][]?.hooks[]?.command] | any(test("session-state.sh"))' "$HOME/.claude/settings.json" >/dev/null 2>&1 ||
+            missing_events="$missing_events $event"
     done
     if [[ -z $missing_events ]]; then
         report ok "settings.json runs session-state.sh on the six events"
     else
         report fail "settings.json misses session-state.sh on:$missing_events" "add {\"type\": \"command\", \"command\": \"bash ~/.claude/hooks/session-state.sh\"} under hooks.<event>"
     fi
+    # Display spelling only; readlink above uses the expanded home path.
+    # shellcheck disable=SC2088
     if [[ -x $(readlink -f "$HOME/.claude/statusline-command.sh") ]]; then report ok "status line script resolves"; else report fail "~/.claude/statusline-command.sh does not resolve" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow claude"; fi
     echo "bar"
     if pgrep -x waybar >/dev/null; then report ok "waybar running"; else report fail "waybar not running" "waybar &"; fi
     if pgrep -f workspace-listener.sh >/dev/null; then report ok "workspace listener running"; else report fail "workspace-listener.sh not running" "pkill -x -SIGUSR2 waybar (reload) and check custom/workspace-listener in config.jsonc"; fi
-    local wanted=1; "$ON_CLAUDE_WORKSPACE" && wanted=0
+    local wanted=1
+    "$ON_CLAUDE_WORKSPACE" && wanted=0
     if [[ $(cat "${XDG_RUNTIME_DIR:-/tmp}/waybar-visible" 2>/dev/null || echo 1) == "$wanted" ]]; then report ok "bar visibility matches the workspace"; else report fail "bar visibility state out of step" "$HOME/.config/waybar/scripts/waybar-visibility.sh sync"; fi
     echo "tmux"
     # pacman can replace the local patch without changing tmux's reported version.
@@ -1841,7 +2049,7 @@ doctor() {
         report fail "manager tmux session missing" "cockpit prepare (systemctl --user start cockpit.service)"
     fi
     local usage="${XDG_RUNTIME_DIR:-/tmp}/claude-usage.json"
-    if [[ -f $usage ]] && (( $(date +%s) - $(stat -c %Y "$usage") < 900 )); then report ok "usage cache fresh"; else report fail "usage cache missing or stale" "$HOME/.config/waybar/scripts/claude-usage.sh five_hour (needs the OAuth token in ~/.claude/.credentials.json)"; fi
+    if [[ -f $usage ]] && (($(date +%s) - $(stat -c %Y "$usage") < 900)); then report ok "usage cache fresh"; else report fail "usage cache missing or stale" "$HOME/.config/waybar/scripts/claude-usage.sh five_hour (needs the OAuth token in ~/.claude/.credentials.json)"; fi
     echo "services and updates"
     local unit
     # Sessions frozen by game-performance during a game; still listed with no game means a missed thaw.
@@ -1859,10 +2067,12 @@ doctor() {
     local archive="${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/usage.sqlite" newest_transcript
     newest_transcript=$(find "${COCKPIT_TRANSCRIPTS:-$HOME/.claude/projects}" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -n | tail -1 || true)
     newest_transcript=${newest_transcript%.*}
-    if [[ -f $archive ]] && (( $(stat -c %Y "$archive") + 600 >= ${newest_transcript:-0} )); then report ok "usage archive up to date"; else report fail "usage archive missing or behind the transcripts" "cockpit reload (the sidebar keeps it), or cockpit-sidebar costs"; fi
-    local recent_facts
-    recent_facts=$(find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 2>/dev/null || true)
-    if [[ -z $recent_facts ]] || jq -e 'select(.effort != null)' $recent_facts >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
+    if [[ -f $archive ]] && (($(stat -c %Y "$archive") + 600 >= ${newest_transcript:-0})); then report ok "usage archive up to date"; else report fail "usage archive missing or behind the transcripts" "cockpit reload (the sidebar keeps it), or cockpit-sidebar costs"; fi
+    local -a recent_facts=()
+    mapfile -d '' -t recent_facts < <(
+        find "$HOME/.cache/claude" -maxdepth 1 -name 'statusline-*.json' -mmin -60 -print0 2>/dev/null || true
+    )
+    if ((${#recent_facts[@]} == 0)) || jq -e 'select(.effort != null)' "${recent_facts[@]}" >/dev/null 2>&1; then report ok "status line reports the effort"; else report fail "status line reports no effort" "install .handoff/claude/statusline-command.sh"; fi
     if command -v ask-to-run >/dev/null && command -v cockpit-run-approve >/dev/null; then report ok "ask-to-run and cockpit-run-approve resolve"; else report fail "ask-to-run or cockpit-run-approve not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
     if command -v ask-to-guide >/dev/null && command -v cockpit-guide >/dev/null && command -v kitten >/dev/null; then report ok "ask-to-guide, cockpit-guide and kitten resolve"; else report fail "ask-to-guide, cockpit-guide or kitten not on PATH" "cd ~/agent-cockpit/config && stow --no-folding -t ~ --restow bin"; fi
     if grep -qs "this terminal" "$HOME/.config/fish/functions/claude.fish"; then report ok "claude asks manager or terminal"; else report fail "fish claude function missing or the old one (~/.config/fish/functions/claude.fish)" "make -C ~/agent-cockpit install"; fi
@@ -1877,20 +2087,23 @@ doctor() {
     # fail the next run for a day.
     errors=$(awk -v since="$since" '$1 >= since && $2 == "ERROR" && $3 != "health:"' "$LOG_FILE" 2>/dev/null | wc -l)
     last_error=$(awk -v since="$since" '$1 >= since && $2 == "ERROR" && $3 != "health:"' "$LOG_FILE" 2>/dev/null | tail -1)
-    if (( errors == 0 )); then report ok "no error logged in 24 h ($LOG_FILE)"; else report fail "$errors error(s) logged in 24 h, the last: ${last_error:0:160}" "cockpit logs"; fi
+    if ((errors == 0)); then report ok "no error logged in 24 h ($LOG_FILE)"; else report fail "$errors error(s) logged in 24 h, the last: ${last_error:0:160}" "cockpit logs"; fi
     echo "pane heuristics (what the daemon sees for each running session, and the process that keeps it alive)"
     if [[ -s $SNAPSHOT ]]; then
         while IFS=$'\t' read -r session project state pane; do
             local alive seen
             alive=$(osd liveness "$session" "$pane")
-            [[ -n $pane ]] || { printf '  %-24s hook says %-9s no tmux pane     process %s\n' "$project" "$state" "$alive"; continue; }
+            [[ -n $pane ]] || {
+                printf '  %-24s hook says %-9s no tmux pane     process %s\n' "$project" "$state" "$alive"
+                continue
+            }
             seen=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null | osd classify)
             printf '  %-24s hook says %-9s pane shows %-9s process %s\n' "$project" "$state" "$seen" "$alive"
         done < <(jq -r '.sessions[] | [.session, .project, .state, (.tmux_pane // "")] | @tsv' "$SNAPSHOT")
     else
         echo "  no session tracked"
     fi
-    (( failures == 0 )) && echo "all good" && return 0
+    ((failures == 0)) && echo "all good" && return 0
     echo "$failures problem(s)"
     # Its findings are in its output: as an ERROR, its exit would start a repair session from the
     # error hand-off and fail the next doctor's log check for a day.
@@ -1912,8 +2125,11 @@ GREYWALL="${COCKPIT_GREYWALL:-$HOME/.local/bin/greywall}"
 # belongs to the first repository.
 clone_repository() { # repository-top
     case $1 in
-        "$CLONES_DIR"/*/*) local inside=${1#"$CLONES_DIR"/}; echo "${inside%%/*}" ;;
-        *) basename "$1" ;;
+    "$CLONES_DIR"/*/*)
+        local inside=${1#"$CLONES_DIR"/}
+        echo "${inside%%/*}"
+        ;;
+    *) basename "$1" ;;
     esac
 }
 
@@ -1965,13 +2181,16 @@ LEFTHOOK_GIT_HOOKS=(applypatch-msg pre-applypatch post-applypatch pre-commit pre
 install_lefthook_hooks() { # clone-dir
     local clone=$1 config="" candidate hook installed=()
     for candidate in lefthook.yml .lefthook.yml lefthook.yaml .lefthook.yaml; do
-        if [[ -f $clone/$candidate && ! -L $clone/$candidate ]]; then config=$clone/$candidate; break; fi
+        if [[ -f $clone/$candidate && ! -L $clone/$candidate ]]; then
+            config=$clone/$candidate
+            break
+        fi
     done
     [[ -n $config ]] || return 0
     mkdir -p "$clone/.git/hooks"
     for hook in "${LEFTHOOK_GIT_HOOKS[@]}"; do
         grep -qE "^${hook}:" "$config" || continue
-        lefthook_hook_script "$hook" > "$clone/.git/hooks/$hook"
+        lefthook_hook_script "$hook" >"$clone/.git/hooks/$hook"
         chmod 755 "$clone/.git/hooks/$hook"
         installed+=("$hook")
     done
@@ -2013,9 +2232,9 @@ inherit_trust() { # source-dir clone-dir
         log_event WARN sessions "could not mark $2 as trusted: no temp file next to $CLAUDE_CONFIG_FILE"
         return 0
     fi
-    if jq --arg clone "$2" '.projects[$clone].hasTrustDialogAccepted = true' "$CLAUDE_CONFIG_FILE" > "$updated" \
-        && dd if="$updated" of="$CLAUDE_CONFIG_FILE" conv=notrunc status=none \
-        && truncate -s "$(stat -c %s "$updated")" "$CLAUDE_CONFIG_FILE"; then
+    if jq --arg clone "$2" '.projects[$clone].hasTrustDialogAccepted = true' "$CLAUDE_CONFIG_FILE" >"$updated" &&
+        dd if="$updated" of="$CLAUDE_CONFIG_FILE" conv=notrunc status=none &&
+        truncate -s "$(stat -c %s "$updated")" "$CLAUDE_CONFIG_FILE"; then
         rm -f "$updated"
     else
         rm -f "$updated"
@@ -2027,6 +2246,8 @@ inherit_trust() { # source-dir clone-dir
 show_failure() { # message
     log_event ERROR manager "$1"
     ensure_manager
+    # The new pane's shell expands its own positional parameters.
+    # shellcheck disable=SC2016
     tmux respawn-pane -k -t "$(viewer_pane)" sh -c 'printf "\n  ✗ %s\n\n  any key closes this pane " "$1"; read -r _' sh "$1"
 }
 
@@ -2035,10 +2256,12 @@ parallel_session() { # dir branch [prompt: its first message, the Todo panel's N
     local directory=$1 branch=$2 prompt=${3:-} clone
     require_plain_directory "$directory"
     if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
-        show_failure "not a branch name: $branch"; return 1
+        show_failure "not a branch name: $branch"
+        return 1
     fi
     if ! clone=$(clone_for "$directory" "${branch//\//-}" 2>&1); then
-        show_failure "could not clone $directory: $clone"; return 1
+        show_failure "could not clone $directory: $clone"
+        return 1
     fi
     # The clone may be one a session already ran in, with a .git/config it could write: git runs
     # inside greywall there, as for lazygit.
@@ -2056,10 +2279,12 @@ parallel_session() { # dir branch [prompt: its first message, the Todo panel's N
 chief_start_session() { # reserved-session-id dedicated-directory
     local session=$1 directory=$2 model
     if [[ $launch_agent != opencode || $directory != "$HOME/IdeaProjects/cockpit-chief" || $directory == *'#'* ]] || ! agent_opencode_is_session_id "$session"; then
-        echo "cockpit: Chief needs its reserved OpenCode identity and dedicated folder" >&2; return 2
+        echo "cockpit: Chief needs its reserved OpenCode identity and dedicated folder" >&2
+        return 2
     fi
     if [[ -L $HOME/IdeaProjects || -L $directory ]]; then
-        echo "cockpit: refusing a symlink for the Chief folder" >&2; return 2
+        echo "cockpit: refusing a symlink for the Chief folder" >&2
+        return 2
     fi
     mkdir -p -- "$directory" || return 2
     model=$(opencode_default_model) || return 2
@@ -2072,15 +2297,32 @@ chief_start_session() { # reserved-session-id dedicated-directory
 # new session's first message, labelled as the asking agent's text Theo approved.
 team_spawn_session() { # token role dir commit|- brief
     local token=$1 role=$2 directory=$3 commit=$4 brief=$5 clone
-    if [[ ! $token =~ ^[0-9a-f]{32}$ ]]; then echo "cockpit: team-spawn needs a 32-character team token" >&2; return 2; fi
+    if [[ ! $token =~ ^[0-9a-f]{32}$ ]]; then
+        echo "cockpit: team-spawn needs a 32-character team token" >&2
+        return 2
+    fi
     case $role in
-        designer | developer) [[ $commit == - ]] || { echo "cockpit: only QA starts at a commit" >&2; return 2; } ;;
-        qa) [[ $commit =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "cockpit: QA needs the full handed-off commit" >&2; return 2; } ;;
-        *) echo "cockpit: team-spawn role is designer, developer or qa" >&2; return 2 ;;
+    designer | developer) [[ $commit == - ]] || {
+        echo "cockpit: only QA starts at a commit" >&2
+        return 2
+    } ;;
+    qa) [[ $commit =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || {
+        echo "cockpit: QA needs the full handed-off commit" >&2
+        return 2
+    } ;;
+    *)
+        echo "cockpit: team-spawn role is designer, developer or qa" >&2
+        return 2
+        ;;
     esac
-    [[ -n ${brief//[[:space:]]/} && $brief != -* ]] || { echo "cockpit: team-spawn needs a brief that is not an option" >&2; return 2; }
+    [[ -n ${brief//[[:space:]]/} && $brief != -* ]] || {
+        echo "cockpit: team-spawn needs a brief that is not an option" >&2
+        return 2
+    }
     require_plain_directory "$directory" || return 1
     audit_event manager session.team_spawn ok "role=$role" "directory=$directory" "agent=$launch_agent"
+    # Consumed by the dynamically selected agent's launch implementation.
+    # shellcheck disable=SC2034
     launch_team_spawn=$token
     # The daemon's brief arrives labelled (who wrote it, what Theo approved); it never starts with "-".
     if [[ $role != qa ]]; then
@@ -2100,8 +2342,14 @@ team_spawn_session() { # token role dir commit|- brief
         echo "cockpit: $name already exists; QA starts only in a fresh copy" >&2
         return 1
     fi
-    clone=$(clone_for "$directory" "$name") || { echo "cockpit: could not copy $directory for QA" >&2; return 1; }
-    git_in_sandbox "$clone" switch --quiet --detach "$commit" || { echo "cockpit: commit $commit is not in $directory" >&2; return 1; }
+    clone=$(clone_for "$directory" "$name") || {
+        echo "cockpit: could not copy $directory for QA" >&2
+        return 1
+    }
+    git_in_sandbox "$clone" switch --quiet --detach "$commit" || {
+        echo "cockpit: commit $commit is not in $directory" >&2
+        return 1
+    }
     "agent_${launch_agent}_detached" "$clone" "$brief"
 }
 
@@ -2118,20 +2366,26 @@ review_session() { # dir number
     local directory=$1 number=$2 clone
     require_plain_directory "$directory"
     if [[ ! $number =~ ^[0-9]+$ ]]; then
-        show_failure "not a pull request number: $number"; return 1
+        show_failure "not a pull request number: $number"
+        return 1
     fi
     # Always a fresh clone: fetching needs the network and Theo's credentials, so git runs out here,
     # and out here it must never run in a clone a session could have written (.git/config). A
     # pull request reviewed before gets pr-<number>-<time>; K deletes the old ones.
     local name="pr-$number" top repository
-    top=$(git -C "$directory" rev-parse --show-toplevel 2>/dev/null) || { show_failure "not a repository: $directory"; return 1; }
+    top=$(git -C "$directory" rev-parse --show-toplevel 2>/dev/null) || {
+        show_failure "not a repository: $directory"
+        return 1
+    }
     repository=$(clone_repository "$top")
     if [[ -e $CLONES_DIR/$repository/$name ]]; then name="pr-$number-$(date +%Y%m%d-%H%M%S)"; fi
     if ! clone=$(clone_for "$directory" "$name" 2>&1); then
-        show_failure "could not clone $directory: $clone"; return 1
+        show_failure "could not clone $directory: $clone"
+        return 1
     fi
     if ! git -C "$clone" fetch --quiet origin "pull/$number/head" 2>/dev/null || ! git -C "$clone" switch --quiet --detach FETCH_HEAD; then
-        show_failure "could not fetch pull request #$number from $(git -C "$clone" remote get-url origin)"; return 1
+        show_failure "could not fetch pull request #$number from $(git -C "$clone" remote get-url origin)"
+        return 1
     fi
     local prompt="Review pull request #$number of this repository (its head is checked out here): read the diff against its base branch, run the relevant tests, and report problems by severity with file and line. Do not push, and do not comment on GitHub."
     new_session_with_prompt "$clone" "$prompt"
@@ -2150,14 +2404,22 @@ clones_popup() {
 clone_leftovers() { # clone
     local report name clone
     if IFS=$'\t' read -r name clone < <(reviewed_clone_of "$1"); then
-        report=$(reviewed_clone_report "$1" "$(live_checkout_of "$name")") || { echo "unreadable"; return; }
+        report=$(reviewed_clone_report "$1" "$(live_checkout_of "$name")") || {
+            echo "unreadable"
+            return
+        }
     else
         report=$(cd "$1" && GREYWALL_NO_PROMPT=1 "$GREYWALL" --auto-profile --profile claude -- sh -c \
-            'git status --porcelain 2>/dev/null | head -1; echo "-- commits"; git log --branches --not --remotes --oneline 2>/dev/null | head -1' 2>/dev/null) \
-            || { echo "unreadable"; return; }
+            'git status --porcelain 2>/dev/null | head -1; echo "-- commits"; git log --branches --not --remotes --oneline 2>/dev/null | head -1' 2>/dev/null) ||
+            {
+                echo "unreadable"
+                return
+            }
     fi
-    if [[ ${report%%-- commits*} == *[![:space:]]* ]]; then echo "changes"
-    elif [[ ${report#*-- commits} == *[![:space:]]* ]]; then echo "commits"
+    if [[ ${report%%-- commits*} == *[![:space:]]* ]]; then
+        echo "changes"
+    elif [[ ${report#*-- commits} == *[![:space:]]* ]]; then
+        echo "commits"
     fi
 }
 
@@ -2197,35 +2459,44 @@ clones_review() { # [sweep]
         clone=${clone%/}
         [[ -d $clone/.git && ! -L $clone ]] || continue
         line="  $(basename "$(dirname "$clone")")/$(basename "$clone")"
-        if grep -qxF -- "$clone" <<< "$in_use"; then
+        if grep -qxF -- "$clone" <<<"$in_use"; then
             echo "$line: kept, a session runs in it"
             continue
         fi
-        if grep -qxF -- "$clone" <<< "$asleep_in_use"; then
+        if grep -qxF -- "$clone" <<<"$asleep_in_use"; then
             echo "$line: kept, a session sleeps in it"
             continue
         fi
         leftovers=$(clone_leftovers "$clone")
         case $leftovers in
-            changes) echo "$line: kept, uncommitted changes" ;;
-            commits) echo "$line: kept, commits not on its remote" ;;
-            unreadable) echo "$line: kept, could not be checked" ;;
-            *) echo "$line: can go"; removable+=("$clone") ;;
+        changes) echo "$line: kept, uncommitted changes" ;;
+        commits) echo "$line: kept, commits not on its remote" ;;
+        unreadable) echo "$line: kept, could not be checked" ;;
+        *)
+            echo "$line: can go"
+            removable+=("$clone")
+            ;;
         esac
     done
     echo
-    if (( ${#removable[@]} == 0 )); then
+    if ((${#removable[@]} == 0)); then
         [[ -n $sweep ]] || read -r -p "Nothing to delete. Enter closes. " _
         return 0
     fi
     if [[ -z $sweep ]]; then
         read -r -p "Delete the ${#removable[@]} clone(s) that can go? [y/N] " answer || answer=""
-        [[ $answer == y || $answer == Y ]] || { echo "Nothing deleted."; return 0; }
+        [[ $answer == y || $answer == Y ]] || {
+            echo "Nothing deleted."
+            return 0
+        }
     fi
     for clone in "${removable[@]}"; do
         # Only a folder two levels under the clones folder, reached without a symlink.
         real=$(realpath -e "$clone" 2>/dev/null) || continue
-        [[ $real == "$clones_root"/*/* && $real != "$clones_root"/*/*/* && ! -L $clone ]] || { echo "  refused: $clone"; continue; }
+        [[ $real == "$clones_root"/*/* && $real != "$clones_root"/*/*/* && ! -L $clone ]] || {
+            echo "  refused: $clone"
+            continue
+        }
         rm -rf -- "$real" && echo "  deleted $(basename "$(dirname "$real")")/$(basename "$real")"
         rmdir -- "$(dirname "$real")" 2>/dev/null || true
     done
@@ -2245,7 +2516,7 @@ prs_window() {
         return
     fi
     directory=$(session_field "$(cat "$CURRENT" 2>/dev/null || true)" cwd)
-    origin=$( [[ -n $directory ]] && git "${SAFE_GIT_CONFIG[@]}" -C "$directory" remote get-url origin 2>/dev/null || true)
+    origin=$([[ -n $directory ]] && git "${SAFE_GIT_CONFIG[@]}" -C "$directory" remote get-url origin 2>/dev/null || true)
     if [[ $origin =~ github\.com[:/]([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)$ ]]; then
         repository=${BASH_REMATCH[1]%.git}
         hyprctl eval "OPEN_IN_SCRATCHPAD(\"prs\", \"https://github.com/$repository/pulls\")" >/dev/null
@@ -2272,7 +2543,10 @@ approval_pane() { # id | close [id]
         place_approval
         return 0
     fi
-    [[ $1 =~ ^[0-9a-f]{12}$ ]] || { echo "cockpit: not a run request id: $1" >&2; return 1; }
+    [[ $1 =~ ^[0-9a-f]{12}$ ]] || {
+        echo "cockpit: not a run request id: $1" >&2
+        return 1
+    }
     # The session the daemon's copy of the request names (ask-to-run sets it from inside the
     # sandbox): it only decides under which session the pane shows; the command and its project
     # show in the pane.
@@ -2282,7 +2556,7 @@ approval_pane() { # id | close [id]
     # (and a window started meanwhile at the viewer's height plus this pane's showed taller).
     is_session_id "$session" || session=""
     forget_approval "$1"
-    printf '%s %s\n' "$1" "$session" >> "$APPROVAL_STATE"
+    printf '%s %s\n' "$1" "$session" >>"$APPROVAL_STATE"
     place_approval focus
 }
 
@@ -2290,7 +2564,7 @@ forget_approval() { # id
     [[ -f $APPROVAL_STATE ]] || return 0
     local others
     others=$(grep -v "^$1 " "$APPROVAL_STATE" || true)
-    if [[ -n $others ]]; then printf '%s\n' "$others" > "$APPROVAL_STATE"; else rm -f "$APPROVAL_STATE"; fi
+    if [[ -n $others ]]; then printf '%s\n' "$others" >"$APPROVAL_STATE"; else rm -f "$APPROVAL_STATE"; fi
 }
 
 # The approval to show under session <id>: the latest it asked that still runs (or one that names
@@ -2301,7 +2575,7 @@ approval_for() { # id
     while read -r run session; do
         tmux has-session -t "=claude-run-$run" 2>/dev/null || continue
         if [[ -z $session || $session == "$1" ]]; then found=$run; fi
-    done < "$APPROVAL_STATE"
+    done <"$APPROVAL_STATE"
     [[ -n $found ]] && echo "$found"
     return 0
 }
@@ -2388,17 +2662,20 @@ reviewed_clone_of() { # dir
     for name in "${REVIEWED_REPOSITORIES[@]}"; do
         work=$(work_clone_of "$name")
         case "$1/" in
-            "$work"/*)
-                inside_another_checkout "$1" "$work" && return 1
-                printf '%s\t%s\n' "$name" "$work"; return 0 ;;
-            "$CLONES_DIR/$name"/*/*)
-                inside=${1#"$CLONES_DIR/$name"/}
-                clone_name=${inside%%/*}
-                [[ $clone_name =~ ^[A-Za-z0-9._-]+$ && $clone_name != . && $clone_name != .. &&
-                   -d $CLONES_DIR/$name/$clone_name && ! -L $CLONES_DIR/$name/$clone_name ]] || return 1
-                inside_another_checkout "$1" "$CLONES_DIR/$name/$clone_name" && return 1
-                printf '%s\t%s\n' "$name" "$CLONES_DIR/$name/$clone_name"
-                return 0 ;;
+        "$work"/*)
+            inside_another_checkout "$1" "$work" && return 1
+            printf '%s\t%s\n' "$name" "$work"
+            return 0
+            ;;
+        "$CLONES_DIR/$name"/*/*)
+            inside=${1#"$CLONES_DIR/$name"/}
+            clone_name=${inside%%/*}
+            [[ $clone_name =~ ^[A-Za-z0-9._-]+$ && $clone_name != . && $clone_name != .. &&
+                -d $CLONES_DIR/$name/$clone_name && ! -L $CLONES_DIR/$name/$clone_name ]] || return 1
+            inside_another_checkout "$1" "$CLONES_DIR/$name/$clone_name" && return 1
+            printf '%s\t%s\n' "$name" "$CLONES_DIR/$name/$clone_name"
+            return 0
+            ;;
         esac
     done
     return 1
@@ -2420,13 +2697,16 @@ inside_another_checkout() { # dir clone-root
 # (same change, git am's new hash), then apply shows them and asks.
 apply_run() { # clone
     local name clone live
-    IFS=$'\t' read -r name clone < <(reviewed_clone_of "$1") || { echo "Refused: $1 is not a reviewed clone." >&2; return 1; }
+    IFS=$'\t' read -r name clone < <(reviewed_clone_of "$1") || {
+        echo "Refused: $1 is not a reviewed clone." >&2
+        return 1
+    }
     live=$(live_checkout_of "$name")
     echo "Exporting the commits $live lacks, inside greywall …"
     # shellcheck disable=SC2016
     if ! (cd "$clone" && GREYWALL_NO_PROMPT=1 "$GREYWALL" --auto-profile --profile claude --allow-read-path "$live" -- sh -c \
-            'git fetch -q "$1" main:refs/remotes/origin/main && rm -f .outgoing/*.patch && git format-patch -q --ignore-if-in-upstream -o .outgoing refs/remotes/origin/main' \
-            sh "$live"); then
+        'git fetch -q "$1" main:refs/remotes/origin/main && rm -f .outgoing/*.patch && git format-patch -q --ignore-if-in-upstream -o .outgoing refs/remotes/origin/main' \
+        sh "$live"); then
         echo "The export failed (above): nothing applied."
         read -r -p "Enter closes. " _ || true
         return 1
@@ -2444,8 +2724,8 @@ apply_run() { # clone
 }
 
 SAFE_GIT_CONFIG=(-c core.hooksPath=/dev/null -c core.sshCommand=ssh -c core.fsmonitor=false -c core.askPass=
-                 -c core.gitProxy= -c core.pager=cat -c diff.external= -c credential.helper= -c protocol.ext.allow=never
-                 -c protocol.file.allow=never -c remote.origin.receivepack=git-receive-pack)
+    -c core.gitProxy= -c core.pager=cat -c diff.external= -c credential.helper= -c protocol.ext.allow=never
+    -c protocol.file.allow=never -c remote.origin.receivepack=git-receive-pack)
 
 push_run() { # dir
     local branch url answer
@@ -2472,7 +2752,11 @@ push_run() { # dir
     # The commits it sends, when the branch already tracks one (a new branch has no upstream yet).
     git "${SAFE_GIT_CONFIG[@]}" --no-pager log --oneline "@{upstream}..HEAD" 2>/dev/null | head -20 | sed 's/^/  /' || true
     read -r -p "Push? [y/N] " answer || answer=""
-    [[ $answer == y || $answer == Y ]] || { echo "Not pushed."; sleep 1; return 0; }
+    [[ $answer == y || $answer == Y ]] || {
+        echo "Not pushed."
+        sleep 1
+        return 0
+    }
     if git "${SAFE_GIT_CONFIG[@]}" push --set-upstream origin "refs/heads/$branch:refs/heads/$branch"; then
         log_event INFO sessions "pushed $branch of $(basename "$1")"
         audit_event push push.done ok "directory=$1" "branch=$branch" "url=$url"
@@ -2518,12 +2802,12 @@ close_shipped_todos() { # live commit-before-the-apply
     while IFS= read -r trailer; do
         [[ -z $trailer ]] && continue
         if [[ ! $trailer =~ ^[0-9a-f]{8}$ ]]; then
-            echo "Ignored the trailer \"Todo: $(cat -v <<< "$trailer")\": not an item id (8 hex characters)." >&2
+            echo "Ignored the trailer \"Todo: $(cat -v <<<"$trailer")\": not an item id (8 hex characters)." >&2
             continue
         fi
         if ! (
             flock -x 9 || exit 1
-            jq -nc --arg id "$trailer" --arg folder "$1" '{action: "done", id: $id, started_in: $folder}' >> "$queue"
+            jq -nc --arg id "$trailer" --arg folder "$1" '{action: "done", id: $id, started_in: $folder}' >>"$queue"
         ) 9>"$queue.lock"; then
             echo "Could not mark todo $trailer done: cockpit-todo done $trailer" >&2
             continue
@@ -2558,7 +2842,7 @@ resume_hyprland_autoreload() { # commit-before-the-apply
 
 apply_reviewed() { # [clone]
     local name clone live outgoing copies patch subjects answer count before
-    local installed=true
+    local is_installed=true
     if ! IFS=$'\t' read -r name clone < <(reviewed_clone_of "${1:-$DOTFILES_WORK}"); then
         echo "Refused: ${1:-} is not a reviewed clone (~/IdeaProjects/<repository> or $CLONES_DIR/<repository>/<name>, for ${REVIEWED_REPOSITORIES[*]})." >&2
         return 1
@@ -2585,7 +2869,7 @@ apply_reviewed() { # [clone]
         cp --no-dereference -- "$patch" "$copies/"
     done < <(find "$outgoing" -maxdepth 1 -type f -name '*.patch' -print0 | sort -z)
     count=$(find "$copies" -type f | wc -l)
-    if (( count == 0 )); then
+    if ((count == 0)); then
         echo "Nothing to apply: $outgoing is empty."
         return 0
     fi
@@ -2605,7 +2889,9 @@ apply_reviewed() { # [clone]
     fi
     subjects=$(grep -h '^Subject: ' "$copies"/*.patch | sed 's/^Subject: //' | cat -v)
     echo "$count commit(s) for $live, the running copy of $name the host runs:"
-    sed 's/^/  /' <<< "$subjects"
+    # Indent every subject line, not just the first line of the string.
+    # shellcheck disable=SC2001
+    sed 's/^/  /' <<<"$subjects"
     echo
     git -C "$live" apply --stat "$copies"/*.patch
     if ! patches_apply_in_order "$live" "$copies"; then
@@ -2617,7 +2903,7 @@ apply_reviewed() { # [clone]
     # Control characters shown, never interpreted: the patches are text a sandbox wrote. less reads
     # a file, not a pipe: q before the end would kill cat, and pipefail the whole command (exit 141).
     # PAGER is cat in the approval window (ask-to-run), which shows the patches as plain output.
-    cat -v "$copies"/*.patch > "$copies/review.txt"
+    cat -v "$copies"/*.patch >"$copies/review.txt"
     if [[ -t 1 ]]; then ${PAGER:-less} "$copies/review.txt"; else cat "$copies/review.txt"; fi
     read -r -p "Apply these $count commit(s) to $live? [y/N] " answer || answer=""
     if [[ $answer != y && $answer != Y ]]; then
@@ -2648,11 +2934,11 @@ apply_reviewed() { # [clone]
     audit_event apply dotfiles.applied ok "repository=$name" "patches=$count" "head=$(git -C "$live" rev-parse HEAD 2>/dev/null)" "subjects=${subjects//$'\n'/ | }"
     close_shipped_todos "$live" "$before"
     if [[ $name == dotfiles ]]; then
-        after_dotfiles_apply "$before" || installed=false
+        after_dotfiles_apply "$before" || is_installed=false
     else
-        after_reviewed_apply "$live" "$before" || installed=false
+        after_reviewed_apply "$live" "$before" || is_installed=false
     fi
-    $installed
+    $is_installed
 }
 
 # The dotfiles' command links share ~/.local/bin with agent-cockpit's, file by file (--no-folding).
@@ -2710,7 +2996,7 @@ build_dotfiles_apps() {
 show_usage() {
     ensure_manager
     tmux respawn-pane -k -t "$(viewer_pane)" cockpit-sidebar usage
-    : > "$CURRENT"
+    : >"$CURRENT"
     label_panes usage
 }
 
@@ -2719,7 +3005,7 @@ clear_exited_viewer() { # session-id
     [[ $(cat "$CURRENT" 2>/dev/null) == "$1" ]] || return 0
     local sidebar viewer approval approval_run sidebar_dead
     read_manager_panes
-    : > "$CURRENT"
+    : >"$CURRENT"
     [[ -n $viewer ]] || return 0
     local commands=(respawn-pane -k -t "$viewer" cockpit idle)
     if [[ -n $approval ]]; then
@@ -2780,15 +3066,17 @@ if [[ ${1:-} == --agent ]]; then
     shift 2
 else
     case ${1:-attach} in
-        new|parallel|background|review|terminal)
-            launch_agent=$(launch_setting_value default-agent) || exit 1
-            validate_launch_setting default-agent "$launch_agent" || exit 2
-            ;;
+    new | parallel | background | review | terminal)
+        launch_agent=$(launch_setting_value default-agent) || exit 1
+        validate_launch_setting default-agent "$launch_agent" || exit 2
+        ;;
     esac
 fi
 
 log_command=${1:-attach}
 log_failure_level=ERROR
+# Referenced inside the EXIT trap's delayed arithmetic expression.
+# shellcheck disable=SC2034
 log_started=$(date +%s%N)
 log_arguments="${*:2}"
 if [[ $log_command == say ]]; then
@@ -2796,11 +3084,11 @@ if [[ $log_command == say ]]; then
 elif [[ $log_command == new ]]; then
     # claude's own arguments after the directory may be a prompt: count them, do not copy them.
     log_arguments="${2:-}"
-    if (( $# > 2 )); then log_arguments+=" (+$(( $# - 2 )) claude arguments)"; fi
+    if (($# > 2)); then log_arguments+=" (+$(($# - 2)) claude arguments)"; fi
 elif [[ $log_command == parallel ]]; then
     # The Todo panel's N passes the item as the first prompt: its length, not its text.
     log_arguments="${2:-} ${3:-}"
-    if (( $# > 3 )); then log_arguments+=" (prompt of ${#4} characters)"; fi
+    if (($# > 3)); then log_arguments+=" (prompt of ${#4} characters)"; fi
 elif [[ $log_command == team-spawn ]]; then
     # The token and the brief stay out of the log (the audit has the role and the folder).
     log_arguments="${3:-} ${4:-} ${5:-} (brief of ${#6} characters)"
@@ -2808,6 +3096,8 @@ fi
 [[ $launch_agent == claude ]] || log_arguments+=" (agent $launch_agent)"
 if [[ $log_command == label-state || $log_command == focus-viewer ]]; then
     # Called on every view change: only their failures are worth a line (40% of the log were these).
+    # The trap assigns log_status before reading it, at shell exit.
+    # shellcheck disable=SC2154
     trap 'log_status=$?; ((log_status)) && log_event ERROR manager "$log_command $log_arguments -> exit $log_status ($(( ($(date +%s%N) - log_started) / 1000000 )) ms)"' EXIT
 elif [[ $log_command != idle && $log_command != log && $log_command != logs ]]; then
     trap 'log_status=$?
@@ -2819,169 +3109,188 @@ if [[ -n ${COCKPIT_LOG_STDERR:-} ]]; then
 fi
 
 case ${1:-attach} in
-    opencode-models)
-        require_plain_directory "${2:?usage: cockpit opencode-models <dir>}"
-        cd -- "$2"
-        env -u CLAUDE_CODE_SESSION_ID -u COCKPIT_OPENCODE_MODEL \
-            timeout 20 "$OPENCODE_LAUNCHER" api --standalone get /api/model
-        ;;
-    attach)
-        ensure_manager
-        exec env -u TMUX tmux attach-session -t "=$MANAGER"
-        ;;
-    show) show_manager "${2:-}" ;;
-    view) view_session "${2:?usage: cockpit view <session-id>}" ;;
-    attend) attend_session "${2:?usage: cockpit attend <session-id>}" ;;
-    attention-answered) attention_answered "${2:?usage: cockpit attention-answered <run-id>}" ;;
-    open) view_session "${2:?usage: cockpit open <session-id>}" && focus_viewer ;;
-    new) shift; new_session "${1:?usage: cockpit new <dir> [claude args]}" "${@:2}" ;;
-    terminal)
-        if ! declare -F "agent_${launch_agent}_terminal" >/dev/null; then
-            echo "cockpit: $launch_agent does not support terminal attachment" >&2
+opencode-models)
+    require_plain_directory "${2:?usage: cockpit opencode-models <dir>}"
+    cd -- "$2"
+    env -u CLAUDE_CODE_SESSION_ID -u COCKPIT_OPENCODE_MODEL \
+        timeout 20 "$OPENCODE_LAUNCHER" api --standalone get /api/model
+    ;;
+attach)
+    ensure_manager
+    exec env -u TMUX tmux attach-session -t "=$MANAGER"
+    ;;
+show) show_manager "${2:-}" ;;
+view) view_session "${2:?usage: cockpit view <session-id>}" ;;
+attend) attend_session "${2:?usage: cockpit attend <session-id>}" ;;
+attention-answered) attention_answered "${2:?usage: cockpit attention-answered <run-id>}" ;;
+open) view_session "${2:?usage: cockpit open <session-id>}" && focus_viewer ;;
+new)
+    shift
+    new_session "${1:?usage: cockpit new <dir> [claude args]}" "${@:2}"
+    ;;
+terminal)
+    if ! declare -F "agent_${launch_agent}_terminal" >/dev/null; then
+        echo "cockpit: $launch_agent does not support terminal attachment" >&2
+        exit 1
+    fi
+    "agent_${launch_agent}_terminal" "${2:?usage: cockpit --agent opencode terminal <dir>}"
+    ;;
+resume) resume_session "${2:?usage: cockpit resume <dir> <session-id>}" "${3:?usage: cockpit resume <dir> <session-id>}" ;;
+exit)
+    [[ ${2:-} =~ ^[A-Za-z0-9_-]+$ ]] || {
+        echo "cockpit: invalid session id" >&2
+        exit 1
+    }
+    is_exiting_asleep=false
+    # A starting pane (claude-retry-*) has no session yet, so no subscription route to cancel.
+    if [[ $2 != claude-retry-* ]]; then
+        "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "$2" || exit
+    fi
+    # A live pane first: a note can outlive its process by the length of the sleep's exit.
+    if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2" && ! agent_opencode_is_session_id "$2"; then
+        is_exiting_asleep=true
+    fi
+    # Explicit ending revokes handoff even if process shutdown subsequently fails.
+    if is_asleep "$2"; then forget_sleep_note "$2"; fi
+    # A later resume (H) must not get the messages that waited for a wake.
+    rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$2"
+    mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >>"$ENDED_SESSIONS"
+    if [[ $is_exiting_asleep == true ]]; then
+        log_event INFO sleep "$2 ended while asleep"
+    else
+        exit_session "$2"
+        clear_exited_viewer "$2"
+    fi
+    ;;
+sleep) sleep_session "${2:?usage: cockpit sleep <session-id>}" ;;
+wake) wake_session "${2:?usage: cockpit wake <session-id>}" ;;
+wake-remote) restore_remote_control "${2:?usage: cockpit wake-remote <session-id> <woke-at>}" "${3:?usage: cockpit wake-remote <session-id> <woke-at>}" ;;
+restore)
+    shift
+    restore_sessions "$@"
+    ;;
+restart-all)
+    shift
+    restart_sessions "$@"
+    ;;
+background) background_session "${2:?usage: cockpit background <dir> <prompt>}" "${3:?usage: cockpit background <dir> <prompt>}" ;;
+loading-screen) show_loading ;;
+restarting-screen) restarting_screen "${2:?usage: cockpit restarting-screen <session-id>}" ;;
+restart) restart_session "${2:?usage: cockpit restart <session-id> [effort] [detached]}" "${3:-}" "${4:-}" ;;
+billing)
+    # The session restarts on the same conversation, billed the other way.
+    [[ ${3:-} == credits || ${3:-} == subscription ]] || {
+        echo "usage: cockpit billing <session-id> credits|subscription" >&2
+        exit 2
+    }
+    restart_session "${2:?usage: cockpit billing <session-id> credits|subscription}" "" "" "$3"
+    ;;
+idle) idle ;;
+usage) show_usage ;;
+compact) compact_session "${2:?usage: cockpit compact <session-id>}" ;;
+variants) open_variants "${2:?usage: cockpit variants <session-id>}" ;;
+approval-pane) approval_pane "${2:?usage: cockpit approval-pane <id> | close [id]}" "${3:-}" ;;
+say) say_to_session "${2:?usage: cockpit say <session-id> <message>}" "${3:?usage: cockpit say <session-id> <message>}" ;;
+logs) show_logs "${2:-80}" ;;
+log) log_event "${3:?usage: cockpit log <component> <INFO|WARN|ERROR> <message>}" "${2:?}" "${4:?}" ;;
+digest) show_digest ;;
+prs) prs_window ;;
+git) git_popup "${2:?usage: cockpit git <dir>}" ;;
+push) push_popup "${2:?usage: cockpit push <dir>}" ;;
+queue-prompt-ask) queue_prompt_ask "${2:-}" ;;
+push-run) push_run "${2:?usage: cockpit push-run <dir>}" ;;
+apply | apply-dotfiles)
+    (($# <= 2)) || {
+        echo "usage: cockpit apply [clone]" >&2
+        exit 2
+    }
+    apply_reviewed "${2:-}"
+    ;;
+apply-run) apply_run "${2:?usage: cockpit apply-run <reviewed clone>}" ;;
+subscription-sweep)
+    folder="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/subscriptions"
+    mkdir -p "$folder"
+    exec 9>"$folder/sweep.lock"
+    if flock -n 9; then "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" sweep; fi
+    ;;
+subscription-route) subscription_route "${2:?usage: cockpit subscription-route <origin> <generation>}" "${3:?}" ;;
+chief-start) chief_start_session "${2:?usage: cockpit chief-start <reserved-session-id> <dedicated-directory>}" "${3:?}" ;;
+team-spawn) team_spawn_session "${2:?usage: cockpit team-spawn <token> <role> <dir> <commit|-> <brief>}" "${3:?}" "${4:?}" "${5:?}" "${6:-}" ;;
+parallel) parallel_session "${2:?usage: cockpit parallel <dir> <branch> [prompt]}" "${3:?usage: cockpit parallel <dir> <branch> [prompt]}" "${4:-}" ;;
+review) review_session "${2:?usage: cockpit review <dir> <pr-number>}" "${3:?usage: cockpit review <dir> <pr-number>}" ;;
+clones) clones_popup ;;
+clones-review) clones_review ;;
+clones-sweep) clones_review sweep ;;
+label-state) label_state "${2:?usage: cockpit label-state <state> [session-id]}" "${3:-}" ;;
+prepare) ensure_manager ;;
+reload)
+    # The editor owns a shared lock until its text reaches todo.json, not just until it closes.
+    exec {todo_editor_lock}>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-todo-editor.lock"
+    flock "$todo_editor_lock"
+    ensure_manager
+    tmux respawn-pane -k -t "$(sidebar_pane)" cockpit-sidebar
+    exec {todo_editor_lock}>&-
+    restart_stale_osd
+    restart_stale_remote
+    "$BAR_VISIBILITY" sync
+    ;;
+restart-osd-when-idle) restart_osd_when_idle ;;
+focus-viewer) focus_viewer ;;
+layout) ensure_manager && apply_layout ;;
+design-review)
+    if (($# < 2)) || [[ $2 != start && $2 != stop ]] || (($# != 2 && $# != 3 && $# != 5)) ||
+        { (($# >= 3)) && [[ ! $3 =~ ^[a-zA-Z0-9_-]+$ ]]; } ||
+        { (($# == 5)) && [[ $2 != start || $4 != --figcraft-window || ! $5 =~ ^0x[0-9a-fA-F]+$ ]]; }; then
+        echo "usage: cockpit design-review start|stop [session-id] [--figcraft-window <address> (start only)]" >&2
+        exit 2
+    fi
+    id=${3:-}
+    if [[ $2 == stop ]]; then
+        if [[ -n $id ]]; then
+            hyprctl eval "require(\"figcraft-review\").stop(\"$id\")"
+        else
+            hyprctl eval 'require("figcraft-review").stop()'
+        fi
+    else
+        [[ -n $id ]] || id=$(cat "$CURRENT" 2>/dev/null || true)
+        if [[ ! $id =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo 'cockpit: select a conversation or pass its session ID' >&2
             exit 1
         fi
-        "agent_${launch_agent}_terminal" "${2:?usage: cockpit --agent opencode terminal <dir>}"
-        ;;
-    resume) resume_session "${2:?usage: cockpit resume <dir> <session-id>}" "${3:?usage: cockpit resume <dir> <session-id>}" ;;
-    exit)
-        [[ ${2:-} =~ ^[A-Za-z0-9_-]+$ ]] || { echo "cockpit: invalid session id" >&2; exit 1; }
-        is_exiting_asleep=false
-        # A starting pane (claude-retry-*) has no session yet, so no subscription route to cancel.
-        if [[ $2 != claude-retry-* ]]; then
-            "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" cancel-session "$2" || exit
+        pane=$(jq -er --arg id "$id" 'first(.sessions[] | select(.session == $id)) | .tmux_pane' "$SNAPSHOT")
+        if [[ ! $pane =~ ^%[0-9]+$ ]]; then
+            echo 'cockpit: conversation has no valid tmux pane' >&2
+            exit 1
         fi
-        # A live pane first: a note can outlive its process by the length of the sleep's exit.
-        if [[ -z $(session_field "${2:?usage: cockpit exit <session-id>}" tmux_pane) ]] && is_asleep "$2" && ! agent_opencode_is_session_id "$2"; then
-            is_exiting_asleep=true
+        read -r target dead server < <(tmux display-message -p -t "$pane" '#{session_name} #{pane_dead} #{pid}')
+        if [[ ! $target =~ ^claude-retry-[a-zA-Z0-9_-]+$ || $dead != 0 || ! $server =~ ^[0-9]+$ ]]; then
+            echo 'cockpit: conversation is not a live agent session' >&2
+            exit 1
         fi
-        # Explicit ending revokes handoff even if process shutdown subsequently fails.
-        if is_asleep "$2"; then forget_sleep_note "$2"; fi
-        # A later resume (H) must not get the messages that waited for a wake.
-        rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/cockpit/prompt-queue/$2"
-        mkdir -p "$(dirname "$ENDED_SESSIONS")" && printf '%s\n' "$2" >> "$ENDED_SESSIONS"
-        if [[ $is_exiting_asleep == true ]]; then
-            log_event INFO sleep "$2 ended while asleep"
+        if ! timeout --signal=KILL 2s osd owns-pane "$id" "$pane" "$server"; then
+            echo 'cockpit: conversation ownership could not be verified; refusing a stale or reused tmux pane' >&2
+            exit 1
+        fi
+        if (($# == 5)); then
+            hyprctl eval "require(\"figcraft-review\").start(\"$id\",\"$target\",\"$5\")"
         else
-            exit_session "$2"
-            clear_exited_viewer "$2"
+            hyprctl eval "require(\"figcraft-review\").start(\"$id\",\"$target\")"
         fi
-        ;;
-    sleep) sleep_session "${2:?usage: cockpit sleep <session-id>}" ;;
-    wake) wake_session "${2:?usage: cockpit wake <session-id>}" ;;
-    wake-remote) restore_remote_control "${2:?usage: cockpit wake-remote <session-id> <woke-at>}" "${3:?usage: cockpit wake-remote <session-id> <woke-at>}" ;;
-    restore) shift; restore_sessions "$@" ;;
-    restart-all) shift; restart_sessions "$@" ;;
-    background) background_session "${2:?usage: cockpit background <dir> <prompt>}" "${3:?usage: cockpit background <dir> <prompt>}" ;;
-    loading-screen) show_loading ;;
-    restarting-screen) restarting_screen "${2:?usage: cockpit restarting-screen <session-id>}" ;;
-    restart) restart_session "${2:?usage: cockpit restart <session-id> [effort] [detached]}" "${3:-}" "${4:-}" ;;
-    billing)
-        # The session restarts on the same conversation, billed the other way.
-        [[ ${3:-} == credits || ${3:-} == subscription ]] || { echo "usage: cockpit billing <session-id> credits|subscription" >&2; exit 2; }
-        restart_session "${2:?usage: cockpit billing <session-id> credits|subscription}" "" "" "$3"
-        ;;
-    idle) idle ;;
-    usage) show_usage ;;
-    compact) compact_session "${2:?usage: cockpit compact <session-id>}" ;;
-    variants) open_variants "${2:?usage: cockpit variants <session-id>}" ;;
-    approval-pane) approval_pane "${2:?usage: cockpit approval-pane <id> | close [id]}" "${3:-}" ;;
-    say) say_to_session "${2:?usage: cockpit say <session-id> <message>}" "${3:?usage: cockpit say <session-id> <message>}" ;;
-    logs) show_logs "${2:-80}" ;;
-    log) log_event "${3:?usage: cockpit log <component> <INFO|WARN|ERROR> <message>}" "${2:?}" "${4:?}" ;;
-    digest) show_digest ;;
-    prs) prs_window ;;
-    git) git_popup "${2:?usage: cockpit git <dir>}" ;;
-    push) push_popup "${2:?usage: cockpit push <dir>}" ;;
-    queue-prompt-ask) queue_prompt_ask "${2:-}" ;;
-    push-run) push_run "${2:?usage: cockpit push-run <dir>}" ;;
-    apply|apply-dotfiles)
-        (( $# <= 2 )) || { echo "usage: cockpit apply [clone]" >&2; exit 2; }
-        apply_reviewed "${2:-}" ;;
-    apply-run) apply_run "${2:?usage: cockpit apply-run <reviewed clone>}" ;;
-    subscription-sweep)
-        folder="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/subscriptions"
-        mkdir -p "$folder"
-        exec 9>"$folder/sweep.lock"
-        if flock -n 9; then "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-subscription" sweep; fi
-        ;;
-    subscription-route) subscription_route "${2:?usage: cockpit subscription-route <origin> <generation>}" "${3:?}" ;;
-    chief-start) chief_start_session "${2:?usage: cockpit chief-start <reserved-session-id> <dedicated-directory>}" "${3:?}" ;;
-    team-spawn) team_spawn_session "${2:?usage: cockpit team-spawn <token> <role> <dir> <commit|-> <brief>}" "${3:?}" "${4:?}" "${5:?}" "${6:-}" ;;
-    parallel) parallel_session "${2:?usage: cockpit parallel <dir> <branch> [prompt]}" "${3:?usage: cockpit parallel <dir> <branch> [prompt]}" "${4:-}" ;;
-    review) review_session "${2:?usage: cockpit review <dir> <pr-number>}" "${3:?usage: cockpit review <dir> <pr-number>}" ;;
-    clones) clones_popup ;;
-    clones-review) clones_review ;;
-    clones-sweep) clones_review sweep ;;
-    label-state) label_state "${2:?usage: cockpit label-state <state> [session-id]}" "${3:-}" ;;
-    prepare) ensure_manager ;;
-    reload)
-        # The editor owns a shared lock until its text reaches todo.json, not just until it closes.
-        exec {todo_editor_lock}>"${XDG_RUNTIME_DIR:-/tmp}/cockpit-todo-editor.lock"
-        flock "$todo_editor_lock"
-        ensure_manager
-        tmux respawn-pane -k -t "$(sidebar_pane)" cockpit-sidebar
-        exec {todo_editor_lock}>&-
-        restart_stale_osd
-        restart_stale_remote
-        "$BAR_VISIBILITY" sync
-        ;;
-    restart-osd-when-idle) restart_osd_when_idle ;;
-    focus-viewer) focus_viewer ;;
-    layout) ensure_manager && apply_layout ;;
-    design-review)
-        if (( $# < 2 )) || [[ $2 != start && $2 != stop ]] || (( $# != 2 && $# != 3 && $# != 5 )) ||
-            { (( $# >= 3 )) && [[ ! $3 =~ ^[a-zA-Z0-9_-]+$ ]]; } ||
-            { (( $# == 5 )) && [[ $2 != start || $4 != --figcraft-window || ! $5 =~ ^0x[0-9a-fA-F]+$ ]]; }; then
-            echo "usage: cockpit design-review start|stop [session-id] [--figcraft-window <address> (start only)]" >&2
-            exit 2
-        fi
-        id=${3:-}
-        if [[ $2 == stop ]]; then
-            if [[ -n $id ]]; then
-                hyprctl eval "require(\"figcraft-review\").stop(\"$id\")"
-            else
-                hyprctl eval 'require("figcraft-review").stop()'
-            fi
-        else
-            [[ -n $id ]] || id=$(cat "$CURRENT" 2>/dev/null || true)
-            if [[ ! $id =~ ^[a-zA-Z0-9_-]+$ ]]; then
-                echo 'cockpit: select a conversation or pass its session ID' >&2
-                exit 1
-            fi
-            pane=$(jq -er --arg id "$id" 'first(.sessions[] | select(.session == $id)) | .tmux_pane' "$SNAPSHOT")
-            if [[ ! $pane =~ ^%[0-9]+$ ]]; then
-                echo 'cockpit: conversation has no valid tmux pane' >&2
-                exit 1
-            fi
-            read -r target dead server < <(tmux display-message -p -t "$pane" '#{session_name} #{pane_dead} #{pid}')
-            if [[ ! $target =~ ^claude-retry-[a-zA-Z0-9_-]+$ || $dead != 0 || ! $server =~ ^[0-9]+$ ]]; then
-                echo 'cockpit: conversation is not a live agent session' >&2
-                exit 1
-            fi
-            if ! timeout --signal=KILL 2s osd owns-pane "$id" "$pane" "$server"; then
-                echo 'cockpit: conversation ownership could not be verified; refusing a stale or reused tmux pane' >&2
-                exit 1
-            fi
-            if (( $# == 5 )); then
-                hyprctl eval "require(\"figcraft-review\").start(\"$id\",\"$target\",\"$5\")"
-            else
-                hyprctl eval "require(\"figcraft-review\").start(\"$id\",\"$target\")"
-            fi
-        fi
-        ;;
-    reset)
-        tmux kill-session -t "=$MANAGER" 2>/dev/null || true
-        osd-show sessions-clear
-        rm -f "$CURRENT" "$VIEWED_STARTS" "$HOME"/.cache/claude/statusline-*.json "$HOME"/.cache/claude/toast-*.id
-        ;;
-    doctor) doctor ;;
-    handoff) handoff "${2:-on}" ;;
-    away) away "${2:-}" ;;
-    setting) setting "${2:?usage: cockpit setting <name> [on|off]}" "${@:3}" ;;
-    remote) toggle_remote "${2:?usage: cockpit remote <session-id>}" ;;
-    sweep) sweep_caches ;;
-    *)
-        echo "usage: cockpit [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|restart-all [<id>...]|billing <id> credits|subscription|handoff [on|off]|away on|off|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
-        exit 2
-        ;;
+    fi
+    ;;
+reset)
+    tmux kill-session -t "=$MANAGER" 2>/dev/null || true
+    osd-show sessions-clear
+    rm -f "$CURRENT" "$VIEWED_STARTS" "$HOME"/.cache/claude/statusline-*.json "$HOME"/.cache/claude/toast-*.id
+    ;;
+doctor) doctor ;;
+handoff) handoff "${2:-on}" ;;
+away) away "${2:-}" ;;
+setting) setting "${2:?usage: cockpit setting <name> [on|off]}" "${@:3}" ;;
+remote) toggle_remote "${2:?usage: cockpit remote <session-id>}" ;;
+sweep) sweep_caches ;;
+*)
+    echo "usage: cockpit [attach|show [id]|view <id>|open <id>|new <dir>|resume <dir> <id>|exit <id>|restart <id>|restart-all [<id>...]|billing <id> credits|subscription|handoff [on|off]|away on|off|setting <name> [on|off]|remote <id>|prepare|idle|reload|reset|doctor|sweep]" >&2
+    exit 2
+    ;;
 esac

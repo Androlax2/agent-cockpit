@@ -17,7 +17,7 @@
 - Designer and Developer start in the asker's folder; QA starts per handoff in a fresh copy at exactly the handed-off commit.
 - Spawn identity comes only from the launch's host process environment (`CLAUDE_SESSIONS_TEAM_SPAWN`, 32 lowercase hex), single use.
 - A previous QA session is unlinked and exited through `claude-sessions exit` when a newer handoff starts the next QA.
-- Briefs: 1–2000 characters, no control characters except newline, shown escaped; a brief is labelled "written by <asker role>, approved by Theo" in the new session's first message.
+- Briefs: 1–2000 characters, no control characters except newline, shown escaped; a brief is labelled `written by <asker role>, approved by Theo` in the new session's first message.
 - Team limits unchanged: one Designer, one Developer, one QA; a session belongs to one team.
 - Daemon never blocks on a start: session starts are spawned and not waited for.
 
@@ -34,12 +34,14 @@
 ### Task 1: Recruit requests in the protocol and the store
 
 **Files:**
+
 - Modify: `apps/cockpit/src/teams.rs` (types), `apps/cockpit/src/teams/store.rs` (schema v2, `recruit`, mapping hash)
 - Modify: `apps/desktop/src/teams.rs` (dispatch the new action), `apps/desktop/src/registry.rs` (`System::default_agent`), `apps/cockpit/src/bin/cockpit-team.rs` (action name)
 - Test (also): `apps/desktop/src/tests.rs` — `an_unreadable_default_agent_refuses_the_recruit_request` moves here from Task 4
 - Test: `apps/cockpit/tests/team_store.rs`, `apps/cockpit/tests/team_protocol.rs`
 
 **Interfaces:**
+
 - Produces:
   - `pub struct Recruit { pub role: Role, pub brief: String }` (serde `deny_unknown_fields`)
   - `pub struct Recruitment { pub submission_key: String, pub task: TaskKey, pub role: Role, pub recruits: Vec<Recruit>, pub reason: String }`
@@ -63,10 +65,12 @@
 ### Task 2: Approval writes spawns; spawns bind once and expire
 
 **Files:**
+
 - Modify: `apps/cockpit/src/teams/store.rs`
 - Test: `apps/cockpit/tests/team_store.rs`
 
 **Interfaces:**
+
 - Consumes: Task 1's proposal columns.
 - Produces:
   - table `spawns (token TEXT PRIMARY KEY, task_key TEXT NOT NULL, role TEXT NOT NULL, agent TEXT NOT NULL, directory TEXT NOT NULL, commit_id TEXT, brief TEXT NOT NULL, handoff_id TEXT, status TEXT NOT NULL, session_id TEXT, created_at INTEGER NOT NULL, started_at INTEGER)`; status ∈ `pending | started | bound | failed | cancelled`
@@ -94,10 +98,12 @@
 ### Task 3: A handoff starts a fresh QA
 
 **Files:**
+
 - Modify: `apps/cockpit/src/teams/store.rs` (`handoff`, `schedule_qa`), `apps/cockpit/src/teams.rs` (`qa_brief_text`)
 - Test: `apps/cockpit/tests/team_store.rs`
 
 **Interfaces:**
+
 - Consumes: Task 2 tables.
 - Produces:
   - `store::handoff` reply gains `"qa_spawned": bool`.
@@ -118,10 +124,12 @@
 ### Task 4: The daemon starts, binds and retires sessions
 
 **Files:**
+
 - Modify: `apps/desktop/src/registry.rs` (`System::start_detached`, `Entry::spawn_token`, `trusted_spawn_token`), `apps/desktop/src/teams.rs`
 - Test: `apps/desktop/src/tests.rs`
 
 **Interfaces:**
+
 - Consumes: Tasks 1–3 store functions.
 - Produces:
   - `System::start_detached(&mut self, command: &[&str]) -> bool` (spawn, never wait; default impl `false`; `Proc`-backed impl uses `Command::spawn` with stdio null)
@@ -142,10 +150,12 @@
 ### Task 5: `claude-sessions team-spawn`
 
 **Files:**
+
 - Modify: `config/bin/.local/bin/claude-sessions` (`team_spawn_session`, dispatcher), `config/bin/.local/bin/claude-sessions-agents/claude.sh` and `opencode.sh` (pass `CLAUDE_SESSIONS_TEAM_SPAWN` in background/detached launches)
 - Test: `apps/cockpit/tests/claude_sessions_script.rs`
 
 **Interfaces:**
+
 - Consumes: the argv Task 4 sends.
 - Produces: `claude-sessions [--agent A] team-spawn <token> <designer|developer|qa> <dir> <commit|-> <brief>`; exit 0 once launched; non-zero with a message on any invalid argument.
 
@@ -162,11 +172,13 @@
 ### Task 6: Agents ask, Theo sees it
 
 **Files:**
+
 - Modify: `apps/cockpit/src/bin/cockpit-team.rs` (help example for `recruit`), `apps/cockpit/src/teams/view.rs` (recruit proposals, spawns), `apps/cockpit/src/app.rs` (nothing new to press: `a`/`x` already act on proposals)
 - Modify: `config/claude/.claude/CLAUDE.md`, `config/opencode/.config/opencode/AGENTS.md` (when to ask), `README.md` (Linked sessions section)
 - Test: `apps/cockpit/tests/team_ui.rs`, `apps/cockpit/tests/team_client.rs`
 
 **Interfaces:**
+
 - Consumes: snapshot fields `recruits`, `spawn_agent`, `spawns` (Tasks 1–2).
 
 - [ ] **Step 1: Write the failing tests:**

@@ -2,13 +2,25 @@ mod common;
 use common::sandbox::*;
 use std::fs;
 
-fn invoke(choice: &str, arguments: &[&str], inside: &str, terminal: bool, attach_status: &str) -> (std::process::Output, Vec<String>) {
+fn invoke(
+    choice: &str,
+    arguments: &[&str],
+    inside: &str,
+    terminal: bool,
+    attach_status: &str,
+) -> (std::process::Output, Vec<String>) {
     let sandbox = Sandbox::new();
     let fzf = sandbox.home.join(".config/fzf");
     fs::create_dir_all(&fzf).unwrap();
     fs::write(fzf.join("tokyonight_night.sh"), "").unwrap();
-    sandbox.shim("cockpit", "if [[ $1 == attach ]]; then exit \"$ATTACH_STATUS\"; fi");
-    sandbox.shim("opencode", "echo \"terminal=$COCKPIT_TERMINAL\" >> \"$SHIM_LOG\"");
+    sandbox.shim(
+        "cockpit",
+        "if [[ $1 == attach ]]; then exit \"$ATTACH_STATUS\"; fi",
+    );
+    sandbox.shim(
+        "opencode",
+        "echo \"terminal=$COCKPIT_TERMINAL\" >> \"$SHIM_LOG\"",
+    );
     let script = r#"
         source "$FISH_CONFIG"
         set -gx PATH "$TEST_SHIMS" $PATH
@@ -21,14 +33,23 @@ fn invoke(choice: &str, arguments: &[&str], inside: &str, terminal: bool, attach
     let config = repo().join("config/fish/.config/fish/functions/opencode.fish");
     let mut command_arguments = vec!["--no-config", "-c", script, "--"];
     command_arguments.extend_from_slice(arguments);
-    let output = sandbox.run_with_input("fish", &command_arguments, &[
-        ("FISH_CONFIG", config.to_str().unwrap()),
-        ("TEST_SHIMS", sandbox.shims.to_str().unwrap()),
-        ("COCKPIT_INSIDE", inside),
-        ("TEST_TERMINAL", if terminal { "yes" } else { "no" }),
-        ("ATTACH_STATUS", attach_status),
-    ], choice);
-    let calls = fs::read_to_string(&sandbox.log).unwrap().lines().map(str::to_string).collect();
+    let output = sandbox.run_with_input(
+        "fish",
+        &command_arguments,
+        &[
+            ("FISH_CONFIG", config.to_str().unwrap()),
+            ("TEST_SHIMS", sandbox.shims.to_str().unwrap()),
+            ("COCKPIT_INSIDE", inside),
+            ("TEST_TERMINAL", if terminal { "yes" } else { "no" }),
+            ("ATTACH_STATUS", attach_status),
+        ],
+        choice,
+    );
+    let calls = fs::read_to_string(&sandbox.log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
     (output, calls)
 }
 
@@ -72,7 +93,12 @@ fn terminal_keys_keep_using_the_managed_terminal_launch() {
 #[test]
 fn arguments_and_managed_or_nonterminal_launches_bypass_the_menu() {
     for (arguments, inside, terminal, expected) in [
-        (vec!["--session", "ses_existing"], "", true, "opencode --session ses_existing"),
+        (
+            vec!["--session", "ses_existing"],
+            "",
+            true,
+            "opencode --session ses_existing",
+        ),
         (vec![], "1", true, "opencode "),
         (vec![], "", false, "opencode "),
     ] {

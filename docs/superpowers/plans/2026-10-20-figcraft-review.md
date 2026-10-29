@@ -31,10 +31,12 @@
 ### Task 1: Reversible host-window arrangement
 
 **Files:**
+
 - Create `config/hyprland/.config/hypr/figcraft-review.lua`.
 - Create `apps/cockpit/tests/figcraft_review_lua.rs`.
 
 **Interfaces:**
+
 - Produces a Lua module with `start()` and `stop()`; consumes `hl` window and workspace queries and dispatchers. Repeated start/stop calls are idempotent.
 - Select exactly one `claude-sessions` window and an `ai.storyteller.figcraft` window (focused first, otherwise uniquely present).
 - Entry comes from an explicitly approved host command, not the focused application's shortcut. Place the pair on workspace 6 on the cockpit's monitor, left/right 50:50, then focus the cockpit.
@@ -50,12 +52,14 @@
 ### Task 2: Agent-proposed review, without shortcuts
 
 **Files:**
+
 - Modify `config/bin/.local/bin/claude-sessions`.
 - Modify `config/claude/.claude/skills/figcraft-design/SKILL.md`.
 - Modify `README.md`.
 - Extend `apps/cockpit/tests/claude_sessions_script.rs` and add regression coverage for the skill's consent instructions using the existing skill-contract test patterns.
 
 **Interfaces:**
+
 - Consume `require("figcraft-review").start()`/`.stop()` from Task 1 through explicit host commands `claude-sessions design-review start` and `claude-sessions design-review stop`.
 - When asked to review/approve boards, compare alternatives or give visual feedback, the agent offers: conversation left, FigCraft right, without reopening the document. It waits for consent before ask-to-run, following the existing host-approval policy.
 - Do not offer merely on connection, on every board, or after a refusal in the same review. At the end, offer restoration; do not move windows without consent.

@@ -4,22 +4,26 @@
 
 self.addEventListener("push", (event) => {
   const notification = event.data ? event.data.json() : { title: "Agent Cockpit", body: "" };
-  event.waitUntil(self.registration.showNotification(notification.title, {
-    body: notification.body,
-    tag: notification.topic,
-    data: { session: notification.session || null },
-  }));
+  event.waitUntil(
+    self.registration.showNotification(notification.title, {
+      body: notification.body,
+      tag: notification.topic,
+      data: { session: notification.session || null },
+    }),
+  );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const session = event.notification.data && event.notification.data.session;
-  event.waitUntil((async () => {
-    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    if (windows.length > 0) {
-      windows[0].postMessage({ session });
-      return windows[0].focus();
-    }
-    return self.clients.openWindow(session ? `/#session=${session}` : "/");
-  })());
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      if (windows.length > 0) {
+        windows[0].postMessage({ session });
+        return windows[0].focus();
+      }
+      return self.clients.openWindow(session ? `/#session=${session}` : "/");
+    })(),
+  );
 });
