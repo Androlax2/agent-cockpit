@@ -656,7 +656,7 @@ pub fn request(
         && registry.teams.as_ref().expect("live_sessions opens the protected store").query_row(
             "SELECT EXISTS(SELECT 1 FROM chief_inbox WHERE recipient=?1 AND state='queued')
                 OR EXISTS(SELECT 1 FROM chief_session_starts WHERE worker=?1 AND worker_runtime=?2 AND state='requested')",
-            (&sender.session_id, &sender.runtime), |row| row.get::<_, bool>(0))?;
+            (&sender.session_id, &sender.runtime), |row| row.get::<_, bool>(0)).map_err(storage_error)?;
     let chief_live = if has_chief_delivery {
         crate::chief::workers_among(registry, live.clone(), now_ms(), false)?
     } else {

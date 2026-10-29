@@ -532,8 +532,13 @@ fn stale_link(sandbox: &Sandbox) -> std::path::PathBuf {
 fn a_team_request_sent_during_a_daemon_restart_reaches_the_restarted_daemon_once() {
     let sandbox = Sandbox::new();
     let answers = stale_link(&sandbox);
-    let child = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("context")
-        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let child = sandbox
+        .command(env!("CARGO_BIN_EXE_cockpit-team"), &[])
+        .arg("context")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     std::thread::sleep(Duration::from_millis(1200));
     let new = sandbox.root.join("new-daemon.sock");
     let listener = UnixListener::bind(&new).unwrap();
@@ -541,13 +546,21 @@ fn a_team_request_sent_during_a_daemon_restart_reaches_the_restarted_daemon_once
     let (mut stream, _) = listener.accept().unwrap();
     let mut request = String::new();
     stream.read_to_string(&mut request).unwrap();
-    stream.write_all(b"{\"request_id\":\"context\",\"result\":{\"Ok\":{\"task\":null}}}").unwrap();
+    stream
+        .write_all(b"{\"request_id\":\"context\",\"result\":{\"Ok\":{\"task\":null}}}")
+        .unwrap();
     drop(stream);
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(serde_json::from_str::<Value>(&request).unwrap()["action"], "context");
+    assert_eq!(
+        serde_json::from_str::<Value>(&request).unwrap()["action"],
+        "context"
+    );
     listener.set_nonblocking(true).unwrap();
-    assert!(listener.accept().is_err(), "the request was delivered more than once");
+    assert!(
+        listener.accept().is_err(),
+        "the request was delivered more than once"
+    );
 }
 
 #[test]
@@ -555,10 +568,22 @@ fn a_team_request_that_never_connects_says_nothing_was_sent() {
     let sandbox = Sandbox::new();
     stale_link(&sandbox);
     let started = std::time::Instant::now();
-    let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("context").output().unwrap();
+    let output = sandbox
+        .command(env!("CARGO_BIN_EXE_cockpit-team"), &[])
+        .arg("context")
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(started.elapsed() >= Duration::from_secs(15), "{:?}", started.elapsed());
-    assert!(stderr(&output).contains("nothing was sent: retry with the same submission key"), "{}", stderr(&output));
+    assert!(
+        started.elapsed() >= Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        stderr(&output).contains("nothing was sent: retry with the same submission key"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -566,8 +591,20 @@ fn a_session_without_a_team_link_is_told_at_once_to_restart() {
     let sandbox = Sandbox::new();
     sandbox.answers("teams");
     let started = std::time::Instant::now();
-    let output = sandbox.command(env!("CARGO_BIN_EXE_cockpit-team"), &[]).arg("context").output().unwrap();
+    let output = sandbox
+        .command(env!("CARGO_BIN_EXE_cockpit-team"), &[])
+        .arg("context")
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
-    assert!(stderr(&output).contains("restart this session"), "{}", stderr(&output));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        stderr(&output).contains("restart this session"),
+        "{}",
+        stderr(&output)
+    );
 }
