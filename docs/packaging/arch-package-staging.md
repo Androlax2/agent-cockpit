@@ -68,8 +68,17 @@ select the adjacent private sandbox launcher in that layout. The existing `COCKP
 and `COCKPIT_OPENCODE` overrides still win. Without package metadata, checkout mode retains
 the existing home launcher paths. Tests drive the actual manager's catalog and background
 commands from a copied runtime tree with spaces in its paths; provider launchers and tmux
-are isolated stand-ins. This does not prove Greywall startup, policy grants or provider
-registration: those separate launcher internals and host integrations remain unfinished.
+are isolated stand-ins.
+
+Sandbox launchers in that layout select the packaged Greywall component, build/clipboard
+helpers, team helper and routed Codex bridge. Native account collection retains existing
+home collector overrides (including broken links), falling back only when absent. Provider
+binaries remain user-owned at their existing paths. Billing/account validation, route
+arguments, resource guards and sandbox grant/denial construction are unchanged.
+
+These tests do not prove Greywall startup, mount permissions, policy migration or provider
+registration. Native sandbox verification, manager doctor/reload/health paths and reviewed
+host integrations remain gates; no launcher path selection grants permission to activate them.
 
 The policy preview tool supports strict JSON plus the existing learned profiles' leading
 `//` comment headers, which it preserves. Other JSONC syntax fails instead of being guessed

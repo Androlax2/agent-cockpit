@@ -4,6 +4,34 @@
 # and $own_folders: the denyRead entries of greywall.json that are its agent's own data.
 # shellcheck shell=sh
 
+launcher_root=$(dirname "$(readlink -f "$0")")/../../../../..
+launcher_commands="$HOME/.local/bin"
+greywall_binary="$HOME/.local/bin/greywall"
+clipboard_shim="$HOME/.local/share/agent-shims/bin/wl-paste"
+native_subscription_script="$HOME/.config/waybar/scripts/native-subscription.py"
+if [ -f "$launcher_root/release.json" ]; then
+    launcher_commands="$launcher_root/config/bin/.local/bin"
+    # The sourcing launchers consume this without exporting it to the agent.
+    # shellcheck disable=SC2034
+    greywall_binary="$launcher_root/components/greywall"
+    clipboard_shim="$launcher_root/config/bin/.local/share/agent-shims/bin/wl-paste"
+    native_subscription_script=$(
+        python3 - "$native_subscription_script" "$launcher_root/config/waybar/.config/waybar/scripts/native-subscription.py" <<'PY'
+import os
+import sys
+
+try:
+    os.lstat(sys.argv[1])
+except FileNotFoundError:
+    print(sys.argv[2])
+except OSError:
+    print(sys.argv[1])
+else:
+    print(sys.argv[1])
+PY
+    ) || exit 1
+fi
+
 # Greywall's drift prompt defaults to merging bundled grants into our reviewed profiles.
 export GREYWALL_NO_PROMPT=1
 
@@ -245,7 +273,7 @@ export CLAUDE_ANSWERS_KEY="$answers_key"
 greywall_options="$greywall_options --allow-read-path $answers_dir"
 # Linked sessions (cockpit-team): the daemon's host-only team socket, hard-linked into this
 # project's read-only answers folder. No new mount; a session sees no other project's link.
-if [ -x "$HOME/.local/bin/cockpit-team" ] && ! "$HOME/.local/bin/cockpit-team" prepare; then
+if [ -x "$launcher_commands/cockpit-team" ] && ! "$launcher_commands/cockpit-team" prepare; then
     echo "$agent launcher: linked-session messaging unavailable until the OSD daemon runs" >&2
 fi
 
@@ -297,11 +325,11 @@ fi
 shims_dir="$HOME/.cache/agent-shims/bin"
 mkdir -p "$shims_dir"
 staged_paste=$(mktemp "$shims_dir/wl-paste.XXXXXX") || exit 1
-cp "$HOME/.local/share/agent-shims/bin/wl-paste" "$staged_paste"
+cp "$clipboard_shim" "$staged_paste"
 install_staged "$staged_paste" "$shims_dir/wl-paste" 755
 # Only build tools run at the lowest priority; the agent itself keeps its normal one.
 build_runner_copy=$(mktemp "$shims_dir/agent-build.XXXXXX") || exit 1
-if ! cp "$HOME/.local/bin/agent-build" "$build_runner_copy" || ! chmod 755 "$build_runner_copy" ||
+if ! cp "$launcher_commands/agent-build" "$build_runner_copy" || ! chmod 755 "$build_runner_copy" ||
     ! mv "$build_runner_copy" "$shims_dir/agent-build"; then
     rm -f "$build_runner_copy"
     echo "$agent launcher: cannot install the build CPU guard, not starting." >&2
@@ -360,7 +388,7 @@ esac
 if [ -S "$docker_socket" ]; then
     export DOCKER_HOST="unix://$docker_socket"
     docker_build_copy=$(mktemp "$shims_dir/agent-docker-build.XXXXXX") || exit 1
-    if ! cp "$HOME/.local/bin/agent-docker-build" "$docker_build_copy" || ! chmod 755 "$docker_build_copy" ||
+    if ! cp "$launcher_commands/agent-docker-build" "$docker_build_copy" || ! chmod 755 "$docker_build_copy" ||
         ! mv "$docker_build_copy" "$shims_dir/agent-docker-build"; then
         rm -f "$docker_build_copy"
         echo "$agent launcher: cannot install the Docker build trust helper, not starting." >&2

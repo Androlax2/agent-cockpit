@@ -65,7 +65,7 @@ fi
 # $XDG_RUNTIME_DIR, which have none.
 # The inline script expands only inside the sandbox's child shell.
 # shellcheck disable=SC2086,SC2016
-exec "$HOME/.local/bin/greywall" $greywall_options -- \
+exec "$greywall_binary" $greywall_options -- \
     env XDG_STATE_HOME=/tmp/opencode-greywall-state COCKPIT_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}" \
     sh -c '
         request=$1
