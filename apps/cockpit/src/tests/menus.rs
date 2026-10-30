@@ -277,6 +277,31 @@ fn settings_show_the_saved_launch_preferences() {
 }
 
 #[test]
+fn the_model_catalog_fixture_works_with_its_declared_posix_shell() {
+    let fixture = Fixture::new();
+    model_catalog(&fixture, json!([{"id":"high"}]));
+    let script = fixture.path("bin/cockpit");
+    let checked = std::process::Command::new("shellcheck")
+        .args(["--shell=sh", "--severity=warning"])
+        .arg(&script)
+        .output()
+        .expect("ShellCheck must be installed for the fixture portability regression");
+    assert!(
+        checked.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let output = std::process::Command::new(script)
+        .arg("opencode-models")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let catalog: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(catalog["data"][0]["variants"], json!([{"id":"high"}]));
+}
+
+#[test]
 fn the_model_picker_loads_the_active_projects_catalog_and_saves_the_choice() {
     let fixture = Fixture::new();
     fixture.snapshot(json!([session(
