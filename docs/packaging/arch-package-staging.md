@@ -63,6 +63,14 @@ individual home override is absent. Existing files, broken links and inaccessibl
 keep priority; a partial user icon directory does not hide other packaged icons. Artifact
 production, installed launcher paths and source-free startup remain separate gates.
 
+Codex/OpenCode adapters recognize the staged `release.json` at their own runtime root and
+select the adjacent private sandbox launcher in that layout. The existing `COCKPIT_CODEX`
+and `COCKPIT_OPENCODE` overrides still win. Without package metadata, checkout mode retains
+the existing home launcher paths. Tests drive the actual manager's catalog and background
+commands from a copied runtime tree with spaces in its paths; provider launchers and tmux
+are isolated stand-ins. This does not prove Greywall startup, policy grants or provider
+registration: those separate launcher internals and host integrations remain unfinished.
+
 The policy preview tool supports strict JSON plus the existing learned profiles' leading
 `//` comment headers, which it preserves. Other JSONC syntax fails instead of being guessed
 or silently rewritten. Duplicate keys, malformed rule lists, parent traversal and whole-root

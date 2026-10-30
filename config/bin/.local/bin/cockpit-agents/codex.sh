@@ -1,7 +1,13 @@
 # Native Codex CLI; all execution stays in its own greywall launcher.
 # shellcheck shell=bash
 
-CODEX_LAUNCHER="${COCKPIT_CODEX:-$HOME/.local/bin/greywall-agents/codex}"
+codex_adapter_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+if [[ -f $codex_adapter_dir/../../../../../release.json ]]; then
+    CODEX_LAUNCHER="${COCKPIT_CODEX:-$codex_adapter_dir/../greywall-agents/codex}"
+else
+    CODEX_LAUNCHER="${COCKPIT_CODEX:-$HOME/.local/bin/greywall-agents/codex}"
+fi
+unset codex_adapter_dir
 
 agent_codex_label() { echo "Codex CLI"; }
 agent_codex_is_session_id() { [[ $1 =~ ^cdx_[0-9a-f]{64}$ ]]; }
