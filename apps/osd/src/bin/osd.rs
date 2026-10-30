@@ -40,7 +40,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -106,10 +105,6 @@ fn report_load(registry: &Rc<RefCell<Registry>>) {
     }
 }
 
-fn icon_dir() -> PathBuf {
-    cockpit::paths::home().join(".config/waybar/icons")
-}
-
 fn layer_window(app: &Application, edge: Edge, margin: i32) -> Window {
     let window = Window::builder()
         .application(app)
@@ -143,7 +138,11 @@ fn banner_row(title: &str, message: &str, sticky: bool) -> GtkBox {
     if sticky {
         row.add_css_class("attention");
     }
-    let icon = Image::from_file(icon_dir().join(if sticky { "bell-dot.svg" } else { "bell.svg" }));
+    let icon = Image::from_file(cockpit::paths::osd_icon(if sticky {
+        "bell-dot.svg"
+    } else {
+        "bell.svg"
+    }));
     icon.set_pixel_size(BANNER_ICON_SIZE);
     icon.set_valign(Align::Center);
     let label = |text: &str, class: &str| {
@@ -318,7 +317,8 @@ fn show_island(island: &Rc<RefCell<Island>>, kind: &str, icon_file: &str, fracti
         this.fill.remove_css_class(class);
     }
     this.fill.add_css_class(kind);
-    this.icon.set_from_file(Some(icon_dir().join(icon_file)));
+    this.icon
+        .set_from_file(Some(cockpit::paths::osd_icon(icon_file)));
     this.fill
         .set_size_request((TRACK_WIDTH as f64 * fraction).round() as i32, 2);
     this.window.present();
@@ -723,7 +723,7 @@ fn serve(
 
 fn activate(app: &Application) {
     let provider = CssProvider::new();
-    provider.load_from_path(cockpit::paths::home().join(".config/osd/style.css"));
+    provider.load_from_path(cockpit::paths::osd_style());
     gtk4::style_context_add_provider_for_display(
         &gdk::Display::default().expect("a display"),
         &provider,

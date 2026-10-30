@@ -29,7 +29,13 @@ agent_opencode_can() { # feature
 # server that outlives the session, and its cockpit plugin with it). --session: the id the card
 # carries from the start; opencode makes the session with it at the first prompt. ask-to-run and
 # claude-todo read it from CLAUDE_CODE_SESSION_ID, as in a Claude session.
-OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
+opencode_adapter_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+if [[ -f $opencode_adapter_dir/../../../../../release.json ]]; then
+    OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$opencode_adapter_dir/../greywall-agents/opencode}"
+else
+    OPENCODE_LAUNCHER="${COCKPIT_OPENCODE:-$HOME/.local/bin/greywall-agents/opencode}"
+fi
+unset opencode_adapter_dir
 # greywall exits 255 for a child ended by a signal, which is how OpenCode's quit ends: the
 # manager's Ctrl-C close (benign) and Theo's own quit in a terminal (a warning, no hand-off,
 # since a crash by a signal looks the same). Any other failure must reach the error hand-off.

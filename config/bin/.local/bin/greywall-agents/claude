@@ -53,8 +53,8 @@ if [ -n "${COCKPIT_SUBSCRIPTION_ROUTE:-}" ]; then
     team_settings="{\"hooks\":{\"SessionStart\":[$gate,{\"hooks\":[{\"type\":\"command\",\"command\":\"cockpit-team watch\",\"asyncRewake\":true,\"timeout\":86400}]}],\"Stop\":$team_watch}}"
     # The host verifies the execution account immediately before entering the existing sandbox.
     # shellcheck disable=SC2086
-    exec python3 "$HOME/.config/waybar/scripts/native-subscription.py" launch-claude "$COCKPIT_SUBSCRIPTION_ROUTE" \
-        "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" \
+    exec python3 "$native_subscription_script" launch-claude "$COCKPIT_SUBSCRIPTION_ROUTE" \
+        "$greywall_binary" $greywall_options -- "$HOME/.local/bin/claude" \
         --mcp-config "$figcraft_mcp_config" --settings "$team_settings"
 fi
 
@@ -62,7 +62,7 @@ fi
 # $XDG_RUNTIME_DIR, which have none.
 COCKPIT_SUBSCRIPTION_ACCOUNT=
 if [ "${COCKPIT_CREDITS:-}" != 1 ]; then
-    COCKPIT_SUBSCRIPTION_ACCOUNT=$(python3 "$HOME/.config/waybar/scripts/native-subscription.py" identity claude 2>/dev/null) || COCKPIT_SUBSCRIPTION_ACCOUNT=
+    COCKPIT_SUBSCRIPTION_ACCOUNT=$(python3 "$native_subscription_script" identity claude 2>/dev/null) || COCKPIT_SUBSCRIPTION_ACCOUNT=
 fi
 for argument in "$@"; do
     case "$argument" in --settings | --settings=* | --setting-sources | --setting-sources=*) COCKPIT_SUBSCRIPTION_ACCOUNT= ;; esac
@@ -73,8 +73,8 @@ export COCKPIT_SUBSCRIPTION_ACCOUNT
 case "${1:-}" in
 mcp | plugin | plugins | auth | doctor | auto-mode)
     # shellcheck disable=SC2086
-    exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@"
+    exec "$greywall_binary" $greywall_options -- "$HOME/.local/bin/claude" "$@"
     ;;
 esac
 # shellcheck disable=SC2086
-exec "$HOME/.local/bin/greywall" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config" --settings "$team_settings"
+exec "$greywall_binary" $greywall_options -- "$HOME/.local/bin/claude" "$@" --mcp-config "$figcraft_mcp_config" --settings "$team_settings"

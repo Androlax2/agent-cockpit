@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# makepkg consumes these globals after sourcing this staging recipe.
+# shellcheck disable=SC2034
+
+pkgname=agent-cockpit-bin
+pkgver=${COCKPIT_PACKAGE_VERSION:?set the staged package version}
+pkgrel=1
+pkgdesc='Agent session cockpit, prebuilt Arch package'
+arch=('x86_64')
+url='https://github.com/Androlax2/agent-cockpit'
+license=('Apache-2.0' 'MIT' 'ISC')
+depends=(
+    'bash' 'python>=3.11' 'tmux' 'jq' 'socat' 'git' 'curl' 'util-linux'
+    'procps-ng' 'sqlite' 'glibc' 'libgcc' 'glib2' 'gtk4' 'gtk4-layer-shell'
+    'kitty' 'hyprland' 'bind' 'libsecret' 'nodejs' 'wl-clipboard' 'systemd'
+    'gzip' 'coreutils' 'grep' 'sed' 'gawk' 'findutils'
+)
+optdepends=(
+    'github-cli: GitHub repository actions'
+    'docker: isolated project Docker integration'
+    'fish: optional shell functions'
+    'libnotify: fallback desktop notifications'
+)
+options=('!strip' '!debug')
+
+source_commit=${COCKPIT_SOURCE_COMMIT:?set the exact staged source commit}
+payload_sha256=${COCKPIT_PAYLOAD_SHA256:?set the prebuilt archive SHA256}
+[[ $pkgver =~ ^[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9._+]*$ ]] || {
+    printf '%s\n' 'invalid Cockpit package version' >&2
+    return 1
+}
+[[ $source_commit =~ ^[0-9a-f]{40}$ && $payload_sha256 =~ ^[0-9a-f]{64}$ ]] || {
+    printf '%s\n' 'source commit and payload checksum must be exact hexadecimal identities' >&2
+    return 1
+}
+source=(
+    "agent-cockpit-${pkgver}-linux-x86_64.tar.zst"
+    'package.py' 'runtime-files.txt' 'integration-files.txt'
+)
+sha256sums=(
+    "$payload_sha256"
+    '102ed75c82df9f136f29763a7059db95dee330ea4b831632fd5a69bd8f7791da'
+    'ed24bedbd0e1402d9ea3b4c238b6515ac5fb8229a79e41789aca5eaaa28f11ab'
+    '133255ac3ee5008decd29cb254a223896ef7da26bdc61ea5ebb18e1634b628d4'
+)
+
+package() {
+    : "${srcdir:?makepkg source directory is required}" "${pkgdir:?makepkg package directory is required}"
+    python3 "$srcdir/package.py" --payload "$srcdir/runtime" --destination "$pkgdir" \
+        --version "$pkgver" --source "$source_commit"
+}

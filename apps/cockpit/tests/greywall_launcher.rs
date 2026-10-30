@@ -101,6 +101,56 @@ struct Launch {
 }
 
 impl Launch {
+    fn packaged_runtime(&self) -> PathBuf {
+        let runtime = self.sandbox.root.join("installed runtime");
+        let commands = runtime.join("config/bin/.local/bin");
+        fs::create_dir_all(commands.join("greywall-agents")).unwrap();
+        for entry in fs::read_dir(bin().join("greywall-agents")).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(
+                entry.path(),
+                commands.join("greywall-agents").join(entry.file_name()),
+            )
+            .unwrap();
+        }
+        fs::write(runtime.join("release.json"), r#"{"version":"0.0.0.test"}"#).unwrap();
+        fs::create_dir_all(runtime.join("components")).unwrap();
+        fs::rename(
+            self.sandbox.home.join(".local/bin/greywall"),
+            runtime.join("components/greywall"),
+        )
+        .unwrap();
+        for name in ["agent-build", "agent-docker-build"] {
+            fs::rename(
+                self.sandbox.home.join(".local/bin").join(name),
+                commands.join(name),
+            )
+            .unwrap();
+        }
+        let clipboard = runtime.join("config/bin/.local/share/agent-shims/bin/wl-paste");
+        fs::create_dir_all(clipboard.parent().unwrap()).unwrap();
+        fs::rename(
+            self.sandbox
+                .home
+                .join(".local/share/agent-shims/bin/wl-paste"),
+            clipboard,
+        )
+        .unwrap();
+        let collector = runtime.join("config/waybar/.config/waybar/scripts/native-subscription.py");
+        fs::create_dir_all(collector.parent().unwrap()).unwrap();
+        let user_collector = self
+            .sandbox
+            .home
+            .join(".config/waybar/scripts/native-subscription.py");
+        fs::copy(&user_collector, collector).unwrap();
+        fs::remove_file(user_collector).unwrap();
+        write_executable(
+            &commands.join("cockpit-team"),
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/package-team-calls\"\n",
+        );
+        runtime
+    }
+
     fn new() -> Launch {
         let mut sandbox = Sandbox::new();
         for name in [
@@ -234,6 +284,181 @@ esac"#);
             .join(format!("{}.{agent}.json", Launch::slug(&self.project)));
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
     }
+}
+
+#[test]
+fn packaged_launchers_use_private_components_and_helpers_without_home_copies() {
+    for &agent in AGENTS.iter() {
+        let launch = Launch::new();
+        let runtime = launch.packaged_runtime();
+        bind_proj_a_daemon_socket(&launch);
+        fs::write(
+            runtime.join("config/waybar/.config/waybar/scripts/native-subscription.py"),
+            "print('a' * 64)\n",
+        )
+        .unwrap();
+        let output = launch
+            .sandbox
+            .command(
+                runtime
+                    .join("config/bin/.local/bin/greywall-agents")
+                    .join(agent),
+                &[],
+            )
+            .current_dir(&launch.project)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{agent}: {}", stderr(&output));
+        assert_eq!(launch.sandbox.calls("greywall").len(), 1, "{agent}");
+        assert_eq!(
+            fs::read_to_string(launch.sandbox.home.join("package-team-calls")).unwrap(),
+            "prepare\n",
+            "{agent} must prepare its private team helper exactly once"
+        );
+        if agent == "claude" || agent == "codex" {
+            let environment =
+                fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment")))
+                    .unwrap();
+            assert!(environment.lines().any(|line| {
+                line == format!("COCKPIT_SUBSCRIPTION_ACCOUNT={}", "a".repeat(64))
+            }));
+        }
+        assert_eq!(
+            fs::read(
+                launch
+                    .sandbox
+                    .home
+                    .join(".cache/agent-shims/bin/agent-build")
+            )
+            .unwrap(),
+            fs::read(runtime.join("config/bin/.local/bin/agent-build")).unwrap(),
+        );
+        assert_eq!(
+            fs::read(launch.sandbox.home.join(".cache/agent-shims/bin/wl-paste")).unwrap(),
+            b"#!/bin/sh\n",
+        );
+        assert_eq!(
+            fs::read(
+                launch
+                    .sandbox
+                    .home
+                    .join(".cache/agent-shims/bin/agent-docker-build")
+            )
+            .unwrap(),
+            fs::read(runtime.join("config/bin/.local/bin/agent-docker-build")).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn packaged_routed_claude_preserves_failed_account_verification() {
+    let launch = Launch::new();
+    let runtime = launch.packaged_runtime();
+    fs::write(
+        runtime.join("config/waybar/.config/waybar/scripts/native-subscription.py"),
+        "import sys\nsys.exit(7)\n",
+    )
+    .unwrap();
+    let output = launch
+        .sandbox
+        .command(
+            runtime.join("config/bin/.local/bin/greywall-agents/claude"),
+            &[("COCKPIT_SUBSCRIPTION_ROUTE", &"a".repeat(32))],
+        )
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(7), "{}", stderr(&output));
+    assert!(launch.sandbox.calls("greywall").is_empty());
+    assert!(!launch.sandbox.home.join("claude-arguments").exists());
+}
+
+#[test]
+fn packaged_native_account_lookup_preserves_regular_and_broken_user_overrides() {
+    for agent in ["claude", "codex"] {
+        for broken in [false, true] {
+            let launch = Launch::new();
+            let runtime = launch.packaged_runtime();
+            fs::write(
+                runtime.join("config/waybar/.config/waybar/scripts/native-subscription.py"),
+                "print('a' * 64)\n",
+            )
+            .unwrap();
+            let user_collector = launch
+                .sandbox
+                .home
+                .join(".config/waybar/scripts/native-subscription.py");
+            if broken {
+                std::os::unix::fs::symlink("missing-user-collector", &user_collector).unwrap();
+            } else {
+                fs::write(&user_collector, "print('b' * 64)\n").unwrap();
+            }
+            let output = launch
+                .sandbox
+                .command(
+                    runtime
+                        .join("config/bin/.local/bin/greywall-agents")
+                        .join(agent),
+                    &[],
+                )
+                .current_dir(&launch.project)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{agent}: {}", stderr(&output));
+            let environment =
+                fs::read_to_string(launch.sandbox.home.join(format!("{agent}-environment")))
+                    .unwrap();
+            let account = if broken {
+                String::new()
+            } else {
+                "b".repeat(64)
+            };
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == format!("COCKPIT_SUBSCRIPTION_ACCOUNT={account}"))
+            );
+        }
+    }
+}
+
+#[test]
+fn packaged_codex_routes_through_its_private_bridge() {
+    let launch = Launch::new();
+    let runtime = launch.packaged_runtime();
+    let bridge = runtime.join("config/codex/.codex/cockpit-bridge.mjs");
+    fs::create_dir_all(bridge.parent().unwrap()).unwrap();
+    fs::copy(
+        repo().join("config/codex/.codex/cockpit-bridge.mjs"),
+        &bridge,
+    )
+    .unwrap();
+    write_executable(
+        &runtime.join("components/greywall"),
+        "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done; shift\nexec \"$@\"\n",
+    );
+    launch.sandbox.shim(
+        "node",
+        "printf '%s\\n' \"$1\" \"$2\" > \"$HOME/bridge-call\"",
+    );
+    let route = "a".repeat(32);
+    let output = launch
+        .sandbox
+        .command(
+            runtime.join("config/bin/.local/bin/greywall-agents/codex"),
+            &[("COCKPIT_SUBSCRIPTION_ROUTE", &route)],
+        )
+        .current_dir(&launch.project)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let call = fs::read_to_string(launch.sandbox.home.join("bridge-call")).unwrap();
+    let mut arguments = call.lines();
+    assert_eq!(
+        Path::new(arguments.next().unwrap()).canonicalize().ok(),
+        Some(bridge.canonicalize().unwrap())
+    );
+    assert_eq!(arguments.next(), Some(route.as_str()));
 }
 
 #[test]

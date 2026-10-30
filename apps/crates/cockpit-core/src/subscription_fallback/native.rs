@@ -185,7 +185,7 @@ pub fn collect(agent: &str, directory: &str) -> Result<Value, String> {
         return Err("unsupported native subscription".into());
     }
     let output = Command::new("python3")
-        .arg(paths::home().join(".config/waybar/scripts/native-subscription.py"))
+        .arg(paths::native_subscription_script())
         .arg(agent)
         .current_dir(directory)
         .output()
@@ -253,7 +253,7 @@ fn candidate_from_evidence(
         )
     } else if agent == "claude" {
         let output = Command::new("python3")
-            .arg(paths::home().join(".config/waybar/scripts/native-subscription.py"))
+            .arg(paths::native_subscription_script())
             .arg("discover-claude")
             .current_dir(directory)
             .output()

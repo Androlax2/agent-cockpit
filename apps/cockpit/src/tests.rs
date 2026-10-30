@@ -689,7 +689,7 @@ fn model_catalog(fixture: &Fixture, variants: Value) {
     fixture.shim(
         "cockpit",
         &format!(
-            "if [[ $1 == opencode-models ]]; then echo '{}'; fi",
+            "if [ \"$1\" = opencode-models ]; then echo '{}'; fi",
             response
         ),
     );
