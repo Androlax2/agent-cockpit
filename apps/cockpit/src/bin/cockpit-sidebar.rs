@@ -152,6 +152,7 @@ fn run() -> io::Result<()> {
             app.maintain();
             screen.draw(&mut app);
         } else if background {
+            app.collect_team();
             app.redraw();
             screen.draw(&mut app);
         }

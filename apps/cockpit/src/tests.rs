@@ -147,6 +147,7 @@ fn check_fixture_server_panic(test_name: &str, unwind: bool) {
 #[path = "../tests/common/link_fixture.rs"]
 mod link_fixture;
 mod session_link_saves;
+mod sidebar_team_fetch;
 mod teams_chief_tabs;
 use crate::teams::store::Connection as LinkConnection;
 
@@ -913,6 +914,7 @@ impl Fixture {
         self.scheduler();
         let mut app = App::new();
         app.build();
+        settle_team(&mut app);
         app
     }
 
@@ -2998,21 +3000,26 @@ fn sessions_needing_attention_keep_amber_markers_even_when_selected() {
                 }
                 assert_eq!(buffer[(2, first)].symbol(), "!");
                 assert_eq!(buffer[(2, first)].fg, color(YELLOW));
-                let bar = *app
-                    .hit_lines
-                    .iter()
-                    .filter(|(_, (panel, item))| *panel == 1 && *item == Some(0))
-                    .map(|(row, _)| row)
-                    .max()
-                    .unwrap();
-                let text: String = (0..width)
-                    .map(|column| buffer[(column, bar)].symbol())
-                    .collect();
                 let expected_label = match phase {
                     "approval" => "Approve a command",
                     "input" => "A running command needs your input",
                     _ => "An answer or permission is needed",
                 };
+                let bar = *app
+                    .hit_lines
+                    .iter()
+                    .filter(|(_, (panel, item))| *panel == 1 && *item == Some(0))
+                    .map(|(row, _)| row)
+                    .find(|row| {
+                        let text: String = (0..width)
+                            .map(|column| buffer[(column, **row)].symbol())
+                            .collect();
+                        text.contains(expected_label)
+                    })
+                    .expect("selected card is missing its ask label");
+                let text: String = (0..width)
+                    .map(|column| buffer[(column, bar)].symbol())
+                    .collect();
                 assert!(text.contains(expected_label), "{state}/{phase}: {text}");
                 let label_start = (0..width)
                     .find(|column| buffer[(*column, bar)].symbol() == &expected_label[..1])
@@ -4663,6 +4670,7 @@ fn unknown_membership_blocks_manual_and_automatic_sleep() {
     no_team_members(&fixture);
     app.team_checked = 0.0;
     app.check_team();
+    settle_team(&mut app);
     app.sleep_checked = 0.0;
     app.dispatch_sleep();
     assert_eq!(
@@ -6441,6 +6449,18 @@ fn the_rare_actions_are_left_without_a_key() {
 
 type HostRequests = std::sync::Arc<Mutex<Vec<Value>>>;
 
+fn settle_team(app: &mut App) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !app.collect_team() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "team fixture did not answer"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    app.redraw();
+}
+
 const TEAM_PROJECT: &str = "remote:git@github.com:example/project-a.git";
 
 /// A fake daemon on the host-only team socket: snapshots answer `snapshot`, controls take the
@@ -6798,6 +6818,7 @@ fn team_sidebar_reports_unavailable_links_without_hiding_sessions() {
     team_host(&fixture, sidebar_snapshot(), vec![]);
     app.team_checked = 0.0;
     app.check_team();
+    settle_team(&mut app);
     app.redraw();
     assert!(texts(&app, 1).join("\n").contains("› 1d3fd318"));
     fs::remove_file(crate::paths::team_host_socket()).unwrap();

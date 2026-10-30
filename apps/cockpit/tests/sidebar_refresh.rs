@@ -99,6 +99,312 @@ impl Drop for Sidebar {
     }
 }
 
+struct TeamHost {
+    paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    has_focus_error: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    snapshots: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[test]
+fn a_stalled_team_snapshot_does_not_block_arrow_navigation() {
+    let mut host = None;
+    let mut sidebar = Sidebar::configured("", |root| {
+        host = Some(TeamHost::start(root, "1111aaaa", true));
+        let sessions: Vec<_> = [
+            ("aaaaaaaa-0000-4000-8000-000000000000", "first", 1),
+            ("bbbbbbbb-0000-4000-8000-000000000000", "second", 2),
+        ]
+        .into_iter()
+        .map(|(session, directory, started)| {
+            serde_json::json!({
+                "session": session, "state": "working", "project": "navigation",
+                "cwd": root.join(directory), "label": directory,
+                "since": started, "started": started, "tmux_pane": "%1"
+            })
+        })
+        .collect();
+        fs::write(
+            root.join("run/cockpit.json"),
+            serde_json::json!({"sessions": sessions}).to_string(),
+        )
+        .unwrap();
+    });
+    let host = host.unwrap();
+    wait_for_team_request(&mut sidebar, &host);
+    sidebar.terminal.screen.clear();
+    sidebar.terminal.type_keys(b"\x1b[Bi");
+    sidebar.terminal.pump(0.6, Some(b"WHERE & WHO"));
+    assert!(
+        contains(&sidebar.terminal.screen, b"WHERE & WHO"),
+        "Down/details input waited for team IPC"
+    );
+    assert!(
+        contains(&sidebar.terminal.screen, b"/second"),
+        "Down did not select the second session"
+    );
+    sidebar.terminal.type_keys(b"\x1b");
+    sidebar.terminal.pump(0.1, None);
+    sidebar.terminal.screen.clear();
+    sidebar.terminal.type_keys(b"\x1b[Ai");
+    sidebar.terminal.pump(0.6, Some(b"WHERE & WHO"));
+    assert!(
+        contains(&sidebar.terminal.screen, b"/first"),
+        "Up/details input waited for team IPC"
+    );
+    assert_eq!(
+        host.snapshots(),
+        1,
+        "navigation started extra snapshot work"
+    );
+}
+
+impl TeamHost {
+    fn start(root: &Path, task_id: &str, is_paused: bool) -> Self {
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixListener,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, AtomicUsize, Ordering},
+            },
+            time::Duration,
+        };
+        let folder = root.join("run/claude-team-host");
+        fs::create_dir_all(&folder).unwrap();
+        let listener = UnixListener::bind(folder.join("host.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let paused = Arc::new(AtomicBool::new(is_paused));
+        let has_focus_error = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let snapshots = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_paused = paused.clone();
+        let worker_focus_error = has_focus_error.clone();
+        let worker_requests = requests.clone();
+        let worker_snapshots = snapshots.clone();
+        let worker_stopped = stopped.clone();
+        let snapshot = serde_json::json!({
+            "members": [], "sessions": [], "messages": [], "escalations": [],
+            "spawns": [], "sleeps": [], "handoffs": [], "qa_plans": [],
+            "chief_session": null, "chief_badge": {}, "chief_answers": [],
+            "proposals": [{"proposal_id": "fixture", "project": "path:/r/project-a",
+                "task_id": task_id, "status": "pending", "reason": "Review team links",
+                "mapping": "[]", "mapping_hash": "fixture", "revision": 1,
+                "created_by": "agent", "parent_id": null}]
+        });
+        let worker = std::thread::spawn(move || {
+            while !worker_stopped.load(Ordering::Acquire) {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+                let mut wire = String::new();
+                if stream.read_to_string(&mut wire).is_err() {
+                    continue;
+                }
+                let request: serde_json::Value = serde_json::from_str(&wire).unwrap();
+                assert!(
+                    matches!(
+                        request["request"].as_str(),
+                        Some("snapshot" | "chief_focus")
+                    ),
+                    "unexpected background request: {request}"
+                );
+                worker_requests.fetch_add(1, Ordering::Release);
+                if request["request"] == "snapshot" {
+                    worker_snapshots.fetch_add(1, Ordering::Release);
+                }
+                while worker_paused.load(Ordering::Acquire) {
+                    if worker_stopped.load(Ordering::Acquire) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let reply = cockpit::teams::TeamReply {
+                    request_id: "snapshot".into(),
+                    result: if request["request"] == "chief_focus"
+                        && worker_focus_error.load(Ordering::Acquire)
+                    {
+                        Err(cockpit::teams::TeamError::new(
+                            cockpit::teams::ErrorCode::Unavailable,
+                            "fixture focus failure",
+                        ))
+                    } else {
+                        Ok(if request["request"] == "snapshot" {
+                            snapshot.clone()
+                        } else {
+                            serde_json::json!({"recorded": true})
+                        })
+                    },
+                };
+                let _ = stream.write_all(serde_json::to_string(&reply).unwrap().as_bytes());
+            }
+        });
+        Self {
+            paused,
+            has_focus_error,
+            requests,
+            snapshots,
+            stopped,
+            worker: Some(worker),
+        }
+    }
+
+    fn snapshots(&self) -> usize {
+        self.snapshots.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn release(&self) {
+        self.paused
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl Drop for TeamHost {
+    fn drop(&mut self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.worker.take().unwrap().join().unwrap();
+    }
+}
+
+fn sidebar_with_team_host(task_id: &str, paused: bool) -> (Sidebar, TeamHost) {
+    let mut host = None;
+    let sidebar = Sidebar::configured("", |root| {
+        host = Some(TeamHost::start(root, task_id, paused))
+    });
+    (sidebar, host.unwrap())
+}
+
+fn wait_for_team_request(sidebar: &mut Sidebar, host: &TeamHost) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while host.snapshots() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "sidebar never requested team state"
+        );
+        sidebar.terminal.pump(0.02, None);
+    }
+}
+
+#[test]
+fn a_stalled_team_snapshot_does_not_block_sidebar_help() {
+    let (mut sidebar, host) = sidebar_with_team_host("1111aaaa", true);
+    wait_for_team_request(&mut sidebar, &host);
+    sidebar.terminal.screen.clear();
+    sidebar.terminal.type_keys(b"?");
+    sidebar.terminal.pump(0.6, Some("Help ·".as_bytes()));
+    assert!(
+        contains(&sidebar.terminal.screen, "Help ·".as_bytes()),
+        "team IPC blocked keyboard input"
+    );
+}
+
+#[test]
+fn a_stalled_focus_report_does_not_block_sidebar_help() {
+    let mut host = None;
+    let mut sidebar = Sidebar::configured("", |root| {
+        write_executable(
+            &root.join("bin/hyprctl"),
+            "#!/bin/sh\nprintf '%s\\n' '{\"id\":11}'\n",
+        );
+        host = Some(TeamHost::start(root, "1111aaaa", true));
+    });
+    let host = host.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while host.requests.load(std::sync::atomic::Ordering::Acquire) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "sidebar never reported focus"
+        );
+        sidebar.terminal.pump(0.02, None);
+    }
+    sidebar.terminal.screen.clear();
+    sidebar.terminal.type_keys(b"?");
+    sidebar.terminal.pump(0.6, Some("Help ·".as_bytes()));
+    assert!(
+        contains(&sidebar.terminal.screen, "Help ·".as_bytes()),
+        "focus IPC blocked keyboard input"
+    );
+}
+
+#[test]
+fn a_failed_focus_report_does_not_suppress_the_team_snapshot() {
+    let mut host = None;
+    let mut sidebar = Sidebar::configured("", |root| {
+        write_executable(
+            &root.join("bin/hyprctl"),
+            "#!/bin/sh\nprintf '%s\\n' '{\"id\":11}'\n",
+        );
+        let team_host = TeamHost::start(root, "1111aaaa", false);
+        team_host
+            .has_focus_error
+            .store(true, std::sync::atomic::Ordering::Release);
+        host = Some(team_host);
+    });
+    let host = host.unwrap();
+    sidebar.terminal.type_keys(b"4");
+    sidebar.terminal.pump(1.5, Some(b"1111aaaa"));
+    assert!(
+        contains(&sidebar.terminal.screen, b"1111aaaa"),
+        "focus failure suppressed independent team data"
+    );
+    assert_eq!(
+        host.snapshots(),
+        1,
+        "focus failure prevented the snapshot request"
+    );
+}
+
+#[test]
+fn an_idle_sidebar_shares_one_team_snapshot_between_maintenance_ticks() {
+    let (mut sidebar, host) = sidebar_with_team_host("1111aaaa", false);
+    wait_for_team_request(&mut sidebar, &host);
+    sidebar.terminal.pump(3.5, None);
+    assert_eq!(
+        host.snapshots(),
+        1,
+        "maintenance multiplied background snapshot requests"
+    );
+}
+
+#[test]
+fn a_replaced_team_socket_cannot_publish_its_old_snapshot() {
+    let (mut sidebar, old_host) = sidebar_with_team_host("1111aaaa", true);
+    wait_for_team_request(&mut sidebar, &old_host);
+    fs::remove_file(sidebar.root.join("run/claude-team-host/host.sock")).unwrap();
+    let new_host = TeamHost::start(&sidebar.root, "2222bbbb", false);
+    old_host.release();
+    sidebar.terminal.type_keys(b"4");
+    sidebar.terminal.pump(1.5, Some(b"2222bbbb"));
+    assert!(
+        !contains(&sidebar.terminal.screen, b"1111aaaa"),
+        "obsolete endpoint result reached the screen"
+    );
+    assert!(
+        contains(&sidebar.terminal.screen, b"2222bbbb"),
+        "replacement endpoint was not refreshed"
+    );
+    assert_eq!(
+        new_host.snapshots(),
+        1,
+        "replacement fetch was not coalesced"
+    );
+}
+
 #[test]
 fn an_idle_sidebar_does_not_gather_sessions_four_times_per_second() {
     let mut sidebar = Sidebar::new();

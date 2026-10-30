@@ -1074,7 +1074,7 @@ impl App {
         if key == Key::Char('R') {
             self.team_checked = 0.0;
             self.check_team();
-            return if matches!(self.team_links, TeamLinks::Ready(_)) {
+            return if self.team_fetch.is_some() || matches!(self.team_links, TeamLinks::Ready(_)) {
                 String::new()
             } else {
                 "Team data still unavailable".into()

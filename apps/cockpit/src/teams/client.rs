@@ -3,13 +3,14 @@
 use super::{AgentAction, ErrorCode, TeamError, TeamReply};
 use crate::{approval, paths};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::Shutdown;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const REQUEST_MAX: usize = 32768;
 pub const AGENT_REPLY_MAX: usize = 65536;
@@ -62,6 +63,106 @@ pub fn request(action: &AgentAction) -> Result<TeamReply, TeamError> {
             format!("invalid team reply ({error}); resubmit only with the same submission key"),
         )
     })
+}
+
+/// Display refreshes have one deadline; action requests retain their existing transport.
+pub(crate) fn host_request_until(
+    path: &Path,
+    request: &super::HostRequest,
+    deadline: Instant,
+) -> Result<TeamReply, TeamError> {
+    let wire = serde_json::to_vec(request)?;
+    let reply = exchange_until(path, &wire, deadline).map_err(|error| {
+        TeamError::new(
+            ErrorCode::Unavailable,
+            format!("team display refresh failed: {error}"),
+        )
+    })?;
+    decode_host_reply(&reply)
+}
+
+fn exchange_until(path: &Path, mut wire: &[u8], deadline: Instant) -> io::Result<Vec<u8>> {
+    remaining_io_timeout(deadline)?;
+    let mut stream = connect_display(path)?;
+    while !wire.is_empty() {
+        stream.set_write_timeout(Some(remaining_io_timeout(deadline)?))?;
+        match stream.write(wire) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(written) => wire = &wire[written..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    stream.shutdown(Shutdown::Write)?;
+    let mut reply = Vec::new();
+    let mut limited = (&mut stream).take(HOST_REPLY_MAX as u64 + 1);
+    let mut chunk = [0; 8192];
+    loop {
+        limited
+            .get_ref()
+            .set_read_timeout(Some(remaining_io_timeout(deadline)?))?;
+        match limited.read(&mut chunk) {
+            Ok(0) => return Ok(reply),
+            Ok(read) => reply.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn remaining_io_timeout(deadline: Instant) -> io::Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "team refresh deadline elapsed",
+        ));
+    }
+    Ok(remaining.min(Duration::from_secs(3)))
+}
+
+fn connect_display(path: &Path) -> io::Result<UnixStream> {
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un consists of integer fields; zero also terminates sun_path.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.is_empty() || bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid team socket path",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
+        *destination = *source as libc::c_char;
+    }
+    // SAFETY: socket takes only integer arguments; a successful fd is owned below.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: socket returned a new, uniquely owned stream fd, including on connect failure.
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    // SAFETY: address is initialized and lives through connect; length covers its bounded path.
+    let connected = unsafe {
+        libc::connect(
+            fd,
+            (&address as *const libc::sockaddr_un).cast(),
+            length as libc::socklen_t,
+        )
+    };
+    if connected != 0 {
+        // A full Linux Unix-socket queue returns EAGAIN instead of pinning the display worker.
+        return Err(io::Error::last_os_error());
+    }
+    stream.set_nonblocking(false)?;
+    Ok(stream)
 }
 
 /// How long a refused connect is retried: an OSD restart binds and re-links the socket in seconds.
@@ -139,7 +240,14 @@ pub const HOST_REPLY_MAX: usize = 1 << 20;
 /// The cockpit's host request; a missing or slow daemon is an error, never an optimistic grant.
 pub fn host_request(request: &super::HostRequest) -> Result<TeamReply, TeamError> {
     let path = paths::team_host_socket();
-    let mut stream = UnixStream::connect(&path).map_err(|error| {
+    host_request_at(&path, request)
+}
+
+pub(crate) fn host_request_at(
+    path: &Path,
+    request: &super::HostRequest,
+) -> Result<TeamReply, TeamError> {
+    let mut stream = UnixStream::connect(path).map_err(|error| {
         TeamError::new(
             ErrorCode::Unavailable,
             format!("team service unavailable ({error}); is the OSD daemon running?"),
@@ -159,7 +267,11 @@ pub fn host_request(request: &super::HostRequest) -> Result<TeamReply, TeamError
                 format!("team service did not answer: {error}"),
             )
         })?;
-    serde_json::from_slice(&reply).map_err(|error| {
+    decode_host_reply(&reply)
+}
+
+fn decode_host_reply(reply: &[u8]) -> Result<TeamReply, TeamError> {
+    serde_json::from_slice(reply).map_err(|error| {
         TeamError::new(
             ErrorCode::Unavailable,
             format!("invalid team service reply: {error}"),

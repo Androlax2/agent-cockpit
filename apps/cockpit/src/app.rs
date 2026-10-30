@@ -38,8 +38,10 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -1460,6 +1462,14 @@ struct SavedTodoScope {
     project: String,
 }
 
+struct TeamFetch {
+    endpoint: (u64, u64),
+    viewed: String,
+    checked_at: f64,
+    started_at: Instant,
+    reply: Receiver<Result<Value, crate::teams::TeamError>>,
+}
+
 pub struct App {
     pub(crate) continuity: Result<Continuity, String>,
     continuity_error: Option<String>,
@@ -1508,6 +1518,8 @@ pub struct App {
     /// Whether the last team check succeeded: until then anyone may be a member, and no one sleeps.
     team_known: bool,
     pub(crate) team_checked: f64,
+    team_endpoint: Option<(u64, u64)>,
+    team_fetch: Option<TeamFetch>,
     team_links: TeamLinks,
     /// The 4 Teams tab: what its list and, inside a team, its rows show (teams_tab).
     pub(crate) teams_tab: teams_tab::TeamsTab,
@@ -1682,6 +1694,8 @@ impl App {
             qa_sessions: HashSet::new(),
             team_known: false,
             team_checked: 0.0,
+            team_endpoint: None,
+            team_fetch: None,
             team_links: TeamLinks::Loading,
             teams_tab: Default::default(),
             chief_tab_rows: Vec::new(),
@@ -8276,6 +8290,19 @@ impl App {
 
     /// Every 10 s: what in the linked teams waits for Theo, and each member's role, for the cards.
     pub(crate) fn check_team(&mut self) {
+        let endpoint = Self::team_endpoint();
+        if endpoint != self.team_endpoint {
+            self.team_endpoint = endpoint;
+            self.team_checked = 0.0;
+            self.team_unavailable();
+        }
+        self.collect_team();
+        if let Some(fetch) = &self.team_fetch {
+            if fetch.started_at.elapsed() >= Duration::from_secs(10) {
+                self.team_unavailable();
+            }
+            return;
+        }
         let now = util::now();
         if now - self.team_checked < 10.0 {
             return;
@@ -8293,33 +8320,110 @@ impl App {
         let workspace = util::output_of("hyprctl", &["-j", "activeworkspace"])
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .and_then(|workspace| workspace["id"].as_i64());
-        if let Some(workspace) = workspace {
-            let _ = crate::teams::client::host_request(&crate::teams::HostRequest::ChiefFocus {
-                viewed: current_session(),
-                workspace_active: workspace == util::CLAUDE_WORKSPACE,
-                gaming: (self.gaming)(),
-            });
-        }
-        if !paths::team_host_socket().exists() {
-            self.team_attention = 0;
-            self.team_roles.clear();
-            self.team_known = false;
-            self.team_links = TeamLinks::Unavailable;
-            return;
-        }
-        let Ok(snapshot) = Self::team_snapshot() else {
-            self.team_known = false;
-            self.team_roles.clear();
-            self.team_attention = 0;
-            self.team_links = TeamLinks::Unavailable;
+        let viewed = current_session();
+        let focus = workspace.map(|workspace| crate::teams::HostRequest::ChiefFocus {
+            viewed: viewed.clone(),
+            workspace_active: workspace == util::CLAUDE_WORKSPACE,
+            gaming: (self.gaming)(),
+        });
+        let Some(endpoint) = endpoint else {
+            self.team_unavailable();
             return;
         };
+        let (send, reply) = std::sync::mpsc::sync_channel(1);
+        let path = paths::team_host_socket();
+        let viewed_path = paths::current();
+        let requested_view = viewed.clone();
+        let started_at = Instant::now();
+        let deadline = started_at + Duration::from_secs(10);
+        match std::thread::Builder::new()
+            .name("sidebar-team".into())
+            .spawn(move || {
+                if let Some(focus) = focus {
+                    let still_viewed = fs::read_to_string(&viewed_path)
+                        .map(|text| text.trim().to_string())
+                        .unwrap_or_default();
+                    if still_viewed == requested_view {
+                        // Focus reporting must not suppress independent team display updates.
+                        let _ = crate::teams::client::host_request_until(&path, &focus, deadline);
+                    }
+                }
+                let result = crate::teams::client::host_request_until(
+                    &path,
+                    &crate::teams::HostRequest::Snapshot,
+                    deadline,
+                )
+                .and_then(|reply| reply.result);
+                if send.send(result).is_ok() {
+                    refresh::background_changed();
+                }
+            }) {
+            Ok(_) => {
+                self.team_fetch = Some(TeamFetch {
+                    endpoint,
+                    viewed,
+                    checked_at: now,
+                    started_at,
+                    reply,
+                });
+            }
+            Err(error) => {
+                self.team_unavailable();
+                self.message = format!("Team refresh could not start: {error}");
+            }
+        }
+    }
+
+    fn team_endpoint() -> Option<(u64, u64)> {
+        fs::metadata(paths::team_host_socket())
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+    }
+
+    fn team_unavailable(&mut self) {
+        self.team_known = false;
+        self.team_roles.clear();
+        self.team_attention = 0;
+        self.chief_answers.clear();
+        self.qa_sessions.clear();
+        self.team_links = TeamLinks::Unavailable;
+    }
+
+    /// Consume a display-only reply without waiting. Returns true when no fetch remains.
+    /// Action checks still use live IPC.
+    pub fn collect_team(&mut self) -> bool {
+        let Some(fetch) = &self.team_fetch else {
+            return true;
+        };
+        let result = match fetch.reply.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => {
+                self.team_fetch = None;
+                self.team_unavailable();
+                return true;
+            }
+        };
+        let fetch = self
+            .team_fetch
+            .take()
+            .expect("reply belongs to the pending fetch");
+        if Self::team_endpoint() != Some(fetch.endpoint)
+            || current_session() != fetch.viewed
+            || self.team_checked != fetch.checked_at
+            || fetch.started_at.elapsed() >= Duration::from_secs(10)
+        {
+            self.team_checked = 0.0;
+            self.team_unavailable();
+            return true;
+        }
+        let Ok(snapshot) = result else {
+            self.team_unavailable();
+            return true;
+        };
         if crate::teams::sidebar::grouped_rows(&snapshot, &[], &HashSet::new()).is_err() {
-            self.team_known = false;
-            self.team_roles.clear();
-            self.team_attention = 0;
-            self.team_links = TeamLinks::Unavailable;
-            return;
+            self.team_unavailable();
+            return true;
         }
         self.team_known = true;
         self.chief_answers = snapshot["chief_answers"]
@@ -8362,6 +8466,7 @@ impl App {
             })
             .collect();
         self.team_links = TeamLinks::Ready(snapshot);
+        true
     }
 
     fn open_team_view(&mut self) -> String {

@@ -324,6 +324,7 @@ fn an_ended_team_folds_under_ended_today_and_d_shows_it() {
     team_host(&fixture, state, vec![]);
     app.team_checked = 0.0;
     app.check_team();
+    settle_team(&mut app);
     app.todos.items = vec![todo_item(TASK, "Session list redesign", "done")];
     app.redraw();
     press(&mut app, &[Key::Char('4')]);
@@ -367,6 +368,12 @@ fn unavailable_team_data_is_red_with_retry_and_never_shown_as_independent_sessio
     );
     team_host(&fixture, team_state(), vec![]);
     press(&mut app, &[Key::Char('R')]);
+    assert!(
+        app.message.is_empty(),
+        "retry reported an outcome before its reply: {}",
+        app.message
+    );
+    settle_team(&mut app);
     assert!(
         texts(&app, TEAMS_PANEL).join("\n").contains("MEMBERS · 3"),
         "R asks again: {:?}",
