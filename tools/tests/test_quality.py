@@ -139,6 +139,41 @@ class QualityTests(unittest.TestCase):
         self.assertIn(misspelling, result.stdout + result.stderr)
 
 
+class RepositoryDocumentationTests(unittest.TestCase):
+    def test_tracked_documentation_links_resolve_without_untracked_files(self):
+        repository = RUNNER.parents[1]
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "-z"], cwd=repository, text=True
+        ).split("\0")
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory)
+            markdown = []
+            for name in filter(None, tracked):
+                source = repository / name
+                if source.is_symlink() or not source.is_file():
+                    continue
+                target = snapshot / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                if source.suffix == ".md":
+                    markdown.append(f"./{name}")
+            self.assertTrue(markdown)
+            result = subprocess.run(
+                [
+                    "lychee",
+                    "--offline",
+                    "--include-fragments=anchor-only",
+                    "--no-progress",
+                    *markdown,
+                ],
+                cwd=snapshot,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class JavaScriptPolicyTests(unittest.TestCase):
     def test_runtime_globals_are_checked_in_their_execution_environment(self):
         for path, source, succeeds in [

@@ -20,7 +20,7 @@ guards and Make verification. Reuse existing dependencies; manifests still need 
 as main changes, and touch no product code now. Design decisions and proposed move
 maps are included here rather than in a second planning document.
 
-**Related distribution roadmap:** [Packaged releases and portability](2026-10-29-packaged-releases-and-portability.md)
+**Related distribution roadmap:** [First packaged Linux release milestone](https://github.com/Androlax2/agent-cockpit/milestone/2)
 addresses CI-built packages, Greywall/Greyproxy composition, `config/**` ownership,
 public project documentation and GitHub milestones/issues. Those are separately gated
 productization changes, not permission to alter runtime behavior inside A/B.
