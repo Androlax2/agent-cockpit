@@ -55,6 +55,14 @@ Runtime files go under `/usr/lib/agent-cockpit`; explicit public commands are li
 examples go under `/usr/share/agent-cockpit/integrations`, outside live systemd/provider config.
 Licenses go under `/usr/share/licenses/agent-cockpit-bin`.
 
+The byte-preserved desktop source defaults live in `assets/runtime`, with provenance in its
+README. CSS uses the approved project license; SVGs retain their Lucide ISC and Feather MIT
+notices. Both icon notices are required payload inputs and installed under the package's
+license directory. OSD and idle-prompt loaders select a packaged asset only when that
+individual home override is absent. Existing files, broken links and inaccessible overrides
+keep priority; a partial user icon directory does not hide other packaged icons. Artifact
+production, installed launcher paths and source-free startup remain separate gates.
+
 The policy preview tool supports strict JSON plus the existing learned profiles' leading
 `//` comment headers, which it preserves. Other JSONC syntax fails instead of being guessed
 or silently rewritten. Duplicate keys, malformed rule lists, parent traversal and whole-root

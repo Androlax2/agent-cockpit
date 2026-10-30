@@ -8,7 +8,7 @@ pkgrel=1
 pkgdesc='Agent session cockpit, prebuilt Arch package'
 arch=('x86_64')
 url='https://github.com/Androlax2/agent-cockpit'
-license=('Apache-2.0' 'MIT')
+license=('Apache-2.0' 'MIT' 'ISC')
 depends=(
     'bash' 'python>=3.11' 'tmux' 'jq' 'socat' 'git' 'curl' 'util-linux'
     'procps-ng' 'sqlite' 'glibc' 'libgcc' 'glib2' 'gtk4' 'gtk4-layer-shell'
@@ -39,7 +39,7 @@ source=(
 )
 sha256sums=(
     "$payload_sha256"
-    '2080c4dd6827e212ce964c37bca09bee75dcbd8ee5b0786ea0f5543d431b6cbf'
+    '102ed75c82df9f136f29763a7059db95dee330ea4b831632fd5a69bd8f7791da'
     'ed24bedbd0e1402d9ea3b4c238b6515ac5fb8229a79e41789aca5eaaa28f11ab'
     '133255ac3ee5008decd29cb254a223896ef7da26bdc61ea5ebb18e1634b628d4'
 )

@@ -36,6 +36,8 @@ EXTRA_FILES = [
     "components/licenses/greywall/LICENSE",
     "components/licenses/greyproxy/LICENSE",
     "components/licenses/tun2socks/LICENSE",
+    "assets/LICENSE-LUCIDE",
+    "assets/LICENSE-FEATHER",
     "assets/osd/style.css",
     "assets/idle/style.css",
     *[
@@ -124,6 +126,13 @@ class ArchPackageTests(unittest.TestCase):
         self.assertTrue(
             (self.destination / "usr/share/licenses/agent-cockpit-bin/LICENSE").is_file()
         )
+        for name in ["LICENSE-LUCIDE", "LICENSE-FEATHER"]:
+            self.assertEqual(
+                (
+                    self.destination / "usr/share/licenses/agent-cockpit-bin/assets" / name
+                ).read_bytes(),
+                (self.payload / "assets" / name).read_bytes(),
+            )
         self.assertFalse((self.destination / "home").exists())
         self.assertFalse((self.destination / "usr/lib/systemd").exists())
 

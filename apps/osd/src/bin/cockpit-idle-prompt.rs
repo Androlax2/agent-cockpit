@@ -69,7 +69,7 @@ fn status_line(rows: &[serde_json::Value]) -> Option<String> {
 
 fn activate(app: &Application, seconds: u32, outcome: Rc<Cell<u8>>) {
     let provider = CssProvider::new();
-    provider.load_from_path(cockpit::paths::home().join(".config/hypr/scripts/claude-idle.css"));
+    provider.load_from_path(cockpit::paths::idle_style());
     gtk4::style_context_add_provider_for_display(
         &gdk::Display::default().expect("a display"),
         &provider,
