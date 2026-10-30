@@ -997,7 +997,7 @@ pub fn chief_state() -> Result<Value, String> {
     answers.sort_by_key(|answer| std::cmp::Reverse(answer["created_at_ms"].as_i64()));
     let mut habits = select("habit");
     habits.sort_by_key(|habit| std::cmp::Reverse(habit["created_at_ms"].as_i64()));
-    let status = crate::chief::view::ChiefView::new(snapshot.clone()).status();
+    let status = crate::chief::summary::status(&snapshot);
     Ok(
         json!({"status":status,"today":snapshot["today"],"session_names":snapshot["session_names"],
         "escalations":select("decision"),"answers":answers,"habits":habits,"counts":snapshot["chief_counts"],"read_at_ms":snapshot["read_at_ms"],

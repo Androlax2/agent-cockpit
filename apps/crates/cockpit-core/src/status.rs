@@ -165,7 +165,7 @@ impl ProviderStatus {
                 state.error = error;
                 state.fetched_at = now();
                 state.fetching = false;
-                crate::app::refresh::background_changed();
+                crate::background::background_changed();
                 previous
             };
             if let Some(current) = current
@@ -191,7 +191,7 @@ impl ProviderStatus {
     }
 
     /// Fetches right now, in this thread (tests).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fetch_now(&self) {
         self.tick();
         for _ in 0..200 {

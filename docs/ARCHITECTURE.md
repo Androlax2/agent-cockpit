@@ -1,18 +1,18 @@
 # Architecture
 
-This map includes the headless daemon and shared protocol extractions from engineering alignment.
-Planned extractions are listed separately.
+This map includes the headless core, daemon and shared protocol boundaries.
 
 ## Source owners
 
 | Path | Responsibility |
 | --- | --- |
-| `apps/cockpit/src/app*` | Terminal application, refresh and screen composition |
+| `apps/cockpit/src/app*` | Terminal application, private panel/input/render modules and refresh scheduling |
 | `apps/cockpit/src/bin/` | CLI and terminal executable entry points |
-| `apps/cockpit/src/teams*`, `chief*` | Compatibility exports, client calls, SQLite stores and presentation |
+| `apps/cockpit/src/teams*`, `chief*` | Compatibility exports and terminal presentation |
+| `apps/crates/cockpit-core/src/` | Headless state/services, client calls, SQLite stores, draft persistence and shared formatting |
 | `apps/crates/cockpit-protocol/src/` | Team/Chief wire contracts, pure validators and agent identity catalog |
-| `apps/cockpit/src/remote*`, `assets/remote/` | Phone server support and browser assets |
-| `apps/cockpit/src/approval.rs` | Approval request helpers and terminal support |
+| `apps/crates/cockpit-core/src/remote*`, `apps/cockpit/assets/remote/` | Phone server support and browser assets |
+| `apps/crates/cockpit-core/src/approval.rs`, `apps/cockpit/src/approval/terminal.rs` | Shared approval request helpers and separate terminal/PTY adapters |
 | `apps/crates/cockpit-daemon/src/registry.rs` | Session registry, request queues and host-operation coordination |
 | `apps/crates/cockpit-daemon/src/{teams,chief}.rs` | Daemon-side collaboration handling |
 | `apps/crates/cockpit-daemon/src/fifo.rs` | FIFO/socket helpers, peer identity and bounded reads |
@@ -24,20 +24,29 @@ Planned extractions are listed separately.
 
 ## Dependency direction today
 
-`osd` depends on `cockpit-daemon` and `cockpit`; `cockpit-daemon` depends on `cockpit`.
-`cockpit` depends on `cockpit-protocol`, whose only external dependencies are serde,
-serde_json and regex. Its Cargo-graph test rejects GTK, terminal UI and SQLite dependencies.
-The daemon crate has no GTK runtime dependency, enforced by the Cargo-graph test in
-`tools/tests/test_crate_boundaries.py`. The `cockpit` library still combines terminal UI,
-state access, wire types and other shared behavior, so this is not yet a UI-free dependency
-tree. GTK dependencies and executable ownership remain in `osd`.
+`osd` depends on `cockpit-daemon` and `cockpit`; daemon production dependencies use
+`cockpit-core`, not `cockpit`. The terminal package depends on the same core and keeps
+its existing executable ownership. Core consumes `cockpit-protocol`, whose only external
+dependencies are serde, serde_json and regex. Cargo-graph tests reject GTK/Ratatui/Crossterm
+and the terminal package from core/daemon production graphs, and also reject SQLite from
+protocol. GTK dependencies and GTK executable ownership remain in `osd`.
+
+Daemon tests retain a dev-only `cockpit` dependency for existing cross-layer App coverage.
+Core's default-off `test-support` feature exposes only existing cache fixture methods
+used by the terminal package's dev-dependency. A real normal-dependency feature-tree test
+checks that production application dependencies do not enable it. Transaction barrier
+hooks remain strictly `cfg(test)` within core; their tests moved with them, not into the
+production feature. No test helper grants host authority.
 
 Team and Chief types reference each other within the protocol crate. Existing
-`cockpit::teams`, `cockpit::chief` and `cockpit::agents` paths re-export the contracts.
+`cockpit::teams`, `cockpit::chief` and `cockpit::agents` paths re-export the same core/protocol definitions.
 Chief storage still uses the team store's SQLite connection; these are not independent
 databases. Explicit SQL-error conversions use `teams::store::storage_error`, preserving
 the wire `Storage` code and SQLite error text without giving the protocol a database dependency.
-Background modules still call the application refresh notifier.
+Background services call the neutral core notification module; old `app::refresh`
+notification paths re-export the same singleton. Draft text formatting is owned beside
+draft persistence, not by App. Shared Chief digest/phone status does not instantiate a view;
+view-local pending/error state remains in its wrapper.
 
 ## Runtime and trust boundaries
 
@@ -57,13 +66,18 @@ from the three-level `apps/crates/cockpit-daemon` layout; other package fixtures
 their two-level paths. Native roundtrips use the existing release `cockpit-team` binary,
 which must be built before running the daemon tests on a clean checkout.
 
-## Deferred UI boundary
+## Module and crate ownership
 
-A separate UI crate is not justified by the current ownership graph: refresh notification,
-draft persistence and terminal presentation still share runtime state in `cockpit`.
-The protocol extraction provides the useful dependency boundary without moving those
-responsibilities or adding a reverse dependency. Reassess a UI crate only when that
-state ownership can be separated for a concrete consumer.
+The existing `cockpit` package is the UI/binary owner rather than adding a redundant
+`cockpit-tui` package. Explicit compatibility exports keep its public import paths stable.
+Private App children own feature methods; App retains shared state and visible dispatch
+ordering. Method relocation does not imply independent state or pure redraws.
+
+Core retains shared Team/Chief connection and transaction ownership. Headless inline unit
+tests and transaction barrier regressions live with core; binary integration tests remain
+with `cockpit` so `CARGO_BIN_EXE_*` and installed-path fixture resolution keep their owners.
+The shared test-only link fixture is referenced through a verified relative path; it is
+not a production dependency or a new fixture crate.
 
 Retain the `apps/` workspace and existing binary packages during these extractions.
-See the [engineering plan](superpowers/plans/2026-10-28-engineering-workflow.md).
+See the [module/core extraction plan](superpowers/plans/2026-10-29-rust-module-and-crate-boundaries.md).

@@ -105,7 +105,8 @@ pub fn read_message(
 mod tests {
     #[test]
     fn the_peer_is_the_process_that_connected() {
-        let path = std::env::temp_dir().join(format!("peer-{}.sock", cockpit::util::token_hex(4)));
+        let path =
+            std::env::temp_dir().join(format!("peer-{}.sock", cockpit_core::util::token_hex(4)));
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let _client = std::os::unix::net::UnixStream::connect(&path).unwrap();
         let (accepted, _) = listener.accept().unwrap();

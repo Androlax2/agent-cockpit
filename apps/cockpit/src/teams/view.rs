@@ -1,7 +1,8 @@
 //! The Team view's content, as plain text the column draws: what Theo reads before approving.
 //! Everything an agent wrote is shown escaped, never interpreted by the terminal.
 
-use crate::approval::escape_hiding;
+pub(crate) use super::summary::short_project;
+use super::summary::shown;
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,20 +27,6 @@ pub struct TeamView {
     pub snapshot_error: Option<String>,
     /// The 4 Teams tab acts through this view without showing it: nothing draws it or routes keys to it.
     pub hidden: bool,
-}
-
-fn shown(value: &Value) -> String {
-    match value {
-        Value::String(text) => escape_hiding(text, "", ""),
-        Value::Null => String::new(),
-        other => escape_hiding(&other.to_string(), "", ""),
-    }
-}
-
-/// "remote:git@github.com:example/project-a.git" → "project-a".
-pub(crate) fn short_project(canonical: &str) -> String {
-    let tail = canonical.rsplit(['/', ':']).next().unwrap_or(canonical);
-    shown(&Value::String(tail.trim_end_matches(".git").to_string()))
 }
 
 fn link_block(snapshot: &Value, record: &Value) -> Option<String> {

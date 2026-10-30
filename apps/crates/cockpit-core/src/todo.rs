@@ -326,7 +326,7 @@ impl Item {
             })
             .collect()
     }
-    pub(crate) fn updated(&self) -> i64 {
+    pub fn updated(&self) -> i64 {
         self.0.get("updated").and_then(Value::as_i64).unwrap_or(0)
     }
     /// The projects a session of another project handed it across (claude-todo add --project),

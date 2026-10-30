@@ -229,6 +229,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "cockpit-core",
  "cockpit-protocol",
  "crossterm",
  "libc",
@@ -246,11 +247,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "cockpit-protocol",
+ "libc",
+ "regex",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1_smol",
+ "sha2",
+ "tiny_http",
+ "ureq",
+]
+
+[[package]]
 name = "cockpit-daemon"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "cockpit",
+ "cockpit-core",
  "regex",
  "serde_json",
 ]

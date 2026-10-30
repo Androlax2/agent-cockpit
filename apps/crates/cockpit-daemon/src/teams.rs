@@ -1,9 +1,9 @@
 //! Daemon side of linked sessions: verified sender identity, then the protected store.
 
 use crate::registry::Registry;
-pub(crate) use cockpit::teams::canonical_project;
-use cockpit::teams::store::storage_error;
-use cockpit::teams::{
+pub(crate) use cockpit_core::teams::canonical_project;
+use cockpit_core::teams::store::storage_error;
+use cockpit_core::teams::{
     AgentAction, ErrorCode, HostAction, TeamError, TeamReply, VerifiedSession, store,
 };
 use serde_json::{Value, json};
@@ -26,13 +26,13 @@ pub(crate) fn now_ms() -> i64 {
 #[derive(Default)]
 pub(crate) struct ResolvedTodos {
     stamp: Option<(i64, i64, i64, i64, u64, u64)>,
-    todos: cockpit::todo::TodoList,
+    todos: cockpit_core::todo::TodoList,
     pub(crate) loads: u64,
 }
 
 impl ResolvedTodos {
-    pub(crate) fn current(&mut self) -> &cockpit::todo::TodoList {
-        let stamp = fs::metadata(cockpit::paths::todo()).ok().map(|file| {
+    pub(crate) fn current(&mut self) -> &cockpit_core::todo::TodoList {
+        let stamp = fs::metadata(cockpit_core::paths::todo()).ok().map(|file| {
             (
                 file.mtime(),
                 file.mtime_nsec(),
@@ -43,7 +43,7 @@ impl ResolvedTodos {
             )
         });
         if self.loads == 0 || stamp.is_none() || stamp != self.stamp {
-            self.todos = resolve_projects(cockpit::todo::TodoList::load());
+            self.todos = resolve_projects(cockpit_core::todo::TodoList::load());
             self.stamp = stamp;
             self.loads += 1;
         }
@@ -51,7 +51,7 @@ impl ResolvedTodos {
     }
 }
 
-fn resolve_projects(mut todos: cockpit::todo::TodoList) -> cockpit::todo::TodoList {
+fn resolve_projects(mut todos: cockpit_core::todo::TodoList) -> cockpit_core::todo::TodoList {
     for item in &mut todos.items {
         if let Ok(project) = canonical_project(&item.cwd()) {
             item.0
@@ -73,7 +73,7 @@ fn unauthorized() -> TeamError {
 fn open_and_restore(registry: &mut Registry) -> Result<bool, TeamError> {
     let is_opened = registry.teams.is_none();
     if is_opened {
-        registry.teams = Some(store::open(&cockpit::paths::team_database())?);
+        registry.teams = Some(store::open(&cockpit_core::paths::team_database())?);
     }
     let missing: Vec<String> = registry
         .sessions
@@ -85,7 +85,7 @@ fn open_and_restore(registry: &mut Registry) -> Result<bool, TeamError> {
         let connection = registry.teams.as_ref().expect("opened above");
         let mut runtimes = store::approved_runtimes(connection, &session)?;
         let member_runtime = store::member_runtime(connection, &session)?;
-        let chief_runtime = cockpit::chief::store::runtime(connection, &session)?;
+        let chief_runtime = cockpit_core::chief::store::runtime(connection, &session)?;
         if member_runtime
             .as_ref()
             .zip(chief_runtime.as_ref())
@@ -181,14 +181,17 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
         )?;
         start_spawns(registry)?;
     }
-    cockpit::chief::store::observe_resumed(registry.teams.as_ref().expect("opened above"), &live)?;
+    cockpit_core::chief::store::observe_resumed(
+        registry.teams.as_ref().expect("opened above"),
+        &live,
+    )?;
     let todos = registry.resolved_todos.current();
-    cockpit::chief::store::reconcile_todos(
+    cockpit_core::chief::store::reconcile_todos(
         registry.teams.as_mut().expect("opened above"),
         todos,
         now_ms(),
     )?;
-    cockpit::chief::store::record_todo_completions(
+    cockpit_core::chief::store::record_todo_completions(
         registry.teams.as_mut().expect("opened above"),
         todos,
         now_ms(),
@@ -238,7 +241,7 @@ pub(crate) fn polled_live_sessions(
 }
 
 fn ended(session: &str) -> bool {
-    match fs::read_to_string(cockpit::paths::ended_sessions()) {
+    match fs::read_to_string(cockpit_core::paths::ended_sessions()) {
         Ok(text) => text.lines().any(|line| line.trim() == session),
         Err(error) => error.kind() != std::io::ErrorKind::NotFound,
     }
@@ -247,7 +250,7 @@ fn ended(session: &str) -> bool {
 /// Pin the private directory, then open its file without following a final symlink. Linux flags
 /// match the daemon's existing direct O_NONBLOCK use; no extra dependency is needed.
 fn matching_sleep_note(permit: &store::sleep::SleepPermit, now: i64) -> bool {
-    if cockpit::agents::of_session_id(&permit.session_id).is_none()
+    if cockpit_core::agents::of_session_id(&permit.session_id).is_none()
         || permit.expires_at <= now
         || ended(&permit.session_id)
     {
@@ -260,7 +263,7 @@ fn matching_sleep_note(permit: &store::sleep::SleepPermit, now: i64) -> bool {
         let directory = fs::OpenOptions::new()
             .read(true)
             .custom_flags(O_NOFOLLOW | O_DIRECTORY)
-            .open(cockpit::paths::asleep_dir())?;
+            .open(cockpit_core::paths::asleep_dir())?;
         let directory_metadata = directory.metadata()?;
         let owner = fs::metadata("/proc/self")?.uid();
         if directory_metadata.uid() != owner || directory_metadata.mode() & 0o077 != 0 {
@@ -279,14 +282,14 @@ fn matching_sleep_note(permit: &store::sleep::SleepPermit, now: i64) -> bool {
             || metadata.uid() != owner
             || metadata.mode() & 0o077 != 0
             || metadata.nlink() != 1
-            || metadata.len() > cockpit::teams::client::REQUEST_MAX as u64
+            || metadata.len() > cockpit_core::teams::client::REQUEST_MAX as u64
         {
             return Ok(None);
         }
         let mut input = Vec::new();
-        file.take(cockpit::teams::client::REQUEST_MAX as u64 + 1)
+        file.take(cockpit_core::teams::client::REQUEST_MAX as u64 + 1)
             .read_to_end(&mut input)?;
-        if input.len() > cockpit::teams::client::REQUEST_MAX {
+        if input.len() > cockpit_core::teams::client::REQUEST_MAX {
             return Ok(None);
         }
         Ok(serde_json::from_slice(&input).ok())
@@ -298,7 +301,7 @@ fn matching_sleep_note(permit: &store::sleep::SleepPermit, now: i64) -> bool {
     let slept_at = note["slept_at"]
         .as_i64()
         .and_then(|seconds| seconds.checked_mul(1000));
-    let lifetime = cockpit::sleep::EXPIRY_S * 1000;
+    let lifetime = cockpit_core::sleep::EXPIRY_S * 1000;
     note["session"].as_str() == Some(&permit.session_id)
         && note["agent"].as_str() == Some(&permit.agent)
         && note["team_resume"].as_str() == Some(&permit.token)
@@ -346,7 +349,7 @@ fn sleep_operation_file(session: &str) -> std::io::Result<Option<fs::File>> {
     let directory = match fs::OpenOptions::new()
         .read(true)
         .custom_flags(O_NOFOLLOW | O_DIRECTORY)
-        .open(cockpit::paths::runtime_dir().join("cockpit.sleep-operations"))
+        .open(cockpit_core::paths::runtime_dir().join("cockpit.sleep-operations"))
     {
         Ok(directory) => directory,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -472,9 +475,9 @@ pub fn start_spawns(registry: &mut Registry) -> Result<(), TeamError> {
     let superseded = store::superseded_qa(connection)?;
     for spawn in pending {
         let role = match spawn.role {
-            cockpit::teams::Role::Designer => "designer",
-            cockpit::teams::Role::Developer => "developer",
-            cockpit::teams::Role::Qa => "qa",
+            cockpit_core::teams::Role::Designer => "designer",
+            cockpit_core::teams::Role::Developer => "developer",
+            cockpit_core::teams::Role::Qa => "qa",
         };
         let commit = spawn.commit_id.as_deref().unwrap_or("-");
         // Recorded before the start: a failure after it can never start the same teammate twice.
@@ -539,7 +542,7 @@ fn database<'a>(
 }
 
 fn record(kind: &str, sender: Option<&VerifiedSession>, is_ok: bool) {
-    cockpit::audit::record(
+    cockpit_core::audit::record(
         "daemon",
         &format!("team.{kind}"),
         if is_ok { "ok" } else { "refused" },
@@ -663,7 +666,7 @@ pub fn request(
         Vec::new()
     };
     let is_subscription_held = matches!(action, AgentAction::Receive)
-        && cockpit::subscription_fallback::message_target(&sender.session_id)
+        && cockpit_core::subscription_fallback::message_target(&sender.session_id)
             .map_err(|error| {
                 TeamError::new(
                     ErrorCode::Unavailable,
@@ -678,13 +681,16 @@ pub fn request(
         } = &action
             && dispatch_id.starts_with("prompt_")
         {
-            if !matches!(outcome, cockpit::teams::TransportOutcome::Received { .. }) {
+            if !matches!(
+                outcome,
+                cockpit_core::teams::TransportOutcome::Received { .. }
+            ) {
                 return Err(TeamError::new(
                     ErrorCode::Conflict,
                     "native user message delivery is uncertain; reconcile before retrying",
                 ));
             }
-            cockpit::prompts::receipt_native(&sender.session_id, &sender.runtime, dispatch_id)
+            cockpit_core::prompts::receipt_native(&sender.session_id, &sender.runtime, dispatch_id)
                 .map_err(|error| TeamError::new(ErrorCode::Storage, error))?;
             return Ok(TeamReply {
                 request_id: dispatch_id.clone(),
@@ -692,21 +698,24 @@ pub fn request(
             });
         }
         if matches!(action, AgentAction::Receive) && !is_subscription_held && turn.is_some() {
-            let routes = cockpit::subscription_fallback::RoutingStore::load(
-                &cockpit::paths::subscription_routes(),
+            let routes = cockpit_core::subscription_fallback::RoutingStore::load(
+                &cockpit_core::paths::subscription_routes(),
             )
             .map_err(|error| TeamError::new(ErrorCode::Storage, error))?;
             if routes.routes().any(|route| {
                 route.current.session == sender.session_id
                     && route.current.runtime == sender.runtime
                     && route.initial_admitted
-                    && matches!(route.phase, cockpit::subscription_fallback::Phase::Active)
+                    && matches!(
+                        route.phase,
+                        cockpit_core::subscription_fallback::Phase::Active
+                    )
             }) {
                 let session = registry
                     .snapshot_rows()
                     .iter()
                     .find(|row| row["session"] == sender.session_id)
-                    .and_then(cockpit::sessions::Session::from_value)
+                    .and_then(cockpit_core::sessions::Session::from_value)
                     .ok_or_else(unauthorized)?;
                 if session.needs_attention()
                     || session.agents != 0
@@ -720,7 +729,7 @@ pub fn request(
                     });
                 }
                 if let Some(delivery) =
-                    cockpit::prompts::claim_native(&sender.session_id, &sender.runtime)
+                    cockpit_core::prompts::claim_native(&sender.session_id, &sender.runtime)
                         .map_err(|error| TeamError::new(ErrorCode::Storage, error))?
                 {
                     if let Some(entry) = registry.sessions.get_mut(&sender.session_id) {
@@ -732,7 +741,7 @@ pub fn request(
                         result: Ok(delivery),
                     });
                 }
-                if cockpit::prompts::folder(&sender.session_id)
+                if cockpit_core::prompts::folder(&sender.session_id)
                     .is_some_and(|folder| folder.join("native-delivery.json").exists())
                 {
                     return Ok(TeamReply {
@@ -756,38 +765,38 @@ pub fn request(
         AgentAction::Context => Ok(TeamReply { request_id: "context".into(), result: Ok(store::context(connection, &sender)?) }),
         AgentAction::Chief { .. } | AgentAction::NativeTelemetry { .. } => Err(TeamError::new(ErrorCode::Unavailable, "action is unavailable here")),
         AgentAction::Propose { proposal } => store::propose(connection, &sender, proposal, &live, now_ms()),
-        AgentAction::LinkPropose { proposal } => cockpit::teams::links::propose(connection, &sender, proposal, &live, now_ms()),
-        AgentAction::LinkSend { message } => cockpit::teams::links::accept(connection, &sender, message, &live, now_ms()),
-        AgentAction::LinkAssess { link_id, thread_id, resolved } => cockpit::teams::links::assess(connection, &sender, link_id, thread_id, *resolved),
+        AgentAction::LinkPropose { proposal } => cockpit_core::teams::links::propose(connection, &sender, proposal, &live, now_ms()),
+        AgentAction::LinkSend { message } => cockpit_core::teams::links::accept(connection, &sender, message, &live, now_ms()),
+        AgentAction::LinkAssess { link_id, thread_id, resolved } => cockpit_core::teams::links::assess(connection, &sender, link_id, thread_id, *resolved),
         AgentAction::Send { .. } => store::accept(connection, &sender, &action, now_ms()),
         AgentAction::Receive => {
             store::expire(connection, now_ms())?;
-            if has_chief_delivery { cockpit::chief::store::observe(connection, &chief_live, now_ms())?; }
+            if has_chief_delivery { cockpit_core::chief::store::observe(connection, &chief_live, now_ms())?; }
             if is_subscription_held { return Ok(TeamReply { request_id:"receive".into(),result:Ok(Value::Null) }); }
             // The native Receive handoff shares the TODO closure boundary.
             let mut dispatch = match &turn { Some(turn) => store::claim(connection, &sender, turn, &live, now_ms())?, None => None };
             // Theo's correction goes out before any Chief answer.
             if has_chief_delivery && let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
-                dispatch = cockpit::chief::store::claim_correction(connection, &sender, idle_turn, boundary, now_ms())?;
+                dispatch = cockpit_core::chief::store::claim_correction(connection, &sender, idle_turn, boundary, now_ms())?;
             }
             if has_chief_delivery && let (None, Some((idle_turn, boundary))) = (&dispatch, &answer_turn) {
-                dispatch = cockpit::chief::store::claim_answer(connection, &sender, idle_turn, boundary, now_ms())?;
+                dispatch = cockpit_core::chief::store::claim_answer(connection, &sender, idle_turn, boundary, now_ms())?;
             }
             if has_chief_delivery && let (None, Some((idle_turn, boundary))) = (&dispatch, &form_turn) {
-                dispatch = cockpit::chief::store::claim_form_reply(connection, &sender, idle_turn, boundary, now_ms())?;
+                dispatch = cockpit_core::chief::store::claim_form_reply(connection, &sender, idle_turn, boundary, now_ms())?;
             }
             if has_chief_delivery && let (None, Some(turn)) = (&dispatch, &turn) {
-                dispatch = cockpit::chief::store::claim_check(connection, &sender, turn, now_ms())?;
+                dispatch = cockpit_core::chief::store::claim_check(connection, &sender, turn, now_ms())?;
             }
             if gift_ready && let (None,Some(turn))=(&dispatch,&turn) {
-                dispatch=cockpit::chief::store::claim_todo_gift(connection,&sender,turn,now_ms())?;
+                dispatch=cockpit_core::chief::store::claim_todo_gift(connection,&sender,turn,now_ms())?;
             }
             if has_chief_delivery && let (None, Some(turn)) = (&dispatch, &turn) {
-                dispatch = cockpit::chief::store::claim(connection, &sender, turn, now_ms())?;
+                dispatch = cockpit_core::chief::store::claim(connection, &sender, turn, now_ms())?;
             }
             Ok(TeamReply { request_id: "receive".into(), result: Ok(dispatch.map_or(Value::Null, |dispatch| json!({
                 "dispatch_id": dispatch.id, "message_id": dispatch.message_id,
-                "text": cockpit::teams::envelope_text(&dispatch.envelope), "envelope": dispatch.envelope}))) })
+                "text": cockpit_core::teams::envelope_text(&dispatch.envelope), "envelope": dispatch.envelope}))) })
         },
         AgentAction::Assess { .. } => store::assess(connection, &sender, &action, now_ms()),
         AgentAction::Handoff { .. } => store::handoff_in(connection, &sender, &action, developer_folder.as_deref(), now_ms()),
@@ -795,8 +804,8 @@ pub fn request(
             store::recruit(connection, &sender, recruitment, default_agent.as_deref(), &live, &directories, now_ms())
         },
         AgentAction::Receipt { dispatch_id, outcome } => {
-            if cockpit::chief::store::owns_dispatch(connection, dispatch_id)? {
-                cockpit::chief::store::finish_for(connection, &sender, dispatch_id, outcome, now_ms())?;
+            if cockpit_core::chief::store::owns_dispatch(connection, dispatch_id)? {
+                cockpit_core::chief::store::finish_for(connection, &sender, dispatch_id, outcome, now_ms())?;
             } else {
                 store::finish_for(connection, &sender, dispatch_id, outcome, now_ms())?;
             }
@@ -830,7 +839,7 @@ pub fn request(
     {
         let message = &delivery["envelope"];
         let project = sender.project.rsplit('/').next().unwrap_or(&sender.project);
-        cockpit::util::log_as(
+        cockpit_core::util::log_as(
             "daemon",
             "INFO",
             &format!(
@@ -839,7 +848,7 @@ pub fn request(
                 sender.session_id
             ),
         );
-        cockpit::audit::record(
+        cockpit_core::audit::record(
             "daemon",
             "chief.message_submitting",
             "ok",
@@ -852,19 +861,19 @@ pub fn request(
 /// Settles the Chief's request once the queue reserved its fresh session; the log and audit keep it.
 fn chief_session_started(
     registry: &mut Registry,
-    task: &cockpit::teams::TaskKey,
+    task: &cockpit_core::teams::TaskKey,
     request: &str,
     reason: &str,
     token: &str,
 ) -> Result<(), TeamError> {
-    cockpit::chief::store::mark_session_started(
+    cockpit_core::chief::store::mark_session_started(
         registry.teams.as_ref().expect("reserved above"),
         request,
         token,
         now_ms(),
     )?;
     let project = task.project.rsplit('/').next().unwrap_or(&task.project);
-    cockpit::util::log_as(
+    cockpit_core::util::log_as(
         "daemon",
         "INFO",
         &format!(
@@ -872,7 +881,7 @@ fn chief_session_started(
             task.task_id
         ),
     );
-    cockpit::audit::record(
+    cockpit_core::audit::record(
         "daemon",
         "chief.session_started",
         "ok",
@@ -903,11 +912,13 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
     }
     let mut state = store::snapshot(database(registry, &live)?, None, None, 100)?;
     state["sessions"] = json!(sessions);
-    state["chief_session"] = json!(cockpit::chief::store::chief_session(
+    state["chief_session"] = json!(cockpit_core::chief::store::chief_session(
         registry.teams.as_ref().expect("opened above")
     )?);
-    state["chief_badge"] =
-        cockpit::chief::store::badge(registry.teams.as_ref().expect("opened above"), now_ms())?;
+    state["chief_badge"] = cockpit_core::chief::store::badge(
+        registry.teams.as_ref().expect("opened above"),
+        now_ms(),
+    )?;
     let mut sleeps = Vec::new();
     for permit in store::sleep::prepared_records(registry.teams.as_ref().expect("opened above"))? {
         let mut status = store::sleep::status(
@@ -919,7 +930,7 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
         sleeps.push(status);
     }
     state["sleeps"] = json!(sleeps);
-    state["chief_answers"] = json!(cockpit::chief::store::answer_counts(
+    state["chief_answers"] = json!(cockpit_core::chief::store::answer_counts(
         registry.teams.as_ref().expect("opened above")
     )?);
     Ok(state)
@@ -928,34 +939,37 @@ pub fn host_snapshot(registry: &mut Registry) -> Result<Value, TeamError> {
 pub fn host(
     registry: &mut Registry,
     peer: u32,
-    request: cockpit::teams::HostRequest,
+    request: cockpit_core::teams::HostRequest,
 ) -> Result<TeamReply, TeamError> {
     let is_poll = matches!(
         &request,
-        cockpit::teams::HostRequest::Snapshot | cockpit::teams::HostRequest::ChiefSnapshot { .. }
+        cockpit_core::teams::HostRequest::Snapshot
+            | cockpit_core::teams::HostRequest::ChiefSnapshot { .. }
     );
     if !is_poll {
         registry.live_session_cache = None;
     }
-    if let cockpit::teams::HostRequest::PrepareSleep { session_id } = &request {
-        if cockpit::agents::of_session_id(session_id).is_none() {
+    if let cockpit_core::teams::HostRequest::PrepareSleep { session_id } = &request {
+        if cockpit_core::agents::of_session_id(session_id).is_none() {
             return Err(unauthorized());
         }
         verify_sleep_operation(peer, session_id)?;
     }
-    if matches!(&request, cockpit::teams::HostRequest::PrepareRestart { .. })
-        && !host_peer_allowed(&crate::registry::Proc, &peer.to_string())
+    if matches!(
+        &request,
+        cockpit_core::teams::HostRequest::PrepareRestart { .. }
+    ) && !host_peer_allowed(&crate::registry::Proc, &peer.to_string())
     {
         return Err(unauthorized());
     }
     let result = match request {
-        cockpit::teams::HostRequest::Control { action } => host_control(registry, &action),
-        cockpit::teams::HostRequest::Snapshot => Ok(TeamReply {
+        cockpit_core::teams::HostRequest::Control { action } => host_control(registry, &action),
+        cockpit_core::teams::HostRequest::Snapshot => Ok(TeamReply {
             request_id: "snapshot".into(),
             result: Ok(host_snapshot(registry)?),
         }),
-        cockpit::teams::HostRequest::Chief { action } => crate::chief::host(registry, &action),
-        cockpit::teams::HostRequest::ChiefSnapshot {
+        cockpit_core::teams::HostRequest::Chief { action } => crate::chief::host(registry, &action),
+        cockpit_core::teams::HostRequest::ChiefSnapshot {
             after,
             limit,
             generation,
@@ -968,7 +982,7 @@ pub fn host(
                 generation.as_deref(),
             )?),
         }),
-        cockpit::teams::HostRequest::ChiefAudit {
+        cockpit_core::teams::HostRequest::ChiefAudit {
             after,
             limit,
             generation,
@@ -976,7 +990,7 @@ pub fn host(
             let live = crate::chief::workers(registry)?;
             Ok(TeamReply {
                 request_id: "chief-audit".into(),
-                result: cockpit::chief::store::audit_page(
+                result: cockpit_core::chief::store::audit_page(
                     registry.teams.as_ref().ok_or_else(|| {
                         TeamError::new(ErrorCode::Unavailable, "chief storage unavailable")
                     })?,
@@ -988,14 +1002,14 @@ pub fn host(
                 ),
             })
         }
-        cockpit::teams::HostRequest::ReserveManual { task_id, directory } => {
+        cockpit_core::teams::HostRequest::ReserveManual { task_id, directory } => {
             live_sessions(registry)?;
-            let task = cockpit::teams::TaskKey {
+            let task = cockpit_core::teams::TaskKey {
                 project: canonical_project(&directory)?,
                 task_id,
             };
             task.validate()?;
-            let todos = cockpit::todo::TodoList::load();
+            let todos = cockpit_core::todo::TodoList::load();
             let item = todos.items.iter().find(|item| item.id() == task.task_id);
             if todos.status_of(&task.task_id) != "todo"
                 || match item {
@@ -1005,7 +1019,7 @@ pub fn host(
             {
                 return Err(unauthorized());
             }
-            let token = cockpit::chief::store::reserve_legacy_kind(
+            let token = cockpit_core::chief::store::reserve_legacy_kind(
                 registry.teams.as_mut().unwrap(),
                 &task,
                 None,
@@ -1017,20 +1031,20 @@ pub fn host(
                 result: Ok(json!({"reservation":token})),
             })
         }
-        cockpit::teams::HostRequest::ReleaseManual {
+        cockpit_core::teams::HostRequest::ReleaseManual {
             task_id,
             directory,
             token,
         } => {
             live_sessions(registry)?;
             let project = canonical_project(&directory)?;
-            if cockpit::todo::TodoList::load().status_of(&task_id) == "doing" {
+            if cockpit_core::todo::TodoList::load().status_of(&task_id) == "doing" {
                 return Err(TeamError::new(
                     ErrorCode::Conflict,
                     "undo the manual status before releasing it",
                 ));
             }
-            cockpit::chief::store::release_manual(
+            cockpit_core::chief::store::release_manual(
                 registry.teams.as_mut().unwrap(),
                 &project,
                 &task_id,
@@ -1041,7 +1055,7 @@ pub fn host(
                 result: Ok(json!({"released_manual_only":true})),
             })
         }
-        cockpit::teams::HostRequest::SettleReservation {
+        cockpit_core::teams::HostRequest::SettleReservation {
             token,
             expected_revision,
             outcome,
@@ -1049,7 +1063,7 @@ pub fn host(
             live_sessions(registry)?;
             Ok(TeamReply {
                 request_id: "settle-reservation".into(),
-                result: cockpit::chief::store::settle_launch(
+                result: cockpit_core::chief::store::settle_launch(
                     registry.teams.as_mut().unwrap(),
                     &token,
                     expected_revision,
@@ -1057,25 +1071,25 @@ pub fn host(
                 ),
             })
         }
-        cockpit::teams::HostRequest::ReserveTask {
+        cockpit_core::teams::HostRequest::ReserveTask {
             task_id,
             directory,
             worker,
             automatic,
         } => {
             let live = live_sessions(registry)?;
-            let task = cockpit::teams::TaskKey {
+            let task = cockpit_core::teams::TaskKey {
                 project: canonical_project(&directory)?,
                 task_id,
             };
             task.validate()?;
-            cockpit::chief::store::expire_todo_gifts(
+            cockpit_core::chief::store::expire_todo_gifts(
                 registry.teams.as_ref().unwrap(),
                 &live,
                 now_ms(),
             )?;
             let chief_request = match (&worker, registry.teams.as_ref()) {
-                (None, Some(connection)) => cockpit::chief::store::open_session_start(
+                (None, Some(connection)) => cockpit_core::chief::store::open_session_start(
                     connection,
                     &task.project,
                     &task.task_id,
@@ -1086,7 +1100,7 @@ pub fn host(
             if automatic {
                 let has_gift: bool = registry.teams.as_ref().unwrap().query_row(
                     "SELECT EXISTS(SELECT 1 FROM chief_session_starts WHERE project=?1 AND task_id=?2 AND worker IS NOT NULL AND state='requested' AND created_at>?3)",
-                    (&task.project,&task.task_id,now_ms()-cockpit::chief::SESSION_START_OPEN_MS), |row|row.get(0)).map_err(storage_error)?;
+                    (&task.project,&task.task_id,now_ms()-cockpit_core::chief::SESSION_START_OPEN_MS), |row|row.get(0)).map_err(storage_error)?;
                 if has_gift {
                     return Err(TeamError::new(
                         ErrorCode::Conflict,
@@ -1104,10 +1118,10 @@ pub fn host(
             {
                 return Err(TeamError::new(
                     ErrorCode::Conflict,
-                    format!("{}: {reason}", cockpit::queue::SESSION_NOT_READY),
+                    format!("{}: {reason}", cockpit_core::queue::SESSION_NOT_READY),
                 ));
             }
-            let todos = cockpit::todo::TodoList::load();
+            let todos = cockpit_core::todo::TodoList::load();
             let item = todos.items.iter().find(|item| item.id() == task.task_id);
             if !task.task_id.contains('#') && item.is_none() {
                 return Err(unauthorized());
@@ -1130,43 +1144,49 @@ pub fn host(
                     .iter()
                     .find(|session| &session.session_id == id && session.project == task.project);
                 let role = if let Some(target) = target {
-                    cockpit::chief::store::require_non_chief(
+                    cockpit_core::chief::store::require_non_chief(
                         registry.teams.as_ref().unwrap(),
                         &target.session_id,
                     )?;
-                    cockpit::chief::store::require_task_mapping(
+                    cockpit_core::chief::store::require_task_mapping(
                         registry.teams.as_ref().unwrap(),
                         target,
                         &task,
                     )?;
-                    cockpit::chief::store::worker_role(registry.teams.as_ref().unwrap(), target)?
+                    cockpit_core::chief::store::worker_role(
+                        registry.teams.as_ref().unwrap(),
+                        target,
+                    )?
                 } else {
                     // Only the existing host sleep ledger can authorize a legacy wake; not a dead card or agent claim.
-                    let asleep = cockpit::sleep::asleep().into_iter().any(|note| {
+                    let asleep = cockpit_core::sleep::asleep().into_iter().any(|note| {
                         &note.session == id
-                            && cockpit::agents::of_session_id(id)
+                            && cockpit_core::agents::of_session_id(id)
                                 .is_some_and(|agent| agent.name == note.agent)
                             && canonical_project(&note.cwd)
                                 .is_ok_and(|project| project == task.project)
                     });
                     if !asleep
-                        || cockpit::chief::store::is_product_worker(
+                        || cockpit_core::chief::store::is_product_worker(
                             registry.teams.as_ref().unwrap(),
                             id,
                         )?
                     {
                         return Err(unauthorized());
                     }
-                    cockpit::chief::store::require_non_chief(registry.teams.as_ref().unwrap(), id)?;
+                    cockpit_core::chief::store::require_non_chief(
+                        registry.teams.as_ref().unwrap(),
+                        id,
+                    )?;
                     None
                 };
-                let designer = role == Some(cockpit::teams::Role::Designer)
-                    || (role.is_none() && cockpit::sessions::role_of(id) == "designer");
+                let designer = role == Some(cockpit_core::teams::Role::Designer)
+                    || (role.is_none() && cockpit_core::sessions::role_of(id) == "designer");
                 if designer != item.is_some_and(|item| item.is_design()) {
                     return Err(unauthorized());
                 }
             }
-            let token = cockpit::chief::store::reserve_legacy(
+            let token = cockpit_core::chief::store::reserve_legacy(
                 registry.teams.as_mut().unwrap(),
                 &task,
                 worker.as_deref(),
@@ -1180,9 +1200,9 @@ pub fn host(
                 result: Ok(json!({"reservation":token})),
             })
         }
-        cockpit::teams::HostRequest::ReserveResume { session, directory } => {
+        cockpit_core::teams::HostRequest::ReserveResume { session, directory } => {
             let live = live_sessions(registry)?;
-            if cockpit::agents::of_session_id(&session).is_none()
+            if cockpit_core::agents::of_session_id(&session).is_none()
                 || live.iter().any(|worker| worker.session_id == session)
             {
                 return Err(TeamError::new(
@@ -1190,11 +1210,11 @@ pub fn host(
                     "conversation is already live or has no valid native identity",
                 ));
             }
-            let task = cockpit::teams::TaskKey {
+            let task = cockpit_core::teams::TaskKey {
                 project: canonical_project(&directory)?,
                 task_id: format!("resume:{session}"),
             };
-            let token = cockpit::chief::store::reserve_resume(
+            let token = cockpit_core::chief::store::reserve_resume(
                 registry.teams.as_mut().unwrap(),
                 &task,
                 &session,
@@ -1205,7 +1225,7 @@ pub fn host(
                 result: Ok(json!({"reservation":token})),
             })
         }
-        cockpit::teams::HostRequest::ChiefFocus {
+        cockpit_core::teams::HostRequest::ChiefFocus {
             viewed,
             workspace_active,
             gaming,
@@ -1216,7 +1236,7 @@ pub fn host(
                 result: Ok(json!({"recorded":true})),
             })
         }
-        cockpit::teams::HostRequest::ChiefNativeObservation {
+        cockpit_core::teams::HostRequest::ChiefNativeObservation {
             session,
             idle,
             pending_input,
@@ -1224,7 +1244,7 @@ pub fn host(
         } => {
             if !live_sessions(registry)?.contains(&session)
                 || session.agent != "opencode"
-                || cockpit::agents::of_session_id(&session.session_id).map(|agent| agent.name)
+                || cockpit_core::agents::of_session_id(&session.session_id).map(|agent| agent.name)
                     != Some("opencode")
             {
                 return Err(unauthorized());
@@ -1245,14 +1265,14 @@ pub fn host(
                 result: Ok(json!({"recorded":true})),
             })
         }
-        cockpit::teams::HostRequest::VerifyChiefAdmission {
+        cockpit_core::teams::HostRequest::VerifyChiefAdmission {
             session,
             adapter,
             evidence,
         } => {
             if !live_sessions(registry)?.contains(&session)
                 || session.agent != "opencode"
-                || cockpit::agents::of_session_id(&session.session_id).map(|agent| agent.name)
+                || cockpit_core::agents::of_session_id(&session.session_id).map(|agent| agent.name)
                     != Some("opencode")
                 || adapter != "opencode-queued-v1"
                 || evidence.trim().is_empty()
@@ -1261,7 +1281,7 @@ pub fn host(
             {
                 return Err(unauthorized());
             }
-            cockpit::chief::store::verify_admission(
+            cockpit_core::chief::store::verify_admission(
                 registry.teams.as_mut().unwrap(),
                 &session,
                 &adapter,
@@ -1273,7 +1293,7 @@ pub fn host(
                 result: Ok(json!({"recorded":true})),
             })
         }
-        cockpit::teams::HostRequest::SubscriptionSource { session } => {
+        cockpit_core::teams::HostRequest::SubscriptionSource { session } => {
             let entry = registry.sessions.get(&session).cloned();
             let value = if entry.as_ref().is_some_and(|entry| {
                 !entry.runtime.is_empty() && registry.system.runtime_is_live(&entry.runtime)
@@ -1308,7 +1328,7 @@ pub fn host(
                 result: Ok(value),
             })
         }
-        cockpit::teams::HostRequest::SubscriptionRuntime { generation } => {
+        cockpit_core::teams::HostRequest::SubscriptionRuntime { generation } => {
             let runtime = registry
                 .subscription_runtime(&generation)
                 .map_err(|error| TeamError::new(ErrorCode::Conflict, error))?;
@@ -1317,7 +1337,7 @@ pub fn host(
                 result: Ok(runtime),
             })
         }
-        cockpit::teams::HostRequest::SubscriptionBind { origin, generation } => {
+        cockpit_core::teams::HostRequest::SubscriptionBind { origin, generation } => {
             bind_subscription(registry, &origin, &generation)
         }
         request => sleep_control(registry, request),
@@ -1330,9 +1350,9 @@ pub fn host(
 
 fn sleep_control(
     registry: &mut Registry,
-    request: cockpit::teams::HostRequest,
+    request: cockpit_core::teams::HostRequest,
 ) -> Result<TeamReply, TeamError> {
-    use cockpit::teams::HostRequest;
+    use cockpit_core::teams::HostRequest;
     let is_recording = matches!(&request, HostRequest::SleepRecorded { .. });
     let is_restart = matches!(&request, HostRequest::PrepareRestart { .. });
     let live = live_sessions(registry)?;
@@ -1345,7 +1365,7 @@ fn sleep_control(
         | HostRequest::PrepareRestart { session_id } => session_id,
         _ => unreachable!(),
     };
-    if cockpit::agents::of_session_id(session_id).is_none() {
+    if cockpit_core::agents::of_session_id(session_id).is_none() {
         return Err(TeamError::new(
             ErrorCode::Invalid,
             "invalid sleep session id",
@@ -1460,10 +1480,11 @@ fn bind_subscription(
     origin: &str,
     generation: &str,
 ) -> Result<TeamReply, TeamError> {
-    use cockpit::subscription_fallback::{Binding, Phase, RoutingStore};
+    use cockpit_core::subscription_fallback::{Binding, Phase, RoutingStore};
     let conflict = |message: &str| TeamError::new(ErrorCode::Conflict, message);
     let storage = |message: String| TeamError::new(ErrorCode::Storage, message);
-    let mut routes = RoutingStore::load(&cockpit::paths::subscription_routes()).map_err(storage)?;
+    let mut routes =
+        RoutingStore::load(&cockpit_core::paths::subscription_routes()).map_err(storage)?;
     let route = routes
         .route(origin)
         .cloned()
@@ -1517,7 +1538,7 @@ fn bind_subscription(
         .snapshot_rows()
         .iter()
         .find(|row| row["session"] == session)
-        .and_then(cockpit::sessions::Session::from_value)
+        .and_then(cockpit_core::sessions::Session::from_value)
         .ok_or_else(|| conflict("replacement metadata is unavailable"))?;
     if replacement.cwd != route.directory
         || replacement.branch != pending.source_branch
@@ -1539,7 +1560,7 @@ fn bind_subscription(
     routes
         .record_runtime(generation, binding, &route.directory)
         .map_err(storage)?;
-    let source = cockpit::sessions::Session {
+    let source = cockpit_core::sessions::Session {
         session: pending.source.session.clone(),
         agent: pending.source.selection.agent.clone(),
         cwd: route.directory.clone(),
@@ -1548,21 +1569,22 @@ fn bind_subscription(
         ..Default::default()
     };
     // Taken before any store commits: a busy TODO writer fails the bind closed with nothing moved.
-    let todo_guard = cockpit::todo::lock_mutations().map_err(|error| {
+    let todo_guard = cockpit_core::todo::lock_mutations().map_err(|error| {
         storage(format!(
             "cannot serialize subscription task transfer: {error}"
         ))
     })?;
-    let mut todos = cockpit::todo::TodoList::load_checked().map_err(storage)?;
+    let mut todos = cockpit_core::todo::TodoList::load_checked().map_err(storage)?;
     if !route.is_session_task() && todos.status_of(&route.task) != "doing" {
         return Err(conflict(
             "subscription task is missing or no longer in progress",
         ));
     }
     let mut continuity =
-        cockpit::continuity::Continuity::load(&cockpit::paths::continuity()).map_err(storage)?;
+        cockpit_core::continuity::Continuity::load(&cockpit_core::paths::continuity())
+            .map_err(storage)?;
     let project = canonical_project(&route.directory)?;
-    let task = cockpit::teams::TaskKey {
+    let task = cockpit_core::teams::TaskKey {
         project: project.clone(),
         task_id: route.task.clone(),
     };
@@ -1630,9 +1652,10 @@ fn bind_subscription(
         todos.save_guarded(&todo_guard)?;
     }
     drop(todo_guard);
-    cockpit::prompts::transfer_subscription_prompts(&source.session, session).map_err(storage)?;
+    cockpit_core::prompts::transfer_subscription_prompts(&source.session, session)
+        .map_err(storage)?;
     routes.finish(origin, generation).map_err(storage)?;
-    cockpit::audit::record(
+    cockpit_core::audit::record(
         "daemon",
         "subscription.switched",
         "ok",

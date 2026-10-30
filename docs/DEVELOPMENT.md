@@ -2,8 +2,8 @@
 
 ## Workspace and prerequisites
 
-The Rust workspace is [apps/Cargo.toml](../apps/Cargo.toml), with `cockpit`, `osd` and
-`crates/cockpit-daemon` and `crates/cockpit-protocol` members. This project targets Linux and integrates with GTK,
+The Rust workspace is [apps/Cargo.toml](../apps/Cargo.toml), with `cockpit`, `osd`,
+`crates/cockpit-core`, `crates/cockpit-daemon` and `crates/cockpit-protocol` members. This project targets Linux and integrates with GTK,
 terminals and host tools.
 
 The Rust toolchain is pinned in [rust-toolchain.toml](../rust-toolchain.toml). Distro
@@ -82,6 +82,17 @@ paths. Execution results are tracked in the engineering baseline; this guide doe
 assert that the baseline passes.
 
 ## Verification policy
+
+The terminal package's `src/tests/` children share its existing parent fixture and
+environment lock. Core owns headless inline tests and the Todo transaction-barrier tests;
+do not enable those barriers in production to make cross-package tests compile. Its
+default-off `test-support` feature is used only by the terminal dev-dependency for
+cache fixtures. Production normal-dependency feature checks guard this distinction.
+
+For a focused core run, use `cargo nextest run --release --locked --manifest-path apps/Cargo.toml -p cockpit-core --lib`.
+Existing executable integration targets stay under `apps/cockpit/tests/`, retaining
+binary discovery and checkout-relative fixtures. Cargo graph tests use locked metadata
+and distinguish runtime edges from dev-only cross-layer UI coverage.
 
 Use focused tests while editing and affected checks after the source settles. A change
 to a shared contract also needs its consumers checked. Preserve failure-path tests;

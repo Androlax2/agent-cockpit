@@ -36,7 +36,7 @@ jobs:
           sudo apt-get install --no-install-recommends --yes \
             build-essential pkg-config libgtk-4-dev libgtk4-layer-shell-dev \
             libssl-dev python3-venv fish lua5.4 jq tmux socat stow sqlite3
-      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
           fallback: none
           tool: >-
@@ -53,5 +53,9 @@ jobs:
           echo "$RUNNER_TEMP/lint-tools/bin" >> "$GITHUB_PATH"
           npm install --global markdownlint-cli2@0.24.0
           cargo install --locked --version 0.24.2 lychee
+      - name: Configure hosted runner admission
+        if: runner.environment == 'github-hosted'
+        # Disposable hosted runners have no workstation game-guard daemon.
+        run: python3 config/bin/.local/bin/cockpit-game-guard off
       - name: Run the same gate as local development
         run: make ci

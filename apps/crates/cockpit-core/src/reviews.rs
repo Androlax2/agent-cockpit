@@ -507,7 +507,7 @@ impl Reviews {
                     fetched_at: now(),
                 },
             );
-            crate::app::refresh::background_changed();
+            crate::background::background_changed();
         });
         true
     }
@@ -608,7 +608,8 @@ impl Reviews {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn age_fetch(&self, seconds: f64) {
         if let Some(fetched) = self
             .state
@@ -621,7 +622,8 @@ impl Reviews {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn set_rows(&self, rows: Vec<Review>) {
         self.state
             .lock()
@@ -632,7 +634,8 @@ impl Reviews {
             .rows = rows;
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn set_issues(&self, issues: Vec<Issue>) {
         self.state
             .lock()

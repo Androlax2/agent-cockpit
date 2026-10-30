@@ -1,23 +1,13 @@
 //! Plain escaped content and navigation for the Chief controls.
+pub(crate) use super::summary::one_line;
+pub use super::summary::{
+    DEFAULT_LOOKBACK_MS, DIGEST_LINE_WIDTH, DIGEST_LINES, answer_summary_line,
+    fallback_session_name, habit_summary_line, shown, since_label,
+};
+use super::summary::{LINE_LIMIT, NAME_LIMIT, host_flag, scope_name, text};
 use crate::{app::Key, approval::escape_hiding};
 use serde_json::{Value, json};
 
-pub fn shown(value: &Value) -> String {
-    escape_hiding(
-        &serde_json::to_string_pretty(value).expect("JSON value serializes"),
-        "",
-        "",
-    )
-}
-fn text(value: &Value) -> String {
-    value
-        .as_str()
-        .map(|value| escape_hiding(value, "", ""))
-        .unwrap_or_else(|| shown(value))
-}
-fn host_flag(value: &Value) -> bool {
-    value == true || value == 1
-}
 /// Plain words for a known host startup reason; the host store and snapshot keep the raw text.
 fn plain_startup_reason(reason: &str) -> &str {
     match reason {
@@ -48,89 +38,12 @@ fn answer_action(decision: &Value, answer: &str) -> Value {
         json!({"decision":decision["id"],"expected_revision":decision["revision"],"answer":answer}),
     )
 }
-/// A host-supplied string cut to one escaped line: agent-chosen text can hold newlines, terminal codes and any length.
-pub(crate) fn one_line(value: &str, limit: usize) -> String {
-    let escaped = escape_hiding(
-        &value.split_whitespace().collect::<Vec<_>>().join(" "),
-        "",
-        "",
-    );
-    if escaped.chars().count() <= limit {
-        return escaped;
-    }
-    let mut kept: String = escaped.chars().take(limit.saturating_sub(1)).collect();
-    kept.push('…');
-    kept
-}
-/// `ses_…` and the last 6 characters of a session id, for a session without a name.
-pub fn fallback_session_name(session_id: &str) -> String {
-    let tail: String = session_id
-        .chars()
-        .rev()
-        .take(6)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("ses_…{}", one_line(&tail, 6))
-}
-/// `<session name> · <question> → <answer>` on one escaped line of at most `width` characters, the question and the name cut first so the answer stays readable.
-pub fn answer_summary_line(
-    session_name: &str,
-    question: &str,
-    answer: &str,
-    width: usize,
-) -> String {
-    one_line(
-        &format!(
-            "{} · {} → {}",
-            one_line(session_name, NAME_LIMIT.min(30)),
-            one_line(question, 40),
-            one_line(answer, LINE_LIMIT)
-        ),
-        width,
-    )
-}
-/// `<habit> · <project name | everywhere>` on one escaped line of at most `width` characters, the habit cut so its scope stays readable.
-pub fn habit_summary_line(text: &str, project: Option<&str>, width: usize) -> String {
-    let scope = one_line(
-        &scope_name(&project.map_or(Value::Null, |project| Value::String(project.into()))),
-        30,
-    );
-    one_line(
-        &format!(
-            "{} · {scope}",
-            one_line(text, width.saturating_sub(scope.chars().count() + 3))
-        ),
-        width,
-    )
-}
-/// When a "since" time started: `HH:MM` on `today`, `yesterday HH:MM` the day before, otherwise `Wed 14 Oct 09:05`.
-pub fn since_label(since_ms: i64, today: chrono::NaiveDate) -> String {
-    let Some(moment) = chrono::DateTime::from_timestamp_millis(since_ms)
-        .map(|moment| moment.with_timezone(&chrono::Local))
-    else {
-        return "an unknown time".into();
-    };
-    let day = moment.date_naive();
-    if day == today {
-        moment.format("%H:%M").to_string()
-    } else if today.pred_opt() == Some(day) {
-        moment.format("yesterday %H:%M").to_string()
-    } else {
-        moment.format("%a %d %b %H:%M").to_string()
-    }
-}
+
 /// How far back a digest or summary looks when it has no earlier one to start from.
-pub const DEFAULT_LOOKBACK_MS: i64 = 24 * 3_600_000;
 /// Answer lines the digest and the summary list before `+K more`, and the width of each.
-pub const DIGEST_LINES: usize = crate::chief::store::DIGEST_ANSWER_LINES;
-pub const DIGEST_LINE_WIDTH: usize = 100;
 fn field(record: &Value, name: &str) -> String {
     one_line(record[name].as_str().unwrap_or("?"), LINE_LIMIT)
 }
-const LINE_LIMIT: usize = 300;
-const NAME_LIMIT: usize = 80;
 /// How many answers the host snapshot holds at most.
 const ANSWER_CAP: usize = 200;
 fn delivery_word(delivery: &Value) -> String {
@@ -217,13 +130,7 @@ fn correction_explanation(answer: &Value, correction: &str) -> String {
         scope_name(&answer["project"])
     )
 }
-/// A project key as Theo reads it (its last path part), or `everywhere` for none.
-fn scope_name(project: &Value) -> String {
-    match project.as_str() {
-        Some(project) => crate::teams::view::short_project(project),
-        None => "everywhere".into(),
-    }
-}
+
 fn habit_source(habit: &Value) -> String {
     match habit["source_kind"].as_str() {
         Some("overrule") => "from your overrule".into(),
@@ -902,13 +809,7 @@ impl ChiefView {
                 "starting"
             };
         }
-        match self.snapshot["startup"]["state"].as_str() {
-            None if self.snapshot["startup"].is_null() => "off",
-            Some("ended") => "off",
-            Some("starting") => "starting",
-            Some("failed") if self.snapshot["startup"]["can_retry"] == true => "failed",
-            _ => "checking",
-        }
+        super::summary::startup_phase(&self.snapshot)
     }
     pub fn startup_action_label(&self) -> Option<&'static str> {
         match self.startup_phase() {
@@ -1183,28 +1084,7 @@ impl ChiefView {
         if self.read_error.is_some() {
             return "Unknown / host review unavailable — retained records are stale".into();
         }
-        let chiefs = self.chiefs();
-        match chiefs.as_slice() {
-            [] if self.snapshot.get("startup").is_some() => match self.startup_phase() {
-                "off" => "Off",
-                "starting" => "Starting",
-                "failed" => "Could not start",
-                _ => "Checking",
-            }
-            .into(),
-            [] => "Off".into(),
-            [chief] if !host_flag(&chief["live_verified"]) => {
-                format!("Unavailable · retained {} grant", text(&chief["state"]))
-            }
-            [chief] if self.unavailable_reason(chief).is_some() => format!(
-                "Unavailable · retained {} grant · {}",
-                text(&chief["state"]),
-                self.unavailable_reason(chief).expect("reason checked")
-            ),
-            [chief] if chief["state"] == "paused" => "Paused · workers continue".into(),
-            [chief] if chief["state"] == "active" => "Active".into(),
-            _ => "Unknown chief state — host review required".into(),
-        }
+        super::summary::status_with_startup_phase(&self.snapshot, self.startup_phase())
     }
     pub fn status_lines(&self) -> Vec<String> {
         let status = self.status();
@@ -1239,27 +1119,6 @@ impl ChiefView {
             ));
         }
         lines
-    }
-    fn unavailable_reason(&self, chief: &Value) -> Option<String> {
-        self.records("worker")
-            .iter()
-            .find(|worker| worker["session"] == chief["session"])
-            .and_then(|worker| worker["blocked_by"].as_array())
-            .and_then(|blockers| {
-                blockers.iter().find(|blocker| {
-                    matches!(
-                        blocker.as_str(),
-                        Some(
-                            "native_admission_unverified_for_adapter"
-                                | "live_queued_admission_verification_required"
-                                | "fresh_native_availability_required"
-                                | "runtime_native_sample_unavailable"
-                                | "unavailable"
-                        )
-                    )
-                })
-            })
-            .map(text)
     }
     fn current(&self, record: &Value) -> bool {
         self.snapshot["records"]
