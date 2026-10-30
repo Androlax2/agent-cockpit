@@ -1,5 +1,18 @@
 # Engineering decisions
 
+## 2026-10-30 — Keep Chief coordination separate from observed todo ownership
+
+An observed in-progress todo remains a work reservation, but does not by itself mean
+the Chief is executing a native turn. Wake readiness permits only the exact active,
+admitted Chief to pass this sole blocker when every observed reservation belongs to
+its own project. The reservations and generic worker readiness remain unchanged.
+
+Real legacy reservations, pending or uncertain launches (including orphaned launch
+records), product-worker membership and all native, identity, focus and gaming holds
+still prevent delivery. Regression tests exercise the authenticated Receive/Receipt
+and Context routes, including a subsequent automatic wake; fixtures are not live
+admission or draft-safety evidence.
+
 ## 2026-10-29 — Keep database error conversion at the store boundary
 
 Team and Chief wire contracts share `cockpit-protocol`, which has no SQLite or UI

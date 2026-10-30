@@ -6,6 +6,8 @@ use cockpit::teams::{AgentAction, ErrorCode, HostRequest, VerifiedSession};
 mod completion;
 #[path = "chief_inspect_tests.rs"]
 mod inspect;
+#[path = "chief_wake_tests.rs"]
+mod wake;
 #[path = "chief_workflow_tests.rs"]
 mod workflow;
 

@@ -2709,13 +2709,28 @@ fn wake_ready(
     {
         return Ok(false);
     }
-    Ok(live.iter().any(|worker| {
+    let Some(worker) = live.iter().find(|worker| {
         worker.session == *chief
             && worker.observed_at_ms <= now_ms
             && now_ms.saturating_sub(worker.observed_at_ms) <= 30_000
-            && worker.ready
-            && worker.blocked_by.is_empty()
-    }))
+    }) else {
+        return Ok(false);
+    };
+    if worker.blocked_by.is_empty() {
+        return Ok(worker.ready);
+    }
+    if worker.blocked_by != ["legacy_work_in_progress"] {
+        return Ok(false);
+    }
+    // An observed coordination todo retains ownership, but is not a native turn or a launch.
+    connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM chief_grants WHERE session_id=?1 AND agent=?2 AND project=?3 AND runtime=?4 AND state='active')
+            AND EXISTS(SELECT 1 FROM scheduling_reservations WHERE worker=?1 AND project=?3 AND owner='observed')
+            AND NOT EXISTS(SELECT 1 FROM scheduling_reservations WHERE worker=?1 AND owner<>'chief' AND (owner<>'observed' OR project<>?3))
+            AND NOT EXISTS(SELECT 1 FROM legacy_launches WHERE worker=?1 AND state IN ('reserved','submitting','uncertain'))",
+        params![chief.session_id, chief.agent, chief.project, chief.runtime],
+        |row| row.get(0),
+    ).map_err(storage_error)
 }
 
 fn schedule_wake(connection: &Connection, now_ms: i64) -> Result<(), TeamError> {
