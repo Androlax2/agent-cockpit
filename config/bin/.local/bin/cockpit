@@ -554,6 +554,10 @@ subscription_route() ( # origin generation
 new_session() {
     local directory=$1 existing
     shift
+    if [[ $directory == --help || $directory == -h ]]; then
+        echo "usage: cockpit new <dir> [claude args]"
+        return 0
+    fi
     require_plain_directory "$directory"
     audit_event manager session.start ok "directory=$directory" "agent=$launch_agent" "claude_arguments=$#"
     ensure_manager
