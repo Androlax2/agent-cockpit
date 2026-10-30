@@ -103,7 +103,24 @@ pub fn codex_usage_cache() -> PathBuf {
     runtime_dir().join("codex-usage.json")
 }
 pub fn codex_session_script() -> PathBuf {
-    home().join(".config/waybar/scripts/codex-session.py")
+    collector_script("codex-session.py")
+}
+pub fn native_subscription_script() -> PathBuf {
+    collector_script("native-subscription.py")
+}
+pub fn codex_usage_script() -> PathBuf {
+    collector_script("codex-usage.sh")
+}
+
+fn collector_script(name: &str) -> PathBuf {
+    let user_script = home().join(".config/waybar/scripts").join(name);
+    match std::fs::symlink_metadata(&user_script) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            PathBuf::from("/usr/lib/agent-cockpit/config/waybar/.config/waybar/scripts").join(name)
+        }
+        // A broken link or inaccessible user script must not silently select another collector.
+        _ => user_script,
+    }
 }
 /// Sessions' reports and requests: the one FIFO the sandboxes can write (greywall allowWrite).
 pub fn osd_fifo() -> PathBuf {
@@ -151,7 +168,7 @@ pub fn billing_dir() -> PathBuf {
     statusline_dir().join("billing")
 }
 pub fn usage_script() -> PathBuf {
-    home().join(".config/waybar/scripts/claude-usage.sh")
+    collector_script("claude-usage.sh")
 }
 pub fn credentials() -> PathBuf {
     home().join(".claude/.credentials.json")

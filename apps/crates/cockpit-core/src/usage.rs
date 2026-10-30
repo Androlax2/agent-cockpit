@@ -800,7 +800,7 @@ impl Refresher {
             }
             let _ = util::spawn_detached(&mut command);
         }
-        let script = paths::home().join(".config/waybar/scripts/codex-usage.sh");
+        let script = paths::codex_usage_script();
         if script.exists() {
             let mut command = Command::new(script);
             if force {

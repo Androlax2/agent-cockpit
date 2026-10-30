@@ -9,6 +9,7 @@ use std::time::Duration;
 
 #[path = "../../../cockpit/tests/common/link_fixture.rs"]
 mod link_fixture;
+mod runtime_resources;
 mod session_link_saves;
 
 const SESSION_A: &str = "aaaaaaaa-0000-4000-8000-000000000000";
