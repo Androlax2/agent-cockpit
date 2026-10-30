@@ -53,5 +53,9 @@ jobs:
           echo "$RUNNER_TEMP/lint-tools/bin" >> "$GITHUB_PATH"
           npm install --global markdownlint-cli2@0.24.0
           cargo install --locked --version 0.24.2 lychee
+      - name: Configure hosted runner admission
+        if: runner.environment == 'github-hosted'
+        # Disposable hosted runners have no workstation game-guard daemon.
+        run: python3 config/bin/.local/bin/cockpit-game-guard off
       - name: Run the same gate as local development
         run: make ci
