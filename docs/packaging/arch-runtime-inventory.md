@@ -122,7 +122,7 @@ does not make a 0644 Python helper executable when its caller invokes `python3` 
 | `config/bin/.local/bin/greywall-agents/claude` | R | Sandboxed Claude launcher; shell, exact Greywall fork, existing Claude binary and optional keyring; registration separately reviewed |
 | `config/bin/.local/bin/greywall-agents/codex` | R | Sandboxed Codex launcher; shell, Node bridge, exact Greywall fork; hard-coded bridge checkout path |
 | `config/bin/.local/bin/greywall-agents/figcraft.sh` | R | Shared FigCraft reservation helper; Bash/jq/process identity; private code, no app bundled |
-| `config/bin/.local/bin/greywall-agents/launcher-common.sh` | R | Shared launcher setup; Git, secret-tool, exact sandbox stack and helpers; copies home-local shims, so relocation is security-sensitive |
+| `config/bin/.local/bin/greywall-agents/launcher-common.sh` | R | Shared launcher setup; Git, dig, secret-tool, exact sandbox stack and helpers; copies home-local shims, so relocation is security-sensitive |
 | `config/bin/.local/bin/greywall-agents/opencode` | R | Sandboxed OpenCode launcher; shell, exact Greywall fork and trusted existing OpenCode; optional keyring |
 | `config/bin/.local/bin/opencode-update` | R | Explicit trusted provider updater; Bash/curl/jq and existing OpenCode; do not auto-run |
 | `config/bin/.local/bin/osd` | R | Same-name GTK/registry Rust wrapper |
@@ -253,7 +253,7 @@ No development directory is copied to satisfy a runtime dependency by accident.
 | `packages/greyproxy/build.sh` | D; never run on workstation package install | Fork source `cdd5cde76dce1262c0fd8d6b1ab2bd9953df5e71`; source archive SHA256 `6e1932582a097cc665917b3177ff33dfe6f6eaef2f32047a05655082f63fd448`; advertised version 0.4.5 |
 | `packages/greyproxy/check.sh` | Required runtime compatibility logic; port from build-script parsing | Reads greyproxy --version; no upstream replacement permitted |
 | `packages/greyproxy/restart.sh` | Host activation utility, no staging execution | Live proxy restart/session compatibility needs review |
-| `packages/greyproxy/settings.sh` | Required compatibility/config check; destination unresolved | Checks live policy/settings; do not modify user proxy config as a package side effect |
+| `packages/greyproxy/settings.sh` | Mutating host activation utility; destination unresolved | Reads settings, then sends PUT to disable conversation tracking when enabled; execution requires reviewed activation, never a staging/preflight check |
 
 Greywall's build also pins tun2socks **2.5.2**, Linux amd64 ZIP SHA256
 `4aa7737009a9f06b9f4957c4fc12932ae0cd2039471d2ae4e5d4666ffeb40a2e`, embedded during its
@@ -268,7 +268,7 @@ Observed runtime commands/interfaces, not invented package names:
 | Capability | Runtime requirements observed in source | Boundary |
 | --- | --- | --- |
 | Terminal/session management | Bash/POSIX shell, tmux, jq, Linux core/process utilities, Python 3 | No Rust/Go compiler required to run prebuilt Cockpit |
-| Launching development sessions | Git, exact Greywall/Greyproxy forks, Linux namespaces/process identity, runtime shims | Git is used by launcher-common and agent-docker-build; it is not exclusively a build dependency |
+| Launching development sessions | Git, dig, exact Greywall/Greyproxy forks, Linux namespaces/process identity, runtime shims | Shared launcher always runs dig for proxy DNS readiness; its absence causes errors and a roughly 30-second startup wait; Git is not exclusively a build dependency |
 | Provider integration | Selected trusted Claude/Codex/OpenCode installation; Node for Codex bridge and supported plugin runtime; Python collectors; curl/jq | Credentials and provider accounts not shipped; optional integrations must remain visibly optional |
 | Host approval/guides | Kitty/kitten, tmux, existing daemon/report transport | Do not replace authenticated host-side approval with a package script |
 | Theo desktop | Hyprland/hyprctl, GTK4/layer-shell, Wayland, Waybar profile helpers and user terminal/tmux setup | This is a desktop profile, not generic Linux portability |

@@ -45,33 +45,33 @@ produces the package input specification, not a nominal package with missing run
   ownership category, consumer, runtime prerequisite and activation requirement.
   Omitted paths carry an explicit reason; unresolved paths are release blockers.
 
-- [ ] **Step 1: Establish a clean source identity**
+- [x] **Step 1: Establish a clean source identity**
 
 Record HEAD and the inspected merge identity; inspect tracked changes and preserve all
 untracked work. Use a new authorized feature branch before committing package work;
 do not continue publishing new work to the merged PR's branch. Do not rebase or reset it.
 
-- [ ] **Step 2: Enumerate inputs using tracked paths**
+- [x] **Step 2: Enumerate inputs using tracked paths**
 
 Use `git ls-files` rather than directory globs that hide dot-directories. Include symlinks
 and their targets in the inventory, but do not follow a link outside the checkout.
 Enumerate Cargo binary targets from manifests and surrounding source without editing them.
 
-- [ ] **Step 3: Trace consumers and classify each path**
+- [x] **Step 3: Trace consumers and classify each path**
 
 For each candidate, identify real callers and classify runtime, optional integration,
 security-sensitive configuration, user state or development-only material. Inspect runtime
 paths for fixed homes, checkout assumptions and external resources. Review all five failure
 conditions above and record a later entry-point regression case for each affected owner.
 
-- [ ] **Step 4: Separate dependencies and component identity**
+- [x] **Step 4: Separate dependencies and component identity**
 
 Record external commands, interpreters and linked native libraries actually required by the
 payload; distinguish observed tool versions from compatibility promises. Record exact existing
 Greywall/Greyproxy pins, but do not choose replacement artifacts or execute build scripts.
 Identify required Arch package-name research without guessing dependency names.
 
-- [ ] **Step 5: Validate the inventory against source**
+- [x] **Step 5: Validate the inventory against source**
 
 Every destination must map to an inspected tracked source or an explicitly identified built
 artifact. Every omitted required helper is a blocker. Confirm no enabled-unit link, learned
@@ -79,7 +79,7 @@ grant, credential or whole-home Stow operation is included. Confirm proposed pri
 preserves wrapper-relative lookup. Documentation checks must pass; no product test claim is
 made for this documentation-only slice.
 
-- [ ] **Step 6: Commit only the inventory and approved planning files**
+- [x] **Step 6: Commit only the inventory and approved planning files**
 
 Show the diff stat, run the affected Markdown/link checks through existing admission,
 and commit only the reviewed documentation on the package feature branch. Report remaining
