@@ -1,0 +1,36 @@
+{
+  "action_commit": "645d1ab48b3cb8591684a8b730b2ccf4cb3f9568",
+  "source": "https://github.com/taiki-e/install-action/tree/645d1ab48b3cb8591684a8b730b2ccf4cb3f9568/manifests",
+  "tools": {
+    "cargo-nextest": {
+      "version": "0.9.150",
+      "platform": "x86_64_linux_gnu",
+      "hash": "b0959bc64232974224cf9fb22c915845398c0e8668fa7831eb5b43fb1eef781f"
+    },
+    "cargo-deny": {
+      "version": "0.20.2",
+      "platform": "x86_64_linux_musl",
+      "hash": "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+    },
+    "typos": {
+      "version": "1.51.1",
+      "platform": "x86_64_linux_musl",
+      "hash": "93c301fd4120ff076e2cc2a6d6a61cab4a4bdb81899287c0938b452e56d1f454"
+    },
+    "shellcheck": {
+      "version": "0.11.0",
+      "platform": "x86_64_linux_musl",
+      "hash": "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+    },
+    "shfmt": {
+      "version": "3.14.1",
+      "platform": "x86_64_linux_musl",
+      "hash": "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf"
+    },
+    "biome": {
+      "version": "2.6.3",
+      "platform": "x86_64_linux_musl",
+      "hash": "fd1249e77e57c21d6e5e6c1102f2f19ee5fda140b6126f6ff24a70e789a5d526"
+    }
+  }
+}
