@@ -26,6 +26,30 @@ Workspace toggling, kitty floating approval/guide windows, Hyprland `eval` hooks
 unfocused pane, idle lock prompt, volume/brightness island. The TUI renders approvals and
 guides in tmux panes so none of these are required for a working Cockpit.
 
+## Integration contract (decided 2026-10-31, from the dotfiles inventory)
+
+Cockpit is standalone; Theo's dotfiles add Hyprland extras on top through this public
+surface only. Every row names what the product ships and what stays in the dotfiles.
+
+| Dotfiles today | Product surface | Dotfiles keep |
+| --- | --- | --- |
+| `SUPER+C` → `cockpit show` (workspace toggle) | `cockpit tui` attaches in the current terminal | the bind, the workspace, the kitty window |
+| `SUPER+SHIFT+C` → `cockpit handoff` | `cockpit session handoff --all` (Remote Control capability, CLI only) | the bind |
+| `cockpit prs` scratchpad, web scratchpads (`P`/`W`/`G`) | none before M6 (Pull requests tab dropped; web windows are an M6 issue) | nothing until then |
+| `lock.sh` → `cockpit away on\|off` | `cockpit notify away on\|off` (a hold rule of `cockpit-notify`) | the hyprlock hook |
+| `claude-idle.sh` → `cockpit setting idle-lock`, `cockpit-idle-prompt` | none: the idle lock is a desktop behaviour; its setting lives in the dotfiles | the script, its setting, its prompt |
+| `cockpit log lock\|idle …` | none: Cockpit logs cover its own operation only (report 12); the dotfiles log to the journal | `logger -t` |
+| waybar `custom/cockpit` reads `$XDG_RUNTIME_DIR/cockpit.json` | the status file above, with a documented, versioned schema | the module and its styling |
+| waybar `osd-show focus-next` | `cockpit session next` prints the session needing you | focusing its window |
+| `osd-show volume\|brightness\|mute` | none: not a Cockpit feature; the GTK OSD leaves with `apps/` | a desktop OSD of their choice |
+| `autostart.lua` → `systemctl --user start cockpit.service` | `cockpit daemon install` writes the user unit (launchd agent on macOS) | enabling it at login |
+| `tmux.conf`: `cockpit-left`, `Alt+Q` queue-prompt popup, focus hooks | `cockpit-tmux` configures its own server: queue-prompt key, Left-key and focus fade as M6 polish rows | nothing: the user's `tmux.conf` is never read |
+| `CLAUDE.md` rules for `ask-to-run`, `cockpit-todo`, session label/doing | the agent instruction bundle (report 08) installed per provider | personal rules on top of the bundle |
+| `config/hyprland`, `config/kitty`, `config/waybar`, `config/fish` in this repository | removed at the M5 cutover (#71) | moved into the dotfiles |
+
+Nothing in the dotfiles may depend on a path under `apps/` or on `cockpit-osd`; a new Cockpit
+install works with the table's left column absent.
+
 ## `cockpit-web` (phone/remote client)
 
 Kept as an optional client, same protocol as the TUI:
