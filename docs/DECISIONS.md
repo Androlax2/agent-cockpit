@@ -1,5 +1,36 @@
 # Engineering decisions
 
+## 2026-10-31 — cockpit-processes: scope or process group, output to files, rustix
+
+Issue #29. Theo chose this design in chat (option A).
+
+- **Two containments, recorded per execution.** On Linux (WSL2 included) an execution runs
+  in a transient systemd user scope (`systemd-run --user --scope --collect`) when this
+  user's manager answers `systemctl --user show-environment`. Otherwise, and always on
+  macOS, it runs in a process group the program leads. The daemon logs which one new
+  launches use. Each row stores its own containment, so a fallback is visible and a restart
+  reconciles each execution with the containment it was launched in. A process group misses
+  a descendant that calls `setsid`; only the scope holds it (report 03 accepts that on
+  macOS). The real-scope test is `#[ignore]`d because sandboxes and CI runners have no user
+  manager; fakes on explicit paths prove the command protocol everywhere.
+- **Identity, never PID alone.** Boot id + process group + the leader's start token
+  (`/proc/<pid>/stat` field 22, or `ps -o lstart` on macOS), compared, never converted.
+  The kernel reuses a group id only once the group is empty, and the start token exposes a
+  reused leader pid. A `/bin/sh` wrapper writes its pid and start token to a leader file,
+  then execs the program. That file is the start confirmation, written by the execution
+  itself, so a daemon that crashed between spawn and commit still finds the execution. An
+  intent with neither a recorded group nor a leader file stays charged (`Uncertain`).
+- **Output to files, not pipes.** A pipe read by the daemon would kill the program with
+  `SIGPIPE` after a daemon restart. The daemon drains each file in bounded chunks into a
+  byte-bounded window, and a lagging viewer reads a gap marker with the exact missed range.
+  The files are not size-limited yet (follow-up).
+- **rustix `=1.1.6`** (already in the lock through `tempfile`) sends group signals and runs
+  the empty-group probe (`kill(-pgid, 0)`) without `unsafe`. Pinned so a change to its
+  signal or errno handling arrives as a reviewed bump.
+- **The environment is explicit.** An execution gets exactly its launch spec's
+  environment. The scope launcher also passes `XDG_RUNTIME_DIR` and
+  `DBUS_SESSION_BUS_ADDRESS`, which `systemd-run` needs to reach the manager.
+
 ## 2026-10-31 — cockpit-projects: checkouts, occupancy and host Git
 
 Issue #28. Projects, their checkouts and checkout occupancy live in `cockpit-projects`,

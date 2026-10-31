@@ -13,9 +13,9 @@ not share code.
 - Depends on: `cockpit-protocol` (wire types and the frame limit), `cockpit-config` (XDG
   layout), `cockpit-diagnostics` (its own log), `cockpit-turso` (the state database it opens
   once), `cockpit-authorization` (whose migrations it runs), `cockpit-agent-channel` (who an
-  agent socket peer is, and its verbs) and `cockpit-projects` (whose migrations it runs and
-  whose verbs `Routes` serves to the owner); `tokio`, `serde`,
-  `serde_json`, `tracing`.
+  agent socket peer is, and its verbs), `cockpit-processes` (whose executions it reconciles)
+  and `cockpit-projects` (whose migrations it runs and whose verbs `Routes` serves to the
+  owner); `tokio`, `serde`, `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
   `clients ->` rules of `cockpit-workspace-rules/tests/crate_graph.rs` keep them from
   linking it.
@@ -30,7 +30,10 @@ not share code.
    user exits 1 with `another cockpit daemon of this user is already running`.
 3. Start logging (`COCKPIT_LOG_LEVEL`, report 12): `$XDG_STATE_HOME/cockpit/logs/daemon`.
 4. Restart contract (report 03): open `state.db` with every capability's migrations
-   (`MIGRATION_SETS`), then reconcile; no capability holds launch intents or executions yet.
+   (`MIGRATION_SETS`), then reconcile. `cockpit-processes` reattaches each execution it
+   positively identifies, releases those observed gone and keeps the rest charged; each
+   outcome is logged. New executions use a systemd user scope when this user's manager
+   answers, otherwise a process group; the log names which.
 5. Only then bind `daemon.sock` and `agent/agent.sock` (0600, stale files replaced) and print
    `ready <socket>`.
 
@@ -71,5 +74,7 @@ not share code.
 - `tests/agent_channel.rs`: issue #32's acceptance on the binary's sockets: a launched
   agent's report, leaked tokens, payload-claimed sessions, a nested agent with its parent's
   grants, refusals with their unblock, restart.
+- `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
+  kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket
   and lanes with a fixture [`Handler`] that blocks or panics on `subscribe` (#108).

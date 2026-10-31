@@ -26,6 +26,8 @@ pub enum StartError {
     Runtime(io::Error),
     Diagnostics(cockpit_diagnostics::Error),
     Database(cockpit_turso::Error),
+    /// Reconciling executions against the real processes failed; nothing was dispatched.
+    Reconcile(cockpit_processes::Error),
 }
 
 impl StartError {
@@ -63,6 +65,7 @@ impl fmt::Display for StartError {
             Self::Runtime(error) => write!(formatter, "cannot start the async runtime: {error}"),
             Self::Diagnostics(error) => write!(formatter, "{error}"),
             Self::Database(error) => write!(formatter, "state database: {error}"),
+            Self::Reconcile(error) => write!(formatter, "reconciling executions: {error}"),
         }
     }
 }
@@ -78,5 +81,11 @@ impl From<cockpit_diagnostics::Error> for StartError {
 impl From<cockpit_turso::Error> for StartError {
     fn from(error: cockpit_turso::Error) -> Self {
         Self::Database(error)
+    }
+}
+
+impl From<cockpit_processes::Error> for StartError {
+    fn from(error: cockpit_processes::Error) -> Self {
+        Self::Reconcile(error)
     }
 }

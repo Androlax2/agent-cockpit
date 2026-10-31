@@ -18,7 +18,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Sleep after idle, wake on open/message/todo/phone, sleep refusals, asleep notes 7 d | keep | sessions; permits via messaging (07) |
 | Reboot restore, ended/recent sessions, resume past session (`H`) | change | sessions: restore is automatic on daemon start, no `B` key (decided 2026-10-31) |
 | Effort, model/variant pickers, billing toggle (credits vs subscription), `/compact`, Remote Control | change | capabilities in the adapters and CLI verbs only; no TUI keys (`e`, `$`, `C`, `m` dropped 2026-10-31) |
-| Stuck-exit capture, forced exit rounds | keep | processes + diagnostics (12) |
+| Stuck-exit capture, forced exit rounds | keep | processes + diagnostics (12): forced rounds (`SIGTERM`, then `SIGKILL` to the whole containment, confirmed only when observed empty) proven by `cockpit-processes` test `lifecycle::termination_escalates_to_sigkill_when_sigterm_is_ignored` (#29); stuck-exit capture pending |
 | Agent state from hooks/plugins/Codex bridge; pane scraping fallback (`osd classify`) | change | adapters own detection; structured events first, screen classification as adapter-internal fallback with recorded confidence; never task completion (05) |
 | Per-agent adapter verbs (`new resume restart exit say prompt_start doctor …`) | keep | `cockpit-provider-api` trait + one bridge per adapter (08, 17) |
 | Subscription fallback/routing between accounts (routes.json, gates in hooks, native evidence) | change | account routing at launch and at quota-stop only; no mid-turn gates (18) |

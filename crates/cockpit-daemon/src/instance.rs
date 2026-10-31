@@ -10,6 +10,7 @@ use crate::server::Limits;
 
 const LOCK_FILE: &str = "daemon.lock";
 const DATABASE_FILE: &str = "state.db";
+const EXECUTIONS_DIR: &str = "executions";
 /// Only the owner may enter the socket directory.
 const PRIVATE_DIR_MODE: u32 = 0o700;
 
@@ -55,6 +56,11 @@ impl Options {
 
     pub(crate) fn database_path(&self) -> PathBuf {
         self.state_dir.join(DATABASE_FILE)
+    }
+
+    /// `$XDG_STATE_HOME/cockpit/executions`: each execution's output files and leader file.
+    pub fn executions_dir(&self) -> PathBuf {
+        self.state_dir.join(EXECUTIONS_DIR)
     }
 }
 
