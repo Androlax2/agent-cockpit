@@ -64,6 +64,28 @@ current table; a crate that does not exist yet is skipped, and a test fails when
 table names a crate report 02 no longer lists, so a rename cannot disable a rule silently. Issue #19's acceptance says `make ci`; since #18 split the gates, the rule runs in
 `make greenfield-ci` (`crates-test`), which CI's `greenfield` job runs.
 
+## 2026-10-31 — cockpit-diagnostics: own queue, own tar, field-name guard
+
+Issue #23. The non-blocking writer is a `sync_channel` and one thread instead of
+`tracing-appender`: the writer thread needs the drop counter to write its own
+`dropped log records` warning, and a bounded shutdown that gives up on a stalled disk.
+The support bundle is a plain ustar archive written by 30 lines in the crate rather than
+the `tar` crate; tests read it back with the system `tar`.
+
+`COCKPIT_LOG_LEVEL` accepts only levels and `component=level`. `EnvFilter` reads a bare word
+as a target, so `loud` would silently enable everything for a target named `loud`; it is
+refused instead. A component names a Cockpit crate without its prefix (`tmux` →
+`cockpit_tmux`), matching report 12's examples to the targets the crates emit.
+
+Overrides longer than 15 minutes are refused, not shortened, so the host sees the limit.
+Records and spans whose field names mark hosted content (`prompt`, `shell_command`, `env`, …)
+are refused at the callsite and counted. The check reads names, not values: content
+formatted into a message string still depends on review.
+
+Each process logs to `logs/<process>/cockpit.log`, keeping report 12's file name per
+process. The crate is a library only: the `cockpit logs level` and `cockpit support-bundle`
+verbs need the daemon's host-only channel (#26) and the CLI.
+
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
 
 Issue #18 asks for `cargo build` and `cargo test` to succeed from the root with no

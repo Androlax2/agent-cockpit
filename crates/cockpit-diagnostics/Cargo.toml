@@ -1,0 +1,18 @@
+[package]
+name = "cockpit-diagnostics"
+description = "Logging of Cockpit's own operation: levels, runtime overrides, bounded log files, support bundle."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt", "json", "smallvec", "std"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
