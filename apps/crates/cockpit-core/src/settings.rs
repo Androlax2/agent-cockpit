@@ -102,6 +102,22 @@ pub fn chief_dispatches_own_todos() -> Result<bool, String> {
     }
 }
 
+/// The chief-turns-while-gaming setting, set with `cockpit setting` (not in the S menu): on lets
+/// Chief messages, answers and the Chief's wake reach idle sessions during a game while the host's
+/// game guard holds new heavy jobs. Missing or empty is on; anything but on or off is an error,
+/// which keeps turns waiting.
+pub fn chief_turns_while_gaming() -> Result<bool, String> {
+    let value = launch_value("chief-turns-while-gaming")
+        .map_err(|error| format!("chief-turns-while-gaming: {error}"))?;
+    match value.as_str() {
+        "" | "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err(format!(
+            "invalid chief-turns-while-gaming {value:?} in settings.json: expected on or off"
+        )),
+    }
+}
+
 pub fn launch_agent() -> Result<String, String> {
     let name = launch_value("default-agent")?;
     crate::agents::find(&name).ok_or_else(|| format!("invalid default-agent: {name}"))?;

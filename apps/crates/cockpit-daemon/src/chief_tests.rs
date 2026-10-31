@@ -6306,3 +6306,134 @@ fn the_active_chiefs_blocked_reports_keep_the_ordinary_daily_request_bound() {
         .unwrap_err();
     assert!(error.contains("too many retained todo requests"), "{error}");
 }
+
+fn set_chief_turns_while_gaming(value: &str) {
+    fs::write(
+        cockpit::paths::settings(),
+        json!({"chief-turns-while-gaming": value}).to_string(),
+    )
+    .unwrap();
+}
+
+/// A game window focused, as the cockpit's focus report or the daemon's own hyprctl check sees it.
+fn start_game(bench: &mut Bench, signal: &str) {
+    match signal {
+        "focus" => {
+            bench.registry.chief_focus = Some((String::new(), false, true, crate::teams::now_ms()))
+        }
+        "daemon" => bench.world.borrow_mut().gaming = true,
+        _ => unreachable!(),
+    }
+}
+
+fn receive_as_message_worker(bench: &mut Bench) -> serde_json::Value {
+    crate::teams::request(&mut bench.registry, 40, AgentAction::Receive)
+        .unwrap()
+        .result
+        .unwrap()
+}
+
+#[test]
+fn a_chief_message_reaches_an_idle_session_during_a_game_while_the_guard_holds_heavy_jobs() {
+    for signal in ["focus", "daemon"] {
+        let mut bench = admitted_chief_bench();
+        idle_message_worker(&mut bench);
+        chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
+        bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
+        start_game(&mut bench, signal);
+        let delivery = receive_as_message_worker(&mut bench);
+        assert_eq!(delivery["envelope"]["kind"], "chief_message", "{signal}");
+    }
+}
+
+#[test]
+fn a_chief_message_still_waits_during_a_game_without_the_guard_the_setting_or_in_game_mode() {
+    for case in [
+        "guard-not-holding",
+        "setting-off",
+        "setting-typo",
+        "game-mode",
+    ] {
+        let mut bench = admitted_chief_bench();
+        idle_message_worker(&mut bench);
+        chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
+        bench.world.borrow_mut().game_guard_holds_heavy_jobs = case != "guard-not-holding";
+        match case {
+            "setting-off" => set_chief_turns_while_gaming("off"),
+            "setting-typo" => set_chief_turns_while_gaming("yes"),
+            "game-mode" => bench.world.borrow_mut().game_mode = true,
+            _ => {}
+        }
+        start_game(&mut bench, "focus");
+        assert!(receive_as_message_worker(&mut bench).is_null(), "{case}");
+    }
+}
+
+#[test]
+fn chief_turns_while_gaming_is_on_unless_set_off() {
+    for (value, is_delivered) in [(None, true), (Some("on"), true), (Some("off"), false)] {
+        let mut bench = admitted_chief_bench();
+        idle_message_worker(&mut bench);
+        chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
+        if let Some(value) = value {
+            set_chief_turns_while_gaming(value);
+        }
+        bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
+        start_game(&mut bench, "focus");
+        assert_eq!(
+            !receive_as_message_worker(&mut bench).is_null(),
+            is_delivered,
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn a_guarded_game_still_holds_every_other_chief_message_blocker() {
+    let mut bench = admitted_chief_bench();
+    idle_message_worker(&mut bench);
+    chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
+    bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
+    bench.registry.chief_focus = Some((MESSAGE_WORKER.into(), true, true, crate::teams::now_ms()));
+    assert!(receive_as_message_worker(&mut bench).is_null());
+}
+
+#[test]
+fn a_todo_gift_still_waits_during_a_game_while_the_guard_holds_heavy_jobs() {
+    for signal in ["focus", "daemon"] {
+        let mut bench = admitted_chief_bench();
+        idle_message_worker(&mut bench);
+        let todo = project_todo(&bench, "aa919cfe", json!({}), false);
+        chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
+        bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
+        start_game(&mut bench, signal);
+        assert!(receive_as_message_worker(&mut bench).is_null(), "{signal}");
+        assert_ne!(cockpit::todo::TodoList::load().status_of(&todo), "doing");
+    }
+}
+
+#[test]
+fn queued_todo_work_still_waits_during_a_game_while_the_guard_holds_heavy_jobs() {
+    for signal in ["focus", "daemon"] {
+        let mut bench = team_bench();
+        let directory = bench.registry.sessions[SESSION_B].cwd.clone();
+        let entry = bench.registry.sessions.get_mut(SESSION_B).unwrap();
+        entry.state = "waiting".into();
+        entry.needs_input = false;
+        entry.since = (crate::teams::now_ms() / 1000 - 600) as f64;
+        let id = cockpit::todo::TodoList::load().add("project-a", &directory, "queued work");
+        bench.registry.chief_focus = Some((String::new(), false, false, crate::teams::now_ms()));
+        bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
+        start_game(&mut bench, signal);
+        let request = HostRequest::ReserveTask {
+            task_id: id,
+            directory,
+            worker: Some(SESSION_B.into()),
+            automatic: true,
+        };
+        assert!(
+            crate::teams::host(&mut bench.registry, std::process::id(), request).is_err(),
+            "{signal}"
+        );
+    }
+}

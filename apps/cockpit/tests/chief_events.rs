@@ -8032,3 +8032,97 @@ fn events_after_a_spent_turns_end_arrive_with_the_next_admitted_wake() {
         json!(["needs_input"])
     );
 }
+
+/// `gaming_guarded`: a game runs, but the host's game guard holds new heavy jobs and Theo lets turns
+/// continue (the daemon decides it, apps/crates/cockpit-daemon/src/chief.rs). Plain `gaming` still holds.
+#[test]
+fn a_chief_answer_reaches_an_idle_session_during_a_guarded_game() {
+    for (blocker, is_delivered) in [("gaming_guarded", true), ("gaming", false)] {
+        let (mut connection, live, stop) = answer_bench();
+        answer_option_a(&mut connection, &live, &stop);
+        assert_eq!(
+            claim_answer_at(&mut connection, &live, &[blocker], GRACE_END_MS).is_some(),
+            is_delivered,
+            "{blocker}"
+        );
+    }
+}
+
+#[test]
+fn a_form_reply_reaches_the_session_at_its_form_during_a_guarded_game() {
+    for (blocker, is_delivered) in [("gaming_guarded", true), ("gaming", false)] {
+        let (mut connection, live, stop) = form_bench(1);
+        answer_form(&mut connection, &live, &stop, "B").unwrap();
+        assert_eq!(
+            claim_form_reply_at(
+                &mut connection,
+                &live,
+                &[AT_FORM.as_slice(), &[blocker]].concat(),
+                GRACE_END_MS
+            )
+            .is_some(),
+            is_delivered,
+            "{blocker}"
+        );
+    }
+}
+
+#[test]
+fn a_correction_reaches_an_idle_session_during_a_guarded_game() {
+    for (blocker, is_delivered) in [("gaming_guarded", true), ("gaming", false)] {
+        let (mut connection, live, _stop, answer) = sent_answer_bench();
+        overrule(&mut connection, &live, &answer, CORRECTION, 1_100_500).unwrap();
+        assert_eq!(
+            claim_correction_at(&mut connection, &live, &[blocker], 1_100_600).is_some(),
+            is_delivered,
+            "{blocker}"
+        );
+    }
+}
+
+#[test]
+fn the_chief_wakes_during_a_guarded_game_but_not_during_an_unguarded_one() {
+    for (blocker, is_woken) in [("gaming_guarded", true), ("gaming", false)] {
+        let (mut connection, mut live) = setup();
+        enable_events(&mut connection, &live);
+        store::verify_admission(
+            &mut connection,
+            &live[0].session,
+            "opencode-queued-v1",
+            "Controlled fixture, not live proof",
+            100,
+        )
+        .unwrap();
+        live[0].blocked_by = vec![blocker.into()];
+        live[0].ready = false;
+        store::observe(&mut connection, &live, 100).unwrap();
+        let wake = store::claim(&mut connection, &live[0].session, "bootstrap", 100).unwrap();
+        assert_eq!(
+            wake.is_some_and(|wake| wake.envelope["kind"] == "chief_wake"),
+            is_woken,
+            "{blocker}"
+        );
+    }
+}
+
+#[test]
+fn a_chief_wake_still_waits_for_any_other_blocker_beside_a_guarded_game() {
+    let (mut connection, mut live) = setup();
+    enable_events(&mut connection, &live);
+    store::verify_admission(
+        &mut connection,
+        &live[0].session,
+        "opencode-queued-v1",
+        "Controlled fixture, not live proof",
+        100,
+    )
+    .unwrap();
+    live[0].blocked_by = vec!["gaming_guarded".into(), "viewed_session".into()];
+    live[0].ready = false;
+    store::observe(&mut connection, &live, 100).unwrap();
+    assert!(
+        store::claim(&mut connection, &live[0].session, "bootstrap", 100)
+            .unwrap()
+            .is_none()
+    );
+}

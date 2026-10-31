@@ -593,6 +593,10 @@ pub trait System {
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>>;
     fn claude_workspace_active(&mut self) -> bool;
     fn gaming(&mut self) -> bool;
+    /// The gamemode submap alone: Theo's explicit "hold everything", which no guard relaxes.
+    fn game_mode(&mut self) -> bool;
+    /// Whether the host's game guard, alive this boot, holds new heavy jobs for an open game.
+    fn game_guard_holds_heavy_jobs(&mut self) -> bool;
     fn in_meeting(&mut self) -> bool;
     fn live_session_ids(&mut self) -> HashSet<String>;
     fn claude_panes(&mut self) -> HashSet<String>;
@@ -3192,6 +3196,8 @@ type ChiefLaunchResult = std::sync::mpsc::Receiver<Result<(i32, String), String>
 pub struct RealSystem {
     chief_launches: HashMap<String, ChiefLaunchResult>,
     gaming_cache: (Option<Instant>, bool),
+    /// Why the game guard last did not hold heavy jobs (None: it did), so the log shows each change once.
+    game_guard_refusal: Option<String>,
     /// When khal was last asked, and its answer so far: khal runs on a thread of its own, never on
     /// the GTK loop (it takes a few hundred ms to start; security audit 2026-10-19, performance 4).
     meeting_cache: (
@@ -3245,6 +3251,7 @@ impl RealSystem {
         RealSystem {
             chief_launches: HashMap::new(),
             gaming_cache: (None, false),
+            game_guard_refusal: None,
             meeting_cache: (None, Default::default()),
             process_scan: None,
             waybar: WaybarPids::default(),
@@ -3854,6 +3861,39 @@ impl System for RealSystem {
         }
         self.gaming_cache = (Some(Instant::now()), now);
         now
+    }
+
+    fn game_mode(&mut self) -> bool {
+        output_within(&["hyprctl", "submap"], COMMAND_TIMEOUT)
+            .is_some_and(|(_, out, _)| out.trim() == "gamemode")
+    }
+
+    fn game_guard_holds_heavy_jobs(&mut self) -> bool {
+        let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok();
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64());
+        let refusal = cockpit_core::game_guard::gate_path()
+            .and_then(|path| {
+                cockpit_core::game_guard::holds_heavy_jobs_for_game(
+                    &path,
+                    now_s,
+                    boot.as_deref().map(str::trim),
+                )
+            })
+            .err();
+        if refusal != self.game_guard_refusal {
+            log(&match &refusal {
+                None => {
+                    "game guard holds heavy jobs: agent turns may continue during the game".into()
+                }
+                Some(why) => format!(
+                    "game guard not holding heavy jobs: agent turns wait during games ({why})"
+                ),
+            });
+            self.game_guard_refusal = refusal.clone();
+        }
+        refusal.is_none()
     }
 
     /// Whether the calendar shows a meeting, as khal last said: asked at most once a minute, on a

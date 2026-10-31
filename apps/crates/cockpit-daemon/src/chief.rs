@@ -192,6 +192,20 @@ fn workers_at(
     workers_among(registry, live, now, observe)
 }
 
+/// Whether a game lets agent turns continue: Theo's setting allows it, the gamemode submap is off
+/// and the host's game guard holds new heavy jobs, so what a turn starts waits or is pinned.
+fn turns_continue_while_gaming(registry: &mut Registry) -> bool {
+    match cockpit_core::settings::chief_turns_while_gaming() {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            crate::registry::log(&format!("{error}; agent turns wait during games"));
+            return false;
+        }
+    }
+    !registry.system.game_mode() && registry.system.game_guard_holds_heavy_jobs()
+}
+
 /// The workers among sessions the caller's own live_sessions() already verified: a team request
 /// must not pay for that pass twice.
 pub(crate) fn workers_among(
@@ -200,7 +214,14 @@ pub(crate) fn workers_among(
     now: i64,
     observe: bool,
 ) -> Result<Vec<WorkerState>, TeamError> {
+    let focus_gaming = matches!(&registry.chief_focus,
+        Some((_, _, true, observed)) if *observed <= now && now - observed <= 30_000);
     let gaming = registry.system.gaming();
+    let gaming_reason = if (gaming || focus_gaming) && turns_continue_while_gaming(registry) {
+        store::GAMING_GUARDED
+    } else {
+        "gaming"
+    };
     let connection = registry
         .teams
         .as_ref()
@@ -297,13 +318,13 @@ pub(crate) fn workers_among(
                         blocked_by.push("viewed_session".into());
                     }
                     if *host_gaming {
-                        blocked_by.push("gaming".into());
+                        blocked_by.push(gaming_reason.into());
                     }
                 }
                 _ => blocked_by.push("fresh_host_focus_required".into()),
             }
             if gaming {
-                blocked_by.push("gaming".into());
+                blocked_by.push(gaming_reason.into());
             }
             if cockpit_core::prompts::count(&session.session_id) > 0 {
                 blocked_by.push("human_prompt_queued".into());
