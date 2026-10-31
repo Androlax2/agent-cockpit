@@ -309,15 +309,12 @@ impl Shared {
 
     fn revert_if(&self, should_revert: impl FnOnce(&State) -> bool) -> Result<(), Error> {
         let mut state = self.lock_state();
-        let Some(active) = state.active_override.clone() else {
-            return Ok(());
-        };
-        if !should_revert(&state) {
+        if state.active_override.is_none() || !should_revert(&state) {
             return Ok(());
         }
         self.reload(&state.baseline)?;
         state.generation += 1;
-        state.active_override = None;
+        let active = state.active_override.take().expect("checked above");
         self.writer.push(own_record(
             "INFO",
             "log level reverted",

@@ -3,7 +3,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,10 +13,9 @@ use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
 
 use crate::Error;
-use crate::rotation::RotatingFile;
+use crate::error::io_error;
+use crate::rotation::{RotatingFile, Written};
 
-/// How often an idle writer checks whether shutdown began.
-const IDLE_POLL: Duration = Duration::from_millis(50);
 /// Removes expired rotated files even when a quiet process never rotates.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
 
@@ -30,8 +29,14 @@ pub(crate) struct Queue {
 /// The [`MakeWriter`] the layers write through; cheap to clone.
 #[derive(Debug, Clone)]
 pub(crate) struct QueueWriter {
-    sender: SyncSender<Vec<u8>>,
+    sender: SyncSender<Message>,
     dropped: Arc<AtomicU64>,
+}
+
+enum Message {
+    Record(Vec<u8>),
+    /// Wakes an idle writer; a busy one sees `closing` after its current record.
+    Shutdown,
 }
 
 impl Queue {
@@ -60,11 +65,7 @@ impl Queue {
         thread::Builder::new()
             .name(String::from("cockpit-log-writer"))
             .spawn(move || worker.run())
-            .map_err(|source| Error::Io {
-                action: "start the log writer for",
-                path: "cockpit.log".into(),
-                source,
-            })?;
+            .map_err(io_error("start the log writer for", "cockpit.log"))?;
         Ok(Self {
             writer,
             closing,
@@ -82,6 +83,8 @@ impl Queue {
 
     pub(crate) fn shutdown(&self, timeout: Duration) -> bool {
         self.closing.store(true, Ordering::Relaxed);
+        // A full queue refuses this, but then the writer is busy and reads `closing` next.
+        let _ = self.writer.sender.try_send(Message::Shutdown);
         let (is_drained, changed) = &*self.drained;
         let is_drained = is_drained
             .lock()
@@ -96,11 +99,8 @@ impl Queue {
 impl QueueWriter {
     /// Queues one whole record without waiting.
     pub(crate) fn push(&self, record: Vec<u8>) {
-        match self.sender.try_send(record) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        if self.sender.try_send(Message::Record(record)).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -143,7 +143,7 @@ impl Drop for RecordWriter<'_> {
 
 struct Worker {
     file: RotatingFile,
-    receiver: Receiver<Vec<u8>>,
+    receiver: Receiver<Message>,
     dropped: Arc<AtomicU64>,
     /// Drops already announced in the log.
     reported: u64,
@@ -157,19 +157,22 @@ impl Worker {
     fn run(mut self) {
         let mut last_pruned = Instant::now();
         while !self.closing.load(Ordering::Relaxed) {
-            match self.receiver.recv_timeout(IDLE_POLL) {
-                Ok(record) => self.write(&record),
+            let until_prune = PRUNE_INTERVAL.saturating_sub(last_pruned.elapsed());
+            match self.receiver.recv_timeout(until_prune) {
+                Ok(Message::Record(record)) => self.write(&record),
+                Ok(Message::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
             }
             if last_pruned.elapsed() >= PRUNE_INTERVAL {
-                self.file.prune();
+                self.remove_expired();
                 last_pruned = Instant::now();
             }
         }
-        let backlog: Vec<Vec<u8>> = self.receiver.try_iter().take(self.capacity).collect();
-        for record in backlog {
-            self.write(&record);
+        let backlog: Vec<Message> = self.receiver.try_iter().take(self.capacity).collect();
+        for message in backlog {
+            if let Message::Record(record) = message {
+                self.write(&record);
+            }
         }
         self.report_drops();
         self.file.flush();
@@ -184,7 +187,27 @@ impl Worker {
 
     fn write(&mut self, record: &[u8]) {
         self.report_drops();
-        if !self.file.write_record(record) {
+        match self.file.write_record(record) {
+            Written::Yes => {}
+            Written::Dropped => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Written::AfterFailedRotation(error) => {
+                self.warn("log rotation failed", &error);
+            }
+        }
+    }
+
+    /// Expired files that cannot be removed now are retried in an hour, not fatal.
+    fn remove_expired(&mut self) {
+        if let Err(error) = self.file.remove_expired() {
+            self.warn("removing expired log files failed", &error);
+        }
+    }
+
+    fn warn(&mut self, message: &str, error: &io::Error) {
+        let warning = own_record("WARN", message, [("error", error.to_string().into())]);
+        if let Written::Dropped = self.file.write_record(&warning) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -200,7 +223,7 @@ impl Worker {
             "dropped log records",
             [("dropped", (dropped - self.reported).into())],
         );
-        if self.file.write_record(&report) {
+        if !matches!(self.file.write_record(&report), Written::Dropped) {
             self.reported = dropped;
         }
     }

@@ -1,5 +1,6 @@
-use std::fs::{self, File, FileTimes};
-use std::os::unix::fs::PermissionsExt;
+mod support;
+
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
@@ -13,16 +14,6 @@ fn log_dir_with(state_dir: &Path, process: &str, files: &[(&str, &str)]) -> Path
         fs::write(log_dir.join(name), contents).unwrap();
     }
     log_dir
-}
-
-fn age(path: &Path, by: Duration) {
-    let modified = SystemTime::now() - by;
-    File::options()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_times(FileTimes::new().set_modified(modified))
-        .unwrap();
 }
 
 fn listed_paths(request: &BundleRequest) -> Vec<String> {
@@ -103,10 +94,7 @@ fn the_written_archive_holds_exactly_the_listed_entries() {
         .map(|item| item.path.clone())
         .collect();
     assert_eq!(tar_listing(&archive), listed);
-    assert_eq!(
-        fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert_eq!(support::mode(&archive), 0o600);
 }
 
 #[test]
@@ -147,7 +135,7 @@ fn log_files_last_written_before_the_window_are_left_out() {
         "daemon",
         &[("cockpit.log", "{}\n"), ("cockpit.log.1", "{}\n")],
     );
-    age(
+    support::age(
         &daemon_logs.join("cockpit.log.1"),
         Duration::from_secs(3 * 3600),
     );

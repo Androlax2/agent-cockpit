@@ -3,9 +3,10 @@
     reason = "each test binary uses a different subset of these helpers"
 )]
 
-use std::fs;
+use std::fs::{self, File};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use cockpit_diagnostics::{Diagnostics, Directives, Options};
 use serde_json::Value;
@@ -49,4 +50,19 @@ pub fn messages(log_dir: &Path) -> Vec<String> {
                 .to_owned()
         })
         .collect()
+}
+
+pub fn mode(path: &Path) -> u32 {
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+/// Back-dates the file's last write by `by`.
+pub fn age(path: &Path, by: Duration) {
+    let modified = SystemTime::now() - by;
+    File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
 }

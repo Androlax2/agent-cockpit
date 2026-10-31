@@ -1,16 +1,12 @@
 mod support;
 
-use std::fs::{self, File, FileTimes};
+use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use cockpit_diagnostics::{FileLimits, Options};
-use support::{SHUTDOWN_TIMEOUT, records};
-
-fn mode(path: &Path) -> u32 {
-    fs::metadata(path).unwrap().permissions().mode() & 0o777
-}
+use support::{SHUTDOWN_TIMEOUT, mode, records};
 
 fn start_with_limits(log_dir: &Path, limits: FileLimits) -> cockpit_diagnostics::Diagnostics {
     let mut options = Options::new(log_dir.to_path_buf(), "info".parse().unwrap());
@@ -22,7 +18,6 @@ fn log_files(log_dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(log_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name != "cockpit.log.lock")
         .collect();
     names.sort();
     names
@@ -100,13 +95,7 @@ fn rotated_files_older_than_the_age_limit_are_removed_at_start() {
     let log_dir = tempfile::tempdir().unwrap();
     let stale = log_dir.path().join("cockpit.log.1");
     fs::write(&stale, "{}\n").unwrap();
-    let eight_days_ago = SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
-    File::options()
-        .write(true)
-        .open(&stale)
-        .unwrap()
-        .set_times(FileTimes::new().set_modified(eight_days_ago))
-        .unwrap();
+    support::age(&stale, Duration::from_secs(8 * 24 * 3600));
     let recent = log_dir.path().join("cockpit.log.2");
     fs::write(&recent, "{}\n").unwrap();
 

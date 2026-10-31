@@ -116,7 +116,7 @@ impl BundlePlan {
 
     /// The contents of `name`, a path inside the bundle such as `platform.json`.
     pub fn entry(&self, name: &str) -> Option<&[u8]> {
-        let path = format!("{ROOT}/{name}");
+        let path = archive_path(name);
         let index = self.items.iter().position(|item| item.path == path)?;
         Some(&self.contents[index])
     }
@@ -127,7 +127,7 @@ impl BundlePlan {
         let entries: u64 = self
             .items
             .iter()
-            .map(|item| TAR_BLOCK + item.bytes.div_ceil(TAR_BLOCK) * TAR_BLOCK)
+            .map(|item| TAR_BLOCK + item.bytes.next_multiple_of(TAR_BLOCK))
             .sum();
         entries + 2 * TAR_BLOCK
     }
@@ -146,17 +146,13 @@ impl BundlePlan {
             drop(file);
             // The write error is the one to report; a failed cleanup leaves a visible partial file.
             let _ = fs::remove_file(destination);
-            return Err(Error::Io {
-                action: "write the support bundle",
-                path: destination.to_path_buf(),
-                source,
-            });
+            return Err(io_error("write the support bundle", destination)(source));
         }
         Ok(())
     }
 
     fn push(&mut self, name: String, contents: Vec<u8>) -> Result<(), Error> {
-        let path = format!("{ROOT}/{name}");
+        let path = archive_path(&name);
         if self.items.iter().any(|item| item.path == path) {
             return Err(Error::InvalidName {
                 kind: "duplicate bundle entry",
@@ -184,11 +180,15 @@ impl BundlePlan {
         for (item, contents) in self.items.iter().zip(&self.contents) {
             archive.write_all(&tar_header(&item.path, item.bytes, modified))?;
             archive.write_all(contents)?;
-            let padding = item.bytes.div_ceil(TAR_BLOCK) * TAR_BLOCK - item.bytes;
-            archive.write_all(&vec![0; padding as usize])?;
+            let padding = item.bytes.next_multiple_of(TAR_BLOCK) - item.bytes;
+            archive.write_all(&[0; TAR_BLOCK as usize][..padding as usize])?;
         }
         archive.write_all(&[0; 2 * TAR_BLOCK as usize])
     }
+}
+
+fn archive_path(name: &str) -> String {
+    format!("{ROOT}/{name}")
 }
 
 /// `cockpit.log` and its rotations, oldest number last, skipping files outside the window.

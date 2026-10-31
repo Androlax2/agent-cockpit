@@ -6,11 +6,8 @@ use std::time::{Duration, SystemTime};
 
 use crate::Error;
 use crate::error::io_error;
-use crate::queue::own_record;
 
 pub(crate) const LOG_FILE: &str = "cockpit.log";
-/// Held locked while a process logs to the directory; a second process fails to start.
-const LOCK_FILE: &str = "cockpit.log.lock";
 
 /// Size rotation with a total cap: at most `max_files` files of `max_file_bytes` each, and
 /// rotated files older than `max_age` are removed. The defaults are the 2026-10-29 budgets.
@@ -49,9 +46,23 @@ pub(crate) struct RotatingFile {
     log_dir: PathBuf,
     limits: FileLimits,
     file: File,
+    /// Bytes in `cockpit.log`.
     size: u64,
-    /// Released when the writer thread ends.
+    /// Rotate before `size` passes this: `max_file_bytes`, or one file further after a
+    /// failed rotation, because retrying per record would shift older files until lost.
+    rotate_at: u64,
+    /// The log directory, locked so a second process fails to start. Released when the
+    /// writer thread ends.
     _lock: File,
+}
+
+/// What [`RotatingFile::write_record`] did with a record.
+pub(crate) enum Written {
+    Yes,
+    /// Larger than a file, or the disk refused it.
+    Dropped,
+    /// Written to the current file because rotating failed.
+    AfterFailedRotation(io::Error),
 }
 
 impl RotatingFile {
@@ -73,14 +84,7 @@ impl RotatingFile {
             .map_err(io_error("create the log directory", log_dir))?;
         fs::set_permissions(log_dir, fs::Permissions::from_mode(0o700))
             .map_err(io_error("make the log directory private", log_dir))?;
-        let lock_path = log_dir.join(LOCK_FILE);
-        let lock = File::options()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&lock_path)
-            .map_err(io_error("open the log lock", &lock_path))?;
+        let lock = File::open(log_dir).map_err(io_error("open the log directory", log_dir))?;
         match lock.try_lock() {
             Ok(()) => {}
             Err(fs::TryLockError::WouldBlock) => {
@@ -89,7 +93,7 @@ impl RotatingFile {
                 });
             }
             Err(fs::TryLockError::Error(source)) => {
-                return Err(io_error("lock", lock_path)(source));
+                return Err(io_error("lock the log directory", log_dir)(source));
             }
         }
         let (file, size) =
@@ -99,6 +103,7 @@ impl RotatingFile {
             limits,
             file,
             size,
+            rotate_at: limits.max_file_bytes,
             _lock: lock,
         };
         rotating
@@ -107,33 +112,24 @@ impl RotatingFile {
         Ok(rotating)
     }
 
-    /// Writes one whole record. Returns `false` when the record was dropped: larger than a
-    /// file, or the disk refused it.
-    pub(crate) fn write_record(&mut self, record: &[u8]) -> bool {
+    /// Writes one whole record, rotating first when it would not fit.
+    pub(crate) fn write_record(&mut self, record: &[u8]) -> Written {
         let length = record.len() as u64;
         if length > self.limits.max_file_bytes {
-            return false;
+            return Written::Dropped;
         }
-        if self.size + length > self.limits.max_file_bytes
+        let mut rotation_error = None;
+        if self.size + length > self.rotate_at
             && let Err(error) = self.rotate()
         {
-            // Keep writing to the current file and retry only after another file's worth:
-            // retrying per record would shift older files again and lose them.
-            self.size = 0;
-            let warning = own_record(
-                "WARN",
-                "log rotation failed",
-                [("error", error.to_string().into())],
-            );
-            let _ = self.file.write_all(&warning);
+            self.rotate_at = self.size + self.limits.max_file_bytes;
+            rotation_error = Some(error);
         }
-        match self.file.write_all(record) {
-            Ok(()) => {
-                self.size += length;
-                true
-            }
-            Err(_) => false,
+        if self.file.write_all(record).is_err() {
+            return Written::Dropped;
         }
+        self.size += length;
+        rotation_error.map_or(Written::Yes, Written::AfterFailedRotation)
     }
 
     pub(crate) fn flush(&mut self) {
@@ -159,18 +155,13 @@ impl RotatingFile {
         let (file, size) = open_current(&self.log_dir)?;
         self.file = file;
         self.size = size;
-        self.prune();
+        self.rotate_at = self.limits.max_file_bytes;
         Ok(())
     }
 
-    /// [`Self::remove_expired`] for a running writer, where a file that cannot be removed now
-    /// is retried at the next rotation or hourly prune instead of costing a record.
-    pub(crate) fn prune(&self) {
-        let _ = self.remove_expired();
-    }
-
-    /// Removes rotated files past the age limit or beyond the file count.
-    fn remove_expired(&self) -> io::Result<()> {
+    /// Removes rotated files past the age limit or beyond the file count. Rotation itself
+    /// keeps the count; the writer calls this hourly for the age limit.
+    pub(crate) fn remove_expired(&self) -> io::Result<()> {
         let oldest_kept = SystemTime::now()
             .checked_sub(self.limits.max_age)
             .unwrap_or(SystemTime::UNIX_EPOCH);
