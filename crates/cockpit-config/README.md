@@ -6,8 +6,8 @@ precedence, provenance and start-file change detection. Design:
 
 **Depends on:** no product crate (only `serde` and `toml`).
 **Used by (planned):** `cockpit-daemon` for paths and settings, `cockpit-sessions` for
-start-file snapshots, the CLI for `config show`. It reads files; it never grants: owner
-settings are inputs to `cockpit-authorization`, which decides.
+start-file snapshots, and `cockpit-cli` for `cockpit config show`. It reads files; it never
+grants: owner settings are inputs to `cockpit-authorization`, which decides.
 
 ## Files and precedence
 
@@ -25,7 +25,7 @@ relative paths and unknown providers fail the same way. State and cache go under
 `$XDG_RUNTIME_DIR/cockpit` and shown as unset when that variable is.
 
 ```sh
-cockpit-config show [--project DIR] [--set KEY=VALUE]...
+cockpit config show [--project DIR] [--set KEY=VALUE]...
 ```
 
 prints every value as `key = value  # source`. It reads files only, so it works without the

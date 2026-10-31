@@ -332,6 +332,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-cli"
+version = "0.1.0"
+dependencies = [
+ "cockpit-config",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "cockpit-config"
 version = "0.1.0"
 dependencies = [
