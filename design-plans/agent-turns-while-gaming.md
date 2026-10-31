@@ -1,6 +1,6 @@
-# Option C: let agent turns continue during games (proposal only)
+# Option C: let agent turns continue during games
 
-Status: **proposal, not implemented, not activated.** Nothing here changes behaviour until Theo approves it.
+Status: **implemented** (Theo approved on 2026-10-31: guard-verified `gaming_guarded` for Chief messages, answers, corrections, form replies and the Chief wake; setting `chief-turns-while-gaming`, default on). Sections below are the original proposal; README describes what exists.
 Origin: todo 0990586d. Chief messages to two gaming-blocked sessions expired after 10 minutes and were
 cancelled (`6afdfdcb…`, `2ea3bf1b…`). Option B (in this branch) only records why a message was cancelled. It is
 diagnostics, not during-game continuation.

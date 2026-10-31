@@ -591,6 +591,10 @@ pub trait System {
     fn open_window(&mut self, command: &[&str]) -> Option<Box<dyn Window>>;
     fn claude_workspace_active(&mut self) -> bool;
     fn gaming(&mut self) -> bool;
+    /// The gamemode submap alone: Theo's explicit "hold everything", which no guard relaxes.
+    fn game_mode(&mut self) -> bool;
+    /// Whether the host's game guard, alive this boot, holds new heavy jobs for an open game.
+    fn game_guard_holds_heavy_jobs(&mut self) -> bool;
     fn in_meeting(&mut self) -> bool;
     fn live_session_ids(&mut self) -> HashSet<String>;
     fn claude_panes(&mut self) -> HashSet<String>;
@@ -1701,6 +1705,8 @@ pub struct Registry {
     /// Linked-session state, opened on first use (teams.rs).
     pub(crate) teams: Option<cockpit::teams::store::Connection>,
     pub(crate) chief_focus: Option<(String, bool, bool, i64)>,
+    /// The invalid chief-turns-while-gaming last logged, so the log shows it once, not every observation.
+    pub(crate) turns_setting_error: Option<String>,
     pub(crate) chief_fault: Option<String>,
     pub(crate) chief_attention_presentations: HashMap<String, bool>,
     chief_question_deadlines: HashMap<String, i64>,
@@ -1764,6 +1770,7 @@ impl Registry {
             project_cache: HashMap::new(),
             teams: None,
             chief_focus: None,
+            turns_setting_error: None,
             chief_fault: None,
             chief_attention_presentations: HashMap::new(),
             chief_question_deadlines: HashMap::new(),
@@ -3185,9 +3192,20 @@ impl Registry {
 
 type ChiefLaunchResult = std::sync::mpsc::Receiver<Result<(i32, String), String>>;
 
+/// What gaming() last read from hyprctl; an unreadable submap counts as game mode.
+struct GameSignals {
+    checked_at: Option<Instant>,
+    is_gaming: bool,
+    is_game_mode: bool,
+}
+
 pub struct RealSystem {
     chief_launches: HashMap<String, ChiefLaunchResult>,
-    gaming_cache: (Option<Instant>, bool),
+    gaming_cache: GameSignals,
+    /// Where the guard's admission status lives; the account's home does not change while we run.
+    game_guard_gate: Result<std::path::PathBuf, String>,
+    /// Why the game guard last did not hold heavy jobs (None: it did), so the log shows each change once.
+    game_guard_refusal: Option<String>,
     /// When khal was last asked, and its answer so far: khal runs on a thread of its own, never on
     /// the GTK loop (it takes a few hundred ms to start; security audit 2026-10-19, performance 4).
     meeting_cache: (
@@ -3240,7 +3258,13 @@ impl RealSystem {
     pub fn new() -> Self {
         RealSystem {
             chief_launches: HashMap::new(),
-            gaming_cache: (None, false),
+            gaming_cache: GameSignals {
+                checked_at: None,
+                is_gaming: false,
+                is_game_mode: true,
+            },
+            game_guard_gate: cockpit::game_guard::gate_path(),
+            game_guard_refusal: None,
             meeting_cache: (None, Default::default()),
             process_scan: None,
             waybar: WaybarPids::default(),
@@ -3823,14 +3847,15 @@ impl System for RealSystem {
     fn gaming(&mut self) -> bool {
         if self
             .gaming_cache
-            .0
+            .checked_at
             .is_some_and(|checked| checked.elapsed() < Duration::from_secs(2))
         {
-            return self.gaming_cache.1;
+            return self.gaming_cache.is_gaming;
         }
         let submap = output_within(&["hyprctl", "submap"], COMMAND_TIMEOUT)
-            .map(|(_, out, _)| out.trim().to_string())
-            .unwrap_or_default();
+            .map(|(_, out, _)| out.trim().to_string());
+        let game_mode = submap.as_deref().is_none_or(|submap| submap == "gamemode");
+        let submap = submap.unwrap_or_default();
         let class = output_within(&["hyprctl", "-j", "activewindow"], COMMAND_TIMEOUT)
             .and_then(|(_, out, _)| serde_json::from_str::<Value>(&out).ok())
             .and_then(|window| {
@@ -3841,15 +3866,49 @@ impl System for RealSystem {
             })
             .unwrap_or_default();
         let now = is_game(&submap, &class);
-        if now != self.gaming_cache.1 {
+        if now != self.gaming_cache.is_gaming {
             log(if now {
                 "gaming: banners and approval windows wait"
             } else {
                 "no game: banners and approval windows shown again"
             });
         }
-        self.gaming_cache = (Some(Instant::now()), now);
+        self.gaming_cache = GameSignals {
+            checked_at: Some(Instant::now()),
+            is_gaming: now,
+            is_game_mode: game_mode,
+        };
         now
+    }
+
+    fn game_mode(&mut self) -> bool {
+        self.gaming();
+        self.gaming_cache.is_game_mode
+    }
+
+    fn game_guard_holds_heavy_jobs(&mut self) -> bool {
+        let refusal = match &self.game_guard_gate {
+            Ok(path) => cockpit::game_guard::holds_heavy_jobs_for_game(
+                path,
+                now(),
+                Proc.boot_id().as_deref(),
+            ),
+            Err(why) => Err(why.clone()),
+        }
+        .err();
+        if refusal != self.game_guard_refusal {
+            log(&match &refusal {
+                None => {
+                    "game guard holds heavy jobs: agent turns may continue during the game".into()
+                }
+                Some(why) => format!(
+                    "game guard not holding heavy jobs: agent turns wait during games ({why})"
+                ),
+            });
+        }
+        let holds = refusal.is_none();
+        self.game_guard_refusal = refusal;
+        holds
     }
 
     /// Whether the calendar shows a meeting, as khal last said: asked at most once a minute, on a

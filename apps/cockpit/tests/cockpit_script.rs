@@ -10011,6 +10011,35 @@ fn chief_dispatches_own_todos_starts_off_and_takes_only_on_or_off() {
 }
 
 #[test]
+fn chief_turns_while_gaming_starts_on_and_takes_only_on_or_off() {
+    let manager = Manager::new();
+    let file = manager.sandbox.state.join("cockpit/settings.json");
+    assert_eq!(
+        stdout(&manager.run(&["setting", "chief-turns-while-gaming"], &[])).trim(),
+        "chief-turns-while-gaming: on"
+    );
+    for value in ["off", "on"] {
+        let result = manager.run(&["setting", "chief-turns-while-gaming", value], &[]);
+        assert!(result.status.success(), "{value:?}: {}", stderr(&result));
+        assert_eq!(
+            stdout(&manager.run(&["setting", "chief-turns-while-gaming"], &[])).trim(),
+            format!("chief-turns-while-gaming: {value}")
+        );
+    }
+    let saved = fs::read_to_string(&file).unwrap();
+    for value in ["", "yes", "true", "OFF", "0"] {
+        let result = manager.run(&["setting", "chief-turns-while-gaming", value], &[]);
+        assert!(!result.status.success(), "{value:?}");
+        assert!(
+            stderr(&result).contains("invalid chief-turns-while-gaming"),
+            "{value:?}: {}",
+            stderr(&result)
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), saved);
+    }
+}
+
+#[test]
 fn turning_on_chief_dispatches_own_todos_is_audited() {
     let manager = Manager::new();
     assert!(

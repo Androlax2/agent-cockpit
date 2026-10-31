@@ -11,6 +11,7 @@ pub mod continuity;
 pub mod costs;
 pub mod errors;
 pub mod failsafe;
+pub mod game_guard;
 pub mod paths;
 pub mod prompts;
 pub mod push;

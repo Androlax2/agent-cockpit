@@ -110,6 +110,8 @@ struct World {
     windows: Vec<Rc<RefCell<FakeWindow>>>,
     on_cockpit: bool,
     gaming: bool,
+    game_mode: bool,
+    game_guard_holds_heavy_jobs: bool,
     in_meeting: bool,
     live_ids: HashSet<String>,
     claude_panes: HashSet<String>,
@@ -230,6 +232,12 @@ impl System for FakeSystem {
     }
     fn gaming(&mut self) -> bool {
         self.0.borrow().gaming
+    }
+    fn game_mode(&mut self) -> bool {
+        self.0.borrow().game_mode
+    }
+    fn game_guard_holds_heavy_jobs(&mut self) -> bool {
+        self.0.borrow().game_guard_holds_heavy_jobs
     }
     fn in_meeting(&mut self) -> bool {
         self.0.borrow().in_meeting

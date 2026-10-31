@@ -143,11 +143,9 @@ pub fn read_json(path: &Path) -> Option<Value> {
 /// 2026-10-19, M5).
 pub fn open_untrusted(path: &Path) -> std::io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    const O_NOFOLLOW: i32 = 0o400000;
-    const O_NONBLOCK: i32 = 0o4000;
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     if !file.metadata()?.is_file() {
         return Err(std::io::Error::other(format!(

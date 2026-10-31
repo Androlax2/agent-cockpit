@@ -190,6 +190,21 @@ fn workers_at(
     workers_among(registry, live, now, observe)
 }
 
+/// Whether a game lets agent turns continue: Theo's setting allows it, the gamemode submap is off
+/// and the host's game guard holds new heavy jobs, so what a turn starts waits or is pinned.
+fn turns_continue_while_gaming(registry: &mut Registry) -> bool {
+    let setting = cockpit::settings::chief_turns_while_gaming();
+    let error = setting.as_ref().err();
+    if let Some(error) = error.filter(|error| registry.turns_setting_error.as_ref() != Some(error))
+    {
+        crate::registry::log(&format!("{error}; agent turns wait during games"));
+    }
+    registry.turns_setting_error = error.cloned();
+    setting == Ok(true)
+        && !registry.system.game_mode()
+        && registry.system.game_guard_holds_heavy_jobs()
+}
+
 /// The workers among sessions the caller's own live_sessions() already verified: a team request
 /// must not pay for that pass twice.
 pub(crate) fn workers_among(
@@ -198,7 +213,19 @@ pub(crate) fn workers_among(
     now: i64,
     observe: bool,
 ) -> Result<Vec<WorkerState>, TeamError> {
-    let gaming = registry.system.gaming();
+    let focus = registry
+        .chief_focus
+        .clone()
+        .filter(|(_, _, _, observed)| *observed <= now && now - observed <= 30_000);
+    let is_gaming = registry.system.gaming()
+        || focus
+            .as_ref()
+            .is_some_and(|(_, _, host_gaming, _)| *host_gaming);
+    let gaming_reason = if is_gaming && turns_continue_while_gaming(registry) {
+        store::GAMING_GUARDED
+    } else {
+        "gaming"
+    };
     let connection = registry
         .teams
         .as_ref()
@@ -284,24 +311,19 @@ pub(crate) fn workers_among(
                     .into(),
                 );
             }
-            match &registry.chief_focus {
-                Some((viewed, active, host_gaming, observed))
-                    if *observed <= now && now - observed <= 30_000 =>
-                {
+            match &focus {
+                Some((viewed, active, _, _)) => {
                     if *active && viewed.is_empty() {
                         blocked_by.push("viewed_session_unknown".into());
                     }
                     if *active && *viewed == session.session_id {
                         blocked_by.push("viewed_session".into());
                     }
-                    if *host_gaming {
-                        blocked_by.push("gaming".into());
-                    }
                 }
-                _ => blocked_by.push("fresh_host_focus_required".into()),
+                None => blocked_by.push("fresh_host_focus_required".into()),
             }
-            if gaming {
-                blocked_by.push("gaming".into());
+            if is_gaming {
+                blocked_by.push(gaming_reason.into());
             }
             if cockpit::prompts::count(&session.session_id) > 0 {
                 blocked_by.push("human_prompt_queued".into());

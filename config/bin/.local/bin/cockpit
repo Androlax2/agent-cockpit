@@ -86,6 +86,9 @@
 #                                for in an hour; todos you queued with Q do not count
 #                                chief-dispatches-own-todos on|off (default off): on lets the Chief start or
 #                                give todos it filed itself without your Q (still capped, logged and audited)
+#                                chief-turns-while-gaming on|off (default on): on lets Chief messages, answers
+#                                and the Chief's wake reach idle sessions during a game while
+#                                cockpit-game-guard holds new heavy jobs; todos and the queue still wait
 #   cockpit remote <id>          toggle Remote Control for one session (the remote action of the sidebar's : list)
 #   cockpit restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
@@ -990,11 +993,12 @@ PHONE_AWAY="${XDG_RUNTIME_DIR:-/tmp}/cockpit-remote-away"
 # same names (apps/cockpit/src/settings.rs).
 SETTINGS_FILE="${COCKPIT_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/cockpit/settings.json"
 KNOWN_SETTINGS=(phone-on-lock todo-queue error-handoff freeze-while-gaming idle-lock daily-digest idle-sleep)
-LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort idle-sleep-after chief-starts-per-hour chief-dispatches-own-todos)
+LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort idle-sleep-after chief-starts-per-hour chief-dispatches-own-todos chief-turns-while-gaming)
 
 launch_setting_value() { # name
     local fallback=""
     [[ $1 == default-agent ]] && fallback=claude
+    [[ $1 == chief-turns-while-gaming ]] && fallback=on
     if [[ ! -e $SETTINGS_FILE ]]; then
         printf '%s\n' "$fallback"
         return
@@ -1016,6 +1020,7 @@ validate_launch_setting() { # name value
     idle-sleep-after) [[ $2 =~ ^[1-9][0-9]{1,5}$ ]] && (($2 >= 30)) ;;
     chief-starts-per-hour) [[ -z $2 || ($2 =~ ^[1-9][0-9]?$ && $2 -le 60) ]] ;;
     chief-dispatches-own-todos) [[ -z $2 || $2 == on || $2 == off ]] ;;
+    chief-turns-while-gaming) [[ $2 == on || $2 == off ]] ;;
     esac || {
         echo "cockpit: invalid $1: $2" >&2
         return 1
