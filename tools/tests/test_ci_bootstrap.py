@@ -25,8 +25,8 @@ class CiBootstrapTests(unittest.TestCase):
             r"        run: ([^\n]+)\n",
             workflow,
         )
-        self.assertIsNotNone(setup, "hosted runners need admission setup before make ci")
-        self.assertLess(setup.end(), workflow.index("        run: make ci"))
+        self.assertIsNotNone(setup, "hosted runners need admission setup before make greenfield-ci")
+        self.assertLess(setup.end(), workflow.index("        run: make greenfield-ci"))
         command = shlex.split(setup[1])
         self.assertEqual(command[:2], ["python3", "config/bin/.local/bin/cockpit-game-guard"])
         loader = importlib.machinery.SourceFileLoader("ci_game_guard", str(ROOT / command[1]))
@@ -52,9 +52,13 @@ class CiBootstrapTests(unittest.TestCase):
         self.assertIsNotNone(installer, "installer must use an immutable commit")
         self.assertEqual(installer[1], reviewed["action_commit"])
 
-        tool_block = re.search(r"tool: >-\n((?:[ ]{12}\S[^\n]*\n)+)", workflow)
-        self.assertIsNotNone(tool_block, "expected explicit pinned installer tools")
-        tools = dict(line.strip().split("@") for line in tool_block[1].splitlines())
+        tool_lists = re.findall(r"tool: ([^\n>]+)\n", workflow)
+        self.assertTrue(tool_lists, "expected explicit pinned installer tools")
+        tools = {}
+        for tool_list in tool_lists:
+            for entry in tool_list.split(","):
+                name, version = entry.strip().split("@")
+                self.assertEqual(tools.setdefault(name, version), version, f"{name} pinned twice")
         self.assertEqual(set(tools), set(reviewed["tools"]))
         for name, version in tools.items():
             with self.subTest(tool=name):

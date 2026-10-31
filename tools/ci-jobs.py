@@ -7,6 +7,8 @@ Usage: git diff --name-only BASE...HEAD | ci-jobs.py
 Patterns follow GitHub's `paths` filters: `*` stays inside one folder, `**` crosses folders.
 A path no job claims (rust-toolchain.toml, .cargo/deny.toml, assets/ ...) and an empty change
 set run every job: a gap in these lists must show up as extra work, never as skipped checks.
+The legacy apps/ suite has no CI job since 2026-10-31 (decided by Theo): it slowed every
+greenfield change and leaves at the cutover; `make ci` stays available locally.
 """
 
 import sys
@@ -14,7 +16,6 @@ from pathlib import PurePosixPath
 
 JOB_PATHS = {
     "greenfield": ["crates/**", "Cargo.toml", "Cargo.lock", "Makefile", ".github/**"],
-    "legacy": ["apps/**", "config/**", "tools/**", "packaging/**", "Makefile", ".github/**"],
     "docs": ["docs/**", "**/*.md"],
 }
 
