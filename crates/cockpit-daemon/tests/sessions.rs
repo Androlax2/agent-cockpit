@@ -226,18 +226,63 @@ impl Home {
     /// Whether `session` may change its own state: the check the agent channel makes before
     /// it accepts a report.
     async fn may_report(&self, session: &str) -> bool {
+        self.may(session, cockpit_authorization::Permission::ChangeState)
+            .await
+    }
+
+    /// Whether `session` may ask the owner to run a command or follow a guide: the check
+    /// `cockpit-approvals` makes before it files an ask.
+    async fn may_ask(&self, session: &str) -> bool {
+        self.may(session, cockpit_authorization::Permission::RunCommands)
+            .await
+    }
+
+    async fn may(&self, session: &str, permission: cockpit_authorization::Permission) -> bool {
         let database = self.database.lock().unwrap().clone().unwrap();
         let read = database.read().await.unwrap();
         let session = cockpit_authorization::SessionId::new(session).unwrap();
         let decision = cockpit_authorization::evaluate(
             &read,
             &cockpit_authorization::Actor::Session(session.clone()),
-            cockpit_authorization::Permission::ChangeState,
+            permission,
             &cockpit_authorization::Scope::Session(session),
         )
         .await
         .unwrap();
         matches!(decision.outcome, cockpit_authorization::Outcome::Allowed(_))
+    }
+
+    /// Asks the owner to run `command` as the agent `launch` would with `cockpit ask run`:
+    /// identified by that agent's real process tree and launch token, then filed through
+    /// `cockpit-approvals`, as the daemon's agent route does. The agent itself cannot dial
+    /// the socket from here: its connection would come from this test process.
+    async fn ask_as_agent(&self, launch: &AgentLaunch, command: &str, cwd: &Path) {
+        let database = self.database.lock().unwrap().clone().unwrap();
+        let write = database.write().await.unwrap();
+        let agent = cockpit_agent_channel::identity_of(u32::try_from(launch.pid).unwrap());
+        let peer = cockpit_agent_channel::ancestry_of(&agent.unwrap());
+        let session = cockpit_agent_channel::identify(&write, &peer, Some(&launch.token))
+            .await
+            .unwrap();
+        cockpit_approvals::ask_run(
+            &write,
+            &session,
+            cockpit_approvals::RunAsk {
+                command: command.to_owned(),
+                cwd: cwd.to_owned(),
+                reason: "the acceptance walk asks".to_owned(),
+                project: None,
+            },
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .try_into()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
     }
 
     /// Starts a session whose agent names no conversation, then restarts the daemon with
@@ -896,6 +941,59 @@ async fn a_session_that_fails_to_restore_loses_change_state_over_itself() {
     let client = connect(&daemon).await;
     wait_for_state(&client, &session, SessionStateView::Failed).await;
     assert!(!home.may_report(&session).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launched_sessions_ask_run_reaches_the_owners_queue_without_a_manual_grant() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    let launch = home.launches(1).await.remove(0);
+
+    home.ask_as_agent(&launch, "make test", &root).await;
+
+    let queued = match request(&client, Command::ApprovalQueue).await {
+        Ok(Reply::ApprovalQueue { runs, .. }) => runs,
+        other => panic!("expected the queue, got {other:?}"),
+    };
+    let asked: Vec<_> = queued
+        .iter()
+        .map(|run| (run.session.as_str(), run.command.as_str()))
+        .collect();
+    assert_eq!(asked, [(started.id.as_str(), "make test")]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ending_a_session_revokes_its_run_commands_over_itself() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    assert!(home.may_ask(&started.id).await);
+
+    session_reply(
+        &client,
+        Command::SessionEnd {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert!(!home.may_ask(&started.id).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_that_fails_to_restore_loses_run_commands_over_itself() {
+    let home = Home::new();
+
+    let (session, daemon) = home.fail_a_restore().await;
+
+    let client = connect(&daemon).await;
+    wait_for_state(&client, &session, SessionStateView::Failed).await;
+    assert!(!home.may_ask(&session).await);
 }
 
 #[tokio::test(flavor = "multi_thread")]

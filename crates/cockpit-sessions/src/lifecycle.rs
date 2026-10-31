@@ -25,6 +25,11 @@ use crate::{
 /// Variables of the terminal tmux emulates, kept from the pane: they describe the host.
 const TERMINAL_VARIABLES: [&str; 2] = ["TERM", "COLORTERM"];
 
+/// What every launch grants the session over itself, and every move to `ended` or `failed`
+/// revokes: reporting its own state (#143), and asking the owner to run a command or follow
+/// a guide (#270), which the owner still approves one by one.
+const SELF_PERMISSIONS: [Permission; 2] = [Permission::ChangeState, Permission::RunCommands];
+
 /// The states the owner's restart starts from: running, and the transitional states an
 /// error or a crash can leave, in which the agent's status is unknown.
 const RESTARTABLE: [SessionState; 5] = [
@@ -855,8 +860,8 @@ impl Sessions {
             .await
     }
 
-    /// Moves the session from one of `from` to `failed` and revokes its self grant: a failed
-    /// launch may have left an agent running, and it must not report for the session.
+    /// Moves the session from one of `from` to `failed` and revokes its self grants: a failed
+    /// launch may have left an agent running, and it must not report or ask for the session.
     async fn move_to_failed(
         &self,
         id: &SessionId,
@@ -874,7 +879,7 @@ impl Sessions {
             operation,
         )
         .await?;
-        revoke_self_grant(&write, id).await?;
+        revoke_self_grants(&write, id).await?;
         store::clear_restart_request(&write, id).await?;
         write.commit().await?;
         Ok(failed)
@@ -1022,13 +1027,15 @@ impl Sessions {
         let token = {
             let write = self.database.write().await?;
             let token = cockpit_agent_channel::mint(&write, &channel_session).await?;
-            cockpit_authorization::grant(
-                &write,
-                &channel_session,
-                Permission::ChangeState,
-                &Scope::Session(channel_session.clone()),
-            )
-            .await?;
+            for permission in SELF_PERMISSIONS {
+                cockpit_authorization::grant(
+                    &write,
+                    &channel_session,
+                    permission,
+                    &Scope::Session(channel_session.clone()),
+                )
+                .await?;
+            }
             write.commit().await?;
             token
         };
@@ -1332,30 +1339,30 @@ async fn release(
 }
 
 /// What an ended session gives up, in the transaction that ends it: its clone and its self
-/// grant. Every move to `ended` calls this.
+/// grants. Every move to `ended` calls this.
 async fn give_up_on_end(
     write: &cockpit_turso::WriteTransaction<'_>,
     ended: &Session,
 ) -> Result<(), Error> {
     release(write, ended).await?;
     store::clear_restart_request(write, &ended.id).await?;
-    revoke_self_grant(write, &ended.id).await
+    revoke_self_grants(write, &ended.id).await
 }
 
-/// Revokes the `change-state` over itself a launch granted the session, so its agent may
-/// no longer report. An owner grant of the same permission and scope is the same grant and
-/// goes with it. Each revocation advances the authorization revision.
-async fn revoke_self_grant(
+/// Revokes the [`SELF_PERMISSIONS`] over itself a launch granted the session, so its agent
+/// may no longer report or ask the owner. An owner grant of the same permission and scope is
+/// the same grant and goes with it. Each revocation advances the authorization revision.
+async fn revoke_self_grants(
     write: &cockpit_turso::WriteTransaction<'_>,
     id: &SessionId,
 ) -> Result<(), Error> {
     let session = authorization_session(id)?;
-    let own_state = Scope::Session(session.clone());
-    let self_grant = cockpit_authorization::active_grants(write, &session)
+    let itself = Scope::Session(session.clone());
+    let self_grants = cockpit_authorization::active_grants(write, &session)
         .await?
         .into_iter()
-        .find(|grant| grant.permission == Permission::ChangeState && grant.scope == own_state);
-    if let Some(grant) = self_grant {
+        .filter(|grant| SELF_PERMISSIONS.contains(&grant.permission) && grant.scope == itself);
+    for grant in self_grants {
         cockpit_authorization::revoke(write, grant.id).await?;
     }
     Ok(())
