@@ -92,7 +92,7 @@ jobs:
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-processes
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
-  # exists: docs/DECISIONS.md, "Gate M0: WSL2 proven in CI". cargo-nextest's pin and hash
+  # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
   # match tools/tests/fixtures/ci-install-action-linux.json (test_ci_bootstrap.py).
   greenfield-wsl2:
     needs: changes

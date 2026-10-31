@@ -38,8 +38,8 @@ other gate items have not run on macOS.
 **WSL2.** No Windows machine is available for a hand run, so (Theo, 2026-10-31, on #27) the
 `greenfield-wsl2` CI job is the WSL2 proof: it runs the same `startup` tests inside Ubuntu
 24.04 under WSL 2 on GitHub's `windows-2025` runner whenever CI selects the greenfield job
-(how and why: the 2026-10-31 WSL2 entry in [Decisions](../DECISIONS.md)). The gate counts
-it once the job is green on `main`, with that run linked on #27.
+(how and why: [the WSL2 decision](../decisions/2026-10-31-27-wsl2-proven-in-ci.md)). The gate
+counts it once the job is green on `main`, with that run linked on #27.
 [The hand-run checklist](m0-wsl2-recorded-run.md) stays as a fallback, not a gate item.
 
 ## Open items
