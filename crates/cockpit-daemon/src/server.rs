@@ -55,9 +55,12 @@ impl Default for Limits {
                 workers: 8,
                 waiting: 64,
             },
+            // A session stop takes up to 10 s; with two waiting places the last one admitted
+            // is answered within 20 s, inside the TUI's 30 s deadline, and one more is `busy`
+            // at once instead of timing out while the daemon still stops it (#217).
             stop: LaneLimits {
                 workers: 2,
-                waiting: 16,
+                waiting: 2,
             },
             bulk: LaneLimits {
                 workers: 4,
