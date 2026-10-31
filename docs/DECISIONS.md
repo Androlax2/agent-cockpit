@@ -1,5 +1,24 @@
 # Engineering decisions
 
+## 2026-10-31 — Greenfield protocol: version lists, open enums, closed change kinds
+
+`cockpit-protocol` (issue #20) negotiates with a list, not a single number: the client's
+`Hello` names every version it speaks and the daemon picks the highest shared one, or
+refuses with `version-mismatch` and its own list. A client can then span an upgrade without
+a second round trip. Additive features are capabilities, granted only when both sides offer
+them; a version bump is reserved for changes an older peer would misread.
+
+Enums that grow (capabilities, refusal reasons, error codes, entity kinds) keep unknown
+values through a `#[serde(untagged)] Unknown(String)` variant. Commands cannot: an untagged
+fallback also swallows a malformed known command as "unknown". `Command` uses a unit
+`#[serde(other)]` variant instead, which catches only unknown tags, so `decode_request`
+answers `unknown-command` naming the kind, or `invalid-request` with serde's precise message.
+The change kind (`upsert`, `tombstone`) is closed: a client that skipped a change it could
+not apply would advance its cursor over data it never applied, so a new kind needs a new
+version. Feed positions (a batch's `follows`, `subscribe`'s `from`) are a required
+`snapshot`-or-cursor enum, not an optional cursor: serde reads a missing `Option` as `None`,
+which would turn a dropped or misspelled field into "replace all state".
+
 ## 2026-10-31 — cockpit-turso: one opener, one writer, full change capture
 
 Issue #24. `cockpit-turso` pins `turso = "=0.8.3"` (the newest non-pre-release) without its
