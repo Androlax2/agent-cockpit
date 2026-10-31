@@ -1,7 +1,9 @@
 mod common;
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 
+use cockpit_daemon::Limits;
 use cockpit_protocol::{Command, Reply, SUPPORTED_VERSIONS};
 use common::{GENEROUS, TestHome};
 
@@ -24,6 +26,19 @@ async fn a_daemon_starts_on_a_clean_home_and_answers_ping() {
         connection.welcome().protocol_version,
         *SUPPORTED_VERSIONS.last().unwrap()
     );
+    assert_eq!(
+        connection.request(Command::Ping, GENEROUS).await.unwrap(),
+        Reply::Pong
+    );
+}
+
+#[tokio::test]
+async fn a_daemon_starts_on_a_clean_home_with_only_home_in_its_environment() {
+    let home = TestHome::bare();
+    let _daemon = home.start();
+
+    let connection = home.connect().await;
+
     assert_eq!(
         connection.request(Command::Ping, GENEROUS).await.unwrap(),
         Reply::Pong
@@ -130,15 +145,7 @@ fn startup_reconciles_durable_state_before_accepting_requests() {
     let home = TestHome::new();
     let _daemon = home.start();
 
-    // Records reach the file through the log writer thread, shortly after `ready`.
-    let deadline = std::time::Instant::now() + GENEROUS;
-    let log = loop {
-        let log = std::fs::read_to_string(home.log_file()).unwrap_or_default();
-        if log.contains("accepting requests") || std::time::Instant::now() > deadline {
-            break log;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
+    let log = home.log_once_it_contains("accepting requests");
     let position = |message: &str| {
         log.find(message)
             .unwrap_or_else(|| panic!("{message:?} is not in the log:\n{log}"))
@@ -147,6 +154,26 @@ fn startup_reconciles_durable_state_before_accepting_requests() {
     let reconciled = position("reconciled durable state");
     let accepting = position("accepting requests");
     assert!(opened < reconciled && reconciled < accepting, "{log}");
+}
+
+#[tokio::test]
+async fn cockpit_log_level_decides_which_records_the_daemon_writes() {
+    let mut home = TestHome::new();
+    home.log_level = Some("warn".to_owned());
+    let _daemon = home.start();
+
+    // The binary serves `Limits::default()`. Handshaken connections hold their places with
+    // no deadline, so one more is closed with a warning, written after every record
+    // startup made.
+    let mut held = Vec::new();
+    for _ in 0..Limits::default().connections {
+        held.push(home.connect().await);
+    }
+    let _over_the_limit = UnixStream::connect(home.socket_path()).expect("the daemon accepts");
+    let log = home.log_once_it_contains("too many connections");
+
+    assert!(log.contains("too many connections"), "{log}");
+    assert!(!log.contains("accepting requests"), "{log}");
 }
 
 #[test]

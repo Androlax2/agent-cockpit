@@ -20,6 +20,9 @@ pub struct TestHome {
     pub root: tempfile::TempDir,
     /// `XDG_RUNTIME_DIR`, or `None` to leave it unset as on macOS.
     pub runtime_base: Option<PathBuf>,
+    /// `false` leaves `XDG_STATE_HOME` and `XDG_CONFIG_HOME` unset, so the daemon derives
+    /// them from `HOME`; [`TestHome::bare`] also leaves `XDG_RUNTIME_DIR` unset.
+    pub sets_xdg_dirs: bool,
     pub log_level: Option<String>,
 }
 
@@ -34,6 +37,17 @@ impl TestHome {
         TestHome {
             root,
             runtime_base: Some(runtime_base),
+            sets_xdg_dirs: true,
+            log_level: None,
+        }
+    }
+
+    /// A home with nothing in it and only `HOME` in the environment.
+    pub fn bare() -> TestHome {
+        TestHome {
+            root: tempfile::tempdir().expect("a temporary home"),
+            runtime_base: None,
+            sets_xdg_dirs: false,
             log_level: None,
         }
     }
@@ -43,7 +57,11 @@ impl TestHome {
     }
 
     pub fn state_home(&self) -> PathBuf {
-        self.home().join("state")
+        if self.sets_xdg_dirs {
+            self.home().join("state")
+        } else {
+            self.home().join(".local/state")
+        }
     }
 
     pub fn socket_dir(&self) -> PathBuf {
@@ -66,11 +84,14 @@ impl TestHome {
         command
             .env_clear()
             .env("HOME", self.home())
-            .env("XDG_STATE_HOME", self.state_home())
-            .env("XDG_CONFIG_HOME", self.home().join("config"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if self.sets_xdg_dirs {
+            command
+                .env("XDG_STATE_HOME", self.state_home())
+                .env("XDG_CONFIG_HOME", self.home().join("config"));
+        }
         if let Some(base) = &self.runtime_base {
             command.env("XDG_RUNTIME_DIR", base);
         }
@@ -116,6 +137,19 @@ impl TestHome {
             .recv_timeout(GENEROUS)
             .expect("the daemon exits")
             .expect("its output is readable")
+    }
+
+    /// The daemon's log once it holds `needle`, or as it is after [`GENEROUS`]. Records
+    /// reach the file through the log writer thread, in the order they were made.
+    pub fn log_once_it_contains(&self, needle: &str) -> String {
+        let deadline = std::time::Instant::now() + GENEROUS;
+        loop {
+            let log = std::fs::read_to_string(self.log_file()).unwrap_or_default();
+            if log.contains(needle) || std::time::Instant::now() > deadline {
+                return log;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     pub async fn connect(&self) -> Connection {
