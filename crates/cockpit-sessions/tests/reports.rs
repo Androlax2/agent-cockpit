@@ -7,7 +7,9 @@ mod common;
 
 use cockpit_agent_channel::{PeerAncestry, Refusal, UnblockedBy};
 use cockpit_authorization::{Permission, Scope};
-use cockpit_sessions::{AgentState, Error, Report, SessionReport, latest_reports, report};
+use cockpit_sessions::{
+    AgentState, Error, QuestionSource, Report, SessionReport, latest_reports, report,
+};
 use cockpit_turso::Database;
 use common::{Process, grant, launch, open, session, this_process, this_process_identity};
 
@@ -147,7 +149,7 @@ async fn fields_left_out_keep_their_previous_values() {
 }
 
 #[tokio::test]
-async fn reporting_working_clears_the_open_question() {
+async fn a_new_prompt_clears_the_open_question() {
     let dir = tempfile::tempdir().unwrap();
     let database = bound_session(dir.path()).await;
     grant(&database, &session("s1"), Permission::ChangeState).await;
@@ -159,6 +161,7 @@ async fn reporting_working_clears_the_open_question() {
     send(&database, &this_process(), question).await.unwrap();
     let working = Report {
         state: Some(AgentState::Working),
+        is_new_prompt: true,
         ..Report::default()
     };
 
@@ -325,6 +328,7 @@ async fn a_report_recorded_before_the_move_survives_the_migration() {
             doing: Some("writing the tests".to_owned()),
             needs_input: Some("Ship it?".to_owned()),
             outcome: None,
+            question_source: Some(QuestionSource::Agent),
             reported_at: 42,
             launch: None,
         }]

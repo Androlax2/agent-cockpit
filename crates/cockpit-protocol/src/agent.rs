@@ -44,6 +44,16 @@ pub enum TurnOutcome {
     QuotaStopped,
 }
 
+/// Where an open question came from, which decides what clears it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuestionSource {
+    /// The agent's own question: open until a new prompt or a new launch.
+    Agent,
+    /// A dialog the provider bridge saw: open until the next report.
+    Dialog,
+}
+
 /// What an agent reports about its session. Every field is optional; one left out keeps its
 /// previous value. The session is never named: the daemon identifies the sender.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,12 +64,18 @@ pub struct AgentReport {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doing: Option<String>,
-    /// A question the agent needs the owner to answer; reporting `working` clears it.
+    /// The agent's own question for the owner; a new prompt or a new launch clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs_input: Option<String>,
     /// How the turn that just ended went; it means waiting, and reporting `working` clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<TurnOutcome>,
+    /// A dialog's question the provider bridge saw; the next report clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialog: Option<String>,
+    /// The owner sent a new prompt: the agent works and its own question is answered.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_new_prompt: bool,
 }
 
 /// A session's latest report as the daemon recorded it.
@@ -69,10 +85,14 @@ pub struct SessionReport {
     pub state: Option<AgentState>,
     pub label: Option<String>,
     pub doing: Option<String>,
+    /// The open question, the agent's own or a dialog's.
     pub needs_input: Option<String>,
     /// How the latest turn ended, until the next one starts. Absent from older daemons.
     #[serde(default)]
     pub outcome: Option<TurnOutcome>,
+    /// Set exactly when `needs_input` is; absent from a daemon before #182.
+    #[serde(default)]
+    pub question_source: Option<QuestionSource>,
     /// Seconds since 1970.
     pub reported_at: i64,
 }

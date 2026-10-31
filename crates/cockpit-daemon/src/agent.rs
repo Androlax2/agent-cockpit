@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity, Refusal};
 use cockpit_protocol::{ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy};
 use cockpit_provider_api::TurnOutcome;
-use cockpit_sessions::{AgentState, Error, Report, SessionReport};
+use cockpit_sessions::{AgentState, Error, QuestionSource, Report, SessionReport};
 use cockpit_turso::Database;
 
 use crate::routes::refusal;
@@ -107,6 +107,8 @@ fn from_wire(report: cockpit_protocol::AgentReport) -> Report {
             cockpit_protocol::TurnOutcome::Failed { reason } => TurnOutcome::Failed { reason },
             cockpit_protocol::TurnOutcome::QuotaStopped => TurnOutcome::QuotaStopped,
         }),
+        dialog: report.dialog,
+        is_new_prompt: report.is_new_prompt,
     }
 }
 
@@ -124,6 +126,10 @@ fn to_wire(report: SessionReport) -> cockpit_protocol::SessionReport {
             TurnOutcome::Completed => cockpit_protocol::TurnOutcome::Completed,
             TurnOutcome::Failed { reason } => cockpit_protocol::TurnOutcome::Failed { reason },
             TurnOutcome::QuotaStopped => cockpit_protocol::TurnOutcome::QuotaStopped,
+        }),
+        question_source: report.question_source.map(|source| match source {
+            QuestionSource::Agent => cockpit_protocol::QuestionSource::Agent,
+            QuestionSource::Dialog => cockpit_protocol::QuestionSource::Dialog,
         }),
         reported_at: report.reported_at,
     }

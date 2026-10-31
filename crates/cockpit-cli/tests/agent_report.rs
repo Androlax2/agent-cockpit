@@ -9,8 +9,8 @@ use std::process::Output;
 mod scripted;
 
 use cockpit_protocol::{
-    AgentReport, AgentState, Command, ErrorCode, Outcome, ProtocolError, Reply, SessionReport,
-    Unblock, UnblockedBy,
+    AgentReport, AgentState, Command, ErrorCode, Outcome, ProtocolError, QuestionSource, Reply,
+    SessionReport, Unblock, UnblockedBy,
 };
 use scripted::{scripted_daemon, text};
 
@@ -65,6 +65,7 @@ fn session_report(session: &str) -> SessionReport {
         doing: None,
         needs_input: Some("Start now?".to_owned()),
         outcome: None,
+        question_source: Some(QuestionSource::Agent),
         reported_at: 1,
     }
 }

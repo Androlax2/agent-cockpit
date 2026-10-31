@@ -9,16 +9,16 @@ use std::time::Duration;
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    AGENT_SOCKET_VARIABLE, AgentReport, AgentState, Command, LAUNCH_TOKEN_VARIABLE, Reply,
-    SessionReport, TurnOutcome, UnblockedBy,
+    AGENT_SOCKET_VARIABLE, AgentReport, AgentState, Command, LAUNCH_TOKEN_VARIABLE, QuestionSource,
+    Reply, SessionReport, TurnOutcome, UnblockedBy,
 };
 
 /// Long enough for a busy daemon, short enough that a hook never hangs its agent.
 const DEADLINE: Duration = Duration::from_secs(10);
 
-/// `--state working|waiting`, `--label`, `--doing`, `--needs-input`,
-/// `--outcome completed|failed|quota-stopped` and `--outcome-reason` (with `failed` only),
-/// each at most once.
+/// `--state working|waiting`, `--label`, `--doing`, `--needs-input`, `--dialog`, the
+/// value-less `--prompt`, `--outcome completed|failed|quota-stopped` and `--outcome-reason`
+/// (with `failed` only), each at most once.
 pub(crate) fn report(flags: &[OsString]) -> Result<ExitCode, String> {
     let report = parse_report(flags)?;
     let launch_token = launch_token();
@@ -66,6 +66,13 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
     let mut flags = flags.iter();
     while let Some(flag) = flags.next() {
         let name = flag.to_string_lossy().into_owned();
+        if name == "--prompt" {
+            if report.is_new_prompt {
+                return Err("--prompt given twice".to_owned());
+            }
+            report.is_new_prompt = true;
+            continue;
+        }
         let value = flags
             .next()
             .ok_or_else(|| format!("{name} needs a value"))?
@@ -90,6 +97,7 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
             "--needs-input" => &mut report.needs_input,
             "--outcome" => &mut outcome,
             "--outcome-reason" => &mut outcome_reason,
+            "--dialog" => &mut report.dialog,
             _ => return Err(format!("unknown argument {name}")),
         };
         if field.replace(value).is_some() {
@@ -99,7 +107,9 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
     report.outcome = turn_outcome(outcome, outcome_reason)?;
     if report == AgentReport::default() {
         return Err(
-            "name at least one of --state, --label, --doing, --needs-input, --outcome".to_owned(),
+            "name at least one of --state, --label, --doing, --needs-input, --dialog, --prompt, \
+             --outcome"
+                .to_owned(),
         );
     }
     Ok(report)
@@ -192,15 +202,19 @@ pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> Exit
 }
 
 /// `session state label="…" doing="…" needs-input="…" outcome=… outcome-reason="…"`, leaving
-/// out what was never reported.
+/// out what was never reported; a dialog's question shows as `dialog="…"`.
 fn render(report: &SessionReport) -> String {
     let mut line = report.session.clone();
     line.push(' ');
     line.push_str(report.state.map_or("-", AgentState::as_str));
+    let question_key = match report.question_source {
+        Some(QuestionSource::Dialog) => "dialog",
+        Some(QuestionSource::Agent) | None => "needs-input",
+    };
     for (key, value) in [
         ("label", &report.label),
         ("doing", &report.doing),
-        ("needs-input", &report.needs_input),
+        (question_key, &report.needs_input),
     ] {
         if let Some(value) = value {
             line.push_str(&format!(" {key}={value:?}"));

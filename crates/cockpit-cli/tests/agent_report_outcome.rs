@@ -46,6 +46,7 @@ fn session_report(outcome: Option<TurnOutcome>) -> SessionReport {
         label: None,
         doing: None,
         needs_input: None,
+        question_source: None,
         outcome,
         reported_at: 1,
     }
