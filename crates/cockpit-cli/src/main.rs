@@ -33,16 +33,18 @@ fn config_show(flags: &[OsString]) -> ExitCode {
     let mut overrides = Vec::new();
     while let Some(flag) = flags.next() {
         let flag_name = flag.to_string_lossy();
-        if flag_name != "--project" && flag_name != "--set" {
-            return usage_error(Some(format!("unknown argument {flag_name}")));
-        }
+        let is_project = match &*flag_name {
+            "--project" => true,
+            "--set" => false,
+            _ => return usage_error(Some(format!("unknown argument {flag_name}"))),
+        };
         let Some(value) = flags
             .next()
             .filter(|value| !value.to_string_lossy().starts_with("--"))
         else {
             return usage_error(Some(format!("{flag_name} needs a value")));
         };
-        if flag_name == "--project" {
+        if is_project {
             if project_dir.is_some() {
                 return usage_error(Some("--project given twice".to_string()));
             }

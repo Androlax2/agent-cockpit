@@ -502,7 +502,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
 fn a_non_utf8_project_path_is_reported_not_a_crash() {
     use std::os::unix::ffi::OsStrExt;
     let home = Home::clean();
-    let project = home.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    let project = home.path().join(std::ffi::OsStr::from_bytes(b"project\xff"));
     let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
         .args(["config", "show", "--project"])
         .arg(&project)
