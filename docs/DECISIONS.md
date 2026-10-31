@@ -8,9 +8,11 @@ binary or the protocol, per platform, and lists what did not run as open.
 - **Clean home means only `HOME`.** The fixture `TestHome::bare` starts the daemon with every
   other variable cleared and an empty home, as on a fresh macOS account; the existing
   clean-home test sets the XDG variables and stays.
-- **macOS runs in CI, narrowly.** The `greenfield-macos` job runs only the clean-home start
-  tests on `macos-26`, with plain `cargo nextest`: the Makefile's `agent-build` runner is
-  Linux-only, and the full gate stays on Linux. Widening it is a later choice per item.
+- **macOS runs in CI, narrowly.** The `greenfield-macos` job runs only `cockpit-daemon`'s
+  `startup` tests (clean-home start, socket paths, modes, single instance, log level) on
+  `macos-26`, with plain `cargo nextest`: the Makefile's `agent-build` runner is Linux-only,
+  and the full gate stays on Linux. It has no build cache, so each run builds the workspace
+  cold; a cache action would be a new pinned dependency.
 - **WSL2 is a checklist.** No agent can run WSL2, so `docs/gates/m0-wsl2-recorded-run.md`
   is filled on Theo's machine; the gate lists WSL2 as open until then.
 - **Level and bundle verbs stay with #32.** The gate's `COCKPIT_LOG_LEVEL` item is proven at

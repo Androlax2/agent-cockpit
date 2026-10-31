@@ -1,5 +1,6 @@
 mod common;
 
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 
@@ -156,17 +157,32 @@ fn startup_reconciles_durable_state_before_accepting_requests() {
     assert!(opened < reconciled && reconciled < accepting, "{log}");
 }
 
+fn handshaken(home: &TestHome) -> UnixStream {
+    let mut stream = UnixStream::connect(home.socket_path()).expect("the daemon accepts");
+    stream
+        .write_all(b"{\"protocol_versions\":[1]}\n")
+        .expect("the hello is sent");
+    let mut welcome = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut welcome)
+        .expect("the daemon answers");
+    assert!(welcome.contains("accepted"), "{welcome}");
+    stream
+}
+
 #[test]
 fn cockpit_log_level_decides_which_records_the_daemon_writes() {
     let mut home = TestHome::new();
     home.log_level = Some("warn".to_owned());
     let _daemon = home.start();
 
-    // One connection more than the daemon has places for is closed with a warning, written
-    // after every record startup made.
-    let _held: Vec<UnixStream> = (0..=Limits::default().connections)
-        .map(|_| UnixStream::connect(home.socket_path()).expect("the daemon accepts"))
+    // The binary serves `Limits::default()`. Handshaken connections hold their places with
+    // no deadline, so one more is closed with a warning, written after every record
+    // startup made.
+    let _held: Vec<UnixStream> = (0..Limits::default().connections)
+        .map(|_| handshaken(&home))
         .collect();
+    let _over_the_limit = UnixStream::connect(home.socket_path()).expect("the daemon accepts");
     let log = home.log_once_it_contains("too many connections");
 
     assert!(log.contains("too many connections"), "{log}");

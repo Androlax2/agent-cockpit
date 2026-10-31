@@ -114,8 +114,8 @@ jobs:
       - name: Run the greenfield gate
         run: make greenfield-ci
 
-  # The daemon's clean-home start on macOS (M0 gate, #27); the full greenfield gate stays on
-  # Linux. Plain cargo: the Makefile's agent-build runner is Linux-only.
+  # The daemon's startup tests on macOS, clean-home start included (M0 gate, #27); the full
+  # greenfield gate stays on Linux. Plain cargo: the Makefile's agent-build runner is Linux-only.
   greenfield-macos:
     needs: changes
     if: needs.changes.outputs.greenfield == 'true'
@@ -133,9 +133,7 @@ jobs:
           fallback: none
           tool: cargo-nextest@0.9.150
       - name: Start the daemon on a clean home
-        run: >-
-          cargo nextest run --locked --manifest-path Cargo.toml
-          -p cockpit-daemon --test startup clean_home
+        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-daemon --test startup
 
   # Markdown and spelling, for docs/ and any Markdown file.
   docs:

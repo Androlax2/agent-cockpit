@@ -20,8 +20,8 @@ pub struct TestHome {
     pub root: tempfile::TempDir,
     /// `XDG_RUNTIME_DIR`, or `None` to leave it unset as on macOS.
     pub runtime_base: Option<PathBuf>,
-    /// `false` leaves every `XDG_*` variable unset, as on a fresh macOS account, so the
-    /// daemon derives all its paths from `HOME`.
+    /// `false` leaves `XDG_STATE_HOME` and `XDG_CONFIG_HOME` unset, so the daemon derives
+    /// them from `HOME`; [`TestHome::bare`] also leaves `XDG_RUNTIME_DIR` unset.
     pub sets_xdg_dirs: bool,
     pub log_level: Option<String>,
 }
