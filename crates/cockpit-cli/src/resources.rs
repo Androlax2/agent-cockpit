@@ -85,12 +85,12 @@ pub fn run(command: Command) -> ExitCode {
         Err(code) => return code,
     };
     match &reply {
-        Reply::ResourceStatus { status } => print!("{}", status_text(status)),
-        Reply::Reservation { reservation } => print!("{}", reservation_text(reservation)),
+        Reply::ResourceStatus { status } => out!("{}", status_text(status)),
+        Reply::Reservation { reservation } => out!("{}", reservation_text(reservation)),
         Reply::ResourceVerdict { verdict } => match verdict {
-            VerdictView::Fits => println!("fits"),
+            VerdictView::Fits => outln!("fits"),
             VerdictView::Held { reason } => {
-                println!("held: {reason}");
+                outln!("held: {reason}");
                 return ExitCode::FAILURE;
             }
         },
@@ -99,13 +99,13 @@ pub fn run(command: Command) -> ExitCode {
             observed_ended,
         } => {
             if !observed_ended {
-                println!(
+                outln!(
                     "reservation {reservation}: stop requested, but its execution was not \
                      observed ended; it keeps its reservation"
                 );
                 return ExitCode::FAILURE;
             }
-            println!("reservation {reservation}: its execution was observed ended; released");
+            outln!("reservation {reservation}: its execution was observed ended; released");
         }
         _ => return unexpected(&reply),
     }

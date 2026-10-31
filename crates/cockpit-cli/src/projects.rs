@@ -71,7 +71,7 @@ pub fn run(command: Command, deadline: Duration) -> ExitCode {
     };
     match render(&reply) {
         Some(text) => {
-            print!("{text}");
+            out!("{text}");
             ExitCode::SUCCESS
         }
         None => unexpected(&reply),

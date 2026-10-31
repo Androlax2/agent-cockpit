@@ -373,3 +373,32 @@ async fn end_finished_exits_1_naming_each_session_it_could_not_end() {
         "cockpit: s000000000002 not ended: conflict: its agent did not stop\n"
     );
 }
+
+// #275: `cockpit session list | head -1` must not panic once `head` has exited.
+#[tokio::test]
+async fn session_list_exits_141_without_a_panic_when_its_stdout_is_closed() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Sessions {
+            sessions: vec![view("s000000000001", SessionStateView::Running)],
+        }),
+    );
+    let (closed_reader, writer) = std::io::pipe().unwrap();
+    drop(closed_reader);
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+    command
+        .args(["session", "list"])
+        .env_clear()
+        .env("HOME", home.dir.path())
+        .env("XDG_RUNTIME_DIR", home.runtime_dir())
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped());
+
+    let output = tokio::task::spawn_blocking(move || command.output().unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(text(&output.stderr), "");
+    assert_eq!(output.status.code(), Some(141));
+}

@@ -206,7 +206,7 @@ pub(crate) fn run(request: Request) -> ExitCode {
         (Ok(Reply::TaskImage { data, .. }), Some(file)) => write_image(&file, &data.0),
         (Ok(reply), _) => match render(&reply) {
             Some(text) => {
-                print!("{text}");
+                out!("{text}");
                 ExitCode::SUCCESS
             }
             None => failed(&socket, Ok(reply)),
@@ -226,7 +226,7 @@ fn socket(is_session: bool) -> Result<PathBuf, ExitCode> {
 fn write_image(file: &Path, bytes: &[u8]) -> ExitCode {
     match std::fs::write(file, bytes) {
         Ok(()) => {
-            println!("wrote {} bytes to {}", bytes.len(), file.display());
+            outln!("wrote {} bytes to {}", bytes.len(), file.display());
             ExitCode::SUCCESS
         }
         Err(error) => {

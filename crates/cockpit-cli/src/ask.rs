@@ -145,7 +145,7 @@ fn check() -> ExitCode {
         launch_token: crate::agent::launch_token(),
     }) {
         Ok(Reply::AskReady { session }) => {
-            println!("ready: asks reach the owner for session {session}");
+            outln!("ready: asks reach the owner for session {session}");
             ExitCode::SUCCESS
         }
         other => agent.failed(other),
@@ -309,12 +309,13 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
         RunStateView::Finished => {
             let result = request.result.as_ref()?;
             if result.truncated_bytes > 0 || result.omitted_lines > 0 {
-                println!(
+                outln!(
                     "[{} earlier lines and {} bytes not shown]",
-                    result.omitted_lines, result.truncated_bytes
+                    result.omitted_lines,
+                    result.truncated_bytes
                 );
             }
-            println!("{}", result.output);
+            outln!("{}", result.output);
             if result.redacted > 0 {
                 eprintln!(
                     "cockpit: {} secrets redacted from the output",
@@ -353,10 +354,10 @@ fn guide_answer(guide: &GuideView) -> Option<ExitCode> {
         GuideStateView::Done => {
             for (index, step) in guide.steps.iter().enumerate() {
                 if let Some(answer) = &step.answer {
-                    println!("step {}: {answer}", index + 1);
+                    outln!("step {}: {answer}", index + 1);
                 }
                 if let Some(request) = step.run_request {
-                    println!(
+                    outln!(
                         "step {}: filed run request {request}; cockpit ask run --wait {request}",
                         index + 1
                     );
@@ -365,7 +366,7 @@ fn guide_answer(guide: &GuideView) -> Option<ExitCode> {
             Some(ExitCode::SUCCESS)
         }
         GuideStateView::Stuck => {
-            println!(
+            outln!(
                 "stuck at step {}: {}",
                 guide.current_step + 1,
                 guide.stuck_note.as_deref().unwrap_or("")

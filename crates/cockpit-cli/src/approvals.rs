@@ -96,19 +96,19 @@ pub(crate) fn run(command: Command) -> ExitCode {
     match crate::agent::exchange(&socket, command) {
         Ok(Reply::ApprovalQueue { runs, guides }) => {
             for run in &runs {
-                println!("{}", run_line(run));
+                outln!("{}", run_line(run));
             }
             for guide in &guides {
-                println!("{}", guide_line(guide));
+                outln!("{}", guide_line(guide));
             }
             ExitCode::SUCCESS
         }
         Ok(Reply::RunRequest { request }) => {
-            print!("{}", run_detail(&request));
+            out!("{}", run_detail(&request));
             ExitCode::SUCCESS
         }
         Ok(Reply::Guide { guide }) => {
-            print!("{}", guide_detail(&guide));
+            out!("{}", guide_detail(&guide));
             ExitCode::SUCCESS
         }
         other => crate::agent::failed(&socket, other),

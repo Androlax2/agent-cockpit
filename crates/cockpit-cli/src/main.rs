@@ -2,6 +2,20 @@
 //! call their capability crate directly; that list is fixed in report 02 (#77). Every other
 //! verb goes to the daemon through `cockpit-client`.
 
+/// `print!` through [`write_stdout`]: exits instead of panicking when stdout is closed.
+macro_rules! out {
+    ($($argument:tt)*) => {
+        $crate::write_stdout(format_args!($($argument)*))
+    };
+}
+
+/// `println!` through [`write_stdout`]: exits instead of panicking when stdout is closed.
+macro_rules! outln {
+    ($($argument:tt)*) => {
+        $crate::write_stdout(format_args!("{}\n", format_args!($($argument)*)))
+    };
+}
+
 mod agent;
 mod approvals;
 mod ask;
@@ -14,6 +28,7 @@ mod tui;
 mod version;
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -115,6 +130,24 @@ fn main() -> ExitCode {
     }
 }
 
+/// Writes and flushes `text` so a closed reader (`cockpit ... | head`) surfaces here, at the
+/// write. Rust ignores SIGPIPE, so `print!` would panic; this exits 141 instead, the status a
+/// shell reports for a writer SIGPIPE ended (#275). Any other write failure exits 1 naming it.
+fn write_stdout(text: std::fmt::Arguments) {
+    let written = {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_fmt(text).and_then(|()| stdout.flush())
+    };
+    let Err(error) = written else {
+        return;
+    };
+    if error.kind() == std::io::ErrorKind::BrokenPipe {
+        std::process::exit(141);
+    }
+    eprintln!("cockpit: cannot write to stdout: {error}");
+    std::process::exit(1);
+}
+
 /// Exit 2 with the usage line, after naming the rejected argument when there is one.
 fn usage_error(problem: Option<String>) -> ExitCode {
     if let Some(problem) = problem {
@@ -164,7 +197,7 @@ fn config_show(flags: &[OsString]) -> ExitCode {
         &overrides,
     ) {
         Ok(config) => {
-            print!("{}", cockpit_config::render(&config));
+            out!("{}", cockpit_config::render(&config));
             ExitCode::SUCCESS
         }
         Err(error) => {

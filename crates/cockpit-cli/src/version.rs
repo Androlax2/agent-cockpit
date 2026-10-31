@@ -18,7 +18,7 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         [flag] if flag == "--all" => true,
         _ => return Err("version takes no argument but --all".to_string()),
     };
-    println!("cockpit {} ({})", env!("CARGO_PKG_VERSION"), revision());
+    outln!("cockpit {} ({})", env!("CARGO_PKG_VERSION"), revision());
     if !shows_all {
         return Ok(ExitCode::SUCCESS);
     }
@@ -31,10 +31,10 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     };
     match fs::read_to_string(&manifest_path) {
         Ok(manifest) => {
-            println!("bundle manifest {}:", manifest_path.display());
-            print!("{manifest}");
+            outln!("bundle manifest {}:", manifest_path.display());
+            out!("{manifest}");
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => println!(
+        Err(error) if error.kind() == ErrorKind::NotFound => outln!(
             "bundle manifest: none at {} (a build outside a release bundle)",
             manifest_path.display()
         ),
