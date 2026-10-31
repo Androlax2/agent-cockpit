@@ -562,7 +562,8 @@ pub(crate) async fn set_conversation(
     Ok(())
 }
 
-/// Records that the session's agent now runs `conversation`, as a change clients see.
+/// Records that the session's agent now runs `conversation`, as a change clients see; unlike
+/// [`set_conversation`], whose launch transaction records its own transition.
 pub(crate) async fn change_conversation(
     write: &WriteTransaction<'_>,
     id: &SessionId,

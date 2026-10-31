@@ -6,11 +6,11 @@
 //! first, and the session then follows the next conversation reported, once, in the same
 //! launch.
 
-use cockpit_agent_channel::Refusal;
 use cockpit_authorization::SessionId;
 use cockpit_provider_api::ConversationId;
 use cockpit_turso::WriteTransaction;
 
+use crate::reports::{invalid, refused};
 use crate::{Error, store};
 
 /// Accepts a report from `reported` for `session`'s `launch`, following an announced change,
@@ -35,17 +35,14 @@ pub(crate) async fn check(
         clear_end(write, session).await?;
         return store::change_conversation(write, &id, reported).await;
     }
-    Err(Error::AgentChannel(
-        Refusal::InvalidRequest {
-            field: "conversation",
-            reason: format!(
-                "{reported} is not session {}'s conversation ({current}), which announced no \
-                 change; a report of another conversation never moves this session",
-                session.as_str()
-            ),
-        }
-        .into(),
-    ))
+    Err(refused(invalid(
+        "conversation",
+        format!(
+            "{reported} is not session {}'s conversation ({current}), which announced no \
+             change; a report of another conversation never moves this session",
+            session.as_str()
+        ),
+    )))
 }
 
 /// A report of the current conversation closes any change it announced, and opens one when

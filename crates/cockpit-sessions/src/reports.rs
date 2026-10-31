@@ -309,7 +309,8 @@ fn merge(
 /// and tmux, so control characters, characters that reorder or hide text (bidirectional
 /// overrides, zero-width marks) and the tmux sequences that run or restyle (`#(`, `#{`, `#[`)
 /// are refused. A plain `#` stays ("issue #32"): whatever renders this text into a tmux
-/// format escapes it as `##`. Returns the conversation apart, checked as an id.
+/// format escapes it as `##`. Returns the conversation apart, checked as an id; the report
+/// keeps none.
 fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal> {
     let conversation = report
         .conversation
@@ -335,7 +336,11 @@ fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal>
                 "comes with fields to report; an announced end reports nothing else".to_owned(),
             ));
         }
-        return Ok((report, conversation));
+        let ending = Report {
+            is_conversation_ending: true,
+            ..Report::default()
+        };
+        return Ok((ending, conversation));
     }
     if reported == Report::default() {
         return Err(invalid("report", "names no field to report".to_owned()));
@@ -427,7 +432,7 @@ fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal>
             dialog,
             is_new_prompt: report.is_new_prompt,
             outcome,
-            conversation: report.conversation,
+            conversation: None,
             is_conversation_ending: false,
         },
         conversation,
@@ -482,11 +487,11 @@ fn is_invisible_format(character: char) -> bool {
 }
 
 /// A refusal keeps the agent channel's shape, so every agent request is refused alike.
-fn refused(refusal: Refusal) -> Error {
+pub(crate) fn refused(refusal: Refusal) -> Error {
     Error::AgentChannel(refusal.into())
 }
 
-fn invalid(field: &'static str, reason: String) -> Refusal {
+pub(crate) fn invalid(field: &'static str, reason: String) -> Refusal {
     Refusal::InvalidRequest { field, reason }
 }
 
