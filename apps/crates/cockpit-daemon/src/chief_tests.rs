@@ -6334,7 +6334,9 @@ fn receive_as_message_worker(bench: &mut Bench) -> serde_json::Value {
 }
 
 /// An idle worker with a Chief message waiting for it, and a host game guard that holds heavy jobs.
+/// Each bench starts from the unset (default on) setting: the loops below share one settings file.
 fn guarded_message_bench() -> Bench {
+    let _ = fs::remove_file(cockpit::paths::settings());
     let mut bench = admitted_chief_bench();
     idle_message_worker(&mut bench);
     chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
