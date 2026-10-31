@@ -83,7 +83,7 @@ jobs:
             python3 tools/release.py check-tag "$TAG" --main origin/main \
               --m3-gate "$m3" --m5-gate "$m5" | tee -a "$GITHUB_OUTPUT"
           else
-            python3 tools/release.py dry-run-version | tee -a "$GITHUB_OUTPUT"
+            python3 tools/release.py dry-run-version --main origin/main | tee -a "$GITHUB_OUTPUT"
           fi
   # git-cliff's notes over the range release.py chose; only the draft waits for them.
   notes:

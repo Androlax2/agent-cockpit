@@ -2,8 +2,8 @@
 """The release workflows' version, packaging and gate steps (docs/RELEASING.md, issue #96).
 
 Usage: release.py check-tag TAG --main REF --m3-gate open|closed --m5-gate open|closed
-       release.py next-prerelease --m3-gate open|closed --m5-gate open|closed
-       release.py dry-run-version
+       release.py next-prerelease --main REF --m3-gate open|closed --m5-gate open|closed
+       release.py dry-run-version --main REF
        release.py stamp VERSION
        release.py package --version V --channel C --platform P --revision SHA
                           --binaries DIR --out DIR
@@ -271,12 +271,15 @@ def prerelease_channel(m3_gate, m5_gate):
     return "alpha"
 
 
-def next_prerelease(m3_gate, m5_gate, cwd):
+def next_prerelease(main_ref, m3_gate, m5_gate, cwd):
     """The tag the dispatched prerelease workflow cuts on HEAD, after every refusal."""
     channel = prerelease_channel(m3_gate, m5_gate)
     refuse_shallow(cwd)
     commit = git("rev-parse", "HEAD", cwd=cwd)
-    tags = release_tags(cwd, commit)
+    if not is_ancestor(commit, main_ref, cwd):
+        raise Refusal(f"{commit[:12]} is not on {main_ref}")
+    # Every tag on main, not only HEAD's: a re-run on an older commit meets the newer tags.
+    tags = release_tags(cwd, main_ref)
     base = base_of(tags, cwd)
     if base["is_stable_tag"]:
         # The version comes from the open release PR, which nothing reads yet (#101).
@@ -288,10 +291,10 @@ def next_prerelease(m3_gate, m5_gate, cwd):
     return {"tag": candidate["tag"], "channel": channel, "revision": commit}
 
 
-def dry_run_version(cwd):
+def dry_run_version(main_ref, cwd):
     """A version no release tag can have, for builds that are never published."""
     refuse_shallow(cwd)
-    base = base_of(release_tags(cwd, "HEAD"), cwd)
+    base = base_of(release_tags(cwd, main_ref), cwd)
     count = commits_since(base["ref"], "HEAD", cwd)
     version = f"{workspace_version(cwd)}-dev.{count}"
     return {
@@ -456,24 +459,30 @@ def refuse_changed_contents(root, manifest):
 
 
 def refuse_wrong_version_output(root, manifest, manifest_text, revision, environment):
-    try:
-        shown = subprocess.run(
-            [str(root / "bin/cockpit"), "version", "--all"],
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as timeout:
-        raise Refusal(f"cockpit version --all did not finish in {timeout.timeout}s") from timeout
+    # Its own process group, so a timeout also stops anything it started.
+    with subprocess.Popen(
+        [str(root / "bin/cockpit"), "version", "--all"],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as shown:
+        try:
+            stdout, stderr = shown.communicate(timeout=60)
+        except subprocess.TimeoutExpired as timeout:
+            os.killpg(shown.pid, signal.SIGKILL)
+            shown.communicate()
+            raise Refusal(
+                f"cockpit version --all did not finish in {timeout.timeout}s"
+            ) from timeout
     expected_first_line = f"cockpit {manifest['version']} (revision {revision})"
-    if shown.returncode != 0 or shown.stdout.splitlines()[:1] != [expected_first_line]:
+    if shown.returncode != 0 or stdout.splitlines()[:1] != [expected_first_line]:
         raise Refusal(
             f"cockpit version --all: exit {shown.returncode}, expected {expected_first_line!r}, "
-            f"got {shown.stdout!r} {shown.stderr!r}"
+            f"got {stdout!r} {stderr!r}"
         )
-    if manifest_text not in shown.stdout:
+    if manifest_text not in stdout:
         raise Refusal("cockpit version --all does not show the installed manifest")
 
 
@@ -526,12 +535,13 @@ def parse_arguments(arguments):
     commands = parser.add_subparsers(dest="command", required=True)
     check_command = commands.add_parser("check-tag")
     check_command.add_argument("tag")
-    check_command.add_argument("--main", required=True)
     next_command = commands.add_parser("next-prerelease")
     for gated_command in (check_command, next_command):
         for gate in ("--m3-gate", "--m5-gate"):
             gated_command.add_argument(gate, choices=("open", "closed"), required=True)
-    commands.add_parser("dry-run-version")
+    dry_run_command = commands.add_parser("dry-run-version")
+    for command in (check_command, next_command, dry_run_command):
+        command.add_argument("--main", required=True)
     commands.add_parser("stamp").add_argument("version")
     package_command = commands.add_parser("package")
     for option in ("--version", "--channel", "--platform", "--revision", "--binaries", "--out"):
@@ -551,9 +561,9 @@ def main(arguments, cwd=ROOT):
                 check_tag(options.tag, options.main, options.m3_gate, options.m5_gate, cwd)
             )
         elif options.command == "next-prerelease":
-            print_outputs(next_prerelease(options.m3_gate, options.m5_gate, cwd))
+            print_outputs(next_prerelease(options.main, options.m3_gate, options.m5_gate, cwd))
         elif options.command == "dry-run-version":
-            print_outputs(dry_run_version(cwd))
+            print_outputs(dry_run_version(options.main, cwd))
         elif options.command == "stamp":
             print_outputs(stamp(options.version, cwd))
         elif options.command == "package":

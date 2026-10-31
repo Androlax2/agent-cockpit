@@ -60,7 +60,8 @@ jobs:
           M3_GATE: ${{ steps.gates.outputs.m3 }}
           M5_GATE: ${{ steps.gates.outputs.m5 }}
         run: |
-          python3 tools/release.py next-prerelease --m3-gate "$M3_GATE" --m5-gate "$M5_GATE" \
+          python3 tools/release.py next-prerelease --main origin/main \
+            --m3-gate "$M3_GATE" --m5-gate "$M5_GATE" \
             | tee -a "$GITHUB_OUTPUT"
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         if: ${{ !inputs.dry_run }}
