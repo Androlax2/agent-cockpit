@@ -12,7 +12,8 @@ Issue #182. Decided by Theo in #200 (option C).
   set exactly when `needs_input` is; `cockpit-sessions` migration 4) sits beside the text.
   A dialog arriving over the agent's own question replaces it; once the dialog is answered
   the agent's question is gone too. Accepted: the agent asks right before ending its turn,
-  so a dialog in between is rare.
+  so a dialog in between is rare. Superseded by `2026-10-31-214-dialog-stacking.md`: the
+  dialog now stacks on the agent's question, which is open again once the dialog clears.
 - **The agent's question may stand while the session reports working.** A tool run after
   asking keeps the question; the owner's views show it from the moment it is asked.
 - **Questions recorded before migration 4 become the agent's own,** the source that stays
