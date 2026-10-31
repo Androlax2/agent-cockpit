@@ -75,13 +75,13 @@ impl Held {
 #[derive(Default)]
 struct LaunchGate {
     is_closed: AtomicBool,
-    is_holding: AtomicBool,
+    held: AtomicUsize,
 }
 
 impl LaunchGate {
     async fn wait_until_held(&self) {
         let deadline = Instant::now() + GENEROUS;
-        while !self.is_holding.load(Ordering::SeqCst) {
+        while self.held.load(Ordering::SeqCst) == 0 {
             assert!(Instant::now() < deadline, "no launch reached the gate");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -106,11 +106,11 @@ impl Provider for GatedProvider {
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
-        self.gate.is_holding.store(true, Ordering::SeqCst);
+        self.gate.held.fetch_add(1, Ordering::SeqCst);
         while self.gate.is_closed.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        self.gate.is_holding.store(false, Ordering::SeqCst);
+        self.gate.held.fetch_sub(1, Ordering::SeqCst);
         self.inner.launch(request)
     }
 }

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cockpit_authorization::{Permission, Scope};
@@ -65,16 +65,17 @@ pub struct Sessions {
 #[derive(Default)]
 struct SessionLock {
     operation: Arc<tokio::sync::Mutex<()>>,
-    /// Set only under `operation`, so at most one launch at a time.
-    is_launching: AtomicBool,
+    /// The live [`Launching`] marks; nested ones (a restart's stop, then its launch) count,
+    /// so the inner one ending does not unmark the outer.
+    launches: AtomicUsize,
     /// Wakes the stops waiting for the lock when a launch starts, so they refuse at once
     /// instead of waiting behind it.
     launch_started: tokio::sync::Notify,
 }
 
-/// A held session lock. [`Sessions::launch`] and a restart's stop take it, and mark it
-/// with [`Operation::launching`] for their whole duration: no launch runs unlocked or
-/// unmarked.
+/// A held session lock: every owner operation and periodic step holds one. Only a launch
+/// marks it, through [`Operation::launching`]: [`Sessions::launch`] and a restart's stop
+/// take the held lock and mark it for their whole duration, so no launch runs unmarked.
 struct Operation {
     _guard: tokio::sync::OwnedMutexGuard<()>,
     session: Arc<SessionLock>,
@@ -82,18 +83,19 @@ struct Operation {
 
 impl Operation {
     fn launching(&self) -> Launching<'_> {
-        self.session.is_launching.store(true, Ordering::SeqCst);
+        self.session.launches.fetch_add(1, Ordering::SeqCst);
         self.session.launch_started.notify_waiters();
         Launching(&self.session)
     }
 }
 
-/// A launch in progress on a session; dropped when the launch returns.
+/// A launch, or a restart's stop and relaunch, in progress on a session; dropped when it
+/// returns.
 struct Launching<'lock>(&'lock SessionLock);
 
 impl Drop for Launching<'_> {
     fn drop(&mut self) {
-        self.0.is_launching.store(false, Ordering::SeqCst);
+        self.0.launches.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -156,7 +158,7 @@ impl Sessions {
             let launch_started = session.launch_started.notified();
             tokio::pin!(launch_started);
             launch_started.as_mut().enable();
-            if session.is_launching.load(Ordering::SeqCst) {
+            if session.launches.load(Ordering::SeqCst) > 0 {
                 return Err(Error::LaunchInProgress {
                     session: id.clone(),
                     operation,
@@ -544,16 +546,22 @@ impl Sessions {
             // Uncontended: restore runs before the daemon accepts requests. A relaunch needs it.
             let operation = self.lock(&id).await;
             let outcome = match session.state {
-                SessionState::Stopping { to } => match self.finish_stop(&id, to).await {
-                    Ok(stopped) if to == StopTarget::Restart => {
-                        match self.relaunch(&operation, &stopped).await {
-                            Ok(relaunched) => Restored::StopFinished(id, relaunched.state),
-                            Err(error) => Restored::Failed(id, format!("restore failed: {error}")),
+                SessionState::Stopping { to } => {
+                    // Marked through its stop phase, as `stop` marks a restart.
+                    let _launching = (to == StopTarget::Restart).then(|| operation.launching());
+                    match self.finish_stop(&id, to).await {
+                        Ok(stopped) if to == StopTarget::Restart => {
+                            match self.relaunch(&operation, &stopped).await {
+                                Ok(relaunched) => Restored::StopFinished(id, relaunched.state),
+                                Err(error) => {
+                                    Restored::Failed(id, format!("restore failed: {error}"))
+                                }
+                            }
                         }
+                        Ok(stopped) => Restored::StopFinished(id, stopped.state),
+                        Err(error) => Restored::StopNotFinished(id, error.to_string()),
                     }
-                    Ok(stopped) => Restored::StopFinished(id, stopped.state),
-                    Err(error) => Restored::StopNotFinished(id, error.to_string()),
-                },
+                }
                 _ => match self.restore_one(&operation, &session).await {
                     Ok(outcome) => outcome,
                     Err(error) => {
@@ -887,10 +895,8 @@ impl Sessions {
         if to != StopTarget::Restart {
             return self.finish_stop(id, to).await;
         }
-        let stopped = {
-            let _launching = lock.launching();
-            self.finish_stop(id, to).await?
-        };
+        let _launching = lock.launching();
+        let stopped = self.finish_stop(id, to).await?;
         self.relaunch(lock, &stopped).await
     }
 
