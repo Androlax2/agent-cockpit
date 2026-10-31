@@ -1,5 +1,5 @@
 //! The session list rendered from a recorded change feed (#35): grouped by project, every
-//! batch applied whole or refused whole, and the needs-you mark on a card without freezing.
+//! batch applied whole or refused whole, and "waiting on you" on a card without freezing.
 
 mod common;
 
@@ -150,7 +150,7 @@ fn a_session_whose_checkout_is_unknown_is_listed_last_under_no_known_project() {
 }
 
 #[test]
-fn a_session_waiting_on_an_approval_is_marked_and_the_list_still_answers_keys() {
+fn a_session_waiting_on_an_approval_shows_waiting_on_you_and_the_list_still_answers_keys() {
     let mut app = app_on_projects();
     let now = Instant::now();
     for batch in recorded_feed() {
@@ -172,7 +172,7 @@ fn a_session_waiting_on_an_approval_is_marked_and_the_list_still_answers_keys() 
     assert_eq!(moved.used, Some("move"));
     assert_eq!(app.selected(), Some("s00000000000d"));
     assert!(
-        screen_text(&app, now).contains(">! s00000000000d  other  running"),
+        screen_text(&app, now).contains(">! s00000000000d  other  running  waiting on you"),
         "{}",
         screen_text(&app, now)
     );
@@ -207,12 +207,12 @@ fn a_card_in_a_39_column_list_shows_that_it_needs_you_its_label_and_its_doing() 
     let rows = list_rows_at_width(&app, now, 39);
 
     assert_eq!(
-        rows[1..3],
+        rows[1..5],
         [
             ">  s00000000000b  fake  running",
             " ! s00000000000d  other  running",
+            "waiting on you",
+            "   acceptance label · dry-run doing",
         ],
-        "{rows:#?}"
     );
-    assert_eq!(rows[3], "   acceptance label · dry-run doing", "{rows:#?}");
 }

@@ -4,8 +4,9 @@
 //!
 //! The format is the current `ask-to-guide`'s: `# Title`, `## Section`, one step per line
 //! (a leading list marker dropped), and under a step indented `open: <url>`,
-//! `copy: <value>`, `ask: <question>` or `run: <command>`. A `run:` step is not run by answering it: answering files the command
-//! as an `ask run` request of the guide's session, which the owner approves like any other.
+//! `copy: <value>`, `ask: <question>` or `run: <command>`. A `run:` step is not run by
+//! answering it: answering files the command as an `ask run` request of the guide's session,
+//! which the owner approves like any other.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

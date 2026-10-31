@@ -137,21 +137,20 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
 /// needs-you mark comes right after the selection marker, before anything a narrow list cuts.
 fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
-    let needs_you = if board.needs_you(&session.id) {
-        "!"
-    } else {
-        " "
-    };
+    let needs_you = board.needs_you(&session.id);
     let mut card = vec![format!(
-        "{marker}{needs_you} {}  {}  {}",
-        session.id, session.agent, session.state
+        "{marker}{} {}  {}  {}{}",
+        if needs_you { "!" } else { " " },
+        session.id,
+        session.agent,
+        session.state,
+        if needs_you { "  waiting on you" } else { "" },
     )];
     let reported: Vec<&str> = board
         .report(&session.id)
-        .map(|report| [&report.label, &report.doing])
         .into_iter()
+        .flat_map(|report| [report.label.as_deref(), report.doing.as_deref()])
         .flatten()
-        .filter_map(|text| text.as_deref())
         .collect();
     if !reported.is_empty() {
         card.push(format!("   {}", reported.join(" · ")));
