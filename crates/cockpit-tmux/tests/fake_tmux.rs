@@ -5,7 +5,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use cockpit_tmux::{CONFIG, Error, Server, ServerSpec, SessionLaunch, SessionName, Socket};
+use cockpit_tmux::{
+    CONFIG, Error, PaneState, Server, ServerSpec, SessionLaunch, SessionName, Socket,
+};
 
 struct FakeTmux {
     directory: tempfile::TempDir,
@@ -14,6 +16,11 @@ struct FakeTmux {
 impl FakeTmux {
     /// A fake whose `-V` prints `version` and whose other commands print `%7`.
     fn printing_version(version: &str) -> FakeTmux {
+        FakeTmux::printing(version, "%7")
+    }
+
+    /// A fake whose `-V` prints `version` and whose other commands print `output`.
+    fn printing(version: &str, output: &str) -> FakeTmux {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let log = directory.path().join("calls");
         let script = format!(
@@ -21,7 +28,7 @@ impl FakeTmux {
              if [ \"$1\" = -V ]; then echo '{version}'; exit 0; fi\n\
              for argument in \"$@\"; do printf '%s\\n' \"$argument\"; done >> '{log}'\n\
              echo >> '{log}'\n\
-             echo '%7'\n",
+             echo '{output}'\n",
             log = log.display()
         );
         let binary = directory.path().join("tmux");
@@ -259,4 +266,19 @@ fn a_session_in_a_missing_directory_is_refused_before_tmux_runs() {
 
     assert!(matches!(error, Error::InvalidArgument { .. }), "{error:?}");
     assert_eq!(fake.calls(), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn an_exited_pane_has_no_pid_even_where_tmux_still_prints_the_old_one() {
+    // Some tmux releases (CI's Ubuntu tmux; not 3.8) still print the ended process's pid.
+    let fake = FakeTmux::printing("tmux 3.4", "%3 4242 1 7");
+    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+
+    let panes = server
+        .panes(&SessionName::new("agent-1").expect("valid"))
+        .expect("lists");
+
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0].pid, None);
+    assert_eq!(panes[0].state, PaneState::Exited { status: Some(7) });
 }

@@ -415,6 +415,9 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
         },
         _ => return None,
     };
+    // Some tmux releases (CI's Ubuntu tmux; not 3.8) still print the ended process's pid,
+    // which the system may reuse.
+    let pid = pid.filter(|_| state == PaneState::Running);
     fields
         .next()
         .is_none()
