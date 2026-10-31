@@ -3,6 +3,10 @@
 //! session and resource routes, with a fixture handler whose held jobs fill the lanes:
 //! `subscribe` holds a bulk worker, `agent-reports` a control worker and `provider-list` a
 //! stop worker. Sessions run the fake provider's agent in a private tmux server.
+//!
+//! Issue #230: a stop of a session whose launch still runs answers `conflict` at once
+//! instead of holding a stop worker until the launch finishes. The fixture provider holds a
+//! launch while its gate is closed.
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -10,7 +14,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
@@ -18,10 +22,13 @@ use cockpit_daemon::{
     Daemon, Handler, Instance, LaneLimits, Limits, Options, Peer, Route, Routes, WorkClass,
 };
 use cockpit_protocol::{
-    Command, ErrorCode, FeedPosition, Outcome, Reply, SessionStateView, SessionView, Welcome,
+    Command, ErrorCode, FeedPosition, Outcome, ProtocolError, Reply, SessionStateView, SessionView,
+    Welcome,
 };
-use cockpit_provider_api::ProviderName;
 use cockpit_provider_api::fake::FakeProvider;
+use cockpit_provider_api::{
+    Capabilities, LaunchCommand, LaunchRequest, Provider, ProviderError, ProviderName,
+};
 use common::GENEROUS;
 use tokio::sync::Semaphore;
 
@@ -64,6 +71,51 @@ impl Held {
     }
 }
 
+/// Launches the fixture provider holds while the gate is closed, as a provider still
+/// starting up would hold its session's launch. Open unless a test closes it.
+#[derive(Default)]
+struct LaunchGate {
+    is_closed: AtomicBool,
+    held: AtomicUsize,
+}
+
+impl LaunchGate {
+    async fn wait_until_held(&self) {
+        let deadline = Instant::now() + GENEROUS;
+        while self.held.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "no launch reached the gate");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+/// The fake provider, whose launches wait at the gate. Blocking in `launch` breaks the
+/// provider contract on purpose: it holds a launch, and with it the session's lock, for as
+/// long as the test wants, on one of the runtime's workers.
+struct GatedProvider {
+    inner: FakeProvider,
+    gate: Arc<LaunchGate>,
+}
+
+impl Provider for GatedProvider {
+    fn name(&self) -> &ProviderName {
+        self.inner.name()
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
+        self.gate.held.fetch_add(1, Ordering::SeqCst);
+        while self.gate.is_closed.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.gate.held.fetch_sub(1, Ordering::SeqCst);
+        self.inner.launch(request)
+    }
+}
+
 struct FixtureHandler {
     held: Arc<Held>,
     routes: Routes,
@@ -85,6 +137,7 @@ struct Home {
     /// `_dir`, canonical: the agent and tmux paths the daemon records are canonical.
     root: PathBuf,
     held: Arc<Held>,
+    launches: Arc<LaunchGate>,
 }
 
 impl Home {
@@ -97,6 +150,7 @@ impl Home {
                 started: AtomicUsize::new(0),
                 gate: Semaphore::new(0),
             }),
+            launches: Arc::default(),
         }
     }
 
@@ -107,10 +161,13 @@ impl Home {
     async fn start(&self, limits: Limits) -> Daemon {
         let mut wiring = common::wiring_in(
             &self.path(),
-            vec![Arc::new(FakeProvider::new(
-                ProviderName::new("fake").unwrap(),
-                self.path().join("agent.log"),
-            ))],
+            vec![Arc::new(GatedProvider {
+                inner: FakeProvider::new(
+                    ProviderName::new("fake").unwrap(),
+                    self.path().join("agent.log"),
+                ),
+                gate: Arc::clone(&self.launches),
+            })],
         );
         wiring.sessions.stop = cockpit_processes::Escalation {
             grace: Duration::from_secs(2),
@@ -174,6 +231,7 @@ impl Home {
 impl Drop for Home {
     fn drop(&mut self) {
         self.held.release();
+        self.launches.is_closed.store(false, Ordering::SeqCst);
         let _ = Process::new("tmux")
             .arg("-S")
             .arg(self.path().join("tmux.sock"))
@@ -315,4 +373,108 @@ async fn a_full_stop_lane_answers_busy_naming_the_stop_lane() {
     .await;
 
     assert_busy_in(answer, "stop");
+}
+
+/// Starts a session whose launch the gate holds, in a daemon whose stop lane has one worker
+/// and no waiting place; returns the session's id and the pending `session-new` reply.
+async fn a_held_launch(
+    home: &Home,
+) -> (
+    Daemon,
+    Arc<Connection>,
+    String,
+    tokio::task::JoinHandle<Result<Reply, ClientError>>,
+) {
+    let daemon = home
+        .start(Limits {
+            stop: ONE_PLACE,
+            ..Limits::default()
+        })
+        .await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.launches.is_closed.store(true, Ordering::SeqCst);
+    let starting = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            request(
+                &client,
+                Command::SessionNew {
+                    dir: root.display().to_string(),
+                    agent: Some("fake".to_owned()),
+                    prompt: None,
+                    clone: None,
+                },
+            )
+            .await
+        })
+    };
+    home.launches.wait_until_held().await;
+    let id = match request(&client, Command::SessionList { ended: false }).await {
+        Ok(Reply::Sessions { sessions }) if sessions.len() == 1 => sessions[0].id.clone(),
+        other => panic!("session-list: {other:?}"),
+    };
+    (daemon, client, id, starting)
+}
+
+/// Sends the stop `stop_of` makes for a session whose launch is held, twice: with one stop
+/// worker, the second is answered `busy` if the first still holds it. Returns the second
+/// answer's refusal.
+async fn stop_a_launching_session_twice(stop_of: fn(String) -> Command) -> ProtocolError {
+    let home = Home::new();
+    let (_daemon, client, id, _starting) = a_held_launch(&home).await;
+
+    let first = common::refused(request(&client, stop_of(id.clone())).await);
+    assert_eq!(first.code, ErrorCode::Conflict, "{first:?}");
+    common::refused(request(&client, stop_of(id)).await)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ending_a_launching_session_answers_conflict_without_holding_a_stop_worker() {
+    let error = stop_a_launching_session_twice(|session| Command::SessionEnd { session }).await;
+
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.contains("is launching its agent"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn putting_a_launching_session_to_sleep_answers_conflict_without_holding_a_stop_worker() {
+    let error = stop_a_launching_session_twice(|session| Command::SessionSleep { session }).await;
+
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.contains("is launching its agent"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_refused_an_end_mid_launch_ends_once_its_launch_finishes() {
+    let home = Home::new();
+    let (_daemon, client, id, starting) = a_held_launch(&home).await;
+    let refused = common::refused(
+        request(
+            &client,
+            Command::SessionEnd {
+                session: id.clone(),
+            },
+        )
+        .await,
+    );
+    assert_eq!(refused.code, ErrorCode::Conflict, "{refused:?}");
+
+    home.launches.is_closed.store(false, Ordering::SeqCst);
+    match starting.await.unwrap() {
+        Ok(Reply::Session { session }) => assert_eq!(session.state, SessionStateView::Running),
+        other => panic!("session-new: {other:?}"),
+    }
+    let ended = request(&client, Command::SessionEnd { session: id }).await;
+
+    match ended {
+        Ok(Reply::Session { session }) => assert_eq!(session.state, SessionStateView::Ended),
+        other => panic!("session-end: {other:?}"),
+    }
 }

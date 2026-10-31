@@ -46,6 +46,11 @@ pub enum Error {
         session: SessionId,
         refusal: SleepRefusal,
     },
+    /// A stop came while a launch holds the session; it is refused rather than wait (#230).
+    LaunchInProgress {
+        session: SessionId,
+        operation: &'static str,
+    },
     /// The agent's execution was not observed gone after `SIGKILL`; the session keeps it.
     StopUnconfirmed {
         session: SessionId,
@@ -118,6 +123,11 @@ impl fmt::Display for Error {
             Error::SleepRefused { session, refusal } => {
                 write!(formatter, "session {session} may not sleep: {refusal}")
             }
+            Error::LaunchInProgress { session, operation } => write!(
+                formatter,
+                "session {session} is launching its agent; cannot {operation} until the launch \
+                 finishes, retry then"
+            ),
             Error::StopUnconfirmed { session, execution } => write!(
                 formatter,
                 "session {session}'s agent did not stop: {execution} still has processes \

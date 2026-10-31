@@ -13,7 +13,8 @@ agents are clients over a Unix socket (`$XDG_RUNTIME_DIR/cockpit/`). Running age
 - **Control path reserved.** Input, status, stop and approval requests have their own bounded
   capacity; bulk output, builds, provider calls and log floods cannot starve them. Stops get
   a small lane of their own (2 workers), so a stop that waits out its grace period neither
-  holds a control worker nor waits behind launches (#217).
+  holds a control worker nor waits behind launches (#217). A stop of a session whose own
+  launch still runs is answered `conflict` at once rather than waiting for it (#230).
 - **Bounded everything.** Every queue has a size; a full queue returns an explicit busy
   result. Every IPC exchange has a deadline, a cancellation meaning and an overload behavior.
 - **Blocking work off the executor.** Finite blocking ops use `spawn_blocking` behind a

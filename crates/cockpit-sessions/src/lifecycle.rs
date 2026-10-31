@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cockpit_authorization::{Permission, Scope};
@@ -55,7 +56,43 @@ pub struct Sessions {
     /// One lock per session, held by each owner operation and each periodic step on it, so
     /// the periodic pass never acts on a launch an owner operation just replaced. Entries
     /// stay for the daemon's life: one per session ever touched.
-    operations: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
+    operations: Mutex<HashMap<SessionId, Arc<SessionLock>>>,
+}
+
+/// A session's operation lock, and the launches that hold or wait for it. A stop never
+/// waits behind a launch (#230, report 03): it holds a stop-lane worker while it waits, and
+/// a launch may wait minutes on its provider, so a stop is refused while a launch runs.
+#[derive(Default)]
+struct SessionLock {
+    operation: Arc<tokio::sync::Mutex<()>>,
+    launches: AtomicUsize,
+    /// Wakes the stops waiting for the lock when a launch starts, so they refuse at once
+    /// instead of waiting behind it.
+    launch_started: tokio::sync::Notify,
+}
+
+/// A held session lock. An operation that goes on to launch the agent marks it with
+/// [`Operation::launching`] for the launch's whole duration.
+struct Operation {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    session: Arc<SessionLock>,
+}
+
+impl Operation {
+    fn launching(&self) -> Launching {
+        self.session.launches.fetch_add(1, Ordering::SeqCst);
+        self.session.launch_started.notify_waiters();
+        Launching(Arc::clone(&self.session))
+    }
+}
+
+/// A launch in progress on a session; dropped when the launch returns.
+struct Launching(Arc<SessionLock>);
+
+impl Drop for Launching {
+    fn drop(&mut self) {
+        self.0.launches.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Sessions {
@@ -84,15 +121,51 @@ impl Sessions {
         &self.database
     }
 
-    async fn lock(&self, id: &SessionId) -> tokio::sync::OwnedMutexGuard<()> {
-        let session_lock = {
-            let mut operations = self
-                .operations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(operations.entry(id.clone()).or_default())
+    fn session_lock(&self, id: &SessionId) -> Arc<SessionLock> {
+        let mut operations = self
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(operations.entry(id.clone()).or_default())
+    }
+
+    async fn lock(&self, id: &SessionId) -> Operation {
+        let session = self.session_lock(id);
+        Operation {
+            _guard: Arc::clone(&session.operation).lock_owned().await,
+            session,
+        }
+    }
+
+    /// The session's lock for a stop, refused with [`Error::LaunchInProgress`] while a
+    /// launch holds it or starts while the stop waits for it.
+    async fn lock_to_stop(
+        &self,
+        id: &SessionId,
+        operation: &'static str,
+    ) -> Result<Operation, Error> {
+        let session = self.session_lock(id);
+        let guard = loop {
+            // Registered before the count is read, so a launch starting in between wakes it.
+            let launch_started = session.launch_started.notified();
+            tokio::pin!(launch_started);
+            launch_started.as_mut().enable();
+            if session.launches.load(Ordering::SeqCst) > 0 {
+                return Err(Error::LaunchInProgress {
+                    session: id.clone(),
+                    operation,
+                });
+            }
+            tokio::select! {
+                biased;
+                guard = Arc::clone(&session.operation).lock_owned() => break guard,
+                () = &mut launch_started => {}
+            }
         };
-        session_lock.lock_owned().await
+        Ok(Operation {
+            _guard: guard,
+            session,
+        })
     }
 
     /// Sessions not ended, or every session with `include_ended`, by creation.
@@ -131,7 +204,8 @@ impl Sessions {
         let id = SessionId::generate()?;
         // Held through the first launch: a restart may take a `launching` session over, so
         // it must not find this one mid-launch.
-        let _operation = self.lock(&id).await;
+        let operation = self.lock(&id).await;
+        let _launching = operation.launching();
         let write = self.database.write().await?;
         store::insert_session(
             &write,
@@ -164,7 +238,8 @@ impl Sessions {
     /// stops it if it still runs, then launches; it is never a no-op.
     pub async fn restart(&self, id: &SessionId) -> Result<Session, Error> {
         self.tmux()?;
-        let _operation = self.lock(id).await;
+        let operation = self.lock(id).await;
+        let _launching = operation.launching();
         let session = self.get(id).await?;
         self.resumable(&session)?;
         self.stop(id, &RESTARTABLE, StopTarget::Restart, "restart")
@@ -204,7 +279,7 @@ impl Sessions {
     /// `restart_all`'s step for one session, decided under its lock on a fresh read of the
     /// session and its agent's report, so an operation or report since the listing counts.
     async fn restart_if_changed(&self, id: &SessionId) -> Result<RestartStep, Error> {
-        let _operation = self.lock(id).await;
+        let operation = self.lock(id).await;
         let Some((session, agent_report)) = self.running_with_report(id).await? else {
             return Ok(RestartStep::Current);
         };
@@ -214,6 +289,7 @@ impl Sessions {
         }
         self.resumable(&session)?;
         if turn_refusal(&session, agent_report.as_ref()).is_none() {
+            let _launching = operation.launching();
             return Ok(RestartStep::Restarted(self.restart_locked(id).await?));
         }
         let write = self.database.write().await?;
@@ -255,7 +331,7 @@ impl Sessions {
     /// working agent to sleep; only losing the conversation is refused.
     pub async fn sleep(&self, id: &SessionId) -> Result<Session, Error> {
         self.tmux()?;
-        let _operation = self.lock(id).await;
+        let _operation = self.lock_to_stop(id, "sleep").await?;
         let session = self.get(id).await?;
         if let Some(refusal) = self.sleep_refusal(&session) {
             return Err(Error::SleepRefused {
@@ -272,7 +348,8 @@ impl Sessions {
     /// session that is not asleep is refused.
     pub async fn wake(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
         self.tmux()?;
-        let _operation = self.lock(id).await;
+        let operation = self.lock(id).await;
+        let _launching = operation.launching();
         self.wake_locked(id, cause).await
     }
 
@@ -280,7 +357,7 @@ impl Sessions {
     /// terminal, delivering a message or a todo): wakes an asleep session and answers a
     /// launching or running one as it is. Any other state is refused, as by [`Self::wake`].
     pub async fn ensure_awake(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
-        let _operation = self.lock(id).await;
+        let operation = self.lock(id).await;
         let session = self.get(id).await?;
         if matches!(
             session.state,
@@ -289,6 +366,7 @@ impl Sessions {
             return Ok(session);
         }
         self.tmux()?;
+        let _launching = operation.launching();
         self.wake_locked(id, cause).await
     }
 
@@ -317,7 +395,8 @@ impl Sessions {
     /// still runs in another session (#157).
     pub async fn resume(&self, id: &SessionId) -> Result<Session, Error> {
         self.tmux()?;
-        let _operation = self.lock(id).await;
+        let operation = self.lock(id).await;
+        let _launching = operation.launching();
         let session = self.get(id).await?;
         let conversation = self.resumable(&session)?;
         self.refuse_if_agent_alive_elsewhere(&session).await?;
@@ -381,7 +460,7 @@ impl Sessions {
     /// its agent running (#221), so a failed session's latest agent is stopped first, as
     /// resume does; one not observed gone refuses the end and the session stays failed.
     pub async fn end(&self, id: &SessionId) -> Result<Session, Error> {
-        let _operation = self.lock(id).await;
+        let _operation = self.lock_to_stop(id, "end").await?;
         let session = self.get(id).await?;
         if matches!(
             session.state,
@@ -538,7 +617,7 @@ impl Sessions {
         };
         for listed in running {
             let id = listed.id.clone();
-            let _operation = self.lock(&id).await;
+            let operation = self.lock(&id).await;
             // Re-read under the lock: an owner operation may have replaced the launch since,
             // and the agent may have reported.
             let (session, agent_report) = match self.running_with_report(&id).await {
@@ -554,6 +633,7 @@ impl Sessions {
                 Ok(false) => {
                     let agent_report = agent_report.as_ref();
                     if session.restart_pending && turn_refusal(&session, agent_report).is_none() {
+                        let _launching = operation.launching();
                         match self.restart_locked(&id).await {
                             Ok(_) => report.restarted.push(id),
                             Err(error) => report.errors.push((id, error.to_string())),
