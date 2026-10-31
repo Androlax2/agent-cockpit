@@ -198,6 +198,9 @@ agent_claude_say() { # id pane message
     tail=$(tmux capture-pane -p -t "$pane" -S -20 2>/dev/null)
     if [[ $(osd classify <<<"$tail") == needs-you ]]; then
         echo "cockpit: $(session_field "$id" project) has a dialog open; answer it first (Y or N)" >&2
+        # A refusal Theo acts on, not a cockpit fault: an ERROR would reach the error hand-off.
+        # shellcheck disable=SC2034 # read by the manager's EXIT trap
+        log_failure_level=WARN
         return 1
     fi
     type_into_pane "$pane" "$message" || return 1

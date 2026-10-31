@@ -2675,6 +2675,24 @@ fn say_refuses_while_a_dialog_is_open_and_keeps_the_text_out_of_the_log() {
     );
 }
 
+/// The refusal asks Theo to answer the dialog: logged as an ERROR, it reached the error hand-off
+/// as a cockpit bug (a coordinator's say to a session waiting on its own question).
+#[test]
+fn say_refused_by_an_open_dialog_logs_a_warning_not_an_error() {
+    let manager = Manager::new();
+    let result = manager.run(
+        &["say", SESSION_A, "stop now"],
+        &[("SHIM_PANE_TEXT", DIALOG)],
+    );
+    assert_eq!(result.status.code(), Some(1));
+    let log = manager.log_lines();
+    assert!(
+        log.iter().any(|line| line.contains(" WARN manager: say ")),
+        "{log:?}"
+    );
+    assert!(!log.iter().any(|line| line.contains(" ERROR ")), "{log:?}");
+}
+
 #[test]
 fn say_without_the_session_snapshot_fails_with_a_reason_instead_of_a_silent_exit() {
     let manager = Manager::new();
@@ -2735,6 +2753,27 @@ fn opencode_keeps_chat_text_out_of_real_dialogs() {
         assert!(!result.status.success());
         assert!(manager.tmux_calls("send-keys").is_empty());
     }
+}
+
+#[test]
+fn opencode_say_refused_by_an_open_dialog_logs_a_warning_not_an_error() {
+    let manager = Manager::new();
+    fs::write(
+        &manager.snapshot,
+        json!({"sessions": [{"session": OPENCODE_SESSION,
+        "agent": "opencode", "state": "needs-you", "needs_input": false,
+        "project": "proj-a", "tmux_pane": "%5"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let result = manager.run(&["say", OPENCODE_SESSION, "stop now"], &[]);
+    assert_eq!(result.status.code(), Some(1));
+    let log = manager.log_lines();
+    assert!(
+        log.iter().any(|line| line.contains(" WARN manager: say ")),
+        "{log:?}"
+    );
+    assert!(!log.iter().any(|line| line.contains(" ERROR ")), "{log:?}");
 }
 
 #[test]

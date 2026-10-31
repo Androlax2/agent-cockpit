@@ -321,6 +321,9 @@ agent_opencode_say() { # id pane message
     state=$(session_field "$id" state)
     if [[ $state == needs-you && $(session_field "$id" needs_input) != true ]]; then
         echo "cockpit: $(session_field "$id" project) has a question open; answer it in its pane first" >&2
+        # A refusal Theo acts on, not a cockpit fault: an ERROR would reach the error hand-off.
+        # shellcheck disable=SC2034 # read by the manager's EXIT trap
+        log_failure_level=WARN
         return 1
     fi
     if [[ $state != waiting && $state != working && $state != needs-you ]]; then
