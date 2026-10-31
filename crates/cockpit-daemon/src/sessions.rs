@@ -225,6 +225,7 @@ fn error_code(error: &Error) -> ErrorCode {
         Error::WrongState { .. }
         | Error::CannotResume { .. }
         | Error::SleepRefused { .. }
+        | Error::LaunchInProgress { .. }
         | Error::StopUnconfirmed { .. } => ErrorCode::Conflict,
         Error::Provider(_) | Error::TmuxUnavailable { .. } => ErrorCode::Refused,
         Error::Projects(error) => crate::projects::error_code(error),
