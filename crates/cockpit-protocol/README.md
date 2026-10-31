@@ -49,7 +49,9 @@ the wire. Report 14 treats this contract as stable from the first release.
    `clone` branch), `session-list` (`ended` adds the ended ones), `session-restart`,
    `session-restart-all`, `session-sleep`, `session-wake`, `session-resume`, `session-end` and
    `session-link` answer a `session` view, `sessions`, or `restarted-all` with each
-   session that could not restart. Owner socket only.
+   session that could not restart; `session-end-finished` answers `ended-finished` with each
+   session ended and each it could not end. A view's `finished` says the task list has the
+   session's work done (#157). Owner socket only.
 7. Tasks (#38): `task-add`, `task-list`, `task-show`, `task-start`, `task-done` and
    `task-delete` serve both sockets (an agent acts on its own project's items and what it
    filed); `task-propose` and `task-report-blocker` are the agent's; `task-edit`,

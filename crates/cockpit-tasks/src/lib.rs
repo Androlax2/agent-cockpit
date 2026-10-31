@@ -14,11 +14,11 @@ pub use error::{Error, Refusal, UnblockedBy};
 pub use images::{IMAGE_MAX_BYTES, IMAGES_PER_ITEM_MAX, Image, add_image, image};
 pub use items::{
     ListFilter, add, approve, decline, delete, edit, finish, item, list, propose, reopen,
-    report_blocker, set_priority, set_queued, start, unwait, wait,
+    report_blocker, session_work, set_priority, set_queued, start, unwait, wait,
 };
 pub use model::{
     Actor, Draft, DraftTarget, Edit, ImageInfo, Item, ItemId, Kind, NewItem, NextAction, Priority,
-    Settings, Status, Wait,
+    SessionWork, Settings, Status, Wait,
 };
 pub use text::{NOTES_MAX_CHARS, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, WHY_MAX_CHARS};
 
@@ -27,9 +27,10 @@ pub use text::{NOTES_MAX_CHARS, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, WHY_MAX_CHAR
 /// waiting on it read. Only `delete` removes a row, with its waits, images and draft.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "tasks",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE tasks_items (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE tasks_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project TEXT NOT NULL CHECK (project <> ''),
                 title TEXT NOT NULL CHECK (title <> ''),
@@ -88,5 +89,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK ((project IS NULL) <> (item IS NULL)),
                 CHECK ((item IS NULL) = (base_intent_revision IS NULL))
             );",
-    }],
+        },
+        // #157: the session that was doing an item when it was finished, so a session's
+        // "finished" label reads task evidence (decided in #201). Items done before it
+        // name none.
+        Migration {
+            version: 2,
+            sql: "ALTER TABLE tasks_items ADD COLUMN finished_by TEXT CHECK (finished_by <> '');",
+        },
+    ],
 };

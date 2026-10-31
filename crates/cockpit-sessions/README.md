@@ -23,6 +23,13 @@ stopped in the middle of one finishes or repairs it at its next start.
 - **Restart, sleep, wake and resume** relaunch the same conversation, so each needs a
   provider with the `resume` capability that named the conversation; otherwise they are
   refused before anything stops.
+- **Resume and wake refuse a conversation alive elsewhere** (#157): while another session's agent
+  of the same conversation is observed alive by `cockpit-processes`, or another session
+  holding it is launching, running or stopping, with the session named in the reason.
+- **Restart from an unknown status** (#157): a session an error or a crash left
+  `launching` or `stopping` restarts like a running one; the stop observes and stops its
+  agent first, so a restart is never a no-op. `start` holds the session's lock through its
+  first launch.
 - **Agents' reports.** An agent reports its state (working, waiting), label, doing-now,
   open question and how its last turn ended (#183) through the agent channel, which
   identifies the sender; this crate checks the fields, asks `cockpit-authorization` whether
@@ -87,6 +94,8 @@ stopped in the middle of one finishes or repairs it at its next start.
 - `tests/schema.rs`: the stored state's constraints on a real database, and the id format.
 - `tests/reports.rs`: report validation, merging, authorization and the migration that
   moved the reports here.
+- `cockpit-daemon/tests/session_robustness.rs`: the resume refusal, restart from an unknown
+  status, and the finished label the daemon computes from the task list (#157).
 - `cockpit-daemon/tests/sessions.rs`: every lifecycle transition through the daemon's
   socket, against a fake provider with only the baseline contract, real processes and a
   private tmux server; `session_restarts.rs`: restart-all after a start file changed, and

@@ -24,6 +24,22 @@ use crate::{
 /// Variables of the terminal tmux emulates, kept from the pane: they describe the host.
 const TERMINAL_VARIABLES: [&str; 2] = ["TERM", "COLORTERM"];
 
+/// The states the owner's restart starts from: running, and the transitional states an
+/// error or a crash can leave, in which the agent's status is unknown.
+const RESTARTABLE: [SessionState; 5] = [
+    SessionState::Running,
+    SessionState::Launching,
+    SessionState::Stopping {
+        to: StopTarget::Asleep,
+    },
+    SessionState::Stopping {
+        to: StopTarget::Ended,
+    },
+    SessionState::Stopping {
+        to: StopTarget::Restart,
+    },
+];
+
 /// The sessions capability over the state database, the process supervisor, Cockpit's
 /// tmux server and the available providers.
 pub struct Sessions {
@@ -60,6 +76,12 @@ impl Sessions {
             settings,
             operations: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The state database the sessions live in, for the daemon's views that join them with
+    /// other capabilities' tables (a session's task work, #157).
+    pub fn database(&self) -> &Arc<Database> {
+        &self.database
     }
 
     async fn lock(&self, id: &SessionId) -> tokio::sync::OwnedMutexGuard<()> {
@@ -107,6 +129,9 @@ impl Sessions {
         // Collected from components: joining an empty `relative` would add a trailing `/`.
         let working_dir: PathBuf = checkout.path.join(relative).components().collect();
         let id = SessionId::generate()?;
+        // Held through the first launch: a restart may take a `launching` session over, so
+        // it must not find this one mid-launch.
+        let _operation = self.lock(&id).await;
         let write = self.database.write().await?;
         store::insert_session(
             &write,
@@ -133,13 +158,17 @@ impl Sessions {
         .await
     }
 
-    /// Stops the agent and launches the same conversation again, in place.
+    /// Stops the agent and launches the same conversation again, in place. A session whose
+    /// agent's status is unknown, because an error or a crash left it `launching` or
+    /// `stopping`, restarts too (#157): the stop observes the agent's execution first,
+    /// stops it if it still runs, then launches; it is never a no-op.
     pub async fn restart(&self, id: &SessionId) -> Result<Session, Error> {
         self.tmux()?;
         let _operation = self.lock(id).await;
         let session = self.get(id).await?;
         self.resumable(&session)?;
-        self.restart_locked(id).await
+        self.stop(id, &RESTARTABLE, StopTarget::Restart, "restart")
+            .await
     }
 
     /// Restarts a running session's agent; the caller holds its lock.
@@ -266,7 +295,12 @@ impl Sessions {
     async fn wake_locked(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
         let session = self.get(id).await?;
         let conversation = self.resumable(&session)?;
-        self.transition(
+        // Waking reopens the conversation as resume does, so it is refused the same way.
+        self.refuse_if_agent_alive_elsewhere(&session).await?;
+        let write = self.database.write().await?;
+        refuse_if_active_elsewhere(&write, &session).await?;
+        store::transition(
+            &write,
             id,
             &[SessionState::Asleep],
             SessionState::Launching,
@@ -274,20 +308,24 @@ impl Sessions {
             "wake",
         )
         .await?;
+        write.commit().await?;
         self.launch(id, LaunchKind::Wake, conversation, None).await
     }
 
     /// Reopens an ended or failed session's conversation. A failed launch may have left its
-    /// agent running, so the previous agent is stopped first.
+    /// agent running, so the previous agent is stopped first. Refused while the conversation
+    /// still runs in another session (#157).
     pub async fn resume(&self, id: &SessionId) -> Result<Session, Error> {
         self.tmux()?;
         let _operation = self.lock(id).await;
         let session = self.get(id).await?;
         let conversation = self.resumable(&session)?;
+        self.refuse_if_agent_alive_elsewhere(&session).await?;
         if matches!(session.state, SessionState::Ended | SessionState::Failed) {
             self.stop_previous_agent(&session).await?;
         }
         let write = self.database.write().await?;
+        refuse_if_active_elsewhere(&write, &session).await?;
         store::transition(
             &write,
             id,
@@ -303,6 +341,39 @@ impl Sessions {
         write.commit().await?;
         self.launch(id, LaunchKind::Resume, conversation, None)
             .await
+    }
+
+    /// Refuses to launch `session`'s conversation while another session's agent of it is
+    /// still alive, as `cockpit-processes` observes its execution now (report 04: an
+    /// execution is identified by its supervisor identity, never a PID): a failed launch
+    /// may have left one running whatever its session's state says.
+    async fn refuse_if_agent_alive_elsewhere(&self, session: &Session) -> Result<(), Error> {
+        let Some(conversation) = &session.conversation else {
+            return Ok(());
+        };
+        let holders = {
+            let read = self.database.read().await?;
+            store::conversation_holders(&read, &session.provider, conversation, &session.id).await?
+        };
+        for holder in holders {
+            let Some(launch) = &holder.launch else {
+                continue;
+            };
+            let execution = self
+                .processes
+                .observe(&self.database, launch.execution)
+                .await?;
+            if execution.phase.is_occupying() {
+                return Err(Error::CannotResume {
+                    session: session.id.clone(),
+                    reason: format!(
+                        "its conversation is still alive as session {}'s agent (execution {})",
+                        holder.id, launch.execution.0
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Ends the session: stops a running agent, releases the clone it occupies. A stop
@@ -1071,6 +1142,37 @@ fn turn_refusal(session: &Session, agent_report: Option<&SessionReport>) -> Opti
         Some(AgentState::Working) => Some(SleepRefusal::Working),
         Some(AgentState::Waiting) => None,
         None => Some(SleepRefusal::NotReady),
+    }
+}
+
+/// Refuses to launch `session`'s conversation while another session holding it is active,
+/// read in the transaction that moves `session` to launching: two resumes of sessions
+/// sharing a conversation cannot both pass, since the first one's move is committed before
+/// the second one reads.
+async fn refuse_if_active_elsewhere(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    session: &Session,
+) -> Result<(), Error> {
+    let Some(conversation) = &session.conversation else {
+        return Ok(());
+    };
+    let holders =
+        store::conversation_holders(write, &session.provider, conversation, &session.id).await?;
+    let active = holders.into_iter().find(|holder| {
+        matches!(
+            holder.state,
+            SessionState::Launching | SessionState::Running | SessionState::Stopping { .. }
+        )
+    });
+    match active {
+        Some(holder) => Err(Error::CannotResume {
+            session: session.id.clone(),
+            reason: format!(
+                "its conversation still runs in session {} ({})",
+                holder.id, holder.state
+            ),
+        }),
+        None => Ok(()),
     }
 }
 

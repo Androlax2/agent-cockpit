@@ -193,6 +193,13 @@ pub enum Command {
     SessionEnd {
         session: String,
     },
+    /// End every session the task list says finished its work (#157, decided in #201).
+    /// With `only`, end just those of the named sessions still finished: the ones the owner
+    /// saw and confirmed, never one that finished since.
+    SessionEndFinished {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        only: Option<Vec<String>>,
+    },
     /// Record a design link (an http or https URL) on the session.
     SessionLink {
         session: String,
@@ -481,6 +488,11 @@ pub enum Reply {
         restarted: Vec<SessionView>,
         #[serde(default)]
         deferred: Vec<SessionView>,
+        failed: Vec<SessionFailure>,
+    },
+    /// What `session-end-finished` ended, and each finished session it could not end.
+    EndedFinished {
+        ended: Vec<SessionView>,
         failed: Vec<SessionFailure>,
     },
     Task {

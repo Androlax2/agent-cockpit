@@ -75,6 +75,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         }),
         changed_start_files: Vec::new(),
         restart_pending: false,
+        finished: false,
     }
 }
 
@@ -109,7 +110,7 @@ async fn session_new_sends_an_absolute_dir_with_its_options_and_prints_the_sessi
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\n"
+        "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
     );
     assert_eq!(
         daemon.await.unwrap(),
@@ -149,8 +150,8 @@ async fn session_list_ended_asks_for_ended_sessions_and_prints_one_line_each() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "s000000000001\tstopping:asleep\tclaude\tstart\tc-1\t/p/app\t-\t-\n\
-         s000000000002\tended\tclaude\tstart\tc-1\t/p/app\tits agent exited\t-\n"
+        "s000000000001\tstopping:asleep\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n\
+         s000000000002\tended\tclaude\tstart\tc-1\t/p/app\tits agent exited\t-\t-\n"
     );
     assert_eq!(daemon.await.unwrap(), Command::SessionList { ended: true });
 }
@@ -240,7 +241,7 @@ async fn restart_all_exits_1_naming_each_session_it_could_not_restart() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stdout),
-        "s000000000001\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\n"
+        "s000000000001\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
     );
     assert_eq!(
         text(&output.stderr),
@@ -292,4 +293,83 @@ async fn malformed_session_arguments_exit_2_before_any_connection() {
             text(&output.stderr)
         );
     }
+}
+
+// #157 (decided in #201): which sessions are finished is the daemon's rule, proven in
+// `cockpit-daemon/tests/session_robustness.rs`; these prove the column and the verb.
+
+#[tokio::test]
+async fn session_list_marks_a_finished_session_in_its_work_column() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Sessions {
+            sessions: vec![
+                SessionView {
+                    finished: true,
+                    ..view("s000000000001", SessionStateView::Running)
+                },
+                view("s000000000002", SessionStateView::Running),
+            ],
+        }),
+    );
+
+    let output = home.cockpit(home.dir.path(), &["session", "list"]).await;
+
+    assert_eq!(
+        text(&output.stdout),
+        "s000000000001\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\tfinished\n\
+         s000000000002\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
+    );
+}
+
+#[tokio::test]
+async fn end_finished_sends_one_request_and_prints_each_ended_session() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::EndedFinished {
+            ended: vec![view("s000000000001", SessionStateView::Ended)],
+            failed: Vec::new(),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "end", "--finished"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "s000000000001\tended\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionEndFinished { only: None }
+    );
+}
+
+#[tokio::test]
+async fn end_finished_exits_1_naming_each_session_it_could_not_end() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::EndedFinished {
+            ended: Vec::new(),
+            failed: vec![SessionFailure {
+                session: "s000000000002".to_owned(),
+                error: ProtocolError::new(ErrorCode::Conflict, "its agent did not stop"),
+            }],
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "end", "--finished"])
+        .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "cockpit: s000000000002 not ended: conflict: its agent did not stop\n"
+    );
 }
