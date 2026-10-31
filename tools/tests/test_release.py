@@ -382,6 +382,18 @@ class NextPrereleaseTests(ReleaseTestCase):
         self.assertEqual(code, 1)
         self.assertIn("already released as v0.1.0-alpha.2", error)
 
+    def test_a_release_shaped_tag_outside_main_does_not_count(self):
+        self.repository.git("checkout", "--quiet", "-b", "side")
+        self.repository.commits(5)
+        self.repository.tag("v0.1.0-alpha.5")
+        self.repository.git("checkout", "--quiet", "main")
+        self.repository.commits(2)
+        code, outputs, error = self.run_release(
+            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "open"
+        )
+        self.assertEqual(code, 0, error)
+        self.assertEqual(outputs["tag"], "v0.1.0-alpha.2")
+
     def test_a_commit_outside_main_is_refused(self):
         self.repository.git("checkout", "--quiet", "-b", "side")
         self.repository.commits(1)
@@ -627,6 +639,14 @@ class VerifyInstallTests(PackagingTestCase):
         code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 0, error)
 
+    def test_a_version_command_that_hangs_fails_instead_of_hanging_the_check(self):
+        self.write_fake("cockpit", "#!/bin/sh\nsleep 600 &\nexec sleep 600\n")
+        _code, outputs, _error = self.package()
+        with patch.object(release, "COMMAND_TIMEOUT_SECONDS", 1):
+            code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("did not finish in 1s", error)
+
     def test_a_binary_built_from_another_revision_fails(self):
         _code, outputs, _error = self.package()
         code, _verified, error = self.verify(outputs["root"], revision="fedcba98")
@@ -680,7 +700,7 @@ class WorkflowMatrixTests(unittest.TestCase):
 
     def test_every_archive_artifact_named_by_hand_is_a_platform(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        for platform in re.findall(r"archive-([a-z0-9_-]+)", workflow):
+        for platform in re.findall(r"\n\s*name: archive-([a-z0-9_-]+)\n", workflow):
             with self.subTest(platform=platform):
                 self.assertIn(platform, release.PLATFORMS)
 

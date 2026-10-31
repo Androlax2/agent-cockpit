@@ -47,6 +47,8 @@ BINARIES = ("cockpit", "cockpit-daemon")
 DOCUMENTS = ("LICENSE", "README.md")
 MANIFEST_PATH = "share/cockpit/manifest.json"
 MANIFEST_SCHEMA = 1
+# How long verify-install waits for `cockpit version --all` and for the daemon's ready line.
+COMMAND_TIMEOUT_SECONDS = 60
 # Alpha notes carry the known gaps (RELEASING.md, Changelog); #97 writes the file.
 KNOWN_GAPS = "docs/KNOWN-GAPS.md"
 
@@ -458,24 +460,39 @@ def refuse_changed_contents(root, manifest):
         raise Refusal("; ".join(problems))
 
 
+def stop_group(process):
+    """Kill a process started with start_new_session, and everything it started."""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    process.wait(timeout=10)
+
+
 def refuse_wrong_version_output(root, manifest, manifest_text, revision, environment):
-    # Its own process group, so a timeout also stops anything it started.
-    with subprocess.Popen(
-        [str(root / "bin/cockpit"), "version", "--all"],
-        env=environment,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    ) as shown:
+    # Output goes to files and the group is always killed, so neither a hang nor a helper the
+    # command leaves behind outlives the check.
+    with (
+        tempfile.TemporaryFile(mode="w+") as stdout_file,
+        tempfile.TemporaryFile(mode="w+") as stderr_file,
+    ):
+        shown = subprocess.Popen(
+            [str(root / "bin/cockpit"), "version", "--all"],
+            env=environment,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            start_new_session=True,
+        )
         try:
-            stdout, stderr = shown.communicate(timeout=60)
+            shown.wait(timeout=COMMAND_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as timeout:
-            os.killpg(shown.pid, signal.SIGKILL)
-            shown.communicate()
             raise Refusal(
                 f"cockpit version --all did not finish in {timeout.timeout}s"
             ) from timeout
+        finally:
+            stop_group(shown)
+        stdout_file.seek(0)
+        stdout = stdout_file.read()
+        stderr_file.seek(0)
+        stderr = stderr_file.read()
     expected_first_line = f"cockpit {manifest['version']} (revision {revision})"
     if shown.returncode != 0 or stdout.splitlines()[:1] != [expected_first_line]:
         raise Refusal(
@@ -486,7 +503,7 @@ def refuse_wrong_version_output(root, manifest, manifest_text, revision, environ
         raise Refusal("cockpit version --all does not show the installed manifest")
 
 
-def refuse_daemon_not_ready(root, environment, timeout_seconds=60):
+def refuse_daemon_not_ready(root, environment):
     """cockpit-daemon prints `ready <socket>` once it accepts requests on a clean home."""
     # Its own process group, so a helper it started dies with it; stderr goes to a file, so
     # a chatty daemon never blocks on a full pipe.
@@ -499,15 +516,13 @@ def refuse_daemon_not_ready(root, environment, timeout_seconds=60):
             text=True,
             start_new_session=True,
         )
-        deadline = threading.Timer(timeout_seconds, os.killpg, (daemon.pid, signal.SIGKILL))
+        deadline = threading.Timer(COMMAND_TIMEOUT_SECONDS, os.killpg, (daemon.pid, signal.SIGKILL))
         deadline.start()
         try:
             first_line = daemon.stdout.readline()
         finally:
             deadline.cancel()
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(daemon.pid, signal.SIGKILL)
-            daemon.wait(timeout=10)
+            stop_group(daemon)
             daemon.stdout.close()
         stderr_file.seek(0)
         stderr = stderr_file.read()

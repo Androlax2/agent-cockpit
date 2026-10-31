@@ -58,12 +58,12 @@ commit `d2d8604` (issue #18).
   - a commit that is a stable release or already has a pre-release tag;
   - a version that already has a stable tag, or is not above the previous stable;
   - a tag not above the newest pre-release, or a commit that does not descend from it.
-- **The release workflow checks the tag first.** A pre-release tag meets every refusal
-  above, however it was made; a stable tag too must be on `main`, on a commit with no other
-  release tag, descending from the newest lower release. On a stable tag, the workspace version must
-  equal the tag's. On a pre-release, it must still be the base's version (`0.1.0` before the
-first stable tag). A pre-release build stamps
-  its own version into `Cargo.toml` and `Cargo.lock` before compiling, and commits nothing.
+- **The release workflow checks the tag first.** It refuses a pre-release tag in every case
+  above, however the tag was made. A stable tag too must be on `main`, on a commit with no
+  other release tag, and descend from the newest lower release; its workspace version must
+  equal the tag's. On a pre-release, the workspace version must still be the base's (`0.1.0`
+  before the first stable tag). A pre-release build stamps its own version into `Cargo.toml`
+  and `Cargo.lock` before compiling, and commits nothing.
 
 ## Channels and what each promises
 
