@@ -131,6 +131,19 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
             "cockpit-projects",
         ],
     },
+    // Scheduling, sessions and tasks ask admission whether work fits; admission answers from
+    // its reservations and the executions they charge, and the daemon converts to wire
+    // types (#42).
+    ForbiddenEdge {
+        rule: "resource-admission -> sessions/tasks/wire types",
+        from: Sources::Named(&["cockpit-resource-admission"]),
+        to: &[
+            "cockpit-sessions",
+            "cockpit-tasks",
+            "cockpit-protocol",
+            "cockpit-client",
+        ],
+    },
     // Sessions drive every provider through the `cockpit-provider-api` contract alone; no
     // provider's type or path reaches them (#31).
     ForbiddenEdge {
