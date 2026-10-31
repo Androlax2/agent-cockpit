@@ -97,10 +97,9 @@ impl RunSettings {
 /// What a run produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ran {
-    pub exit_code: i32,
-    pub output: Output,
+    pub result: RunResult,
     /// A process the command left in the background still held the terminal when the
-    /// command exited; what it printed afterwards is not in `output`.
+    /// command exited; what it printed afterwards is not in the result.
     pub terminal_held_open: bool,
 }
 
@@ -109,21 +108,12 @@ pub struct Ran {
 pub struct Output {
     /// The last lines of the kept output, for the agent's answer.
     pub shown: String,
+    /// Lines of the kept output left out of `shown`.
     pub omitted_lines: u64,
+    /// Bytes from the start of the output that were not kept at all.
     pub truncated_bytes: u64,
+    /// How many secret-looking values were replaced by `[redacted]`.
     pub redacted: u64,
-}
-
-impl Ran {
-    pub fn result(&self) -> RunResult {
-        RunResult {
-            exit_code: self.exit_code,
-            output: self.output.shown.clone(),
-            omitted_lines: self.output.omitted_lines,
-            truncated_bytes: self.output.truncated_bytes,
-            redacted: self.output.redacted,
-        }
-    }
 }
 
 /// Why a run has no result.
@@ -265,8 +255,10 @@ impl Runner {
             .expect("the output lock is never poisoned");
         let tail = &kept.bytes[kept.bytes.len().saturating_sub(self.settings.kept_bytes)..];
         Ok(Ran {
-            exit_code,
-            output: present(tail, kept.total, self.settings.answer_lines),
+            result: RunResult {
+                exit_code,
+                output: present(tail, kept.total, self.settings.answer_lines),
+            },
             terminal_held_open,
         })
     }

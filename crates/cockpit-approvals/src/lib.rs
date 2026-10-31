@@ -6,6 +6,7 @@ mod guides;
 mod hints;
 mod pty;
 mod redact;
+mod rows;
 mod runs;
 
 use cockpit_turso::{Migration, MigrationSet};

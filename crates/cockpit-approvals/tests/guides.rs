@@ -5,7 +5,7 @@ mod common;
 
 use cockpit_approvals::{
     Error, GuideId, GuideRequest, GuideState, Refusal, RunState, answer_step, ask_guide,
-    close_guide, guide_status, open_guides, parse_guide, report_stuck, run_request,
+    close_guide, guide_request, guide_status, open_guides, parse_guide, report_stuck, run_request,
 };
 use common::{Fixture, NOW, session};
 
@@ -291,6 +291,66 @@ async fn a_run_step_request_stays_before_the_owner_while_the_agent_waits_on_the_
 
     let run = run_request(&write, filed, expiry).await.unwrap().unwrap();
     assert_eq!(run.state, RunState::Asking);
+}
+
+#[tokio::test]
+async fn a_guide_poll_while_the_expiry_is_fresh_writes_nothing() {
+    let fixture = Fixture::new().await;
+    let guide = asked(&fixture, GUIDE).await;
+    let before = fixture.revision().await;
+
+    let write = fixture.database.write().await.unwrap();
+    let seen = guide_status(&write, &session("s1"), guide.id, NOW + 59)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(seen, guide);
+    assert_eq!(fixture.revision().await, before);
+}
+
+#[tokio::test]
+async fn the_owner_sees_each_open_guide_with_its_own_steps() {
+    let fixture = Fixture::new().await;
+    let first = asked(&fixture, "# First\nOne\nTwo\n").await;
+    let closed = asked(&fixture, "# Closed\nThree\n").await;
+    let last = asked(&fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    close_guide(&write, closed.id, NOW).await.unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(open_guides(&read, NOW).await.unwrap(), [first, last]);
+}
+
+#[tokio::test]
+async fn each_answer_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let answered = asked(&fixture, GUIDE).await;
+    let stuck = asked(&fixture, GUIDE).await;
+    let closed = asked(&fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    let stored = async |id| guide_request(&write, id, NOW).await.unwrap().unwrap();
+
+    let after_open = answer_step(&write, answered.id, 0, None, NOW)
+        .await
+        .unwrap();
+    assert_eq!(after_open, stored(answered.id).await);
+    let after_ask = answer_step(&write, answered.id, 1, Some("42".to_owned()), NOW)
+        .await
+        .unwrap();
+    assert_eq!(after_ask, stored(answered.id).await);
+    let after_run = answer_step(&write, answered.id, 2, None, NOW)
+        .await
+        .unwrap();
+    assert_eq!(after_run.state, GuideState::Done);
+    assert_eq!(after_run, stored(answered.id).await);
+    let reported = report_stuck(&write, stuck.id, 0, "no such menu", NOW)
+        .await
+        .unwrap();
+    assert_eq!(reported, stored(stuck.id).await);
+    let ended = close_guide(&write, closed.id, NOW).await.unwrap();
+    assert_eq!(ended, stored(closed.id).await);
 }
 
 #[tokio::test]

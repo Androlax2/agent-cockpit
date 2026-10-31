@@ -11,7 +11,10 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use cockpit_client::Connection;
+use cockpit_agent_channel::{LaunchToken, ProcessIdentity};
+use cockpit_authorization::{Permission, Scope, SessionId};
+use cockpit_client::{ClientError, Connection};
+use cockpit_protocol::{ProtocolError, Reply};
 
 /// Long enough never to fire in a passing test, short enough to fail a hung one quickly.
 pub const GENEROUS: Duration = Duration::from_secs(10);
@@ -171,6 +174,35 @@ impl TestHome {
         }
     }
 
+    /// Launches `session` rooted at `root` while no daemon runs, granted `permission` over
+    /// itself when one is given.
+    pub async fn launch(
+        &self,
+        session: &str,
+        root: &ProcessIdentity,
+        permission: Option<Permission>,
+    ) -> LaunchToken {
+        let session = SessionId::new(session).expect("a valid session id");
+        let database = self.open_state().await;
+        let write = database.write().await.unwrap();
+        let token = cockpit_agent_channel::mint(&write, &session).await.unwrap();
+        cockpit_agent_channel::record_root(&write, &session, root)
+            .await
+            .unwrap();
+        if let Some(permission) = permission {
+            cockpit_authorization::grant(
+                &write,
+                &session,
+                permission,
+                &Scope::Session(session.clone()),
+            )
+            .await
+            .unwrap();
+        }
+        write.commit().await.unwrap();
+        token
+    }
+
     pub async fn connect(&self) -> Connection {
         Connection::open(&self.socket_path(), GENEROUS)
             .await
@@ -219,5 +251,13 @@ pub fn wiring_in(
         providers,
         sessions: cockpit_sessions::Settings::default(),
         session_tick: Duration::from_secs(3600),
+    }
+}
+
+/// The daemon's refusal of a request expected to be refused.
+pub fn refused(reply: Result<Reply, ClientError>) -> ProtocolError {
+    match reply {
+        Err(ClientError::Daemon(error)) => error,
+        other => panic!("expected a refusal, got {other:?}"),
     }
 }

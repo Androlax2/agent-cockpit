@@ -8,48 +8,16 @@ mod common;
 use std::process::{Command as Process, Stdio};
 
 use cockpit_agent_channel::{LaunchToken, ProcessIdentity, identity_of};
-use cockpit_authorization::{Permission, Scope, SessionId};
-use cockpit_client::ClientError;
-use cockpit_protocol::{
-    AgentReport, Command, ErrorCode, ProtocolError, Reply, SessionReport, UnblockedBy,
-};
-use common::{GENEROUS, TestHome};
+use cockpit_authorization::Permission;
+use cockpit_protocol::{AgentReport, Command, ErrorCode, Reply, SessionReport, UnblockedBy};
+use common::{GENEROUS, TestHome, refused};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Set in the child this file spawns as a nested agent; see `nested_agent`.
 const NESTED_AGENT_SOCKET: &str = "COCKPIT_TEST_NESTED_AGENT_SOCKET";
 
-fn session(id: &str) -> SessionId {
-    SessionId::new(id).unwrap()
-}
-
 fn this_process() -> ProcessIdentity {
     identity_of(std::process::id()).unwrap()
-}
-
-/// Launches `session` rooted at `root`, optionally granting it `change-state` over itself,
-/// while no daemon runs.
-async fn launch(home: &TestHome, id: &str, root: &ProcessIdentity, granted: bool) -> LaunchToken {
-    let database = home.open_state().await;
-    let write = database.write().await.unwrap();
-    let token = cockpit_agent_channel::mint(&write, &session(id))
-        .await
-        .unwrap();
-    cockpit_agent_channel::record_root(&write, &session(id), root)
-        .await
-        .unwrap();
-    if granted {
-        cockpit_authorization::grant(
-            &write,
-            &session(id),
-            Permission::ChangeState,
-            &Scope::Session(session(id)),
-        )
-        .await
-        .unwrap();
-    }
-    write.commit().await.unwrap();
-    token
 }
 
 fn doing(text: &str) -> AgentReport {
@@ -78,17 +46,12 @@ async fn owner_view(home: &TestHome) -> Vec<SessionReport> {
     }
 }
 
-fn refused(result: Result<Reply, ClientError>) -> ProtocolError {
-    match result {
-        Err(ClientError::Daemon(error)) => error,
-        other => panic!("expected a refusal, got {other:?}"),
-    }
-}
-
 #[tokio::test]
 async fn a_launched_agent_reports_and_the_owner_reads_it() {
     let home = TestHome::new();
-    let token = launch(&home, "s1", &this_process(), true).await;
+    let token = home
+        .launch("s1", &this_process(), Some(Permission::ChangeState))
+        .await;
     let _daemon = home.start();
 
     let reply = home
@@ -118,7 +81,13 @@ async fn a_token_leaked_to_another_process_tree_is_refused() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let token = launch(&home, "s1", &identity_of(agent.id()).unwrap(), true).await;
+    let token = home
+        .launch(
+            "s1",
+            &identity_of(agent.id()).unwrap(),
+            Some(Permission::ChangeState),
+        )
+        .await;
     let _daemon = home.start();
 
     let refusal = refused(
@@ -142,8 +111,15 @@ async fn a_token_leaked_to_another_process_tree_is_refused() {
 #[tokio::test]
 async fn a_session_named_in_the_payload_does_not_change_who_reports() {
     let home = TestHome::new();
-    let token = launch(&home, "s1", &this_process(), true).await;
-    launch(&home, "s2", &identity_of(1).unwrap(), true).await;
+    let token = home
+        .launch("s1", &this_process(), Some(Permission::ChangeState))
+        .await;
+    home.launch(
+        "s2",
+        &identity_of(1).unwrap(),
+        Some(Permission::ChangeState),
+    )
+    .await;
     let _daemon = home.start();
     let stream = tokio::net::UnixStream::connect(home.agent_socket_path())
         .await
@@ -182,7 +158,9 @@ async fn a_session_named_in_the_payload_does_not_change_who_reports() {
 #[tokio::test]
 async fn a_nested_agent_reports_with_its_parent_sessions_grants() {
     let home = TestHome::new();
-    let token = launch(&home, "s1", &this_process(), true).await;
+    let token = home
+        .launch("s1", &this_process(), Some(Permission::ChangeState))
+        .await;
     let _daemon = home.start();
     home.connect_agent()
         .await
@@ -241,7 +219,7 @@ async fn nested_agent() {
 #[tokio::test]
 async fn an_ungranted_session_is_refused_with_what_unblocks_it() {
     let home = TestHome::new();
-    let token = launch(&home, "s1", &this_process(), false).await;
+    let token = home.launch("s1", &this_process(), None).await;
     let _daemon = home.start();
 
     let refusal = refused(
@@ -282,7 +260,9 @@ async fn an_unlaunched_process_is_unidentified() {
 #[tokio::test]
 async fn an_invalid_report_is_refused_naming_its_field() {
     let home = TestHome::new();
-    let token = launch(&home, "s1", &this_process(), true).await;
+    let token = home
+        .launch("s1", &this_process(), Some(Permission::ChangeState))
+        .await;
     let _daemon = home.start();
 
     let refusal = refused(
@@ -331,7 +311,9 @@ async fn the_host_only_socket_takes_no_agent_report() {
 #[tokio::test]
 async fn a_bound_session_is_identified_after_a_daemon_restart() {
     let home = TestHome::new();
-    let token = launch(&home, "s1", &this_process(), true).await;
+    let token = home
+        .launch("s1", &this_process(), Some(Permission::ChangeState))
+        .await;
     let daemon = home.start();
     home.connect_agent()
         .await

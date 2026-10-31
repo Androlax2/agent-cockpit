@@ -17,6 +17,11 @@ use sha2::{Digest, Sha256};
 
 use crate::display::is_outside_project;
 use crate::error::invalid;
+use crate::pty::Output;
+use crate::rows::{
+    AskState, invalid_row, next_id, project_from, refreshed_expiry, session_from, state_at,
+    still_asking,
+};
 use crate::{Error, Refusal};
 
 /// An asking request expires this long after the agent last asked about it: an approval
@@ -29,6 +34,7 @@ pub const EXPIRES_AFTER_SECONDS: i64 = 15 * 60;
 pub const APPROVAL_GRACE_SECONDS: i64 = 2;
 const COMMAND_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const REASON_MAX_CHARS: usize = 1000;
+const TABLE: &str = "approvals_runs";
 
 /// The columns `run_from` reads, in its order.
 const SELECT_RUNS: &str = "SELECT id, session, revision, command, asked_command, cwd, project,
@@ -53,6 +59,15 @@ pub enum RunState {
     NotRun,
     /// It may have run, wholly or in part; the note says why nobody knows.
     OutcomeUnknown,
+}
+
+impl AskState for RunState {
+    const ASKING: RunState = RunState::Asking;
+    const EXPIRED: RunState = RunState::Expired;
+
+    fn as_str(self) -> &'static str {
+        RunState::as_str(self)
+    }
 }
 
 impl RunState {
@@ -102,18 +117,12 @@ pub struct RunAsk {
     pub project: Option<Project>,
 }
 
-/// What a finished run returns to the agent: redacted, without terminal controls, bounded.
+/// What a finished run returns to the agent: its exit code and its output, redacted,
+/// without terminal controls, bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunResult {
     pub exit_code: i32,
-    /// The last lines of the output.
-    pub output: String,
-    /// Lines of the kept output left out of `output`.
-    pub omitted_lines: u64,
-    /// Bytes from the start of the output that were not kept at all.
-    pub truncated_bytes: u64,
-    /// How many secret-looking values were replaced by `[redacted]`.
-    pub redacted: u64,
+    pub output: Output,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,12 +246,7 @@ pub(crate) async fn insert_run(
     ask: &RunAsk,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let id = write
-        .prepare("SELECT coalesce(max(id), 0) + 1 FROM approvals_runs")
-        .await?
-        .query_row(())
-        .await?
-        .get::<i64>(0)?;
+    let id = next_id(write, TABLE).await?;
     let cwd = text_of(&ask.cwd)?;
     let project_root = ask
         .project
@@ -267,7 +271,22 @@ pub(crate) async fn insert_run(
             ),
         )
         .await?;
-    required(write, RunId(id), now).await
+    Ok(RunRequest {
+        id: RunId(id),
+        session: session.clone(),
+        revision: 1,
+        command: ask.command.clone(),
+        asked_command: ask.command.clone(),
+        cwd: ask.cwd.clone(),
+        project: ask.project.clone(),
+        reason: ask.reason.clone(),
+        state: RunState::Asking,
+        asked_at: now,
+        revised_at: now,
+        expires_at: now + EXPIRES_AFTER_SECONDS,
+        result: None,
+        note: None,
+    })
 }
 
 /// Requests the owner still has to see: asking (not expired), approved and running, oldest
@@ -320,27 +339,31 @@ pub async fn run_request(
 }
 
 /// The request as its asking session sees it. Asking about an undecided request keeps it
-/// from expiring: someone still waits for the answer.
+/// from expiring: someone still waits for the answer. Polls while the expiry is fresh
+/// write nothing.
 pub async fn run_status(
     write: &WriteTransaction<'_>,
     session: &SessionId,
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let run = match run_request(write, id, now).await? {
+    let mut run = match run_request(write, id, now).await? {
         Some(run) if run.session == *session => run,
         _ => return Err(not_found(id).into()),
     };
     if run.state != RunState::Asking {
         return Ok(run);
     }
-    write
-        .execute(
-            "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1",
-            (id.0, now + EXPIRES_AFTER_SECONDS),
-        )
-        .await?;
-    required(write, id, now).await
+    if let Some(expires_at) = refreshed_expiry(run.expires_at, now) {
+        write
+            .execute(
+                "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1",
+                (id.0, expires_at),
+            )
+            .await?;
+        run.expires_at = expires_at;
+    }
+    Ok(run)
 }
 
 /// The owner's edit: `command` replaces the current one as a new revision, so a decision
@@ -352,7 +375,7 @@ pub async fn edit_run(
     command: &str,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    undecided_at(write, id, revision, now).await?;
+    let mut run = undecided_at(write, id, revision, now).await?;
     validate_command("command", command)?;
     write
         .execute(
@@ -361,7 +384,10 @@ pub async fn edit_run(
             (id.0, command, now),
         )
         .await?;
-    required(write, id, now).await
+    run.command = command.to_owned();
+    run.revision += 1;
+    run.revised_at = now;
+    Ok(run)
 }
 
 pub async fn decline_run(
@@ -369,28 +395,30 @@ pub async fn decline_run(
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    undecided(write, id, now).await?;
+    let mut run = undecided(write, id, now).await?;
     write
         .execute(
             "UPDATE approvals_runs SET state = 'declined', decided_at = ?2 WHERE id = ?1",
             (id.0, now),
         )
         .await?;
-    required(write, id, now).await
+    run.state = RunState::Declined;
+    Ok(run)
 }
 
 /// The owner's approval of exactly `revision`, whose digest must be `digest`. It is consumed
 /// here: the request leaves `asking` with the run intent in the same transaction, so a second
 /// approval, or one made on an older revision, is refused; so is one made within
-/// [`APPROVAL_GRACE_SECONDS`] of the revision appearing.
+/// [`APPROVAL_GRACE_SECONDS`] of the revision appearing. Returns the run to carry out and
+/// the request as it now reads.
 pub async fn approve_run(
     write: &WriteTransaction<'_>,
     id: RunId,
     revision: i64,
     digest: &str,
     now: i64,
-) -> Result<Approved, Error> {
-    let run = undecided_at(write, id, revision, now).await?;
+) -> Result<(Approved, RunRequest), Error> {
+    let mut run = undecided_at(write, id, revision, now).await?;
     let current_digest = run.digest();
     if current_digest != digest {
         return Err(Refusal::DigestMismatch.into());
@@ -409,12 +437,14 @@ pub async fn approve_run(
             (id.0, now, current_digest),
         )
         .await?;
-    Ok(Approved {
+    run.state = RunState::Approved;
+    let approved = Approved {
         id,
         revision: run.revision,
-        command: run.command,
-        cwd: run.cwd,
-    })
+        command: run.command.clone(),
+        cwd: run.cwd.clone(),
+    };
+    Ok((approved, run))
 }
 
 /// Marks the approved run started, before anything is spawned: a restart then knows it may
@@ -449,10 +479,10 @@ pub async fn finish_run(
             run.id.0,
             run.revision,
             i64::from(result.exit_code),
-            result.output.as_str(),
-            count_column(result.omitted_lines),
-            count_column(result.truncated_bytes),
-            count_column(result.redacted),
+            result.output.shown.as_str(),
+            count_column(result.output.omitted_lines),
+            count_column(result.output.truncated_bytes),
+            count_column(result.output.redacted),
             now,
         ),
     )
@@ -557,14 +587,8 @@ async fn undecided(write: &WriteTransaction<'_>, id: RunId, now: i64) -> Result<
     let run = run_request(write, id, now)
         .await?
         .ok_or_else(|| not_found(id))?;
-    match run.state {
-        RunState::Asking => Ok(run),
-        RunState::Expired => Err(Refusal::Expired.into()),
-        state => Err(Refusal::AlreadyDecided {
-            state: state.as_str(),
-        }
-        .into()),
-    }
+    still_asking(run.state)?;
+    Ok(run)
 }
 
 /// The request if the owner may still decide it and it is still at `revision`, the one the
@@ -583,15 +607,6 @@ async fn undecided_at(
         .into());
     }
     Ok(run)
-}
-
-async fn required(connection: &Connection, id: RunId, now: i64) -> Result<RunRequest, Error> {
-    run_request(connection, id, now)
-        .await?
-        .ok_or_else(|| Error::InvalidStoredRow {
-            table: "approvals_runs",
-            reason: format!("run {} vanished inside its transaction", id.0),
-        })
 }
 
 fn not_found(id: RunId) -> Refusal {
@@ -650,55 +665,41 @@ fn count_column(count: u64) -> i64 {
 }
 
 fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
-    let invalid_row = |reason: String| Error::InvalidStoredRow {
-        table: "approvals_runs",
-        reason,
-    };
-    let session =
-        SessionId::new(row.get::<String>(1)?).map_err(|error| invalid_row(error.to_string()))?;
     let stored_state = row.get::<String>(9)?;
-    let mut state = RunState::parse(&stored_state)
-        .ok_or_else(|| invalid_row(format!("state {stored_state:?}")))?;
+    let stored = RunState::parse(&stored_state)
+        .ok_or_else(|| invalid_row(TABLE, format!("state {stored_state:?}")))?;
     let expires_at: i64 = row.get(11)?;
-    if state == RunState::Asking && now >= expires_at {
-        state = RunState::Expired;
-    }
-    let project = match (row.get::<Option<String>>(6)?, row.get::<Option<String>>(7)?) {
-        (Some(name), Some(root)) => Some(Project {
-            name,
-            root: PathBuf::from(root),
-        }),
-        _ => None,
+    let count = |column: usize| -> Result<u64, Error> {
+        let stored: i64 = row.get(column)?;
+        u64::try_from(stored).map_err(|_| invalid_row(TABLE, format!("negative count {stored}")))
     };
     let result = match row.get::<Option<i64>>(12)? {
         Some(exit_code) => Some(RunResult {
             exit_code: i32::try_from(exit_code)
-                .map_err(|_| invalid_row(format!("exit code {exit_code}")))?,
-            output: row.get(13)?,
-            omitted_lines: count_of(row.get(14)?).map_err(invalid_row)?,
-            truncated_bytes: count_of(row.get(15)?).map_err(invalid_row)?,
-            redacted: count_of(row.get(16)?).map_err(invalid_row)?,
+                .map_err(|_| invalid_row(TABLE, format!("exit code {exit_code}")))?,
+            output: Output {
+                shown: row.get(13)?,
+                omitted_lines: count(14)?,
+                truncated_bytes: count(15)?,
+                redacted: count(16)?,
+            },
         }),
         None => None,
     };
     Ok(RunRequest {
         id: RunId(row.get(0)?),
-        session,
+        session: session_from(row, 1, TABLE)?,
         revision: row.get(2)?,
         command: row.get(3)?,
         asked_command: row.get(4)?,
         cwd: PathBuf::from(row.get::<String>(5)?),
-        project,
+        project: project_from(row, 6, 7)?,
         reason: row.get(8)?,
-        state,
+        state: state_at(stored, expires_at, now),
         asked_at: row.get(10)?,
         revised_at: row.get(18)?,
         expires_at,
         result,
         note: row.get(17)?,
     })
-}
-
-fn count_of(column: i64) -> Result<u64, String> {
-    u64::try_from(column).map_err(|_| format!("negative count {column}"))
 }

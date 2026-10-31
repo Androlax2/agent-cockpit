@@ -1,4 +1,4 @@
-//! A scripted daemon socket: it answers the handshake and one request, for tests that
+//! A scripted daemon socket: it answers the handshake and scripted requests, for tests that
 //! drive `cockpit` without the daemon (the crate graph keeps frontends from building it).
 #![allow(
     dead_code,
@@ -16,6 +16,16 @@ use tokio::net::UnixListener;
 /// Accepts one connection on `socket`, answers the handshake, then answers its one request
 /// with `outcome`, and returns the command it received.
 pub fn scripted_daemon(socket: &Path, outcome: Outcome) -> tokio::task::JoinHandle<Command> {
+    let conversation = scripted_conversation(socket, vec![outcome]);
+    tokio::spawn(async move { conversation.await.unwrap().pop().expect("a request") })
+}
+
+/// Accepts one connection on `socket`, answers the handshake, then each request with the
+/// next of `outcomes`, and returns the commands it received.
+pub fn scripted_conversation(
+    socket: &Path,
+    outcomes: Vec<Outcome>,
+) -> tokio::task::JoinHandle<Vec<Command>> {
     let listener = UnixListener::bind(socket).unwrap();
     tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
@@ -27,14 +37,20 @@ pub fn scripted_daemon(socket: &Path, outcome: Outcome) -> tokio::task::JoinHand
             capabilities: Vec::new(),
         });
         send(&mut write_half, serde_json::to_value(welcome).unwrap()).await;
-        let request: Request =
-            serde_json::from_str(&lines.next_line().await.unwrap().expect("a request")).unwrap();
-        let response = ServerFrame::Response(Response {
-            id: request.id,
-            outcome,
-        });
-        send(&mut write_half, serde_json::to_value(response).unwrap()).await;
-        request.command
+        let mut received = Vec::new();
+        for outcome in outcomes {
+            let Some(line) = lines.next_line().await.unwrap() else {
+                break;
+            };
+            let request: Request = serde_json::from_str(&line).unwrap();
+            received.push(request.command);
+            let response = ServerFrame::Response(Response {
+                id: request.id,
+                outcome,
+            });
+            send(&mut write_half, serde_json::to_value(response).unwrap()).await;
+        }
+        received
     })
 }
 
