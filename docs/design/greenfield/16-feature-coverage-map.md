@@ -29,7 +29,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 
 | Feature | Verdict | Owner |
 | --- | --- | --- |
-| Manager tmux session, column + viewer pane, nested attach per agent session | keep | tmux on a private server (05) |
+| Manager tmux session, column + viewer pane, nested attach per agent session | keep | tmux on a private server (05); nested attach: `cockpit-tmux` `the_viewer_pane_attaches_to_an_agent_session_nested`, approval split: `the_approval_pane_opens_focused_below_the_viewer` (the manager session and column layout come with the TUI, #35) |
 | Focus fade (`cockpit-fade`), Left-at-prompt-start (`cockpit-left`), kitty chords, loading/restarting screens | polish | tui (05) |
 | Workspace 6 kitty window toggle, Hyprland/waybar signals, floating approval/guide windows | change | desktop integration client (19); approvals inside tmux panes by default |
 | Image viewer (`I`), reply images | polish | dropped as is; redesigned in M6 (decided 2026-10-31) |

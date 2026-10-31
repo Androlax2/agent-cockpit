@@ -43,6 +43,13 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
         from: CLIENTS,
         to: &["cockpit-scheduling"],
     },
+    // Report 05: clients render the capture stream the daemon serves; only the daemon's
+    // side runs tmux.
+    ForbiddenEdge {
+        rule: "clients -> tmux",
+        from: CLIENTS,
+        to: &["cockpit-tmux"],
+    },
     ForbiddenEdge {
         rule: "providers -> UI",
         from: PROVIDERS,
@@ -292,6 +299,7 @@ fn a_client_depending_on_persistence_fails_naming_the_rule() {
 fn each_rule_catches_its_forbidden_edge() {
     for (rule, source, target) in [
         ("clients -> scheduling", "cockpit-tui", "cockpit-scheduling"),
+        ("clients -> tmux", "cockpit-tui", "cockpit-tmux"),
         ("providers -> UI", "cockpit-claude", "cockpit-web"),
         (
             "authorization -> chief/workflows",

@@ -3,6 +3,28 @@
 This file is history. New decisions are one file each under [docs/decisions/](decisions/README.md),
 so parallel pull requests stop conflicting here.
 
+## 2026-10-31 — cockpit-tmux: the observer never makes tmux wait
+
+Issue #30. Report 05 names control mode with flow control (`pause-after`) for observation.
+Measured on tmux 3.8: a control client that stops reading makes tmux stop reading the pane,
+so the agent's own output stalls, and `%pause` then often never comes because the stalled
+pane produces nothing more to age (6 of 12 runs, in a flood fixture). So the reader thread
+always drains tmux; when the consumer's bounded channel is full it drops that pane's output
+and reports `OutputLost`, and the capture stream answers with a fresh snapshot.
+`pause-after` stays set as tmux's own backstop and is handled the same way.
+
+- **`-C`, not `-CC`.** The daemon reads control mode through pipes; `-CC` needs a terminal.
+- **Exact targets are `=name:`.** `=name` alone still reached `agent-12` from `agent-1` in
+  `list-panes -s`, which takes a window target and falls back to window names.
+- **Snapshots through the observing client.** `capture-pane` is sent on the control
+  client's own stdin, so its reply is ordered with the pane's `%output` lines.
+- **Std only.** tmux calls are processes and the reader is a dedicated thread (report 03), so
+  the crate has no dependency; a test keeps it that way. Clients may not link it
+  (`clients -> tmux` in the crate-graph rule): they get the capture stream from the daemon.
+- **No daemon wiring or CLI verb yet.** Which sessions exist is `cockpit-sessions`' (#31),
+  readiness reporting and the session verbs come with #31 and #35; this issue delivers the
+  library they call, proven against real tmux.
+
 ## 2026-10-31 — cockpit-processes: scope or process group, output to files, rustix
 
 Issue #29. Theo chose this design in chat (option A).
