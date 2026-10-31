@@ -13,6 +13,7 @@ mod start_files;
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 use toml::Spanned;
@@ -104,6 +105,10 @@ pub struct EffectiveConfig {
     pub tasks_blocker_project: Sourced<Option<String>>,
     /// Open items one project's sessions may have filed in another project's list.
     pub tasks_cross_project_open_max: Sourced<u32>,
+    /// How long an agent waits at its prompt before its session sleeps.
+    pub idle_sleep_after: Sourced<Duration>,
+    /// How long a session may sleep before it ends.
+    pub asleep_expiry: Sourced<Duration>,
 }
 
 impl EffectiveConfig {
@@ -181,6 +186,7 @@ struct SettingsFile {
     workflow: Option<WorkflowTable>,
     start_files: Option<Spanned<Vec<Spanned<StartFileEntry>>>>,
     tasks: Option<Spanned<TasksTable>>,
+    sessions: Option<Spanned<SessionsTable>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +199,14 @@ struct ProjectsTable {
 #[serde(deny_unknown_fields)]
 struct WorkflowTable {
     preset: Option<Spanned<String>>,
+}
+
+/// Whole minutes and days: `u32` keeps a negative or huge value a parse error with its line.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionsTable {
+    idle_sleep_after_minutes: Option<Spanned<u32>>,
+    asleep_expiry_days: Option<Spanned<u32>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,6 +302,8 @@ pub fn load(
         start_files: start_files(&layers, &home)?,
         tasks_blocker_project: tasks_blocker_project(&layers)?,
         tasks_cross_project_open_max: tasks_cross_project_open_max(&layers)?,
+        idle_sleep_after: idle_sleep_after(&layers)?,
+        asleep_expiry: asleep_expiry(&layers)?,
     })
 }
 
@@ -337,6 +353,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         projects,
         start_files,
         tasks,
+        sessions,
         workflow: _,
     } = &layer.settings;
     if let Some(tasks) = tasks {
@@ -355,6 +372,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "start_files",
             source: layer.source_at(start_files.span()),
+        });
+    }
+    if let Some(sessions) = sessions {
+        return Err(ConfigError::OwnerOnly {
+            key: "sessions",
+            source: layer.source_at(sessions.span()),
         });
     }
     Ok(())
@@ -508,6 +531,84 @@ fn tasks_cross_project_open_max(layers: &[Layer]) -> Result<Sourced<u32>, Config
         cap = Sourced::new(value, source);
     }
     Ok(cap)
+}
+
+/// The current cockpit's `idle-sleep-after`: 60 minutes by default, 30 at least.
+pub(crate) const IDLE_SLEEP_AFTER_MINUTES: Bound = Bound {
+    key: "sessions.idle_sleep_after_minutes",
+    default: 60,
+    minimum: 30,
+    unit: "minutes",
+    seconds_per_unit: 60,
+};
+
+/// The current cockpit's fixed 7-day expiry; less than a day would end a session its owner
+/// put to sleep for the night.
+pub(crate) const ASLEEP_EXPIRY_DAYS: Bound = Bound {
+    key: "sessions.asleep_expiry_days",
+    default: 7,
+    minimum: 1,
+    unit: "days",
+    seconds_per_unit: 86_400,
+};
+
+/// A whole number of `unit`s with a product default and a minimum.
+pub(crate) struct Bound {
+    key: &'static str,
+    default: u32,
+    minimum: u32,
+    unit: &'static str,
+    seconds_per_unit: u64,
+}
+
+impl Bound {
+    fn duration(&self, count: u32) -> Duration {
+        Duration::from_secs(u64::from(count) * self.seconds_per_unit)
+    }
+
+    /// The whole units in `duration`, as the owner wrote them.
+    pub(crate) fn count(&self, duration: Duration) -> u64 {
+        duration.as_secs() / self.seconds_per_unit
+    }
+
+    /// The last layer's value, checked against the minimum.
+    fn resolve(
+        &self,
+        layers: &[Layer],
+        value_in: fn(&SessionsTable) -> Option<&Spanned<u32>>,
+    ) -> Result<Sourced<Duration>, ConfigError> {
+        let mut resolved = Sourced::new(self.duration(self.default), Source::ProductDefault);
+        for layer in layers {
+            let Some(count) = layer
+                .settings
+                .sessions
+                .as_ref()
+                .and_then(|sessions| value_in(sessions.get_ref()))
+            else {
+                continue;
+            };
+            let source = layer.source_at(count.span());
+            if *count.get_ref() < self.minimum {
+                return Err(ConfigError::Invalid {
+                    key: self.key.to_string(),
+                    source,
+                    reason: format!("must be at least {} {}", self.minimum, self.unit),
+                });
+            }
+            resolved = Sourced::new(self.duration(*count.get_ref()), source);
+        }
+        Ok(resolved)
+    }
+}
+
+fn idle_sleep_after(layers: &[Layer]) -> Result<Sourced<Duration>, ConfigError> {
+    IDLE_SLEEP_AFTER_MINUTES.resolve(layers, |sessions| {
+        sessions.idle_sleep_after_minutes.as_ref()
+    })
+}
+
+fn asleep_expiry(layers: &[Layer]) -> Result<Sourced<Duration>, ConfigError> {
+    ASLEEP_EXPIRY_DAYS.resolve(layers, |sessions| sessions.asleep_expiry_days.as_ref())
 }
 
 /// Product defaults, then each `[[start_files]]` entry: a new label adds a file, an existing
