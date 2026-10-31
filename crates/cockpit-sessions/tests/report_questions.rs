@@ -234,3 +234,14 @@ async fn a_report_mixing_questions_or_a_prompt_is_refused_naming_its_field() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_dialog_cleared_by_a_report_without_a_state_leaves_the_session_working() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = reporting_session(dir.path()).await;
+    send(&database, dialog("Allow Bash?")).await.unwrap();
+
+    let recorded = send(&database, label("Agent channel issue")).await.unwrap();
+
+    assert_eq!(recorded.state, Some(AgentState::Working));
+}
