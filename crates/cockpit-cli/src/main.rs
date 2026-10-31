@@ -8,6 +8,7 @@ mod ask;
 mod daemon;
 mod projects;
 mod sessions;
+mod version;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -35,7 +36,8 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit session list [--ended]
        cockpit session restart SESSION|--all
        cockpit session sleep|wake|resume|end SESSION
-       cockpit session link SESSION URL";
+       cockpit session link SESSION URL
+       cockpit version [--all]";
 
 fn main() -> ExitCode {
     // OsString: a project path need not be UTF-8.
@@ -71,6 +73,9 @@ fn main() -> ExitCode {
             Ok(command) => sessions::run(command),
             Err(problem) => usage_error(Some(problem)),
         },
+        [Some("version"), ..] => {
+            version::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
         _ => usage_error(None),
     }
 }

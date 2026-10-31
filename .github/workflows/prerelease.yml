@@ -1,0 +1,87 @@
+name: Pre-release
+
+# Theo dispatches this on main to cut the next alpha or beta (docs/RELEASING.md, Tags):
+# tools/release.py computes the tag and refuses every case the policy lists. A dry run, the
+# default, prints the tag and creates nothing. The tag is created with a GitHub App token,
+# because a tag pushed with GITHUB_TOKEN starts no workflow; release.yml takes it from there.
+# Setup: the App (contents: write on this repository only) has its client ID in the
+# RELEASE_APP_CLIENT_ID variable and its private key in the RELEASE_APP_PRIVATE_KEY secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the tag and create nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: prerelease
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Refuse anything but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::pre-releases tag main only, not $GITHUB_REF"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test the release tool
+        run: python3 -m unittest discover -s tools/tests -p test_release.py
+      # The M3 gate (#52) opens alphas; the M5 gate (#66) switches them to betas.
+      - name: Read the gate issues
+        id: gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The same two lines as release.yml's plan job reads.
+        run: |
+          m3=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          m5=$(gh issue view 66 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          echo "m3=$m3" | tee -a "$GITHUB_OUTPUT"
+          echo "m5=$m5" | tee -a "$GITHUB_OUTPUT"
+      - name: Compute the next pre-release tag
+        id: next
+        env:
+          M3_GATE: ${{ steps.gates.outputs.m3 }}
+          M5_GATE: ${{ steps.gates.outputs.m5 }}
+        run: |
+          python3 tools/release.py next-prerelease --main origin/main \
+            --m3-gate "$M3_GATE" --m5-gate "$M5_GATE" \
+            | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        if: ${{ !inputs.dry_run }}
+        id: app
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+      - name: Create the tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ steps.next.outputs.tag }}
+          REVISION: ${{ steps.next.outputs.revision }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$REVISION"
+          echo "tagged $REVISION as $TAG; the Release workflow builds it"
+      - name: Report the dry run
+        if: ${{ inputs.dry_run }}
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+          REVISION: ${{ steps.next.outputs.revision }}
+        run: echo "dry run: would tag $REVISION as $TAG"

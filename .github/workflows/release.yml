@@ -1,0 +1,383 @@
+name: Release
+
+# A release tag (docs/RELEASING.md) builds every archive, attests them, drafts the GitHub
+# Release with every asset, runs report 13's gate on the tagged commit, and publishes last.
+# Pull requests that touch the release machinery, the nightly schedule and a manual dispatch
+# run the same build and install checks as a dry run: no tag, attestation, draft or release.
+# Tool choices: docs/decisions/2026-10-31-96-release-tooling.md; nightlies:
+# docs/decisions/2026-10-31-96-nightly-builds.md.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/workflows/prerelease.yml
+      - Cargo.toml
+      - crates/*/Cargo.toml
+      - crates/cockpit-cli/src/main.rs
+      - crates/cockpit-daemon/src/main.rs
+      - tools/release.py
+      - tools/tests/test_release.py
+      - cliff.toml
+      - crates/cockpit-cli/src/version.rs
+  schedule:
+    # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # plan reads the gate issues' state.
+  issues: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    # pipefail: `release.py ... | tee` must fail the step when release.py refuses.
+    shell: bash
+
+jobs:
+  # The tag's version and channel, checked against every rule on the tagged commit.
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      revision: ${{ steps.version.outputs.revision }}
+      notes_range: ${{ steps.version.outputs.notes_range }}
+      notes_tag: ${{ steps.version.outputs.notes_tag }}
+      notes_tag_pattern: ${{ steps.version.outputs.notes_tag_pattern }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test the release tool
+        run: python3 -m unittest discover -s tools/tests -p test_release.py
+      - name: Check the tag, or name the dry run's version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        # Only a tag push releases; a dispatch or schedule on a tag ref is a dry run like any
+        # other, and the tag-only jobs follow the `tag` output, which a dry run leaves empty.
+        run: |
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
+            # The same gates prerelease.yml reads: a hand-made tag meets every rule too.
+            m3=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+            m5=$(gh issue view 66 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+            python3 tools/release.py check-tag "$TAG" --main origin/main \
+              --m3-gate "$m3" --m5-gate "$m5" | tee -a "$GITHUB_OUTPUT"
+          else
+            python3 tools/release.py dry-run-version --main origin/main | tee -a "$GITHUB_OUTPUT"
+          fi
+  # git-cliff's notes over the range release.py chose; only the draft waits for them.
+  notes:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
+        with:
+          fallback: none
+          tool: git-cliff@2.14.2
+      - name: Write the release notes
+        env:
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          NOTES_RANGE: ${{ needs.plan.outputs.notes_range }}
+          NOTES_TAG: ${{ needs.plan.outputs.notes_tag }}
+          NOTES_TAG_PATTERN: ${{ needs.plan.outputs.notes_tag_pattern }}
+        run: |
+          flags=()
+          if [ -n "$NOTES_TAG" ]; then flags+=(--tag "$NOTES_TAG"); fi
+          if [ -n "$NOTES_TAG_PATTERN" ]; then flags+=(--tag-pattern "$NOTES_TAG_PATTERN"); fi
+          git cliff --config cliff.toml --strip all "${flags[@]}" "$NOTES_RANGE" > notes.md
+          # Alpha notes carry the known gaps; check-tag refuses an alpha without them.
+          if [ "$CHANNEL" = alpha ]; then
+            { echo; cat docs/KNOWN-GAPS.md; } >> notes.md
+          fi
+          cat notes.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: notes.md
+          if-no-files-found: error
+
+  # One archive per platform: the stamped version, built from the checked commit.
+  build:
+    needs: plan
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Linux builds on the oldest supported runner image, so its glibc floor stays low.
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            targets: x86_64-unknown-linux-gnu
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            targets: aarch64-unknown-linux-gnu
+          - platform: macos-universal
+            runner: macos-26
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+          targets: ${{ matrix.targets }}
+      - name: Stamp the release version, uncommitted
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          python3 tools/release.py stamp "$VERSION"
+          # Rewrites only the workspace members' entries; --locked below refuses any other.
+          cargo update --workspace
+      - name: Build cockpit and cockpit-daemon
+        env:
+          COCKPIT_SOURCE_REVISION: ${{ needs.plan.outputs.revision }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          target_flags=()
+          for target in ${TARGETS//,/ }; do target_flags+=(--target "$target"); done
+          cargo build --release --locked "${target_flags[@]}" -p cockpit-cli -p cockpit-daemon
+      - name: Gather the binaries
+        env:
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          mkdir binaries
+          for binary in cockpit cockpit-daemon; do
+            if [ "$RUNNER_OS" = macOS ]; then
+              lipo -create -output "binaries/$binary" \
+                "target/aarch64-apple-darwin/release/$binary" \
+                "target/x86_64-apple-darwin/release/$binary"
+              lipo "binaries/$binary" -verify_arch arm64 x86_64
+            else
+              cp "target/$TARGETS/release/$binary" "binaries/$binary"
+            fi
+          done
+      - name: Package the bundle
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          REVISION: ${{ needs.plan.outputs.revision }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir dist
+          python3 tools/release.py package --version "$VERSION" --channel "$CHANNEL" \
+            --platform "$PLATFORM" --revision "$REVISION" --binaries binaries --out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archive-${{ matrix.platform }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # Report 13's clean install: unpack into a fresh prefix, check every file against the
+  # manifest, `cockpit version --all`, and the daemon's start on an empty home.
+  install:
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - platform: macos-universal
+            runner: macos-26
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archive-${{ matrix.platform }}
+          path: dist
+      - name: Install on a clean prefix and check it
+        env:
+          REVISION: ${{ needs.plan.outputs.revision }}
+        run: |
+          prefix=$(mktemp -d)
+          tar -xzf dist/*.tar.gz -C "$prefix"
+          python3 tools/release.py verify-install "$prefix"/cockpit-v* --revision "$REVISION"
+
+  # WSL2 has no archive of its own: it installs the Linux x86_64 one (report 13). Setup as in
+  # ci.yml's greenfield-wsl2 job (docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md).
+  install-wsl2:
+    needs: [plan, build]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: wsl-bash {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archive-linux-x86_64
+          path: dist
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          wsl-shell-user: cockpit
+          additional-packages: ca-certificates python3
+      - name: Install on a clean prefix inside WSL 2 and check it
+        # A Windows step variable reaches WSL only through WSLENV; the revision is release.py's
+        # `git rev-parse` output, 40 hex characters, so it is safe inline.
+        run: |
+          revision='${{ needs.plan.outputs.revision }}'
+          case "$(uname -r)" in *microsoft-standard-WSL2*) ;; *) exit 1 ;; esac
+          test "$(id -u)" -ne 0
+          # The distribution's own file system, not DrvFs, as a real install would be.
+          prefix=$(mktemp -d)
+          tar -xzf dist/*.tar.gz -C "$prefix"
+          python3 tools/release.py verify-install "$prefix"/cockpit-v* --revision "$revision"
+
+  # Checksums over every archive; with the archive-* artifacts, the nightly's download.
+  assemble:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: dist
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: checksums
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  # A tag only: build provenance over the checksummed archives, then the draft with every
+  # asset. Dry runs never attest, so no unreleased build verifies as this repository's.
+  draft:
+    if: needs.plan.outputs.tag != ''
+    needs: [plan, notes, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: checksums
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Draft the release with every asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Cockpit $VERSION" --notes-file notes.md "${flags[@]}" dist/*
+
+  # Report 13's Rust checks, Clippy, dependency and license checks, crate-graph rules and
+  # tests, on the tagged commit itself. The same steps as ci.yml's greenfield job.
+  gate:
+    if: needs.plan.outputs.tag != ''
+    needs: plan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
+        with:
+          fallback: none
+          tool: cargo-nextest@0.9.150,cargo-deny@0.20.2,typos@1.51.1
+      - name: Install tmux for cockpit-tmux's real-server tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes tmux
+      - name: Configure hosted runner admission
+        if: runner.environment == 'github-hosted'
+        run: python3 config/bin/.local/bin/cockpit-game-guard off
+      - name: Run the greenfield gate
+        run: make greenfield-ci
+
+  # Publishing is the last step and needs every gate job; a gate check without a job is a
+  # named gap that keeps the release a draft (tools/release.py GATE_CHECKS).
+  publish:
+    if: needs.plan.outputs.tag != ''
+    needs: [plan, draft, gate, install, install-wsl2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse while a gate check has no job
+        env:
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+        run: python3 tools/release.py gate-gaps "$CHANNEL"
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+        run: |
+          latest=true
+          if [ "$PRERELEASE" = true ]; then latest=false; fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
