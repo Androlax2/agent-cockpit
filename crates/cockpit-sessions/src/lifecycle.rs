@@ -434,9 +434,13 @@ impl Sessions {
         for session in active {
             let id = session.id.clone();
             let outcome = match session.state {
-                SessionState::Stopping {
-                    to: to @ (StopTarget::Asleep | StopTarget::Ended),
-                } => match self.finish_stop(&id, to).await {
+                SessionState::Stopping { to } => match self.finish_stop(&id, to).await {
+                    Ok(stopped) if to == StopTarget::Restart => {
+                        match self.relaunch(&stopped).await {
+                            Ok(relaunched) => Restored::StopFinished(id, relaunched.state),
+                            Err(error) => Restored::Failed(id, format!("restore failed: {error}")),
+                        }
+                    }
                     Ok(stopped) => Restored::StopFinished(id, stopped.state),
                     Err(error) => Restored::StopNotFinished(id, error.to_string()),
                 },
@@ -762,11 +766,16 @@ impl Sessions {
     ) -> Result<Session, Error> {
         self.transition(id, from, SessionState::Stopping { to }, None, operation)
             .await?;
-        self.finish_stop(id, to).await
+        let stopped = self.finish_stop(id, to).await?;
+        if to != StopTarget::Restart {
+            return Ok(stopped);
+        }
+        self.relaunch(&stopped).await
     }
 
-    /// Stops a stopping session's agent and moves it on: asleep, ended, or a launch of the
-    /// same conversation. An agent not observed gone puts the session back to running.
+    /// Stops a stopping session's agent and moves it on: asleep, ended, or `launching` for
+    /// a restart, which [`Self::relaunch`] then launches. An agent not observed gone puts
+    /// the session back to running.
     async fn finish_stop(&self, id: &SessionId, to: StopTarget) -> Result<Session, Error> {
         let session = self.get(id).await?;
         let stopping = SessionState::Stopping { to };
@@ -799,17 +808,20 @@ impl Sessions {
             give_up_on_end(&write, &stopped).await?;
         }
         write.commit().await?;
-        if to != StopTarget::Restart {
-            return Ok(stopped);
-        }
-        let conversation = match self.resumable(&stopped) {
+        Ok(stopped)
+    }
+
+    /// Launches a restart's conversation again once its stop finished. A failure leaves the
+    /// session `failed` with the reason, and is returned.
+    async fn relaunch(&self, stopped: &Session) -> Result<Session, Error> {
+        let conversation = match self.resumable(stopped) {
             Ok(conversation) => conversation,
             Err(error) => {
-                self.fail(id, &error.to_string()).await?;
+                self.fail(&stopped.id, &error.to_string()).await?;
                 return Err(error);
             }
         };
-        self.launch(id, LaunchKind::Restart, conversation, None)
+        self.launch(&stopped.id, LaunchKind::Restart, conversation, None)
             .await
     }
 

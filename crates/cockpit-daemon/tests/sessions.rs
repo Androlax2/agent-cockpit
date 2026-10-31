@@ -248,6 +248,21 @@ impl Home {
         .unwrap();
         write.commit().await.unwrap();
     }
+
+    /// Leaves `session` `stopping` toward `to`, as an error or a crash midway through a stop
+    /// leaves it.
+    async fn leave_stopping(&self, session: &str, to: &str) {
+        let database = self.database.lock().unwrap().clone().unwrap();
+        let write = database.write().await.unwrap();
+        write
+            .execute(
+                "UPDATE sessions SET state = 'stopping', stopping_to = ?2 WHERE id = ?1",
+                [session, to],
+            )
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+    }
 }
 
 impl Drop for Home {
@@ -639,16 +654,7 @@ async fn end_finishes_a_stop_an_error_left_unfinished() {
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
-    let database = home.database.lock().unwrap().clone().unwrap();
-    let write = database.write().await.unwrap();
-    write
-        .execute(
-            "UPDATE sessions SET state = 'stopping', stopping_to = 'asleep' WHERE id = ?1",
-            [started.id.as_str()],
-        )
-        .await
-        .unwrap();
-    write.commit().await.unwrap();
+    home.leave_stopping(&started.id, "asleep").await;
 
     let ended = session_reply(
         &client,
@@ -974,17 +980,7 @@ async fn a_stop_interrupted_by_a_daemon_crash_is_finished_on_start() {
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
     drop(client);
-    let database = home.database.lock().unwrap().clone().unwrap();
-    let write = database.write().await.unwrap();
-    write
-        .execute(
-            "UPDATE sessions SET state = 'stopping', stopping_to = 'asleep' WHERE id = ?1",
-            [started.id.as_str()],
-        )
-        .await
-        .unwrap();
-    write.commit().await.unwrap();
-    drop(database);
+    home.leave_stopping(&started.id, "asleep").await;
     home.stop(daemon);
 
     let daemon = home.start(BASELINE, settings()).await;
@@ -993,6 +989,39 @@ async fn a_stop_interrupted_by_a_daemon_crash_is_finished_on_start() {
     let finished = sessions(&client, false).await;
     assert_eq!(finished[0].state, SessionStateView::Asleep);
     assert!(!is_alive(home.launches()[0].pid));
+}
+
+/// #205: the stop of an interrupted restart is finished, and a relaunch that then fails is
+/// a failed reopen, as for any restore: `failed`, not retried on the next start.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_restart_whose_relaunch_fails_on_start_is_left_failed() {
+    let home = Home::new();
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    drop(client);
+    home.leave_stopping(&started.id, "restart").await;
+    home.stop(daemon);
+
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    let failed = sessions(&client, false).await;
+    assert_eq!(failed[0].state, SessionStateView::Failed, "{failed:?}");
+    assert!(
+        !is_alive(home.launches()[0].pid),
+        "the old agent was stopped"
+    );
+    drop(client);
+    home.stop(daemon);
+
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    assert_eq!(
+        sessions(&client, false).await[0].state,
+        SessionStateView::Failed
+    );
+    assert_eq!(home.launches().len(), 1, "never launched again");
 }
 
 #[tokio::test(flavor = "multi_thread")]
