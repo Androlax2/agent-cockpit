@@ -674,6 +674,30 @@ class GateGapTests(unittest.TestCase):
                 self.assertIn(job, needed)
 
 
+class ReleaseTriggerTests(unittest.TestCase):
+    def test_pull_requests_start_the_release_workflow_only_for_its_own_machinery(self):
+        paths = re.search(
+            r"\n  pull_request:\n    paths:\n((?:      - [^\n]*\n)*)", RELEASE_WORKFLOW.read_text()
+        )
+        self.assertIsNotNone(paths, "expected the pull_request trigger's paths")
+        self.assertEqual(
+            set(re.findall(r"- (\S+)", paths[1])),
+            {
+                ".github/workflows/release.yml",
+                ".github/workflows/prerelease.yml",
+                "tools/release.py",
+                "tools/tests/test_release.py",
+                "cliff.toml",
+            },
+        )
+
+    def test_tags_the_nightly_and_a_dispatch_still_start_it(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        self.assertIn('\n  push:\n    tags: ["v*"]\n', workflow)
+        self.assertRegex(workflow, r"\n  schedule:\n(?:    [^\n]*\n)*?    - cron: ")
+        self.assertIn("\n  workflow_dispatch:\n", workflow)
+
+
 class WorkflowMatrixTests(unittest.TestCase):
     def test_build_and_install_cover_every_platform(self):
         workflow = RELEASE_WORKFLOW.read_text()
