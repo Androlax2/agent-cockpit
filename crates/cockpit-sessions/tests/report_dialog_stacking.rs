@@ -46,6 +46,13 @@ fn own_question(question: &str) -> Report {
     }
 }
 
+fn state(state: AgentState) -> Report {
+    Report {
+        state: Some(state),
+        ..Report::default()
+    }
+}
+
 fn shown(report: &SessionReport) -> Option<(&str, QuestionSource)> {
     report.needs_input.as_deref().zip(report.question_source)
 }
@@ -83,14 +90,8 @@ async fn a_dialog_over_the_agents_question_shows_while_open() {
 #[tokio::test]
 async fn the_agents_question_shows_again_once_the_dialog_clears() {
     let answered_reports = [
-        Report {
-            state: Some(AgentState::Working),
-            ..Report::default()
-        },
-        Report {
-            state: Some(AgentState::Waiting),
-            ..Report::default()
-        },
+        state(AgentState::Working),
+        state(AgentState::Waiting),
         Report {
             label: Some("Agent channel issue".to_owned()),
             ..Report::default()
@@ -118,15 +119,7 @@ async fn the_agents_question_under_a_dialog_survives_a_daemon_reading_it_back() 
     drop(database);
     let database = open(dir.path()).await;
 
-    let recorded = send(
-        &database,
-        Report {
-            state: Some(AgentState::Waiting),
-            ..Report::default()
-        },
-    )
-    .await
-    .unwrap();
+    let recorded = send(&database, state(AgentState::Waiting)).await.unwrap();
 
     assert_eq!(
         shown(&recorded),
@@ -202,15 +195,7 @@ async fn a_new_launch_clears_the_agents_question_under_a_dialog() {
         .unwrap();
     write.commit().await.unwrap();
 
-    let recorded = send(
-        &database,
-        Report {
-            state: Some(AgentState::Waiting),
-            ..Report::default()
-        },
-    )
-    .await
-    .unwrap();
+    let recorded = send(&database, state(AgentState::Waiting)).await.unwrap();
 
     assert_eq!(shown(&recorded), None);
     assert_eq!(recorded.covered_question, None);
