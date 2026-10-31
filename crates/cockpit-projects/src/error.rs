@@ -16,6 +16,10 @@ pub enum Error {
     InvalidBranch {
         branch: String,
     },
+    /// Beyond what the store holds: SQLite integers are signed.
+    InvalidPullRequest {
+        pull_request: u64,
+    },
     /// The path cannot be a project root or checkout; `reason` says why.
     InvalidPath {
         path: PathBuf,
@@ -125,6 +129,9 @@ impl fmt::Display for Error {
             ),
             Error::InvalidBranch { branch } => {
                 write!(formatter, "{branch:?} is not a valid branch name")
+            }
+            Error::InvalidPullRequest { pull_request } => {
+                write!(formatter, "pull request {pull_request} is out of range")
             }
             Error::InvalidPath { path, reason } => {
                 write!(formatter, "{}: {reason}", path.display())

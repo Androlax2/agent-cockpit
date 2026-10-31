@@ -70,8 +70,14 @@ enum Precheck {
     Present,
 }
 
+/// [`precheck_now`] off the async workers: it reads the disk.
+async fn precheck(stored: &StoredCheckout) -> Result<Precheck, Error> {
+    let stored = stored.clone();
+    blocking(move || Ok(precheck_now(&stored))).await
+}
+
 /// A holder keeps the clone even when its directory is gone: the holder decides.
-fn precheck(stored: &StoredCheckout) -> Precheck {
+fn precheck_now(stored: &StoredCheckout) -> Precheck {
     if let Some(occupancy) = &stored.checkout.occupancy {
         return Precheck::Keep(Kept::Occupied {
             holder: occupancy.holder.clone(),
@@ -84,7 +90,7 @@ fn precheck(stored: &StoredCheckout) -> Precheck {
     }
     // A working copy that is not the recorded incarnation, a half-deleted clone replaced
     // before the next sweep included.
-    match stored.verify_on_disk() {
+    match stored.verify_on_disk_now() {
         Ok(()) => Precheck::Present,
         Err(error) => Precheck::Keep(Kept::Replaced {
             reason: error.to_string(),
@@ -94,7 +100,7 @@ fn precheck(stored: &StoredCheckout) -> Precheck {
 
 /// Why a dry run keeps the clone, or `None` when the sweep would delete it.
 async fn inspect(git: &Git, stored: &StoredCheckout) -> Result<Option<Kept>, Error> {
-    match precheck(stored) {
+    match precheck(stored).await? {
         Precheck::Keep(kept) => Ok(Some(kept)),
         Precheck::Gone => Ok(None),
         Precheck::Present if stored.checkout.state == CheckoutState::Deleting => Ok(None),
@@ -109,7 +115,7 @@ async fn sweep_one(
     stored: &StoredCheckout,
 ) -> Result<Option<Kept>, Error> {
     let checkout = &stored.checkout;
-    let is_gone = match precheck(stored) {
+    let is_gone = match precheck(stored).await? {
         Precheck::Keep(kept) => return Ok(Some(kept)),
         Precheck::Gone => true,
         Precheck::Present => false,

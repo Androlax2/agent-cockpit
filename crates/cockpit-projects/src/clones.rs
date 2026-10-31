@@ -134,7 +134,8 @@ async fn source(database: &Database, project: &str) -> Result<Project, Error> {
     let project = store::project_named(&read, project).await?;
     store::main_checkout(&read, project.id)
         .await?
-        .verify_on_disk()?;
+        .verify_on_disk()
+        .await?;
     Ok(project)
 }
 

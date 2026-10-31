@@ -197,6 +197,18 @@ fn a_parallel_clone_of_a_trusted_project_inherits_its_trust() {
 }
 
 #[test]
+fn a_pull_request_number_beyond_storage_is_an_invalid_argument() {
+    let home = TestHome::new();
+    let root = home.project("app");
+    let _daemon = home.start();
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+
+    let refused = home.cockpit_err(&["checkout", "review", "app", &u64::MAX.to_string()]);
+
+    assert!(refused.contains("invalid-argument"), "{refused}");
+}
+
+#[test]
 fn a_review_clone_checks_out_the_pull_request_head_and_is_never_trusted() {
     let home = TestHome::new();
     let root = home.project("app");

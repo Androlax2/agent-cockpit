@@ -183,6 +183,7 @@ fn error_code(error: &Error) -> ErrorCode {
         Error::InvalidName { .. }
         | Error::InvalidHolder { .. }
         | Error::InvalidBranch { .. }
+        | Error::InvalidPullRequest { .. }
         | Error::InvalidPath { .. } => ErrorCode::InvalidArgument,
         Error::UnknownProject { .. } | Error::UnknownCheckout { .. } => ErrorCode::NotFound,
         Error::NameTaken { .. }

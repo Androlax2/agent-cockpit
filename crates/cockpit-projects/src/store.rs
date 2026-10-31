@@ -8,7 +8,7 @@ use cockpit_turso::{Migration, MigrationSet, WriteTransaction};
 
 use crate::{
     Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Holder, Occupancy, Project,
-    ProjectId, ProjectName,
+    ProjectId, ProjectName, blocking,
 };
 
 /// The projects tables. A removed checkout keeps its row, so an id is never reused and a stale
@@ -113,14 +113,22 @@ fn real_git_dir(checkout: &Path) -> Result<PathBuf, String> {
 }
 
 /// A checkout row with what the crate needs beyond the public view.
+#[derive(Clone)]
 pub(crate) struct StoredCheckout {
     pub(crate) checkout: Checkout,
     identity: GitDirIdentity,
 }
 
 impl StoredCheckout {
-    /// Refuses when the working copy on disk is not the recorded incarnation.
-    pub(crate) fn verify_on_disk(&self) -> Result<(), Error> {
+    /// Refuses when the working copy on disk is not the recorded incarnation. Reads the
+    /// disk off the async workers, since the checkout may sit on a slow mount.
+    pub(crate) async fn verify_on_disk(&self) -> Result<(), Error> {
+        let stored = self.clone();
+        blocking(move || stored.verify_on_disk_now()).await
+    }
+
+    /// [`Self::verify_on_disk`] for code already off the async workers.
+    pub(crate) fn verify_on_disk_now(&self) -> Result<(), Error> {
         let replaced = |reason: String| Error::Replaced {
             checkout: self.checkout.id,
             path: self.checkout.path.clone(),
@@ -140,9 +148,7 @@ pub(crate) fn now() -> i64 {
 
 /// A pull request number as stored: SQLite integers are signed.
 pub(crate) fn pull_request_number(pull_request: u64) -> Result<i64, Error> {
-    i64::try_from(pull_request).map_err(|_| Error::Refused {
-        reason: format!("pull request {pull_request} is out of range"),
-    })
+    i64::try_from(pull_request).map_err(|_| Error::InvalidPullRequest { pull_request })
 }
 
 pub(crate) fn path_text(path: &Path) -> Result<&str, Error> {
@@ -387,7 +393,7 @@ pub async fn claim(
             holder: occupancy.holder.clone(),
         });
     }
-    stored.verify_on_disk()?;
+    stored.verify_on_disk().await?;
     let claimed_at = now();
     write
         .execute(

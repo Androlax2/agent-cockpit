@@ -97,10 +97,13 @@ pub fn run(command: Command, deadline: Duration) -> ExitCode {
         connection.request(command, deadline).await
     });
     match answer {
-        Ok(reply) => {
-            print!("{}", render(&reply));
-            ExitCode::SUCCESS
-        }
+        Ok(reply) => match render(&reply) {
+            Some(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            None => fail(&format!("the daemon answered with an unexpected {reply:?}")),
+        },
         Err(ClientError::Daemon(error)) => {
             fail(&format!("{}: {}", error.code.as_str(), error.message))
         }
@@ -124,8 +127,9 @@ fn socket_path() -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
-fn render(reply: &Reply) -> String {
-    match reply {
+/// The reply as printed, or `None` when it is not one a project verb gets.
+fn render(reply: &Reply) -> Option<String> {
+    let text = match reply {
         Reply::ProjectAdded { main, .. } => checkout_line(main),
         Reply::Projects { projects } => projects
             .iter()
@@ -156,8 +160,9 @@ fn render(reply: &Reply) -> String {
         Reply::Pushed {
             branch, remote_url, ..
         } => format!("pushed {branch} to {remote_url}\n"),
-        other => format!("{other:?}\n"),
-    }
+        _ => return None,
+    };
+    Some(text)
 }
 
 /// `id  project  kind  incarnation  occupant  trust  path`, tab-separated.
