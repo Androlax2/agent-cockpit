@@ -5,7 +5,6 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use cockpit_protocol::{Command, ErrorCode, Outcome, ProtocolError, Reply};
 use cockpit_sessions::{SessionId, SessionState, Sessions};
@@ -18,8 +17,6 @@ use crate::routes::{Route, WorkClass, refusal};
 const MANAGER: &str = "cockpit";
 /// The viewer's share of the manager's width.
 const VIEWER_PERCENT: u8 = 70;
-/// How long a rebuild waits for a server the broken manager was the last session of to exit.
-const SERVER_EXIT_WAIT: Duration = Duration::from_secs(5);
 
 /// A handle on the private tmux server for the manager, or why there is none.
 pub struct Manager {
@@ -124,7 +121,6 @@ fn open(
         ManagerState::Broken => {
             tracing::warn!("the manager session lost its column or viewer: building it again");
             tmux.close_session(&name).map_err(tmux_error)?;
-            wait_for_an_emptied_server_to_exit(tmux)?;
             true
         }
     };
@@ -158,28 +154,6 @@ fn open(
             .collect(),
         created,
     })
-}
-
-/// Closing the server's last session makes tmux exit, but not at once: a `new-session` in
-/// between reaches the exiting server and fails with "server exited unexpectedly".
-fn wait_for_an_emptied_server_to_exit(tmux: &cockpit_tmux::Server) -> Result<(), ProtocolError> {
-    if tmux.sessions().is_ok_and(|others| !others.is_empty()) {
-        return Ok(());
-    }
-    let deadline = Instant::now() + SERVER_EXIT_WAIT;
-    // An exiting server can answer with an error; that is still exiting.
-    while !matches!(tmux.server_pid(), Ok(None)) {
-        if Instant::now() >= deadline {
-            return Err(ProtocolError::new(
-                ErrorCode::Internal,
-                format!(
-                    "the tmux server did not exit within {SERVER_EXIT_WAIT:?} after the broken manager session closed"
-                ),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    Ok(())
 }
 
 enum ManagerState {

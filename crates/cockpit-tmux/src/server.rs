@@ -4,6 +4,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use crate::Error;
 use crate::names::{PaneId, SessionName};
@@ -24,6 +25,9 @@ set-option -g default-command 'unset TMUX TMUX_PANE; exec /bin/sh'
 # The TUI runs in a pane: an Escape key must not wait for the rest of a sequence.
 set-option -s escape-time 0
 ";
+
+/// How long [`Server::close_session`] waits for a server it emptied to exit.
+const SERVER_EXIT_WAIT: Duration = Duration::from_secs(5);
 
 /// Which tmux server socket every command addresses.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,10 +249,37 @@ impl Server {
     }
 
     /// Closes a session and its panes; tmux sends their processes `SIGHUP`. Ending the
-    /// process tree for certain belongs to `cockpit-processes`.
+    /// process tree for certain belongs to `cockpit-processes`. When it was the server's
+    /// last session, returns only once the server has exited, so the next `new-session`
+    /// starts a fresh one; fails after `SERVER_EXIT_WAIT` if it has not.
+    /// Why: `docs/decisions/2026-10-31-197-tmux-last-session-close.md`.
     pub fn close_session(&self, session: &SessionName) -> Result<(), Error> {
-        self.run(&words(&["kill-session", "-t", &session.target()]))
-            .map(drop)
+        self.run(&words(&["kill-session", "-t", &session.target()]))?;
+        self.wait_until_server_holds_a_session_or_exited()
+    }
+
+    /// tmux exits once its last session is gone, but not at once: a `new-session` that
+    /// reaches the exiting server fails with "server exited unexpectedly".
+    fn wait_until_server_holds_a_session_or_exited(&self) -> Result<(), Error> {
+        let arguments = words(&["list-sessions", "-F", "#{session_id}"]);
+        let deadline = Instant::now() + SERVER_EXIT_WAIT;
+        loop {
+            // An exiting server can answer with a failed command; that is still exiting.
+            let answer = match self.run_if_server(&arguments) {
+                Ok(None) => return Ok(()),
+                Ok(Some(printed)) if !printed.is_empty() => return Ok(()),
+                Ok(Some(_)) => "no sessions".to_string(),
+                Err(error @ Error::CommandFailed { .. }) => error.to_string(),
+                Err(error) => return Err(error),
+            };
+            if Instant::now() >= deadline {
+                return Err(Error::EmptiedServerKeptRunning {
+                    waited: SERVER_EXIT_WAIT,
+                    last_answer: answer,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     pub fn close_pane(&self, pane: &PaneId) -> Result<(), Error> {

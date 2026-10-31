@@ -34,6 +34,12 @@ pub enum Error {
     },
     /// The control-mode client ended; no further event will arrive.
     ObserverClosed,
+    /// The server's last session closed, yet the server neither exited nor took a new
+    /// session within `waited`; `last_answer` is what `list-sessions` last said.
+    EmptiedServerKeptRunning {
+        waited: std::time::Duration,
+        last_answer: String,
+    },
 }
 
 impl Error {
@@ -101,6 +107,14 @@ impl fmt::Display for Error {
                 source,
             } => write!(formatter, "{action} {}: {source}", path.display()),
             Self::ObserverClosed => write!(formatter, "the tmux control-mode client has exited"),
+            Self::EmptiedServerKeptRunning {
+                waited,
+                last_answer,
+            } => write!(
+                formatter,
+                "the tmux server did not exit within {waited:?} after its last session closed \
+                 (list-sessions last said: {last_answer})"
+            ),
         }
     }
 }
