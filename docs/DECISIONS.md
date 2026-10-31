@@ -100,13 +100,16 @@ to CI. The `greenfield-wsl2` job runs on `windows-2025`, which ships WSL 2 as th
   launch whose account setup is interactive, which a hosted runner cannot answer; the action
   registers it non-interactively and provides the `wsl-bash` step shell. It is a new
   third-party action, which Theo allowed for this job.
-- **Fail loud on the wrong kernel.** The job stops unless `uname -r` names a WSL 2 kernel, so
-  a silent fallback to WSL 1 cannot pass as WSL 2 evidence.
-- **Linux file system, not DrvFs.** The checkout is copied into the distribution's home
-  before the tests run, and checked out with `core.autocrlf` off, so modes and line endings
-  are the Linux ones the daemon sees on a real install.
-- Rust 1.99.1 comes from rustup and cargo-nextest 0.9.150 from its release archive inside
-  the distribution: the Windows-side toolchain actions do not reach into WSL.
+- **Fail loud on the wrong kernel or user.** The job stops unless `uname -r` names a WSL 2
+  kernel and the steps run as an ordinary user (`wsl-shell-user`), so neither a fallback to
+  WSL 1 nor root's permission override can pass as WSL 2 evidence.
+- **A clone, not the DrvFs checkout.** The tests run from a `git clone` in the
+  distribution's home, which checks files out with Linux git: index modes and LF endings,
+  not DrvFs's reported modes or the Windows checkout's line-ending conversion.
+- **Downloads are pinned and verified.** rustup-init 1.29.2 and cargo-nextest 0.9.150 are
+  fetched by version and checked against SHA-256 sums in the workflow; the Windows-side
+  toolchain actions do not reach into WSL. rustup installs no toolchain itself, so
+  `rust-toolchain.toml` alone picks it.
 
 ## 2026-10-31 — Agent channel: launch tokens bound to the process tree, report only (#32)
 
