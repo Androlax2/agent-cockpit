@@ -97,6 +97,24 @@ pub async fn retract(
     Ok(Some(revision + 1))
 }
 
+/// The ids of the entities of `kind` on the feed now, tombstones left out, ordered by id: a
+/// producer that publishes from its own state retracts the ones its state no longer has.
+pub async fn published_ids(connection: &Connection, kind: &str) -> Result<Vec<String>, Error> {
+    validate_kind(kind)?;
+    let mut rows = connection
+        .query(
+            "SELECT entity FROM messaging_entities
+             WHERE kind = ?1 AND state IS NOT NULL ORDER BY entity",
+            [kind],
+        )
+        .await?;
+    let mut ids = Vec::new();
+    while let Some(row) = rows.next().await? {
+        ids.push(row.get(0)?);
+    }
+    Ok(ids)
+}
+
 /// One entity as the feed hands it out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityChange {
@@ -189,6 +207,17 @@ fn parse_state(text: &str) -> Result<Map<String, Value>, Error> {
 }
 
 fn validate(kind: &str, id: &str) -> Result<(), Error> {
+    validate_kind(kind)?;
+    if id.is_empty() || id.len() > LONGEST_ENTITY_ID {
+        return Err(invalid(
+            "id",
+            format!("an entity id has 1 to {LONGEST_ENTITY_ID} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_kind(kind: &str) -> Result<(), Error> {
     let is_kebab_case = kind.starts_with(|first: char| first.is_ascii_lowercase())
         && kind.chars().all(|character| {
             character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
@@ -197,12 +226,6 @@ fn validate(kind: &str, id: &str) -> Result<(), Error> {
         return Err(invalid(
             "kind",
             format!("{kind:?} is not lower-case kebab case of at most {LONGEST_KIND} bytes"),
-        ));
-    }
-    if id.is_empty() || id.len() > LONGEST_ENTITY_ID {
-        return Err(invalid(
-            "id",
-            format!("an entity id has 1 to {LONGEST_ENTITY_ID} bytes"),
         ));
     }
     Ok(())

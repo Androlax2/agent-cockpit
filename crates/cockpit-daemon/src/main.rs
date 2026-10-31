@@ -107,6 +107,7 @@ fn run(foreground: bool) -> Result<(), StartError> {
             },
             session_tick: Duration::from_secs(30),
             run_settings,
+            environment: environment.clone(),
         };
         let daemon = instance
             .start(wiring, |capabilities| {

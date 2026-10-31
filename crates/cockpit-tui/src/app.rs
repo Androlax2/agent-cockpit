@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use cockpit_protocol::{ChangeBatch, Command, Reply};
+use cockpit_protocol::{ChangeBatch, Command, FeedPosition, Reply};
 
 use crate::board::{Board, FeedError};
 use crate::form::{Form, FormOutcome};
@@ -103,13 +103,11 @@ impl App {
         App::default()
     }
 
-    /// What the runtime asks the daemon on every refresh, until sessions and checkouts are
-    /// published on the change feed (#41 serves it; nothing publishes them yet).
+    /// What the runtime asks the daemon on every refresh. Sessions and checkouts are not
+    /// among them: they come from the change feed (#199).
     pub fn refresh_commands() -> Vec<Command> {
         vec![
             Command::ProjectList,
-            Command::CheckoutList { project: None },
-            Command::SessionList { ended: false },
             Command::AgentReports,
             Command::ApprovalQueue,
         ]
@@ -146,8 +144,25 @@ impl App {
     /// Applies a change-feed batch whole, or refuses it whole.
     pub fn apply_changes(&mut self, batch: &ChangeBatch) -> Result<(), FeedError> {
         self.board.apply(batch)?;
+        if self
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.kind == FEED_LABEL)
+        {
+            self.failure = None;
+        }
         self.keep_selection();
         Ok(())
+    }
+
+    /// The change feed stopped: shown and logged like a failed command, once per problem.
+    pub fn feed_lost(&mut self, problem: String) {
+        self.failed(
+            &Command::Subscribe {
+                from: FeedPosition::Snapshot,
+            },
+            problem,
+        );
     }
 
     pub fn key(&mut self, key: Key, now: Instant) -> Step {
@@ -444,6 +459,9 @@ impl App {
         self.log.push_back(entry);
     }
 }
+
+/// The wire kind of `subscribe`, which labels the change feed's failures.
+const FEED_LABEL: &str = "subscribe";
 
 /// The command's wire kind, for the status line and the log.
 fn command_label(command: &Command) -> String {

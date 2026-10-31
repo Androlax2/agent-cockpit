@@ -178,9 +178,9 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
 }
 
 /// Each session's items, as the task list records them.
-type Work = HashMap<TaskSession, SessionWork>;
+pub(crate) type Work = HashMap<TaskSession, SessionWork>;
 
-async fn task_work(sessions: &Sessions) -> Result<Work, Failed> {
+pub(crate) async fn task_work(sessions: &Sessions) -> Result<Work, Failed> {
     let read = sessions.database().read().await.map_err(Error::from)?;
     Ok(cockpit_tasks::session_work(&read).await?)
 }
@@ -295,7 +295,7 @@ async fn reply(sessions: &Sessions, session: &Session, work: &Work) -> Answer {
 }
 
 /// The session's view with the start files that changed since its launch, compared now.
-async fn current_view(
+pub(crate) async fn current_view(
     sessions: &Sessions,
     session: &Session,
     work: &Work,

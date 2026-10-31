@@ -243,7 +243,7 @@ impl Drop for RunningDaemon {
 }
 
 /// What an in-process daemon is wired with in tests: a private tmux server in `dir`, never
-/// the user's, and `providers`.
+/// the user's, `providers`, and a home of its own in `dir/home`.
 pub fn wiring_in(
     dir: &Path,
     providers: Vec<std::sync::Arc<dyn cockpit_provider_api::Provider>>,
@@ -259,6 +259,10 @@ pub fn wiring_in(
         sessions: cockpit_sessions::Settings::default(),
         session_tick: Duration::from_secs(3600),
         run_settings: cockpit_daemon::run_settings(Vec::new()).unwrap(),
+        environment: cockpit_config::Environment {
+            home: Some(dir.join("home").into()),
+            ..cockpit_config::Environment::default()
+        },
     }
 }
 

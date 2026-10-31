@@ -42,6 +42,9 @@ effect key, written in the transaction that applies the effect. `Received::First
   the change, and `retract` when it is gone. An unchanged state writes nothing, so an
   identical observation sends no batch. Tombstones are kept, so an entity's revision
   never goes back.
+- In-transaction publishing stays the contract for producers that own their writes; derived
+  views may be projected by the daemon on commit (sessions and checkouts, #199), retracting
+  what `published_ids` lists and its source no longer has.
 - Revisions are Turso's global commit revisions (CDC, `cockpit-turso`). `Feed::open` reads the
   snapshot and its revision in one read transaction, or the changes after a cursor; `Feed::next`
   reads the commits since. A batch carries each changed entity once, in its state at the
@@ -65,4 +68,5 @@ effect key, written in the transaction that applies the effect. `Received::First
   enqueue, duplicate delivery, lost acknowledgement with and without a deduplicating
   receiver, stale failures, restart, expiry, coalescing.
 - `tests/feed.rs`: snapshot, resume, unchanged publishes, tombstones, retention and epochs.
+- `tests/published_ids.rs`: the published ids of one kind, tombstones left out.
 - The feed over the socket is proven in `cockpit-daemon/tests/change_feed.rs`.

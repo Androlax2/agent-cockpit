@@ -199,7 +199,9 @@ pub(crate) fn error_code(error: &Error) -> ErrorCode {
 /// The owner's trusted project paths, read before the command acts: a broken owner config
 /// refuses the command instead of answering it with every checkout untrusted, or after it
 /// already took effect. Read off the async workers, since it reads files.
-async fn trusted_roots(environment: cockpit_config::Environment) -> Result<Vec<PathBuf>, Error> {
+pub(crate) async fn trusted_roots(
+    environment: cockpit_config::Environment,
+) -> Result<Vec<PathBuf>, Error> {
     let configured = tokio::task::spawn_blocking(move || {
         cockpit_config::load(&environment, None, &[])
             .map(|config| cockpit_projects::resolve_trusted_roots(config.trusted_projects.value))
@@ -222,7 +224,7 @@ fn project_view(project: &cockpit_projects::Project) -> ProjectView {
     }
 }
 
-fn checkout_view(checkout: &Checkout, trusted_roots: &[PathBuf]) -> CheckoutView {
+pub(crate) fn checkout_view(checkout: &Checkout, trusted_roots: &[PathBuf]) -> CheckoutView {
     CheckoutView {
         id: checkout.id.0,
         project: checkout.project.to_string(),

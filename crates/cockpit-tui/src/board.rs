@@ -119,8 +119,16 @@ impl Board {
             .collect();
     }
 
-    /// One session as a command answered it, ahead of the next refresh.
+    /// One session as a command answered it or the feed carries it. A revision older than
+    /// the one shown is ignored: a command's answer may arrive after the feed moved on.
     pub fn put_session(&mut self, session: SessionView) {
+        if self
+            .sessions
+            .get(&session.id)
+            .is_some_and(|shown| shown.revision > session.revision)
+        {
+            return;
+        }
         self.sessions.insert(session.id.clone(), session);
     }
 

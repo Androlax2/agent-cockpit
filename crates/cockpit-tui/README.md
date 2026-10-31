@@ -27,10 +27,12 @@ detaching the terminal leaves everything running.
 
 - **Never waits.** Keys are read on their own thread (presses only, report 05); each request
   runs in its own task on one shared connection; answers update the view as they arrive.
-- **State.** [`Board`] applies change-feed batches whole (sessions and checkouts) or refuses
-  them whole. The feed serves `subscribe` (#41), but nothing publishes sessions or
-  checkouts on it yet; until something does, the TUI refreshes every second with
-  `project-list`, `checkout-list`, `session-list`, `agent-reports` and `approval-queue`.
+- **State.** Sessions and checkouts come from the change feed (#199): [`follow_feed`]
+  subscribes on a connection of its own and [`Board`] applies each batch whole or refuses it
+  whole; the cursor advances only once a batch is applied. A lost feed resumes from that
+  cursor, a refused batch starts again from a snapshot, and either shows on the status line.
+  What is not on the feed is refreshed every second: `project-list`, `agent-reports` and
+  `approval-queue`. A command's answer never takes a session back to an older revision.
 - **Usage.** Every key counts as one named command (`open`, `restart`, `approval-approve`,
   `unbound`…) in `$XDG_STATE_HOME/cockpit/logs/tui/cockpit.log`: the name only, never what
   was typed, so M6 prunes on data.
@@ -50,6 +52,8 @@ detaching the terminal leaves everything running.
 ## Tests
 
 - `tests/feed.rs`: the list rendered from a recorded change feed, grouped by project.
+- `tests/feed_follow.rs`: a session shown from the feed alone against a scripted daemon,
+  with `subscribe` the only request; no list in the refresh; a late answer kept older.
 - `tests/pane.rs`: the pane's input model with an injected clock.
 - `tests/keys.rs`: open, next needing you, restart and exit after `y`, help, the log view,
   and every key counted as a named command.

@@ -13,12 +13,12 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, Reply};
-use cockpit_tui::{App, Key, draw, record_usage};
+use cockpit_tui::{App, FeedEvent, Key, draw, follow_feed, record_usage};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use tokio::sync::mpsc;
 
-/// How often the TUI asks the daemon for its state, until sessions and checkouts are on the
-/// change feed.
+/// How often the TUI asks the daemon for what is not on the change feed: projects, the
+/// agents' reports and the approval queue.
 const REFRESH: Duration = Duration::from_secs(1);
 /// Redraws this often regardless, so the pane's grace hint goes away on time.
 const REDRAW: Duration = Duration::from_millis(200);
@@ -94,6 +94,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
     let reader = inputs.clone();
     std::thread::spawn(move || read_keys(&reader));
     let (requests, pending) = mpsc::unbounded_channel::<Sent>();
+    let (feed_events, mut feed) = mpsc::channel::<FeedEvent>(1);
+    tokio::spawn(follow_feed(socket.clone(), feed_events));
     tokio::spawn(serve(socket, pending, inputs));
     let mut app = App::new();
     // A refresh is sent only once the last one is answered, so a slow daemon gets no pile.
@@ -112,6 +114,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
                 }
             }
             _ = redraw.tick() => {}
+            event = feed.recv() => match event {
+                None => return Err("the change feed task stopped".to_owned()),
+                Some(event) => follow(&mut app, event),
+            },
             input = received.recv() => match input {
                 None => return Err("the key reader stopped".to_owned()),
                 Some(Input::Redraw) => {}
@@ -131,6 +137,16 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
                 }
             },
         }
+    }
+}
+
+fn follow(app: &mut App, event: FeedEvent) {
+    match event {
+        FeedEvent::Batch { batch, applied } => {
+            // The feed task waits on this answer; it is gone only when the TUI stops.
+            let _ = applied.send(app.apply_changes(&batch));
+        }
+        FeedEvent::Lost(problem) => app.feed_lost(problem),
     }
 }
 
