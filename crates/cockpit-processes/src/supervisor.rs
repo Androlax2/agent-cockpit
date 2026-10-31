@@ -157,17 +157,16 @@ impl Supervisor {
                 .open(&path)
                 .map_err(Error::io("create", path))
         };
-        let program = match containment {
-            Containment::SystemdScope { .. } => self.systemd.systemd_run.clone(),
-            Containment::ProcessGroup => PathBuf::from("/bin/sh"),
-        };
-        let mut command = match containment {
+        let (mut command, program) = match containment {
             Containment::SystemdScope { unit } => {
                 let mut command = self.systemd.scope_launcher(unit);
                 command.arg("/bin/sh");
-                command
+                (command, self.systemd.systemd_run.clone())
             }
-            Containment::ProcessGroup => tokio::process::Command::new(&program),
+            Containment::ProcessGroup => (
+                tokio::process::Command::new("/bin/sh"),
+                PathBuf::from("/bin/sh"),
+            ),
         };
         command
             .arg("-c")
