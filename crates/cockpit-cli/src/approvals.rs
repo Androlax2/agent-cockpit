@@ -123,23 +123,20 @@ fn run_line(run: &RunRequestView) -> String {
         crate::ask::state_name(run.state)
     };
     let line = format!("run\t{}\t{state}\t{}\t", run.id, run.session);
-    let shown = &run.shown_command.text;
-    let lines = shown.lines().count();
-    if lines > 1 {
-        let first_line = shown.lines().next().unwrap_or("");
-        return format!(
-            "{line}{first_line} [more: {} lines; cockpit approval show {}]",
-            lines - 1,
-            run.id
-        );
-    }
-    match &run.folded_command {
-        Some(folded) => format!(
-            "{line}{} [more: {} characters; cockpit approval show {}]",
-            folded.preview, folded.more_chars, run.id
+    let shown = run.shown_command.text.trim_end_matches('\n');
+    // One line per run: a longer command shows its first line and counts the rest.
+    let (preview, more) = match (shown.split_once('\n'), &run.folded_command) {
+        (Some((first_line, rest)), _) => (first_line, format!("{} lines", rest.lines().count())),
+        (None, Some(folded)) => (
+            folded.preview.as_str(),
+            format!("{} characters", folded.more_chars),
         ),
-        None => format!("{line}{}", shown.lines().next().unwrap_or("")),
-    }
+        (None, None) => return format!("{line}{shown}"),
+    };
+    format!(
+        "{line}{preview} [more: {more}; cockpit approval show {}]",
+        run.id
+    )
 }
 
 fn guide_line(guide: &GuideView) -> String {
@@ -162,6 +159,7 @@ fn warnings(shown: &ShownText) -> String {
             .iter()
             .map(|kind| hidden_name(*kind))
             .collect();
+        // An older daemon sends no kinds.
         if kinds.is_empty() {
             notes.push("hidden characters shown escaped".to_owned());
         } else {
@@ -195,19 +193,16 @@ fn hidden_name(kind: HiddenView) -> &'static str {
 /// changed that the command runs, and a `timeout` that would take the terminal from it.
 fn run_hints(run: &RunRequestView) -> String {
     let mut text = String::new();
-    match &run.changed_build_files {
-        Some(files) if !files.is_empty() => {
+    if let Some(files) = &run.changed_build_files {
+        if !files.is_empty() {
             let _ = writeln!(
                 text,
                 "  ! runs files changed in this checkout, not on the default branch: {}",
                 files.join(", ")
             );
         }
-        Some(_) => {}
-        None if run.state == RunStateView::Asking => {
-            text.push_str("  ! could not read which changed build files it runs\n");
-        }
-        None => {}
+    } else if run.state == RunStateView::Asking {
+        text.push_str("  ! could not read which changed build files it runs\n");
     }
     if run.timeout_without_foreground {
         text.push_str(

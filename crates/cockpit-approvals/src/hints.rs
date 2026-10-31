@@ -12,16 +12,26 @@ use std::path::Path;
 pub fn timeout_without_foreground(command: &str) -> bool {
     let words = words(command);
     words.iter().enumerate().any(|(index, word)| {
-        if program_name(word) != "timeout" {
-            return false;
-        }
-        let after = &words[index + 1..];
-        let options: Vec<&str> = options(after).collect();
-        let Some(duration) = after.get(option_words(after)) else {
-            return false;
-        };
-        is_duration(duration) && !options.iter().any(|option| is_foreground_option(option))
+        program_name(word) == "timeout" && matches!(read_options(&words[index + 1..]), Some(false))
     })
+}
+
+/// Reads `timeout`'s options up to its duration: whether one was `--foreground`, or `None`
+/// when no duration follows (`echo timeout`, so not the program). Option values (`-s KILL`,
+/// `-k 5`) are skipped.
+fn read_options(after: &[&str]) -> Option<bool> {
+    let mut is_foreground = false;
+    let mut words = after.iter();
+    while let Some(word) = words.next() {
+        if !word.starts_with('-') || word.len() < 2 {
+            return is_duration(word).then_some(is_foreground);
+        }
+        is_foreground |= is_foreground_option(word);
+        if takes_value(word) {
+            words.next();
+        }
+    }
+    None
 }
 
 /// `--foreground` or an unambiguous abbreviation of it (`--f`), or `-f` alone or in a
@@ -38,26 +48,6 @@ fn is_foreground_option(option: &str) -> bool {
 fn takes_value(option: &str) -> bool {
     matches!(option, "--signal" | "--kill-after")
         || (!option.starts_with("--") && (option.ends_with('s') || option.ends_with('k')))
-}
-
-/// The options before `timeout`'s duration, their values skipped.
-fn options<'a>(after: &'a [&'a str]) -> impl Iterator<Item = &'a str> {
-    after[..option_words(after)]
-        .iter()
-        .copied()
-        .filter(|word| word.starts_with('-'))
-}
-
-/// How many words the options before the duration take, values included.
-fn option_words(after: &[&str]) -> usize {
-    let mut index = 0;
-    while let Some(word) = after.get(index) {
-        if !word.starts_with('-') || word.len() < 2 {
-            break;
-        }
-        index += if takes_value(word) { 2 } else { 1 };
-    }
-    index.min(after.len())
 }
 
 /// `5`, `1.5`, `30s`, `2m`, `1h`, `1d`: `timeout`'s duration.

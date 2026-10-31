@@ -39,8 +39,8 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
             Ok(Agent::connect().map_or_else(|code| code, |agent| agent.wait_for_run(id)))
         }
         _ => {
-            let (asked, waits) = parse_ask_run(&words)?;
-            Ok(Agent::connect().map_or_else(|code| code, |agent| agent.ask_run(asked, waits)))
+            let asked = parse_ask_run(&words)?;
+            Ok(Agent::connect().map_or_else(|code| code, |agent| agent.ask_run(asked)))
         }
     }
 }
@@ -87,15 +87,16 @@ fn absolute(dir: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{}: not UTF-8", path.display()))
 }
 
-/// What `ask run` files: the command, the directory it runs in and why.
+/// What `ask run` files: the command, the directory it runs in and why; and whether the
+/// call waits for the answer.
 struct RunAsked {
     command: String,
     cwd: String,
     reason: String,
+    waits: bool,
 }
 
-/// The request, and whether the call waits for its answer.
-fn parse_ask_run(words: &[&str]) -> Result<(RunAsked, bool), String> {
+fn parse_ask_run(words: &[&str]) -> Result<RunAsked, String> {
     let mut cwd = None;
     let mut reason = None;
     let mut command = None;
@@ -126,14 +127,12 @@ fn parse_ask_run(words: &[&str]) -> Result<(RunAsked, bool), String> {
     let reason = reason.ok_or("--reason is required: what the command does and why")?;
     let command = command.ok_or("name the command to run")?;
     let cwd = absolute(cwd.as_deref().unwrap_or("."))?;
-    Ok((
-        RunAsked {
-            command,
-            cwd,
-            reason,
-        },
+    Ok(RunAsked {
+        command,
+        cwd,
+        reason,
         waits,
-    ))
+    })
 }
 
 /// `ask-to-run --check`: whether an ask from here would reach the owner now.
@@ -192,7 +191,8 @@ impl Agent {
         }
     }
 
-    fn ask_run(&self, asked: RunAsked, waits: bool) -> ExitCode {
+    fn ask_run(&self, asked: RunAsked) -> ExitCode {
+        let waits = asked.waits;
         let asked = self.request(Command::AskRun {
             launch_token: crate::agent::launch_token(),
             command: asked.command,

@@ -583,8 +583,7 @@ fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
 /// A run request as the owner reads it before deciding: with the changed build files it
 /// would run, read now.
 async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
-    let mut changes = CheckoutChanges::default();
-    let changed = changes.build_files_run(run).await;
+    let changed = CheckoutChanges::default().build_files_run(run).await;
     Reply::RunRequest {
         request: Box::new(run_view(run, &runner.waiting_for_input(), changed)),
     }
@@ -607,12 +606,17 @@ impl CheckoutChanges {
             return None;
         }
         let root = &run.project.as_ref()?.root;
-        if !self.read.contains_key(root) {
-            let changed = changed_files(root.clone()).await;
-            self.read.insert(root.clone(), changed);
-        }
-        let changed = self.read[root].as_deref()?;
-        Some(cockpit_approvals::build_files_run(&run.command, changed))
+        let changed = match self.read.get(root) {
+            Some(changed) => changed,
+            None => {
+                let changed = changed_files(root.clone()).await;
+                self.read.entry(root.clone()).or_insert(changed)
+            }
+        };
+        Some(cockpit_approvals::build_files_run(
+            &run.command,
+            changed.as_deref()?,
+        ))
     }
 }
 
