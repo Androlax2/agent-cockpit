@@ -135,7 +135,9 @@ jobs:
           tar -xzf nextest.tar.gz -C "$HOME/.cargo/bin"
       - name: Clone the checkout into the distribution's file system
         run: |
+          # DrvFs files are not owned by the job's user; upload-pack checks the .git path.
           git config --global --add safe.directory "$PWD"
+          git config --global --add safe.directory "$PWD/.git"
           git clone --quiet "$PWD" "$HOME/agent-cockpit"
       - name: Start the daemon on a clean home
         run: |
