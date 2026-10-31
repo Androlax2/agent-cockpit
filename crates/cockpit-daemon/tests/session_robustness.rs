@@ -151,16 +151,11 @@ impl Home {
         task.id
     }
 
-    /// `session` finishes the item it is doing, as its agent would.
-    /// The session finishes the item a second after its latest launch, so the finish counts
-    /// for that launch's finished label (#226) whatever second the test runs in.
+    /// `session` finishes the item it is doing, as its agent would, a second after its latest
+    /// launch, so the finish counts for that launch's finished label (#226) whatever second
+    /// the test runs in.
     async fn session_finishes(&self, client: &Connection, session: &str, item: i64) {
         let launched_at = listed(client, session).await.launch.unwrap().launched_at;
-        self.session_finishes_at(session, item, launched_at + 1)
-            .await;
-    }
-
-    async fn session_finishes_at(&self, session: &str, item: i64, at: i64) {
         let database = self.database();
         let write = database.write().await.unwrap();
         cockpit_tasks::finish(
@@ -168,7 +163,7 @@ impl Home {
             &agent(session),
             cockpit_tasks::ItemId(item),
             Some("done"),
-            at,
+            launched_at + 1,
         )
         .await
         .unwrap();

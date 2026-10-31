@@ -178,8 +178,8 @@ pub struct Item {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionWork {
     pub doing: u32,
-    /// Seconds since the Unix epoch; `None` when it finished none, or only items finished
-    /// before finish times were kept (#226).
+    /// Seconds since the Unix epoch; `None` when it finished none since finish times were
+    /// kept (#226).
     pub last_finished_at: Option<i64>,
 }
 

@@ -29,6 +29,15 @@ async fn finish_at(fixture: &Fixture, actor: &Actor, id: ItemId, at: i64) -> Ite
     finished
 }
 
+async fn reopen_at(fixture: &Fixture, id: ItemId, at: i64) -> Item {
+    let write = fixture.database.write().await.unwrap();
+    let reopened = cockpit_tasks::reopen(&write, &Actor::Owner, id, at)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    reopened
+}
+
 async fn work_of(fixture: &Fixture, session: &str) -> Option<SessionWork> {
     let read = fixture.database.read().await.unwrap();
     cockpit_tasks::session_work(&read)
@@ -86,11 +95,7 @@ async fn reopening_an_item_drops_its_finisher_and_its_finish_time() {
     start(&fixture, &session, item.id).await;
     finish(&fixture, &session, item.id).await;
 
-    let write = fixture.database.write().await.unwrap();
-    let reopened = cockpit_tasks::reopen(&write, &Actor::Owner, item.id, NOW)
-        .await
-        .unwrap();
-    write.commit().await.unwrap();
+    let reopened = reopen_at(&fixture, item.id, NOW).await;
 
     assert_eq!(reopened.finished_by, None);
     assert_eq!(work_of(&fixture, "s1").await, None);
@@ -148,11 +153,7 @@ async fn reopening_the_latest_finish_falls_back_to_the_one_before() {
     start(&fixture, &session, second.id).await;
     finish_at(&fixture, &session, second.id, NOW + 60).await;
 
-    let write = fixture.database.write().await.unwrap();
-    cockpit_tasks::reopen(&write, &Actor::Owner, second.id, NOW + 90)
-        .await
-        .unwrap();
-    write.commit().await.unwrap();
+    reopen_at(&fixture, second.id, NOW + 90).await;
 
     assert_eq!(
         work_of(&fixture, "s1").await,
@@ -164,7 +165,7 @@ async fn reopening_the_latest_finish_falls_back_to_the_one_before() {
 }
 
 #[tokio::test]
-async fn an_item_done_before_finish_times_were_kept_gives_its_session_no_finish_time() {
+async fn an_item_done_before_finish_times_were_kept_does_not_count_as_finished_work() {
     let fixture = Fixture::new().await;
     let session = fixture.session("s1", "app").await;
     let item = fixture.owner_adds("app", "Fix the login").await;
@@ -177,11 +178,5 @@ async fn an_item_done_before_finish_times_were_kept_gives_its_session_no_finish_
         .unwrap();
     write.commit().await.unwrap();
 
-    assert_eq!(
-        work_of(&fixture, "s1").await,
-        Some(SessionWork {
-            doing: 0,
-            last_finished_at: None
-        })
-    );
+    assert_eq!(work_of(&fixture, "s1").await, None);
 }

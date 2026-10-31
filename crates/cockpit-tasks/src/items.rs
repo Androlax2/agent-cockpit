@@ -323,15 +323,23 @@ pub async fn session_work(
     for (session, count) in counts_by_session(connection, doing).await? {
         work.entry(session).or_default().doing = count;
     }
+    // Items done before finish times were kept (#226) have none and never count.
     let finished = "SELECT finished_by, max(finished_at) FROM tasks_items
-        WHERE finished_by IS NOT NULL AND status = 'done' GROUP BY finished_by";
+        WHERE finished_by IS NOT NULL AND status = 'done' AND finished_at IS NOT NULL
+        GROUP BY finished_by";
     let mut rows = connection.query(finished, ()).await?;
     while let Some(row) = rows.next().await? {
-        let session = SessionId::new(row.get::<String>(0)?)
-            .map_err(|error| invalid_row("tasks_items", error.to_string()))?;
-        work.entry(session).or_default().last_finished_at = row.get::<Option<i64>>(1)?;
+        work.entry(session_column(&row)?)
+            .or_default()
+            .last_finished_at = Some(row.get(1)?);
     }
     Ok(work)
+}
+
+/// A grouped row's first column: the session it counts for.
+fn session_column(row: &Row) -> Result<SessionId, Error> {
+    SessionId::new(row.get::<String>(0)?)
+        .map_err(|error| invalid_row("tasks_items", error.to_string()))
 }
 
 /// The rows of `query`: a session column, then a count.
@@ -342,8 +350,7 @@ async fn counts_by_session(
     let mut rows = connection.query(query, ()).await?;
     let mut counts = Vec::new();
     while let Some(row) = rows.next().await? {
-        let session = SessionId::new(row.get::<String>(0)?)
-            .map_err(|error| invalid_row("tasks_items", error.to_string()))?;
+        let session = session_column(&row)?;
         let count = u32::try_from(row.get::<i64>(1)?)
             .map_err(|error| invalid_row("tasks_items", error.to_string()))?;
         counts.push((session, count));

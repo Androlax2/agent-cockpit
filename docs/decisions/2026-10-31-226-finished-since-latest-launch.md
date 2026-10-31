@@ -9,7 +9,7 @@ the issue's two options give the same label, and this one needs no write outside
   time is strictly after its latest launch. A restart, resume or wake to keep working therefore drops the label until new work
   is finished, and `session-end-finished` cannot end a conversation the owner just reopened.
 - **Strictly after, in whole seconds.** A finish in the launch's own second does not count:
-  the tie is resolved toward showing the session, never toward ending it.
+  the tie is resolved toward showing the session, never toward ending it (#273).
 - **Items done before the migration have no finish time and never count after a launch.**
   `changed_at` is not a finish time: an edit or priority change after the finish moves it,
   so backfilling from it could label a just-resumed session finished.
