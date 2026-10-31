@@ -79,10 +79,7 @@ impl Provider for FakeProvider {
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
-        let capabilities = self.capabilities();
-        for capability in request.needed_capabilities() {
-            capabilities.require(capability)?;
-        }
+        request.require(&self.capabilities())?;
         let (mode, conversation) = match request.conversation {
             Conversation::New => {
                 let number = self.conversations.fetch_add(1, Ordering::SeqCst) + 1;

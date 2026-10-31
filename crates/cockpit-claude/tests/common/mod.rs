@@ -1,6 +1,7 @@
 //! A Claude Code adapter on fixed paths, and the pinned hook payloads.
 #![allow(dead_code, reason = "each test file uses part of these helpers")]
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use cockpit_claude::{Bridge, CONFORMANCE_VERSION, ClaudeCode};
@@ -27,4 +28,12 @@ pub fn fixture(name: &str) -> String {
         .join(format!("claude-code-{CONFORMANCE_VERSION}"))
         .join(format!("{name}.json"));
     std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+/// An executable `sh` script named `name` in `dir`, running `body`.
+pub fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
 }

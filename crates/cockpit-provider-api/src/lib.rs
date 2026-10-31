@@ -120,6 +120,14 @@ impl LaunchRequest<'_> {
         }
         needed
     }
+
+    /// Refuses this request, naming the first capability it needs that `capabilities`
+    /// does not report.
+    pub fn require(&self, capabilities: &Capabilities) -> Result<(), ProviderError> {
+        self.needed_capabilities()
+            .into_iter()
+            .try_for_each(|capability| capabilities.require(capability))
+    }
 }
 
 /// The program that runs the conversation in its terminal. `environment` is all it gets
@@ -147,7 +155,7 @@ pub trait Provider: Send + Sync + 'static {
 
     /// The command for `request`. Must not block: it builds words, it starts nothing. It
     /// refuses a request that needs a capability it does not report
-    /// ([`LaunchRequest::needed_capabilities`]).
+    /// ([`LaunchRequest::require`]).
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError>;
 
     /// The terminal input that takes `action` while the agent is in `activity` (`None`:

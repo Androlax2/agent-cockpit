@@ -5,7 +5,7 @@ use std::path::Path;
 
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, LaunchCommand,
-    LaunchRequest, Provider, ProviderError, ProviderName,
+    LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
 };
 
 struct LaunchOnly(ProviderName);
@@ -83,4 +83,32 @@ fn a_provider_without_screen_reading_reads_nothing() {
 
     assert_eq!(provider.read_screen("❯ "), None);
     assert_eq!(provider.version(), None);
+}
+
+#[test]
+fn a_request_is_refused_naming_the_first_capability_the_provider_lacks() {
+    let launch = LaunchRequest {
+        effort: Some("high"),
+        remote_control: true,
+        ..request(&Conversation::New)
+    };
+    let capabilities = Capabilities::none().with(Capability::Effort, Provenance::Discovered);
+
+    let error = launch.require(&capabilities).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        ProviderError::unsupported(Capability::RemoteControl).to_string()
+    );
+}
+
+#[test]
+fn a_request_whose_capabilities_are_all_reported_is_accepted() {
+    let launch = LaunchRequest {
+        effort: Some("high"),
+        ..request(&Conversation::New)
+    };
+    let capabilities = Capabilities::none().with(Capability::Effort, Provenance::Discovered);
+
+    assert!(launch.require(&capabilities).is_ok());
 }

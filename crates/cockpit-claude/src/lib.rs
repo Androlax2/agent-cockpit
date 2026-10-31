@@ -104,7 +104,9 @@ impl ClaudeCode {
             })
     }
 
-    fn provenance(&self) -> Provenance {
+    /// `tested` on [`CONFORMANCE_VERSION`], `discovered` on any other version; every
+    /// capability it reports has this provenance.
+    pub fn provenance(&self) -> Provenance {
         match &self.version {
             Some(version) if version == CONFORMANCE_VERSION => Provenance::Tested {
                 version: version.clone(),
@@ -140,7 +142,8 @@ impl Provider for ClaudeCode {
 
     fn capabilities(&self) -> Capabilities {
         // `outcome` waits until the agent channel carries a turn's outcome (#146).
-        let events = self.bridge.as_ref().map(|_| Capability::Events);
+        let events = self.bridge.is_some().then_some(Capability::Events);
+        let provenance = self.provenance();
         [
             Capability::Resume,
             Capability::Submit,
@@ -153,15 +156,12 @@ impl Provider for ClaudeCode {
         .into_iter()
         .chain(events)
         .fold(Capabilities::none(), |capabilities, capability| {
-            capabilities.with(capability, self.provenance())
+            capabilities.with(capability, provenance.clone())
         })
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
-        let capabilities = self.capabilities();
-        for capability in request.needed_capabilities() {
-            capabilities.require(capability)?;
-        }
+        request.require(&self.capabilities())?;
         let mut arguments: Vec<OsString> = Vec::new();
         // Its optional name would take the next plain word, so flags always follow it.
         if request.remote_control {

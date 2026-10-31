@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use cockpit_provider_api::{ConversationId, EventKind, ObservedBy, ProviderEvent, TurnOutcome};
+use cockpit_provider_api::{Activity, ConversationId, EventKind, ProviderEvent, TurnOutcome};
 
 /// The hook events launches subscribe the bridge to. `SessionEnd` reports nothing: the
 /// process ending is observed by `cockpit-processes`, not claimed by the agent.
@@ -102,22 +102,23 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
 /// The `cockpit` arguments that report `event` on the agent channel; `None` for an event
 /// that proves no activity.
 pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
-    let observation = event.observation()?;
-    debug_assert_eq!(observation.observed_by, ObservedBy::Event);
+    let activity = event.observation()?.activity;
     let mut arguments: Vec<String> = ["agent", "report", "--state"]
         .into_iter()
         .map(str::to_owned)
         .collect();
-    match &event.kind {
-        EventKind::NeedsYou { question } => {
+    match activity {
+        Activity::Working => arguments.push("working".to_owned()),
+        Activity::Waiting => arguments.push("waiting".to_owned()),
+        Activity::NeedsYou => {
+            let question = match &event.kind {
+                EventKind::NeedsYou { question } => question.as_deref(),
+                _ => None,
+            };
             arguments.push("waiting".to_owned());
             arguments.push("--needs-input".to_owned());
-            arguments.push(channel_question(question.as_deref()));
+            arguments.push(channel_question(question));
         }
-        EventKind::PromptSubmitted | EventKind::ToolUsed { .. } => {
-            arguments.push("working".to_owned());
-        }
-        _ => arguments.push("waiting".to_owned()),
     }
     Some(arguments)
 }

@@ -2,23 +2,13 @@
 
 mod common;
 
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-
 use cockpit_claude::{CONFORMANCE_VERSION, ClaudeCode};
 use cockpit_provider_api::{Availability, Capability, Provider};
-
-fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
-    let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
-}
 
 #[test]
 fn the_version_claude_prints_decides_the_provenance() {
     let dir = tempfile::tempdir().unwrap();
-    let program = script(
+    let program = common::script(
         dir.path(),
         "claude",
         &format!("echo '{CONFORMANCE_VERSION} (Claude Code)'"),
@@ -38,7 +28,7 @@ fn the_version_claude_prints_decides_the_provenance() {
 #[test]
 fn a_program_that_fails_its_version_is_not_discovered() {
     let dir = tempfile::tempdir().unwrap();
-    let program = script(dir.path(), "claude", "echo broken >&2; exit 3");
+    let program = common::script(dir.path(), "claude", "echo broken >&2; exit 3");
 
     let error = ClaudeCode::discover(&program, Some(common::bridge())).unwrap_err();
 
@@ -48,7 +38,7 @@ fn a_program_that_fails_its_version_is_not_discovered() {
 #[test]
 fn a_version_that_is_not_dotted_numbers_is_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let program = script(dir.path(), "claude", "echo 'Claude Code'");
+    let program = common::script(dir.path(), "claude", "echo 'Claude Code'");
 
     assert!(ClaudeCode::discover(&program, Some(common::bridge())).is_err());
 }
@@ -57,7 +47,7 @@ fn a_version_that_is_not_dotted_numbers_is_refused() {
 fn claude_is_found_in_the_first_path_directory_that_has_it() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
-    let program = script(second.path(), "claude", "exit 0");
+    let program = common::script(second.path(), "claude", "exit 0");
     std::fs::write(first.path().join("claude"), "not executable").unwrap();
     let path = std::env::join_paths([first.path(), second.path()]).unwrap();
 
@@ -76,7 +66,7 @@ fn no_claude_on_the_path_finds_nothing() {
 #[test]
 fn a_program_whose_output_never_ends_is_given_up_on() {
     let dir = tempfile::tempdir().unwrap();
-    let program = script(
+    let program = common::script(
         dir.path(),
         "claude",
         &format!("sleep 60 & echo '{CONFORMANCE_VERSION} (Claude Code)'"),

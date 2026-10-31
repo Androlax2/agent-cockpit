@@ -4,7 +4,6 @@
 mod common;
 
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -16,17 +15,15 @@ impl FakeCockpit {
     /// A `cockpit` that records its arguments and launch token, then exits with `status`.
     fn exiting_with(status: i32) -> FakeCockpit {
         let dir = tempfile::tempdir().unwrap();
-        let program = dir.path().join("cockpit");
-        std::fs::write(
-            &program,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/arguments\"\n\
+        common::script(
+            dir.path(),
+            "cockpit",
+            &format!(
+                "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/arguments\"\n\
                  printf '%s' \"$COCKPIT_LAUNCH_TOKEN\" > \"$(dirname \"$0\")/token\"\n\
-                 echo 'reported for session s000000000001'\nexit {status}\n"
+                 echo 'reported for session s000000000001'\nexit {status}"
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         FakeCockpit { dir }
     }
 

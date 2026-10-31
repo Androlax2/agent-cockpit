@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_daemon::{Instance, Options, RUN_LEADER_FLAG, Routes, StartError, Wiring};
-use cockpit_provider_api::{Capability, Provenance, Provider};
+use cockpit_provider_api::{Provenance, Provider};
 
 const USAGE: &str = "usage: cockpit-daemon [--foreground]";
 /// Variables of the daemon's own environment every agent starts with; the provider adds its
@@ -156,9 +156,9 @@ fn claude_code(daemon_program: &Path) -> Option<cockpit_claude::ClaudeCode> {
             return None;
         }
     };
-    let provenance = match claude.capabilities().provenance(Capability::Resume) {
-        Some(Provenance::Tested { .. }) => "tested",
-        _ => "unverified",
+    let provenance = match claude.provenance() {
+        Provenance::Tested { .. } => "tested",
+        Provenance::Discovered => "unverified",
     };
     tracing::info!(
         "provider claude ready version={} provenance={provenance}",
