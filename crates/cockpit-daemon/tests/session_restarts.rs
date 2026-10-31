@@ -19,8 +19,8 @@ use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, Routes};
 use cockpit_protocol::{Command, LaunchKindView, Reply, SessionStateView, SessionView};
 use cockpit_provider_api::{
-    Capabilities as ProviderCapabilities, Conversation, ConversationId, LaunchCommand,
-    LaunchRequest, Provider, ProviderError, ProviderName,
+    Capabilities as ProviderCapabilities, Capability, Conversation, ConversationId, LaunchCommand,
+    LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
 };
 use cockpit_sessions::{AgentState, SessionId, Sessions, WakeCause};
 use common::GENEROUS;
@@ -42,7 +42,12 @@ impl Provider for FakeProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities { resume: true }
+        ProviderCapabilities::none().with(
+            Capability::Resume,
+            Provenance::Tested {
+                version: "fake".to_owned(),
+            },
+        )
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {

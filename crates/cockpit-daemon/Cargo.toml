@@ -15,6 +15,7 @@ path = "src/main.rs"
 cockpit-agent-channel = { path = "../cockpit-agent-channel", version = "0.1.0" }
 cockpit-approvals = { path = "../cockpit-approvals", version = "0.1.0" }
 cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
+cockpit-claude = { path = "../cockpit-claude", version = "0.1.0" }
 cockpit-config = { path = "../cockpit-config", version = "0.1.0" }
 cockpit-diagnostics = { path = "../cockpit-diagnostics", version = "0.1.0" }
 cockpit-processes = { path = "../cockpit-processes", version = "0.1.0" }
@@ -31,6 +32,8 @@ tracing = "0.1"
 
 [dev-dependencies]
 cockpit-client = { path = "../cockpit-client", version = "0.1.0" }
+# The fake provider the session tests launch (#33).
+cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0", features = ["fake"] }
 tempfile = "3.27.0"
 
 [lints]

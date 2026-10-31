@@ -10,7 +10,7 @@ use cockpit_authorization::{Permission, Scope};
 use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
-use cockpit_provider_api::{Conversation, LaunchRequest, Provider, ProviderError};
+use cockpit_provider_api::{Capability, Conversation, LaunchRequest, Provider, ProviderError};
 use cockpit_tmux::{Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
 
@@ -621,7 +621,7 @@ impl Sessions {
             reason: reason.to_owned(),
         };
         let provider = self.provider(Some(session.provider.as_str()))?;
-        if !provider.capabilities().resume {
+        if !provider.capabilities().supports(Capability::Resume) {
             return Err(cannot("its agent's provider cannot resume a conversation"));
         }
         let conversation = session.conversation.clone().ok_or_else(|| {
@@ -795,6 +795,8 @@ impl Sessions {
             working_dir: &session.working_dir,
             conversation,
             first_message,
+            effort: None,
+            remote_control: false,
         })?;
         if let Conversation::Resume(requested) = conversation
             && command.conversation.as_ref() != Some(requested)

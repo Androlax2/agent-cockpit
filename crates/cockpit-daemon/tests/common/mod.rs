@@ -27,6 +27,8 @@ pub struct TestHome {
     /// them from `HOME`; [`TestHome::bare`] also leaves `XDG_RUNTIME_DIR` unset.
     pub sets_xdg_dirs: bool,
     pub log_level: Option<String>,
+    /// The daemon's `PATH`; unset by default, so it finds no agent program.
+    pub path: Option<std::ffi::OsString>,
 }
 
 impl TestHome {
@@ -42,6 +44,7 @@ impl TestHome {
             runtime_base: Some(runtime_base),
             sets_xdg_dirs: true,
             log_level: None,
+            path: None,
         }
     }
 
@@ -52,6 +55,7 @@ impl TestHome {
             runtime_base: None,
             sets_xdg_dirs: false,
             log_level: None,
+            path: None,
         }
     }
 
@@ -119,6 +123,9 @@ impl TestHome {
         }
         if let Some(level) = &self.log_level {
             command.env("COCKPIT_LOG_LEVEL", level);
+        }
+        if let Some(path) = &self.path {
+            command.env("PATH", path);
         }
         command
     }

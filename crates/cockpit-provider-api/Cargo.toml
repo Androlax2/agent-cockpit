@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-provider-api"
-description = "The contract every agent provider adapter implements: its capabilities and how to launch, or resume, one of its conversations."
+description = "The contract every agent provider adapter implements: identity, capabilities with provenance, launch and resume, terminal actions and normalized events."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,3 +8,12 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# The fake provider other crates' tests launch; never part of a release build.
+fake = []
+
+[dev-dependencies]
+# Its own tests always build the fake, so they cannot be skipped by a feature selection.
+cockpit-provider-api = { path = ".", features = ["fake"] }
+tempfile = "3.27.0"
