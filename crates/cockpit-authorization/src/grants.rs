@@ -35,12 +35,8 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
     }],
 };
 
-const OWNER_SCOPE: &str = "owner";
-const SESSION_SCOPE: &str = "session";
-const TASK_SCOPE: &str = "task";
-
 /// Gives `holder` `permission` over `scope`. Granting an active grant again returns it
-/// unchanged, without a new revision. On error, roll the transaction back.
+/// unchanged, without a new revision.
 pub async fn grant(
     write: &WriteTransaction<'_>,
     holder: &SessionId,
@@ -93,20 +89,25 @@ pub async fn grant(
 }
 
 /// Revokes an active grant and returns the revision that revoked it. Every evaluation that
-/// reads the committed revocation refuses what the grant allowed. On error, roll the
-/// transaction back.
+/// reads the committed revocation refuses what the grant allowed. Refusing an inactive grant
+/// changes nothing.
 pub async fn revoke(write: &WriteTransaction<'_>, grant: GrantId) -> Result<Revision, Error> {
+    let mut active = write
+        .query(
+            "SELECT 1 FROM authorization_grants WHERE id = ?1 AND revoked_at IS NULL",
+            [grant.0],
+        )
+        .await?;
+    if active.next().await?.is_none() {
+        return Err(Error::GrantNotActive { grant });
+    }
     let revoked_at = advance_revision(write).await?;
-    let revoked = write
+    write
         .execute(
-            "UPDATE authorization_grants SET revoked_at = ?2
-             WHERE id = ?1 AND revoked_at IS NULL",
+            "UPDATE authorization_grants SET revoked_at = ?2 WHERE id = ?1",
             (grant.0, revoked_at.0),
         )
         .await?;
-    if revoked == 0 {
-        return Err(Error::GrantNotActive { grant });
-    }
     Ok(revoked_at)
 }
 
@@ -119,28 +120,27 @@ pub async fn evaluate(
     permission: Permission,
     scope: &Scope,
 ) -> Result<Decision, Error> {
-    let holder = match actor {
-        Actor::Owner => {
-            return Ok(Decision {
-                revision: current_revision(connection).await?,
-                outcome: Outcome::Allowed(Basis::Owner),
-            });
+    let (revision, outcome) = match actor {
+        Actor::Owner => (
+            current_revision(connection).await?,
+            Outcome::Allowed(Basis::Owner),
+        ),
+        Actor::Session(_) if permission.is_owner_only() => (
+            current_revision(connection).await?,
+            Outcome::Refused(Refusal::OwnerOnly { permission }),
+        ),
+        Actor::Session(holder) => {
+            let (revision, covering_grant) =
+                covering_grant(connection, holder, permission, scope).await?;
+            let outcome = match covering_grant {
+                Some(grant) => Outcome::Allowed(Basis::Grant(grant)),
+                None => Outcome::Refused(Refusal::NoGrant {
+                    permission,
+                    scope: scope.clone(),
+                }),
+            };
+            (revision, outcome)
         }
-        Actor::Session(_) if permission.is_owner_only() => {
-            return Ok(Decision {
-                revision: current_revision(connection).await?,
-                outcome: Outcome::Refused(Refusal::OwnerOnly { permission }),
-            });
-        }
-        Actor::Session(holder) => holder,
-    };
-    let (revision, covering_grant) = covering_grant(connection, holder, permission, scope).await?;
-    let outcome = match covering_grant {
-        Some(grant) => Outcome::Allowed(Basis::Grant(grant)),
-        None => Outcome::Refused(Refusal::NoGrant {
-            permission,
-            scope: scope.clone(),
-        }),
     };
     Ok(Decision { revision, outcome })
 }
@@ -177,13 +177,15 @@ pub async fn current_revision(connection: &Connection) -> Result<Revision, Error
 }
 
 async fn advance_revision(write: &WriteTransaction<'_>) -> Result<Revision, Error> {
-    write
-        .execute(
-            "UPDATE authorization_revision SET revision = revision + 1 WHERE singleton = 1",
-            (),
+    let row = write
+        .prepare(
+            "UPDATE authorization_revision SET revision = revision + 1 WHERE singleton = 1
+             RETURNING revision",
         )
+        .await?
+        .query_row(())
         .await?;
-    current_revision(write).await
+    Ok(Revision(row.get(0)?))
 }
 
 /// The current revision and the oldest active grant to `holder` of `permission` whose scope
@@ -217,9 +219,9 @@ async fn covering_grant(
 
 fn scope_columns(scope: &Scope) -> (&'static str, Value) {
     match scope {
-        Scope::Owner => (OWNER_SCOPE, Value::Null),
-        Scope::Session(session) => (SESSION_SCOPE, Value::Text(session.as_str().to_string())),
-        Scope::Task(task) => (TASK_SCOPE, Value::Text(task.as_str().to_string())),
+        Scope::Owner => ("owner", Value::Null),
+        Scope::Session(session) => ("session", Value::Text(session.as_str().to_string())),
+        Scope::Task(task) => ("task", Value::Text(task.as_str().to_string())),
     }
 }
 
@@ -227,27 +229,27 @@ fn scope_columns(scope: &Scope) -> (&'static str, Value) {
 /// this crate never writes instead of reading them as a narrower or wider grant.
 fn grant_from_row(row: &Row) -> Result<Grant, Error> {
     let id = GrantId(row.get(0)?);
-    let invalid = |reason: String| Error::InvalidStoredGrant { grant: id, reason };
-    let holder =
-        SessionId::new(row.get::<String>(1)?).map_err(|error| invalid(error.to_string()))?;
+    let invalid = |reason: &dyn std::fmt::Display| Error::InvalidStoredGrant {
+        grant: id,
+        reason: reason.to_string(),
+    };
+    let holder = SessionId::new(row.get::<String>(1)?).map_err(|error| invalid(&error))?;
     let permission: Permission = row
         .get::<String>(2)?
         .parse()
-        .map_err(|error: Error| invalid(error.to_string()))?;
+        .map_err(|error: Error| invalid(&error))?;
     if permission.is_owner_only() {
-        return Err(invalid(format!("{permission} is held by a session")));
+        return Err(invalid(&format_args!("{permission} is held by a session")));
     }
     let scope_kind: String = row.get(3)?;
     let scope_id: Option<String> = row.get(4)?;
     let scope = match (scope_kind.as_str(), scope_id) {
-        (OWNER_SCOPE, None) => Scope::Owner,
-        (SESSION_SCOPE, Some(id)) => {
-            Scope::Session(SessionId::new(id).map_err(|error| invalid(error.to_string()))?)
+        ("owner", None) => Scope::Owner,
+        ("session", Some(id)) => {
+            Scope::Session(SessionId::new(id).map_err(|error| invalid(&error))?)
         }
-        (TASK_SCOPE, Some(id)) => {
-            Scope::Task(TaskId::new(id).map_err(|error| invalid(error.to_string()))?)
-        }
-        (kind, id) => return Err(invalid(format!("scope {kind:?} with id {id:?}"))),
+        ("task", Some(id)) => Scope::Task(TaskId::new(id).map_err(|error| invalid(&error))?),
+        (kind, id) => return Err(invalid(&format_args!("scope {kind:?} with id {id:?}"))),
     };
     Ok(Grant {
         id,

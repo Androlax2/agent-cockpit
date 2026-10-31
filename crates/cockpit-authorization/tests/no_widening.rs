@@ -51,15 +51,21 @@ fn grantable() -> Vec<(cockpit_authorization::SessionId, Permission, Scope)> {
     grants
 }
 
+/// The model's rule: a grant allows its holder its permission over its scope, and an owner
+/// scope covers every scope.
+fn model_grant_allows(grant: &Grant, actor: &Actor, permission: Permission, scope: &Scope) -> bool {
+    Actor::Session(grant.holder.clone()) == *actor
+        && grant.permission == permission
+        && (grant.scope == Scope::Owner || grant.scope == *scope)
+}
+
 fn model_allows(active: &[Grant], actor: &Actor, permission: Permission, scope: &Scope) -> bool {
     match actor {
         Actor::Owner => true,
         Actor::Session(_) if permission == Permission::HostActions => false,
-        Actor::Session(sender) => active.iter().any(|grant| {
-            &grant.holder == sender
-                && grant.permission == permission
-                && (grant.scope == Scope::Owner || &grant.scope == scope)
-        }),
+        Actor::Session(_) => active
+            .iter()
+            .any(|grant| model_grant_allows(grant, actor, permission, scope)),
     }
 }
 
@@ -77,12 +83,9 @@ async fn assert_request_matches_the_model(
         .outcome;
     let is_allowed = match &outcome {
         Outcome::Allowed(Basis::Owner) => *actor == Actor::Owner,
-        Outcome::Allowed(Basis::Grant(id)) => active.iter().any(|grant| {
-            grant.id == *id
-                && Actor::Session(grant.holder.clone()) == *actor
-                && grant.permission == permission
-                && (grant.scope == Scope::Owner || grant.scope == *scope)
-        }),
+        Outcome::Allowed(Basis::Grant(id)) => active
+            .iter()
+            .any(|grant| grant.id == *id && model_grant_allows(grant, actor, permission, scope)),
         Outcome::Refused(_) => false,
     };
     assert_eq!(
@@ -126,6 +129,22 @@ async fn assert_changed_grant_matches_the_model(
 
 const FULL_CHECK_EVERY: usize = 5;
 
+/// The check after the change at `position` of `change_count`: the changed grant's request,
+/// and every request every `FULL_CHECK_EVERY` changes and after the last one.
+async fn assert_after_change(
+    database: &Database,
+    active: &[Grant],
+    changed: &Grant,
+    step: &str,
+    position: usize,
+    change_count: usize,
+) {
+    assert_changed_grant_matches_the_model(database, active, changed, step).await;
+    if position.is_multiple_of(FULL_CHECK_EVERY) || position + 1 == change_count {
+        assert_every_request_matches_the_model(database, active, step).await;
+    }
+}
+
 /// A fixed permutation, so a failure reproduces; the order mixes holders, permissions and
 /// scopes instead of granting them in table order.
 fn shuffled<T>(mut items: Vec<T>, seed: u64) -> Vec<T> {
@@ -151,10 +170,7 @@ async fn no_sequence_of_grants_and_revocations_allows_more_than_its_active_grant
         let granted = grant(&database, &holder, permission, &scope).await;
         active.push(granted.clone());
         let step = format!("granting {granted:?}");
-        assert_changed_grant_matches_the_model(&database, &active, &granted, &step).await;
-        if position % FULL_CHECK_EVERY == 0 || position + 1 == grant_count {
-            assert_every_request_matches_the_model(&database, &active, &step).await;
-        }
+        assert_after_change(&database, &active, &granted, &step, position, grant_count).await;
     }
     let to_revoke = shuffled(active.clone(), 0x2545_f491_4f6c_dd1d);
     for (position, revoked) in to_revoke.iter().enumerate() {
@@ -163,10 +179,15 @@ async fn no_sequence_of_grants_and_revocations_allows_more_than_its_active_grant
         write.commit().await.unwrap();
         active.retain(|grant| grant.id != revoked.id);
         let step = format!("revoking {revoked:?}");
-        assert_changed_grant_matches_the_model(&database, &active, revoked, &step).await;
-        if position % FULL_CHECK_EVERY == 0 || position + 1 == to_revoke.len() {
-            assert_every_request_matches_the_model(&database, &active, &step).await;
-        }
+        assert_after_change(
+            &database,
+            &active,
+            revoked,
+            &step,
+            position,
+            to_revoke.len(),
+        )
+        .await;
     }
 }
 
