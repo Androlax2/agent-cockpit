@@ -156,7 +156,7 @@ fn each_event_reports_its_state_through_the_agent_channel() {
         ),
         (
             "user-prompt-submit",
-            words(&["agent", "report", "--state", "working"]),
+            words(&["agent", "report", "--state", "working", "--prompt"]),
         ),
         (
             "post-tool-use",
@@ -169,7 +169,7 @@ fn each_event_reports_its_state_through_the_agent_channel() {
                 "report",
                 "--state",
                 "waiting",
-                "--needs-input",
+                "--dialog",
                 "Claude needs your permission",
             ]),
         ),

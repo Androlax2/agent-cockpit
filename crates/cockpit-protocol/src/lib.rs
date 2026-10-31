@@ -12,8 +12,8 @@ mod sessions;
 mod tasks;
 
 pub use agent::{
-    AGENT_SOCKET_VARIABLE, AgentReport, AgentState, LAUNCH_TOKEN_VARIABLE, SessionReport,
-    TurnOutcome,
+    AGENT_SOCKET_VARIABLE, AgentReport, AgentState, LAUNCH_TOKEN_VARIABLE, QuestionSource,
+    SessionReport, TurnOutcome,
 };
 pub use approvals::{
     FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView, RunRequestView,

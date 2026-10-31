@@ -12,7 +12,7 @@ pub use model::{
     Launch, LaunchKind, RestartAll, Restored, Session, SessionId, SessionState, Settings,
     SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
-pub use reports::{AgentState, Report, SessionReport, latest_reports, report};
+pub use reports::{AgentState, QuestionSource, Report, SessionReport, latest_reports, report};
 pub use store::MIGRATIONS;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

@@ -108,6 +108,32 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             ALTER TABLE session_reports ADD COLUMN outcome_reason TEXT
                 CHECK (outcome_reason IS NULL OR outcome = 'failed');",
         },
+        // #182 (decided in #200): an open question records where it came from. A question
+        // recorded before is taken as the agent's own, the source that stays visible.
+        Migration {
+            version: 4,
+            sql: "CREATE TABLE session_reports_with_sources (
+                session TEXT PRIMARY KEY CHECK (session <> ''),
+                state TEXT CHECK (state IN ('working', 'waiting')),
+                label TEXT,
+                doing TEXT,
+                needs_input TEXT,
+                reported_at INTEGER NOT NULL,
+                launch_id INTEGER,
+                outcome TEXT CHECK (outcome IN ('completed', 'failed', 'quota-stopped')),
+                outcome_reason TEXT CHECK (outcome_reason IS NULL OR outcome = 'failed'),
+                question_source TEXT CHECK (question_source IN ('agent', 'dialog')),
+                CHECK ((question_source IS NULL) = (needs_input IS NULL))
+            );
+            INSERT INTO session_reports_with_sources
+                (session, state, label, doing, needs_input, reported_at, launch_id, outcome,
+                 outcome_reason, question_source)
+                SELECT session, state, label, doing, needs_input, reported_at, launch_id,
+                    outcome, outcome_reason, CASE WHEN needs_input IS NULL THEN NULL ELSE 'agent' END
+                FROM session_reports;
+            DROP TABLE session_reports;
+            ALTER TABLE session_reports_with_sources RENAME TO session_reports;",
+        },
     ],
 };
 

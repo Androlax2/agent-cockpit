@@ -102,7 +102,8 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
 }
 
 /// The `cockpit` arguments that report `event` on the agent channel; `None` for an event
-/// that proves no activity.
+/// that proves no activity. A dialog's question goes as `--dialog`, which the next report
+/// clears; a submitted prompt adds `--prompt`, which clears the agent's own question (#200).
 pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let activity = event.observation()?.activity;
     let mut arguments: Vec<String> = ["agent", "report", "--state"]
@@ -110,7 +111,12 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
         .map(str::to_owned)
         .collect();
     match activity {
-        Activity::Working => arguments.push("working".to_owned()),
+        Activity::Working => {
+            arguments.push("working".to_owned());
+            if event.kind == EventKind::PromptSubmitted {
+                arguments.push("--prompt".to_owned());
+            }
+        }
         Activity::Waiting => {
             arguments.push("waiting".to_owned());
             if let EventKind::TurnEnded { outcome } = &event.kind {
@@ -123,7 +129,7 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
                 _ => None,
             };
             arguments.push("waiting".to_owned());
-            arguments.push("--needs-input".to_owned());
+            arguments.push("--dialog".to_owned());
             arguments.push(channel_question(question));
         }
     }

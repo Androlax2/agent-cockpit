@@ -18,7 +18,7 @@ const OUTCOME_REASON_MAX_CHARS: usize = 80;
 
 /// The columns `report_from` reads, in its order.
 const SELECT_REPORTS: &str = "SELECT session, state, label, doing, needs_input, reported_at,
-     launch_id, outcome, outcome_reason FROM session_reports";
+     launch_id, outcome, outcome_reason, question_source FROM session_reports";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -41,7 +41,33 @@ impl AgentState {
     }
 }
 
-/// What an agent reports; each field it leaves out keeps its previous value.
+/// Where an open question came from, which decides what clears it (#200).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestionSource {
+    /// The agent asked it (`--needs-input`): open until a new prompt or a new launch.
+    Agent,
+    /// The provider bridge saw a dialog (permission, elicitation): open until the next
+    /// report, since any later event means the dialog was answered.
+    Dialog,
+}
+
+impl QuestionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuestionSource::Agent => "agent",
+            QuestionSource::Dialog => "dialog",
+        }
+    }
+
+    fn parse(text: &str) -> Option<QuestionSource> {
+        [QuestionSource::Agent, QuestionSource::Dialog]
+            .into_iter()
+            .find(|source| source.as_str() == text)
+    }
+}
+
+/// What an agent reports; each field it leaves out keeps its previous value, except the
+/// open question, which [`QuestionSource`] clears.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     pub state: Option<AgentState>,
@@ -49,9 +75,12 @@ pub struct Report {
     pub label: Option<String>,
     /// The current step, 2 to 12 words and at most 80 characters.
     pub doing: Option<String>,
-    /// A question the agent needs answered before it can go on, at most 300 characters.
-    /// Reporting `working` clears it: the agent got its answer.
+    /// The agent's own question for the owner, at most 300 characters.
     pub needs_input: Option<String>,
+    /// A dialog's question the provider bridge saw, at most 300 characters.
+    pub dialog: Option<String>,
+    /// The owner sent a new prompt: the agent is working and its own question is answered.
+    pub is_new_prompt: bool,
     /// How the agent's turn ended; it means waiting. Reporting `working` clears it: a new
     /// turn started. A failure's reason is at most 80 characters.
     pub outcome: Option<TurnOutcome>,
@@ -64,7 +93,10 @@ pub struct SessionReport {
     pub state: Option<AgentState>,
     pub label: Option<String>,
     pub doing: Option<String>,
+    /// The open question, the agent's own or a dialog's.
     pub needs_input: Option<String>,
+    /// Set exactly when `needs_input` is.
+    pub question_source: Option<QuestionSource>,
     /// How the latest turn ended, until the next turn starts.
     pub outcome: Option<TurnOutcome>,
     /// Seconds since 1970 of the last report.
@@ -109,8 +141,8 @@ pub async fn report(
         .execute(
             "INSERT INTO session_reports
                 (session, state, label, doing, needs_input, reported_at, launch_id, outcome,
-                 outcome_reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 outcome_reason, question_source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             (
                 merged.session.as_str(),
                 merged.state.map(AgentState::as_str),
@@ -125,6 +157,7 @@ pub async fn report(
                     .as_ref()
                     .and_then(TurnOutcome::failure_reason)
                     .map(str::to_owned),
+                merged.question_source.map(QuestionSource::as_str),
             ),
         )
         .await?;
@@ -186,13 +219,28 @@ fn merge(
         label: None,
         doing: None,
         needs_input: None,
+        question_source: None,
         outcome: None,
         reported_at: 0,
         launch: None,
     });
-    // A question is only open, and a turn only ended, while the agent waits.
-    let state = if report.needs_input.is_some() || report.outcome.is_some() {
+    let is_kept = previous.question_source == Some(QuestionSource::Agent)
+        && !report.is_new_prompt
+        && previous.launch == launch;
+    let asked = report
+        .needs_input
+        .map(|question| (question, QuestionSource::Agent))
+        .or(report
+            .dialog
+            .map(|question| (question, QuestionSource::Dialog)));
+    // A report after a dialog means the dialog was answered and the agent goes on, so a
+    // stateless one leaves it working rather than in the waiting the dialog forced.
+    let is_answering_dialog = previous.question_source == Some(QuestionSource::Dialog);
+    // A question is only asked, and a turn only ended, while the agent waits.
+    let state = if asked.is_some() || report.outcome.is_some() {
         Some(AgentState::Waiting)
+    } else if is_answering_dialog {
+        report.state.or(Some(AgentState::Working))
     } else {
         report.state.or(previous.state)
     };
@@ -203,17 +251,18 @@ fn merge(
         (None, _) if previous.launch != launch => None,
         (None, _) => previous.outcome,
     };
-    let needs_input = match (report.needs_input, report.state) {
-        (Some(question), _) => Some(question),
-        (None, Some(AgentState::Working)) => None,
-        (None, _) => previous.needs_input,
-    };
+    let kept = previous
+        .needs_input
+        .filter(|_| is_kept)
+        .map(|question| (question, QuestionSource::Agent));
+    let (needs_input, question_source) = asked.or(kept).unzip();
     SessionReport {
         session: session.clone(),
         state,
         label: report.label.or(previous.label),
         doing: report.doing.or(previous.doing),
         needs_input,
+        question_source,
         outcome,
         reported_at: now(),
         launch,
@@ -229,10 +278,29 @@ fn validate(report: Report) -> Result<Report, Refusal> {
     if report == Report::default() {
         return Err(invalid("report", "names no field to report".to_owned()));
     }
-    if report.state == Some(AgentState::Working) && report.needs_input.is_some() {
+    let is_asking = report.needs_input.is_some() || report.dialog.is_some();
+    if report.needs_input.is_some() && report.dialog.is_some() {
+        return Err(invalid(
+            "dialog",
+            "comes with a needs-input question; a report carries one question".to_owned(),
+        ));
+    }
+    if report.is_new_prompt && (is_asking || report.outcome.is_some()) {
+        return Err(invalid(
+            "prompt",
+            "comes with a question or a turn's outcome; a new prompt starts a turn".to_owned(),
+        ));
+    }
+    if report.is_new_prompt && report.state == Some(AgentState::Waiting) {
         return Err(invalid(
             "state",
-            "is working, but a needs-input question means waiting".to_owned(),
+            "is waiting, but a new prompt means working".to_owned(),
+        ));
+    }
+    if report.state == Some(AgentState::Working) && is_asking {
+        return Err(invalid(
+            "state",
+            "is working, but a question means waiting".to_owned(),
         ));
     }
     if report.state == Some(AgentState::Working) && report.outcome.is_some() {
@@ -267,6 +335,10 @@ fn validate(report: Report) -> Result<Report, Refusal> {
         .needs_input
         .map(|question| bounded_text("needs-input", &question, QUESTION_MAX_CHARS))
         .transpose()?;
+    let dialog = report
+        .dialog
+        .map(|question| bounded_text("dialog", &question, QUESTION_MAX_CHARS))
+        .transpose()?;
     let outcome = match report.outcome {
         Some(TurnOutcome::Failed {
             reason: Some(reason),
@@ -280,10 +352,17 @@ fn validate(report: Report) -> Result<Report, Refusal> {
         outcome => outcome,
     };
     Ok(Report {
-        state: report.state,
+        // A new prompt means working, so its report clears what a new turn clears.
+        state: if report.is_new_prompt {
+            Some(AgentState::Working)
+        } else {
+            report.state
+        },
         label,
         doing,
         needs_input,
+        dialog,
+        is_new_prompt: report.is_new_prompt,
         outcome,
     })
 }
@@ -364,12 +443,20 @@ fn report_from(row: &Row) -> Result<SessionReport, Error> {
                 .ok_or_else(|| invalid_row(format!("outcome {name:?}")))
         })
         .transpose()?;
+    let question_source = row
+        .get::<Option<String>>(9)?
+        .map(|source| {
+            QuestionSource::parse(&source)
+                .ok_or_else(|| invalid_row(format!("question_source {source:?}")))
+        })
+        .transpose()?;
     Ok(SessionReport {
         session,
         state,
         label: row.get(2)?,
         doing: row.get(3)?,
         needs_input: row.get(4)?,
+        question_source,
         outcome,
         reported_at: row.get(5)?,
         launch: row.get(6)?,
