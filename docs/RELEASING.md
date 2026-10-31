@@ -1,38 +1,65 @@
 # Releasing
 
-How Cockpit is versioned and shipped (issue #94). The release bundle itself, its packaging
-and its gate are [report 13](design/greenfield/13-release-upgrades.md); this file is the
-policy a tag must follow. Releases are cut from the greenfield workspace (root
-[Cargo.toml](../Cargo.toml)); `apps/` is never tagged.
+How Cockpit is versioned and shipped (issue #94), modelled on
+[AprilNEA/OpenLogi](https://github.com/AprilNEA/OpenLogi)'s release system. The release
+bundle itself, its packaging and its gate are [report 13](design/greenfield/13-release-upgrades.md);
+this file is the policy every tag follows. Releases are cut from the greenfield workspace
+(root [Cargo.toml](../Cargo.toml)); `apps/` is never tagged.
+
+The tools named below (release-plz, git-cliff, nfpm, minisign) are the proposal; issue #96
+decides which pieces they provide and which come from `cargo-dist` or an `xtask`. Whatever
+it picks, the version source, tag grammar, changelog and channel promises here are the
+contract.
 
 ## Versions
 
 - Cockpit uses [Semantic Versioning](https://semver.org/) and stays on `0.x` until 1.0.
   Under `0.x`, as in Cargo, a breaking change raises the minor number (`0.3.2` → `0.4.0`)
   and anything else raises the patch number (`0.3.2` → `0.3.3`).
-- The release version is `[workspace.package] version` in the root `Cargo.toml`; every
-  crate inherits it, and a tag names exactly that version. Internal path dependencies also
-  state `version = "…"`, and Cargo refuses a requirement that does not match: a release
-  changes them together, to the same string (`"0.2.0-alpha.1"` matches only that
-  pre-release and later ones of `0.2.0`).
-- Tags, all on `main`:
+- There is one version: `[workspace.package] version` in the root `Cargo.toml`, inherited by
+  every crate (`version.workspace = true`). Nobody edits it by hand: a **release-plz** release
+  PR, from a `release-plz/` branch, bumps it and updates `CHANGELOG.md`.
+- release-plz tags only, and only after its release PR merges; it never creates the GitHub
+  Release (`git_release_enable = false`). The tag push starts the release workflow, which owns
+  the GitHub Release: it creates a draft, attaches every asset, and publishes last, so an
+  immutable release never locks before its assets exist.
 
-| Channel | Tag | GitHub release |
-| --- | --- | --- |
-| alpha | `v0.x.y-alpha.n` | pre-release |
-| beta | `v0.x.y-beta.n` | pre-release |
-| stable | `v0.x.y` (later `vX.Y.Z`) | release |
+## Tags
 
-`n` starts at 1 for each version and channel and only grows: `v0.2.0-alpha.1`,
-`v0.2.0-alpha.2`, `v0.2.0-beta.1`, `v0.2.0`. A published tag is never moved or reused; a
-broken release is fixed by the next one.
+| Tag | Channel | Cut by | GitHub release |
+| --- | --- | --- | --- |
+| `vX.Y.Z` | stable | release-plz, on merging the release PR | release |
+| `vX.Y.Z-beta.N` | beta | the dispatched prerelease workflow | pre-release, never latest |
+| `vX.Y.Z-alpha.N` | alpha, until the M5 cutover | the dispatched prerelease workflow | pre-release, never latest |
+
+No other tag shape is a release tag. Only one pre-release shape is open at a time: `-alpha.N`
+from the M3 gate to the M5 cutover, `-beta.N` from then on.
+
+- **A pre-release tags `main` without a version bump.** `X.Y.Z` is the version the open
+  release PR prepares, the next stable release; with no open release PR, nothing is cut.
+- **`N` is the commit count since the previous stable tag**, `git rev-list --count
+  <previous-stable>..<commit>`, so it is at least 1 and pre-releases rise one per commit.
+  Before the first stable tag, the count starts at the greenfield bootstrap commit
+  `d2d8604` (issue #18), the root of the workspace, and `X.Y.Z` is the first release's
+  version, the workspace's current `0.1.0`.
+- **Nobody tags by hand.** Theo dispatches the prerelease workflow on `main`; it tags the
+  commit it was dispatched on, with an app token (a tag pushed with `GITHUB_TOKEN` starts no
+  workflow). A dry run prints the tag and creates nothing. It refuses a commit that is a
+  stable release or already has a pre-release tag, a count that does not match, and a version
+  not above the previous stable.
+- **The release workflow checks the tag first.** On a stable tag the workspace version must
+  equal the tag's; on a pre-release it must still be the previous stable's (before the first
+stable, the first release's). A pre-release
+  build stamps its own version into `Cargo.toml` and `Cargo.lock` before compiling, and
+  commits nothing.
+- A published tag is never moved, reused or re-run; a missing artifact ships with the next tag.
 
 ## Channels and what each promises
 
 Each channel opens at a milestone gate of the [refactoring plan](design/greenfield/20-refactoring-plan.md).
 No tag of a channel exists before its gate issue is closed with its proof linked. Every tag
-also needs [report 13's release gate](design/greenfield/13-release-upgrades.md#release-gate),
-whose clean installs check the install promises below.
+also needs [report 13's release gate](design/greenfield/13-release-upgrades.md#release-gate)
+on the commit it tags, whose clean installs check the install promises below.
 
 | Channel | Opens after | Promise |
 | --- | --- | --- |
@@ -41,46 +68,41 @@ whose clean installs check the install promises below.
 | stable 0.x | M5 gate (#71), per promoted beta | A beta build whose upgrade-keeps-state promise was verified on Linux, macOS and WSL2 |
 | 1.0 | M6 gate and every claim of [report 15](design/greenfield/15-validation-open-questions.md) proven | Report 15's validation list holds for the tagged build; Semantic Versioning's 1.x compatibility applies from then on |
 
-Until the M5 gate, every tag is a pre-release.
+Until the M5 gate, every tag is a pre-release. A stable `vX.Y.Z` promotes a beta: Theo
+merges the release PR only once the newest `vX.Y.Z-beta.N` had its upgrade promise verified
+on the three platforms and nothing but the release PR landed on `main` after it.
 
 A promise is a release blocker, not an aspiration: an alpha that does not install on one of
 the three platforms, or a beta that loses state on upgrade, is not tagged.
 
 ## Changelog
 
-[CHANGELOG.md](../CHANGELOG.md) is the only changelog. It is kept from pull request
-titles: `main` is squash-merged (`gh pr merge --squash`), so each commit subject on `main` is
-a PR title followed by its PR number, and a greenfield title already ends in its issue number:
-`cockpit-daemon skeleton: … (#26) (#109)` is issue #26, PR #109. A release entry lists those
-subjects since the previous tag:
+[CHANGELOG.md](../CHANGELOG.md) is the only changelog, generated by **git-cliff** from the
+squash-merge subjects on `main`, never written by hand. `main` takes squash merges only (merge
+commits disabled), and a PR title is a conventional commit subject; GitHub appends the PR
+number on merge:
 
-```sh
-git log --first-parent --format='- %s' <previous-tag>..HEAD
+```text
+type(scope): description (#N)
 ```
 
-`--first-parent` keeps a stray merge commit to one line instead of its branch's commits;
-replace that line with the PR's title. The first release has no previous tag; its range
-starts at the greenfield bootstrap commit, `d2d8604` (issue #18, PR #75), included:
-`git log --first-parent --format='- %s' d2d8604^..HEAD`.
+`type` is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`;
+`scope` is the crate or area without its `cockpit-` prefix (`feat(daemon): …`); the issue is
+referenced in the PR body, not the title. The first release covers the subjects since the
+bootstrap commit `d2d8604`; older subjects there are not conventional, and #96 decides how
+git-cliff groups them.
 
-Entries are newest first, headed `## <tag> — YYYY-MM-DD` (`## v0.2.0-beta.1 — 2027-03-01`).
-Alpha entries carry a `Known gaps` list; beta and stable entries name any upgrade step.
-[Contributing](../CONTRIBUTING.md) says how to write a PR title for it.
+A stable release's notes compare with the previous stable tag, so they cover its
+pre-releases. A pre-release's notes compare with the highest release tag below it that its
+commit reaches. Alpha notes carry a `Known gaps` list; beta and stable notes name any
+upgrade step.
 
-## Cutting a release
+## Who does what
 
-1. Check the channel's gate issue is closed.
-2. Open a PR that sets the version in the root `Cargo.toml`, in every internal path
-   dependency and in `Cargo.lock`, and adds the changelog entry. Merge it once CI is green.
-3. Run report 13's release gate on that merge commit, the one to be tagged; a check that did
-   not run is a named gap, not a pass. A failure means no tag: fix it in a new PR and run
-   the gate again on the new commit.
-4. Theo tags the commit the gate passed on and publishes the release from the changelog
-   entry in one step: `gh release create <tag> --target <commit> --title <tag> --notes-file
-   <entry> --prerelease` (no `--prerelease` for stable).
-
-Promoting a beta to stable follows the same steps; the promotion PR only changes
-`0.x.y-beta.n` to `0.x.y`, so `git diff --stat v0.x.y-beta.n HEAD` lists only the manifests,
-`Cargo.lock` and `CHANGELOG.md`.
-
-Tagging and publishing are Theo's: agent sessions prepare the PR, they do not tag or publish.
+- Agent sessions write PRs with conventional titles; they never tag, dispatch the prerelease
+  workflow, merge a release PR or publish.
+- Theo dispatches pre-releases and merges release PRs, each only once the channel's gate issue
+  is closed and report 13's release gate passed on that commit; a check that did not run is a
+  named gap, not a pass.
+- The release workflow builds, signs and publishes; a failure means no release, fixed in a
+  new PR and a new tag.

@@ -154,19 +154,25 @@ binary or the protocol, per platform, and lists what did not run as open.
   daemon start and the override and bundle in the library; the CLI verbs need the
   host-only channel #108 assigned to #32, so the gate lists them as open, not proven.
 
-## 2026-10-31 — Release policy: one version, changelog from squash subjects (#94)
+## 2026-10-31 — Release policy modelled on OpenLogi (#94)
 
-[Releasing](RELEASING.md) implements issue #94 as written, plus Theo's addition on #94:
-stable `v0.x.y` tags exist only from the M5 cutover (#71), as promoted betas. Choices the
-issue leaves open:
+[Releasing](RELEASING.md) follows the reference Theo posted on #94: one workspace version
+bumped by a release-plz release PR, release-plz tagging only and the release workflow owning
+the GitHub Release, git-cliff changelog from conventional squash subjects, and pre-releases
+cut on `main` by a dispatched workflow without a version bump. Cockpit adds `-alpha.N` from
+the M3 gate to the M5 cutover; stable `v0.x.y` tags exist only from the M5 cutover (#71), as
+promoted betas (Theo, on #94). The tools are the proposal; #96 decides them. Choices the
+reference leaves open:
 
-- **One version source.** Crates do not version independently: Cockpit ships as one bundle
-  (report 13) and `publish = false` keeps crates off crates.io.
-- **Changelog from `git log`.** Squash-merge subjects already are the PR titles, so the entry
-  needs no GitHub token or extra tool. The first release starts at the greenfield bootstrap:
+- **Count base before the first stable.** OpenLogi counts `N` from the previous stable tag;
+  Cockpit has none until M5, so alphas count from the greenfield bootstrap commit `d2d8604`:
   earlier history is the `apps/` code, which is never tagged.
-- **Gate the tagged commit.** The version bump changes the build, so the release gate runs on
-  the commit that is tagged, not on an earlier candidate.
+- **Promotion means no drift.** A stable release promotes a beta only if nothing but the
+  release PR landed after that beta, so the stable build is the one whose upgrade was
+  verified on the three platforms.
+- **Issue in the body.** Greenfield titles used to end in their issue number, which doubles
+  the `(#N)` git-cliff reads; titles are now conventional subjects and the issue goes in the
+  body.
 
 ## 2026-10-31 — cockpit-daemon: a handler seam, two lanes, nothing aborted
 
