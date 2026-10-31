@@ -462,6 +462,9 @@ def refuse_changed_contents(root, manifest):
     for binary in BINARIES:
         if f"bin/{binary}" not in manifest["contents"]:
             problems.append(f"bin/{binary}: not listed in the manifest")
+    expected_helpers = {helper: manifest["version"] for helper in HELPERS}
+    if manifest.get("helpers") != expected_helpers:
+        problems.append(f"helpers: {manifest.get('helpers')!r}, expected {expected_helpers!r}")
     if problems:
         raise Refusal("; ".join(problems))
 

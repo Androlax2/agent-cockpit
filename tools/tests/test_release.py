@@ -599,10 +599,12 @@ class PackageTests(PackagingTestCase):
         for binary in ("cockpit", "cockpit-daemon", "cockpit-claude-hook"):
             with self.subTest(binary=binary):
                 (self.binaries / binary).rename(self.root / binary)
-                code, _outputs, error = self.package()
-                (self.root / binary).rename(self.binaries / binary)
-                shutil.rmtree(self.out)
-                self.out.mkdir()
+                try:
+                    code, _outputs, error = self.package()
+                finally:
+                    (self.root / binary).rename(self.binaries / binary)
+                    shutil.rmtree(self.out)
+                    self.out.mkdir()
                 self.assertEqual(code, 1)
                 self.assertIn(f"{binary}: built binary missing", error)
 
@@ -644,6 +646,16 @@ class VerifyInstallTests(PackagingTestCase):
         code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
         self.assertIn("bin/cockpit-claude-hook: not listed in the manifest", error)
+
+    def test_a_manifest_whose_helpers_record_is_wrong_fails(self):
+        _code, outputs, _error = self.package()
+        manifest_file = Path(outputs["root"]) / release.MANIFEST_PATH
+        manifest = json.loads(manifest_file.read_text())
+        manifest["helpers"] = {}
+        manifest_file.write_text(json.dumps(manifest))
+        code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("helpers: {}, expected {'cockpit-claude-hook': '0.1.0-alpha.7'}", error)
 
     def test_a_file_the_manifest_does_not_list_fails_naming_it(self):
         _code, outputs, _error = self.package()
@@ -761,13 +773,20 @@ class WorkflowMatrixTests(unittest.TestCase):
         workflow = RELEASE_WORKFLOW.read_text()
         built = re.search(r"cargo build --release --locked [^\n]*", workflow)
         self.assertIsNotNone(built, "expected the cargo build line")
-        self.assertEqual(
-            set(re.findall(r"-p (\S+)", built[0])),
-            {"cockpit-cli", "cockpit-daemon", "cockpit-claude"},
-        )
+        built_binaries = set()
+        for package in re.findall(r"-p (\S+)", built[0]):
+            manifest = tomllib.loads((ROOT / "crates" / package / "Cargo.toml").read_text())
+            built_binaries.update(binary["name"] for binary in manifest.get("bin", []))
+        self.assertLessEqual(set(release.BINARIES), built_binaries)
         gathered = re.search(r"\n\s*for binary in ([^;\n]*); do\n", workflow)
         self.assertIsNotNone(gathered, "expected the gather loop")
         self.assertEqual(gathered[1].split(), list(release.BINARIES))
+
+    def test_the_daemon_looks_for_every_helper_beside_itself(self):
+        daemon = (ROOT / "crates/cockpit-daemon/src/main.rs").read_text()
+        for helper in release.HELPERS:
+            with self.subTest(helper=helper):
+                self.assertIn(f'bin_dir.join("{helper}")', daemon)
 
     def test_every_archive_artifact_named_by_hand_is_a_platform(self):
         workflow = RELEASE_WORKFLOW.read_text()
