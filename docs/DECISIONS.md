@@ -26,7 +26,8 @@ recovery and single opener pass, and the closed file passes plain `sqlite3`'s in
   appears and an existing destination is never overwritten. Restore is offline: it takes the
   single-opener lock, checks the copy's integrity, gives it a new database epoch so earlier
   change-feed cursors are recognisably stale (report 04), and folds its WAL. The target's old
-  WAL moves aside before the rename and is deleted after it, so a crash in between loses nothing.
+  WAL moves aside before the rename and is deleted after it: a crash in between leaves its
+  frames on disk, and rerunning the restore finishes the job.
 - **Edges.** `cockpit-turso` depends on no `cockpit-*` crate, and no other member depends on
   `turso`: capabilities run SQL through `cockpit_turso::sql`, which leaves out `turso::Builder`
   and `turso::Database` so only this crate opens the file. Both rules are

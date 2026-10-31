@@ -1,7 +1,7 @@
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::database::{lock_for_single_opener, new_epoch, open_turso, sibling_path};
+use crate::database::{lock_for_single_opener, new_epoch, open_turso, path_text, sibling_path};
 use crate::{Database, Error};
 
 impl Database {
@@ -14,14 +14,7 @@ impl Database {
         // backup never appears at `destination` and the link, not a check, refuses a file
         // created there meanwhile.
         let partial = sibling_path(destination, &format!(".partial-{}", new_epoch()));
-        let partial_text = partial.to_str().ok_or_else(|| Error::Io {
-            path: destination.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "the backup path is not valid UTF-8",
-            ),
-        })?;
-        let quoted_partial = partial_text.replace('\'', "''");
+        let quoted_partial = path_text(&partial)?.replace('\'', "''");
         let written = self
             .connect()?
             .execute(format!("VACUUM INTO '{quoted_partial}'"), ())
@@ -48,23 +41,17 @@ pub async fn restore(backup: &Path, target: &Path) -> Result<(), Error> {
     let staging = sibling_path(target, ".restoring");
     remove_if_present(&staging)?;
     remove_if_present(&sibling_path(&staging, "-wal"))?;
-    std::fs::copy(backup, &staging).map_err(|source| Error::Io {
-        path: backup.to_path_buf(),
-        source,
-    })?;
+    std::fs::copy(backup, &staging).map_err(Error::io(backup))?;
     prepare_staged_copy(&staging).await?;
     refuse_unfolded_wal(&staging)?;
     remove_if_present(&sibling_path(&staging, "-wal"))?;
     sync_file(&staging)?;
-    // The old WAL must not meet the new file, but a crash before the rename must not lose
-    // it either: it moves aside first and is deleted only once the new file is in place.
+    // The old WAL must not meet the new file. It moves aside rather than being deleted, so a
+    // crash before the rename leaves its frames on disk; rerunning the restore finishes it.
     let target_wal = sibling_path(target, "-wal");
     let replaced_wal = sibling_path(target, "-wal.replaced");
     rename_if_present(&target_wal, &replaced_wal)?;
-    std::fs::rename(&staging, target).map_err(|source| Error::Io {
-        path: target.to_path_buf(),
-        source,
-    })?;
+    std::fs::rename(&staging, target).map_err(Error::io(target))?;
     sync_file(&parent_directory(target))?;
     remove_if_present(&replaced_wal)
 }
@@ -121,10 +108,7 @@ fn refuse_existing(path: &Path) -> Result<(), Error> {
             path: path.to_path_buf(),
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(Error::io(path)(source)),
     }
 }
 
@@ -137,18 +121,15 @@ fn link_new(from: &Path, to: &Path) -> Result<(), Error> {
                 path: to.to_path_buf(),
             })
         }
-        Err(source) => Err(Error::Io {
-            path: to.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(Error::io(to)(source)),
     }
 }
 
 /// The directory holding `path`; `.` for a bare file name, whose parent is the empty path.
-fn parent_directory(path: &Path) -> std::path::PathBuf {
+fn parent_directory(path: &Path) -> PathBuf {
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => std::path::PathBuf::from("."),
+        _ => PathBuf::from("."),
     }
 }
 
@@ -156,10 +137,7 @@ fn rename_if_present(from: &Path, to: &Path) -> Result<(), Error> {
     match std::fs::rename(from, to) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            path: from.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(Error::io(from)(source)),
     }
 }
 
@@ -167,18 +145,12 @@ fn remove_if_present(path: &Path) -> Result<(), Error> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
+        Err(source) => Err(Error::io(path)(source)),
     }
 }
 
 fn sync_file(path: &Path) -> Result<(), Error> {
     File::open(path)
         .and_then(|file| file.sync_all())
-        .map_err(|source| Error::Io {
-            path: path.to_path_buf(),
-            source,
-        })
+        .map_err(Error::io(path))
 }

@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -49,6 +49,14 @@ pub enum Error {
         source: std::io::Error,
     },
     Database(turso::Error),
+}
+
+impl Error {
+    /// Maps an I/O failure on `path`, for `map_err`.
+    pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Error {
+        let path = path.to_path_buf();
+        move |source| Error::Io { path, source }
+    }
 }
 
 impl fmt::Display for Error {

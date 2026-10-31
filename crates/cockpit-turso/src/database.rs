@@ -151,33 +151,30 @@ pub(crate) fn lock_for_single_opener(path: &Path) -> Result<File, Error> {
         .truncate(false)
         .write(true)
         .open(&lock_path)
-        .map_err(|source| Error::Io {
-            path: lock_path.clone(),
-            source,
-        })?;
+        .map_err(Error::io(&lock_path))?;
     match lock_file.try_lock() {
         Ok(()) => Ok(lock_file),
         Err(TryLockError::WouldBlock) => Err(Error::AlreadyOpen {
             path: path.to_path_buf(),
         }),
-        Err(TryLockError::Error(source)) => Err(Error::Io {
-            path: lock_path,
-            source,
-        }),
+        Err(TryLockError::Error(source)) => Err(Error::io(&lock_path)(source)),
     }
 }
 
 /// Opens a file in SQLite-compatible mode: default journal mode, no MVCC, no experimental
 /// feature flags (report 04).
 pub(crate) async fn open_turso(path: &Path) -> Result<turso::Database, Error> {
-    let path_text = path.to_str().ok_or_else(|| Error::Io {
-        path: path.to_path_buf(),
-        source: std::io::Error::new(
+    Ok(turso::Builder::new_local(path_text(path)?).build().await?)
+}
+
+/// `path` as the UTF-8 text Turso's API takes.
+pub(crate) fn path_text(path: &Path) -> Result<&str, Error> {
+    path.to_str().ok_or_else(|| {
+        Error::io(path)(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "the database path is not valid UTF-8",
-        ),
-    })?;
-    Ok(turso::Builder::new_local(path_text).build().await?)
+            "the path is not valid UTF-8",
+        ))
+    })
 }
 
 /// `path` with `suffix` appended to its file name, as SQLite names `-wal` files.
@@ -203,12 +200,10 @@ async fn ensure_epoch(writer: &turso::Connection) -> Result<String, Error> {
             [new_epoch()],
         )
         .await?;
-    let mut rows = writer
-        .query("SELECT value FROM cockpit_database WHERE key = 'epoch'", ())
-        .await?;
-    let row = rows
-        .next()
+    let row = writer
+        .prepare("SELECT value FROM cockpit_database WHERE key = 'epoch'")
         .await?
-        .ok_or(turso::Error::QueryReturnedNoRows)?;
+        .query_row(())
+        .await?;
     Ok(row.get(0)?)
 }

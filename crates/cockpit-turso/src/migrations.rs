@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
+use turso::transaction::TransactionBehavior;
+
 use crate::Error;
 
 /// One schema step of a capability. `sql` may hold several statements; it runs in one
@@ -136,25 +138,17 @@ async fn apply_one(
     owner: &str,
     migration: &Migration,
 ) -> Result<(), Error> {
-    connection.execute("BEGIN IMMEDIATE", ()).await?;
-    let applied = async {
-        connection.execute_batch(migration.sql).await?;
-        connection
-            .execute(
-                "INSERT INTO cockpit_migrations (owner, version, sql) VALUES (?1, ?2, ?3)",
-                (owner, i64::from(migration.version), migration.sql),
-            )
+    // On error the transaction rolls back when dropped, and the failing open drops the
+    // connection with it.
+    let transaction =
+        turso::transaction::Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
             .await?;
-        connection.execute("COMMIT", ()).await
-    }
-    .await;
-    if let Err(error) = applied {
-        // The migration's error is the one to report. A failed ROLLBACK changes nothing: the
-        // failing open drops this connection, which discards the open transaction.
-        if matches!(connection.is_autocommit(), Ok(false)) {
-            let _ = connection.execute("ROLLBACK", ()).await;
-        }
-        return Err(error.into());
-    }
-    Ok(())
+    transaction.execute_batch(migration.sql).await?;
+    transaction
+        .execute(
+            "INSERT INTO cockpit_migrations (owner, version, sql) VALUES (?1, ?2, ?3)",
+            (owner, i64::from(migration.version), migration.sql),
+        )
+        .await?;
+    Ok(transaction.commit().await?)
 }
