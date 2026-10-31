@@ -16,8 +16,8 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Start session (blank, with prompt, in own clone), background/detached, terminal-in-place | keep | sessions, projects, tmux (05) |
 | Restart in place with same conversation; restart-all after config change (17 start files) | keep | sessions; config change detection in config (09): detection proven by `cockpit-config` test `start_file_changes::every_kind_of_change_to_a_read_file_is_reported` (#22); restart-all pending |
 | Sleep after idle, wake on open/message/todo/phone, sleep refusals, asleep notes 7 d | keep | sessions; permits via messaging (07) |
-| Reboot restore (`B`), ended/recent sessions, resume past session (`H`) | keep | sessions |
-| Effort, model/variant pickers, billing toggle (credits vs subscription), `/compact`, Remote Control | keep | provider adapters expose as capabilities (08); UI generic |
+| Reboot restore, ended/recent sessions, resume past session (`H`) | change | sessions: restore is automatic on daemon start, no `B` key (decided 2026-10-31) |
+| Effort, model/variant pickers, billing toggle (credits vs subscription), `/compact`, Remote Control | change | capabilities in the adapters and CLI verbs only; no TUI keys (`e`, `$`, `C`, `m` dropped 2026-10-31) |
 | Stuck-exit capture, forced exit rounds | keep | processes + diagnostics (12) |
 | Agent state from hooks/plugins/Codex bridge; pane scraping fallback (`osd classify`) | change | adapters own detection; structured events first, screen classification as adapter-internal fallback with recorded confidence; never task completion (05) |
 | Per-agent adapter verbs (`new resume restart exit say prompt_start doctor …`) | keep | `cockpit-provider-api` trait + one bridge per adapter (08, 17) |
@@ -32,21 +32,25 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Manager tmux session, column + viewer pane, nested attach per agent session | keep | tmux on a private server (05) |
 | Focus fade (`cockpit-fade`), Left-at-prompt-start (`cockpit-left`), kitty chords, loading/restarting screens | polish | tui (05) |
 | Workspace 6 kitty window toggle, Hyprland/waybar signals, floating approval/guide windows | change | desktop integration client (19); approvals inside tmux panes by default |
-| Image viewer (`I`), reply images | keep | sessions artifacts; renderer in tui/web |
+| Image viewer (`I`), reply images | polish | dropped as is; redesigned in M6 (decided 2026-10-31) |
 | Contextual help `?`, card legend | keep | tui |
+| Team view (`k`), Chief answers (`c`), drop queued (`d`), next needing you (`n`) | change | `n` stays; `k`/`c` become basic lists in M4, designed in M6; `d` dropped |
+| Settings view (`S`), web windows (`P`/`W`/`G`), daily digest (`D`) | polish | `cockpit config` CLI now; designed views and web-window approach in M6 |
 
 ## Tasks, todo, queue
 
 | Feature | Verdict | Owner |
 | --- | --- | --- |
 | Items, priorities, kinds, statuses, notes with images, drafts surviving reload | keep | tasks (06) |
-| Proposals/Ideas (`y`/`n`), declined memory | keep | tasks: `proposed` status + decline memory |
+| Proposals/Ideas (`y`/`n`), declined memory | keep (core) / polish (view) | tasks: `proposed` status + decline memory; designed view in M6 |
 | `blocked` reports to the dotfiles project; `stack` proposals to greywall/greyproxy | change | generic "report blocker to configured target project" (owner setting); stack = plain cross-project proposal |
 | `--after` dependencies, `unwait`, completion summaries to the filing session | keep | tasks + messaging |
 | Cross-project `add --project`, caps per project | keep | tasks; caps in config |
 | Queue dispatch (idle 5 min, priority, viewed-session exclusion, designer routing), `Q` explanation | keep | scheduling (10) with explanations |
-| Todo trailers closing items on apply; task trail; updates/reviewed; return notes; defer 20 min | keep | tasks + verification evidence (06); notes/defer in tui state |
-| GitHub issues shown with todos; PR list; review session in fresh clone | keep | `cockpit-github` evidence source + projects |
+| Todo trailers closing items on apply | keep | tasks + verification evidence (06) |
+| Task trail, updates/reviewed, return notes, defer 20 min, details view (`t`, `u`, `v`, `w`, `l`, `i`) | drop | unused (decided 2026-10-31); rebuilt only if M6 usage data asks |
+| GitHub issues shown with todos; review session from a PR | keep | `cockpit-github` + projects; CLI verb for the review session |
+| Pull requests tab | drop | not needed (decided 2026-10-31); PR state stays as task evidence |
 
 ## Approvals, host actions, agent channel
 
@@ -71,7 +75,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 
 | Feature | Verdict | Owner |
 | --- | --- | --- |
-| Plan windows (5 h / 7 d), 80/95 % alerts, Codex quota, cost archive at API prices, time with agent, digest | keep | `cockpit-usage` (18) |
+| Plan windows (5 h / 7 d), 80/95 % alerts, Codex quota, cost archive at API prices, time with agent, digest | keep (core) / polish (views) | `cockpit-usage` (18); Status panel and digest views designed in M6 |
 | Provider incident status pages | keep | usage/status; adapters supply URLs |
 | Waybar module, bar visibility | change | desktop client reads a status file (19) |
 
@@ -89,7 +93,8 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Feature | Verdict | Owner |
 | --- | --- | --- |
 | Parallel clones (`--no-local`, trust, hooks, memory set-aside), clones sweep, `K` check | keep | projects (02) |
-| lazygit in sandbox, `U` push with safe git config (GitHub-only origin, no rewrites, hooks off) | keep | projects + `cockpit-github`; host git safety rules unchanged |
+| Push with safe git config (GitHub-only origin, no rewrites, hooks off) | keep | projects + `cockpit-github` as a CLI verb; host git safety rules unchanged |
+| lazygit key (`g`), push key (`U`), design-canvas key (`o`) | drop | unused keys (decided 2026-10-31) |
 | Reviewed repos: clone vs running copy, `.outgoing` patches, `cockpit apply`, `after-apply` | drop | Theo-only tooling outside the product (decided 2026-10-31); lives in his dotfiles, uses public CLI verbs only |
 | Per-project rootless Docker (system units, per-project users, nftables, relays), `agent-docker-build` CA trust, forwards | keep | containers + sandbox (11); system install optional, reported by readiness |
 | GitHub tokens (repo-only, board), protect/check, PR review | keep | `cockpit-github` |
@@ -99,7 +104,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Feature | Verdict | Owner |
 | --- | --- | --- |
 | FigCraft per-checkout launch, port reservation, MCP wiring, design-review float, Hyprland lua | plugin | first plugin candidate (14); `design link` stays generic in sessions |
-| Claude Design canvas link, `N` canvas mode | keep | sessions design link (generic URL) |
+| Claude Design canvas link, `N` canvas mode | change | generic design link kept as data; no `o` key or canvas mode in the basic TUI |
 | Clipboard image bridge (Wayland), `wl-paste` shim | keep | sandbox host service with per-platform backend (11) |
 | Phone page: pairing, push, live screen, answers, wake, todos, PRs, usage, lock-time notifications | keep | `cockpit-web` client (19) |
 
