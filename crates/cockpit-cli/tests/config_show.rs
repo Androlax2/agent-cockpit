@@ -517,7 +517,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit session list [--ended]\n       \
                  cockpit session restart SESSION|--all\n       \
                  cockpit session sleep|wake|resume|end SESSION\n       \
-                 cockpit session link SESSION URL\n"
+                 cockpit session link SESSION URL\n       \
+                 cockpit version [--all]\n"
             )
         );
     }

@@ -10,9 +10,10 @@ requirements. "Merged" is not "installed"; "installed" is not "running".
 
 ## Packaging
 
-- `dist` (cargo-dist) for archives, checksums and release manifests; platform packaging
-  (Arch first, Homebrew for macOS) wraps the same artifacts. Windows receives the Linux
-  package plus WSL-specific setup and validation.
+- Archives, checksums and release manifests from Cockpit's own release workflow (#96
+  replaced the `dist` proposal: [decision](../../decisions/2026-10-31-96-release-tooling.md));
+  platform packaging (Arch first, Homebrew for macOS) wraps the same artifacts. Windows
+  receives the Linux package plus WSL-specific setup and validation.
 - Install tests check that helpers and agent guidance are present, not only that the binary
   starts.
 - Build provenance (attestation) and verification results are recorded separately: where an
