@@ -16,6 +16,10 @@ process acts for:
    bound launch's root names the session. Nested agents and hooks therefore act as the
    session that started them, with its grants.
 
+`identify` takes a write transaction because step 2 writes. Requests that otherwise write
+nothing (the approval status polls) use `identify_bound` in a read transaction: it gives
+the same session or refusal, and `None` when a pending token needs `identify` to bind it.
+
 A process is identified by boot id, pid and start time, so a reused pid never matches. The
 walk stops at a parent that started after its child. Reading process trees is implemented
 for Linux (`/proc`); elsewhere every sender is refused as unverifiable (report 11 keeps
@@ -44,4 +48,6 @@ read-only into that project's sandboxes only.
 
 - `tests/identity.rs`: binding, spent and leaked tokens, pid reuse and nested sessions on a
   real state database with real processes.
+- `tests/identify_bound.rs`: the read-only path beside a held writer, pending tokens left
+  to `identify`, and the same refusals.
 - `tests/answers.rs`: directory modes, refused names and write-once answers.

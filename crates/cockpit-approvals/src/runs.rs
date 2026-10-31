@@ -340,10 +340,7 @@ pub async fn run_status(
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = match run_request(write, id, now).await? {
-        Some(run) if run.session == *session => run,
-        _ => return Err(not_found(KIND, id.0).into()),
-    };
+    let mut run = run_of(write, session, id, now).await?;
     if run.state != RunState::Asking {
         return Ok(run);
     }
@@ -357,6 +354,32 @@ pub async fn run_status(
         run.expires_at = expires_at;
     }
     Ok(run)
+}
+
+/// [`run_status`] when the poll writes nothing, read in any transaction; `None` when the
+/// poll must keep the request from expiring, which only [`run_status`] may do.
+pub async fn run_status_if_fresh(
+    connection: &Connection,
+    session: &SessionId,
+    id: RunId,
+    now: i64,
+) -> Result<Option<RunRequest>, Error> {
+    let run = run_of(connection, session, id, now).await?;
+    let is_stale = run.state == RunState::Asking && refreshed_expiry(run.expires_at, now).is_some();
+    Ok((!is_stale).then_some(run))
+}
+
+/// The request `id`, which only its asking session may see.
+async fn run_of(
+    connection: &Connection,
+    session: &SessionId,
+    id: RunId,
+    now: i64,
+) -> Result<RunRequest, Error> {
+    match run_request(connection, id, now).await? {
+        Some(run) if run.session == *session => Ok(run),
+        _ => Err(not_found(KIND, id.0).into()),
+    }
 }
 
 /// The owner's edit: `command` replaces the current one as a new revision, so a decision

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cockpit_authorization::SessionId;
 use cockpit_turso::WriteTransaction;
-use cockpit_turso::sql::Row;
+use cockpit_turso::sql::{Connection, Row};
 
 use crate::process::{ProcessError, ProcessIdentity};
 use crate::{Error, Refusal};
@@ -109,16 +109,61 @@ pub async fn identify(
     peer: &PeerAncestry,
     token: Option<&str>,
 ) -> Result<SessionId, Error> {
-    let ancestry = peer
-        .as_ref()
-        .map_err(|error| Refusal::PeerUnverifiable(error.clone()))?;
-    if let Some(token) = token.filter(|token| LaunchToken::is_well_formed(token))
+    let ancestry = verified(peer)?;
+    if let Some(token) = well_formed(token)
         && let Some(session) = bind(write, ancestry, token).await?
     {
         return Ok(session);
     }
+    bound_session(write, ancestry, token).await
+}
+
+/// [`identify`] without binding, for requests that would otherwise write nothing (status
+/// polls): it reads, so it runs in a read transaction and never waits for the writer.
+/// `None` when a well-formed `token` names a pending launch: only [`identify`], in a write
+/// transaction, may bind or refuse it. Every other outcome is the one [`identify`] gives.
+pub async fn identify_bound(
+    connection: &Connection,
+    peer: &PeerAncestry,
+    token: Option<&str>,
+) -> Result<Option<SessionId>, Error> {
+    let ancestry = verified(peer)?;
+    if let Some(token) = well_formed(token)
+        && is_pending(connection, token).await?
+    {
+        return Ok(None);
+    }
+    bound_session(connection, ancestry, token).await.map(Some)
+}
+
+fn verified(peer: &PeerAncestry) -> Result<&[ProcessIdentity], Error> {
+    peer.as_deref()
+        .map_err(|error| Refusal::PeerUnverifiable(error.clone()).into())
+}
+
+fn well_formed(token: Option<&str>) -> Option<&str> {
+    token.filter(|token| LaunchToken::is_well_formed(token))
+}
+
+async fn is_pending(connection: &Connection, token: &str) -> Result<bool, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT 1 FROM agent_channel_launches WHERE token = ?1",
+            [token],
+        )
+        .await?;
+    Ok(rows.next().await?.is_some())
+}
+
+/// The session whose bound root is the sender's nearest ancestor. `token` only chooses the
+/// refusal when none is.
+async fn bound_session(
+    connection: &Connection,
+    ancestry: &[ProcessIdentity],
+    token: Option<&str>,
+) -> Result<SessionId, Error> {
     // One row per session: read every bound root once, then take the nearest ancestor's.
-    let mut rows = write
+    let mut rows = connection
         .query(
             "SELECT session, root_boot, root_pid, root_start FROM agent_channel_launches
              WHERE bound_at IS NOT NULL",

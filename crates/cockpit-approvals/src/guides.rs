@@ -391,10 +391,7 @@ pub async fn guide_status(
     id: GuideId,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut guide = match guide_request(write, id, now).await? {
-        Some(guide) if guide.session == *session => guide,
-        _ => return Err(not_found(KIND, id.0).into()),
-    };
+    let mut guide = guide_of(write, session, id, now).await?;
     if guide.state != GuideState::Asking {
         return Ok(guide);
     }
@@ -418,6 +415,33 @@ pub async fn guide_status(
         guide.expires_at = expires_at;
     }
     Ok(guide)
+}
+
+/// [`guide_status`] when the poll writes nothing, read in any transaction; `None` when the
+/// poll must keep the guide from expiring, which only [`guide_status`] may do.
+pub async fn guide_status_if_fresh(
+    connection: &Connection,
+    session: &SessionId,
+    id: GuideId,
+    now: i64,
+) -> Result<Option<GuideRequest>, Error> {
+    let guide = guide_of(connection, session, id, now).await?;
+    let is_stale =
+        guide.state == GuideState::Asking && refreshed_expiry(guide.expires_at, now).is_some();
+    Ok((!is_stale).then_some(guide))
+}
+
+/// The guide `id`, which only its asking session may see.
+async fn guide_of(
+    connection: &Connection,
+    session: &SessionId,
+    id: GuideId,
+    now: i64,
+) -> Result<GuideRequest, Error> {
+    match guide_request(connection, id, now).await? {
+        Some(guide) if guide.session == *session => Ok(guide),
+        _ => Err(not_found(KIND, id.0).into()),
+    }
 }
 
 /// The owner's answer to step `step`, the one shown now. A step that asks a question needs
