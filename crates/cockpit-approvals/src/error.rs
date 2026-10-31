@@ -26,6 +26,9 @@ pub enum Refusal {
     NotRunning,
     /// The answer names a guide step that is not the one shown now.
     StaleStep { current: usize },
+    /// The approval came within the grace after the request appeared or changed: it may be a
+    /// keystroke meant for something else (#156).
+    TooSoon { wait_seconds: i64 },
 }
 
 /// Who can lift a refusal.
@@ -79,6 +82,10 @@ impl Refusal {
                 UnblockedBy::Owner,
                 format!("answer the step shown now, step {}", current + 1),
             ),
+            Refusal::TooSoon { wait_seconds } => (
+                UnblockedBy::Owner,
+                format!("read the request, then approve it again in {wait_seconds} s"),
+            ),
         }
     }
 }
@@ -124,6 +131,11 @@ impl fmt::Display for Refusal {
                 formatter,
                 "the guide is at step {}, not the one answered",
                 current + 1
+            ),
+            Refusal::TooSoon { wait_seconds } => write!(
+                formatter,
+                "the request appeared or changed just now; an approval counts {wait_seconds} s \
+                 from now"
             ),
         }
     }

@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 
 use cockpit_protocol::{
-    Command, ErrorCode, GuideStateView, GuideStepView, GuideView, HandshakeReply, Outcome,
-    ProtocolError, ProtocolVersion, Reply, Request, Response, RunRequestView, RunResultView,
-    RunStateView, ServerFrame, ShownText, Unblock, UnblockedBy, Welcome,
+    Command, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView, HandshakeReply,
+    HiddenView, Outcome, ProtocolError, ProtocolVersion, Reply, Request, Response, RunRequestView,
+    RunResultView, RunStateView, ServerFrame, ShownText, Unblock, UnblockedBy, Welcome,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -125,6 +125,7 @@ fn shown(text: &str) -> ShownText {
         text: text.to_owned(),
         has_hidden_characters: false,
         non_ascii: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 
@@ -143,6 +144,9 @@ fn request(state: RunStateView) -> RunRequestView {
         shown_reason: shown("tests"),
         project: None,
         outside_project: true,
+        folded_command: None,
+        timeout_without_foreground: false,
+        changed_build_files: Some(Vec::new()),
         digest: "d".repeat(64),
         asked_at: 1,
         expires_at: 901,
@@ -421,6 +425,7 @@ async fn the_owner_reads_a_request_with_its_warnings() {
                 text: "rm -rf /\\u{202e}".to_owned(),
                 has_hidden_characters: true,
                 non_ascii: vec!["а U+0430".to_owned()],
+                warnings: vec![HiddenView::BidiControl, HiddenView::BlankLines],
             },
             ..request(RunStateView::Asking)
         })],
@@ -431,7 +436,10 @@ async fn the_owner_reads_a_request_with_its_warnings() {
     let shown = text(&output.stdout);
     assert!(shown.contains("command:\nrm -rf /\\u{202e}\n"), "{shown}");
     assert!(
-        shown.contains("! hidden characters shown escaped; non-ASCII: а U+0430"),
+        shown.contains(
+            "! hidden characters shown escaped (direction controls, blank-line padding); \
+             non-ASCII: а U+0430"
+        ),
         "{shown}"
     );
     assert!(
@@ -454,6 +462,7 @@ async fn the_owner_reads_a_guides_directory_escaped_and_placed_against_the_proje
                 text: "/tmp/x\\u{202e}".to_owned(),
                 has_hidden_characters: true,
                 non_ascii: Vec::new(),
+                warnings: vec![HiddenView::BidiControl],
             },
             project: Some("app".to_owned()),
             outside_project: true,
@@ -527,4 +536,112 @@ async fn guide_steps_count_from_one_for_the_owner() {
             answer: Some("1234".to_owned()),
         }]
     );
+}
+
+async fn shown_to_owner(request: RunRequestView) -> String {
+    let home = Home::new();
+    let _daemon = scripted_daemon(&home.owner_socket(), vec![run_reply(request)]);
+    let output = home.cockpit(&["approval", "show", "7"], "").await;
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    text(&output.stdout)
+}
+
+#[tokio::test]
+async fn the_owner_is_warned_of_the_changed_build_files_a_command_runs() {
+    let shown = shown_to_owner(RunRequestView {
+        changed_build_files: Some(vec!["Makefile".to_owned(), "build.rs".to_owned()]),
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    assert!(
+        shown
+            .contains("! runs files changed in this checkout and on no remote: Makefile, build.rs"),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_is_told_when_changed_build_files_could_not_be_read() {
+    let shown = shown_to_owner(RunRequestView {
+        changed_build_files: None,
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    assert!(
+        shown.contains("! could not read which changed build files it runs"),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_gets_the_timeout_hint_before_approving() {
+    let shown = shown_to_owner(RunRequestView {
+        timeout_without_foreground: true,
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    assert!(shown.contains("! timeout without --foreground:"), "{shown}");
+}
+
+#[tokio::test]
+async fn the_queue_folds_a_long_command_behind_an_explicit_more() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.owner_socket(),
+        vec![Outcome::Ok(Reply::ApprovalQueue {
+            runs: vec![RunRequestView {
+                shown_command: shown("echo 1\necho 2\necho 3"),
+                folded_command: Some(FoldedView {
+                    preview: "echo 1".to_owned(),
+                    more_lines: 2,
+                    more_chars: 14,
+                }),
+                ..request(RunStateView::Asking)
+            }],
+            guides: Vec::new(),
+        })],
+    );
+
+    let output = home.cockpit(&["approval", "list"], "").await;
+
+    assert_eq!(
+        text(&output.stdout),
+        "run\t7\tasking\ts1\techo 1 [more: 2 lines; cockpit approval show 7]\n"
+    );
+}
+
+#[tokio::test]
+async fn ask_run_no_wait_files_the_request_and_returns_at_once_with_how_to_wait() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.agent_socket(),
+        vec![
+            run_reply(request(RunStateView::Asking)),
+            run_reply(request(RunStateView::Asking)),
+        ],
+    );
+
+    let output = home
+        .cockpit(
+            &["ask", "run", "--no-wait", "--reason", "tests", "make test"],
+            "",
+        )
+        .await;
+
+    assert_eq!(output.status.code(), Some(124), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("cockpit ask run --wait 7"),
+        "{}",
+        text(&output.stderr)
+    );
+    let received = daemon.await.unwrap();
+    assert_eq!(
+        received.len(),
+        1,
+        "no status poll after the ask: {received:?}"
+    );
+    assert!(matches!(received[0], Command::AskRun { .. }));
 }

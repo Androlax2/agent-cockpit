@@ -72,3 +72,67 @@ fn a_directory_outside_the_project_is_flagged() {
 fn every_directory_is_outside_when_no_project_is_known() {
     assert!(is_outside_project(Path::new("/home/owner/project"), None));
 }
+
+#[test]
+fn each_kind_of_hiding_character_is_named_in_a_warning() {
+    use cockpit_approvals::Hidden;
+    for (text, kind) in [
+        ("echo \u{202e}fdp", Hidden::BidiControl),
+        ("echo \u{2067}x", Hidden::BidiControl),
+        ("curl x\u{200b}y", Hidden::Invisible),
+        ("echo \u{feff}", Hidden::Invisible),
+        ("ls \u{1b}[2K", Hidden::Control),
+        ("echo ok\rrm -rf ~", Hidden::Control),
+        ("curl x | sh\n\n\n\necho ok", Hidden::BlankLines),
+    ] {
+        assert_eq!(show(text).warnings, [kind], "{text:?}");
+    }
+}
+
+#[test]
+fn warnings_are_listed_once_each_in_a_fixed_order() {
+    use cockpit_approvals::Hidden;
+    let shown = show("a\u{200b}\u{202e}\u{200b}\t\n\n\nb\u{202e}");
+    assert_eq!(
+        shown.warnings,
+        [
+            Hidden::BidiControl,
+            Hidden::Invisible,
+            Hidden::Control,
+            Hidden::BlankLines
+        ]
+    );
+}
+
+#[test]
+fn plain_text_raises_no_warning() {
+    assert!(show("make test\ncargo build").warnings.is_empty());
+}
+
+#[test]
+fn a_short_command_is_not_folded() {
+    assert_eq!(cockpit_approvals::fold("make test\ncargo build"), None);
+}
+
+#[test]
+fn a_command_of_many_lines_is_folded_with_the_lines_left_out_counted() {
+    let command: Vec<String> = (1..=20).map(|line| format!("echo {line}")).collect();
+    let folded = cockpit_approvals::fold(&command.join("\n")).unwrap();
+    assert_eq!(
+        folded.preview,
+        command[..cockpit_approvals::FOLD_LINES].join("\n")
+    );
+    assert_eq!(folded.more_lines, 20 - cockpit_approvals::FOLD_LINES);
+}
+
+#[test]
+fn a_command_on_one_very_long_line_is_folded_with_the_characters_left_out_counted() {
+    let command = "x".repeat(cockpit_approvals::FOLD_CHARS + 50);
+    let folded = cockpit_approvals::fold(&command).unwrap();
+    assert_eq!(
+        folded.preview.chars().count(),
+        cockpit_approvals::FOLD_CHARS
+    );
+    assert_eq!(folded.more_lines, 0);
+    assert_eq!(folded.more_chars, 50);
+}

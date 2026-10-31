@@ -3,25 +3,27 @@
 mod display;
 mod error;
 mod guides;
+mod hints;
 mod pty;
 mod redact;
 mod runs;
 
 use cockpit_turso::{Migration, MigrationSet};
 
-pub use display::{Shown, is_outside_project, show};
+pub use display::{FOLD_CHARS, FOLD_LINES, Folded, Hidden, Shown, fold, is_outside_project, show};
 pub use error::{Error, Refusal, UnblockedBy};
 pub use guides::{
     Guide, GuideId, GuideRequest, GuideState, GuideStep, Step, answer_step, ask_guide, close_guide,
     guide_request, guide_status, open_guides, parse_guide, report_stuck,
 };
+pub use hints::{build_files_run, timeout_without_foreground};
 pub use pty::{NoResult, Output, Ran, RunSettings, Runner, present, run_leader};
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use runs::{
-    Approved, EXPIRES_AFTER_SECONDS, Project, RunAsk, RunId, RunRequest, RunResult, RunState,
-    action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, may_ask, open_runs,
-    queue_order, reconcile_runs, record_not_run, record_outcome_unknown, resolve_cwd, run_request,
-    run_status, start_run,
+    APPROVAL_GRACE_SECONDS, Approved, EXPIRES_AFTER_SECONDS, Project, RunAsk, RunId, RunRequest,
+    RunResult, RunState, action_digest, approve_run, ask_run, decline_run, edit_run, finish_run,
+    may_ask, open_runs, queue_order, reconcile_runs, record_not_run, record_outcome_unknown,
+    resolve_cwd, run_request, run_status, start_run,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an
@@ -29,9 +31,10 @@ pub use runs::{
 /// leaves `asking`. Rows are never deleted: a late result names the request it belongs to.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "approvals",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE approvals_runs (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE approvals_runs (
                 id INTEGER PRIMARY KEY,
                 session TEXT NOT NULL CHECK (session <> ''),
                 revision INTEGER NOT NULL CHECK (revision >= 1),
@@ -99,5 +102,12 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 answered_at INTEGER,
                 PRIMARY KEY (guide, position)
             );",
-    }],
+        },
+        Migration {
+            version: 2,
+            // #156: the grace after a revision appears needs its time; an edit sets it again.
+            sql: "ALTER TABLE approvals_runs ADD COLUMN revised_at INTEGER NOT NULL DEFAULT 0;
+            UPDATE approvals_runs SET revised_at = asked_at;",
+        },
+    ],
 };

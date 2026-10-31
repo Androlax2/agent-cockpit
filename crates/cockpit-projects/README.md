@@ -27,7 +27,9 @@ marker is refused as `Replaced` instead of being acted on.
   files never count.
 - **Host Git.** Every call runs with `SAFE_CONFIG` (hooks off, program-running and
   signature settings reset), every filter, diff and merge driver the configuration names reset, no `GIT_*`
-  variable from the daemon's environment and no terminal prompt.
+  variable from the daemon's environment and no terminal prompt. `Git::changed_files` reads
+  what work in a checkout changed and no remote has, for the approvals' build-file warning
+  (#156).
 - **Push.** Only the current branch, only to an `origin` with one URL that pushes to one URL,
   both on GitHub after every rewrite, with no local or worktree redirect or `http.*` setting, only as `refs/heads/B:refs/heads/B` without force, so a rewrite is
   refused by Git as a non-fast-forward.
@@ -38,12 +40,14 @@ marker is refused as `Replaced` instead of being acted on.
   and filesystem work).
 - Must not depend on `cockpit-sessions`, `cockpit-tasks` or `cockpit-scheduling`:
   checkouts outlive tasks (report 03); `tests/crate_graph.rs` enforces it.
-- Used by: the daemon, whose `Routes` serve the `project` and `checkout` verbs to the owner.
+- Used by: the daemon, whose `Routes` serve the `project` and `checkout` verbs to the owner
+  and read changed files for approvals.
 
 ## Tests
 
 - `tests/registration.rs`: registration, names, overlap and path validation on real Git.
 - `tests/occupancy.rs`: claim, release, conflicts and replaced checkouts on a real database.
 - `tests/sweep.rs`: a clone left `removing` is checked again, not deleted.
+- `tests/changed_files.rs`: uncommitted and unpushed changes on real Git.
 - `cockpit-cli/tests/projects.rs`: issue #28's acceptance through the CLI and daemon with a
   fake `git` on `PATH`.

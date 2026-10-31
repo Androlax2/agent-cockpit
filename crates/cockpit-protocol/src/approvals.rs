@@ -11,6 +11,38 @@ pub struct ShownText {
     pub text: String,
     pub has_hidden_characters: bool,
     pub non_ascii: Vec<String>,
+    /// Why `text` differs from what the agent wrote, each kind once (#156). Every client
+    /// (TUI, phone) shows these as warnings.
+    #[serde(default)]
+    pub warnings: Vec<HiddenView>,
+}
+
+/// A kind of character, or run of lines, the display rules escaped or collapsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HiddenView {
+    /// Direction-changing characters (`U+202E` shows `fdp` as `pdf`).
+    BidiControl,
+    /// Zero-width and other characters that take no room on screen.
+    Invisible,
+    /// Control codes other than the newline: escapes, carriage returns, tabs.
+    Control,
+    /// Two or more blank lines in a row, collapsed into one marked line.
+    BlankLines,
+    /// A kind this client does not know yet; show it as a warning all the same.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The start of a long shown command, for panes and screens that fold it behind an explicit
+/// "more"; the whole is `shown_command`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoldedView {
+    pub preview: String,
+    /// Whole lines after the preview.
+    pub more_lines: usize,
+    /// Characters after the preview, its line breaks included.
+    pub more_chars: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +83,17 @@ pub struct RunRequestView {
     pub project: Option<String>,
     /// The directory is not inside the project (always so when no project is known).
     pub outside_project: bool,
+    /// `shown_command` folded, when it is too long to show whole.
+    #[serde(default)]
+    pub folded_command: Option<FoldedView>,
+    /// The command runs `timeout` without `--foreground`: a prompt in it would stop it.
+    #[serde(default)]
+    pub timeout_without_foreground: bool,
+    /// Build files and scripts changed in the project's checkout and no remote has that the
+    /// command runs (Makefiles for `make`, `build.rs` for `cargo`, files it names). Read for
+    /// the owner's views of an asking request; `None` when it was not or could not be read.
+    #[serde(default)]
+    pub changed_build_files: Option<Vec<String>>,
     /// SHA-256 of this revision's directory and command; an approval names it.
     pub digest: String,
     /// Seconds since 1970.

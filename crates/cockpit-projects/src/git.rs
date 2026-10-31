@@ -103,6 +103,66 @@ impl Git {
         Ok(settings)
     }
 
+    /// Files work in the checkout at `dir` changed that no remote has: uncommitted (staged,
+    /// unstaged, untracked) and touched by commits on no remote branch. Paths from the
+    /// repository root, sorted, each once (#156: an approval names the changed build files a
+    /// command would run). Without any remote, every commit counts as changed.
+    pub fn changed_files(&self, dir: &Path) -> Result<Vec<String>, Error> {
+        let status = self.run(
+            dir,
+            &[
+                arg("status"),
+                arg("--porcelain=v1"),
+                arg("-z"),
+                arg("--untracked-files=all"),
+                arg("--no-renames"),
+            ],
+        )?;
+        // Each entry is `XY path`; with renames off, no entry carries a second path.
+        let mut changed: Vec<String> = status
+            .split('\0')
+            .filter_map(|entry| entry.get(3..))
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let has_commit = self
+            .output(
+                dir,
+                &[
+                    arg("rev-parse"),
+                    arg("--verify"),
+                    arg("--quiet"),
+                    arg("HEAD"),
+                ],
+            )?
+            .status
+            .success();
+        if has_commit {
+            let committed = self.run(
+                dir,
+                &[
+                    arg("log"),
+                    arg("--format="),
+                    arg("--name-only"),
+                    arg("--no-renames"),
+                    arg("-z"),
+                    arg("HEAD"),
+                    arg("--not"),
+                    arg("--remotes"),
+                ],
+            )?;
+            changed.extend(
+                committed
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+        changed.sort();
+        changed.dedup();
+        Ok(changed)
+    }
+
     /// An empty value for every program-running driver the configuration seen from `dir`
     /// names. Driver names are chosen by whoever writes the configuration, so they cannot be
     /// listed in [`SAFE_CONFIG`]; reading the configuration runs nothing.
