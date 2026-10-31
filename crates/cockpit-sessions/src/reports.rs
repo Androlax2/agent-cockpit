@@ -18,7 +18,7 @@ const OUTCOME_REASON_MAX_CHARS: usize = 80;
 
 /// The columns `report_from` reads, in its order.
 const SELECT_REPORTS: &str = "SELECT session, state, label, doing, needs_input, reported_at,
-     launch_id, outcome, outcome_reason, question_source FROM session_reports";
+     launch_id, outcome, outcome_reason, question_source, covered_question FROM session_reports";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -97,6 +97,9 @@ pub struct SessionReport {
     pub needs_input: Option<String>,
     /// Set exactly when `needs_input` is.
     pub question_source: Option<QuestionSource>,
+    /// The agent's own question an open dialog covers; it is the open question again once
+    /// the dialog is answered (#214). Set only while the open question is a dialog's.
+    pub covered_question: Option<String>,
     /// How the latest turn ended, until the next turn starts.
     pub outcome: Option<TurnOutcome>,
     /// Seconds since 1970 of the last report.
@@ -141,8 +144,8 @@ pub async fn report(
         .execute(
             "INSERT INTO session_reports
                 (session, state, label, doing, needs_input, reported_at, launch_id, outcome,
-                 outcome_reason, question_source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 outcome_reason, question_source, covered_question)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             (
                 merged.session.as_str(),
                 merged.state.map(AgentState::as_str),
@@ -158,6 +161,7 @@ pub async fn report(
                     .and_then(TurnOutcome::failure_reason)
                     .map(str::to_owned),
                 merged.question_source.map(QuestionSource::as_str),
+                merged.covered_question.clone(),
             ),
         )
         .await?;
@@ -220,25 +224,18 @@ fn merge(
         doing: None,
         needs_input: None,
         question_source: None,
+        covered_question: None,
         outcome: None,
         reported_at: 0,
         launch: None,
     });
-    let is_kept = previous.question_source == Some(QuestionSource::Agent)
-        && !report.is_new_prompt
-        && previous.launch == launch;
-    let asked = report
-        .needs_input
-        .map(|question| (question, QuestionSource::Agent))
-        .or(report
-            .dialog
-            .map(|question| (question, QuestionSource::Dialog)));
+    let is_asking = report.needs_input.is_some() || report.dialog.is_some();
     // A report after a dialog means the dialog was answered and the agent goes on, so a
     // stateless one leaves it working rather than in the waiting the dialog forced.
     let is_answering_dialog =
         previous.question_source == Some(QuestionSource::Dialog) && previous.launch == launch;
     // A question is only asked, and a turn only ended, while the agent waits.
-    let state = if asked.is_some() || report.outcome.is_some() {
+    let state = if is_asking || report.outcome.is_some() {
         Some(AgentState::Waiting)
     } else if is_answering_dialog {
         report.state.or(Some(AgentState::Working))
@@ -252,11 +249,23 @@ fn merge(
         (None, _) if previous.launch != launch => None,
         (None, _) => previous.outcome,
     };
-    let kept = previous
-        .needs_input
-        .filter(|_| is_kept)
-        .map(|question| (question, QuestionSource::Agent));
-    let (needs_input, question_source) = asked.or(kept).unzip();
+    let previous_agent_question = match previous.question_source {
+        Some(QuestionSource::Agent) => previous.needs_input,
+        Some(QuestionSource::Dialog) => previous.covered_question,
+        None => None,
+    };
+    let kept_agent_question =
+        previous_agent_question.filter(|_| !report.is_new_prompt && previous.launch == launch);
+    let agent_question = report.needs_input.or(kept_agent_question);
+    // A previous dialog is answered by this report, so only this report's dialog is open;
+    // it shows over the agent's question, which waits beneath it.
+    let (needs_input, question_source, covered_question) = match report.dialog {
+        Some(dialog) => (Some(dialog), Some(QuestionSource::Dialog), agent_question),
+        None => {
+            let question_source = agent_question.as_ref().map(|_| QuestionSource::Agent);
+            (agent_question, question_source, None)
+        }
+    };
     SessionReport {
         session: session.clone(),
         state,
@@ -264,6 +273,7 @@ fn merge(
         doing: report.doing.or(previous.doing),
         needs_input,
         question_source,
+        covered_question,
         outcome,
         reported_at: now(),
         launch,
@@ -458,6 +468,7 @@ fn report_from(row: &Row) -> Result<SessionReport, Error> {
         doing: row.get(3)?,
         needs_input: row.get(4)?,
         question_source,
+        covered_question: row.get(10)?,
         outcome,
         reported_at: row.get(5)?,
         launch: row.get(6)?,

@@ -35,7 +35,9 @@ stopped in the middle of one finishes or repairs it at its next start.
   identifies the sender; this crate checks the fields, asks `cockpit-authorization` whether
   the session may change its own state, and keeps the latest report per session with the
   launch it came from (moved from `cockpit-agent-channel` in #146). Restart and sleep trust
-  only a report of the current launch.
+  only a report of the current launch. A dialog the bridge saw clears on the next report;
+  the agent's own question waits for a new prompt or launch (#182) and stays beneath a
+  dialog, open again once the dialog is answered (#214).
 - **Start files.** Each launch records the state of the start files (`cockpit-config`) its
   provider reads, before the agent runs. A running session whose files changed since shows
   them in `session list`.

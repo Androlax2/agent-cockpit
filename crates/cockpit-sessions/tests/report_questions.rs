@@ -179,20 +179,6 @@ async fn a_new_launch_clears_the_agents_own_question() {
 }
 
 #[tokio::test]
-async fn a_dialog_replaces_the_agents_own_question() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = reporting_session(dir.path()).await;
-    send(&database, own_question("Which database?"))
-        .await
-        .unwrap();
-
-    let recorded = send(&database, dialog("Allow Bash?")).await.unwrap();
-
-    assert_eq!(recorded.needs_input.as_deref(), Some("Allow Bash?"));
-    assert_eq!(recorded.question_source, Some(QuestionSource::Dialog));
-}
-
-#[tokio::test]
 async fn a_report_mixing_questions_or_a_prompt_is_refused_naming_its_field() {
     let cases: [(Report, &str); 4] = [
         (

@@ -329,6 +329,7 @@ async fn a_report_recorded_before_the_move_survives_the_migration() {
             needs_input: Some("Ship it?".to_owned()),
             outcome: None,
             question_source: Some(QuestionSource::Agent),
+            covered_question: None,
             reported_at: 42,
             launch: None,
         }]

@@ -56,6 +56,7 @@ async fn a_version_3_report_keeps_every_column_and_its_question_becomes_the_agen
                 doing: Some("writing the tests".to_owned()),
                 needs_input: Some("Ship it?".to_owned()),
                 question_source: Some(QuestionSource::Agent),
+                covered_question: None,
                 outcome: Some(TurnOutcome::Failed {
                     reason: Some("overloaded".to_owned()),
                 }),
@@ -69,6 +70,7 @@ async fn a_version_3_report_keeps_every_column_and_its_question_becomes_the_agen
                 doing: None,
                 needs_input: None,
                 question_source: None,
+                covered_question: None,
                 outcome: None,
                 reported_at: 43,
                 launch: Some(8),
