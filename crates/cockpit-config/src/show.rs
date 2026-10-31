@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use toml::Value;
+use toml::{Table, Value};
 
 use crate::{ConfigFile, EffectiveConfig, Source};
 
@@ -10,33 +10,24 @@ const UNSET: &str = "<unset>";
 
 pub fn render(config: &EffectiveConfig) -> String {
     let layout = &config.layout;
-    let mut lines = vec![
-        line(
-            "paths.config_dir",
-            &path_value(&layout.config_dir.value),
-            &layout.config_dir.source,
-        ),
-        line(
-            "paths.state_dir",
-            &path_value(&layout.state_dir.value),
-            &layout.state_dir.source,
-        ),
-        line(
-            "paths.cache_dir",
-            &path_value(&layout.cache_dir.value),
-            &layout.cache_dir.source,
-        ),
-        line(
-            "paths.runtime_dir",
-            &layout
-                .runtime_dir
-                .value
-                .as_deref()
-                .map_or(UNSET.to_string(), path_value),
-            &layout.runtime_dir.source,
-        ),
-        file_line("files.user_config", &config.user_file),
-    ];
+    let mut lines: Vec<String> = [
+        ("paths.config_dir", &layout.config_dir),
+        ("paths.state_dir", &layout.state_dir),
+        ("paths.cache_dir", &layout.cache_dir),
+    ]
+    .into_iter()
+    .map(|(key, dir)| line(key, &path_toml(&dir.value).to_string(), &dir.source))
+    .collect();
+    lines.push(line(
+        "paths.runtime_dir",
+        &layout
+            .runtime_dir
+            .value
+            .as_deref()
+            .map_or(UNSET.to_string(), |dir| path_toml(dir).to_string()),
+        &layout.runtime_dir.source,
+    ));
+    lines.push(file_line("files.user_config", &config.user_file));
     if let Some(project_file) = &config.project_file {
         lines.push(file_line("files.project_config", project_file));
     }
@@ -47,7 +38,7 @@ pub fn render(config: &EffectiveConfig) -> String {
                 .trusted_projects
                 .value
                 .iter()
-                .map(|path| Value::String(path.display().to_string()))
+                .map(|path| path_toml(path))
                 .collect(),
         )
         .to_string(),
@@ -60,28 +51,23 @@ pub fn render(config: &EffectiveConfig) -> String {
             .value
             .as_ref()
             .map_or(UNSET.to_string(), |name| {
-                Value::String(name.clone()).to_string()
+                Value::from(name.as_str()).to_string()
             }),
         &config.workflow_preset.source,
     ));
     for start_file in &config.start_files {
-        let providers = Value::Array(
-            start_file
-                .value
-                .providers
-                .iter()
-                .map(|provider| Value::String(provider.clone()))
-                .collect(),
+        let mut fields = Table::new();
+        fields.insert("path".to_string(), path_toml(&start_file.value.path));
+        fields.insert(
+            "providers".to_string(),
+            Value::from(start_file.value.providers.clone()),
         );
         lines.push(line(
             &format!(
                 "start_files.{}",
-                Value::String(start_file.value.label.clone())
+                Value::from(start_file.value.label.as_str())
             ),
-            &format!(
-                "{{ path = {}, providers = {providers} }}",
-                path_value(&start_file.value.path)
-            ),
+            &Value::Table(fields).to_string(),
             &start_file.source,
         ));
     }
@@ -92,11 +78,11 @@ fn line(key: &str, value: &str, source: &Source) -> String {
     format!("{key} = {value}  # {source}")
 }
 
-fn path_value(path: &Path) -> String {
-    Value::String(path.display().to_string()).to_string()
+fn path_toml(path: &Path) -> Value {
+    Value::from(path.display().to_string())
 }
 
 fn file_line(key: &str, file: &ConfigFile) -> String {
     let presence = if file.is_present { "read" } else { "absent" };
-    format!("{key} = {}  # {presence}", path_value(&file.path))
+    format!("{key} = {}  # {presence}", path_toml(&file.path))
 }

@@ -19,7 +19,7 @@ use toml::Spanned;
 
 pub use layout::{Environment, Layout};
 pub use show::render;
-pub use start_files::{FileState, KNOWN_PROVIDERS, StartFile, StartFileSnapshot};
+pub use start_files::{FileState, KNOWN_PROVIDERS, RecordedFile, StartFile, StartFileSnapshot};
 
 /// Where the project's own configuration lives, relative to the project directory.
 pub const PROJECT_CONFIG_FILE: &str = ".cockpit/config.toml";
@@ -198,50 +198,32 @@ struct StartFileEntry {
     providers: Vec<String>,
 }
 
-#[derive(Clone, Copy)]
-enum LayerKind {
-    User,
-    Project,
+/// The file a layer came from; `--set` overrides have none.
+enum LayerOrigin {
+    User(PathBuf),
+    Project(PathBuf),
     CommandLine,
 }
 
 struct Layer {
-    kind: LayerKind,
-    path: PathBuf,
+    origin: LayerOrigin,
     text: String,
     settings: SettingsFile,
 }
 
 impl Layer {
-    fn parse(kind: LayerKind, path: PathBuf, text: String) -> Result<Self, ConfigError> {
-        let settings = toml::from_str(&text).map_err(|error| ConfigError::Parse {
-            origin: match kind {
-                LayerKind::User => format!("user config {}", path.display()),
-                LayerKind::Project => format!("project config {}", path.display()),
-                LayerKind::CommandLine => format!("--set {text}"),
-            },
-            message: error.to_string(),
-        })?;
-        Ok(Self {
-            kind,
-            path,
-            text,
-            settings,
-        })
-    }
-
     fn source_at(&self, span: std::ops::Range<usize>) -> Source {
         let line = self.text[..span.start].matches('\n').count() + 1;
-        match self.kind {
-            LayerKind::User => Source::UserFile {
-                path: self.path.clone(),
+        match &self.origin {
+            LayerOrigin::User(path) => Source::UserFile {
+                path: path.clone(),
                 line,
             },
-            LayerKind::Project => Source::ProjectFile {
-                path: self.path.clone(),
+            LayerOrigin::Project(path) => Source::ProjectFile {
+                path: path.clone(),
                 line,
             },
-            LayerKind::CommandLine => Source::CommandLine,
+            LayerOrigin::CommandLine => Source::CommandLine,
         }
     }
 }
@@ -256,16 +238,10 @@ pub fn load(
     let home = environment.home_dir()?;
     let layout = Layout::resolve(environment, &home);
 
-    let user_path = layout.user_config_file();
-    let user_text = read_optional(&user_path)?;
-    let user_file = ConfigFile {
-        path: user_path.clone(),
-        is_present: user_text.is_some(),
-    };
     let mut layers = Vec::new();
-    if let Some(text) = user_text {
-        layers.push(Layer::parse(LayerKind::User, user_path, text)?);
-    }
+    let (user_file, user_layer) =
+        read_layer(layout.user_config_file(), LayerOrigin::User, "user config")?;
+    layers.extend(user_layer);
 
     let mut project_file = None;
     if let Some(project_dir) = project_dir {
@@ -275,14 +251,13 @@ pub fn load(
                 reason: "not a directory".to_string(),
             });
         }
-        let project_path = project_dir.join(PROJECT_CONFIG_FILE);
-        let project_text = read_optional(&project_path)?;
-        project_file = Some(ConfigFile {
-            path: project_path.clone(),
-            is_present: project_text.is_some(),
-        });
-        if let Some(text) = project_text {
-            let layer = Layer::parse(LayerKind::Project, project_path, text)?;
+        let (file, project_layer) = read_layer(
+            project_dir.join(PROJECT_CONFIG_FILE),
+            LayerOrigin::Project,
+            "project config",
+        )?;
+        project_file = Some(file);
+        if let Some(layer) = project_layer {
             reject_owner_settings(&layer)?;
             layers.push(layer);
         }
@@ -302,25 +277,60 @@ pub fn load(
     })
 }
 
-fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(ConfigError::Read {
-            path: path.to_path_buf(),
-            error: error.to_string(),
+/// Reads and parses a configuration file; an absent file is no layer, not an error.
+fn read_layer(
+    path: PathBuf,
+    origin: fn(PathBuf) -> LayerOrigin,
+    description: &str,
+) -> Result<(ConfigFile, Option<Layer>), ConfigError> {
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let file = ConfigFile {
+                path,
+                is_present: false,
+            };
+            return Ok((file, None));
+        }
+        Err(error) => {
+            return Err(ConfigError::Read {
+                path,
+                error: error.to_string(),
+            });
+        }
+    };
+    let settings = toml::from_str(&text).map_err(|error| ConfigError::Parse {
+        origin: format!("{description} {}", path.display()),
+        message: error.to_string(),
+    })?;
+    let file = ConfigFile {
+        path: path.clone(),
+        is_present: true,
+    };
+    Ok((
+        file,
+        Some(Layer {
+            origin: origin(path),
+            text,
+            settings,
         }),
-    }
+    ))
 }
 
 fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
-    if let Some(projects) = &layer.settings.projects {
+    // Exhaustive on purpose: a new setting must be classified here as owner or describing.
+    let SettingsFile {
+        projects,
+        start_files,
+        workflow: _,
+    } = &layer.settings;
+    if let Some(projects) = projects {
         return Err(ConfigError::OwnerOnly {
             key: "projects",
             source: layer.source_at(projects.span()),
         });
     }
-    if let Some(start_files) = &layer.settings.start_files {
+    if let Some(start_files) = start_files {
         return Err(ConfigError::OwnerOnly {
             key: "start_files",
             source: layer.source_at(start_files.span()),
@@ -348,14 +358,12 @@ fn override_layer(argument: &str) -> Result<Layer, ConfigError> {
     if value.contains(['\n', '\r']) {
         return Err(fail("the value must be on one line"));
     }
-    Layer::parse(
-        LayerKind::CommandLine,
-        PathBuf::new(),
-        format!("{key} = {value}"),
-    )
-    .map_err(|error| match error {
-        ConfigError::Parse { message, .. } => fail(&message),
-        other => other,
+    let text = format!("{key} = {value}");
+    let settings = toml::from_str(&text).map_err(|error| fail(&error.to_string()))?;
+    Ok(Layer {
+        origin: LayerOrigin::CommandLine,
+        text,
+        settings,
     })
 }
 

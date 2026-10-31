@@ -70,14 +70,14 @@ impl Layout {
                 &environment.xdg_cache_home,
                 home.join(".cache"),
             ),
-            runtime_dir: match xdg_value("XDG_RUNTIME_DIR", &environment.xdg_runtime_dir) {
+            runtime_dir: match xdg_value(&environment.xdg_runtime_dir) {
                 XdgValue::Absolute(dir) => Sourced::new(
                     Some(dir.join("cockpit")),
                     Source::Environment("XDG_RUNTIME_DIR"),
                 ),
                 XdgValue::Unset => Sourced::new(None, Source::EnvironmentUnset("XDG_RUNTIME_DIR")),
-                XdgValue::Ignored(variable) => {
-                    Sourced::new(None, Source::InvalidEnvironment(variable))
+                XdgValue::Ignored => {
+                    Sourced::new(None, Source::InvalidEnvironment("XDG_RUNTIME_DIR"))
                 }
             },
         }
@@ -91,16 +91,16 @@ impl Layout {
 enum XdgValue {
     Absolute(PathBuf),
     Unset,
-    Ignored(&'static str),
+    Ignored,
 }
 
 /// The XDG spec: an empty variable counts as unset, and a relative one is invalid and ignored.
-fn xdg_value(variable: &'static str, value: &Option<OsString>) -> XdgValue {
+fn xdg_value(value: &Option<OsString>) -> XdgValue {
     match value {
         None => XdgValue::Unset,
         Some(value) if value.is_empty() => XdgValue::Unset,
         Some(value) if Path::new(value).is_absolute() => XdgValue::Absolute(PathBuf::from(value)),
-        Some(_) => XdgValue::Ignored(variable),
+        Some(_) => XdgValue::Ignored,
     }
 }
 
@@ -109,12 +109,10 @@ fn base_dir(
     value: &Option<OsString>,
     home_default: PathBuf,
 ) -> Sourced<PathBuf> {
-    match xdg_value(variable, value) {
+    let default_dir = home_default.join("cockpit");
+    match xdg_value(value) {
         XdgValue::Absolute(dir) => Sourced::new(dir.join("cockpit"), Source::Environment(variable)),
-        XdgValue::Unset => Sourced::new(home_default.join("cockpit"), Source::ProductDefault),
-        XdgValue::Ignored(variable) => Sourced::new(
-            home_default.join("cockpit"),
-            Source::IgnoredEnvironment(variable),
-        ),
+        XdgValue::Unset => Sourced::new(default_dir, Source::ProductDefault),
+        XdgValue::Ignored => Sourced::new(default_dir, Source::IgnoredEnvironment(variable)),
     }
 }
