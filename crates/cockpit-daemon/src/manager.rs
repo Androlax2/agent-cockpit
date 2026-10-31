@@ -20,22 +20,23 @@ const VIEWER_PERCENT: u8 = 70;
 
 /// A handle on the private tmux server for the manager, or why there is none.
 pub struct Manager {
-    tmux: Result<cockpit_tmux::Server, String>,
+    /// The daemon's one handle, shared with the sessions, or why tmux is unavailable.
+    tmux: Result<Arc<cockpit_tmux::Server>, String>,
     /// Held while the manager is checked and built, so two `cockpit tui` at once build it
     /// once.
     opening: Mutex<()>,
 }
 
 impl Manager {
-    pub(crate) fn open(spec: cockpit_tmux::ServerSpec) -> Manager {
+    pub(crate) fn new(tmux: Result<Arc<cockpit_tmux::Server>, String>) -> Manager {
         Manager {
-            tmux: cockpit_tmux::Server::open(spec).map_err(|error| error.to_string()),
+            tmux,
             opening: Mutex::new(()),
         }
     }
 
     fn tmux(&self) -> Result<&cockpit_tmux::Server, ProtocolError> {
-        self.tmux.as_ref().map_err(|reason| {
+        self.tmux.as_deref().map_err(|reason| {
             ProtocolError::new(ErrorCode::Refused, format!("tmux is unavailable: {reason}"))
         })
     }

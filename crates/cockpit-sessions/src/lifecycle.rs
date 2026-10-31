@@ -29,8 +29,9 @@ const TERMINAL_VARIABLES: [&str; 2] = ["TERM", "COLORTERM"];
 pub struct Sessions {
     database: Arc<Database>,
     processes: Supervisor,
-    /// Cockpit's tmux server, or why it could not be opened: the daemon starts without tmux
-    /// (report 09), and each operation that needs a terminal refuses with that reason.
+    /// Cockpit's tmux server, which the caller opens and may share, or why it could not be
+    /// opened: the daemon starts without tmux (report 09), and each operation that needs a
+    /// terminal refuses with that reason.
     tmux: Result<Arc<Server>, String>,
     git: Git,
     providers: Vec<Arc<dyn Provider>>,
@@ -45,7 +46,7 @@ impl Sessions {
     pub fn new(
         database: Arc<Database>,
         processes: Supervisor,
-        tmux: Result<Server, cockpit_tmux::Error>,
+        tmux: Result<Arc<Server>, String>,
         git: Git,
         providers: Vec<Arc<dyn Provider>>,
         settings: Settings,
@@ -53,7 +54,7 @@ impl Sessions {
         Sessions {
             database,
             processes,
-            tmux: tmux.map(Arc::new).map_err(|error| error.to_string()),
+            tmux,
             git,
             providers,
             settings,

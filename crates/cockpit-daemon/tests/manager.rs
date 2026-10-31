@@ -39,6 +39,11 @@ impl Home {
     }
 
     async fn start(&self) -> Daemon {
+        self.start_with_tmux(PathBuf::from("tmux")).await
+    }
+
+    /// Starts the daemon with `tmux` as its tmux binary.
+    async fn start_with_tmux(&self, tmux: PathBuf) -> Daemon {
         let log = self.path().join("agents.log");
         let providers: Vec<Arc<dyn Provider>> = vec![
             Arc::new(FakeProvider::new(
@@ -48,6 +53,7 @@ impl Home {
             Arc::new(FakeProvider::new(ProviderName::new("plain").unwrap(), log).without_resume()),
         ];
         let mut wiring = common::wiring_in(&self.path(), providers);
+        wiring.tmux.tmux = tmux;
         wiring.sessions.stop = cockpit_processes::Escalation {
             grace: Duration::from_secs(2),
             kill_wait: Duration::from_secs(5),
@@ -183,6 +189,90 @@ async fn the_provider_list_names_each_wired_provider_and_whether_it_resumes() {
             ]
         }
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_daemon_opens_its_tmux_server_once_for_the_sessions_and_the_manager() {
+    let home = Home::new();
+    // Opening the server checks the version (`tmux -V`), then writes the config; nothing
+    // else writes it. One check that found no config, and a config after, is one open.
+    let checks = home.path().join("version-checks.log");
+    let config = home.path().join("tmux.conf");
+    let wrapper = home.path().join("tmux-wrapper");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = -V ]; then\n\
+             if [ -e '{config}' ]; then echo config-written >> '{checks}'; \
+             else echo no-config >> '{checks}'; fi\n\
+             fi\n\
+             exec tmux \"$@\"\n",
+            config = config.display(),
+            checks = checks.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &wrapper,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let daemon = home.start_with_tmux(wrapper).await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+
+    home.open_manager(&client).await.unwrap();
+    session(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: None,
+        },
+    )
+    .await;
+
+    assert_eq!(std::fs::read_to_string(&checks).unwrap(), "no-config\n");
+    assert!(config.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_tmux_the_manager_is_refused_with_the_reason_sessions_give() {
+    let home = Home::new();
+    let daemon = home.start_with_tmux(home.path().join("no-tmux-here")).await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+
+    let manager = refusal(home.open_manager(&client).await);
+    let sessions = refusal(
+        request(
+            &client,
+            Command::SessionNew {
+                dir: root.display().to_string(),
+                agent: Some("fake".to_owned()),
+                prompt: None,
+                clone: None,
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(
+        (manager.code, sessions.code),
+        (ErrorCode::Refused, ErrorCode::Refused)
+    );
+    let reason = format!(
+        "`{}` could not be run",
+        home.path().join("no-tmux-here").display()
+    );
+    assert!(manager.message.contains(&reason), "{}", manager.message);
+    assert!(sessions.message.contains(&reason), "{}", sessions.message);
 }
 
 #[tokio::test(flavor = "multi_thread")]
