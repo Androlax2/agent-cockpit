@@ -36,8 +36,7 @@ async fn start(
     database: Arc<Database>,
 ) -> Result<(Cursor, mpsc::Receiver<ChangeBatch>), Outcome> {
     // Watched before the feed is read, so a commit in between wakes the stream.
-    let mut commits = database.watch_commits();
-    commits.mark_unchanged();
+    let commits = database.watch_commits();
     let (feed, first) = Feed::open(&database, feed_position(from))
         .await
         .map_err(|error| feed_error(&error))?;

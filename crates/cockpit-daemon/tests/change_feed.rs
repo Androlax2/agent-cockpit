@@ -40,12 +40,16 @@ impl Home {
     /// Starts a daemon on this home's state. A daemon dropped just before releases its
     /// database once its aborted tasks are gone, so the start is retried until then.
     async fn start(&self) -> Daemon {
+        self.start_with(Limits::default()).await
+    }
+
+    async fn start_with(&self, limits: Limits) -> Daemon {
         let deadline = Instant::now() + GENEROUS;
         loop {
             let options = Options {
                 runtime_dir: self.dir.path().join("run/cockpit"),
                 state_dir: self.dir.path().join("state/cockpit"),
-                limits: Limits::default(),
+                limits,
             };
             let started = match Instance::acquire(options) {
                 Ok(instance) => {
@@ -211,6 +215,16 @@ impl RawFeedPeer {
             .expect("the daemon answers")
             .unwrap();
         serde_json::from_str(&line).expect("the daemon sends JSON")
+    }
+
+    /// `None` once the daemon closed the connection.
+    async fn read_line_or_end(&mut self) -> Option<String> {
+        let mut line = String::new();
+        let read = tokio::time::timeout(GENEROUS, self.reader.read_line(&mut line))
+            .await
+            .expect("the daemon answers or closes")
+            .unwrap();
+        (read > 0).then_some(line)
     }
 
     async fn read_frame(&mut self) -> ServerFrame {
@@ -411,4 +425,52 @@ async fn the_agent_socket_never_offers_the_change_feed() {
         ),
         "{refused:?}"
     );
+}
+
+#[tokio::test]
+async fn a_connection_with_one_answer_place_still_gets_its_batches() {
+    let home = Home::new();
+    let _daemon = home
+        .start_with(Limits {
+            requests_per_connection: 1,
+            ..Limits::default()
+        })
+        .await;
+    home.publish("session", "s-1", json!({"state": "working"}))
+        .await;
+    let mut subscription = home.subscription(None);
+
+    let snapshot = apply_next(&mut subscription).await;
+    home.publish("session", "s-1", json!({"state": "idle"}))
+        .await;
+    let streamed = apply_next(&mut subscription).await;
+
+    assert_eq!(snapshot.changes.len(), 1);
+    assert_eq!(
+        streamed.changes,
+        [upsert(
+            EntityKind::Session,
+            "s-1",
+            2,
+            json!({"state": "idle"})
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_snapshot_too_large_for_one_frame_closes_the_connection_instead_of_skipping_it() {
+    let home = Home::new();
+    let _daemon = home.start().await;
+    let large = "x".repeat(cockpit_protocol::MAX_FRAME_BYTES);
+    home.publish("session", "s-1", json!({"note": large})).await;
+    let mut peer = RawFeedPeer::connect(&home).await;
+
+    let subscribed = peer.subscribe(FeedPosition::Snapshot).await;
+    let after_answer = peer.read_line_or_end().await;
+
+    assert!(
+        matches!(subscribed, Outcome::Ok(Reply::Subscribed { .. })),
+        "{subscribed:?}"
+    );
+    assert_eq!(after_answer, None);
 }

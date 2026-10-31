@@ -185,14 +185,7 @@ pub async fn enqueue(
         .await?;
     let id = EnvelopeId(write.last_insert_rowid());
     if let Some(replaced) = waiting_observation {
-        write
-            .execute(
-                "UPDATE messaging_envelopes SET state = 'superseded', superseded_by = ?2,
-                     updated_at = ?3
-                 WHERE id = ?1",
-                (replaced.0, id.0, now),
-            )
-            .await?;
+        supersede(write, replaced, id, now).await?;
     }
     Ok(Enqueued::Queued {
         id,
@@ -469,7 +462,8 @@ pub trait Deliverer {
 
 /// One pass of the delivery worker: claims up to `limit` due envelopes and commits, delivers
 /// each through `deliverer`, then records each outcome in its own transaction. A crash in
-/// between leaves the envelopes `submitting` for [`reconcile_deliveries`].
+/// between leaves the envelopes `submitting` for [`reconcile_deliveries`]. An outcome that
+/// cannot be recorded is returned as the error after every other outcome was recorded.
 pub async fn deliver_due(
     database: &Database,
     deliverer: &impl Deliverer,
@@ -480,14 +474,33 @@ pub async fn deliver_due(
     let claims = claim_due(&write, now, limit).await?;
     write.commit().await?;
     let mut delivered = Vec::with_capacity(claims.len());
+    // One outcome that cannot be recorded must not leave the other claims submitting.
+    let mut first_error = None;
     for claim in claims {
         let delivery = deliverer.deliver(&claim).await;
-        let write = database.write().await?;
-        let state = record_delivery(&write, claim.id, claim.attempt, &delivery, now).await?;
-        write.commit().await?;
-        delivered.push((claim.id, state));
+        match record_outcome(database, &claim, &delivery, now).await {
+            Ok(state) => delivered.push((claim.id, state)),
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
     }
-    Ok(delivered)
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(delivered),
+    }
+}
+
+async fn record_outcome(
+    database: &Database,
+    claim: &Claim,
+    delivery: &Delivery,
+    now: i64,
+) -> Result<DeliveryState, Error> {
+    let write = database.write().await?;
+    let state = record_delivery(&write, claim.id, claim.attempt, delivery, now).await?;
+    write.commit().await?;
+    Ok(state)
 }
 
 async fn fail(
@@ -511,6 +524,17 @@ async fn fail(
         }
         Failure::Unacknowledged { reason, .. } => (DeliveryState::Uncertain, reason, now),
     };
+    let newer_observation = match (&envelope.replaceable_slot, state) {
+        (Some(slot), DeliveryState::Queued) => {
+            waiting_in_slot(write, &envelope.destination, slot).await?
+        }
+        _ => None,
+    };
+    // Enqueued while this one was in flight: sending this one again would overwrite it.
+    if let Some(newer) = newer_observation {
+        supersede(write, envelope.id, newer, now).await?;
+        return Ok(DeliveryState::Superseded);
+    }
     match state {
         DeliveryState::Queued => {
             write
@@ -525,6 +549,23 @@ async fn fail(
         _ => set_ended(write, envelope.id, state, note, now).await?,
     }
     Ok(state)
+}
+
+async fn supersede(
+    write: &WriteTransaction<'_>,
+    replaced: EnvelopeId,
+    by: EnvelopeId,
+    now: i64,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "UPDATE messaging_envelopes SET state = 'superseded', superseded_by = ?2,
+                 updated_at = ?3
+             WHERE id = ?1",
+            (replaced.0, by.0, now),
+        )
+        .await?;
+    Ok(())
 }
 
 async fn set_received(

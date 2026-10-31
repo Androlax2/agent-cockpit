@@ -5,6 +5,7 @@
 //! in its state at the batch's cursor, so a client that applies the whole batch holds exactly
 //! the state of that revision. Commits that change no published entity produce no batch.
 
+use std::collections::HashSet;
 use std::num::NonZeroU64;
 
 use cockpit_turso::sql::Connection;
@@ -175,9 +176,10 @@ async fn changed_entities(
     after: i64,
 ) -> Result<Vec<EntityChange>, Error> {
     let mut changed_rows = Vec::new();
+    let mut seen_rows = HashSet::new();
     for commit in read.commits_after(after, usize::MAX).await? {
         for change in commit.changes {
-            if change.table == entities::TABLE && !changed_rows.contains(&change.row_id) {
+            if change.table == entities::TABLE && seen_rows.insert(change.row_id) {
                 changed_rows.push(change.row_id);
             }
         }

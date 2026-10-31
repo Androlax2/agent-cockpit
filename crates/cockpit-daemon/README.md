@@ -88,9 +88,11 @@ not share code.
 - `subscribe` is granted only on `daemon.sock`, to a peer that negotiated `change-feed`; the
   agent socket offers no capability. Its start (snapshot or replay) runs in the bulk lane;
   the answer is queued before the first batch, and forwarding the stream holds no lane place.
-- One feed per connection: a second `subscribe` is refused `invalid-request`. A feed that
-  stops (its history discarded, an error) closes the connection, so the client subscribes
-  again from its cursor and gets `resnapshot-required` when that cursor cannot resume.
+- One feed per connection: a second `subscribe` is refused `invalid-request`. Batches reach
+  the writer on their own channel, so busy answer places never hold them back. A feed that
+  stops (its history discarded, an error) or a batch larger than `MAX_FRAME_BYTES` closes
+  the connection, so the client subscribes again from its cursor and gets
+  `resnapshot-required` when that cursor cannot resume; nothing is skipped.
 - A supervised worker keeps the newest 100,000 change rows, hourly.
 
 ## Requests
@@ -125,7 +127,8 @@ not share code.
   ended and never repeated, one that outlives the restart is reattached until it ends.
 - `tests/change_feed.rs`: issue #41's feed through the socket: snapshot then each commit,
   resume after a restart with tombstones, `resnapshot-required` for another epoch and for
-  discarded history, one feed per connection, none on the agent socket.
+  discarded history, one feed per connection, none on the agent socket, batches with one
+  answer place, an oversized snapshot closing the connection.
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket

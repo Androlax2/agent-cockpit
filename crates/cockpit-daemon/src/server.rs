@@ -202,11 +202,12 @@ async fn connector(stream: &UnixStream) -> Result<ProcessIdentity, ProcessError>
         .expect("reading the process table does not panic")
 }
 
-/// What the connection's writer sends: frames, or the end of the connection.
-enum Outbound {
-    Frame(ServerFrame),
-    /// The change feed this connection followed stopped: closing tells the client to
-    /// subscribe again, instead of leaving it waiting for batches that never come.
+/// What a change feed hands the connection's writer. Its own channel, apart from answers, so
+/// a client that keeps every answer place busy still gets its batches.
+enum FeedFrame {
+    Batch(ChangeBatch),
+    /// The feed stopped: closing tells the client to subscribe again, instead of leaving it
+    /// waiting for batches that never come.
     Close,
 }
 
@@ -231,7 +232,8 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         }
     };
     let (outgoing, frames) = mpsc::channel(shared.limits.requests_per_connection);
-    let writer = tokio::spawn(write_frames(write_half, frames));
+    let (feed_frames, feed) = mpsc::channel(1);
+    let writer = tokio::spawn(write_frames(write_half, frames, feed));
     // Set while a `subscribe` runs or its feed streams: one feed per connection.
     let following = Arc::new(AtomicBool::new(false));
     // Dropped when the client stops sending, which stops the feed forwarding to it.
@@ -247,29 +249,26 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         match next_frame(&mut reader, &mut frame).await {
             Ok(()) => {}
             Err(FrameError::TooLarge) => {
-                answer.send(Outbound::Frame(malformed(format!(
+                answer.send(malformed(format!(
                     "the frame is larger than {MAX_FRAME_BYTES} bytes"
-                ))));
+                )));
                 break;
             }
             Err(FrameError::Closed) => break,
         }
         let Ok(text) = std::str::from_utf8(&frame) else {
-            answer.send(Outbound::Frame(malformed(
-                "the frame is not UTF-8".to_owned(),
-            )));
+            answer.send(malformed("the frame is not UTF-8".to_owned()));
             continue;
         };
         let request = match decode_request(text) {
             Ok(request) => request,
             Err(rejection) => {
-                answer.send(Outbound::Frame(rejection.into_frame()));
+                answer.send(rejection.into_frame());
                 continue;
             }
         };
         let id = request.id;
-        let respond =
-            move |outcome| Outbound::Frame(ServerFrame::Response(Response { id, outcome }));
+        let respond = move |outcome| ServerFrame::Response(Response { id, outcome });
         let (class, job, stream_start) =
             match shared
                 .handler
@@ -300,19 +299,20 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
                     (WorkClass::Bulk, job, Some(start))
                 }
             };
+        let is_stream = stream_start.is_some();
         match shared.lanes.admit(class, job) {
             Ok(run) => {
                 let feed = stream_start.map(|start| {
                     (
                         start,
-                        outgoing.clone(),
+                        feed_frames.clone(),
                         connection_closed.clone(),
                         Arc::clone(&following),
                     )
                 });
                 tokio::spawn(async move {
                     let outcome = run.await;
-                    let Some((start, outgoing, connection_closed, following)) = feed else {
+                    let Some((start, feed_frames, connection_closed, following)) = feed else {
                         answer.send(respond(outcome));
                         return;
                     };
@@ -324,20 +324,22 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
                     // The answer is queued before the first batch, as the client expects.
                     answer.send(respond(outcome));
                     if let Some(batches) = batches {
-                        forward(batches, outgoing, connection_closed).await;
+                        forward(batches, feed_frames, connection_closed).await;
                     }
                 });
             }
             Err(busy) => {
-                following.store(false, Ordering::SeqCst);
+                if is_stream {
+                    following.store(false, Ordering::SeqCst);
+                }
                 answer.send(respond(busy));
             }
         }
     }
-    // A feed forwarding holds a sender too: stopped first, or the writer would wait on it
-    // forever. Requests still running keep their answer places, so the writer delivers
-    // their answers before it stops.
+    // Requests still running keep their answer places, so the writer delivers their
+    // answers before it stops; a feed stops forwarding here.
     drop(connection_open);
+    drop(feed_frames);
     drop(outgoing);
     let _ = writer.await;
 }
@@ -346,7 +348,7 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
 /// that stops first closes the connection.
 async fn forward(
     mut batches: mpsc::Receiver<ChangeBatch>,
-    outgoing: mpsc::Sender<Outbound>,
+    feed_frames: mpsc::Sender<FeedFrame>,
     mut connection_closed: watch::Receiver<()>,
 ) {
     loop {
@@ -355,11 +357,11 @@ async fn forward(
             _ = connection_closed.changed() => return,
         };
         let frame = match batch {
-            Some(batch) => Outbound::Frame(ServerFrame::Changes(batch)),
-            None => Outbound::Close,
+            Some(batch) => FeedFrame::Batch(batch),
+            None => FeedFrame::Close,
         };
-        let is_close = matches!(frame, Outbound::Close);
-        if outgoing.send(frame).await.is_err() || is_close {
+        let is_close = matches!(frame, FeedFrame::Close);
+        if feed_frames.send(frame).await.is_err() || is_close {
             return;
         }
     }
@@ -398,33 +400,66 @@ async fn handshake(
     }
 }
 
-async fn write_frames(mut writer: OwnedWriteHalf, mut frames: mpsc::Receiver<Outbound>) {
-    while let Some(outbound) = frames.recv().await {
-        let frame = match outbound {
-            Outbound::Frame(frame) => frame,
-            Outbound::Close => {
-                tracing::info!("a change feed stopped; closing its connection");
-                return;
-            }
-        };
-        let line = match (encode(&frame), frame) {
-            (Some(line), _) => line,
-            (None, ServerFrame::Response(Response { id, .. })) => {
-                let too_large = ServerFrame::Response(Response {
-                    id,
-                    outcome: refusal(
-                        ErrorCode::Internal,
-                        "the answer is larger than the frame limit; the request may have \
-                         taken effect",
-                    ),
-                });
-                encode(&too_large).expect("a refusal is far below the frame limit")
-            }
-            (None, _) => continue,
+/// Writes answers and feed batches until every answer is written. Answers go first, so a
+/// `subscribe` answer precedes its first batch. A stopped feed, or a batch too large to send,
+/// closes the connection: skipping one would leave the client applying changes onto a gap.
+async fn write_frames(
+    mut writer: OwnedWriteHalf,
+    mut frames: mpsc::Receiver<ServerFrame>,
+    mut feed: mpsc::Receiver<FeedFrame>,
+) {
+    let mut is_feed_open = true;
+    loop {
+        let line = tokio::select! {
+            biased;
+            frame = frames.recv() => match frame {
+                Some(frame) => match answer_line(frame) {
+                    Some(line) => line,
+                    None => continue,
+                },
+                None => return,
+            },
+            feed_frame = feed.recv(), if is_feed_open => match feed_frame {
+                Some(FeedFrame::Batch(batch)) => {
+                    let Some(line) = encode(&ServerFrame::Changes(batch)) else {
+                        tracing::error!("a change batch exceeds the frame limit; closing its feed");
+                        return;
+                    };
+                    line
+                }
+                Some(FeedFrame::Close) => {
+                    tracing::info!("a change feed stopped; closing its connection");
+                    return;
+                }
+                None => {
+                    is_feed_open = false;
+                    continue;
+                }
+            },
         };
         if writer.write_all(&line).await.is_err() {
             return;
         }
+    }
+}
+
+/// A response too large to send is answered `internal` instead, so its client is not left
+/// waiting; any other frame too large is dropped.
+fn answer_line(frame: ServerFrame) -> Option<Vec<u8>> {
+    match (encode(&frame), frame) {
+        (Some(line), _) => Some(line),
+        (None, ServerFrame::Response(Response { id, .. })) => {
+            let too_large = ServerFrame::Response(Response {
+                id,
+                outcome: refusal(
+                    ErrorCode::Internal,
+                    "the answer is larger than the frame limit; the request may have \
+                     taken effect",
+                ),
+            });
+            Some(encode(&too_large).expect("a refusal is far below the frame limit"))
+        }
+        (None, _) => None,
     }
 }
 

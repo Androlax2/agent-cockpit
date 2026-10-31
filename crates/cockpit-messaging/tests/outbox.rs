@@ -480,3 +480,71 @@ async fn decisions_and_observations_already_in_flight_are_never_replaced() {
         DeliveryState::Queued
     );
 }
+
+#[tokio::test]
+async fn an_observation_sent_back_for_a_retry_gives_way_to_a_newer_one() {
+    let fixture = Fixture::new().await;
+    let older = queued_id(enqueue(&fixture.database, &observation("idle-1", "availability")).await);
+    let claims = claim(&fixture.database, NOW).await;
+    let newer = queued_id(enqueue(&fixture.database, &observation("idle-2", "availability")).await);
+    let not_sent = Delivery::Failed(Failure::NotSent {
+        reason: "the chief is not running".to_owned(),
+        retry_at: NOW,
+    });
+
+    let recorded = record(&fixture.database, &claims[0], not_sent).await;
+    let read = fixture.database.read().await.unwrap();
+    let stored = cockpit_messaging::envelope(&read, older)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(recorded, DeliveryState::Superseded);
+    assert_eq!(stored.superseded_by, Some(newer));
+}
+
+/// Answers every delivery received, but with an empty receipt for `bad_key`.
+struct EmptyReceiptFor {
+    bad_key: &'static str,
+}
+
+impl Deliverer for EmptyReceiptFor {
+    async fn deliver(&self, claim: &Claim) -> Delivery {
+        let receipt = if claim.effect_key == self.bad_key {
+            String::new()
+        } else {
+            format!("receipt-{}", claim.effect_key)
+        };
+        Delivery::Received { receipt }
+    }
+}
+
+#[tokio::test]
+async fn an_outcome_that_cannot_be_recorded_leaves_the_other_deliveries_recorded() {
+    let fixture = Fixture::new().await;
+    let first = queued_id(enqueue(&fixture.database, &envelope("first", "chief", "a")).await);
+    let bad = queued_id(enqueue(&fixture.database, &envelope("bad", "chief", "b")).await);
+    let last = queued_id(enqueue(&fixture.database, &envelope("last", "chief", "c")).await);
+
+    let pass = cockpit_messaging::deliver_due(
+        &fixture.database,
+        &EmptyReceiptFor { bad_key: "bad" },
+        NOW,
+        10,
+    )
+    .await;
+
+    assert!(pass.is_err(), "{pass:?}");
+    assert_eq!(
+        state(&fixture.database, first).await,
+        DeliveryState::Received
+    );
+    assert_eq!(
+        state(&fixture.database, bad).await,
+        DeliveryState::Submitting
+    );
+    assert_eq!(
+        state(&fixture.database, last).await,
+        DeliveryState::Received
+    );
+}
