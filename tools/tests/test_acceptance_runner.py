@@ -18,7 +18,7 @@ START_TOOLS = (
     "awk", "bash", "cat", "chmod", "dirname", "env", "git", "grep", "id", "ln", "mkdir",
     "readlink", "realpath", "setsid", "sleep", "touch",
 )
-RUNNER_VERBS = {"start", "tui", "cockpit", "session", "kill-daemon", "stop", "clean"}
+RUNNER_VERBS = {"start", "tui", "tui-window", "cockpit", "session", "kill-daemon", "stop", "clean"}
 
 
 def guide_steps(text):
@@ -124,10 +124,10 @@ class RunnerTests(unittest.TestCase):
             variables["PATH"].split(":")[:2], [str(self.scratch / "bin"), str(self.bin)]
         )
 
-    def make_program(self, relative):
+    def make_program(self, relative, body=""):
         program = self.root / relative
         program.parent.mkdir(parents=True, exist_ok=True)
-        program.write_text("#!/bin/sh\n")
+        program.write_text(f"#!/bin/sh\n{body}\n")
         program.chmod(0o755)
         return program
 
@@ -175,6 +175,32 @@ class RunnerTests(unittest.TestCase):
         result = self.start_with_path("greywall-agents")
         self.assertEqual(result.returncode, 1)
         self.assertIn("COCKPIT_ACCEPTANCE_CLAUDE", result.stderr)
+
+    def open_tui_window(self, hyprctl_exit=0):
+        """run.sh tui-window with stand-ins for hyprctl and setsid that record their calls."""
+        (self.scratch / "projects").mkdir(parents=True)
+        calls = self.root / "calls"
+        self.make_program("fakes/hyprctl", f'echo "hyprctl $XDG_RUNTIME_DIR $*" >> {calls}\nexit {hyprctl_exit}')
+        self.make_program("fakes/setsid", f'echo "setsid ${{XDG_CONFIG_HOME:-unset}} $XDG_RUNTIME_DIR $*" >> {calls}')
+        result = self.run_script("tui-window", PATH=f"{self.root / 'fakes'}:{os.environ['PATH']}")
+        return result, calls.read_text().splitlines()
+
+    def test_tui_window_opens_the_tui_in_an_opaque_window_of_its_own(self):
+        result, (hyprctl, setsid) = self.open_tui_window()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(hyprctl.startswith("hyprctl /run/user/owner eval hl.window_rule("))
+        self.assertIn('class = "^(cockpit-acceptance)$"', hyprctl)
+        self.assertIn('opacity = "1 1"', hyprctl)
+        self.assertEqual(
+            setsid,
+            f"setsid unset /run/user/owner -f kitty --class cockpit-acceptance bash {self.script} tui",
+        )
+
+    def test_tui_window_opens_nothing_when_hyprctl_fails(self):
+        result, calls = self.open_tui_window(hyprctl_exit=1)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].startswith("hyprctl "))
 
     def test_cockpit_before_start_says_to_start_first(self):
         result = self.run_script("cockpit", "version")

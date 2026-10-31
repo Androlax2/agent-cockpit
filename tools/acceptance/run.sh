@@ -5,6 +5,7 @@
 #
 #   run.sh start              start the daemon, register the scratch project `demo`
 #   run.sh tui                attach this terminal to the TUI
+#   run.sh tui-window         open the TUI in its own opaque kitty window (Hyprland)
 #   run.sh cockpit ARGS...    run this clone's `cockpit`, from the scratch projects directory
 #   run.sh session new ARGS   start a session in `demo` (`cockpit session new` options), remember it
 #   run.sh session VERB       sleep|wake|resume|end the session `session new` remembered
@@ -17,7 +18,7 @@
 # uses the owner's Claude Code login.
 set -euo pipefail
 
-usage="usage: run.sh start|tui|kill-daemon|stop|clean | cockpit ARGS... | session new [OPTIONS] | session sleep|wake|resume|end"
+usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | cockpit ARGS... | session new [OPTIONS] | session sleep|wake|resume|end"
 
 clone=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 bin="$clone/target/release"
@@ -181,8 +182,30 @@ stop() {
     tmux -L cockpit kill-server 2>/dev/null || true
 }
 
+# The owner's Hyprland draws windows at 0.95 / 0.9 opacity, too faint for the walk: the TUI gets
+# its own kitty window, made opaque by a rule on its class (the same rule as hypr/apps/craft.lua),
+# added for this Hyprland session only.
+tui_window() {
+    local class=cockpit-acceptance rule
+    require_binaries
+    enter_projects
+    rule="hl.window_rule({ match = { class = \"^($class)\$\" }, opacity = \"1 1\" })"
+    # hyprctl and kitty find the compositor through the owner's runtime directory.
+    XDG_RUNTIME_DIR=$owner_runtime hyprctl eval "$rule" >/dev/null || {
+        echo "hyprctl could not make the window opaque; nothing opened" >&2
+        exit 1
+    }
+    # kitty reads the owner's own configuration; `run.sh tui` sets the scratch home again inside it.
+    env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME -u TMUX_TMPDIR \
+        XDG_RUNTIME_DIR="$owner_runtime" PATH="$owner_path" \
+        setsid -f kitty --class "$class" bash "$clone/tools/acceptance/run.sh" tui \
+        </dev/null >/dev/null 2>&1
+    echo "opened the TUI in an opaque kitty window (class $class)"
+}
+
 case ${1:-} in
 start) start ;;
+tui-window) tui_window ;;
 tui)
     require_binaries
     enter_projects

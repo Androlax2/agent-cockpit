@@ -8,11 +8,13 @@ completed by Theo". The guide is [docs/acceptance/m1.md](../acceptance/m1.md), i
 
 - Build this clone: `cargo build --release --manifest-path Cargo.toml --bin cockpit --bin
   cockpit-daemon --bin cockpit-tui --bin cockpit-claude-hook`.
-- From the clone root, the worker hands the guide over with the clone's path filled in:
-  `sed "s|@CLONE@|$PWD|" docs/acceptance/m1.md | ask-to-guide`. Its `run:` steps call `tools/acceptance/run.sh`, which runs `target/release` on scratch
+- From the clone root, the worker hands the guide over: `ask-to-guide < docs/acceptance/m1.md`.
+  Its `run:` steps call `tools/acceptance/run.sh`, which runs `target/release` on scratch
   `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` and `TMUX_TMPDIR`
   under `/tmp/cockpit-acceptance-<uid>`, never the installed cockpit. Until #134 lands this is
   the only isolation; from then on the `cockpit-next` profile replaces it.
+- `run.sh tui-window` opens the TUI in its own kitty window (class `cockpit-acceptance`) after a
+  Hyprland rule makes that class opaque: Theo's default window opacity was too faint to read.
 - `HOME` stays the owner's, so sessions use the owner's Claude Code login and its user-level
   hooks. `run.sh start` links the first `claude` on `PATH` outside a `greywall-agents`
   directory (or `COCKPIT_ACCEPTANCE_CLAUDE`) into the scratch `bin`: the greywall launcher would
@@ -69,7 +71,7 @@ completed by Theo". The guide is [docs/acceptance/m1.md](../acceptance/m1.md), i
   - The tmux status bar (green, at the bottom of the viewer) shows all the time; it should go:
     #302.
   - Next guides should turn off the cockpit window's opacity on Hyprland first: it was hard to
-    see anything: #304.
+    see anything. Theo's setup, not Cockpit: handled by `run.sh tui-window` (see above).
 - Seen in the screenshots: the owner's Claude Code stop hooks fail to notify ("Cannot autolaunch
   D-Bus without X11 $DISPLAY"): daemon-launched agents get no `DISPLAY` or `WAYLAND_DISPLAY`:
   #303.
