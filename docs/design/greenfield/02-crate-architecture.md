@@ -21,6 +21,7 @@ behavior, SQL queries and tests. No `core`, `domain`, `common`, `host`, `store` 
 | `cockpit-resource-admission` | Capacity reservations, enforced vs requested limits, profiles (gaming) |
 | `cockpit-approvals` | Human decisions bound to exact action digest, revision, expiry |
 | `cockpit-authorization` | Effective grants; the only place that answers "may this happen" |
+| `cockpit-agent-channel` | Launch tokens, sender identity from the verified process tree, agent reports, answers directories (report 17; added by #32) |
 | `cockpit-messaging` | Durable delivery envelopes, receipts, retries, change-feed cursors |
 | `cockpit-teams` | Roles as workflow steps over tasks and messaging (report 07) |
 | `cockpit-chief` | Judgment: decomposition, priorities, blockers; proposes, never places |

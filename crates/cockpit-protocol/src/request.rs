@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::agent::{AgentReport, SessionReport};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 
@@ -23,6 +24,15 @@ pub enum Command {
     Subscribe {
         from: FeedPosition,
     },
+    /// Agent socket only: report the sender's session state. `launch_token` binds a new
+    /// launch; once bound, the sender's process tree alone identifies it.
+    AgentReport {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        report: AgentReport,
+    },
+    /// Owner only: every session's latest report.
+    AgentReports,
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -48,7 +58,16 @@ pub enum Outcome {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Reply {
     Pong,
-    Subscribed { cursor: Cursor },
+    Subscribed {
+        cursor: Cursor,
+    },
+    /// The report as recorded, under the session the daemon identified.
+    AgentReported {
+        report: SessionReport,
+    },
+    AgentReports {
+        reports: Vec<SessionReport>,
+    },
 }
 
 /// Every frame the daemon sends after the handshake.
@@ -121,9 +140,6 @@ pub fn decode_request(frame: &str) -> Result<Request, RequestRejection> {
 fn rejection(id: Option<RequestId>, code: ErrorCode, message: String) -> RequestRejection {
     RequestRejection {
         id,
-        error: ProtocolError {
-            code,
-            message: bounded(message),
-        },
+        error: ProtocolError::new(code, bounded(message)),
     }
 }

@@ -29,6 +29,12 @@ the wire. Report 14 treats this contract as stable from the first release.
    `ChangeBatch`: events with entity, entity revision and an `upsert` or `tombstone`, ending
    at a cursor (database epoch plus commit revision). `follows` says whether the batch is a `snapshot` replacing the client's state
    or continues from a `cursor`; a cursor other than the client's own is a gap.
+4. The agent channel (report 17): on the agent socket, `agent-report` carries an
+   `AgentReport` and, from a newly launched agent, the `launch_token` it was given in
+   `COCKPIT_LAUNCH_TOKEN`. No command names the sender's session; the daemon identifies it.
+   The owner reads every session's latest report with `agent-reports`. A refusal the sender
+   can act on carries `unblock`: the `action` that would lift it and who can (`owner`,
+   `agent`, `cockpit`).
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are

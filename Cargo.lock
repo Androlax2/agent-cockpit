@@ -324,6 +324,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-agent-channel"
+version = "0.1.0"
+dependencies = [
+ "cockpit-authorization",
+ "cockpit-turso",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cockpit-authorization"
 version = "0.1.0"
 dependencies = [
@@ -335,8 +345,12 @@ dependencies = [
 name = "cockpit-cli"
 version = "0.1.0"
 dependencies = [
+ "cockpit-client",
  "cockpit-config",
+ "cockpit-protocol",
+ "serde_json",
  "tempfile",
+ "tokio",
  "toml",
 ]
 
@@ -363,6 +377,7 @@ dependencies = [
 name = "cockpit-daemon"
 version = "0.1.0"
 dependencies = [
+ "cockpit-agent-channel",
  "cockpit-authorization",
  "cockpit-client",
  "cockpit-config",

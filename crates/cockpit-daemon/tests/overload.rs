@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{
-    Daemon, Handler, Instance, LaneLimits, Limits, Options, Route, Routes, StartError, WorkClass,
+    Daemon, Handler, Instance, LaneLimits, Limits, Options, Peer, Route, Routes, StartError,
+    WorkClass,
 };
 use cockpit_protocol::{
     Command, CommitRevision, Cursor, DatabaseEpoch, ErrorCode, FeedPosition, MAX_FRAME_BYTES,
@@ -64,14 +65,17 @@ impl Fixture {
 }
 
 /// The handler is shared with the daemon; the test keeps its own `Arc` to the fixture.
-struct FixtureHandler(Arc<Fixture>);
+struct FixtureHandler {
+    fixture: Arc<Fixture>,
+    routes: Routes,
+}
 
 impl Handler for FixtureHandler {
-    fn route(&self, command: Command, welcome: &Welcome) -> Route {
+    fn route(&self, command: Command, welcome: &Welcome, peer: Peer) -> Route {
         if !matches!(command, Command::Subscribe { .. }) {
-            return Routes.route(command, welcome);
+            return self.routes.route(command, welcome, peer);
         }
-        let fixture = Arc::clone(&self.0);
+        let fixture = Arc::clone(&self.fixture);
         if let BulkBehavior::PanicWhileRouting = fixture.behavior {
             panic!("fixture: routing failed");
         }
@@ -135,7 +139,12 @@ async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
     let home = tempfile::tempdir().unwrap();
     let daemon = Instance::acquire(options_in(&home, bulk))
         .unwrap()
-        .start(Arc::new(FixtureHandler(Arc::clone(fixture))))
+        .start(|database| {
+            Arc::new(FixtureHandler {
+                fixture: Arc::clone(fixture),
+                routes: Routes::new(database),
+            })
+        })
         .await
         .unwrap();
     Running {

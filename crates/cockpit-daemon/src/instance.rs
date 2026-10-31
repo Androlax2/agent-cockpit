@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use crate::StartError;
 use crate::server::Limits;
 
-const SOCKET_FILE: &str = "daemon.sock";
 const LOCK_FILE: &str = "daemon.lock";
 const DATABASE_FILE: &str = "state.db";
 /// Only the owner may enter the socket directory.
@@ -33,26 +32,25 @@ impl Options {
     ) -> Result<Options, StartError> {
         let home = environment.home_dir().map_err(StartError::Config)?;
         let layout = cockpit_config::Layout::resolve(environment, &home);
-        let state_dir = layout.state_dir.value;
-        if let cockpit_config::Source::InvalidEnvironment(variable) = layout.runtime_dir.source {
-            return Err(StartError::PrivateDir {
-                path: PathBuf::from(format!("${variable}")),
-                reason: "not an absolute path".to_owned(),
-            });
-        }
-        let runtime_dir = layout
-            .runtime_dir
-            .value
-            .unwrap_or_else(|| state_dir.join("run"));
         Ok(Options {
-            runtime_dir,
-            state_dir,
+            runtime_dir: layout.socket_dir().map_err(StartError::Config)?,
+            state_dir: layout.state_dir.value,
             limits: Limits::default(),
         })
     }
 
+    /// The host-only socket: its peers are the owner. No sandbox may reach it.
     pub fn socket_path(&self) -> PathBuf {
-        self.runtime_dir.join(SOCKET_FILE)
+        self.runtime_dir.join(cockpit_config::DAEMON_SOCKET)
+    }
+
+    /// The socket sandboxed agents reach; its peers are never the owner.
+    pub fn agent_socket_path(&self) -> PathBuf {
+        self.agent_socket_dir().join(cockpit_config::AGENT_SOCKET)
+    }
+
+    fn agent_socket_dir(&self) -> PathBuf {
+        self.runtime_dir.join(cockpit_config::AGENT_SOCKET_DIR)
     }
 
     pub(crate) fn database_path(&self) -> PathBuf {
@@ -78,6 +76,7 @@ impl Instance {
         let owner_uid = effective_uid(&options.state_dir)?;
         create_private_dir(&options.state_dir, owner_uid)?;
         create_private_dir(&options.runtime_dir, owner_uid)?;
+        create_private_dir(&options.agent_socket_dir(), owner_uid)?;
         let lock_path = options.runtime_dir.join(LOCK_FILE);
         let lock = OpenOptions::new()
             .create(true)

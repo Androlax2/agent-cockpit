@@ -163,6 +163,8 @@ fn every_known_error_code_has_its_published_name() {
         (ErrorCode::InvalidRequest, "invalid-request"),
         (ErrorCode::UnknownCommand, "unknown-command"),
         (ErrorCode::NotAuthorized, "not-authorized"),
+        (ErrorCode::UnidentifiedPeer, "unidentified-peer"),
+        (ErrorCode::InvalidArgument, "invalid-argument"),
         (ErrorCode::NotNegotiated, "not-negotiated"),
         (ErrorCode::Busy, "busy"),
         (ErrorCode::StaleRevision, "stale-revision"),

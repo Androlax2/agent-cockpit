@@ -72,7 +72,26 @@ impl TestHome {
     }
 
     pub fn socket_path(&self) -> PathBuf {
-        self.socket_dir().join("daemon.sock")
+        self.socket_dir().join(cockpit_config::DAEMON_SOCKET)
+    }
+
+    pub fn agent_socket_path(&self) -> PathBuf {
+        self.socket_dir()
+            .join(cockpit_config::AGENT_SOCKET_DIR)
+            .join(cockpit_config::AGENT_SOCKET)
+    }
+
+    /// The state database the daemon opens, for a test to prepare while no daemon runs.
+    pub async fn open_state(&self) -> cockpit_turso::Database {
+        let state_dir = self.state_home().join("cockpit");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&state_dir)
+            .expect("the state directory is creatable");
+        cockpit_turso::Database::open(&state_dir.join("state.db"), &cockpit_daemon::MIGRATION_SETS)
+            .await
+            .expect("the state database opens")
     }
 
     pub fn log_file(&self) -> PathBuf {
@@ -156,6 +175,12 @@ impl TestHome {
         Connection::open(&self.socket_path(), GENEROUS)
             .await
             .expect("the daemon accepts the handshake")
+    }
+
+    pub async fn connect_agent(&self) -> Connection {
+        Connection::open(&self.agent_socket_path(), GENEROUS)
+            .await
+            .expect("the daemon accepts the handshake on the agent socket")
     }
 }
 

@@ -489,10 +489,15 @@ fn a_rejected_argument_is_named_before_the_usage() {
     ] {
         let output = home.show(arguments);
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(
-            String::from_utf8_lossy(&output.stderr),
+            stderr,
             format!(
-                "cockpit: {problem}\nusage: cockpit config show [--project DIR] [--set KEY=VALUE]...\n"
+                "cockpit: {problem}\n\
+                 usage: cockpit config show [--project DIR] [--set KEY=VALUE]...\n       \
+                 cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] \
+                 [--needs-input QUESTION]\n       \
+                 cockpit agent reports\n"
             )
         );
     }

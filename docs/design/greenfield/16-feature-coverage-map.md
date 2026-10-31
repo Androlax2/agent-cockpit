@@ -57,8 +57,8 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Feature | Verdict | Owner |
 | --- | --- | --- |
 | `ask-to-run` (fish parse, approval pane, PTY run, redaction, phone answer), `ask-to-guide`, `--check` | keep | approvals + processes (17) |
-| `cockpit-needs-input`, `session-label`, `session-doing`, todo CLI over the report socket | keep | one agent channel (17) |
-| Per-project read-only answers dir, kernel peer identity, request copies host-side | keep | agent channel (17, 11) |
+| `cockpit-needs-input`, `session-label`, `session-doing`, todo CLI over the report socket | keep | one agent channel (17); label, doing and needs-input proven by `cockpit agent report` through `cockpit-daemon` `agent_channel::a_launched_agent_reports_and_the_owner_reads_it` and `cockpit-cli` `agent_report::a_report_goes_to_the_agent_socket_with_the_launch_token` (#32); the todo verb waits for its owner (#44) |
+| Per-project read-only answers dir, kernel peer identity, request copies host-side | keep | agent channel (17, 11); peer identity proven by `cockpit-daemon` `agent_channel::a_token_leaked_to_another_process_tree_is_refused`, `a_session_named_in_the_payload_does_not_change_who_reports` and `a_nested_agent_reports_with_its_parent_sessions_grants`; answers dir by `cockpit-agent-channel` `answers::an_answer_is_written_whole_and_read_only` (sandbox mount pending, #61); request copies with approvals (#34) |
 | `.handoff/` + `make handoff-install`, `make system` with diffs | keep | CLI host actions with review (17) |
 | Security audit log (hash chain, verify, retention) | keep | `cockpit-audit` (11) |
 
@@ -86,7 +86,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Build shims (nice/SCHED_IDLE), heavy-gate admission, game guard core pinning, failsafe freeze/thaw, `freeze-while-gaming` | keep | resource-admission with Linux backend; macOS/WSL: nice + SIGSTOP only, reported honestly (10) |
 | Disk ≥85 % warning, greyproxy-held requests warning, load reports | keep | diagnostics/readiness (09, 12) |
 | Meeting hold (`khal`), idle lock prompt, "still there?", away mode, banners | change | desktop client (19); not in daemon |
-| Error hand-off of Cockpit log errors to a repair session | drop | replaced by diagnostics + support bundle (12); bundle proven by `cockpit-diagnostics` `support_bundle::the_written_archive_holds_exactly_the_listed_entries` (verb wiring pending: it needs the host-only channel, #32, decided in #108) |
+| Error hand-off of Cockpit log errors to a repair session | drop | replaced by diagnostics + support bundle (12); bundle proven by `cockpit-diagnostics` `support_bundle::the_written_archive_holds_exactly_the_listed_entries` (verb wiring pending: the host-only socket exists since #32; the verb is not wired yet) |
 
 ## Projects, Git, GitHub, Docker
 
@@ -112,7 +112,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 
 | Feature | Verdict | Owner |
 | --- | --- | --- |
-| `cockpit doctor`, health-check timer, `cockpit logs`, `reload`, `reset` | keep | readiness (09), diagnostics (12), daemon lifecycle (13); `COCKPIT_LOG_LEVEL` at daemon start proven by `cockpit-daemon` `startup::cockpit_log_level_decides_which_records_the_daemon_writes` (#27); `cockpit logs level` library proven by `cockpit-diagnostics` `level::an_override_reverts_when_it_expires` (verb wiring pending: it needs the host-only channel, #32, decided in #108) |
+| `cockpit doctor`, health-check timer, `cockpit logs`, `reload`, `reset` | keep | readiness (09), diagnostics (12), daemon lifecycle (13); `COCKPIT_LOG_LEVEL` at daemon start proven by `cockpit-daemon` `startup::cockpit_log_level_decides_which_records_the_daemon_writes` (#27); `cockpit logs level` library proven by `cockpit-diagnostics` `level::an_override_reverts_when_it_expires` (verb wiring pending: the host-only socket exists since #32; the verb is not wired yet) |
 | Name migration (`claude-*` aliases, inode-preserving renames) | drop | greenfield has one name |
 | Volume/brightness OSD island | drop | not a Cockpit feature; stays in Theo's dotfiles |
 | Demo fixture + screenshot capture, Arch package staging, `make ci` quality gates | keep | release (13) |
