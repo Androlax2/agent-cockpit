@@ -87,6 +87,16 @@ fn repository(home: &Path, name: &str) -> PathBuf {
 }
 
 impl Tasks {
+    /// Replaces the owner config of the running daemon; the daemon refuses to start with a
+    /// broken one, but tasks read it again on each filing.
+    fn break_owner_config(&self) {
+        std::fs::write(
+            self.home.home().join("config/cockpit/config.toml"),
+            "[tasks]\ncross_project_open_max = -1\n",
+        )
+        .unwrap();
+    }
+
     fn token(&self) -> Option<String> {
         Some(self.token.as_str().to_owned())
     }
@@ -237,7 +247,8 @@ async fn a_blocker_project_that_is_not_registered_is_refused() {
 
 #[tokio::test]
 async fn a_broken_owner_config_refuses_a_filing_instead_of_using_defaults() {
-    let tasks = started(&["app"], "[tasks]\ncross_project_open_max = -1\n").await;
+    let tasks = started(&["app"], "").await;
+    tasks.break_owner_config();
 
     let refusal = refused(tasks.agent_adds(None, "Cache the build").await);
 
@@ -415,7 +426,8 @@ async fn an_agent_outside_every_registered_project_must_name_one() {
 
 #[tokio::test]
 async fn the_owner_files_even_when_the_owner_config_does_not_load() {
-    let tasks = started(&["app"], "[tasks]\ncross_project_open_max = -1\n").await;
+    let tasks = started(&["app"], "").await;
+    tasks.break_owner_config();
 
     let added = tasks.owner_adds("app", "Fix the config", Vec::new()).await;
 
