@@ -318,15 +318,12 @@ async fn the_manager_opens_a_column_and_a_viewer_once_and_answers_how_to_attach(
     );
 }
 
-/// The pane an attached client's keys go to: the window's active pane.
-fn focused_pane_command(home: &Home) -> String {
-    home.tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        "=cockpit:",
-        "#{pane_start_command}",
-    ])
+/// The index of the pane an attached client's keys go to: the window's active pane. The
+/// column is pane 0, the viewer pane 1.
+fn focused_pane(home: &Home) -> String {
+    home.tmux(&["display-message", "-p", "-t", "=cockpit:", "#{pane_index}"])
+        .trim()
+        .to_owned()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -339,12 +336,11 @@ async fn a_new_manager_answers_with_its_column_focused() {
 
     home.open_manager(&client).await.unwrap();
 
-    let focused = focused_pane_command(&home);
-    assert!(focused.contains("600"), "{focused}");
+    assert_eq!(focused_pane(&home), "0");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn reopening_the_manager_focuses_its_column_again() {
+async fn reopening_the_manager_keeps_the_pane_its_owner_focused() {
     let home = Home::new();
     let daemon = home.start().await;
     let client = Connection::open(daemon.socket_path(), GENEROUS)
@@ -355,8 +351,7 @@ async fn reopening_the_manager_focuses_its_column_again() {
 
     home.open_manager(&client).await.unwrap();
 
-    let focused = focused_pane_command(&home);
-    assert!(focused.contains("600"), "{focused}");
+    assert_eq!(focused_pane(&home), "1");
 }
 
 #[tokio::test(flavor = "multi_thread")]
