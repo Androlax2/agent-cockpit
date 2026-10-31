@@ -154,16 +154,24 @@ def refuse_shallow(cwd):
         raise Refusal("shallow clone: N and the base need the full history (fetch-depth: 0)")
 
 
-def notes_start(parsed, tags, base, commit, cwd):
+def newest_lower(tags, candidate):
+    """The highest release below the candidate, or None."""
+    lower = [other for other in tags if version_order(other) < version_order(candidate)]
+    return max(lower, key=version_order, default=None)
+
+
+def notes_start(parsed, tags, base):
     """Where the release notes start (RELEASING.md, Changelog)."""
     if parsed["channel"] == "stable":
         return base["ref"]
-    lower = sorted(
-        (tag for tag in tags if version_order(tag) < version_order(parsed)),
-        key=version_order,
-        reverse=True,
-    )
-    return next((tag["tag"] for tag in lower if is_ancestor(tag["tag"], commit, cwd)), base["ref"])
+    # refuse_released_or_behind guarantees the commit descends from it.
+    previous = newest_lower(tags, parsed)
+    return previous["tag"] if previous else base["ref"]
+
+
+def refuse_off_main(commit, main_ref, cwd):
+    if not is_ancestor(commit, main_ref, cwd):
+        raise Refusal(f"{commit[:12]} is not on {main_ref}")
 
 
 def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
@@ -171,8 +179,7 @@ def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
     parsed = parse_tag(tag)
     refuse_shallow(cwd)
     commit = git("rev-parse", f"{tag}^{{commit}}", cwd=cwd)
-    if not is_ancestor(commit, main_ref, cwd):
-        raise Refusal(f"{tag}: {commit[:12]} is not on {main_ref}")
+    refuse_off_main(commit, main_ref, cwd)
     tags = [other for other in release_tags(cwd, main_ref) if other["tag"] != tag]
     base = base_of(tags, cwd)
     version_at_tag = workspace_version(cwd, commit)
@@ -182,7 +189,7 @@ def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
         "version": tag.removeprefix("v"),
         "prerelease": "false" if parsed["channel"] == "stable" else "true",
         "revision": commit,
-        "notes_range": f"{notes_start(parsed, tags, base, commit, cwd)}..{tag}",
+        "notes_range": f"{notes_start(parsed, tags, base)}..{tag}",
     }
     if parsed["channel"] == "stable":
         refuse_stable(parsed, version_at_tag, base, m5_gate, commit)
@@ -223,11 +230,9 @@ def refuse_released_or_behind(candidate, commit, tags, cwd):
     ]
     if other_tags_on_commit:
         raise Refusal(f"{commit[:12]} is already released as {other_tags_on_commit[0]}")
-    lower = [other for other in tags if version_order(other) < version_order(candidate)]
-    if lower:
-        newest_lower = max(lower, key=version_order)
-        if not is_ancestor(newest_lower["tag"], commit, cwd):
-            raise Refusal(f"{commit[:12]} does not descend from {newest_lower['tag']}")
+    previous = newest_lower(tags, candidate)
+    if previous and not is_ancestor(previous["tag"], commit, cwd):
+        raise Refusal(f"{commit[:12]} does not descend from {previous['tag']}")
 
 
 def refuse_prerelease(candidate, commit, version_at_commit, tags, base, cwd):
@@ -278,8 +283,7 @@ def next_prerelease(main_ref, m3_gate, m5_gate, cwd):
     channel = prerelease_channel(m3_gate, m5_gate)
     refuse_shallow(cwd)
     commit = git("rev-parse", "HEAD", cwd=cwd)
-    if not is_ancestor(commit, main_ref, cwd):
-        raise Refusal(f"{commit[:12]} is not on {main_ref}")
+    refuse_off_main(commit, main_ref, cwd)
     # Every tag on main, not only HEAD's: a re-run on an older commit meets the newer tags.
     tags = release_tags(cwd, main_ref)
     base = base_of(tags, cwd)

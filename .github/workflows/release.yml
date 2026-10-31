@@ -15,7 +15,6 @@ on:
       - .github/workflows/release.yml
       - .github/workflows/prerelease.yml
       - Cargo.toml
-      - Cargo.lock
       - crates/*/Cargo.toml
       - crates/cockpit-cli/src/main.rs
       - crates/cockpit-daemon/src/main.rs

@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 SPEC = importlib.util.spec_from_file_location("release", ROOT / "tools/release.py")
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
@@ -94,6 +95,11 @@ class ReleaseTestCase(unittest.TestCase):
 
     def run_release(self, *arguments):
         return run(*arguments, cwd=self.repository.path)
+
+    def next_prerelease(self, m3_gate="closed", m5_gate="open", main="main"):
+        return self.run_release(
+            "next-prerelease", "--main", main, "--m3-gate", m3_gate, "--m5-gate", m5_gate
+        )
 
     def check_tag(self, tag, m3_gate="closed", m5_gate="open", main="main"):
         return self.run_release(
@@ -340,9 +346,7 @@ class CheckTagTests(ReleaseTestCase):
 class NextPrereleaseTests(ReleaseTestCase):
     def test_after_the_m3_gate_the_next_alpha_numbers_the_commits_since_the_bootstrap(self):
         revision = self.repository.commits(7)
-        code, outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "open"
-        )
+        code, outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="open")
         self.assertEqual(code, 0, error)
         self.assertEqual(
             outputs, {"tag": "v0.1.0-alpha.7", "channel": "alpha", "revision": revision}
@@ -351,34 +355,26 @@ class NextPrereleaseTests(ReleaseTestCase):
     def test_no_alpha_without_its_known_gaps(self):
         (self.repository.path / release.KNOWN_GAPS).unlink()
         self.repository.commit("docs: drop the known gaps")
-        code, _outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "open"
-        )
+        code, _outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="open")
         self.assertEqual(code, 1)
         self.assertIn("an alpha needs docs/KNOWN-GAPS.md", error)
 
     def test_no_alpha_while_the_m3_gate_is_open(self):
         self.repository.commits(1)
-        code, _outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "open", "--m5-gate", "open"
-        )
+        code, _outputs, error = self.next_prerelease(m3_gate="open", m5_gate="open")
         self.assertEqual(code, 1)
         self.assertIn("M3 gate issue (#52) is open", error)
 
     def test_after_the_m5_gate_the_suffix_is_beta(self):
         self.repository.commits(2)
-        code, outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "closed"
-        )
+        code, outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="closed")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["tag"], "v0.1.0-beta.2")
 
     def test_a_commit_that_already_has_a_pre_release_is_refused(self):
         self.repository.commits(2)
         self.repository.tag("v0.1.0-alpha.2")
-        code, _outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "open"
-        )
+        code, _outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="open")
         self.assertEqual(code, 1)
         self.assertIn("already released as v0.1.0-alpha.2", error)
 
@@ -388,18 +384,14 @@ class NextPrereleaseTests(ReleaseTestCase):
         self.repository.tag("v0.1.0-alpha.5")
         self.repository.git("checkout", "--quiet", "main")
         self.repository.commits(2)
-        code, outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "open"
-        )
+        code, outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="open")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["tag"], "v0.1.0-alpha.2")
 
     def test_a_commit_outside_main_is_refused(self):
         self.repository.git("checkout", "--quiet", "-b", "side")
         self.repository.commits(1)
-        code, _outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "open"
-        )
+        code, _outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="open")
         self.assertEqual(code, 1)
         self.assertIn("is not on main", error)
 
@@ -408,27 +400,21 @@ class NextPrereleaseTests(ReleaseTestCase):
         self.repository.commits(3)
         self.repository.tag("v0.1.0-alpha.4")
         self.repository.git("checkout", "--quiet", "--detach", older_commit)
-        code, _outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "open"
-        )
+        code, _outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="open")
         self.assertEqual(code, 1)
         self.assertIn("not above the newest pre-release v0.1.0-alpha.4", error)
 
     def test_a_pre_release_not_above_the_newest_one_is_refused(self):
         self.repository.commits(2)
         self.repository.tag("v0.1.0-beta.1", "HEAD~1")
-        code, _outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "open"
-        )
+        code, _outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="open")
         self.assertEqual(code, 1)
         self.assertIn("v0.1.0-alpha.2 is not above the newest pre-release v0.1.0-beta.1", error)
 
     def test_after_a_stable_tag_the_release_pr_version_is_required(self):
         self.repository.tag("v0.1.0")
         self.repository.commits(1)
-        code, _outputs, error = self.run_release(
-            "next-prerelease", "--main", "main", "--m3-gate", "closed", "--m5-gate", "closed"
-        )
+        code, _outputs, error = self.next_prerelease(m3_gate="closed", m5_gate="closed")
         self.assertEqual(code, 1)
         self.assertIn("release PR's version (#101)", error)
 
@@ -676,7 +662,7 @@ class GateGapTests(unittest.TestCase):
         self.assertIn("gap: sustained responsiveness run", stdout.getvalue())
 
     def test_publishing_waits_for_every_gate_job_of_the_release_workflow(self):
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        workflow = RELEASE_WORKFLOW.read_text()
         publish_needs = re.search(
             r"\n  publish:\n(?:    [^\n]*\n)*?    needs: \[([^\]]*)\]", workflow
         )
@@ -690,7 +676,7 @@ class GateGapTests(unittest.TestCase):
 
 class WorkflowMatrixTests(unittest.TestCase):
     def test_build_and_install_cover_every_platform(self):
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        workflow = RELEASE_WORKFLOW.read_text()
         for job in ("build", "install"):
             with self.subTest(job=job):
                 body = re.search(rf"\n  {job}:\n((?:    [^\n]*\n|\n)*)", workflow)
@@ -699,7 +685,7 @@ class WorkflowMatrixTests(unittest.TestCase):
                 self.assertEqual(sorted(listed), sorted(release.PLATFORMS))
 
     def test_every_archive_artifact_named_by_hand_is_a_platform(self):
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        workflow = RELEASE_WORKFLOW.read_text()
         for platform in re.findall(r"\n\s*name: archive-([a-z0-9_-]+)\n", workflow):
             with self.subTest(platform=platform):
                 self.assertIn(platform, release.PLATFORMS)
