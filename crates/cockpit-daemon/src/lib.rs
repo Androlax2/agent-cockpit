@@ -3,6 +3,7 @@
 mod agent;
 mod approvals;
 mod error;
+mod feed;
 mod instance;
 mod lanes;
 mod projects;
@@ -21,17 +22,18 @@ pub use approvals::{RUN_LEADER_FLAG, run_settings};
 pub use error::StartError;
 pub use instance::{Instance, Options};
 pub use lanes::LaneLimits;
-pub use routes::{Handler, Job, Peer, Route, Routes, WorkClass, refusal};
+pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusal};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 6] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 7] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
     cockpit_processes::MIGRATIONS,
     cockpit_approvals::MIGRATIONS,
     cockpit_sessions::MIGRATIONS,
+    cockpit_messaging::MIGRATIONS,
 ];
 
 /// What the daemon wires its capabilities with: the host's tools in the binary, fixtures in
@@ -66,6 +68,7 @@ pub struct Daemon {
     accepting: tokio::task::JoinHandle<()>,
     accepting_agents: tokio::task::JoinHandle<()>,
     ticking: tokio::task::JoinHandle<()>,
+    retaining: tokio::task::JoinHandle<()>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
 }
@@ -148,6 +151,10 @@ impl Instance {
         let ticking = tokio::spawn(supervisor::supervise("sessions-tick", move || {
             sessions::tick_forever(Arc::clone(&sessions), wiring.session_tick)
         }));
+        let retained = Arc::clone(&database);
+        let retaining = tokio::spawn(supervisor::supervise("feed-retention", move || {
+            feed::discard_history_forever(Arc::clone(&retained))
+        }));
         let accepting = accept(&listener, &shared, server::Socket::HostOnly);
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent);
         tracing::info!(
@@ -161,6 +168,7 @@ impl Instance {
             accepting,
             accepting_agents,
             ticking,
+            retaining,
             _database: database,
             _instance: self,
         })
@@ -188,7 +196,8 @@ fn accept(
 
 /// Step 2 and 3 of the restart contract: each capability that holds launch intents,
 /// reservations or execution identities reconciles them against the real processes here,
-/// before the socket exists. Processes is the first, then approvals; sessions restore after.
+/// before the socket exists. Processes is the first, then approvals and messaging; sessions
+/// restore after.
 async fn reconcile(
     database: &Arc<cockpit_turso::Database>,
     processes: &cockpit_processes::Supervisor,
@@ -217,7 +226,25 @@ async fn reconcile(
     tracing::info!(executions = reconciled.len(), "reconciled durable state");
     approvals::reconcile_runs(database, runner)
         .await
-        .map_err(StartError::Approvals)
+        .map_err(StartError::Approvals)?;
+    reconcile_deliveries(database).await
+}
+
+/// Deliveries the daemon stopped during: only a deduplicating receiver gets them again (#41).
+async fn reconcile_deliveries(database: &cockpit_turso::Database) -> Result<(), StartError> {
+    let write = database.write().await?;
+    let reconciled = cockpit_messaging::reconcile_deliveries(&write, approvals::now())
+        .await
+        .map_err(StartError::Messaging)?;
+    write.commit().await?;
+    for (envelope, state) in reconciled {
+        tracing::warn!(
+            envelope = envelope.0,
+            state = state.as_str(),
+            "a delivery was in flight when the daemon stopped"
+        );
+    }
+    Ok(())
 }
 
 impl Daemon {
@@ -245,5 +272,6 @@ impl Drop for Daemon {
         self.accepting.abort();
         self.accepting_agents.abort();
         self.ticking.abort();
+        self.retaining.abort();
     }
 }

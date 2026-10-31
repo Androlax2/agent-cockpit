@@ -4,21 +4,23 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_protocol::{
-    ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal, RefusalReason, Response,
-    SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello, decode_request, negotiate,
+    Capability, ChangeBatch, ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal,
+    RefusalReason, Response, SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello,
+    decode_request, negotiate,
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
 use crate::StartError;
 use crate::lanes::{LaneLimits, Lanes};
-use crate::routes::{Handler, Peer, Route, refusal};
+use crate::routes::{Handler, Job, Peer, Route, WorkClass, refusal};
 
 /// Only the owner may connect; the 0700 directory already says so, this is the second lock.
 const SOCKET_MODE: u32 = 0o600;
@@ -27,6 +29,8 @@ const SOCKET_MODE: u32 = 0o600;
 const RETAINED_FRAME_CAPACITY: usize = 64 * 1024;
 /// A failed `accept` (out of descriptors) is retried after this pause instead of spinning.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+/// The owner may follow the change feed; agents never see the whole state (report 11).
+const OWNER_CAPABILITIES: &[Capability] = &[Capability::ChangeFeed];
 
 /// How much the daemon accepts at once. Every bound answers or closes when reached.
 #[derive(Debug, Clone, Copy)]
@@ -198,13 +202,25 @@ async fn connector(stream: &UnixStream) -> Result<ProcessIdentity, ProcessError>
         .expect("reading the process table does not panic")
 }
 
+/// What the connection's writer sends: frames, or the end of the connection.
+enum Outbound {
+    Frame(ServerFrame),
+    /// The change feed this connection followed stopped: closing tells the client to
+    /// subscribe again, instead of leaving it waiting for batches that never come.
+    Close,
+}
+
 async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut frame = Vec::new();
+    let offered = match peer {
+        Peer::Owner => OWNER_CAPABILITIES,
+        Peer::Agent { .. } => &[],
+    };
     let handshake = tokio::time::timeout(
         shared.limits.handshake_timeout,
-        handshake(&mut reader, &mut write_half, &mut frame),
+        handshake(&mut reader, &mut write_half, &mut frame, offered),
     );
     let welcome = match handshake.await {
         Ok(Some(welcome)) => welcome,
@@ -216,6 +232,10 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
     };
     let (outgoing, frames) = mpsc::channel(shared.limits.requests_per_connection);
     let writer = tokio::spawn(write_frames(write_half, frames));
+    // Set while a `subscribe` runs or its feed streams: one feed per connection.
+    let following = Arc::new(AtomicBool::new(false));
+    // Dropped when the client stops sending, which stops the feed forwarding to it.
+    let (connection_open, connection_closed) = watch::channel(());
     loop {
         // A place for this request's answer, taken before reading it: the connection is
         // read only while it has room for another answer.
@@ -227,58 +247,131 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         match next_frame(&mut reader, &mut frame).await {
             Ok(()) => {}
             Err(FrameError::TooLarge) => {
-                answer.send(malformed(format!(
+                answer.send(Outbound::Frame(malformed(format!(
                     "the frame is larger than {MAX_FRAME_BYTES} bytes"
-                )));
+                ))));
                 break;
             }
             Err(FrameError::Closed) => break,
         }
         let Ok(text) = std::str::from_utf8(&frame) else {
-            answer.send(malformed("the frame is not UTF-8".to_owned()));
+            answer.send(Outbound::Frame(malformed(
+                "the frame is not UTF-8".to_owned(),
+            )));
             continue;
         };
         let request = match decode_request(text) {
             Ok(request) => request,
             Err(rejection) => {
-                answer.send(rejection.into_frame());
+                answer.send(Outbound::Frame(rejection.into_frame()));
                 continue;
             }
         };
         let id = request.id;
-        let respond = move |outcome| ServerFrame::Response(Response { id, outcome });
-        let (class, job) = match shared
-            .handler
-            .route(request.command, &welcome, peer.clone())
-        {
-            Route::Answer(outcome) => {
-                answer.send(respond(outcome));
-                continue;
-            }
-            Route::Run { class, job } => (class, job),
-        };
+        let respond =
+            move |outcome| Outbound::Frame(ServerFrame::Response(Response { id, outcome }));
+        let (class, job, stream_start) =
+            match shared
+                .handler
+                .route(request.command, &welcome, peer.clone())
+            {
+                Route::Answer(outcome) => {
+                    answer.send(respond(outcome));
+                    continue;
+                }
+                Route::Run { class, job } => (class, job, None),
+                Route::Stream { job } => {
+                    if following.swap(true, Ordering::SeqCst) {
+                        answer.send(respond(refusal(
+                            ErrorCode::InvalidRequest,
+                            "this connection follows the change feed already; subscribe on a \
+                         new connection",
+                        )));
+                        continue;
+                    }
+                    let (started, start) = oneshot::channel();
+                    let job: Job = Box::pin(async move {
+                        let (outcome, batches) = job.await;
+                        if let Some(batches) = batches {
+                            let _ = started.send(batches);
+                        }
+                        outcome
+                    });
+                    (WorkClass::Bulk, job, Some(start))
+                }
+            };
         match shared.lanes.admit(class, job) {
             Ok(run) => {
+                let feed = stream_start.map(|start| {
+                    (
+                        start,
+                        outgoing.clone(),
+                        connection_closed.clone(),
+                        Arc::clone(&following),
+                    )
+                });
                 tokio::spawn(async move {
-                    answer.send(respond(run.await));
+                    let outcome = run.await;
+                    let Some((start, outgoing, connection_closed, following)) = feed else {
+                        answer.send(respond(outcome));
+                        return;
+                    };
+                    // The job has finished, so whether it started a stream is known now.
+                    let batches = start.await.ok();
+                    if batches.is_none() {
+                        following.store(false, Ordering::SeqCst);
+                    }
+                    // The answer is queued before the first batch, as the client expects.
+                    answer.send(respond(outcome));
+                    if let Some(batches) = batches {
+                        forward(batches, outgoing, connection_closed).await;
+                    }
                 });
             }
             Err(busy) => {
+                following.store(false, Ordering::SeqCst);
                 answer.send(respond(busy));
             }
         }
     }
-    // Requests still running keep their answer places, so the writer delivers their
-    // answers before it stops.
+    // A feed forwarding holds a sender too: stopped first, or the writer would wait on it
+    // forever. Requests still running keep their answer places, so the writer delivers
+    // their answers before it stops.
+    drop(connection_open);
     drop(outgoing);
     let _ = writer.await;
 }
 
-/// Reads the `hello` and answers it; `None` when the connection ends here.
+/// Sends the feed's batches on the connection until the feed or the connection stops. A feed
+/// that stops first closes the connection.
+async fn forward(
+    mut batches: mpsc::Receiver<ChangeBatch>,
+    outgoing: mpsc::Sender<Outbound>,
+    mut connection_closed: watch::Receiver<()>,
+) {
+    loop {
+        let batch = tokio::select! {
+            batch = batches.recv() => batch,
+            _ = connection_closed.changed() => return,
+        };
+        let frame = match batch {
+            Some(batch) => Outbound::Frame(ServerFrame::Changes(batch)),
+            None => Outbound::Close,
+        };
+        let is_close = matches!(frame, Outbound::Close);
+        if outgoing.send(frame).await.is_err() || is_close {
+            return;
+        }
+    }
+}
+
+/// Reads the `hello` and answers it, granting what both sides offer of `offered`; `None`
+/// when the connection ends here.
 async fn handshake(
     reader: &mut BufReader<OwnedReadHalf>,
     writer: &mut OwnedWriteHalf,
     frame: &mut Vec<u8>,
+    offered: &[Capability],
 ) -> Option<Welcome> {
     let read = next_frame(reader, frame).await;
     let reply = match read {
@@ -289,9 +382,7 @@ async fn handshake(
         Ok(()) => match std::str::from_utf8(frame) {
             Err(_) => malformed_hello("the first frame is not UTF-8".to_owned()),
             Ok(text) => match decode_hello(text, &SUPPORTED_VERSIONS) {
-                // The daemon offers no capability yet: the change feed arrives with
-                // messaging (#41).
-                Ok(hello) => negotiate(&hello, &SUPPORTED_VERSIONS, &[]),
+                Ok(hello) => negotiate(&hello, &SUPPORTED_VERSIONS, offered),
                 Err(refusal) => HandshakeReply::Refused(refusal),
             },
         },
@@ -307,8 +398,15 @@ async fn handshake(
     }
 }
 
-async fn write_frames(mut writer: OwnedWriteHalf, mut frames: mpsc::Receiver<ServerFrame>) {
-    while let Some(frame) = frames.recv().await {
+async fn write_frames(mut writer: OwnedWriteHalf, mut frames: mpsc::Receiver<Outbound>) {
+    while let Some(outbound) = frames.recv().await {
+        let frame = match outbound {
+            Outbound::Frame(frame) => frame,
+            Outbound::Close => {
+                tracing::info!("a change feed stopped; closing its connection");
+                return;
+            }
+        };
         let line = match (encode(&frame), frame) {
             (Some(line), _) => line,
             (None, ServerFrame::Response(Response { id, .. })) => {

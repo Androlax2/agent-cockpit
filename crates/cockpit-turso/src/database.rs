@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard, watch};
 
 use crate::Error;
 use crate::migrations::{self, MigrationSet};
@@ -21,6 +21,8 @@ pub struct Database {
     /// Every write goes through this one connection, which has change capture on. The daemon
     /// is the only writer (report 04), so writers queue here instead of on SQLite's busy lock.
     writer: Mutex<turso::Connection>,
+    /// Marked after every committed write transaction; see [`Database::watch_commits`].
+    commits: watch::Sender<()>,
     turso: turso::Database,
     /// Declared last so it is released after the Turso handles above are closed.
     _opener_lock: File,
@@ -46,6 +48,7 @@ impl Database {
         Ok(Database {
             epoch,
             writer: Mutex::new(writer),
+            commits: watch::Sender::new(()),
             turso,
             _opener_lock: opener_lock,
         })
@@ -66,7 +69,17 @@ impl Database {
             connection.execute("ROLLBACK", ()).await?;
         }
         connection.execute("BEGIN IMMEDIATE", ()).await?;
-        Ok(WriteTransaction { connection })
+        Ok(WriteTransaction {
+            connection,
+            commits: &self.commits,
+        })
+    }
+
+    /// Wakes after each write transaction that commits from now on, so a reader of the change
+    /// feed waits for new commits instead of polling. Several commits may wake it once; it says
+    /// that something committed, and the reader reads what.
+    pub fn watch_commits(&self) -> watch::Receiver<()> {
+        self.commits.subscribe()
     }
 
     /// Starts a read-only transaction on its own connection. Its snapshot is taken here, so
@@ -104,11 +117,13 @@ impl std::fmt::Debug for Database {
 
 pub struct WriteTransaction<'database> {
     connection: MutexGuard<'database, turso::Connection>,
+    commits: &'database watch::Sender<()>,
 }
 
 impl WriteTransaction<'_> {
     pub async fn commit(self) -> Result<(), Error> {
         self.connection.execute("COMMIT", ()).await?;
+        self.commits.send_replace(());
         Ok(())
     }
 

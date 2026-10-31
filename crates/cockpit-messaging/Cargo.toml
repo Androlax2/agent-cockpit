@@ -1,0 +1,19 @@
+[package]
+name = "cockpit-messaging"
+description = "Durable delivery envelopes, receipts, retries and change-feed cursors; producers own what a message or an entity means."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
+cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

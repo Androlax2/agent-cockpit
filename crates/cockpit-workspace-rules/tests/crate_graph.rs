@@ -182,6 +182,13 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: PROVIDER_ADAPTERS,
         allowed: &["cockpit-provider-api"],
     },
+    // Producers own what a message or an entity means and depend on messaging, never the
+    // reverse; the daemon converts the feed to wire types (#41).
+    AllowList {
+        rule: "messaging -> the database only",
+        from: &["cockpit-messaging"],
+        allowed: &["cockpit-turso"],
+    },
 ];
 
 /// Package names of the first column of `cargo tree --prefix none -f {p}` output.
@@ -528,6 +535,16 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-claude",
             "cockpit-sessions",
         ),
+        (
+            "messaging -> the database only",
+            "cockpit-messaging",
+            "cockpit-protocol",
+        ),
+        (
+            "messaging -> the database only",
+            "cockpit-messaging",
+            "cockpit-teams",
+        ),
     ] {
         let manifest_path = fixture_workspace(
             &format!("{source}_to_{target}"),
@@ -552,6 +569,7 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-authorization", "cockpit-turso"),
         ("cockpit-daemon", "cockpit-claude"),
         ("cockpit-claude", "cockpit-provider-api"),
+        ("cockpit-messaging", "cockpit-turso"),
     ] {
         let manifest_path = fixture_workspace(
             &format!("allowed_{source}_to_{target}"),
