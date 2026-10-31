@@ -2,6 +2,15 @@
 
 Tests that every member of the greenfield workspace follows its shared rules.
 
-It is not a capability crate and nothing depends on it. Its tests read each manifest under
-`crates/` and fail with the crate's name when a member does not inherit the workspace's
-edition, `rust-version` or lint policy from the root [Cargo.toml](../../Cargo.toml).
+It is not a capability crate and nothing depends on it. Its tests fail, naming the crate,
+when a member under `crates/`:
+
+- does not inherit the workspace's edition, `rust-version`, `publish` setting or lint
+  policy from the root [Cargo.toml](../../Cargo.toml);
+- does not state its ownership as a one-sentence `description` that its README repeats;
+- depends, directly or through other crates, on a crate one of the forbidden edges of
+  [report 02](../../docs/design/greenfield/02-crate-architecture.md) and issue #19 rules
+  out. The failure names the rule, for example `clients -> persistence`.
+
+The forbidden edges are a table in `tests/crate_graph.rs`, keyed by crate name. A test fails
+when the table names a crate report 02 no longer lists, so a rename updates both.
