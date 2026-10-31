@@ -50,9 +50,6 @@ pub struct RunSettings {
     /// name starts with `GIT_` are dropped, so none can point Git elsewhere, and so is the
     /// launch token.
     pub environment: Vec<(OsString, OsString)>,
-    /// `key=value` Git settings every Git in the run applies over the repository's own
-    /// configuration (`cockpit-projects`' safe settings), passed as `GIT_CONFIG_*`.
-    pub git_config: Vec<String>,
     /// The end of the output kept; what came before is counted, not kept.
     pub kept_bytes: usize,
     /// Lines of output the agent's answer quotes; the rest are counted.
@@ -68,7 +65,6 @@ impl RunSettings {
             leader,
             leader_arguments,
             environment: Vec::new(),
-            git_config: Vec::new(),
             kept_bytes: 1024 * 1024,
             answer_lines: 120,
             rows: 40,
@@ -76,8 +72,9 @@ impl RunSettings {
         }
     }
 
-    fn run_environment(&self, extra_git_config: &[String]) -> Vec<(OsString, OsString)> {
-        let git_config: Vec<&String> = self.git_config.iter().chain(extra_git_config).collect();
+    /// The environment, with `git_config` passed as `GIT_CONFIG_*` so every Git in the run
+    /// applies it over the repository's own configuration.
+    fn run_environment(&self, git_config: &[String]) -> Vec<(OsString, OsString)> {
         let mut environment: Vec<(OsString, OsString)> = self
             .environment
             .iter()
@@ -88,7 +85,7 @@ impl RunSettings {
             "GIT_CONFIG_COUNT".into(),
             git_config.len().to_string().into(),
         ));
-        for (index, setting) in git_config.into_iter().enumerate() {
+        for (index, setting) in git_config.iter().enumerate() {
             let (key, value) = setting.split_once('=').unwrap_or((setting, ""));
             environment.push((format!("GIT_CONFIG_KEY_{index}").into(), key.into()));
             environment.push((format!("GIT_CONFIG_VALUE_{index}").into(), value.into()));
@@ -199,9 +196,9 @@ impl Runner {
         )))
     }
 
-    /// Runs `run` to its end, `extra_git_config` (the repository's own drivers reset) applied
-    /// after the settings' Git configuration.
-    pub async fn run(&self, run: &Approved, extra_git_config: &[String]) -> Result<Ran, NoResult> {
+    /// Runs `run` to its end, every Git in it applying `git_config` (`key=value` settings) over
+    /// the repository's own configuration.
+    pub async fn run(&self, run: &Approved, git_config: &[String]) -> Result<Ran, NoResult> {
         match std::fs::canonicalize(&run.cwd) {
             Ok(resolved) if resolved == run.cwd => {}
             Ok(resolved) => {
@@ -225,14 +222,12 @@ impl Runner {
         let reader = master
             .try_clone()
             .map_err(|error| not_started("cannot read the terminal", error))?;
-        let mut child = self
-            .spawn(run, terminal, extra_git_config)
-            .map_err(|error| {
-                not_started(
-                    &format!("cannot start {}", self.settings.leader.display()),
-                    error,
-                )
-            })?;
+        let mut child = self.spawn(run, terminal, git_config).map_err(|error| {
+            not_started(
+                &format!("cannot start {}", self.settings.leader.display()),
+                error,
+            )
+        })?;
         let live = Arc::new(LiveRun {
             input: Mutex::new(master),
             output: Mutex::new(Kept {
@@ -268,9 +263,10 @@ impl Runner {
             .output
             .lock()
             .expect("the output lock is never poisoned");
+        let tail = &kept.bytes[kept.bytes.len().saturating_sub(self.settings.kept_bytes)..];
         Ok(Ran {
             exit_code,
-            output: present(&kept.bytes, kept.total, self.settings.answer_lines),
+            output: present(tail, kept.total, self.settings.answer_lines),
             terminal_held_open,
         })
     }
@@ -279,7 +275,7 @@ impl Runner {
         &self,
         run: &Approved,
         terminal: rustix::fd::OwnedFd,
-        extra_git_config: &[String],
+        git_config: &[String],
     ) -> std::io::Result<tokio::process::Child> {
         let mut command = tokio::process::Command::new(&self.settings.leader);
         command
@@ -288,7 +284,7 @@ impl Runner {
             .arg("-c")
             .arg(&run.command)
             .env_clear()
-            .envs(self.settings.run_environment(extra_git_config))
+            .envs(self.settings.run_environment(git_config))
             .current_dir(&run.cwd)
             .stdin(Stdio::from(terminal.try_clone()?))
             .stdout(Stdio::from(terminal.try_clone()?))
@@ -314,24 +310,25 @@ impl Runner {
             .map_err(|_| Refusal::NotRunning)
     }
 
-    /// Whether the run has been silent a while with its output ending mid-line: a prompt.
-    pub fn is_waiting_for_input(&self, id: RunId) -> bool {
-        let Some(live) = self
-            .live
+    /// The runs silent a while with their output ending mid-line: prompts. Read at one
+    /// instant, so a queue sorted by it stays consistent.
+    pub fn waiting_for_input(&self) -> Vec<RunId> {
+        let now = Instant::now();
+        self.live
             .lock()
             .expect("the live runs lock is never poisoned")
-            .get(&id)
-            .cloned()
-        else {
-            return false;
-        };
-        let kept = live
-            .output
-            .lock()
-            .expect("the output lock is never poisoned");
-        kept.total > 0
-            && kept.bytes.last() != Some(&b'\n')
-            && kept.last_output.elapsed() >= PROMPT_IDLE
+            .iter()
+            .filter(|(_, live)| {
+                let kept = live
+                    .output
+                    .lock()
+                    .expect("the output lock is never poisoned");
+                kept.total > 0
+                    && kept.bytes.last() != Some(&b'\n')
+                    && now.duration_since(kept.last_output) >= PROMPT_IDLE
+            })
+            .map(|(id, _)| *id)
+            .collect()
     }
 }
 
@@ -377,7 +374,8 @@ fn drain(mut reader: File, live: Arc<LiveRun>, kept_bytes: usize) -> oneshot::Re
                     kept.bytes.extend_from_slice(&buffer[..read]);
                     kept.total += read as u64;
                     kept.last_output = Instant::now();
-                    if kept.bytes.len() > kept_bytes {
+                    // Trimmed only at twice the bound, so each byte is moved about once.
+                    if kept.bytes.len() > 2 * kept_bytes {
                         let excess = kept.bytes.len() - kept_bytes;
                         kept.bytes.drain(..excess);
                     }

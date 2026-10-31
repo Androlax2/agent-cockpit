@@ -211,7 +211,7 @@ async fn trusted_roots(environment: cockpit_config::Environment) -> Result<Vec<P
     })
 }
 
-fn text(path: &Path) -> String {
+pub(crate) fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 

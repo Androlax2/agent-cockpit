@@ -119,14 +119,6 @@ impl GuideRequest {
             self.project.as_ref().map(|project| project.root.as_path()),
         )
     }
-
-    /// The step the owner is shown now, while the guide still asks.
-    pub fn current(&self) -> Option<&GuideStep> {
-        match self.state {
-            GuideState::Asking => self.steps.get(self.current_step),
-            _ => None,
-        }
-    }
 }
 
 /// Parses a guide in the `ask-to-guide` format, refusing what the owner could not follow.

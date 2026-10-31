@@ -151,11 +151,7 @@ async fn reconcile(
 /// Approved runs the daemon stopped before or during: neither is repeated (#34).
 async fn reconcile_runs(database: &cockpit_turso::Database) -> Result<(), StartError> {
     let write = database.write().await?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock is after 1970")
-        .as_secs();
-    let ended = cockpit_approvals::reconcile_runs(&write, i64::try_from(now).expect("fits"))
+    let ended = cockpit_approvals::reconcile_runs(&write, approvals::now())
         .await
         .map_err(StartError::Approvals)?;
     write.commit().await?;

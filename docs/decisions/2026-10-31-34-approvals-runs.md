@@ -16,7 +16,7 @@ Issue #34. Implementation choices within report 17's settled design; none change
 - **Safe Git settings are `cockpit-projects`' whole `SAFE_CONFIG`**, passed as
   `GIT_CONFIG_COUNT/KEY/VALUE` with every inherited `GIT_*` variable and the launch token
   removed. Content filters and diff or merge drivers chosen by name are read from the
-  configuration seen from the run's directory just before it starts (`Git::drivers_off`, the
+  configuration seen from the run's directory just before it starts (`Git::safe_config`, the
   rule every daemon Git call follows) and reset too, user-wide ones such as Git LFS included.
   Limits: a command that `cd`s into another repository meets that repository's drivers; and
   `credential.helper` is reset, so an approved HTTPS push gets no stored credential.

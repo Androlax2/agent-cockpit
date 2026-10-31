@@ -33,7 +33,6 @@ pub enum Refusal {
 pub enum UnblockedBy {
     Owner,
     Agent,
-    Cockpit,
 }
 
 impl Refusal {

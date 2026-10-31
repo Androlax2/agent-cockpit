@@ -496,6 +496,20 @@ async fn the_owner_types_input_from_standard_input_not_the_command_line() {
 }
 
 #[tokio::test]
+async fn empty_standard_input_is_refused_rather_than_pressing_enter() {
+    let home = Home::new();
+
+    let output = home.cockpit(&["approval", "input", "7"], "").await;
+
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("no input on standard input"),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[tokio::test]
 async fn guide_steps_count_from_one_for_the_owner() {
     let home = Home::new();
     let daemon = scripted_daemon(&home.owner_socket(), vec![guide(GuideStateView::Done)]);

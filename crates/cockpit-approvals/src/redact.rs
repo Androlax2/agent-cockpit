@@ -2,6 +2,7 @@
 //! secrets by their shape or by the name in front of them. The patterns are the current
 //! approval terminal's (`apps/crates/cockpit-core/src/approval.rs`), carried over unchanged.
 
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
@@ -97,8 +98,13 @@ pub fn redact_secrets(text: &str) -> (String, usize) {
     let mut count = 0;
     let mut redacted = text.to_owned();
     for shape in SECRET_SHAPES.iter() {
-        count += shape.find_iter(&redacted).count();
-        redacted = shape.replace_all(&redacted, REDACTED).into_owned();
+        let replaced = shape.replace_all(&redacted, |_: &Captures| {
+            count += 1;
+            REDACTED
+        });
+        if let Cow::Owned(replaced) = replaced {
+            redacted = replaced;
+        }
     }
     for value in SECRET_VALUES.iter() {
         redacted = value

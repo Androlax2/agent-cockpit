@@ -29,8 +29,7 @@ pub const RUN_LEADER_FLAG: &str = "--run-leader";
 const DEFAULT_SHELL: &str = "/bin/sh";
 
 /// The runner approved commands go through: `$SHELL` when it is absolute, else `/bin/sh`,
-/// started under this program's run leader, with `environment` (the daemon's own) and
-/// `cockpit-projects`' safe Git settings over every repository's configuration.
+/// started under this program's run leader, with `environment` (the daemon's own).
 pub fn runner(environment: Vec<(OsString, OsString)>) -> std::io::Result<Runner> {
     let shell = environment
         .iter()
@@ -44,10 +43,6 @@ pub fn runner(environment: Vec<(OsString, OsString)>) -> std::io::Result<Runner>
         vec![RUN_LEADER_FLAG.into()],
     );
     settings.environment = environment;
-    settings.git_config = cockpit_projects::SAFE_CONFIG
-        .iter()
-        .map(|setting| (*setting).to_owned())
-        .collect();
     Ok(Runner::new(settings))
 }
 
@@ -78,7 +73,6 @@ impl From<Refusal> for Failed {
                 by: match by {
                     cockpit_approvals::UnblockedBy::Owner => UnblockedBy::Owner,
                     cockpit_approvals::UnblockedBy::Agent => UnblockedBy::Agent,
-                    cockpit_approvals::UnblockedBy::Cockpit => UnblockedBy::Cockpit,
                 },
             }),
         })
@@ -337,19 +331,11 @@ pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: 
             Command::ApprovalQueue => {
                 let read = database.read().await?;
                 let mut runs = cockpit_approvals::open_runs(&read, now()).await?;
-                // Read once: whether a run waits for input changes with the clock.
-                let waiting: Vec<RunId> = runs
-                    .iter()
-                    .filter(|run| is_waiting_for_input(run, &runner))
-                    .map(|run| run.id)
-                    .collect();
+                let waiting = runner.waiting_for_input();
                 cockpit_approvals::queue_order(&mut runs, &waiting);
                 let guides = cockpit_approvals::open_guides(&read, now()).await?;
                 Ok(Reply::ApprovalQueue {
-                    runs: runs
-                        .iter()
-                        .map(|run| run_view(run, waiting.contains(&run.id)))
-                        .collect(),
+                    runs: runs.iter().map(|run| run_view(run, &waiting)).collect(),
                     guides: guides.iter().map(guide_view).collect(),
                 })
             }
@@ -479,8 +465,8 @@ async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
         record_end_or_log(&database, &approved, &ended).await;
         return;
     }
-    let ended = match repository_drivers_off(&approved.cwd).await {
-        Ok(drivers_off) => runner.run(&approved, &drivers_off).await,
+    let ended = match safe_git_config(&approved.cwd).await {
+        Ok(git_config) => runner.run(&approved, &git_config).await,
         Err(reason) => Err(NoResult::NotStarted(reason)),
     };
     match &ended {
@@ -503,11 +489,11 @@ async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
     record_end_or_log(&database, &approved, &ended).await;
 }
 
-/// The repository's own program-running Git drivers, reset for the run: they are chosen by
-/// whoever writes the checkout's configuration, so `SAFE_CONFIG` cannot name them.
-async fn repository_drivers_off(cwd: &Path) -> Result<Vec<String>, String> {
+/// `cockpit-projects`' safe Git settings for a run in `cwd`, read just before it starts: the
+/// repository's own program-running drivers are reset too.
+async fn safe_git_config(cwd: &Path) -> Result<Vec<String>, String> {
     let cwd = cwd.to_path_buf();
-    tokio::task::spawn_blocking(move || cockpit_projects::Git::from_path().drivers_off(&cwd))
+    tokio::task::spawn_blocking(move || cockpit_projects::Git::from_path().safe_config(&cwd))
         .await
         .map_err(|error| format!("the Git configuration check stopped: {error}"))?
         .map_err(|error| format!("cannot reset the repository's Git drivers: {error}"))
@@ -568,7 +554,7 @@ async fn record_end(
     Ok(())
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is after 1970");
@@ -577,7 +563,7 @@ fn now() -> i64 {
 
 fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     Reply::RunRequest {
-        request: Box::new(run_view(run, is_waiting_for_input(run, runner))),
+        request: Box::new(run_view(run, &runner.waiting_for_input())),
     }
 }
 
@@ -600,17 +586,9 @@ fn shown(text: &str) -> ShownText {
     }
 }
 
-fn path_text(path: &Path) -> String {
-    // Requests hold canonical UTF-8 paths: `resolve_cwd` refuses any other.
-    path.to_string_lossy().into_owned()
-}
-
-fn is_waiting_for_input(run: &RunRequest, runner: &Runner) -> bool {
-    run.state == RunState::Running && runner.is_waiting_for_input(run.id)
-}
-
-fn run_view(run: &RunRequest, waiting_for_input: bool) -> RunRequestView {
-    let cwd = path_text(&run.cwd);
+/// `waiting_for_input`: the runs the runner sees waiting at a prompt.
+fn run_view(run: &RunRequest, waiting_for_input: &[RunId]) -> RunRequestView {
+    let cwd = crate::projects::text(&run.cwd);
     RunRequestView {
         id: run.id.0,
         session: run.session.as_str().to_owned(),
@@ -637,7 +615,7 @@ fn run_view(run: &RunRequest, waiting_for_input: bool) -> RunRequestView {
         digest: run.digest(),
         asked_at: run.asked_at,
         expires_at: run.expires_at,
-        waiting_for_input,
+        waiting_for_input: run.state == RunState::Running && waiting_for_input.contains(&run.id),
         result: run.result.as_ref().map(|result| RunResultView {
             exit_code: result.exit_code,
             output: result.output.clone(),
@@ -650,7 +628,7 @@ fn run_view(run: &RunRequest, waiting_for_input: bool) -> RunRequestView {
 }
 
 fn guide_view(guide: &GuideRequest) -> GuideView {
-    let cwd = path_text(&guide.cwd);
+    let cwd = crate::projects::text(&guide.cwd);
     GuideView {
         id: guide.id.0,
         session: guide.session.as_str().to_owned(),

@@ -10,13 +10,7 @@ use cockpit_protocol::{Command, GuideStateView, GuideView, Reply, RunRequestView
 
 /// The command a verb sends, or the usage problem that stops it.
 pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, String> {
-    let words: Vec<&str> = arguments
-        .iter()
-        .map(|word| {
-            word.to_str()
-                .ok_or_else(|| format!("{}: not UTF-8", word.to_string_lossy()))
-        })
-        .collect::<Result<_, _>>()?;
+    let words = crate::ask::utf8(arguments)?;
     let command = match (verb, words.as_slice()) {
         ("approval", ["list"]) => Command::ApprovalQueue,
         ("approval", ["show", id]) => Command::ApprovalShow {
@@ -68,9 +62,13 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
 /// given as an argument would sit in the shell history and in every process listing.
 fn input_line() -> Result<String, String> {
     let mut line = String::new();
-    std::io::stdin()
+    let read = std::io::stdin()
         .read_line(&mut line)
         .map_err(|error| format!("cannot read the input from standard input: {error}"))?;
+    // At end of input nothing was typed; sending it would press Enter on the prompt.
+    if read == 0 {
+        return Err("no input on standard input; type the line, then Enter".to_owned());
+    }
     let line = line.strip_suffix('\n').unwrap_or(&line);
     Ok(line.strip_suffix('\r').unwrap_or(line).to_owned())
 }

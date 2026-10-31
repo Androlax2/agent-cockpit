@@ -285,8 +285,8 @@ pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunReque
 
 /// Report 17's queue: one approval asks at a time per owner. A running command that waits
 /// for input comes to the front, then asking requests oldest first; approved commands keep
-/// running behind them. `waiting_for_input` is read once, before sorting: it changes with the
-/// clock.
+/// running behind them. `waiting_for_input` is one reading of the runner
+/// (`Runner::waiting_for_input`): it changes with the clock.
 pub fn queue_order(runs: &mut [RunRequest], waiting_for_input: &[RunId]) {
     runs.sort_by_key(|run| {
         let place = match run.state {
@@ -345,13 +345,7 @@ pub async fn edit_run(
     command: &str,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let run = undecided(write, id, now).await?;
-    if run.revision != revision {
-        return Err(Refusal::StaleRevision {
-            current: run.revision,
-        }
-        .into());
-    }
+    undecided_at(write, id, revision, now).await?;
     validate_command("command", command)?;
     write
         .execute(
@@ -387,13 +381,7 @@ pub async fn approve_run(
     digest: &str,
     now: i64,
 ) -> Result<Approved, Error> {
-    let run = undecided(write, id, now).await?;
-    if run.revision != revision {
-        return Err(Refusal::StaleRevision {
-            current: run.revision,
-        }
-        .into());
-    }
+    let run = undecided_at(write, id, revision, now).await?;
     let current_digest = run.digest();
     if current_digest != digest {
         return Err(Refusal::DigestMismatch.into());
@@ -561,6 +549,24 @@ async fn undecided(write: &WriteTransaction<'_>, id: RunId, now: i64) -> Result<
         }
         .into()),
     }
+}
+
+/// The request if the owner may still decide it and it is still at `revision`, the one the
+/// owner read.
+async fn undecided_at(
+    write: &WriteTransaction<'_>,
+    id: RunId,
+    revision: i64,
+    now: i64,
+) -> Result<RunRequest, Error> {
+    let run = undecided(write, id, now).await?;
+    if run.revision != revision {
+        return Err(Refusal::StaleRevision {
+            current: run.revision,
+        }
+        .into());
+    }
+    Ok(run)
 }
 
 async fn required(connection: &Connection, id: RunId, now: i64) -> Result<RunRequest, Error> {

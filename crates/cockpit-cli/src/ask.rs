@@ -63,7 +63,7 @@ pub(crate) fn guide(arguments: &[OsString]) -> Result<ExitCode, String> {
     Ok(Agent::connect().map_or_else(|code| code, |agent| agent.ask_guide(guide, cwd)))
 }
 
-fn utf8(arguments: &[OsString]) -> Result<Vec<&str>, String> {
+pub(crate) fn utf8(arguments: &[OsString]) -> Result<Vec<&str>, String> {
     arguments
         .iter()
         .map(|word| {
