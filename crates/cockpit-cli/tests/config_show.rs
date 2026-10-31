@@ -569,7 +569,10 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit todo after ID ON... | unwait ID ON...\n       \
                  cockpit todo image add ID FILE | image get ID NUMBER FILE\n       \
                  cockpit todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]\n       \
-                 cockpit todo drafts | draft discard (ID | --new PROJECT)\n"
+                 cockpit todo drafts | draft discard (ID | --new PROJECT)\n       \
+                 cockpit resources status | profile normal|foreground | pause-queue | resume-queue\n       \
+                 cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...\n       \
+                 cockpit resources checkpoint RESERVATION | stop RESERVATION\n"
             )
         );
     }
