@@ -10,9 +10,12 @@ when a member under `crates/`:
 - does not state its ownership as a one-sentence `description` that its README repeats;
 - depends, directly or through other crates, on a crate one of the forbidden edges of
   [report 02](../../docs/design/greenfield/02-crate-architecture.md) and issue #19 rules
-  out. The failure names the rule, for example `clients -> persistence`.
+  out. The failure names the rule, for example `clients -> persistence`;
+- is a frontend or `cockpit-authorization` and reaches a `cockpit-*` crate outside its
+  allow-list (report 02, #77, #119), for example `frontends -> client/protocol only`;
 - is depended on by another member while being `cockpit-daemon`, which wires capabilities
   together and so sits above all of them (rule `nothing -> daemon`).
 
-The forbidden edges are a table in `tests/crate_graph.rs`, keyed by crate name. A test fails
-when the table names a crate report 02 no longer lists, so a rename updates both.
+The forbidden edges and allow-lists are tables in `tests/crate_graph.rs`, keyed by crate
+name. A test fails when a table names a crate report 02 no longer lists, so a rename updates
+both.

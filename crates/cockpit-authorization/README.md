@@ -17,7 +17,8 @@ permission names parse only when spelled exactly.
 ## Dependency edges
 
 - Depends on: `cockpit-turso`, for the transaction its functions take and its migrations.
-- Depends on no product capability (report 02); `tests/crate_graph.rs` enforces it.
+- Depends on no product capability (report 02); the `authorization -> nothing product-level`
+  rule of `cockpit-workspace-rules/tests/crate_graph.rs` enforces it.
 - Used by: the daemon, which evaluates every mediated request before acting on it.
 
 ## Tests
