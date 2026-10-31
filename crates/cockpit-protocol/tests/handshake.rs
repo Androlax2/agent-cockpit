@@ -182,3 +182,12 @@ fn an_unknown_refusal_reason_from_a_newer_daemon_is_preserved() {
     assert_eq!(refusal.reason, RefusalReason::Unknown("owner-only".into()));
     assert_eq!(serde_json::to_value(reply).unwrap(), wire);
 }
+
+#[test]
+fn a_malformed_hello_refusal_does_not_echo_a_huge_input_back() {
+    let frame = format!(r#"{{"protocol_versions": "{}"}}"#, "x".repeat(100_000));
+
+    let refusal = decode_hello(&frame, &SUPPORTED_VERSIONS).unwrap_err();
+
+    assert!(refusal.message.len() < 400, "{}", &refusal.message[..80]);
+}

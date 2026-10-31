@@ -21,20 +21,21 @@ pub struct Cursor {
 /// it stores `cursor`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeBatch {
-    pub follows: Follows,
+    /// What the batch builds on: a `snapshot` replaces all of the client's state; a cursor
+    /// other than the client's own means it missed a batch and must subscribe again.
+    pub follows: FeedPosition,
     pub cursor: Cursor,
     pub changes: Vec<ChangeEvent>,
 }
 
-/// What a batch builds on. Required on the wire: a missing value must not read as a snapshot,
-/// which would make the client drop its state.
+/// A point in the change feed. Always explicit on the wire: a missing value must not read as
+/// a snapshot, which would make a client drop its state or re-read everything.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum Follows {
-    /// The batch is a snapshot and replaces all of the client's state.
+pub enum FeedPosition {
+    /// Before everything: the full current state.
     Snapshot,
-    /// The batch continues from this cursor. One other than the client's own means it missed
-    /// a batch and must subscribe again.
+    /// Just after this cursor.
     Cursor(Cursor),
 }
 
@@ -62,6 +63,7 @@ pub enum EntityKind {
     Execution,
     Checkout,
     /// A kind this version does not know, kept as sent so a client can skip or show it.
+    /// Never build one with a known name: it would read back as the known variant.
     #[serde(untagged)]
     Unknown(String),
 }

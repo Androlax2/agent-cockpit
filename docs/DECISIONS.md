@@ -15,9 +15,9 @@ fallback also swallows a malformed known command as "unknown". `Command` uses a 
 answers `unknown-command` naming the kind, or `invalid-request` with serde's precise message.
 The change kind (`upsert`, `tombstone`) is closed: a client that skipped a change it could
 not apply would advance its cursor over data it never applied, so a new kind needs a new
-version. A batch's `follows` (`snapshot` or a cursor) is a required enum, not an optional
-cursor: serde reads a missing `Option` as `None`, which would turn a dropped field into
-"replace all state".
+version. Feed positions (a batch's `follows`, `subscribe`'s `from`) are a required
+`snapshot`-or-cursor enum, not an optional cursor: serde reads a missing `Option` as `None`,
+which would turn a dropped or misspelled field into "replace all state".
 
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
 

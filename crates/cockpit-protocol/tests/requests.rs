@@ -1,6 +1,6 @@
 use cockpit_protocol::{
-    Command, CommitRevision, Cursor, DatabaseEpoch, ErrorCode, Outcome, ProtocolError, Reply,
-    Request, RequestId, Response, ServerFrame, decode_request,
+    Command, CommitRevision, Cursor, DatabaseEpoch, ErrorCode, FeedPosition, Outcome,
+    ProtocolError, Reply, Request, RequestId, Response, ServerFrame, decode_request,
 };
 use serde_json::json;
 
@@ -8,7 +8,7 @@ use serde_json::json;
 fn a_request_round_trips_through_its_wire_form() {
     let wire = json!({
         "id": 4,
-        "command": {"kind": "subscribe", "after": {"epoch": "e1", "revision": 9}}
+        "command": {"kind": "subscribe", "from": {"cursor": {"epoch": "e1", "revision": 9}}}
     });
 
     let request = decode_request(&wire.to_string()).unwrap();
@@ -18,7 +18,7 @@ fn a_request_round_trips_through_its_wire_form() {
         Request {
             id: RequestId(4),
             command: Command::Subscribe {
-                after: Some(Cursor {
+                from: FeedPosition::Cursor(Cursor {
                     epoch: DatabaseEpoch("e1".into()),
                     revision: CommitRevision(9),
                 }),
@@ -163,6 +163,7 @@ fn every_known_error_code_has_its_published_name() {
         (ErrorCode::InvalidRequest, "invalid-request"),
         (ErrorCode::UnknownCommand, "unknown-command"),
         (ErrorCode::NotAuthorized, "not-authorized"),
+        (ErrorCode::NotNegotiated, "not-negotiated"),
         (ErrorCode::Busy, "busy"),
         (ErrorCode::StaleRevision, "stale-revision"),
         (ErrorCode::ResnapshotRequired, "resnapshot-required"),
@@ -174,6 +175,23 @@ fn every_known_error_code_has_its_published_name() {
         assert_eq!(
             serde_json::from_value::<ErrorCode>(json!(name)).unwrap(),
             code
+        );
+    }
+}
+
+#[test]
+fn a_rejection_does_not_echo_a_huge_input_back() {
+    let huge = "x".repeat(100_000);
+    for frame in [
+        format!(r#"{{"id": 1, "command": {{"kind": "{huge}"}}}}"#),
+        format!(r#"{{"id": 1, "command": {{"kind": "subscribe", "from": "{huge}"}}}}"#),
+    ] {
+        let rejection = decode_request(&frame).unwrap_err();
+
+        assert!(
+            rejection.error.message.len() < 400,
+            "{}",
+            &rejection.error.message[..80]
         );
     }
 }

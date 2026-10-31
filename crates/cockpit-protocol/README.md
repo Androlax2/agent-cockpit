@@ -23,10 +23,11 @@ the wire. Report 14 treats this contract as stable from the first release.
 2. Then each `Request { id, command }` gets one `response` frame with the same id: `ok` with
    a `Reply`, or `error` with an `ErrorCode`. `decode_request` tells an unknown command
    (`unknown-command`) apart from a malformed one (`invalid-request`); a frame with no
-   readable id is answered with a `malformed-frame` frame.
-3. After `subscribe`, `changes` frames carry a `ChangeBatch`: events with entity, entity
-   revision and an `upsert` or `tombstone`, ending at a cursor (database epoch plus commit
-   revision). `follows` says whether the batch is a `snapshot` replacing the client's state
+   readable id is answered with a `malformed-frame` frame. Messages built from a peer's input
+   are capped at 256 bytes.
+3. After `subscribe` (`from` a `snapshot` or a cursor), `changes` frames carry a
+   `ChangeBatch`: events with entity, entity revision and an `upsert` or `tombstone`, ending
+   at a cursor (database epoch plus commit revision). `follows` says whether the batch is a `snapshot` replacing the client's state
    or continues from a `cursor`; a cursor other than the client's own is a gap.
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,

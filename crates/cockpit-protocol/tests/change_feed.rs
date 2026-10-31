@@ -1,6 +1,6 @@
 use cockpit_protocol::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
-    EntityRevision, Follows, ServerFrame,
+    EntityRevision, FeedPosition, ServerFrame,
 };
 use serde_json::json;
 
@@ -129,7 +129,7 @@ fn a_snapshot_batch_says_so() {
     }))
     .unwrap();
 
-    assert_eq!(batch.follows, Follows::Snapshot);
+    assert_eq!(batch.follows, FeedPosition::Snapshot);
 }
 
 #[test]

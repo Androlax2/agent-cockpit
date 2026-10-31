@@ -17,6 +17,8 @@ pub enum ErrorCode {
     UnknownCommand,
     /// The sender lacks the grant the command needs.
     NotAuthorized,
+    /// The command needs a capability the handshake did not grant.
+    NotNegotiated,
     /// The daemon has no capacity for this class of work right now; retrying later may work.
     Busy,
     /// The command was based on an entity revision that is no longer current.
@@ -25,7 +27,23 @@ pub enum ErrorCode {
     ResnapshotRequired,
     /// The daemon failed; the request may or may not have taken effect.
     Internal,
-    /// A code this version does not know, kept as sent.
+    /// A code this version does not know, kept as sent. Never build one with a known name.
     #[serde(untagged)]
     Unknown(String),
+}
+
+/// Longest message built from a peer's input, so a huge frame cannot grow its own rejection.
+const MAX_ECHOED_MESSAGE_BYTES: usize = 256;
+
+/// Cuts `message` to [`MAX_ECHOED_MESSAGE_BYTES`] on a character boundary.
+pub(crate) fn bounded(mut message: String) -> String {
+    if message.len() > MAX_ECHOED_MESSAGE_BYTES {
+        let mut end = MAX_ECHOED_MESSAGE_BYTES;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+        message.push_str("...");
+    }
+    message
 }

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::error::bounded;
+
 /// A protocol generation. Additive changes go through capabilities; a new version is only
 /// for changes an older peer would misread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -60,7 +62,7 @@ pub enum RefusalReason {
     VersionMismatch,
     /// The first frame was not a readable [`Hello`].
     MalformedHello,
-    /// A reason this version does not know, kept as sent.
+    /// A reason this version does not know, kept as sent. Never build one with a known name.
     #[serde(untagged)]
     Unknown(String),
 }
@@ -70,7 +72,7 @@ pub enum RefusalReason {
 pub fn decode_hello(frame: &str, daemon_versions: &[ProtocolVersion]) -> Result<Hello, Refusal> {
     serde_json::from_str(frame).map_err(|error| Refusal {
         reason: RefusalReason::MalformedHello,
-        message: format!("the first frame is not a valid hello: {error}"),
+        message: bounded(format!("the first frame is not a valid hello: {error}")),
         supported_versions: daemon_versions.to_vec(),
     })
 }

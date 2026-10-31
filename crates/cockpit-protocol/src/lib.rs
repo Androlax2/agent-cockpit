@@ -7,7 +7,7 @@ mod request;
 
 pub use change_feed::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
-    EntityRevision, Follows,
+    EntityRevision, FeedPosition,
 };
 pub use error::{ErrorCode, ProtocolError};
 pub use handshake::{
