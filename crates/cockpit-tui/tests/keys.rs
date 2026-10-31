@@ -182,8 +182,8 @@ fn a_daemon_outage_is_logged_once_and_its_status_clears_when_the_daemon_answers(
     for command in cockpit_tui::App::refresh_commands() {
         app.answer(
             &command,
-            Ok(Reply::Sessions {
-                sessions: Vec::new(),
+            Ok(Reply::Projects {
+                projects: Vec::new(),
             }),
             now,
         );

@@ -49,13 +49,46 @@ pub(crate) async fn publish_forever(
     let mut written: Option<Projection> = None;
     let mut config_problem: Option<String> = None;
     loop {
-        let projection = project(&database, &sessions, &environment, &mut config_problem).await;
-        let outcome = match projection {
-            Ok(projection) if written.as_ref() == Some(&projection) => Ok(()),
-            Ok(projection) => write(&database, &projection)
-                .await
-                .map(|()| written = Some(projection)),
-            Err(problem) => Err(problem),
+        let (sessions_read, checkouts_read) = tokio::join!(
+            session_states(&sessions),
+            checkout_states(&database, &environment)
+        );
+        // A broken owner configuration leaves the published checkouts as they are rather than
+        // publishing every checkout untrusted. Logged once per problem, not once per pass.
+        let checkouts = match checkouts_read {
+            Ok(checkouts) => {
+                config_problem = None;
+                Some(checkouts)
+            }
+            Err(error) => {
+                let problem = error.to_string();
+                if config_problem.as_ref() != Some(&problem) {
+                    tracing::warn!(
+                        problem,
+                        "the checkouts on the change feed are left unchanged"
+                    );
+                    config_problem = Some(problem);
+                }
+                None
+            }
+        };
+        let outcome = match sessions_read {
+            Err(error) => Err(format!("cannot read the sessions: {error}")),
+            Ok((sessions, kept_sessions)) => {
+                let projection = Projection {
+                    sessions,
+                    kept_sessions,
+                    checkouts,
+                };
+                if written.as_ref() == Some(&projection) {
+                    Ok(())
+                } else {
+                    write(&database, &projection)
+                        .await
+                        .map(|()| written = Some(projection))
+                        .map_err(|error| error.to_string())
+                }
+            }
         };
         if let Err(problem) = outcome {
             tracing::warn!(
@@ -72,74 +105,44 @@ pub(crate) async fn publish_forever(
     }
 }
 
-async fn project(
+async fn write(
     database: &Database,
-    sessions: &Sessions,
-    environment: &cockpit_config::Environment,
-    config_problem: &mut Option<String>,
-) -> Result<Projection, String> {
-    let (sessions, kept_sessions) = session_states(sessions)
-        .await
-        .map_err(|error| format!("cannot read the sessions: {error}"))?;
-    // A broken owner configuration leaves the published checkouts as they are rather than
-    // publishing every checkout untrusted. Logged once per problem, not once per pass.
-    let checkouts = match checkout_states(database, environment).await {
-        Ok(checkouts) => {
-            *config_problem = None;
-            Some(checkouts)
-        }
-        Err(error) => {
-            let problem = error.to_string();
-            if config_problem.as_ref() != Some(&problem) {
-                tracing::warn!(
-                    problem,
-                    "the checkouts on the change feed are left unchanged"
-                );
-                *config_problem = Some(problem);
-            }
-            None
-        }
-    };
-    Ok(Projection {
-        sessions,
-        kept_sessions,
-        checkouts,
-    })
-}
-
-async fn write(database: &Database, projection: &Projection) -> Result<(), String> {
-    let write = database.write().await.map_err(|error| error.to_string())?;
+    projection: &Projection,
+) -> Result<(), cockpit_messaging::Error> {
+    let write = database.write().await?;
     let mut has_changed = replace(
         &write,
         SESSION,
         &projection.sessions,
         &projection.kept_sessions,
     )
-    .await
-    .map_err(|error| error.to_string())?;
+    .await?;
     if let Some(checkouts) = &projection.checkouts {
-        has_changed |= replace(&write, CHECKOUT, checkouts, &BTreeSet::new())
-            .await
-            .map_err(|error| error.to_string())?;
+        has_changed |= replace(&write, CHECKOUT, checkouts, &BTreeSet::new()).await?;
     }
     if has_changed {
-        write.commit().await
+        write.commit().await?;
     } else {
-        write.rollback().await
+        write.rollback().await?;
     }
-    .map_err(|error| error.to_string())
+    Ok(())
 }
 
 /// The sessions not ended, as `session-list` answers them; an ended one is retracted. A
 /// session whose view cannot be read is logged and kept as published, so one bad session
 /// does not stop the others from reaching the feed.
-async fn session_states(
-    sessions: &Sessions,
-) -> Result<(States, BTreeSet<String>), cockpit_sessions::Error> {
+async fn session_states(sessions: &Sessions) -> Result<(States, BTreeSet<String>), String> {
+    let work = crate::sessions::task_work(sessions)
+        .await
+        .map_err(|failed| failed.0.message)?;
     let mut states = States::new();
     let mut kept = BTreeSet::new();
-    for session in sessions.list(false).await? {
-        match crate::sessions::current_view(sessions, &session).await {
+    for session in sessions
+        .list(false)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        match crate::sessions::current_view(sessions, &session, &work).await {
             Ok(view) => {
                 states.insert(view.id.clone(), state_of(&view));
             }

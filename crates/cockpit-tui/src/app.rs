@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use cockpit_protocol::{ChangeBatch, Command, FeedPosition, Reply};
+use cockpit_protocol::{ChangeBatch, Command, Reply};
 
 use crate::board::{Board, FeedError};
 use crate::form::{Form, FormOutcome};
@@ -89,6 +89,9 @@ pub struct App {
     /// (or a session, request or guide answer). The same problem again, as every refresh
     /// while the daemon is down, is not logged again.
     pub(crate) failure: Option<Failure>,
+    /// Why the change feed stopped: the sessions and checkouts shown are not current until
+    /// a batch applies again.
+    pub(crate) feed_problem: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,25 +147,18 @@ impl App {
     /// Applies a change-feed batch whole, or refuses it whole.
     pub fn apply_changes(&mut self, batch: &ChangeBatch) -> Result<(), FeedError> {
         self.board.apply(batch)?;
-        if self
-            .failure
-            .as_ref()
-            .is_some_and(|failure| failure.kind == FEED_LABEL)
-        {
-            self.failure = None;
-        }
+        self.feed_problem = None;
         self.keep_selection();
         Ok(())
     }
 
-    /// The change feed stopped: shown and logged like a failed command, once per problem.
+    /// The change feed stopped: on the status line until a batch applies, logged once per
+    /// problem.
     pub fn feed_lost(&mut self, problem: String) {
-        self.failed(
-            &Command::Subscribe {
-                from: FeedPosition::Snapshot,
-            },
-            problem,
-        );
+        if self.feed_problem.as_ref() != Some(&problem) {
+            self.note(format!("change feed: {problem}"));
+        }
+        self.feed_problem = Some(problem);
     }
 
     pub fn key(&mut self, key: Key, now: Instant) -> Step {
@@ -393,7 +389,7 @@ impl App {
                 };
                 self.note(format!("{what} {} in {}", session.id, session.working_dir));
                 self.board.put_session(*session);
-                self.clear_command_failure();
+                self.failure = None;
             }
             Reply::EndedFinished { ended, failed } => {
                 self.note(format!("exited {} finished sessions", ended.len()));
@@ -409,11 +405,11 @@ impl App {
             }
             Reply::RunRequest { request } => {
                 self.note(format!("request {} is {:?}", request.id, request.state));
-                self.clear_command_failure();
+                self.failure = None;
             }
             Reply::Guide { guide } => {
                 self.note(format!("guide {} is {:?}", guide.id, guide.state));
-                self.clear_command_failure();
+                self.failure = None;
             }
             other => self.note(format!("unexpected answer {other:?}")),
         }
@@ -450,18 +446,6 @@ impl App {
         }
     }
 
-    /// A command went through: a failed command no longer shows. A lost change feed still
-    /// does, since only an applied batch says the list is current again.
-    fn clear_command_failure(&mut self) {
-        if self
-            .failure
-            .as_ref()
-            .is_some_and(|failure| failure.kind != FEED_LABEL)
-        {
-            self.failure = None;
-        }
-    }
-
     fn note(&mut self, entry: String) {
         if self.log.len() == LOG_ENTRIES {
             self.log.pop_front();
@@ -469,9 +453,6 @@ impl App {
         self.log.push_back(entry);
     }
 }
-
-/// The wire kind of `subscribe`, which labels the change feed's failures.
-const FEED_LABEL: &str = "subscribe";
 
 /// The command's wire kind, for the status line and the log.
 fn command_label(command: &Command) -> String {

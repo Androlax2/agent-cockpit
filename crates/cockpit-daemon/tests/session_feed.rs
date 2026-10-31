@@ -141,7 +141,11 @@ fn git(dir: &Path, arguments: &[&str]) {
         .args(arguments)
         .output()
         .unwrap();
-    assert!(output.status.success(), "git {arguments:?}");
+    assert!(
+        output.status.success(),
+        "git {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 async fn request(client: &Connection, command: Command) -> Reply {

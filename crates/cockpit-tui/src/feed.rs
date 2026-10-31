@@ -35,7 +35,8 @@ pub enum FeedEvent {
 /// Follows the feed of the daemon at `socket` until `events` is closed. A disconnect resumes
 /// from the last applied batch; a batch the board refused starts again from a snapshot.
 pub async fn follow_feed(socket: PathBuf, events: mpsc::Sender<FeedEvent>) {
-    let mut subscription = Subscription::new(socket.clone(), None, SUBSCRIBE_DEADLINE);
+    let from_snapshot = || Subscription::new(socket.clone(), None, SUBSCRIBE_DEADLINE);
+    let mut subscription = from_snapshot();
     let mut retry = FIRST_RETRY;
     loop {
         let problem = match subscription.next_batch().await {
@@ -57,7 +58,7 @@ pub async fn follow_feed(socket: PathBuf, events: mpsc::Sender<FeedEvent>) {
                         continue;
                     }
                     Ok(Err(refused)) => {
-                        subscription = Subscription::new(socket.clone(), None, SUBSCRIBE_DEADLINE);
+                        subscription = from_snapshot();
                         refused.to_string()
                     }
                     Err(_) => return,
