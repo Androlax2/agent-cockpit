@@ -9,6 +9,8 @@
 
 mod common;
 
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::sync::Arc;
@@ -199,25 +201,19 @@ async fn the_daemon_opens_its_tmux_server_once_for_the_sessions_and_the_manager(
     let checks = home.path().join("version-checks.log");
     let config = home.path().join("tmux.conf");
     let wrapper = home.path().join("tmux-wrapper");
+    // The wrapper finds the config and its log beside itself, so no path is quoted into it.
     std::fs::write(
         &wrapper,
-        format!(
-            "#!/bin/sh\n\
-             if [ \"$1\" = -V ]; then\n\
-             if [ -e '{config}' ]; then echo config-written >> '{checks}'; \
-             else echo no-config >> '{checks}'; fi\n\
-             fi\n\
-             exec tmux \"$@\"\n",
-            config = config.display(),
-            checks = checks.display(),
-        ),
+        "#!/bin/sh\n\
+         here=$(dirname \"$0\")\n\
+         if [ \"$1\" = -V ]; then\n\
+         if [ -e \"$here/tmux.conf\" ]; then echo config-written >> \"$here/version-checks.log\"; \
+         else echo no-config >> \"$here/version-checks.log\"; fi\n\
+         fi\n\
+         exec tmux \"$@\"\n",
     )
     .unwrap();
-    std::fs::set_permissions(
-        &wrapper,
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
+    std::fs::set_permissions(&wrapper, Permissions::from_mode(0o755)).unwrap();
     let daemon = home.start_with_tmux(wrapper).await;
     let client = Connection::open(daemon.socket_path(), GENEROUS)
         .await
@@ -241,9 +237,10 @@ async fn the_daemon_opens_its_tmux_server_once_for_the_sessions_and_the_manager(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_tmux_the_manager_is_refused_with_the_reason_sessions_give() {
+async fn without_tmux_the_manager_and_sessions_are_refused_naming_the_same_cause_and_fix() {
     let home = Home::new();
-    let daemon = home.start_with_tmux(home.path().join("no-tmux-here")).await;
+    let missing_tmux = home.path().join("no-tmux-here");
+    let daemon = home.start_with_tmux(missing_tmux.clone()).await;
     let client = Connection::open(daemon.socket_path(), GENEROUS)
         .await
         .unwrap();
@@ -267,12 +264,11 @@ async fn without_tmux_the_manager_is_refused_with_the_reason_sessions_give() {
         (manager.code, sessions.code),
         (ErrorCode::Refused, ErrorCode::Refused)
     );
-    let reason = format!(
-        "`{}` could not be run",
-        home.path().join("no-tmux-here").display()
-    );
-    assert!(manager.message.contains(&reason), "{}", manager.message);
-    assert!(sessions.message.contains(&reason), "{}", sessions.message);
+    let reason = format!("`{}` could not be run", missing_tmux.display());
+    for message in [&manager.message, &sessions.message] {
+        assert!(message.contains(&reason), "{message}");
+        assert!(message.contains("restart the daemon"), "{message}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

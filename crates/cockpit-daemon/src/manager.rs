@@ -37,7 +37,13 @@ impl Manager {
 
     fn tmux(&self) -> Result<&cockpit_tmux::Server, ProtocolError> {
         self.tmux.as_deref().map_err(|reason| {
-            ProtocolError::new(ErrorCode::Refused, format!("tmux is unavailable: {reason}"))
+            ProtocolError::new(
+                ErrorCode::Refused,
+                format!(
+                    "the manager needs tmux, which was unavailable when the daemon started: \
+                     {reason}; install tmux, then restart the daemon"
+                ),
+            )
         })
     }
 }

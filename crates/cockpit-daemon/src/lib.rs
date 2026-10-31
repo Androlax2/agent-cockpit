@@ -161,7 +161,7 @@ impl Instance {
                 | cockpit_tmux::Error::UnrecognizedVersion { .. }
                 | cockpit_tmux::Error::TmuxTooOld { .. }),
             ) => {
-                tracing::warn!(%error, "tmux is unavailable: sessions are refused until it is installed and the daemon restarts");
+                tracing::warn!(%error, "tmux is unavailable: sessions and the manager are refused until it is installed and the daemon restarts");
                 Err(error.to_string())
             }
             Err(error) => return Err(StartError::Tmux(error)),
