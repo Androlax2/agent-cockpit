@@ -2713,8 +2713,10 @@ fn wake_ready(
         worker.session == *chief
             && worker.observed_at_ms <= now_ms
             && now_ms.saturating_sub(worker.observed_at_ms) <= 30_000
-            && worker.ready
-            && worker.blocked_by.is_empty()
+            && worker
+                .blocked_by
+                .iter()
+                .all(|reason| reason == GAMING_GUARDED)
     }))
 }
 
@@ -3195,13 +3197,10 @@ pub fn claim(
                     worker.session == identity
                         && worker.observed_at_ms <= now_ms
                         && now_ms - worker.observed_at_ms <= 30_000
-                        && worker.blocked_by.iter().all(|reason| {
-                            matches!(
-                                reason.as_str(),
-                                "live_queued_admission_verification_required"
-                                    | "legacy_work_in_progress"
-                            )
-                        })
+                        && worker
+                            .blocked_by
+                            .iter()
+                            .all(|reason| CHIEF_MESSAGE_IGNORES.contains(&reason.as_str()))
                 });
                 if active && ready && !launching {
                     InboxValidation::Ready
@@ -3371,6 +3370,20 @@ pub fn claim_check(
     }))
 }
 
+/// A game is running, but the host's game guard holds new heavy jobs and Theo lets agent turns
+/// continue (`chief-turns-while-gaming`); the daemon reports it instead of `gaming`. Only Chief
+/// messages, answers, corrections, form replies and the Chief's wake tolerate it: todo gifts,
+/// queue starts and fresh sessions still wait for the game to end.
+pub const GAMING_GUARDED: &str = "gaming_guarded";
+
+/// Readiness reasons a Chief message may ignore: it can resume the current task, but cannot overtake
+/// a launch or another native turn.
+const CHIEF_MESSAGE_IGNORES: [&str; 3] = [
+    "live_queued_admission_verification_required",
+    "legacy_work_in_progress",
+    GAMING_GUARDED,
+];
+
 /// Readiness reasons a Chief answer may ignore: the answer is meant for a session that just stopped
 /// (the idle guard), sits at its own question (`human_input`) and works on a todo (its observed
 /// reservation). The osd turn gate already refused permission prompts.
@@ -3379,21 +3392,23 @@ pub fn claim_check(
 /// `live_queued_admission_verification_required` is on every worker and would hold every reply
 /// forever. A reply needs no such check: only the plugin's receipt under the reply's own stable id
 /// settles it as received, and anything else turns it uncertain with a host delivery decision.
-const ANSWER_IGNORES: [&str; 4] = [
+const ANSWER_IGNORES: [&str; 5] = [
     "idle_guard",
     "human_input",
     "legacy_work_in_progress",
     "live_queued_admission_verification_required",
+    GAMING_GUARDED,
 ];
 /// A form reply goes to a session waiting on the very form it settles, whose runtime still runs the
 /// turn that asked (`native_busy_at_form`; a plain `native_busy` still holds it).
-const FORM_REPLY_IGNORES: [&str; 6] = [
+const FORM_REPLY_IGNORES: [&str; 7] = [
     "idle_guard",
     "human_input",
     "legacy_work_in_progress",
     "live_queued_admission_verification_required",
     "native_form_pending",
     "native_busy_at_form",
+    GAMING_GUARDED,
 ];
 
 /// Hands the stopped session the answer to its stop. `boundary` is the session's current stop
