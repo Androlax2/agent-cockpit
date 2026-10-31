@@ -9,6 +9,10 @@ use crate::StartError;
 use crate::server::Limits;
 
 const SOCKET_FILE: &str = "daemon.sock";
+/// The agent socket has a directory of its own, so a sandbox can be given that directory
+/// without the host-only socket beside it.
+const AGENT_SOCKET_DIR: &str = "agent";
+const AGENT_SOCKET_FILE: &str = "agent.sock";
 const LOCK_FILE: &str = "daemon.lock";
 const DATABASE_FILE: &str = "state.db";
 /// Only the owner may enter the socket directory.
@@ -51,8 +55,16 @@ impl Options {
         })
     }
 
+    /// The host-only socket: its peers are the owner. No sandbox may reach it.
     pub fn socket_path(&self) -> PathBuf {
         self.runtime_dir.join(SOCKET_FILE)
+    }
+
+    /// The socket sandboxed agents reach; its peers are never the owner.
+    pub fn agent_socket_path(&self) -> PathBuf {
+        self.runtime_dir
+            .join(AGENT_SOCKET_DIR)
+            .join(AGENT_SOCKET_FILE)
     }
 
     pub(crate) fn database_path(&self) -> PathBuf {
@@ -78,6 +90,7 @@ impl Instance {
         let owner_uid = effective_uid(&options.state_dir)?;
         create_private_dir(&options.state_dir, owner_uid)?;
         create_private_dir(&options.runtime_dir, owner_uid)?;
+        create_private_dir(&options.runtime_dir.join(AGENT_SOCKET_DIR), owner_uid)?;
         let lock_path = options.runtime_dir.join(LOCK_FILE);
         let lock = OpenOptions::new()
             .create(true)

@@ -17,7 +17,7 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::StartError;
 use crate::lanes::{LaneLimits, Lanes};
-use crate::routes::{Handler, Route, refusal};
+use crate::routes::{Handler, Peer, Route, refusal};
 
 /// Only the owner may connect; the 0700 directory already says so, this is the second lock.
 const SOCKET_MODE: u32 = 0o600;
@@ -30,7 +30,7 @@ const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// How much the daemon accepts at once. Every bound answers or closes when reached.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// Open connections; one more is closed at once.
+    /// Open connections per socket; one more is closed at once.
     pub connections: usize,
     /// Requests one connection may have unanswered; the daemon stops reading that
     /// connection until one is answered, so a client that does not read cannot grow memory.
@@ -88,7 +88,22 @@ pub(crate) struct Shared {
     pub(crate) limits: Limits,
     pub(crate) lanes: Lanes,
     pub(crate) handler: Arc<dyn Handler>,
-    pub(crate) connections: Arc<Semaphore>,
+}
+
+/// Which socket a connection came through; it alone decides between owner and agent.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Socket {
+    HostOnly,
+    Agent,
+}
+
+impl Socket {
+    pub(crate) fn worker_name(self) -> &'static str {
+        match self {
+            Socket::HostOnly => "accept",
+            Socket::Agent => "accept-agents",
+        }
+    }
 }
 
 /// Binds the socket at `path`, replacing a stale socket file. The caller holds the
@@ -105,9 +120,14 @@ pub(crate) fn bind(path: &Path) -> Result<UnixListener, StartError> {
     Ok(listener)
 }
 
-/// Accepts connections forever. Each connection runs in its own task, so a panic there ends
-/// that connection only.
-pub(crate) async fn accept_connections(listener: Arc<UnixListener>, shared: Arc<Shared>) {
+/// Accepts connections forever, at most `connections` open at once. Each connection runs in
+/// its own task, so a panic there ends that connection only.
+pub(crate) async fn accept_connections(
+    listener: Arc<UnixListener>,
+    shared: Arc<Shared>,
+    connections: Arc<Semaphore>,
+    socket: Socket,
+) {
     loop {
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
@@ -117,7 +137,7 @@ pub(crate) async fn accept_connections(listener: Arc<UnixListener>, shared: Arc<
                 continue;
             }
         };
-        let Ok(connection_place) = Arc::clone(&shared.connections).try_acquire_owned() else {
+        let Ok(connection_place) = Arc::clone(&connections).try_acquire_owned() else {
             tracing::warn!(
                 limit = shared.limits.connections,
                 "too many connections; closing a new one"
@@ -127,9 +147,15 @@ pub(crate) async fn accept_connections(listener: Arc<UnixListener>, shared: Arc<
         if !is_owner(&stream, shared.owner_uid) {
             continue;
         }
+        let peer = match socket {
+            Socket::HostOnly => Peer::Owner,
+            Socket::Agent => Peer::Agent {
+                pid: peer_pid(&stream),
+            },
+        };
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
-            serve_connection(stream, &shared).await;
+            serve_connection(stream, &shared, peer).await;
             drop(connection_place);
         });
     }
@@ -153,7 +179,13 @@ fn is_owner(stream: &UnixStream, owner_uid: u32) -> bool {
     }
 }
 
-async fn serve_connection(stream: UnixStream, shared: &Shared) {
+/// The peer's process as the kernel recorded it when it connected.
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    let pid = stream.peer_cred().ok()?.pid()?;
+    u32::try_from(pid).ok().filter(|pid| *pid > 0)
+}
+
+async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut frame = Vec::new();
@@ -202,7 +234,7 @@ async fn serve_connection(stream: UnixStream, shared: &Shared) {
         };
         let id = request.id;
         let respond = move |outcome| ServerFrame::Response(Response { id, outcome });
-        let (class, job) = match shared.handler.route(request.command, &welcome) {
+        let (class, job) = match shared.handler.route(request.command, &welcome, peer) {
             Route::Answer(outcome) => {
                 answer.send(respond(outcome));
                 continue;
@@ -306,10 +338,7 @@ fn malformed_hello(message: String) -> HandshakeReply {
 }
 
 fn malformed(message: String) -> ServerFrame {
-    ServerFrame::MalformedFrame(ProtocolError {
-        code: ErrorCode::InvalidRequest,
-        message,
-    })
+    ServerFrame::MalformedFrame(ProtocolError::new(ErrorCode::InvalidRequest, message))
 }
 
 enum FrameError {

@@ -155,10 +155,7 @@ impl Peer {
     pub async fn fail(&mut self, id: RequestId, code: ErrorCode) {
         self.send(&ServerFrame::Response(Response {
             id,
-            outcome: Outcome::Error(ProtocolError {
-                code,
-                message: "scripted failure".to_owned(),
-            }),
+            outcome: Outcome::Error(ProtocolError::new(code, "scripted failure")),
         }))
         .await;
     }

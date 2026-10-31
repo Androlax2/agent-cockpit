@@ -1,15 +1,19 @@
 #![doc = include_str!("../README.md")]
 
+mod agent;
 mod change_feed;
 mod error;
 mod handshake;
 mod request;
 
+pub use agent::{
+    AGENT_SOCKET_VARIABLE, AgentReport, AgentState, LAUNCH_TOKEN_VARIABLE, SessionReport,
+};
 pub use change_feed::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
     EntityRevision, FeedPosition,
 };
-pub use error::{ErrorCode, ProtocolError};
+pub use error::{ErrorCode, ProtocolError, Unblock, UnblockedBy};
 pub use handshake::{
     Capability, HandshakeReply, Hello, ProtocolVersion, Refusal, RefusalReason, SUPPORTED_VERSIONS,
     Welcome, decode_hello, negotiate,

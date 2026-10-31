@@ -1,11 +1,45 @@
 use serde::{Deserialize, Serialize};
 
 /// Why the daemon did not carry out a request. Clients branch on `code`; `message` is for
-/// people.
+/// people. A refusal the sender can act on also says what would lift it (report 17).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolError {
     pub code: ErrorCode,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unblock: Option<Unblock>,
+}
+
+impl ProtocolError {
+    /// An error with no unblock: the daemon failed, or nothing the sender does changes it.
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> ProtocolError {
+        ProtocolError {
+            code,
+            message: message.into(),
+            unblock: None,
+        }
+    }
+}
+
+/// What would lift a refusal, and who can do it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unblock {
+    pub action: String,
+    pub by: UnblockedBy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UnblockedBy {
+    /// The human who owns the installation.
+    Owner,
+    /// The sender, by changing its request.
+    Agent,
+    /// Cockpit itself: a missing feature or a fault to report.
+    Cockpit,
+    /// A party this version does not know, kept as sent. Never build one with a known name.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,8 +49,12 @@ pub enum ErrorCode {
     InvalidRequest,
     /// The command kind is not one this daemon knows.
     UnknownCommand,
-    /// The sender lacks the grant the command needs.
+    /// The sender lacks the grant the command needs, or the command is the owner's alone.
     NotAuthorized,
+    /// The agent socket could not tell which session the sender acts for.
+    UnidentifiedPeer,
+    /// The request is well formed, but a value in it is not acceptable.
+    InvalidArgument,
     /// The command needs a capability the handshake did not grant.
     NotNegotiated,
     /// The daemon has no capacity for this class of work right now; retrying later may work.

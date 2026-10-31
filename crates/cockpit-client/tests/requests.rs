@@ -213,10 +213,7 @@ async fn a_change_batch_without_a_subscription_closes_the_connection() {
 
 #[tokio::test]
 async fn a_frame_the_daemon_could_not_read_closes_the_connection_with_its_error() {
-    let rejection = ProtocolError {
-        code: ErrorCode::InvalidRequest,
-        message: "the frame is not JSON".to_owned(),
-    };
+    let rejection = ProtocolError::new(ErrorCode::InvalidRequest, "the frame is not JSON");
     let malformed = line(&ServerFrame::MalformedFrame(rejection.clone()));
 
     let reason = close_reason(request_answered_with(malformed, false).await);

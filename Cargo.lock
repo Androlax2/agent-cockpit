@@ -373,6 +373,7 @@ dependencies = [
 name = "cockpit-daemon"
 version = "0.1.0"
 dependencies = [
+ "cockpit-agent-channel",
  "cockpit-authorization",
  "cockpit-client",
  "cockpit-config",

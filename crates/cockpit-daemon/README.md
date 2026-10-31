@@ -12,7 +12,8 @@ not share code.
 
 - Depends on: `cockpit-protocol` (wire types and the frame limit), `cockpit-config` (XDG
   layout), `cockpit-diagnostics` (its own log), `cockpit-turso` (the state database it opens
-  once) and `cockpit-authorization` (whose migrations it runs); `tokio`, `serde`,
+  once), `cockpit-authorization` (whose migrations it runs) and `cockpit-agent-channel`
+  (who an agent socket peer is, and its verbs); `tokio`, `serde`,
   `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
   `clients ->` rules of `cockpit-workspace-rules/tests/crate_graph.rs` keep them from
@@ -27,9 +28,21 @@ not share code.
 2. Take the instance lock, `daemon.lock` in the socket directory. A second daemon of the same
    user exits 1 with `another cockpit daemon of this user is already running`.
 3. Start logging (`COCKPIT_LOG_LEVEL`, report 12): `$XDG_STATE_HOME/cockpit/logs/daemon`.
-4. Restart contract (report 03): open `state.db` with every capability's migrations, then
-   reconcile; no capability holds launch intents or executions yet.
-5. Only then bind `daemon.sock` (0600, a stale file replaced) and print `ready <socket>`.
+4. Restart contract (report 03): open `state.db` with every capability's migrations
+   (`MIGRATION_SETS`), then reconcile; no capability holds launch intents or executions yet.
+5. Only then bind `daemon.sock` and `agent/agent.sock` (0600, stale files replaced) and print
+   `ready <socket>`.
+
+## Two sockets (report 17)
+
+- `daemon.sock` is host-only: no sandbox may reach it, and its peers are the owner.
+- `agent/agent.sock` sits in a 0700 directory of its own, so a sandbox can be given that
+  directory alone. Its peers are only ever agents: the kernel's peer process goes to
+  `cockpit-agent-channel`, which decides the session from the launch token and the verified
+  process tree. Owner commands there are refused `not-authorized`; `agent-report` on the
+  host-only socket is refused.
+- Each socket has its own connection limit. Agent requests run in the bulk lane, so
+  sandboxed senders never take the owner's control capacity.
 
 ## Requests
 
@@ -53,5 +66,8 @@ not share code.
   macOS layout, a stale socket after `kill -9`, reconcile before accept.
 - `tests/protocol.rs`: handshake, version refusal, framing and `not-negotiated`, through the
   binary's socket.
+- `tests/agent_channel.rs`: issue #32's acceptance on the binary's sockets: a launched
+  agent's report, leaked tokens, payload-claimed sessions, a nested agent with its parent's
+  grants, refusals with their unblock, restart.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket
   and lanes with a fixture [`Handler`] that blocks or panics on `subscribe` (#108).

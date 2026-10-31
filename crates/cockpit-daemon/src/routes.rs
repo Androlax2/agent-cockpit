@@ -2,8 +2,13 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
-use cockpit_protocol::{Command, ErrorCode, Outcome, ProtocolError, Reply, Welcome};
+use cockpit_protocol::{
+    Command, ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy, Welcome,
+};
+
+use crate::agent;
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
 /// so bulk work can fill its lane without taking capacity from control (report 03).
@@ -28,34 +33,86 @@ pub enum Route {
     Run { class: WorkClass, job: Job },
 }
 
+/// Who is at the other end of a connection, as the socket it came through and the kernel
+/// say; never what a payload claims (report 11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Peer {
+    /// The host-only socket, which no sandbox reaches: the owner.
+    Owner,
+    /// The agent socket. `pid` is the kernel's peer process, `None` when it named none; the
+    /// agent channel decides which session, if any, that process acts for.
+    Agent { pid: Option<u32> },
+}
+
 /// Turns commands into routes. Capabilities add their commands to [`Routes`]; the seam
 /// exists so fixtures can stand in slow or failing work behind the real socket, lanes and
 /// panic containment (#108).
 pub trait Handler: Send + Sync + 'static {
-    /// `welcome` is what this connection negotiated. Called on the connection's task: it
-    /// must not block or wait; the work belongs in the [`Job`].
-    fn route(&self, command: Command, welcome: &Welcome) -> Route;
+    /// `welcome` is what this connection negotiated and `peer` who is on it. Called on the
+    /// connection's task: it must not block or wait; the work belongs in the [`Job`].
+    fn route(&self, command: Command, welcome: &Welcome, peer: Peer) -> Route;
 }
 
-/// The daemon's own commands.
-#[derive(Debug, Default)]
-pub struct Routes;
+/// The daemon's commands, over the state database the daemon opened.
+pub struct Routes {
+    database: Arc<cockpit_turso::Database>,
+}
+
+impl Routes {
+    pub fn new(database: Arc<cockpit_turso::Database>) -> Routes {
+        Routes { database }
+    }
+}
 
 impl Handler for Routes {
-    fn route(&self, command: Command, _welcome: &Welcome) -> Route {
-        match command {
-            Command::Ping => Route::Run {
+    fn route(&self, command: Command, _welcome: &Welcome, peer: Peer) -> Route {
+        match (command, peer) {
+            (Command::Ping, _) => Route::Run {
                 class: WorkClass::Control,
                 job: Box::pin(async { Outcome::Ok(Reply::Pong) }),
             },
             // The daemon offers no change feed until messaging serves it (#41), so no
             // connection has negotiated it.
-            Command::Subscribe { .. } => Route::Answer(refusal(
+            (Command::Subscribe { .. }, _) => Route::Answer(refusal(
                 ErrorCode::NotNegotiated,
                 "this connection did not negotiate the change-feed capability",
             )),
+            // Agent requests run in the bulk lane: sandboxed senders must never take the
+            // owner's control capacity (docs/DECISIONS.md, #32).
+            (
+                Command::AgentReport {
+                    launch_token,
+                    report,
+                },
+                Peer::Agent { pid },
+            ) => Route::Run {
+                class: WorkClass::Bulk,
+                job: Box::pin(agent::report(
+                    Arc::clone(&self.database),
+                    pid,
+                    launch_token,
+                    report,
+                )),
+            },
+            (Command::AgentReport { .. }, Peer::Owner) => {
+                Route::Answer(Outcome::Error(ProtocolError {
+                    code: ErrorCode::InvalidRequest,
+                    message: "agent-report is an agent's request; the owner has no session"
+                        .to_owned(),
+                    unblock: Some(Unblock {
+                        action: "send it on the agent socket from a session Cockpit launched"
+                            .to_owned(),
+                        by: UnblockedBy::Agent,
+                    }),
+                }))
+            }
+            (Command::AgentReports, Peer::Owner) => Route::Run {
+                class: WorkClass::Control,
+                job: Box::pin(agent::reports(Arc::clone(&self.database))),
+            },
+            (Command::AgentReports, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
-            Command::Unknown => Route::Answer(refusal(
+            (Command::Unknown, _) => Route::Answer(refusal(
                 ErrorCode::UnknownCommand,
                 "this daemon does not know the command",
             )),
@@ -64,8 +121,17 @@ impl Handler for Routes {
 }
 
 pub fn refusal(code: ErrorCode, message: &str) -> Outcome {
+    Outcome::Error(ProtocolError::new(code, message))
+}
+
+/// The answer to an owner's command sent on the agent socket.
+fn owner_only() -> Outcome {
     Outcome::Error(ProtocolError {
-        code,
-        message: message.to_owned(),
+        code: ErrorCode::NotAuthorized,
+        message: "this command is the owner's alone".to_owned(),
+        unblock: Some(Unblock {
+            action: "ask the owner to run it on the host".to_owned(),
+            by: UnblockedBy::Owner,
+        }),
     })
 }

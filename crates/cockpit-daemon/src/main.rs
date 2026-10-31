@@ -47,7 +47,9 @@ fn run(foreground: bool) -> Result<(), StartError> {
         .expect("nothing installed a subscriber before startup");
     let runtime = tokio::runtime::Runtime::new().map_err(StartError::Runtime)?;
     runtime.block_on(async {
-        let daemon = instance.start(Arc::new(Routes)).await?;
+        let daemon = instance
+            .start(|database| Arc::new(Routes::new(database)))
+            .await?;
         println!("ready {}", daemon.socket_path().display());
         daemon.wait().await;
         Ok(())
