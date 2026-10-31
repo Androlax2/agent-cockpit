@@ -7,13 +7,24 @@ use cockpit_authorization::SessionId;
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::Row;
 
-use crate::runs::{EXPIRES_AFTER_SECONDS, Project};
 use crate::{Error, Refusal};
+
+/// An asking request expires this long after the agent last asked about it: an approval
+/// nobody waits for is not run behind the agent's back (the current `ask-to-run` rule).
+pub const EXPIRES_AFTER_SECONDS: i64 = 15 * 60;
 
 /// A poll moves the expiry forward only once it is this much older than a fresh one, so
 /// polls inside that window write nothing: an asking request outlives the last poll by at
 /// least `EXPIRES_AFTER_SECONDS - REFRESH_AFTER_SECONDS`.
 const REFRESH_AFTER_SECONDS: i64 = 60;
+
+/// The registered project the asking agent works in, as the daemon found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    pub name: String,
+    /// The checkout's canonical path.
+    pub root: PathBuf,
+}
 
 /// A request state that starts as asking and reads as expired once nobody polls for it.
 pub(crate) trait AskState: Copy + PartialEq {
@@ -60,6 +71,11 @@ pub(crate) async fn next_id(write: &WriteTransaction<'_>, table: &str) -> Result
         .query_row(())
         .await?
         .get::<i64>(0)?)
+}
+
+/// No such request, or another session's: the asker learns nothing about it.
+pub(crate) fn not_found(kind: &'static str, id: i64) -> Refusal {
+    Refusal::NotFound { kind, id }
 }
 
 pub(crate) fn invalid_row(table: &'static str, reason: String) -> Error {

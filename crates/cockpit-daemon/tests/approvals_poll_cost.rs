@@ -56,7 +56,6 @@ async fn measure_status_polls_and_the_owner_queue() {
     let cwd = cwd.to_str().unwrap().to_owned();
     let daemon = home.start();
     let agent = home.connect_agent().await;
-    let owner = home.connect().await;
 
     let Reply::RunRequest { request } = agent
         .request(
@@ -95,8 +94,7 @@ async fn measure_status_polls_and_the_owner_queue() {
     let rows_before = change_rows(&home).await;
     let daemon = home.start();
     let agent = home.connect_agent().await;
-    let owner_after_restart = home.connect().await;
-    drop(owner);
+    let owner = home.connect().await;
 
     let run_poll = timed(POLLS, &agent, || Command::AskRunStatus {
         launch_token: None,
@@ -108,7 +106,7 @@ async fn measure_status_polls_and_the_owner_queue() {
         guide: guides[0],
     })
     .await;
-    let queue = timed(QUEUE_READS, &owner_after_restart, || Command::ApprovalQueue).await;
+    let queue = timed(QUEUE_READS, &owner, || Command::ApprovalQueue).await;
     daemon.kill();
     let rows_written = change_rows(&home).await - rows_before;
 

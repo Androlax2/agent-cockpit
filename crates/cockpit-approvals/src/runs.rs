@@ -19,14 +19,11 @@ use crate::display::is_outside_project;
 use crate::error::invalid;
 use crate::pty::Output;
 use crate::rows::{
-    AskState, invalid_row, next_id, project_from, refreshed_expiry, session_from, state_at,
-    still_asking,
+    AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
+    refreshed_expiry, session_from, state_at, still_asking,
 };
 use crate::{Error, Refusal};
 
-/// An asking request expires this long after the agent last asked about it: an approval
-/// nobody waits for is not run behind the agent's back (the current `ask-to-run` rule).
-pub const EXPIRES_AFTER_SECONDS: i64 = 15 * 60;
 /// An approval is refused this long after the request was asked or last edited (#156,
 /// #166): a keystroke meant for something else, landing as the request appears, approves
 /// nothing. Clients add their own grace on top; this one holds for every client. Times are
@@ -35,6 +32,7 @@ pub const APPROVAL_GRACE_SECONDS: i64 = 2;
 const COMMAND_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const REASON_MAX_CHARS: usize = 1000;
 const TABLE: &str = "approvals_runs";
+const KIND: &str = "run request";
 
 /// The columns `run_from` reads, in its order.
 const SELECT_RUNS: &str = "SELECT id, session, revision, command, asked_command, cwd, project,
@@ -97,14 +95,6 @@ impl RunState {
         .into_iter()
         .find(|state| state.as_str() == text)
     }
-}
-
-/// The registered project the asking agent works in, as the daemon found it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Project {
-    pub name: String,
-    /// The checkout's canonical path.
-    pub root: PathBuf,
 }
 
 /// What an agent asks to run. `cwd` is canonical (see [`resolve_cwd`]): what the owner reads
@@ -349,7 +339,7 @@ pub async fn run_status(
 ) -> Result<RunRequest, Error> {
     let mut run = match run_request(write, id, now).await? {
         Some(run) if run.session == *session => run,
-        _ => return Err(not_found(id).into()),
+        _ => return Err(not_found(KIND, id.0).into()),
     };
     if run.state != RunState::Asking {
         return Ok(run);
@@ -586,7 +576,7 @@ async fn fenced_update(
 async fn undecided(write: &WriteTransaction<'_>, id: RunId, now: i64) -> Result<RunRequest, Error> {
     let run = run_request(write, id, now)
         .await?
-        .ok_or_else(|| not_found(id))?;
+        .ok_or_else(|| not_found(KIND, id.0))?;
     still_asking(run.state)?;
     Ok(run)
 }
@@ -607,13 +597,6 @@ async fn undecided_at(
         .into());
     }
     Ok(run)
-}
-
-fn not_found(id: RunId) -> Refusal {
-    Refusal::NotFound {
-        kind: "run request",
-        id: id.0,
-    }
 }
 
 pub(crate) fn validate_command(field: &'static str, command: &str) -> Result<(), Refusal> {

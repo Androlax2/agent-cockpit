@@ -167,7 +167,7 @@ pub(crate) fn route_ask(
                 launch_token,
                 request,
             } => {
-                let sender = Sender::identified(connector).await;
+                let sender = Sender::of(connector, Cwd::Skip).await;
                 let write = database.write().await?;
                 let session = sender.identify(&write, launch_token).await?;
                 let run =
@@ -179,7 +179,7 @@ pub(crate) fn route_ask(
                 launch_token,
                 guide,
             } => {
-                let sender = Sender::identified(connector).await;
+                let sender = Sender::of(connector, Cwd::Skip).await;
                 let write = database.write().await?;
                 let session = sender.identify(&write, launch_token).await?;
                 let guide =
@@ -189,7 +189,7 @@ pub(crate) fn route_ask(
                 Ok(guide_reply(&guide))
             }
             Command::AskCheck { launch_token } => {
-                let sender = Sender::identified(connector).await;
+                let sender = Sender::of(connector, Cwd::Skip).await;
                 let write = database.write().await?;
                 let session = sender.identify(&write, launch_token).await?;
                 cockpit_approvals::may_ask(&write, &session).await?;
@@ -216,7 +216,7 @@ async fn ask_run(
     cwd: String,
     reason: String,
 ) -> Answer {
-    let sender = Sender::working(connector).await;
+    let sender = Sender::of(connector, Cwd::Read).await;
     let cwd = cockpit_approvals::resolve_cwd(&cwd)?;
     check_syntax(runner, &command).await?;
     let write = database.write().await?;
@@ -246,7 +246,7 @@ async fn ask_guide(
     guide: &str,
     cwd: &str,
 ) -> Answer {
-    let sender = Sender::working(connector).await;
+    let sender = Sender::of(connector, Cwd::Read).await;
     let guide = cockpit_approvals::parse_guide(guide)?;
     let cwd = cockpit_approvals::resolve_cwd(cwd)?;
     for command in guide.steps.iter().filter_map(|step| step.run.as_deref()) {
@@ -279,34 +279,30 @@ async fn check_syntax(runner: &Runner, command: &str) -> Result<(), Failed> {
 struct Sender {
     ancestry: PeerAncestry,
     /// The connecting process's working directory, which says which checkout it works in.
-    /// Read only for a new ask: a poll or a check has no project to find.
     cwd: Option<PathBuf>,
 }
 
+/// Whether to read the sender's working directory: a new ask needs it to find the project;
+/// a poll or a check does not.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cwd {
+    Read,
+    Skip,
+}
+
 impl Sender {
-    /// The sender, to identify only.
-    async fn identified(connector: Result<ProcessIdentity, ProcessError>) -> Sender {
-        Sender::read(connector, false).await
-    }
-
-    /// The sender and the checkout it works in, for a new ask.
-    async fn working(connector: Result<ProcessIdentity, ProcessError>) -> Sender {
-        Sender::read(connector, true).await
-    }
-
-    async fn read(connector: Result<ProcessIdentity, ProcessError>, reads_cwd: bool) -> Sender {
+    async fn of(connector: Result<ProcessIdentity, ProcessError>, cwd: Cwd) -> Sender {
         tokio::task::spawn_blocking(move || {
             let ancestry =
                 connector.and_then(|process| cockpit_agent_channel::ancestry_of(&process));
             // Read after the ancestry verified the pid's start time; only the display's
             // "outside the project" flag depends on it.
-            let cwd = ancestry
-                .as_ref()
-                .ok()
-                .filter(|_| reads_cwd)
-                .and_then(|chain| {
-                    std::fs::read_link(format!("/proc/{}/cwd", chain.first()?.pid)).ok()
-                });
+            let cwd = match (cwd, &ancestry) {
+                (Cwd::Read, Ok(chain)) => chain
+                    .first()
+                    .and_then(|leaf| std::fs::read_link(format!("/proc/{}/cwd", leaf.pid)).ok()),
+                _ => None,
+            };
             Sender { ancestry, cwd }
         })
         .await

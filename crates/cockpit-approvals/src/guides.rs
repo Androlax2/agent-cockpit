@@ -17,13 +17,10 @@ use cockpit_turso::sql::{Connection, Row};
 use crate::display::is_outside_project;
 use crate::error::invalid;
 use crate::rows::{
-    AskState, invalid_row, next_id, project_from, refreshed_expiry, session_from, state_at,
-    still_asking,
+    AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
+    refreshed_expiry, session_from, state_at, still_asking,
 };
-use crate::runs::{
-    EXPIRES_AFTER_SECONDS, Project, REASON_MAX_CHARS, RunAsk, RunId, insert_run, may_ask,
-    validate_command,
-};
+use crate::runs::{REASON_MAX_CHARS, RunAsk, RunId, insert_run, may_ask, validate_command};
 use crate::{Error, Refusal};
 
 const GUIDE_MAX_BYTES: usize = 64 * 1024;
@@ -31,6 +28,7 @@ const GUIDE_MAX_STEPS: usize = 100;
 const LINE_MAX_CHARS: usize = 1000;
 const ANSWER_MAX_CHARS: usize = 1000;
 const TABLE: &str = "approvals_guides";
+const KIND: &str = "guide";
 
 const SELECT_GUIDES: &str = "SELECT id, session, title, cwd, project, project_root, state,
         current_step, stuck_note, asked_at, expires_at
@@ -353,7 +351,10 @@ pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideR
         steps.entry(row.get(0)?).or_default().push(step_from(&row)?);
     }
     for guide in &mut guides {
-        guide.steps = steps.remove(&guide.id.0).unwrap_or_default();
+        // Both queries read one snapshot and every guide has a step: a miss is a broken row.
+        guide.steps = steps
+            .remove(&guide.id.0)
+            .ok_or_else(|| invalid_row(TABLE, format!("guide {} has no steps", guide.id.0)))?;
     }
     Ok(guides)
 }
@@ -392,7 +393,7 @@ pub async fn guide_status(
 ) -> Result<GuideRequest, Error> {
     let mut guide = match guide_request(write, id, now).await? {
         Some(guide) if guide.session == *session => guide,
-        _ => return Err(not_found(id).into()),
+        _ => return Err(not_found(KIND, id.0).into()),
     };
     if guide.state != GuideState::Asking {
         return Ok(guide);
@@ -555,7 +556,7 @@ async fn asking(
 ) -> Result<GuideRequest, Error> {
     let guide = guide_request(write, id, now)
         .await?
-        .ok_or_else(|| not_found(id))?;
+        .ok_or_else(|| not_found(KIND, id.0))?;
     still_asking(guide.state)?;
     Ok(guide)
 }
@@ -575,13 +576,6 @@ async fn asking_at(
         .into());
     }
     Ok(guide)
-}
-
-fn not_found(id: GuideId) -> Refusal {
-    Refusal::NotFound {
-        kind: "guide",
-        id: id.0,
-    }
 }
 
 fn guide_from(row: &Row, now: i64) -> Result<GuideRequest, Error> {

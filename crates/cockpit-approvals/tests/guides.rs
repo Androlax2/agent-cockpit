@@ -323,34 +323,69 @@ async fn the_owner_sees_each_open_guide_with_its_own_steps() {
     assert_eq!(open_guides(&read, NOW).await.unwrap(), [first, last]);
 }
 
-#[tokio::test]
-async fn each_answer_returns_the_guide_as_it_now_reads() {
-    let fixture = Fixture::new().await;
-    let answered = asked(&fixture, GUIDE).await;
-    let stuck = asked(&fixture, GUIDE).await;
-    let closed = asked(&fixture, GUIDE).await;
-    let write = fixture.database.write().await.unwrap();
-    let stored = async |id| guide_request(&write, id, NOW).await.unwrap().unwrap();
+/// The guide `id` as stored at `NOW`, for comparing with what a mutation returned.
+async fn stored(write: &cockpit_turso::WriteTransaction<'_>, id: GuideId) -> GuideRequest {
+    guide_request(write, id, NOW).await.unwrap().unwrap()
+}
 
-    let after_open = answer_step(&write, answered.id, 0, None, NOW)
+/// `GUIDE`'s steps in order: an `open:` step, an `ask:` step, then a `run:` step.
+async fn answered_up_to(fixture: &Fixture, last_step: usize) -> (GuideRequest, GuideRequest) {
+    let guide = asked(fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    let mut answered = None;
+    for step in 0..=last_step {
+        let answer = (step == 1).then(|| "42".to_owned());
+        answered = Some(
+            answer_step(&write, guide.id, step, answer, NOW)
+                .await
+                .unwrap(),
+        );
+    }
+    let stored = stored(&write, guide.id).await;
+    write.commit().await.unwrap();
+    (answered.unwrap(), stored)
+}
+
+#[tokio::test]
+async fn answering_an_open_step_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let (answered, stored) = answered_up_to(&fixture, 0).await;
+    assert_eq!(answered, stored);
+}
+
+#[tokio::test]
+async fn answering_a_question_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let (answered, stored) = answered_up_to(&fixture, 1).await;
+    assert_eq!(answered, stored);
+}
+
+#[tokio::test]
+async fn answering_the_last_run_step_returns_the_done_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let (answered, stored) = answered_up_to(&fixture, 2).await;
+    assert_eq!(answered.state, GuideState::Done);
+    assert_eq!(answered, stored);
+}
+
+#[tokio::test]
+async fn being_stuck_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let guide = asked(&fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    let reported = report_stuck(&write, guide.id, 0, "no such menu", NOW)
         .await
         .unwrap();
-    assert_eq!(after_open, stored(answered.id).await);
-    let after_ask = answer_step(&write, answered.id, 1, Some("42".to_owned()), NOW)
-        .await
-        .unwrap();
-    assert_eq!(after_ask, stored(answered.id).await);
-    let after_run = answer_step(&write, answered.id, 2, None, NOW)
-        .await
-        .unwrap();
-    assert_eq!(after_run.state, GuideState::Done);
-    assert_eq!(after_run, stored(answered.id).await);
-    let reported = report_stuck(&write, stuck.id, 0, "no such menu", NOW)
-        .await
-        .unwrap();
-    assert_eq!(reported, stored(stuck.id).await);
-    let ended = close_guide(&write, closed.id, NOW).await.unwrap();
-    assert_eq!(ended, stored(closed.id).await);
+    assert_eq!(reported, stored(&write, guide.id).await);
+}
+
+#[tokio::test]
+async fn closing_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let guide = asked(&fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    let closed = close_guide(&write, guide.id, NOW).await.unwrap();
+    assert_eq!(closed, stored(&write, guide.id).await);
 }
 
 #[tokio::test]
