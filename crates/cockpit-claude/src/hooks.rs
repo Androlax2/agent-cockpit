@@ -133,17 +133,10 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
 /// `--outcome` and, for a failure with a reason the channel accepts, `--outcome-reason`. A
 /// reason it would refuse is left out, so the outcome still arrives.
 fn outcome_arguments(outcome: &TurnOutcome) -> Vec<String> {
-    let (name, reason) = match outcome {
-        TurnOutcome::Completed => ("completed", None),
-        TurnOutcome::QuotaStopped => ("quota-stopped", None),
-        TurnOutcome::Failed { reason } => (
-            "failed",
-            reason
-                .as_deref()
-                .and_then(|reason| channel_text(reason, OUTCOME_REASON_MAX_CHARS)),
-        ),
-    };
-    let mut arguments = vec!["--outcome".to_owned(), name.to_owned()];
+    let mut arguments = vec!["--outcome".to_owned(), outcome.name().to_owned()];
+    let reason = outcome
+        .failure_reason()
+        .and_then(|reason| channel_text(reason, OUTCOME_REASON_MAX_CHARS));
     if let Some(reason) = reason {
         arguments.extend(["--outcome-reason".to_owned(), reason]);
     }

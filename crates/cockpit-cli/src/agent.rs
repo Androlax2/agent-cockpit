@@ -109,20 +109,15 @@ fn turn_outcome(
     outcome: Option<String>,
     reason: Option<String>,
 ) -> Result<Option<TurnOutcome>, String> {
-    let Some(outcome) = outcome else {
-        return match reason {
-            Some(_) => Err("--outcome-reason needs --outcome failed".to_owned()),
-            None => Ok(None),
-        };
-    };
-    match (outcome.as_str(), reason) {
-        ("failed", reason) => Ok(Some(TurnOutcome::Failed { reason })),
-        ("completed" | "quota-stopped", Some(_)) => {
+    match (outcome.as_deref(), reason) {
+        (None, None) => Ok(None),
+        (Some("failed"), reason) => Ok(Some(TurnOutcome::Failed { reason })),
+        (Some("completed"), None) => Ok(Some(TurnOutcome::Completed)),
+        (Some("quota-stopped"), None) => Ok(Some(TurnOutcome::QuotaStopped)),
+        (None | Some("completed" | "quota-stopped"), Some(_)) => {
             Err("--outcome-reason needs --outcome failed".to_owned())
         }
-        ("completed", None) => Ok(Some(TurnOutcome::Completed)),
-        ("quota-stopped", None) => Ok(Some(TurnOutcome::QuotaStopped)),
-        (other, _) => Err(format!(
+        (Some(other), _) => Err(format!(
             "--outcome {other}: use completed, failed or quota-stopped"
         )),
     }

@@ -49,6 +49,35 @@ pub enum TurnOutcome {
     QuotaStopped,
 }
 
+impl TurnOutcome {
+    /// The outcome's name, as the agent channel's `--outcome` and its stored column spell it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            TurnOutcome::Completed => "completed",
+            TurnOutcome::Failed { .. } => "failed",
+            TurnOutcome::QuotaStopped => "quota-stopped",
+        }
+    }
+
+    /// The outcome `name` spells, with `reason` for a failure; `None` for another name.
+    pub fn from_name(name: &str, reason: Option<String>) -> Option<TurnOutcome> {
+        match name {
+            "completed" => Some(TurnOutcome::Completed),
+            "failed" => Some(TurnOutcome::Failed { reason }),
+            "quota-stopped" => Some(TurnOutcome::QuotaStopped),
+            _ => None,
+        }
+    }
+
+    /// A failure's reason, when it gives one.
+    pub fn failure_reason(&self) -> Option<&str> {
+        match self {
+            TurnOutcome::Failed { reason } => reason.as_deref(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventKind {
     /// The conversation started or was resumed, and waits at its prompt.

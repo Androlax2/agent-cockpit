@@ -119,11 +119,12 @@ pub async fn report(
                 merged.needs_input.clone(),
                 merged.reported_at,
                 merged.launch,
-                merged.outcome.as_ref().map(outcome_name),
-                match &merged.outcome {
-                    Some(TurnOutcome::Failed { reason }) => reason.clone(),
-                    _ => None,
-                },
+                merged.outcome.as_ref().map(TurnOutcome::name),
+                merged
+                    .outcome
+                    .as_ref()
+                    .and_then(TurnOutcome::failure_reason)
+                    .map(str::to_owned),
             ),
         )
         .await?;
@@ -339,15 +340,6 @@ fn refused(refusal: Refusal) -> Error {
     Error::AgentChannel(refusal.into())
 }
 
-/// The stored name of `outcome`; a failure's reason has its own column.
-fn outcome_name(outcome: &TurnOutcome) -> &'static str {
-    match outcome {
-        TurnOutcome::Completed => "completed",
-        TurnOutcome::Failed { .. } => "failed",
-        TurnOutcome::QuotaStopped => "quota-stopped",
-    }
-}
-
 fn invalid(field: &'static str, reason: String) -> Refusal {
     Refusal::InvalidRequest { field, reason }
 }
@@ -365,13 +357,13 @@ fn report_from(row: &Row) -> Result<SessionReport, Error> {
         })
         .transpose()?;
     let reason = row.get::<Option<String>>(8)?;
-    let outcome = match row.get::<Option<String>>(7)?.as_deref() {
-        None => None,
-        Some("completed") => Some(TurnOutcome::Completed),
-        Some("failed") => Some(TurnOutcome::Failed { reason }),
-        Some("quota-stopped") => Some(TurnOutcome::QuotaStopped),
-        Some(other) => return Err(invalid_row(format!("outcome {other:?}"))),
-    };
+    let outcome = row
+        .get::<Option<String>>(7)?
+        .map(|name| {
+            TurnOutcome::from_name(&name, reason)
+                .ok_or_else(|| invalid_row(format!("outcome {name:?}")))
+        })
+        .transpose()?;
     Ok(SessionReport {
         session,
         state,
