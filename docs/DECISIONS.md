@@ -9,12 +9,15 @@ a second round trip. Additive features are capabilities, granted only when both 
 them; a version bump is reserved for changes an older peer would misread.
 
 Enums that grow (capabilities, refusal reasons, error codes, entity kinds) keep unknown
-values through a `#[serde(untagged)] Unknown(String)` variant. Commands do not: serde's
-untagged fallback would also swallow a malformed known command as "unknown", so
-`decode_request` checks the kind against `Command::KINDS` first and answers
-`unknown-command` or `invalid-request` with the precise serde message. The change kind
-(`upsert`, `tombstone`) is closed: a client that skipped a change it could not apply would
-advance its cursor over data it never applied, so a new kind needs a new version.
+values through a `#[serde(untagged)] Unknown(String)` variant. Commands cannot: an untagged
+fallback also swallows a malformed known command as "unknown". `Command` uses a unit
+`#[serde(other)]` variant instead, which catches only unknown tags, so `decode_request`
+answers `unknown-command` naming the kind, or `invalid-request` with serde's precise message.
+The change kind (`upsert`, `tombstone`) is closed: a client that skipped a change it could
+not apply would advance its cursor over data it never applied, so a new kind needs a new
+version. A batch's `follows` (`snapshot` or a cursor) is a required enum, not an optional
+cursor: serde reads a missing `Option` as `None`, which would turn a dropped field into
+"replace all state".
 
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
 

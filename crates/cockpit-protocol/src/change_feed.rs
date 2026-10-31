@@ -17,12 +17,25 @@ pub struct Cursor {
     pub revision: CommitRevision,
 }
 
-/// Changes committed after the previous batch, ending at `cursor`. A client applies the
-/// whole batch, deletions included, before it stores `cursor`.
+/// Changes ending at `cursor`. A client applies the whole batch, deletions included, before
+/// it stores `cursor`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeBatch {
+    pub follows: Follows,
     pub cursor: Cursor,
     pub changes: Vec<ChangeEvent>,
+}
+
+/// What a batch builds on. Required on the wire: a missing value must not read as a snapshot,
+/// which would make the client drop its state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Follows {
+    /// The batch is a snapshot and replaces all of the client's state.
+    Snapshot,
+    /// The batch continues from this cursor. One other than the client's own means it missed
+    /// a batch and must subscribe again.
+    Cursor(Cursor),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

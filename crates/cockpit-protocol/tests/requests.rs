@@ -61,20 +61,21 @@ fn a_malformed_known_command_is_invalid_not_unknown() {
 }
 
 #[test]
-fn every_command_kind_is_listed_as_known() {
-    let commands = [Command::Ping, Command::Subscribe { after: None }];
+fn a_command_kind_that_is_not_a_string_is_invalid() {
+    let rejection = decode_request(r#"{"id": 5, "command": {"kind": 5}}"#).unwrap_err();
 
-    let kinds: Vec<String> = commands
-        .iter()
-        .map(|command| {
-            serde_json::to_value(command).unwrap()["kind"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .collect();
+    assert_eq!(rejection.id, Some(RequestId(5)));
+    assert_eq!(rejection.error.code, ErrorCode::InvalidRequest);
+}
 
-    assert_eq!(kinds, Command::KINDS);
+#[test]
+fn the_unknown_command_placeholder_cannot_be_sent() {
+    let request = Request {
+        id: RequestId(1),
+        command: Command::Unknown,
+    };
+
+    assert!(serde_json::to_value(request).is_err());
 }
 
 #[test]

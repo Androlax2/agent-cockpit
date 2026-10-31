@@ -28,6 +28,7 @@ pub enum Capability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub protocol_versions: Vec<ProtocolVersion>,
+    #[serde(default)]
     pub capabilities: Vec<Capability>,
 }
 
@@ -57,20 +58,35 @@ pub struct Refusal {
 pub enum RefusalReason {
     /// The client and the daemon share no protocol version.
     VersionMismatch,
+    /// The first frame was not a readable [`Hello`].
+    MalformedHello,
     /// A reason this version does not know, kept as sent.
     #[serde(untagged)]
     Unknown(String),
 }
 
+/// Reads the client's first frame; an unreadable one gets a typed refusal to send back.
+pub fn decode_hello(frame: &str) -> Result<Hello, Refusal> {
+    serde_json::from_str(frame).map_err(|error| Refusal {
+        reason: RefusalReason::MalformedHello,
+        message: format!("the first frame is not a valid hello: {error}"),
+        supported_versions: SUPPORTED_VERSIONS.to_vec(),
+    })
+}
+
 /// Agrees on the highest version both sides speak and the capabilities both offer, in the
-/// daemon's order.
-pub fn negotiate(hello: &Hello, daemon_capabilities: &[Capability]) -> HandshakeReply {
-    let shared_version = SUPPORTED_VERSIONS
+/// daemon's order. The daemon passes [`SUPPORTED_VERSIONS`].
+pub fn negotiate(
+    hello: &Hello,
+    daemon_versions: &[ProtocolVersion],
+    daemon_capabilities: &[Capability],
+) -> HandshakeReply {
+    let shared_version = daemon_versions
         .iter()
-        .rev()
-        .find(|version| hello.protocol_versions.contains(version));
+        .filter(|version| hello.protocol_versions.contains(version))
+        .max();
     let Some(&protocol_version) = shared_version else {
-        return HandshakeReply::Refused(version_mismatch(hello));
+        return HandshakeReply::Refused(version_mismatch(hello, daemon_versions));
     };
     let capabilities = daemon_capabilities
         .iter()
@@ -83,22 +99,22 @@ pub fn negotiate(hello: &Hello, daemon_capabilities: &[Capability]) -> Handshake
     })
 }
 
-fn version_mismatch(hello: &Hello) -> Refusal {
-    Refusal {
-        reason: RefusalReason::VersionMismatch,
-        message: format!(
-            "the client speaks protocol versions [{}]; this daemon speaks [{}]",
-            joined(&hello.protocol_versions),
-            joined(&SUPPORTED_VERSIONS)
-        ),
-        supported_versions: SUPPORTED_VERSIONS.to_vec(),
-    }
-}
-
-fn joined(versions: &[ProtocolVersion]) -> String {
-    versions
+/// Names only the client's highest version, so a huge list cannot grow the reply.
+fn version_mismatch(hello: &Hello, daemon_versions: &[ProtocolVersion]) -> Refusal {
+    let client_offer = match hello.protocol_versions.iter().max() {
+        Some(highest) => format!("the client speaks versions up to {}", highest.0),
+        None => "the client named no version".to_owned(),
+    };
+    let daemon_list = daemon_versions
         .iter()
         .map(|version| version.0.to_string())
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+    Refusal {
+        reason: RefusalReason::VersionMismatch,
+        message: format!(
+            "no shared protocol version: {client_offer}; this daemon speaks [{daemon_list}]"
+        ),
+        supported_versions: daemon_versions.to_vec(),
+    }
 }

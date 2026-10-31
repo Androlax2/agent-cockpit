@@ -6,7 +6,8 @@
 //!
 //! Forward compatibility: unknown object fields are ignored, and enums whose set grows over
 //! time (capabilities, reasons, error codes, entity kinds) keep a value they do not know in
-//! an `Unknown` variant instead of failing.
+//! an `Unknown` variant instead of failing. An unknown command kind reads as
+//! `Command::Unknown`, which `decode_request` refuses as `unknown-command`.
 
 mod change_feed;
 mod error;
@@ -15,12 +16,12 @@ mod request;
 
 pub use change_feed::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
-    EntityRevision,
+    EntityRevision, Follows,
 };
 pub use error::{ErrorCode, ProtocolError};
 pub use handshake::{
     Capability, HandshakeReply, Hello, ProtocolVersion, Refusal, RefusalReason, SUPPORTED_VERSIONS,
-    Welcome, negotiate,
+    Welcome, decode_hello, negotiate,
 };
 pub use request::{
     Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,

@@ -1,6 +1,6 @@
 use cockpit_protocol::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
-    EntityRevision, ServerFrame,
+    EntityRevision, Follows, ServerFrame,
 };
 use serde_json::json;
 
@@ -8,6 +8,7 @@ use serde_json::json;
 fn a_change_batch_round_trips_through_its_wire_form() {
     let wire = json!({
         "type": "changes",
+        "follows": {"cursor": {"epoch": "e1", "revision": 40}},
         "cursor": {"epoch": "e1", "revision": 41},
         "changes": [
             {
@@ -81,6 +82,7 @@ fn unknown_event_fields_from_a_newer_daemon_are_ignored() {
 #[test]
 fn an_unknown_change_kind_fails_the_batch() {
     let parsed = serde_json::from_value::<ChangeBatch>(json!({
+        "follows": {"cursor": {"epoch": "e1", "revision": 1}},
         "cursor": {"epoch": "e1", "revision": 2},
         "changes": [{
             "entity": {"kind": "task", "id": "t-1"},
@@ -116,4 +118,26 @@ fn every_known_entity_kind_has_its_published_name() {
             kind
         );
     }
+}
+
+#[test]
+fn a_snapshot_batch_says_so() {
+    let batch: ChangeBatch = serde_json::from_value(json!({
+        "follows": "snapshot",
+        "cursor": {"epoch": "e2", "revision": 5},
+        "changes": []
+    }))
+    .unwrap();
+
+    assert_eq!(batch.follows, Follows::Snapshot);
+}
+
+#[test]
+fn a_batch_must_say_what_it_follows() {
+    let parsed = serde_json::from_value::<ChangeBatch>(json!({
+        "cursor": {"epoch": "e2", "revision": 5},
+        "changes": []
+    }));
+
+    assert!(parsed.is_err());
 }

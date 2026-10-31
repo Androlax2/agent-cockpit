@@ -1,6 +1,6 @@
 use cockpit_protocol::{
     Capability, HandshakeReply, Hello, ProtocolVersion, RefusalReason, SUPPORTED_VERSIONS,
-    negotiate,
+    decode_hello, negotiate,
 };
 use serde_json::json;
 
@@ -12,7 +12,7 @@ fn hello_from_wire(wire: serde_json::Value) -> Hello {
 fn a_client_speaking_the_daemon_version_is_accepted_at_that_version() {
     let hello = hello_from_wire(json!({"protocol_versions": [1], "capabilities": []}));
 
-    let reply = negotiate(&hello, &[]);
+    let reply = negotiate(&hello, &SUPPORTED_VERSIONS, &[]);
 
     assert_eq!(
         serde_json::to_value(reply).unwrap(),
@@ -22,32 +22,43 @@ fn a_client_speaking_the_daemon_version_is_accepted_at_that_version() {
 
 #[test]
 fn the_highest_version_both_sides_speak_is_chosen() {
-    let hello = hello_from_wire(json!({"protocol_versions": [7, 1, 0], "capabilities": []}));
+    let hello = hello_from_wire(json!({"protocol_versions": [1, 2, 7], "capabilities": []}));
 
-    let HandshakeReply::Accepted(welcome) = negotiate(&hello, &[]) else {
-        panic!("version 1 is shared");
-    };
-
-    assert_eq!(welcome.protocol_version, ProtocolVersion(1));
+    for daemon_versions in [
+        [ProtocolVersion(1), ProtocolVersion(2), ProtocolVersion(3)],
+        [ProtocolVersion(3), ProtocolVersion(2), ProtocolVersion(1)],
+    ] {
+        let HandshakeReply::Accepted(welcome) = negotiate(&hello, &daemon_versions, &[]) else {
+            panic!("versions 1 and 2 are shared");
+        };
+        assert_eq!(
+            welcome.protocol_version,
+            ProtocolVersion(2),
+            "{daemon_versions:?}"
+        );
+    }
 }
 
 #[test]
 fn a_version_mismatch_is_a_typed_refusal_listing_the_daemon_versions() {
     let hello = hello_from_wire(json!({"protocol_versions": [2, 3], "capabilities": []}));
 
-    let wire = serde_json::to_value(negotiate(&hello, &[])).unwrap();
+    let wire = serde_json::to_value(negotiate(&hello, &SUPPORTED_VERSIONS, &[])).unwrap();
 
     assert_eq!(wire["outcome"], "refused");
     assert_eq!(wire["reason"], "version-mismatch");
     assert_eq!(wire["supported_versions"], json!(SUPPORTED_VERSIONS));
-    assert!(wire["message"].as_str().unwrap().contains("2, 3"), "{wire}");
+    assert!(
+        wire["message"].as_str().unwrap().contains("up to 3"),
+        "{wire}"
+    );
 }
 
 #[test]
 fn a_hello_without_versions_is_refused_as_a_mismatch() {
     let hello = hello_from_wire(json!({"protocol_versions": [], "capabilities": []}));
 
-    let HandshakeReply::Refused(refusal) = negotiate(&hello, &[]) else {
+    let HandshakeReply::Refused(refusal) = negotiate(&hello, &SUPPORTED_VERSIONS, &[]) else {
         panic!("no version is shared");
     };
 
@@ -60,7 +71,9 @@ fn negotiated_capabilities_are_those_both_sides_offer() {
         json!({"protocol_versions": [1], "capabilities": ["change-feed", "teleport"]}),
     );
 
-    let HandshakeReply::Accepted(welcome) = negotiate(&hello, &[Capability::ChangeFeed]) else {
+    let HandshakeReply::Accepted(welcome) =
+        negotiate(&hello, &SUPPORTED_VERSIONS, &[Capability::ChangeFeed])
+    else {
         panic!("version 1 is shared");
     };
 
@@ -71,7 +84,7 @@ fn negotiated_capabilities_are_those_both_sides_offer() {
 fn a_capability_the_daemon_does_not_offer_is_not_granted() {
     let hello = hello_from_wire(json!({"protocol_versions": [1], "capabilities": ["change-feed"]}));
 
-    let HandshakeReply::Accepted(welcome) = negotiate(&hello, &[]) else {
+    let HandshakeReply::Accepted(welcome) = negotiate(&hello, &SUPPORTED_VERSIONS, &[]) else {
         panic!("version 1 is shared");
     };
 
@@ -84,7 +97,9 @@ fn a_capability_listed_twice_is_granted_once() {
         json!({"protocol_versions": [1], "capabilities": ["change-feed", "change-feed"]}),
     );
 
-    let HandshakeReply::Accepted(welcome) = negotiate(&hello, &[Capability::ChangeFeed]) else {
+    let HandshakeReply::Accepted(welcome) =
+        negotiate(&hello, &SUPPORTED_VERSIONS, &[Capability::ChangeFeed])
+    else {
         panic!("version 1 is shared");
     };
 
@@ -113,7 +128,7 @@ fn unknown_hello_fields_from_a_newer_client_are_ignored() {
     }));
 
     assert!(matches!(
-        negotiate(&hello, &[]),
+        negotiate(&hello, &SUPPORTED_VERSIONS, &[]),
         HandshakeReply::Accepted(_)
     ));
 }

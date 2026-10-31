@@ -23,12 +23,10 @@ pub enum Command {
     Subscribe {
         after: Option<Cursor>,
     },
-}
-
-impl Command {
-    /// Every `kind` this version reads, so an unknown one is refused as `unknown-command`
-    /// rather than as a malformed request.
-    pub const KINDS: [&str; 2] = ["ping", "subscribe"];
+    /// A kind this version does not know. Read only: `decode_request` refuses it as
+    /// `unknown-command`, and serializing it fails.
+    #[serde(other, skip_serializing)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,33 +83,42 @@ impl RequestRejection {
 
 /// Reads one request frame, telling an unknown command apart from a malformed one.
 pub fn decode_request(frame: &str) -> Result<Request, RequestRejection> {
-    let invalid = |id, message: String| RequestRejection {
-        id,
-        error: ProtocolError {
-            code: ErrorCode::InvalidRequest,
-            message,
-        },
-    };
-    let value: Value = serde_json::from_str(frame)
-        .map_err(|error| invalid(None, format!("the frame is not JSON: {error}")))?;
-    let id = value
-        .get("id")
-        .and_then(|id| RequestId::deserialize(id).ok());
-    let kind = value
-        .get("command")
-        .and_then(|command| command.get("kind"))
-        .and_then(Value::as_str);
-    if let Some(kind) = kind
-        && !Command::KINDS.contains(&kind)
-    {
-        return Err(RequestRejection {
+    match serde_json::from_str::<Request>(frame) {
+        Ok(Request {
             id,
+            command: Command::Unknown,
+        }) => Err(RequestRejection {
+            id: Some(id),
             error: ProtocolError {
                 code: ErrorCode::UnknownCommand,
-                message: format!("this daemon does not know the command `{kind}`"),
+                message: format!(
+                    "this daemon does not know the command `{}`",
+                    command_kind(frame)
+                ),
             },
-        });
+        }),
+        Ok(request) => Ok(request),
+        Err(error) => Err(RequestRejection {
+            id: readable_id(frame),
+            error: ProtocolError {
+                code: ErrorCode::InvalidRequest,
+                message: format!("malformed request: {error}"),
+            },
+        }),
     }
-    serde_json::from_value(value)
-        .map_err(|error| invalid(id, format!("malformed request: {error}")))
+}
+
+/// The id of a frame that failed to parse as a request, when it has a valid one.
+fn readable_id(frame: &str) -> Option<RequestId> {
+    let value: Value = serde_json::from_str(frame).ok()?;
+    RequestId::deserialize(value.get("id")?).ok()
+}
+
+/// Only called after the frame parsed with a string `kind`, which serde(other) requires.
+fn command_kind(frame: &str) -> String {
+    let value: Value = serde_json::from_str(frame).expect("the frame already parsed");
+    value["command"]["kind"]
+        .as_str()
+        .expect("serde(other) matched a string kind")
+        .to_owned()
 }
