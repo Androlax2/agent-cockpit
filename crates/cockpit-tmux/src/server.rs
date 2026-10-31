@@ -288,12 +288,23 @@ impl Server {
     }
 
     /// Splits a pane off `parent`, to its right (`side_by_side`) or below it, holding
-    /// `percent` of its size, and returns the new pane's id.
+    /// `percent` of its size, and returns the new pane's id. Focus stays where it was, so
+    /// keys keep going to the pane the human typed in.
     pub fn split_pane(
         &self,
         parent: &PaneId,
         split: Split,
         command: &[OsString],
+    ) -> Result<PaneId, Error> {
+        self.split(parent, split, command, false)
+    }
+
+    fn split(
+        &self,
+        parent: &PaneId,
+        split: Split,
+        command: &[OsString],
+        takes_focus: bool,
     ) -> Result<PaneId, Error> {
         let percent = split.percent();
         if !(1..=99).contains(&percent) {
@@ -312,16 +323,13 @@ impl Server {
             "-P",
             "-F",
             "#{pane_id}",
-            "--",
         ]);
+        if !takes_focus {
+            arguments.push("-d".into());
+        }
+        arguments.push("--".into());
         arguments.extend(pane_command(command)?);
         self.run_for_pane_id(&arguments)
-    }
-
-    /// Makes `pane` its window's active pane, the one an attached client's keys go to.
-    pub fn select_pane(&self, pane: &PaneId) -> Result<(), Error> {
-        self.run(&words(&["select-pane", "-t", pane.as_str()]))
-            .map(drop)
     }
 
     /// The approval pane: a split under the viewer, focused so the human answers there.
@@ -331,7 +339,7 @@ impl Server {
         viewer: &PaneId,
         command: &[OsString],
     ) -> Result<PaneId, Error> {
-        self.split_pane(viewer, Split::Below { percent: 40 }, command)
+        self.split(viewer, Split::Below { percent: 40 }, command, true)
     }
 
     /// Nested attach: replaces whatever runs in the `viewer` pane with a tmux client of

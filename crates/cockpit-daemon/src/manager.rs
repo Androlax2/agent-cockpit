@@ -151,9 +151,6 @@ fn open(
             &words(viewer),
         )
         .map_err(tmux_error)?;
-        // The split took focus; the list must have it on attach (#271). Only a new manager
-        // is focused: an open one keeps the focus its owner or an approval pane gave it.
-        tmux.select_pane(&column_pane).map_err(tmux_error)?;
         tracing::info!("opened the manager session");
     }
     Ok(Reply::Manager {

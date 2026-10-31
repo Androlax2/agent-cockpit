@@ -5,7 +5,7 @@ mod common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use cockpit_tmux::{Error, PaneId, PaneState, SessionLaunch, SessionName};
+use cockpit_tmux::{Error, PaneId, PaneState, SessionLaunch, SessionName, Split};
 use common::{TestServer, eventually, shell};
 
 fn screen(fixture: &TestServer, pane: &PaneId) -> String {
@@ -231,19 +231,14 @@ fn the_approval_pane_opens_focused_below_the_viewer() {
 }
 
 #[test]
-fn selecting_a_pane_makes_it_the_one_keys_go_to() {
+fn a_split_leaves_focus_on_the_pane_it_split() {
     let fixture = TestServer::new();
     let (_, left) = fixture.start_shell("cockpit", "sleep 60");
+
     fixture
         .server
-        .split_pane(
-            &left,
-            cockpit_tmux::Split::SideBySide { percent: 70 },
-            &shell("sleep 60"),
-        )
+        .split_pane(&left, Split::SideBySide { percent: 70 }, &shell("sleep 60"))
         .expect("splits");
-
-    fixture.server.select_pane(&left).expect("selects");
 
     let active = fixture.tmux(&["display-message", "-p", "-t", "=cockpit:", "#{pane_id}"]);
     assert_eq!(active.trim(), left.as_str());
