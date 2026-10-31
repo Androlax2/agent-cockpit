@@ -7,8 +7,11 @@ the idle notification after 60 seconds, `/compact`, `/exit`) and a `-p --resume`
 Only the home directory, working directory and file owner were renamed (`/home/owner`,
 `/work`, `owner`); field names, order and values are as written.
 
-`stop-failure-rate-limit.json` is the exception: a rate limit cannot be provoked on demand,
-so it is still written from the hook input schema the legacy hook consumed on 2.1.31x.
+The two `stop-failure-rate-limit-*.json` payloads are the exception: a rate limit cannot be
+provoked on demand, so they are written from 2.1.316's code (#212): its `StopFailure` hook
+input (`error`, then the optional `error_details` and `last_assistant_message`) and the
+message its API-error mapping sets for a spent 5-hour window (`plan-window`) and for a
+server-side 429 (`transient`). Both carry `error: "rate_limit"`.
 
 `tests/live_hooks.rs` re-runs the bridge against the installed Claude Code (ignored by
 default). `cockpit-claude`'s `CONFORMANCE_VERSION` names this directory; a new pinned

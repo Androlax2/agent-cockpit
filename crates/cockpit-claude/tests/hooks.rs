@@ -54,9 +54,19 @@ fn each_pinned_payload_normalizes_to_its_event() {
             },
         ),
         (
-            "stop-failure-rate-limit",
+            "stop-failure-rate-limit-plan-window",
             EventKind::TurnEnded {
-                outcome: TurnOutcome::QuotaStopped,
+                outcome: TurnOutcome::Failed {
+                    reason: Some("rate_limit".to_owned()),
+                },
+            },
+        ),
+        (
+            "stop-failure-rate-limit-transient",
+            EventKind::TurnEnded {
+                outcome: TurnOutcome::Failed {
+                    reason: Some("rate_limit".to_owned()),
+                },
             },
         ),
         (
@@ -102,7 +112,7 @@ fn a_notification_that_asks_nothing_is_unknown() {
 }
 
 #[test]
-fn a_failure_other_than_the_usage_limit_keeps_its_reason() {
+fn a_failure_keeps_its_reason() {
     let payload = r#"{"hook_event_name":"StopFailure","error":"server_error"}"#;
 
     assert_eq!(
@@ -189,14 +199,29 @@ fn each_event_reports_its_state_through_the_agent_channel() {
             ]),
         ),
         (
-            "stop-failure-rate-limit",
+            "stop-failure-rate-limit-plan-window",
             words(&[
                 "agent",
                 "report",
                 "--state",
                 "waiting",
                 "--outcome",
-                "quota-stopped",
+                "failed",
+                "--outcome-reason",
+                "rate_limit",
+            ]),
+        ),
+        (
+            "stop-failure-rate-limit-transient",
+            words(&[
+                "agent",
+                "report",
+                "--state",
+                "waiting",
+                "--outcome",
+                "failed",
+                "--outcome-reason",
+                "rate_limit",
             ]),
         ),
         ("session-end", None),
