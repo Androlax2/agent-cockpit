@@ -128,10 +128,62 @@ fn forbidden_edges_in(manifest_path: &Path) -> Vec<String> {
     violations
 }
 
+/// The daemon wires capabilities together, so it sits above all of them (report 02): a
+/// member that depends on it, directly or through another crate, inverts that direction.
+fn members_depending_on_the_daemon(manifest_path: &Path) -> Vec<String> {
+    workspace_members(manifest_path)
+        .into_iter()
+        .filter(|member| member != DAEMON)
+        .filter(|member| {
+            packages_reachable_from(manifest_path, member)
+                .iter()
+                .any(|package| package == DAEMON)
+        })
+        .map(|member| {
+            format!(
+                "rule `nothing -> daemon`: {member} depends on {DAEMON} \
+                 (`cargo tree --target all -e normal,build,dev -p {member} -i {DAEMON}` \
+                 shows the path)"
+            )
+        })
+        .collect()
+}
+
+const DAEMON: &str = "cockpit-daemon";
+
 #[test]
 fn the_workspace_has_no_forbidden_dependency_edge() {
     let root_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
     assert_eq!(forbidden_edges_in(&root_manifest), Vec::<String>::new());
+}
+
+#[test]
+fn no_workspace_member_depends_on_the_daemon() {
+    let root_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    assert_eq!(
+        members_depending_on_the_daemon(&root_manifest),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_capability_depending_on_the_daemon_fails_naming_the_rule() {
+    let manifest_path = fixture_workspace(
+        "capability_to_daemon",
+        &[
+            ("cockpit-tasks", &depends_on("cockpit-middle")),
+            ("cockpit-middle", &depends_on(DAEMON)),
+            (DAEMON, ""),
+        ],
+    );
+    let violations = members_depending_on_the_daemon(&manifest_path);
+    assert_eq!(violations.len(), 2, "{violations:?}");
+    assert!(
+        violations
+            .iter()
+            .all(|line| line.starts_with("rule `nothing -> daemon`")),
+        "{violations:?}"
+    );
 }
 
 /// A rule naming a crate that no longer exists would pass forever without checking anything.

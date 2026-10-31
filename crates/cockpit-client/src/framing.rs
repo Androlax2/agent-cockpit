@@ -3,9 +3,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
 
 use crate::error::{ClientError, CloseReason};
 
-/// Longest frame either side may send, newline included. Large enough for a snapshot of a
-/// personal installation's state, small enough that a runaway peer cannot exhaust memory.
-pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+pub use cockpit_protocol::MAX_FRAME_BYTES;
 
 /// `frame` as one line of JSON, refused when it would exceed [`MAX_FRAME_BYTES`].
 pub(crate) fn encode(frame: &impl Serialize) -> Result<Vec<u8>, ClientError> {

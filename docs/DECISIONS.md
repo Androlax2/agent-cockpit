@@ -1,5 +1,39 @@
 # Engineering decisions
 
+## 2026-10-31 — cockpit-daemon: a handler seam, two lanes, nothing aborted
+
+Issue #26. The daemon routes every command through a `Handler` that answers at once or
+names a lane (`control` or `bulk`) and a job. The binary passes `Routes`, the daemon's own
+commands; capabilities add theirs there. No protocol command does bulk work yet, so Theo
+chose (#108) to prove the control-path reservation with a fixture `Handler` that makes
+`subscribe` a blocking bulk job, behind the real socket, handshake, lanes and panic
+containment, instead of a test command on the wire or deferring the proof to M1. The
+fixture's meaning of `subscribe` exists only in `tests/overload.rs`; the first real bulk
+command should replace it there.
+
+- **Lanes.** Each lane has its own workers and its own waiting places; a full lane answers
+  `busy` at once, so bulk work fills only its own lane. A connection keeps at most
+  `requests_per_connection` answers pending and is not read past that, which bounds a client
+  that never reads.
+- **Nothing is aborted.** A job runs in its own task (a panic answers that request
+  `internal`) and holds its lane places until it returns or panics, never until the client
+  stops waiting (report 03's two facts). Daemon-side cancellation would need a protocol
+  command; none exists.
+- **One instance.** `daemon.lock` in the socket directory is taken before logging or the
+  database, so a second daemon reports the running one instead of a log or database lock.
+  The lock, not the socket file, tells a stale socket apart, so a socket left by `kill -9`
+  is replaced. The daemon reads its own user id from the 0700 directory it could write in,
+  since `geteuid` would need `unsafe` or a new dependency; peers with another id are closed.
+- **macOS layout.** Without `XDG_RUNTIME_DIR` the socket directory is
+  `$XDG_STATE_HOME/cockpit/run`: the XDG spec leaves the fallback to the program, and the
+  instance lock makes a directory that survives reboots safe. Existing private directories
+  with a wider mode stop startup; the daemon never tightens them, since someone may already
+  have reached them.
+- **Frame limit in the protocol.** `MAX_FRAME_BYTES` moved from `cockpit-client` to
+  `cockpit-protocol` (the client re-exports it), so both ends read one constant.
+- **Edges.** `cockpit-workspace-rules` gains `nothing -> daemon`: no member may depend on
+  `cockpit-daemon`, directly or through another crate.
+
 ## 2026-10-31 — Offline CLI verbs import their capability crate (#77)
 
 Report 02 lets frontends import only `cockpit-client` and `cockpit-protocol`, but report 09
