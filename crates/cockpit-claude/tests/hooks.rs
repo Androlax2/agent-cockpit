@@ -59,6 +59,14 @@ fn each_pinned_payload_normalizes_to_its_event() {
                 outcome: TurnOutcome::QuotaStopped,
             },
         ),
+        (
+            "session-start-resume",
+            EventKind::Started {
+                conversation: Some(
+                    ConversationId::new("576d7a7d-768a-47d6-ae5c-290c19e81fdc").unwrap(),
+                ),
+            },
+        ),
         ("session-end", EventKind::Ended),
     ] {
         assert_eq!(kind(fixture), expected, "{fixture}");

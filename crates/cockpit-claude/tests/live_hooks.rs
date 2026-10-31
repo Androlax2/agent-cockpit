@@ -1,6 +1,6 @@
-//! The hook bridge against a live Claude Code (#184): the payloads it writes and the launch
-//! token its hooks inherit. The live test is ignored by default because CI has no Claude
-//! Code and it spends one short model turn; run it with the binary of `CONFORMANCE_VERSION`:
+//! The hook bridge against a live Claude Code (#184): a real launch's hooks report with the
+//! launch token they inherit. Ignored by default because CI has no Claude Code and it
+//! spends one short model turn; run it with the binary of `CONFORMANCE_VERSION`:
 //!
 //! ```text
 //! COCKPIT_CLAUDE_PROGRAM=~/.local/share/claude/versions/2.1.316 \
@@ -11,24 +11,13 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
-use cockpit_claude::hooks;
 use cockpit_claude::{Bridge, ClaudeCode};
-use cockpit_provider_api::{Conversation, ConversationId, EventKind, LaunchRequest, Provider};
+use cockpit_provider_api::{Conversation, LaunchRequest, Provider};
 
-#[test]
-fn a_resumed_session_start_names_the_resumed_conversation() {
-    let event = hooks::normalize(&common::fixture("session-start-resume")).unwrap();
-
-    assert_eq!(
-        event.kind,
-        EventKind::Started {
-            conversation: Some(
-                ConversationId::new("576d7a7d-768a-47d6-ae5c-290c19e81fdc").unwrap()
-            )
-        }
-    );
-}
+/// How long the live turn may take before the test gives up on it.
+const TURN_DEADLINE: Duration = Duration::from_secs(120);
 
 /// A `cockpit` that appends its launch token and arguments, one report per line.
 fn recording_cockpit(dir: &Path) -> PathBuf {
@@ -62,19 +51,34 @@ fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
         })
         .unwrap();
 
-    let status = Command::new(&launch.program)
-        .args(["-p", "--model", "haiku"])
+    // Without the owner's settings their own hooks stay off; without the parent's session
+    // variables nothing this turn does can report into the session running the test.
+    let mut child = Command::new(&launch.program)
+        .args(["-p", "--model", "haiku", "--setting-sources", "project"])
         .args(&launch.arguments)
         .envs(launch.environment.iter().cloned())
+        .env_remove("COCKPIT_SESSION")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .env("COCKPIT_LAUNCH_TOKEN", "live-launch-token")
         .current_dir(dir.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    let started = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > TURN_DEADLINE {
+            child.kill().unwrap();
+            panic!("the live turn took over {TURN_DEADLINE:?}");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let output = child.wait_with_output().unwrap();
 
-    assert!(status.success(), "{status}");
-    let reports = std::fs::read_to_string(dir.path().join("reports")).unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let reports = std::fs::read_to_string(dir.path().join("reports"))
+        .unwrap_or_else(|error| panic!("no hook reported ({error}): {output:?}"));
     assert_eq!(
         reports.lines().collect::<Vec<_>>(),
         [

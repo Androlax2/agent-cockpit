@@ -42,3 +42,21 @@ fn the_installed_claude_code_documents_every_flag_the_adapter_passes() {
         assert!(help.contains(level), "effort {level} is not in --help");
     }
 }
+
+/// An environment variable the binary no longer reads would silently stop protecting the
+/// launch; `CLAUDE_CODE_DISABLE_AGENT_VIEW` removing `/background` was measured by hand
+/// on 2.1.316 (docs/decisions/2026-10-31-184-claude-launch-without-background-daemon.md).
+#[test]
+#[ignore = "needs an installed Claude Code (COCKPIT_CLAUDE_PROGRAM)"]
+fn the_installed_claude_code_reads_every_variable_the_adapter_sets() {
+    let binary = std::fs::read(installed()).unwrap();
+
+    for (name, _) in cockpit_claude::LAUNCH_ENVIRONMENT {
+        assert!(
+            binary
+                .windows(name.len())
+                .any(|window| window == name.as_bytes()),
+            "{name} is not in the binary"
+        );
+    }
+}

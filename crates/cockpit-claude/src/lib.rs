@@ -33,11 +33,12 @@ pub const LAUNCH_FLAGS: [&str; 5] = [
     "--effort",
 ];
 
-/// Turns off Claude Code's background daemon for a launch: `/background` and the exit
-/// menu's "Move to background" would continue the conversation in the daemon's process,
-/// whose environment, launch token included, is whichever session started the daemon, so
-/// its hooks would report as another Cockpit session (#184).
-const AGENT_VIEW_SWITCH: (&str, &str) = ("CLAUDE_CODE_DISABLE_AGENT_VIEW", "1");
+/// The environment every launch sets; the conformance test finds each name in the binary.
+/// `CLAUDE_CODE_DISABLE_AGENT_VIEW` turns off Claude Code's background daemon:
+/// `/background` and the exit menu's "Move to background" would continue the conversation
+/// in the daemon's process, whose environment, launch token included, is whichever session
+/// started the daemon, so its hooks would report as another Cockpit session (#184).
+pub const LAUNCH_ENVIRONMENT: [(&str, &str); 1] = [("CLAUDE_CODE_DISABLE_AGENT_VIEW", "1")];
 
 /// How long `claude --version` may take at discovery.
 const VERSION_DEADLINE: Duration = Duration::from_secs(10);
@@ -207,7 +208,10 @@ impl Provider for ClaudeCode {
         Ok(LaunchCommand {
             program: self.program.clone(),
             arguments,
-            environment: vec![(AGENT_VIEW_SWITCH.0.into(), AGENT_VIEW_SWITCH.1.into())],
+            environment: LAUNCH_ENVIRONMENT
+                .iter()
+                .map(|(name, value)| ((*name).into(), (*value).into()))
+                .collect(),
             conversation: Some(conversation),
         })
     }

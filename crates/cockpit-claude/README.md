@@ -18,7 +18,7 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   first (its optional name would take the next plain word), the first message last after
   `--`. Every launch passes `--settings` with the hook bridge; the hooks therefore run only
   in this conversation, never in a nested `claude` a tool starts. Every launch sets
-  `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`: `/background` and the exit menu's "Move to
+  `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, which a nested `claude` does inherit: `/background` and the exit menu's "Move to
   background" would continue the conversation in Claude Code's shared daemon, whose hooks
   carry the launch token of whichever session started that daemon (#184).
 - **Hook bridge.** `cockpit-claude-hook <cockpit>` runs on `SessionStart`,
