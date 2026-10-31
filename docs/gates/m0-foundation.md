@@ -17,7 +17,7 @@ hardware. A platform counts only where it ran; an item without proof stays open 
 
 ## Recorded runs
 
-**Run 1, Linux, 2026-10-31.** Base `a91c859` plus this branch's tests. AMD Ryzen 7 7800X3D
+**Run 1, Linux, 2026-10-31.** Commit `4d0fdc6` (the commit that records this run changes only this file). AMD Ryzen 7 7800X3D
 (16 threads), 30 GiB RAM, Arch Linux, kernel 7.2.11, x86_64, inside Theo's greywall sandbox.
 cargo 1.99.1, cargo-nextest 0.9.150.
 
