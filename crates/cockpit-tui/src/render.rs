@@ -100,14 +100,16 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         }
         for session in group.sessions {
             let is_selected = app.selected() == Some(session.id.as_str());
-            for text in card(board, session, is_selected) {
-                let line = Line::from(text);
-                lines.push(if is_selected {
-                    line.style(Style::default().add_modifier(Modifier::REVERSED))
-                } else {
-                    line
-                });
-            }
+            let style = if is_selected {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            lines.extend(
+                card(board, session, is_selected)
+                    .into_iter()
+                    .map(|text| Line::from(text).style(style)),
+            );
         }
     }
     let finished = board.finished_sessions().len();
@@ -133,27 +135,32 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-/// One session's card: the id line, then what the agent reports on a line of its own. The
-/// needs-you mark comes right after the selection marker, before anything a narrow list cuts.
+/// One session's card: the id line, then whether it waits on you and what the agent reports
+/// on an indented line of their own. The `!` after the selection marker lets the eye find the
+/// sessions that need you down the list's left edge.
 fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
     let needs_you = board.needs_you(&session.id);
     let mut card = vec![format!(
-        "{marker}{} {}  {}  {}{}",
+        "{marker}{} {}  {}  {}",
         if needs_you { "!" } else { " " },
         session.id,
         session.agent,
         session.state,
-        if needs_you { "  waiting on you" } else { "" },
     )];
-    let reported: Vec<&str> = board
-        .report(&session.id)
+    let details: Vec<&str> = needs_you
+        .then_some("waiting on you")
         .into_iter()
-        .flat_map(|report| [report.label.as_deref(), report.doing.as_deref()])
-        .flatten()
+        .chain(
+            board
+                .report(&session.id)
+                .into_iter()
+                .flat_map(|report| [report.label.as_deref(), report.doing.as_deref()])
+                .flatten(),
+        )
         .collect();
-    if !reported.is_empty() {
-        card.push(format!("   {}", reported.join(" · ")));
+    if !details.is_empty() {
+        card.push(format!("   {}", details.join(" · ")));
     }
     card
 }

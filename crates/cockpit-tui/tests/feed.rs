@@ -10,7 +10,7 @@ use cockpit_protocol::{
     SessionReport,
 };
 use cockpit_tui::{App, Key};
-use common::{answer, project, queue, run, screen_of_width, screen_text, session, upsert};
+use common::{answer, project, queue, run, screen, session, upsert};
 
 /// The batches of `tests/fixtures/two-projects.feed`, as the daemon sent them.
 fn recorded_feed() -> Vec<ChangeBatch> {
@@ -34,12 +34,8 @@ fn app_on_projects() -> App {
 }
 
 /// The rows from the first project heading to the last card.
-fn list_rows(app: &App, now: Instant) -> Vec<String> {
-    list_rows_at_width(app, now, 100)
-}
-
-fn list_rows_at_width(app: &App, now: Instant, width: u16) -> Vec<String> {
-    screen_of_width(app, now, width)
+fn list_rows(app: &App, now: Instant, width: u16) -> Vec<String> {
+    screen(app, now, width)
         .into_iter()
         .skip(1)
         .take_while(|row| !row.starts_with('└'))
@@ -64,7 +60,7 @@ fn the_list_renders_the_recorded_feed_grouped_by_project() {
     }
 
     assert_eq!(
-        list_rows(&app, now),
+        list_rows(&app, now, 100),
         [
             "api",
             ">  s00000000000b  fake  running",
@@ -142,7 +138,7 @@ fn a_session_whose_checkout_is_unknown_is_listed_last_under_no_known_project() {
     })
     .unwrap();
 
-    let rows = list_rows(&app, Instant::now());
+    let rows = list_rows(&app, Instant::now(), 100);
     assert_eq!(
         rows[rows.len() - 2..],
         ["(no known project)", "   s0000000000ff  fake  running"]
@@ -171,10 +167,11 @@ fn a_session_waiting_on_an_approval_shows_waiting_on_you_and_the_list_still_answ
 
     assert_eq!(moved.used, Some("move"));
     assert_eq!(app.selected(), Some("s00000000000d"));
+    let rows = list_rows(&app, now, 100);
     assert!(
-        screen_text(&app, now).contains(">! s00000000000d  other  running  waiting on you"),
-        "{}",
-        screen_text(&app, now)
+        rows.windows(2)
+            .any(|card| card == [">! s00000000000d  other  running", "   waiting on you"]),
+        "{rows:#?}"
     );
 }
 
@@ -204,15 +201,15 @@ fn a_card_in_a_39_column_list_shows_that_it_needs_you_its_label_and_its_doing() 
         now,
     );
 
-    let rows = list_rows_at_width(&app, now, 39);
+    let rows = list_rows(&app, now, 39);
 
     assert_eq!(
         rows[1..5],
         [
             ">  s00000000000b  fake  running",
             " ! s00000000000d  other  running",
-            "waiting on you",
-            "   acceptance label · dry-run doing",
+            "   waiting on you · acceptance label",
+            "· dry-run doing",
         ],
     );
 }

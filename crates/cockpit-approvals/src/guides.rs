@@ -225,16 +225,15 @@ pub fn parse_guide(text: &str) -> Result<Guide, Refusal> {
 /// A step's text without the `- `, `* `, `1. ` or `1) ` it may start with: the pane numbers
 /// the steps itself, and guides written for `ask-to-guide` number or bullet them.
 fn without_list_marker(line: &str) -> &str {
-    let digits_left = line.trim_start_matches(|character: char| character.is_ascii_digit());
-    let after_marker = match line.strip_prefix(['-', '*']) {
-        Some(rest) => Some(rest),
-        None if digits_left.len() < line.len() => digits_left.strip_prefix(['.', ')']),
-        None => None,
-    };
-    match after_marker {
-        Some(rest) if rest.starts_with(char::is_whitespace) => rest,
-        _ => line,
-    }
+    let after_marker = line.strip_prefix(['-', '*']).or_else(|| {
+        let digits_left = line.trim_start_matches(|character: char| character.is_ascii_digit());
+        (digits_left.len() < line.len())
+            .then(|| digits_left.strip_prefix(['.', ')']))
+            .flatten()
+    });
+    after_marker
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .unwrap_or(line)
 }
 
 fn checked_line(number: usize, text: &str) -> Result<String, Refusal> {
