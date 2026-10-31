@@ -140,7 +140,35 @@ fn level_changes_are_logged() {
     });
     let messages = messages(log_dir.path());
     assert!(
-        messages.contains(&"log level raised".to_owned()),
+        messages.contains(&"log level override set".to_owned()),
+        "{messages:?}"
+    );
+    assert!(
+        messages.contains(&"log level reverted".to_owned()),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn component_directives_keep_info_for_everything_else() {
+    let log_dir = tempfile::tempdir().unwrap();
+    record(log_dir.path(), "tmux=trace", |_| {
+        tracing::info!("daemon started");
+    });
+    assert_eq!(messages(log_dir.path()), ["daemon started"]);
+}
+
+#[test]
+fn a_lowering_override_still_records_its_own_change() {
+    let log_dir = tempfile::tempdir().unwrap();
+    record(log_dir.path(), "info", |diagnostics| {
+        let level_override = LevelOverride::parse("error", None).unwrap();
+        diagnostics.level().set_override(level_override).unwrap();
+        diagnostics.level().revert().unwrap();
+    });
+    let messages = messages(log_dir.path());
+    assert!(
+        messages.contains(&"log level override set".to_owned()),
         "{messages:?}"
     );
     assert!(

@@ -6,8 +6,11 @@ use std::time::{Duration, SystemTime};
 
 use crate::Error;
 use crate::error::io_error;
+use crate::queue::own_record;
 
 pub(crate) const LOG_FILE: &str = "cockpit.log";
+/// Held locked while a process logs to the directory; a second process fails to start.
+const LOCK_FILE: &str = "cockpit.log.lock";
 
 /// Size rotation with a total cap: at most `max_files` files of `max_file_bytes` each, and
 /// rotated files older than `max_age` are removed. The defaults are the 2026-10-29 budgets.
@@ -47,6 +50,8 @@ pub(crate) struct RotatingFile {
     limits: FileLimits,
     file: File,
     size: u64,
+    /// Released when the writer thread ends.
+    _lock: File,
 }
 
 impl RotatingFile {
@@ -68,6 +73,25 @@ impl RotatingFile {
             .map_err(io_error("create the log directory", log_dir))?;
         fs::set_permissions(log_dir, fs::Permissions::from_mode(0o700))
             .map_err(io_error("make the log directory private", log_dir))?;
+        let lock_path = log_dir.join(LOCK_FILE);
+        let lock = File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(io_error("open the log lock", &lock_path))?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(Error::LogDirInUse {
+                    path: log_dir.to_path_buf(),
+                });
+            }
+            Err(fs::TryLockError::Error(source)) => {
+                return Err(io_error("lock", lock_path)(source));
+            }
+        }
         let (file, size) =
             open_current(log_dir).map_err(io_error("open the log file in", log_dir))?;
         let rotating = Self {
@@ -75,6 +99,7 @@ impl RotatingFile {
             limits,
             file,
             size,
+            _lock: lock,
         };
         rotating
             .remove_expired()
@@ -89,8 +114,18 @@ impl RotatingFile {
         if length > self.limits.max_file_bytes {
             return false;
         }
-        if self.size + length > self.limits.max_file_bytes && self.rotate().is_err() {
-            return false;
+        if self.size + length > self.limits.max_file_bytes
+            && let Err(error) = self.rotate()
+        {
+            // Keep writing to the current file and retry only after another file's worth:
+            // retrying per record would shift older files again and lose them.
+            self.size = 0;
+            let warning = own_record(
+                "WARN",
+                "log rotation failed",
+                [("error", error.to_string().into())],
+            );
+            let _ = self.file.write_all(&warning);
         }
         match self.file.write_all(record) {
             Ok(()) => {
@@ -124,7 +159,14 @@ impl RotatingFile {
         let (file, size) = open_current(&self.log_dir)?;
         self.file = file;
         self.size = size;
-        self.remove_expired()
+        self.prune();
+        Ok(())
+    }
+
+    /// [`Self::remove_expired`] for a running writer, where a file that cannot be removed now
+    /// is retried at the next rotation or hourly prune instead of costing a record.
+    pub(crate) fn prune(&self) {
+        let _ = self.remove_expired();
     }
 
     /// Removes rotated files past the age limit or beyond the file count.

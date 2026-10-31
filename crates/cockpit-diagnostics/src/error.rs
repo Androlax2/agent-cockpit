@@ -28,6 +28,10 @@ pub enum Error {
         kind: &'static str,
         name: String,
     },
+    /// Another running process already writes this log directory.
+    LogDirInUse {
+        path: PathBuf,
+    },
     /// Neither `XDG_STATE_HOME` nor `HOME` is set.
     NoStateDirectory,
     Io {
@@ -69,6 +73,11 @@ impl fmt::Display for Error {
             Self::InvalidName { kind, name } => write!(
                 formatter,
                 "invalid {kind} name {name:?}: must be a plain name"
+            ),
+            Self::LogDirInUse { path } => write!(
+                formatter,
+                "another process already logs to {}; give each process its own name",
+                path.display()
             ),
             Self::NoStateDirectory => write!(formatter, "neither XDG_STATE_HOME nor HOME is set"),
             Self::Io {

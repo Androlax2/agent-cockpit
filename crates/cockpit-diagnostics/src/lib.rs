@@ -104,7 +104,7 @@ pub fn start(options: Options) -> Result<Diagnostics, Error> {
         .with(file_layer)
         .with(stderr_layer);
     let dispatch = Dispatch::new(subscriber);
-    let level = LevelControl::new(options.directives, filter_handle, dispatch.clone());
+    let level = LevelControl::new(options.directives, filter_handle, queue.writer());
     Ok(Diagnostics {
         dispatch,
         level,
@@ -134,8 +134,8 @@ impl Diagnostics {
         self.refused.load(Ordering::Relaxed)
     }
 
-    /// Stops accepting the writer's backlog after `timeout`; returns whether every queued
-    /// record reached the file. Records logged afterwards are dropped and counted.
+    /// Asks the writer to write what is queued, then stop; waits at most `timeout` and
+    /// returns whether it finished. Records logged afterwards are dropped and counted.
     pub fn shutdown(&self, timeout: Duration) -> bool {
         self.queue.shutdown(timeout)
     }

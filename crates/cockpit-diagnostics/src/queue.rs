@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::fmt::format::Writer;
@@ -17,6 +17,8 @@ use crate::rotation::RotatingFile;
 
 /// How often an idle writer checks whether shutdown began.
 const IDLE_POLL: Duration = Duration::from_millis(50);
+/// Removes expired rotated files even when a quiet process never rotates.
+const PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
 
 pub(crate) struct Queue {
     writer: QueueWriter,
@@ -26,7 +28,7 @@ pub(crate) struct Queue {
 }
 
 /// The [`MakeWriter`] the layers write through; cheap to clone.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct QueueWriter {
     sender: SyncSender<Vec<u8>>,
     dropped: Arc<AtomicU64>,
@@ -51,6 +53,7 @@ impl Queue {
             receiver,
             dropped: Arc::clone(&writer.dropped),
             reported: 0,
+            capacity,
             closing: Arc::clone(&closing),
             drained: Arc::clone(&drained),
         };
@@ -144,20 +147,28 @@ struct Worker {
     dropped: Arc<AtomicU64>,
     /// Drops already announced in the log.
     reported: u64,
+    /// Bounds the shutdown drain to what the queue held, while producers keep logging.
+    capacity: usize,
     closing: Arc<AtomicBool>,
     drained: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl Worker {
     fn run(mut self) {
+        let mut last_pruned = Instant::now();
         while !self.closing.load(Ordering::Relaxed) {
             match self.receiver.recv_timeout(IDLE_POLL) {
                 Ok(record) => self.write(&record),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
+            if last_pruned.elapsed() >= PRUNE_INTERVAL {
+                self.file.prune();
+                last_pruned = Instant::now();
+            }
         }
-        while let Ok(record) = self.receiver.try_recv() {
+        let backlog: Vec<Vec<u8>> = self.receiver.try_iter().take(self.capacity).collect();
+        for record in backlog {
             self.write(&record);
         }
         self.report_drops();

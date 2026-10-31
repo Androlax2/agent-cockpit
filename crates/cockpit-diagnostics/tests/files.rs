@@ -22,6 +22,7 @@ fn log_files(log_dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(log_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "cockpit.log.lock")
         .collect();
     names.sort();
     names
@@ -156,4 +157,50 @@ fn a_process_name_that_is_not_a_plain_name_is_rejected() {
             "{process:?}"
         );
     }
+}
+
+#[test]
+fn a_second_process_cannot_share_a_log_directory() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let _first = support::start(log_dir.path(), "info");
+    let options = Options::new(log_dir.path().to_path_buf(), "info".parse().unwrap());
+    let error = cockpit_diagnostics::start(options).unwrap_err();
+    assert!(
+        matches!(error, cockpit_diagnostics::Error::LogDirInUse { .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_failed_rotation_keeps_writing_and_keeps_older_files() {
+    let log_dir = tempfile::tempdir().unwrap();
+    fs::write(log_dir.path().join("cockpit.log.1"), "first rotation\n").unwrap();
+    let limits = FileLimits {
+        max_file_bytes: 1024,
+        max_files: 3,
+        ..FileLimits::default()
+    };
+    let diagnostics = start_with_limits(log_dir.path(), limits);
+    // Without write permission on the directory every rename fails; appending still works.
+    fs::set_permissions(log_dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+    tracing::dispatcher::with_default(diagnostics.dispatch(), || {
+        for index in 0..50 {
+            tracing::info!(index, "filling the log");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    assert!(diagnostics.shutdown(SHUTDOWN_TIMEOUT));
+    fs::set_permissions(log_dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        fs::read_to_string(log_dir.path().join("cockpit.log.1")).unwrap(),
+        "first rotation\n"
+    );
+    assert!(!log_dir.path().join("cockpit.log.2").exists());
+    let log = support::current_log(log_dir.path());
+    assert!(
+        log.contains("\"index\":49"),
+        "records after the failed rotation are kept"
+    );
+    assert!(log.contains("log rotation failed"), "{log}");
+    assert_eq!(diagnostics.dropped_records(), 0);
 }

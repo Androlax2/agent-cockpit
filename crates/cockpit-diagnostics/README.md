@@ -16,7 +16,9 @@ channel.
 - Overrides: 5 minutes by default, 15 at most, reverted by a timer; nothing persists across
   a restart.
 - `$XDG_STATE_HOME/cockpit/logs/<process>/cockpit.log`, JSON lines, 0600 in a 0700
-  directory, 4 files of 4 MiB, rotated files removed after seven days.
+  directory, 4 files of 4 MiB, rotated files removed after seven days (checked hourly). A
+  second process with the same name fails to start: `cockpit.log.lock` is held locked.
+- Level changes are written straight to the file, so an override cannot hide its own record.
 - A bounded queue and one writer thread: a stalled disk drops records, counts them
   (`dropped_records`) and writes a `dropped log records` warning once writing resumes.
 - Span fields (`task_id`, `attempt_id`, `session_id`, `request_id`) appear on every record

@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use tracing::Dispatch;
 use tracing_subscriber::{EnvFilter, Registry, reload};
 
 use crate::Error;
+use crate::queue::{QueueWriter, own_record};
 
 /// A dedicated variable, so Cockpit never inherits an unrelated `RUST_LOG`.
 pub const LOG_LEVEL_VAR: &str = "COCKPIT_LOG_LEVEL";
@@ -88,6 +88,10 @@ impl FromStr for Directives {
                 format!("cockpit_{target}")
             };
             filter_parts.push(format!("{target}={level}"));
+        }
+        // Without a bare level EnvFilter disables every target the components do not name.
+        if !filter_parts.iter().any(|part| !part.contains('=')) {
+            filter_parts.insert(0, String::from("info"));
         }
         let filter = filter_parts.join(",");
         EnvFilter::builder()
@@ -188,8 +192,9 @@ pub struct LevelControl {
 #[derive(Debug)]
 struct Shared {
     filter: reload::Handle<EnvFilter, Registry>,
-    /// Level changes are logged through the same pipeline, from whichever thread makes them.
-    dispatch: Dispatch,
+    /// Level changes are written straight to the queue: the filter they change must not
+    /// hide them.
+    writer: QueueWriter,
     state: Mutex<State>,
 }
 
@@ -205,7 +210,7 @@ impl LevelControl {
     pub(crate) fn new(
         baseline: Directives,
         filter: reload::Handle<EnvFilter, Registry>,
-        dispatch: Dispatch,
+        writer: QueueWriter,
     ) -> Self {
         let state = State {
             baseline,
@@ -215,7 +220,7 @@ impl LevelControl {
         Self {
             shared: Arc::new(Shared {
                 filter,
-                dispatch,
+                writer,
                 state: Mutex::new(state),
             }),
         }
@@ -224,30 +229,33 @@ impl LevelControl {
     /// Applies `level_override` until it expires, replacing any active override.
     pub fn set_override(&self, level_override: LevelOverride) -> Result<ActiveOverride, Error> {
         let mut state = self.shared.lock_state();
-        self.shared.reload(&level_override.directives)?;
-        state.generation += 1;
-        let active = ActiveOverride {
-            directives: level_override.directives,
-            expires_at: SystemTime::now() + level_override.duration,
-        };
-        state.active_override = Some(active.clone());
-        let generation = state.generation;
-        drop(state);
-
+        let generation = state.generation + 1;
+        // The timer starts before the reload: an override that cannot expire is never applied.
+        // Should the reload fail, the timer finds another generation and does nothing.
         let shared = Arc::downgrade(&self.shared);
+        let duration = level_override.duration;
         thread::Builder::new()
             .name(String::from("cockpit-log-level-expiry"))
-            .spawn(move || expire_after(shared, level_override.duration, generation))
+            .spawn(move || expire_after(shared, duration, generation))
             .map_err(|error| Error::Reload {
                 reason: format!("cannot start the expiry timer: {error}"),
             })?;
-        tracing::dispatcher::with_default(&self.shared.dispatch, || {
-            tracing::info!(
-                directives = %active.directives,
-                expires_in_seconds = level_override.duration.as_secs(),
-                "log level raised"
-            );
-        });
+        self.shared.reload(&level_override.directives)?;
+        let active = ActiveOverride {
+            directives: level_override.directives,
+            expires_at: SystemTime::now() + duration,
+        };
+        state.generation = generation;
+        state.active_override = Some(active.clone());
+        drop(state);
+        self.shared.writer.push(own_record(
+            "INFO",
+            "log level override set",
+            [
+                ("directives", active.directives.to_string().into()),
+                ("expires_in_seconds", duration.as_secs().into()),
+            ],
+        ));
         Ok(active)
     }
 
@@ -275,9 +283,11 @@ fn expire_after(shared: Weak<Shared>, duration: Duration, generation: u64) {
         return;
     };
     if let Err(error) = shared.revert_if(|state| state.generation == generation) {
-        tracing::dispatcher::with_default(&shared.dispatch, || {
-            tracing::error!(%error, "log level override did not revert");
-        });
+        shared.writer.push(own_record(
+            "ERROR",
+            "log level override did not revert",
+            [("error", error.to_string().into())],
+        ));
     }
 }
 
@@ -305,13 +315,17 @@ impl Shared {
         if !should_revert(&state) {
             return Ok(());
         }
-        // Logged before the reload so the record passes the raised filter it describes.
-        tracing::dispatcher::with_default(&self.dispatch, || {
-            tracing::info!(from = %active.directives, to = %state.baseline, "log level reverted");
-        });
         self.reload(&state.baseline)?;
         state.generation += 1;
         state.active_override = None;
+        self.writer.push(own_record(
+            "INFO",
+            "log level reverted",
+            [
+                ("from", active.directives.to_string().into()),
+                ("to", state.baseline.to_string().into()),
+            ],
+        ));
         Ok(())
     }
 }
