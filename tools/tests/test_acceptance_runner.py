@@ -12,6 +12,12 @@ GUIDE = REPO / "docs/acceptance/m1.md"
 BINARIES = ("cockpit", "cockpit-daemon", "cockpit-tui", "cockpit-claude-hook")
 # ask-to-guide's limit (apps/cockpit/src/bin/ask-to-guide.rs MAX_STEPS).
 MAX_STEPS = 60
+BASH = shutil.which("bash")
+# What `run.sh start` runs, for the tests that give it a PATH without the host's claude programs.
+START_TOOLS = (
+    "awk", "bash", "cat", "chmod", "dirname", "env", "git", "grep", "id", "ln", "mkdir",
+    "readlink", "realpath", "setsid", "sleep", "touch",
+)
 RUNNER_VERBS = {"start", "tui", "cockpit", "session", "kill-daemon", "stop", "clean"}
 
 
@@ -68,7 +74,7 @@ class RunnerTests(unittest.TestCase):
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        root = Path(self.directory.name)
+        self.root = root = Path(self.directory.name)
         self.clone = root / "clone"
         self.script = self.clone / "tools/acceptance/run.sh"
         self.script.parent.mkdir(parents=True)
@@ -92,7 +98,7 @@ class RunnerTests(unittest.TestCase):
 
     def run_script(self, *arguments, **overrides):
         return subprocess.run(
-            ["bash", str(self.script), *arguments],
+            [BASH, str(self.script), *arguments],
             env={**self.environment, **overrides},
             capture_output=True,
             text=True,
@@ -114,7 +120,61 @@ class RunnerTests(unittest.TestCase):
         ):
             with self.subTest(variable=name):
                 self.assertEqual(variables[name], str(self.scratch / place))
-        self.assertEqual(variables["PATH"].split(":")[0], str(self.bin))
+        self.assertEqual(
+            variables["PATH"].split(":")[:2], [str(self.scratch / "bin"), str(self.bin)]
+        )
+
+    def make_program(self, relative):
+        program = self.root / relative
+        program.parent.mkdir(parents=True, exist_ok=True)
+        program.write_text("#!/bin/sh\n")
+        program.chmod(0o755)
+        return program
+
+    def start_with_path(self, *directories, **overrides):
+        """run.sh start with the given directories (relative to the temporary directory) first on
+        PATH and a daemon stand-in that is ready at once."""
+        # Alive a moment after ready, like a real daemon, so start's liveness check holds.
+        (self.bin / "cockpit-daemon").write_text("#!/bin/sh\necho 'ready stand-in'\nexec sleep 2\n")
+        # The host's own PATH holds claude programs: give the script only the tools it uses.
+        tools = self.root / "tools"
+        tools.mkdir()
+        for tool in START_TOOLS:
+            (tools / tool).symlink_to(shutil.which(tool))
+        path = [str(self.root / directory) for directory in directories] + [str(tools)]
+        return self.run_script("start", PATH=":".join(path), **overrides)
+
+    def linked_claude(self):
+        return Path(os.readlink(self.scratch / "bin/claude"))
+
+    def test_start_links_the_first_claude_outside_greywall(self):
+        self.make_program("greywall-agents/claude")
+        real = self.make_program("real/claude")
+        result = self.start_with_path("greywall-agents", "real")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.linked_claude(), real)
+
+    def test_start_skips_a_claude_that_links_to_the_greywall_launcher(self):
+        launcher = self.make_program("greywall-agents/claude")
+        (self.root / "shim").mkdir()
+        (self.root / "shim/claude").symlink_to(launcher)
+        real = self.make_program("real/claude")
+        result = self.start_with_path("shim", "real")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.linked_claude(), real)
+
+    def test_start_links_the_claude_the_owner_names(self):
+        self.make_program("real/claude")
+        chosen = self.make_program("chosen/claude")
+        result = self.start_with_path("real", COCKPIT_ACCEPTANCE_CLAUDE=str(chosen))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.linked_claude(), chosen)
+
+    def test_start_without_a_claude_outside_greywall_fails(self):
+        self.make_program("greywall-agents/claude")
+        result = self.start_with_path("greywall-agents")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("COCKPIT_ACCEPTANCE_CLAUDE", result.stderr)
 
     def test_cockpit_before_start_says_to_start_first(self):
         result = self.run_script("cockpit", "version")

@@ -46,8 +46,10 @@ export XDG_CACHE_HOME="$scratch/cache"
 export XDG_RUNTIME_DIR="$scratch/runtime"
 # The daemon's tmux server is `-L cockpit` in tmux's per-user directory: a private one here.
 export TMUX_TMPDIR="$scratch/tmux"
-# Agents inherit the daemon's PATH: their `cockpit` must be this clone's, not the installed one.
-export PATH="$bin:$PATH"
+# Agents inherit the daemon's PATH: their `cockpit` must be this clone's, not the installed one,
+# and their `claude` the one start linked into $scratch/bin (see link_claude).
+owner_path=$PATH
+export PATH="$scratch/bin:$bin:$PATH"
 unset TMUX
 
 require_binaries() {
@@ -121,16 +123,43 @@ start_daemon() {
     exit 1
 }
 
+# The daemon launches the `claude` on its PATH. A greywall launcher there would hide this clone's
+# target/release and the scratch sockets from the agent, so the walk runs Claude Code itself,
+# unsandboxed in the scratch project: COCKPIT_ACCEPTANCE_CLAUDE, else the first `claude` on the
+# owner's PATH outside a greywall-agents directory.
+link_claude() {
+    local claude=${COCKPIT_ACCEPTANCE_CLAUDE:-} candidate
+    if [[ -n $claude ]]; then
+        claude=$(readlink -f "$claude")
+    else
+        while read -r candidate; do
+            # Resolved, so a link to the launcher is skipped too.
+            candidate=$(readlink -f "$candidate")
+            [[ $candidate == */greywall-agents/* ]] || {
+                claude=$candidate
+                break
+            }
+        done < <(PATH=$owner_path type -ap claude)
+    fi
+    [[ -n $claude && -x $claude ]] || {
+        echo "no claude outside greywall on PATH; set COCKPIT_ACCEPTANCE_CLAUDE" >&2
+        exit 1
+    }
+    mkdir -p "$scratch/bin"
+    ln -sfn "$claude" "$scratch/bin/claude"
+}
+
 start() {
     require_binaries
     make_scratch
+    link_claude
     start_daemon
     if ! "$bin/cockpit" project list | awk -F '\t' -v dir="$demo" '$2 == dir { found = 1 } END { exit !found }'; then
         "$bin/cockpit" project add "$demo" --name demo
     fi
     echo "scratch:  $scratch"
     echo "project:  $demo"
-    echo "claude:   $(command -v claude || echo 'none on PATH: sessions cannot start')"
+    echo "claude:   $(readlink "$scratch/bin/claude") (outside greywall)"
     echo "commit:   $(git -C "$clone" rev-parse HEAD)"
     echo "TUI:      bash $clone/tools/acceptance/run.sh tui"
 }
