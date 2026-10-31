@@ -59,6 +59,11 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
         to: &["cockpit-scheduling"],
     },
     ForbiddenEdge {
+        rule: "agent-channel -> wire types",
+        from: &["cockpit-agent-channel"],
+        to: &["cockpit-protocol", "cockpit-client"],
+    },
+    ForbiddenEdge {
         rule: "verification -> processes",
         from: &["cockpit-verification"],
         to: &["cockpit-processes"],
