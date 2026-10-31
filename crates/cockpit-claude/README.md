@@ -17,10 +17,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   is named from the start; a resumed one runs `--resume <id>`. `--remote-control` comes
   first (its optional name would take the next plain word), the first message last after
   `--`. Every launch passes `--settings` with the hook bridge; the hooks therefore run only
-  in this conversation, never in a nested `claude` a tool starts. Every launch sets
-  `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, which a nested `claude` does inherit: `/background` and the exit menu's "Move to
-  background" would continue the conversation in Claude Code's shared daemon, whose hooks
-  carry the launch token of whichever session started that daemon (#184).
+  in this conversation, never in a nested `claude` a tool starts. Every launch also sets
+  `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, which a nested `claude` inherits, so the conversation
+  never moves into Claude Code's shared background daemon (`LAUNCH_ENVIRONMENT`, #184).
 - **Hook bridge.** `cockpit-claude-hook <cockpit>` runs on `SessionStart`,
   `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `StopFailure` and `SessionEnd`,
   normalizes the payload (`hooks::normalize`) and reports through `cockpit agent report`.

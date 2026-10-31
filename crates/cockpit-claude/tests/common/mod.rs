@@ -22,6 +22,14 @@ pub fn claude() -> ClaudeCode {
     )
 }
 
+/// The installed Claude Code the ignored live tests run.
+pub fn installed() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("COCKPIT_CLAUDE_PROGRAM")
+            .expect("COCKPIT_CLAUDE_PROGRAM names the Claude Code binary to test"),
+    )
+}
+
 pub fn fixture(name: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")

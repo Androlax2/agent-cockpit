@@ -31,16 +31,12 @@ fn recording_cockpit(dir: &Path) -> PathBuf {
 #[test]
 #[ignore = "needs an installed Claude Code (COCKPIT_CLAUDE_PROGRAM) and spends one model turn"]
 fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
-    let installed = PathBuf::from(
-        std::env::var_os("COCKPIT_CLAUDE_PROGRAM")
-            .expect("COCKPIT_CLAUDE_PROGRAM names the Claude Code binary to test"),
-    );
     let dir = tempfile::tempdir().unwrap();
     let bridge = Bridge {
         hook_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-claude-hook")),
         cockpit_program: recording_cockpit(dir.path()),
     };
-    let claude = ClaudeCode::discover(&installed, Some(bridge)).unwrap();
+    let claude = ClaudeCode::discover(&common::installed(), Some(bridge)).unwrap();
     let launch = claude
         .launch(&LaunchRequest {
             working_dir: dir.path(),
@@ -63,7 +59,9 @@ fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
         .current_dir(dir.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        // A file, not a pipe: nothing reads a pipe while the turn runs, so a full one would
+        // block Claude Code until the deadline.
+        .stderr(std::fs::File::create(dir.path().join("stderr")).unwrap())
         .spawn()
         .unwrap();
     let started = Instant::now();
@@ -74,11 +72,12 @@ fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    let output = child.wait_with_output().unwrap();
+    let status = child.wait().unwrap();
+    let stderr = std::fs::read_to_string(dir.path().join("stderr")).unwrap();
 
-    assert!(output.status.success(), "{output:?}");
+    assert!(status.success(), "{status}: {stderr}");
     let reports = std::fs::read_to_string(dir.path().join("reports"))
-        .unwrap_or_else(|error| panic!("no hook reported ({error}): {output:?}"));
+        .unwrap_or_else(|error| panic!("no hook reported ({error}): {stderr}"));
     assert_eq!(
         reports.lines().collect::<Vec<_>>(),
         [

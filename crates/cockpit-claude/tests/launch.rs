@@ -179,8 +179,7 @@ fn remote_control_is_turned_on_at_launch() {
     assert!(words[index + 1].starts_with("--"), "{words:?}");
 }
 
-/// A conversation moved into Claude Code's background daemon would run its hooks with the
-/// daemon's environment, another session's launch token included (#184).
+/// See `LAUNCH_ENVIRONMENT` (#184).
 #[test]
 fn every_launch_turns_off_claude_codes_background_daemon() {
     let resumed = ConversationId::new("0b7f3c1e-1f6a-4c55-a2a1-9e3c7c0d1a2b").unwrap();
