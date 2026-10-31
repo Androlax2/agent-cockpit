@@ -61,9 +61,11 @@ stopped in the middle of one finishes or repairs it at its next start.
   nothing, and the idle window (60 minutes) has passed since that report. With no such
   report it is never put to sleep. The expiry counts from the move to asleep. A session asleep past the expiry (7 days) ends. Both values come from the current
   cockpit's sleep rules.
-- **Self grant.** Each launch grants the session `change-state` over itself, in the
-  transaction that mints its launch token, so its agent's reports are accepted; every move
-  to `ended` or `failed` revokes it in the same transaction (`docs/decisions/2026-10-31-31-self-state-grant.md`).
+- **Self grants.** Each launch grants the session `change-state` and `run-commands` over
+  itself (`SELF_PERMISSIONS`), in the transaction that mints its launch token, so its
+  agent's reports and asks are accepted; every move to `ended` or `failed` revokes both in
+  the same transaction (`docs/decisions/2026-10-31-31-self-state-grant.md`,
+  `docs/decisions/2026-10-31-270-self-run-commands-grant.md`).
 - **Exits.** An agent observed gone ends its session with the reason; `resume` reopens it.
 - **Stops are confirmed.** A stop whose termination `cockpit-processes` cannot confirm puts
   the session back to `running` with the reason and answers an error; it is never recorded
