@@ -2,7 +2,8 @@
 mod common;
 
 use cockpit_authorization::{
-    Actor, Basis, Error, Outcome, Permission, Refusal, Scope, active_grants, evaluate, revoke,
+    Actor, Basis, Error, Outcome, Permission, Refusal, Scope, active_grants, current_revision,
+    evaluate, revoke,
 };
 use cockpit_turso::Database;
 use common::{grant, open, session, task};
@@ -206,6 +207,53 @@ async fn granting_an_active_grant_again_returns_it_without_a_new_revision() {
     let second = grant(&database, &builder, Permission::ReadState, &scope).await;
 
     assert_eq!(second, first);
+    let read = database.read().await.unwrap();
+    assert_eq!(current_revision(&read).await.unwrap(), first.granted_at);
+}
+
+/// Writers other than `grant` (a later migration, a restore) meet the same rule in the schema.
+#[tokio::test]
+async fn the_schema_refuses_a_second_active_copy_of_a_grant() {
+    let database = open("duplicate-row").await;
+    for scope in [Scope::Owner, Scope::Task(task("t1"))] {
+        let existing = grant(
+            &database,
+            &session("builder"),
+            Permission::ReadState,
+            &scope,
+        )
+        .await;
+        let write = database.write().await.unwrap();
+
+        let copy = write
+            .execute(
+                "INSERT INTO authorization_grants
+                    (holder, permission, scope_kind, scope_id, granted_at)
+                 SELECT holder, permission, scope_kind, scope_id, granted_at
+                 FROM authorization_grants WHERE id = ?1",
+                [existing.id.value()],
+            )
+            .await;
+
+        assert!(copy.is_err(), "{scope:?}: {copy:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_schema_refuses_a_stored_host_actions_grant() {
+    let database = open("host-actions-row").await;
+    let write = database.write().await.unwrap();
+
+    let row = write
+        .execute(
+            "INSERT INTO authorization_grants
+                (holder, permission, scope_kind, scope_id, granted_at)
+             VALUES ('builder', 'host-actions', 'owner', NULL, 1)",
+            (),
+        )
+        .await;
+
+    assert!(row.is_err(), "{row:?}");
 }
 
 #[tokio::test]
@@ -347,10 +395,10 @@ async fn grants_and_revocations_survive_a_restart() {
 fn an_empty_id_is_refused() {
     assert!(matches!(
         cockpit_authorization::SessionId::new(""),
-        Err(Error::EmptyId)
+        Err(Error::EmptyId { kind: "session" })
     ));
     assert!(matches!(
         cockpit_authorization::TaskId::new(""),
-        Err(Error::EmptyId)
+        Err(Error::EmptyId { kind: "task" })
     ));
 }

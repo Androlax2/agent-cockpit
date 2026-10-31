@@ -17,8 +17,10 @@ needs the owner's approval of that exact command (report 17).
 One counter, the authorization revision, increments on every grant and revocation and comes
 back with every decision, so an effect can record what it was authorized against. Nothing
 is cached: a revocation applies from the next evaluation that reads it. Granting an active
-grant again returns it, so a repeated grant leaves no second copy that would survive a
-revocation of the first. Revoked rows stay, with the revision that revoked them.
+grant again returns it, and a partial unique index refuses a second active copy from any
+writer, since a copy would survive a revocation of the first. Revoked rows stay, with the
+revision that revoked them. `evaluate` reads the revision and the covering grant in one
+statement, so they come from one commit whatever connection the caller passes.
 
 The acceptance property (prose, payloads and manifests cannot widen a grant) is checked
 against a reference model over a bounded universe of every grantable grant and adversarial

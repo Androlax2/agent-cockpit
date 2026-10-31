@@ -5,8 +5,10 @@ use crate::{GrantId, Permission};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// A session or task id was empty.
-    EmptyId,
+    /// A session or task id was empty; `kind` says which.
+    EmptyId {
+        kind: &'static str,
+    },
     /// The name is not exactly one permission's name.
     UnknownPermission {
         name: String,
@@ -30,7 +32,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::EmptyId => formatter.write_str("a session or task id is empty"),
+            Error::EmptyId { kind } => write!(formatter, "a {kind} id is empty"),
             Error::UnknownPermission { name } => write!(
                 formatter,
                 "{name:?} is not a permission; permissions are named exactly, one at a time"

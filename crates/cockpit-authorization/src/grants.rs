@@ -7,7 +7,9 @@ use crate::{
 };
 
 /// The authorization tables. Revoked grants stay, with the revision that revoked them, so a
-/// decision's revision can be traced to the grants it read.
+/// decision's revision can be traced to the grants it read. The unique index keeps one active
+/// copy of a grant whoever writes the table: a second copy would survive revoking the first.
+/// Ids are never empty, so `coalesce(scope_id, '')` cannot make an owner scope collide.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "authorization",
     migrations: &[Migration {
@@ -20,14 +22,16 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE TABLE authorization_grants (
                 id INTEGER PRIMARY KEY,
                 holder TEXT NOT NULL CHECK (holder <> ''),
-                permission TEXT NOT NULL,
+                permission TEXT NOT NULL CHECK (permission <> 'host-actions'),
                 scope_kind TEXT NOT NULL CHECK (scope_kind IN ('owner', 'session', 'task')),
-                scope_id TEXT CHECK ((scope_kind = 'owner') = (scope_id IS NULL)),
+                scope_id TEXT CHECK (scope_id <> '')
+                    CHECK ((scope_kind = 'owner') = (scope_id IS NULL)),
                 granted_at INTEGER NOT NULL,
                 revoked_at INTEGER
             );
-            CREATE INDEX authorization_grants_by_holder
-                ON authorization_grants (holder, permission);",
+            CREATE UNIQUE INDEX authorization_grants_one_active
+                ON authorization_grants (holder, permission, scope_kind, coalesce(scope_id, ''))
+                WHERE revoked_at IS NULL;",
     }],
 };
 
@@ -36,8 +40,7 @@ const SESSION_SCOPE: &str = "session";
 const TASK_SCOPE: &str = "task";
 
 /// Gives `holder` `permission` over `scope`. Granting an active grant again returns it
-/// unchanged, so a repeated request cannot leave a second copy behind that survives a
-/// revocation of the first.
+/// unchanged, without a new revision. On error, roll the transaction back.
 pub async fn grant(
     write: &WriteTransaction<'_>,
     holder: &SessionId,
@@ -90,9 +93,10 @@ pub async fn grant(
 }
 
 /// Revokes an active grant and returns the revision that revoked it. Every evaluation that
-/// reads the committed revocation refuses what the grant allowed.
+/// reads the committed revocation refuses what the grant allowed. On error, roll the
+/// transaction back.
 pub async fn revoke(write: &WriteTransaction<'_>, grant: GrantId) -> Result<Revision, Error> {
-    let revoked_at = Revision(current_revision(write).await?.0 + 1);
+    let revoked_at = advance_revision(write).await?;
     let revoked = write
         .execute(
             "UPDATE authorization_grants SET revoked_at = ?2
@@ -103,33 +107,40 @@ pub async fn revoke(write: &WriteTransaction<'_>, grant: GrantId) -> Result<Revi
     if revoked == 0 {
         return Err(Error::GrantNotActive { grant });
     }
-    advance_revision(write).await
+    Ok(revoked_at)
 }
 
-/// Answers whether `actor` may use `permission` over `scope`. Pass the transaction the action
-/// runs in (or a read transaction), so the grants and the revision come from one snapshot.
-/// Nothing is cached: a revocation applies from the next evaluation that reads it.
+/// Answers whether `actor` may use `permission` over `scope`. Evaluate in the transaction the
+/// action runs in, so the action cannot outlive a revocation it did not see. Nothing is
+/// cached: a revocation applies from the next evaluation that reads it.
 pub async fn evaluate(
     connection: &Connection,
     actor: &Actor,
     permission: Permission,
     scope: &Scope,
 ) -> Result<Decision, Error> {
-    let revision = current_revision(connection).await?;
-    let outcome = match actor {
-        Actor::Owner => Outcome::Allowed(Basis::Owner),
+    let holder = match actor {
+        Actor::Owner => {
+            return Ok(Decision {
+                revision: current_revision(connection).await?,
+                outcome: Outcome::Allowed(Basis::Owner),
+            });
+        }
         Actor::Session(_) if permission.is_owner_only() => {
-            Outcome::Refused(Refusal::OwnerOnly { permission })
+            return Ok(Decision {
+                revision: current_revision(connection).await?,
+                outcome: Outcome::Refused(Refusal::OwnerOnly { permission }),
+            });
         }
-        Actor::Session(holder) => {
-            match covering_grant(connection, holder, permission, scope).await? {
-                Some(grant) => Outcome::Allowed(Basis::Grant(grant)),
-                None => Outcome::Refused(Refusal::NoGrant {
-                    permission,
-                    scope: scope.clone(),
-                }),
-            }
-        }
+        Actor::Session(holder) => holder,
+    };
+    let (revision, covering_grant) = covering_grant(connection, holder, permission, scope).await?;
+    let outcome = match covering_grant {
+        Some(grant) => Outcome::Allowed(Basis::Grant(grant)),
+        None => Outcome::Refused(Refusal::NoGrant {
+            permission,
+            scope: scope.clone(),
+        }),
     };
     Ok(Decision { revision, outcome })
 }
@@ -175,29 +186,33 @@ async fn advance_revision(write: &WriteTransaction<'_>) -> Result<Revision, Erro
     current_revision(write).await
 }
 
-/// The oldest active grant to `holder` of `permission` whose scope covers `scope`, matching
-/// ids with `=` only: no pattern, case or prefix match can stretch a grant.
+/// The current revision and the oldest active grant to `holder` of `permission` whose scope
+/// covers `scope`, read by one statement so both come from the same commit whatever
+/// connection the caller passes. Ids match with `=` only: no pattern, case or prefix match
+/// can stretch a grant.
 async fn covering_grant(
     connection: &Connection,
     holder: &SessionId,
     permission: Permission,
     scope: &Scope,
-) -> Result<Option<GrantId>, Error> {
+) -> Result<(Revision, Option<GrantId>), Error> {
     let (scope_kind, scope_id) = scope_columns(scope);
-    let mut rows = connection
-        .query(
-            "SELECT id FROM authorization_grants
-             WHERE holder = ?1 AND permission = ?2 AND revoked_at IS NULL
-               AND (scope_kind = 'owner' OR (scope_kind = ?3 AND scope_id = ?4))
-             ORDER BY id
-             LIMIT 1",
-            (holder.as_str(), permission.as_str(), scope_kind, scope_id),
+    let row = connection
+        .prepare(
+            "SELECT
+                (SELECT revision FROM authorization_revision WHERE singleton = 1),
+                (SELECT id FROM authorization_grants
+                 WHERE holder = ?1 AND permission = ?2 AND revoked_at IS NULL
+                   AND (scope_kind = 'owner' OR (scope_kind = ?3 AND scope_id = ?4))
+                 ORDER BY id
+                 LIMIT 1)",
         )
+        .await?
+        .query_row((holder.as_str(), permission.as_str(), scope_kind, scope_id))
         .await?;
-    match rows.next().await? {
-        Some(row) => Ok(Some(GrantId(row.get(0)?))),
-        None => Ok(None),
-    }
+    let revision = Revision(row.get(0)?);
+    let grant = row.get::<Option<i64>>(1)?.map(GrantId);
+    Ok((revision, grant))
 }
 
 fn scope_columns(scope: &Scope) -> (&'static str, Value) {
@@ -219,6 +234,9 @@ fn grant_from_row(row: &Row) -> Result<Grant, Error> {
         .get::<String>(2)?
         .parse()
         .map_err(|error: Error| invalid(error.to_string()))?;
+    if permission.is_owner_only() {
+        return Err(invalid(format!("{permission} is held by a session")));
+    }
     let scope_kind: String = row.get(3)?;
     let scope_id: Option<String> = row.get(4)?;
     let scope = match (scope_kind.as_str(), scope_id) {

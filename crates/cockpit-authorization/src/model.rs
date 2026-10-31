@@ -10,7 +10,7 @@ pub struct SessionId(String);
 
 impl SessionId {
     pub fn new(id: impl Into<String>) -> Result<SessionId, Error> {
-        non_empty(id.into()).map(SessionId)
+        non_empty(id.into(), "session").map(SessionId)
     }
 
     pub fn as_str(&self) -> &str {
@@ -24,7 +24,7 @@ pub struct TaskId(String);
 
 impl TaskId {
     pub fn new(id: impl Into<String>) -> Result<TaskId, Error> {
-        non_empty(id.into()).map(TaskId)
+        non_empty(id.into(), "task").map(TaskId)
     }
 
     pub fn as_str(&self) -> &str {
@@ -32,9 +32,9 @@ impl TaskId {
     }
 }
 
-fn non_empty(id: String) -> Result<String, Error> {
+fn non_empty(id: String, kind: &'static str) -> Result<String, Error> {
     if id.is_empty() {
-        return Err(Error::EmptyId);
+        return Err(Error::EmptyId { kind });
     }
     Ok(id)
 }
