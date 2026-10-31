@@ -83,8 +83,20 @@ impl Git {
         arguments: &[&OsStr],
     ) -> Result<Output, Error> {
         let drivers_off = self.drivers_off(dir)?;
+        self.output_resetting(dir, extra_config, &drivers_off, arguments)
+    }
+
+    /// [`Git::output_with`] with `drivers_off` already read, for a caller that runs several
+    /// commands in one directory.
+    fn output_resetting(
+        &self,
+        dir: &Path,
+        extra_config: &[&str],
+        drivers_off: &[String],
+        arguments: &[&OsStr],
+    ) -> Result<Output, Error> {
         let mut command = self.command(dir, extra_config);
-        for setting in &drivers_off {
+        for setting in drivers_off {
             command.arg("-c").arg(setting);
         }
         command.args(arguments);
@@ -101,6 +113,78 @@ impl Git {
             .collect();
         settings.extend(self.drivers_off(dir)?);
         Ok(settings)
+    }
+
+    /// Files the work in the checkout at `dir` may have changed outside review: uncommitted
+    /// (staged, unstaged, untracked), ignored (a directory as `dir/`), hidden from `status`
+    /// by skip-worktree or assume-unchanged, and touched by commits the remote's default
+    /// branch (`origin/HEAD`) lacks; a pushed feature branch still counts. Without
+    /// `origin/HEAD`, every commit counts. Paths from the repository root, sorted, each once
+    /// (#156: an approval names the changed build files a command would run).
+    pub fn changed_files(&self, dir: &Path) -> Result<Vec<String>, Error> {
+        // Read once: every command below runs in the same directory.
+        let drivers_off = self.drivers_off(dir)?;
+        let output =
+            |arguments: &[&OsStr]| self.output_resetting(dir, &[], &drivers_off, arguments);
+        let run = |arguments: &[&OsStr]| {
+            let output = output(arguments)?;
+            if !output.status.success() {
+                return Err(git_failure(arguments, &output));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        };
+        let verifies = |revision: &str| -> Result<bool, Error> {
+            let arguments = [
+                arg("rev-parse"),
+                arg("--verify"),
+                arg("--quiet"),
+                arg(revision),
+            ];
+            Ok(output(&arguments)?.status.success())
+        };
+        let status = run(&[
+            arg("status"),
+            arg("--porcelain=v1"),
+            arg("-z"),
+            arg("--untracked-files=all"),
+            arg("--ignored=matching"),
+            arg("--no-renames"),
+        ])?;
+        // Each entry is `XY path`; with renames off, no entry carries a second path.
+        let mut changed: Vec<String> = status
+            .split('\0')
+            .filter_map(|entry| entry.get(3..))
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let tagged = run(&[arg("ls-files"), arg("-v"), arg("-z")])?;
+        // `S` marks skip-worktree, a lower-case tag assume-unchanged: `status` hides both.
+        changed.extend(tagged.split('\0').filter_map(|entry| {
+            let (tag, path) = entry.split_once(' ')?;
+            (tag == "S" || tag.chars().all(|tag| tag.is_ascii_lowercase())).then(|| path.to_owned())
+        }));
+        if verifies("HEAD")? {
+            let mut log = vec![
+                arg("log"),
+                arg("--format="),
+                arg("--name-only"),
+                arg("--no-renames"),
+                arg("-z"),
+                arg("HEAD"),
+            ];
+            if verifies("refs/remotes/origin/HEAD")? {
+                log.extend([arg("--not"), arg("refs/remotes/origin/HEAD")]);
+            }
+            changed.extend(
+                run(&log)?
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+        changed.sort();
+        changed.dedup();
+        Ok(changed)
     }
 
     /// An empty value for every program-running driver the configuration seen from `dir`

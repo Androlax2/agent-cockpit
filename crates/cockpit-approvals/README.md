@@ -14,12 +14,17 @@ request here, so nothing is re-read from the sandbox.
    `run-commands` over itself. The working directory is resolved first (`resolve_cwd`), and
    the shell must parse the command (`Runner::check_syntax`, `<shell> -n -c`).
 2. The owner reads it through `show`: hiding characters escaped as `\u{…}`, runs of blank
-   lines collapsed, non-ASCII characters named, a directory outside the asking agent's
-   project flagged (`RunRequest::is_outside_project`).
+   lines collapsed, each kind escaped named in `Shown::warnings` (`Hidden`), non-ASCII
+   characters named, a directory outside the asking agent's project flagged
+   (`RunRequest::is_outside_project`). `fold` gives a long command's start and what it
+   leaves out, for a pane's explicit "more". `timeout_without_foreground` and
+   `build_files_run` (the changed build files and scripts a command runs, from the
+   checkout's changed files the daemon reads) say what the text alone does not (#156).
 3. `approve_run` needs the request's current revision and its `action_digest` (SHA-256 of
    the directory and command). It consumes the request with the run intent in one
    transaction; a second decision, an older revision or another digest is refused. The
-   owner's `edit_run` creates a new revision. Asking requests expire
+   owner's `edit_run` creates a new revision. An approval within `APPROVAL_GRACE_SECONDS` of
+   the revision appearing (ask or edit) is refused `TooSoon` (#156, #166). Asking requests expire
    `EXPIRES_AFTER_SECONDS` after the agent last asked about them (`run_status`).
 4. `Runner::run` runs the approved revision in a pseudo-terminal through `run_leader`
    (a session leader, so prompts and `sudo` work), Git hooks off and program-running Git
@@ -50,6 +55,7 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 ## Tests
 
 - `tests/display.rs`, `tests/redaction.rs`: the display and redaction rules.
+- `tests/hints.rs`: the `timeout` hint and the changed build files a command runs.
 - `tests/runs.rs`: the run state machine on a real state database, report 04's
   stale-approval walkthrough included.
 - `tests/guides.rs`: the guide format and step answers.

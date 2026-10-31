@@ -32,11 +32,58 @@ fn result(exit_code: i32) -> RunResult {
 async fn approve(fixture: &Fixture, id: cockpit_approvals::RunId) -> Approved {
     let write = fixture.database.write().await.unwrap();
     let run = run_request(&write, id, NOW).await.unwrap().unwrap();
-    let approved = approve_run(&write, id, run.revision, &run.digest(), NOW)
+    let approved = approve_run(&write, id, run.revision, &run.digest(), AFTER_GRACE)
         .await
         .unwrap();
     write.commit().await.unwrap();
     approved
+}
+
+/// The first moment a request asked at `NOW` may be approved.
+const AFTER_GRACE: i64 = NOW + cockpit_approvals::APPROVAL_GRACE_SECONDS;
+
+#[tokio::test]
+async fn an_approval_right_after_the_ask_is_refused_until_the_grace_has_passed() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let write = fixture.database.write().await.unwrap();
+
+    let at_once = refusal(approve_run(&write, run.id, 1, &run.digest(), NOW).await);
+    let almost = refusal(approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE - 1).await);
+    let approved = approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE).await;
+
+    assert_eq!(
+        at_once,
+        Refusal::TooSoon {
+            wait_seconds: cockpit_approvals::APPROVAL_GRACE_SECONDS
+        }
+    );
+    assert_eq!(almost, Refusal::TooSoon { wait_seconds: 1 });
+    assert!(approved.is_ok(), "{approved:?}");
+}
+
+#[tokio::test]
+async fn an_edit_starts_the_grace_again() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let write = fixture.database.write().await.unwrap();
+    let edited_at = NOW + 60;
+    let edited = edit_run(&write, run.id, 1, "ls -la", edited_at)
+        .await
+        .unwrap();
+
+    let at_once = refusal(approve_run(&write, run.id, 2, &edited.digest(), edited_at).await);
+    let later = approve_run(
+        &write,
+        run.id,
+        2,
+        &edited.digest(),
+        edited_at + cockpit_approvals::APPROVAL_GRACE_SECONDS,
+    )
+    .await;
+
+    assert!(matches!(at_once, Refusal::TooSoon { .. }), "{at_once:?}");
+    assert!(later.is_ok(), "{later:?}");
 }
 
 #[tokio::test]
@@ -145,7 +192,7 @@ async fn an_offline_approval_of_an_edited_request_fails_its_revision_then_the_re
         replayed.id,
         replayed.revision,
         &replayed.digest(),
-        NOW,
+        AFTER_GRACE,
     )
     .await
     .unwrap();

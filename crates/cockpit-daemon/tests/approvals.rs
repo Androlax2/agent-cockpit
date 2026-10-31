@@ -11,8 +11,8 @@ use cockpit_agent_channel::{LaunchToken, identity_of};
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, ErrorCode, GuideStateView, GuideView, ProtocolError, Reply, RunRequestView,
-    RunStateView, UnblockedBy,
+    Command, ErrorCode, GuideStateView, GuideView, HiddenView, ProtocolError, Reply,
+    RunRequestView, RunStateView, UnblockedBy,
 };
 use common::{GENEROUS, TestHome};
 
@@ -94,7 +94,7 @@ impl Asking {
         run(self.ask(command).await)
     }
 
-    async fn approve(&self, request: &RunRequestView) -> Result<Reply, ClientError> {
+    async fn approve_once(&self, request: &RunRequestView) -> Result<Reply, ClientError> {
         self.owner
             .request(
                 Command::ApprovalApprove {
@@ -105,6 +105,22 @@ impl Asking {
                 GENEROUS,
             )
             .await
+    }
+
+    /// Approves `request` as soon as the daemon's grace after its ask or edit allows.
+    async fn approve(&self, request: &RunRequestView) -> Result<Reply, ClientError> {
+        let deadline = Instant::now() + GENEROUS;
+        loop {
+            let reply = self.approve_once(request).await;
+            let too_soon = matches!(
+                &reply,
+                Err(ClientError::Daemon(error)) if error.code == ErrorCode::Refused
+            );
+            if !too_soon || Instant::now() > deadline {
+                return reply;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     async fn status(&self, request: i64) -> RunRequestView {
@@ -209,6 +225,7 @@ async fn the_owner_sees_the_request_in_the_queue_with_the_display_rules_applied(
         ["é U+00E9"],
         "escaped characters are not listed again"
     );
+    assert_eq!(request.shown_command.warnings, [HiddenView::BidiControl]);
     assert!(
         request.outside_project,
         "no registered checkout holds the agent, so every directory is outside"
@@ -497,4 +514,247 @@ async fn the_owner_sees_a_guides_directory_with_the_display_rules_applied() {
         asked.outside_project,
         "no registered checkout holds the agent, so every directory is outside"
     );
+}
+
+/// Registers a fresh Git repository as a project and makes it this test process's working
+/// directory, so the daemon finds the asking agent in it. nextest runs each test in its own
+/// process, so no other test sees the directory change.
+async fn in_a_registered_project(asking: &Asking) -> std::path::PathBuf {
+    let root = std::fs::canonicalize(asking.cwd.path()).unwrap();
+    let status = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let added = asking
+        .owner
+        .request(
+            Command::ProjectAdd {
+                path: root.to_str().unwrap().to_owned(),
+                name: Some("app".to_owned()),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(added.is_ok(), "{added:?}");
+    std::env::set_current_dir(&root).unwrap();
+    root
+}
+
+async fn shown_to_owner(asking: &Asking, request: i64) -> RunRequestView {
+    run(asking
+        .owner
+        .request(Command::ApprovalShow { request }, GENEROUS)
+        .await)
+}
+
+#[tokio::test]
+async fn the_owner_is_warned_of_changed_build_files_the_command_runs_as_they_are_now() {
+    let asking = started(true).await;
+    let root = in_a_registered_project(&asking).await;
+    let request = asking.asked("make test").await;
+    assert_eq!(request.project.as_deref(), Some("app"));
+
+    let before = shown_to_owner(&asking, request.id).await;
+    std::fs::write(root.join("Makefile"), "test:\n\techo hi\n").unwrap();
+    let after = shown_to_owner(&asking, request.id).await;
+
+    assert_eq!(before.changed_build_files, Some(Vec::new()));
+    assert_eq!(after.changed_build_files, Some(vec!["Makefile".to_owned()]));
+}
+
+#[tokio::test]
+async fn the_owner_is_told_when_changed_build_files_cannot_be_read() {
+    let asking = started(true).await;
+    let request = asking.asked("make test").await;
+
+    let shown = shown_to_owner(&asking, request.id).await;
+
+    assert_eq!(
+        shown.changed_build_files, None,
+        "no project is known for the agent, so no checkout to read"
+    );
+}
+
+#[tokio::test]
+async fn a_timeout_without_foreground_carries_the_hint() {
+    let asking = started(true).await;
+
+    let hinted = asking.asked("timeout 5 sh -c 'read -r answer'").await;
+    let plain = asking.asked("timeout --foreground 5 true").await;
+
+    assert!(hinted.timeout_without_foreground);
+    assert!(!plain.timeout_without_foreground);
+}
+
+#[tokio::test]
+async fn a_long_command_reaches_the_owner_folded_with_what_is_left_out() {
+    let asking = started(true).await;
+    let command: Vec<String> = (1..=30).map(|line| format!("echo {line}")).collect();
+
+    let request = asking.asked(&command.join("\n")).await;
+
+    let folded = request.folded_command.expect("thirty lines are folded");
+    assert!(request.shown_command.text.starts_with(&folded.preview));
+    assert_eq!(folded.more_lines, 30 - folded.preview.lines().count());
+}
+
+impl Asking {
+    /// Approves `command` and returns it once the runner sees it waiting at a prompt.
+    async fn waiting_at_a_prompt(&self, command: &str) -> RunRequestView {
+        let request = self.asked(command).await;
+        run(self.approve(&request).await);
+        let waiting = self
+            .status_once(request.id, |run| run.waiting_for_input)
+            .await;
+        assert!(waiting.waiting_for_input, "{waiting:?}");
+        waiting
+    }
+
+    async fn type_line(&self, request: i64, text: &str) {
+        run(self
+            .owner
+            .request(
+                Command::ApprovalInput {
+                    request,
+                    text: text.to_owned(),
+                },
+                GENEROUS,
+            )
+            .await);
+    }
+
+    async fn queue(&self) -> Vec<RunRequestView> {
+        match self.owner.request(Command::ApprovalQueue, GENEROUS).await {
+            Ok(Reply::ApprovalQueue { runs, .. }) => runs,
+            other => panic!("expected the queue, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_password_prompt_reads_the_typed_line_with_echo_off() {
+    let asking = started(true).await;
+    let request = asking
+        .waiting_at_a_prompt(
+            "printf 'Type it: '; stty -echo; read -r secret; stty echo; \
+             printf '\\nlength %s\\n' \"${#secret}\"",
+        )
+        .await;
+
+    asking.type_line(request.id, "hunter22").await;
+
+    let output = asking.ended(request.id).await.result.unwrap().output;
+    assert!(output.ends_with("length 8"), "{output}");
+    assert!(
+        !output.contains("hunter22"),
+        "a terminal with echo off shows nothing typed"
+    );
+}
+
+#[tokio::test]
+async fn a_prompt_in_a_pipeline_stage_reads_the_terminal_in_the_foreground_group() {
+    let asking = started(true).await;
+    let request = asking
+        .waiting_at_a_prompt(
+            "sh -c 'printf \"Name? \" >/dev/tty; read -r name </dev/tty; echo \"hello $name\"' | cat",
+        )
+        .await;
+
+    asking.type_line(request.id, "theo").await;
+
+    let ended = asking.ended(request.id).await;
+    let result = ended.result.unwrap();
+    assert_eq!(result.exit_code, 0);
+    assert!(result.output.ends_with("hello theo"), "{}", result.output);
+}
+
+#[tokio::test]
+async fn a_new_request_queues_behind_a_command_waiting_for_input() {
+    let asking = started(true).await;
+    let waiting = asking
+        .waiting_at_a_prompt("printf 'sudo password: '; read -r answer")
+        .await;
+
+    let newer = asking.asked("echo newer").await;
+    let queue = asking.queue().await;
+
+    let order: Vec<(i64, bool)> = queue
+        .iter()
+        .map(|run| (run.id, run.waiting_for_input))
+        .collect();
+    assert_eq!(order, [(waiting.id, true), (newer.id, false)]);
+    asking.type_line(waiting.id, "done").await;
+}
+
+#[tokio::test]
+async fn an_agent_waiting_on_an_approval_keeps_working_on_the_channel() {
+    let home = TestHome::new();
+    let token = launch(&home, true).await;
+    {
+        let database = home.open_state().await;
+        let write = database.write().await.unwrap();
+        let session = SessionId::new("s1").unwrap();
+        cockpit_authorization::grant(
+            &write,
+            &session,
+            Permission::ChangeState,
+            &Scope::Session(session.clone()),
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
+    }
+    let daemon = home.start();
+    let asking = Asking {
+        agent: home.connect_agent().await,
+        owner: home.connect().await,
+        _daemon: daemon,
+        _home: home,
+        token,
+        cwd: tempfile::tempdir().unwrap(),
+    };
+    let request = asking.asked("echo later").await;
+
+    let reported = asking
+        .agent
+        .request(
+            Command::AgentReport {
+                launch_token: None,
+                report: cockpit_protocol::AgentReport {
+                    doing: Some("other work while the owner decides".to_owned()),
+                    ..cockpit_protocol::AgentReport::default()
+                },
+            },
+            GENEROUS,
+        )
+        .await;
+
+    assert!(reported.is_ok(), "{reported:?}");
+    let queue = asking.queue().await;
+    assert_eq!(queue.len(), 1);
+    assert_eq!(
+        (queue[0].id, queue[0].state),
+        (request.id, RunStateView::Asking)
+    );
+}
+
+#[tokio::test]
+async fn an_approval_at_once_after_the_ask_is_refused_with_when_to_approve() {
+    let asking = started(true).await;
+    let request = asking.asked("echo approved").await;
+
+    let refusal = refused(asking.approve_once(&request).await);
+
+    assert_eq!(refusal.code, ErrorCode::Refused);
+    let unblock = refusal.unblock.unwrap();
+    assert_eq!(unblock.by, UnblockedBy::Owner);
+    assert!(
+        unblock.action.contains("approve it again in"),
+        "{unblock:?}"
+    );
+    assert_eq!(asking.status(request.id).await.state, RunStateView::Asking);
+    run(asking.approve(&request).await);
+    assert_eq!(asking.ended(request.id).await.state, RunStateView::Finished);
 }

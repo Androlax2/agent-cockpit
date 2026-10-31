@@ -6,7 +6,9 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
-use cockpit_protocol::{Command, GuideStateView, GuideView, Reply, RunRequestView, ShownText};
+use cockpit_protocol::{
+    Command, GuideStateView, GuideView, HiddenView, Reply, RunRequestView, RunStateView, ShownText,
+};
 
 /// The command a verb sends, or the usage problem that stops it.
 pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, String> {
@@ -120,8 +122,21 @@ fn run_line(run: &RunRequestView) -> String {
     } else {
         crate::ask::state_name(run.state)
     };
-    let first_line = run.shown_command.text.lines().next().unwrap_or("");
-    format!("run\t{}\t{state}\t{}\t{first_line}", run.id, run.session)
+    let line = format!("run\t{}\t{state}\t{}\t", run.id, run.session);
+    let shown = run.shown_command.text.trim_end_matches('\n');
+    // One line per run: a longer command shows its first line and counts the rest.
+    let (preview, more) = match (shown.split_once('\n'), &run.folded_command) {
+        (Some((first_line, rest)), _) => (first_line, format!("{} lines", rest.lines().count())),
+        (None, Some(folded)) => (
+            folded.preview.as_str(),
+            format!("{} characters", folded.more_chars),
+        ),
+        (None, None) => return format!("{line}{shown}"),
+    };
+    format!(
+        "{line}{preview} [more: {more}; cockpit approval show {}]",
+        run.id
+    )
 }
 
 fn guide_line(guide: &GuideView) -> String {
@@ -139,7 +154,20 @@ fn guide_line(guide: &GuideView) -> String {
 fn warnings(shown: &ShownText) -> String {
     let mut notes = Vec::new();
     if shown.has_hidden_characters {
-        notes.push("hidden characters shown escaped".to_owned());
+        let kinds: Vec<&str> = shown
+            .warnings
+            .iter()
+            .map(|kind| hidden_name(*kind))
+            .collect();
+        // An older daemon sends no kinds.
+        if kinds.is_empty() {
+            notes.push("hidden characters shown escaped".to_owned());
+        } else {
+            notes.push(format!(
+                "hidden characters shown escaped ({})",
+                kinds.join(", ")
+            ));
+        }
     }
     if !shown.non_ascii.is_empty() {
         notes.push(format!("non-ASCII: {}", shown.non_ascii.join(", ")));
@@ -149,6 +177,40 @@ fn warnings(shown: &ShownText) -> String {
     } else {
         format!("  ! {}\n", notes.join("; "))
     }
+}
+
+fn hidden_name(kind: HiddenView) -> &'static str {
+    match kind {
+        HiddenView::BidiControl => "direction controls",
+        HiddenView::Invisible => "invisible characters",
+        HiddenView::Control => "control codes",
+        HiddenView::BlankLines => "blank-line padding",
+        HiddenView::Unknown => "characters of a kind this client does not know",
+    }
+}
+
+/// What the owner should weigh before approving, beyond the text: build files the session
+/// changed that the command runs, and a `timeout` that would take the terminal from it.
+fn run_hints(run: &RunRequestView) -> String {
+    let mut text = String::new();
+    if let Some(files) = &run.changed_build_files {
+        if !files.is_empty() {
+            let _ = writeln!(
+                text,
+                "  ! runs files changed in this checkout, not on the default branch: {}",
+                files.join(", ")
+            );
+        }
+    } else if run.state == RunStateView::Asking {
+        text.push_str("  ! could not read which changed build files it runs\n");
+    }
+    if run.timeout_without_foreground {
+        text.push_str(
+            "  ! timeout without --foreground: a prompt in the command (sudo, read) stops it \
+             instead of reading the terminal; ask for timeout --foreground\n",
+        );
+    }
+    text
 }
 
 fn run_detail(run: &RunRequestView) -> String {
@@ -164,6 +226,7 @@ fn run_detail(run: &RunRequestView) -> String {
     }
     let _ = writeln!(text, "command:\n{}", run.shown_command.text);
     text.push_str(&warnings(&run.shown_command));
+    text.push_str(&run_hints(run));
     text.push_str(&directory(
         &run.shown_cwd,
         run.project.as_deref(),
@@ -193,7 +256,7 @@ fn run_detail(run: &RunRequestView) -> String {
     if let Some(note) = &run.note {
         let _ = writeln!(text, "note: {note}");
     }
-    if run.state == cockpit_protocol::RunStateView::Asking {
+    if run.state == RunStateView::Asking {
         let _ = writeln!(
             text,
             "approve: cockpit approval approve {} --revision {} --digest {}",

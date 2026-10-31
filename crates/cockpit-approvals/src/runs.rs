@@ -22,13 +22,18 @@ use crate::{Error, Refusal};
 /// An asking request expires this long after the agent last asked about it: an approval
 /// nobody waits for is not run behind the agent's back (the current `ask-to-run` rule).
 pub const EXPIRES_AFTER_SECONDS: i64 = 15 * 60;
+/// An approval is refused this long after the request was asked or last edited (#156,
+/// #166): a keystroke meant for something else, landing as the request appears, approves
+/// nothing. Clients add their own grace on top; this one holds for every client. Times are
+/// whole seconds, so the grace actually lasts between one and two seconds.
+pub const APPROVAL_GRACE_SECONDS: i64 = 2;
 const COMMAND_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const REASON_MAX_CHARS: usize = 1000;
 
 /// The columns `run_from` reads, in its order.
 const SELECT_RUNS: &str = "SELECT id, session, revision, command, asked_command, cwd, project,
         project_root, reason, state, asked_at, expires_at, exit_code, output,
-        output_omitted_lines, output_truncated_bytes, redacted, note
+        output_omitted_lines, output_truncated_bytes, redacted, note, revised_at
      FROM approvals_runs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -125,6 +130,8 @@ pub struct RunRequest {
     pub reason: String,
     pub state: RunState,
     pub asked_at: i64,
+    /// When this revision appeared: the ask, or the owner's last edit.
+    pub revised_at: i64,
     pub expires_at: i64,
     pub result: Option<RunResult>,
     pub note: Option<String>,
@@ -245,8 +252,8 @@ pub(crate) async fn insert_run(
     write
         .execute(
             "INSERT INTO approvals_runs (id, session, revision, command, asked_command, cwd,
-                project, project_root, reason, state, asked_at, expires_at)
-             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?9)",
+                project, project_root, reason, state, asked_at, revised_at, expires_at)
+             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9)",
             (
                 id,
                 session.as_str(),
@@ -349,8 +356,9 @@ pub async fn edit_run(
     validate_command("command", command)?;
     write
         .execute(
-            "UPDATE approvals_runs SET command = ?2, revision = revision + 1 WHERE id = ?1",
-            (id.0, command),
+            "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3
+             WHERE id = ?1",
+            (id.0, command, now),
         )
         .await?;
     required(write, id, now).await
@@ -373,7 +381,8 @@ pub async fn decline_run(
 
 /// The owner's approval of exactly `revision`, whose digest must be `digest`. It is consumed
 /// here: the request leaves `asking` with the run intent in the same transaction, so a second
-/// approval, or one made on an older revision, is refused.
+/// approval, or one made on an older revision, is refused; so is one made within
+/// [`APPROVAL_GRACE_SECONDS`] of the revision appearing.
 pub async fn approve_run(
     write: &WriteTransaction<'_>,
     id: RunId,
@@ -385,6 +394,13 @@ pub async fn approve_run(
     let current_digest = run.digest();
     if current_digest != digest {
         return Err(Refusal::DigestMismatch.into());
+    }
+    let grace_ends = run.revised_at + APPROVAL_GRACE_SECONDS;
+    if now < grace_ends {
+        return Err(Refusal::TooSoon {
+            wait_seconds: grace_ends - now,
+        }
+        .into());
     }
     write
         .execute(
@@ -676,6 +692,7 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
         reason: row.get(8)?,
         state,
         asked_at: row.get(10)?,
+        revised_at: row.get(18)?,
         expires_at,
         result,
         note: row.get(17)?,

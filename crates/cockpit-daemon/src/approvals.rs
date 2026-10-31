@@ -3,6 +3,7 @@
 //! where `cockpit-agent-channel` identifies the sender; the owner decides on the host-only
 //! socket. The rules live in those crates; this file maps, and starts approved runs.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,13 +11,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cockpit_agent_channel::{PeerAncestry, ProcessError, ProcessIdentity};
 use cockpit_approvals::{
-    Approved, GuideId, GuideRequest, GuideState, NoResult, Project, Refusal, RunAsk, RunId,
+    Approved, GuideId, GuideRequest, GuideState, Hidden, NoResult, Project, Refusal, RunAsk, RunId,
     RunRequest, RunResult, RunSettings, RunState, Runner, Shown,
 };
 use cockpit_authorization::SessionId;
 use cockpit_protocol::{
-    Command, ErrorCode, GuideStateView, GuideStepView, GuideView, Outcome, ProtocolError, Reply,
-    RunRequestView, RunResultView, RunStateView, ShownText, Unblock, UnblockedBy,
+    Command, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView, Outcome,
+    ProtocolError, Reply, RunRequestView, RunResultView, RunStateView, ShownText, Unblock,
+    UnblockedBy,
 };
 use cockpit_turso::{Database, WriteTransaction};
 
@@ -63,6 +65,7 @@ impl From<Refusal> for Failed {
             Refusal::Expired | Refusal::AlreadyDecided { .. } | Refusal::NotRunning => {
                 ErrorCode::Conflict
             }
+            Refusal::TooSoon { .. } => ErrorCode::Refused,
         };
         let (by, action) = refused.unblock();
         Failed(ProtocolError {
@@ -331,17 +334,26 @@ pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: 
             Command::ApprovalQueue => {
                 let read = database.read().await?;
                 let mut runs = cockpit_approvals::open_runs(&read, now()).await?;
+                let guides = cockpit_approvals::open_guides(&read, now()).await?;
+                // Git runs below; the database is not held meanwhile.
+                drop(read);
                 let waiting = runner.waiting_for_input();
                 cockpit_approvals::queue_order(&mut runs, &waiting);
-                let guides = cockpit_approvals::open_guides(&read, now()).await?;
+                let mut changes = CheckoutChanges::default();
+                let mut views = Vec::with_capacity(runs.len());
+                for run in &runs {
+                    views.push(run_view(run, &waiting, changes.build_files_run(run).await));
+                }
                 Ok(Reply::ApprovalQueue {
-                    runs: runs.iter().map(|run| run_view(run, &waiting)).collect(),
+                    runs: views,
                     guides: guides.iter().map(guide_view).collect(),
                 })
             }
             Command::ApprovalShow { request } => {
                 let read = database.read().await?;
-                Ok(run_reply(&existing_run(&read, request).await?, &runner))
+                let run = existing_run(&read, request).await?;
+                drop(read);
+                Ok(owner_run_reply(&run, &runner).await)
             }
             Command::ApprovalApprove {
                 request,
@@ -367,7 +379,7 @@ pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: 
                         .await?;
                 write.commit().await?;
                 tracing::info!(request, revision = run.revision, "the owner edited a run");
-                Ok(run_reply(&run, &runner))
+                Ok(owner_run_reply(&run, &runner).await)
             }
             Command::ApprovalInput { request, text } => {
                 runner.send_input(RunId(request), &text)?;
@@ -561,10 +573,62 @@ pub(crate) fn now() -> i64 {
     i64::try_from(elapsed.as_secs()).expect("seconds since 1970 fit in an i64")
 }
 
+/// A run request as its asking agent reads it.
 fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     Reply::RunRequest {
-        request: Box::new(run_view(run, &runner.waiting_for_input())),
+        request: Box::new(run_view(run, &runner.waiting_for_input(), None)),
     }
+}
+
+/// A run request as the owner reads it before deciding: with the changed build files it
+/// would run, read now.
+async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
+    let changed = CheckoutChanges::default().build_files_run(run).await;
+    Reply::RunRequest {
+        request: Box::new(run_view(run, &runner.waiting_for_input(), changed)),
+    }
+}
+
+/// The changed files of each checkout the owner's view reads, each read once per view: a
+/// queue of requests from one project runs Git once.
+#[derive(Default)]
+struct CheckoutChanges {
+    read: HashMap<PathBuf, Option<Vec<String>>>,
+}
+
+impl CheckoutChanges {
+    /// The build files and scripts `run` would run that work in its project's checkout
+    /// changed (`Git::changed_files`, #156). Read when the owner looks, not when the agent
+    /// asked: a file changed after the ask still shows. `None` when the request is decided,
+    /// its project is unknown, or Git could not read the checkout; the owner's view says so.
+    async fn build_files_run(&mut self, run: &RunRequest) -> Option<Vec<String>> {
+        if run.state != RunState::Asking {
+            return None;
+        }
+        let root = &run.project.as_ref()?.root;
+        let changed = match self.read.get(root) {
+            Some(changed) => changed,
+            None => {
+                let changed = changed_files(root.clone()).await;
+                self.read.entry(root.clone()).or_insert(changed)
+            }
+        };
+        Some(cockpit_approvals::build_files_run(
+            &run.command,
+            changed.as_deref()?,
+        ))
+    }
+}
+
+async fn changed_files(root: PathBuf) -> Option<Vec<String>> {
+    let read = tokio::task::spawn_blocking(move || {
+        cockpit_projects::Git::from_path().changed_files(&root)
+    })
+    .await
+    .expect("reading a checkout's changes does not panic");
+    // Debug, not warn: the owner's views poll, and each already shows the read failed.
+    read.inspect_err(|error| tracing::debug!(%error, "cannot read a checkout's changed files"))
+        .ok()
 }
 
 fn guide_reply(guide: &GuideRequest) -> Reply {
@@ -578,17 +642,33 @@ fn shown(text: &str) -> ShownText {
         text,
         has_hidden_characters,
         non_ascii,
+        warnings,
     } = cockpit_approvals::show(text);
     ShownText {
         text,
         has_hidden_characters,
         non_ascii,
+        warnings: warnings
+            .into_iter()
+            .map(|kind| match kind {
+                Hidden::BidiControl => HiddenView::BidiControl,
+                Hidden::Invisible => HiddenView::Invisible,
+                Hidden::Control => HiddenView::Control,
+                Hidden::BlankLines => HiddenView::BlankLines,
+            })
+            .collect(),
     }
 }
 
-/// `waiting_for_input`: the runs the runner sees waiting at a prompt.
-fn run_view(run: &RunRequest, waiting_for_input: &[RunId]) -> RunRequestView {
+/// `waiting_for_input`: the runs the runner sees waiting at a prompt. `changed_build_files`:
+/// see [`CheckoutChanges::build_files_run`]; agents' views leave it out.
+fn run_view(
+    run: &RunRequest,
+    waiting_for_input: &[RunId],
+    changed_build_files: Option<Vec<String>>,
+) -> RunRequestView {
     let cwd = crate::projects::text(&run.cwd);
+    let shown_command = shown(&run.command);
     RunRequestView {
         id: run.id.0,
         session: run.session.as_str().to_owned(),
@@ -605,7 +685,14 @@ fn run_view(run: &RunRequest, waiting_for_input: &[RunId]) -> RunRequestView {
         },
         command: run.command.clone(),
         asked_command: run.was_edited().then(|| run.asked_command.clone()),
-        shown_command: shown(&run.command),
+        folded_command: cockpit_approvals::fold(&shown_command.text).map(|folded| FoldedView {
+            preview: folded.preview,
+            more_lines: folded.more_lines,
+            more_chars: folded.more_chars,
+        }),
+        timeout_without_foreground: cockpit_approvals::timeout_without_foreground(&run.command),
+        changed_build_files,
+        shown_command,
         shown_cwd: shown(&cwd),
         shown_reason: shown(&run.reason),
         cwd,

@@ -27,7 +27,9 @@ const DEFAULT_WAIT: Duration = Duration::from_secs(540);
 const POLL_EVERY: Duration = Duration::from_millis(500);
 const DEADLINE: Duration = Duration::from_secs(10);
 
-/// `cockpit ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check`.
+/// `cockpit ask run [--cwd DIR] [--no-wait] --reason TEXT COMMAND | --wait ID | --check`.
+/// With `--no-wait` the agent files the request and goes on with other work: it exits 124
+/// at once, naming the `--wait ID` that collects the answer (#156).
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     let words = utf8(arguments)?;
     match words.as_slice() {
@@ -37,9 +39,8 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
             Ok(Agent::connect().map_or_else(|code| code, |agent| agent.wait_for_run(id)))
         }
         _ => {
-            let (cwd, reason, command) = parse_ask_run(&words)?;
-            Ok(Agent::connect()
-                .map_or_else(|code| code, |agent| agent.ask_run(command, cwd, reason)))
+            let asked = parse_ask_run(&words)?;
+            Ok(Agent::connect().map_or_else(|code| code, |agent| agent.ask_run(asked)))
         }
     }
 }
@@ -86,13 +87,28 @@ fn absolute(dir: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{}: not UTF-8", path.display()))
 }
 
-fn parse_ask_run(words: &[&str]) -> Result<(String, String, String), String> {
+/// What `ask run` files: the command, the directory it runs in and why; and whether the
+/// call waits for the answer.
+struct RunAsked {
+    command: String,
+    cwd: String,
+    reason: String,
+    waits: bool,
+}
+
+fn parse_ask_run(words: &[&str]) -> Result<RunAsked, String> {
     let mut cwd = None;
     let mut reason = None;
     let mut command = None;
+    let mut waits = true;
     let mut words = words.iter();
     while let Some(word) = words.next() {
         let slot = match *word {
+            "--no-wait" if waits => {
+                waits = false;
+                continue;
+            }
+            "--no-wait" => return Err("--no-wait given twice".to_owned()),
             "--cwd" => &mut cwd,
             "--reason" => &mut reason,
             _ if command.is_none() => {
@@ -111,7 +127,12 @@ fn parse_ask_run(words: &[&str]) -> Result<(String, String, String), String> {
     let reason = reason.ok_or("--reason is required: what the command does and why")?;
     let command = command.ok_or("name the command to run")?;
     let cwd = absolute(cwd.as_deref().unwrap_or("."))?;
-    Ok((cwd, reason, command))
+    Ok(RunAsked {
+        command,
+        cwd,
+        reason,
+        waits,
+    })
 }
 
 /// `ask-to-run --check`: whether an ask from here would reach the owner now.
@@ -170,17 +191,26 @@ impl Agent {
         }
     }
 
-    fn ask_run(&self, command: String, cwd: String, reason: String) -> ExitCode {
+    fn ask_run(&self, asked: RunAsked) -> ExitCode {
+        let waits = asked.waits;
         let asked = self.request(Command::AskRun {
             launch_token: crate::agent::launch_token(),
-            command,
-            cwd,
-            reason,
+            command: asked.command,
+            cwd: asked.cwd,
+            reason: asked.reason,
         });
         match asked {
-            Ok(Reply::RunRequest { request }) => {
+            Ok(Reply::RunRequest { request }) if waits => {
                 eprintln!("cockpit: asked the owner (request {}); waiting", request.id);
                 self.wait_for_run(request.id)
+            }
+            Ok(Reply::RunRequest { request }) => {
+                eprintln!(
+                    "cockpit: asked the owner (request {id}); collect the answer with: \
+                     cockpit ask run --wait {id}",
+                    id = request.id
+                );
+                ExitCode::from(PENDING)
             }
             other => self.failed(other),
         }

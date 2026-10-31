@@ -1,7 +1,8 @@
 //! The wire form of `ask run`, `ask guide` and the owner's decisions (#34): requests name no
 //! session, and an approval names the revision and digest it was made on.
 use cockpit_protocol::{
-    Command, Outcome, Reply, RunRequestView, RunResultView, RunStateView, ShownText, decode_request,
+    Command, FoldedView, HiddenView, Outcome, Reply, RunRequestView, RunResultView, RunStateView,
+    ShownText, decode_request,
 };
 use serde_json::json;
 
@@ -10,6 +11,7 @@ fn shown(text: &str) -> ShownText {
         text: text.to_owned(),
         has_hidden_characters: false,
         non_ascii: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 
@@ -147,6 +149,9 @@ fn a_finished_run_request_reply_round_trips() {
             shown_reason: shown("tests"),
             project: Some("p".to_owned()),
             outside_project: false,
+            folded_command: None,
+            timeout_without_foreground: false,
+            changed_build_files: Some(Vec::new()),
             digest: "d".repeat(64),
             asked_at: 1,
             expires_at: 901,
@@ -179,4 +184,51 @@ fn each_run_state_has_its_kebab_case_name() {
     ] {
         assert_eq!(serde_json::to_value(state).unwrap(), json!(name));
     }
+}
+
+#[test]
+fn each_hidden_kind_has_its_kebab_case_name_and_an_unknown_one_is_kept_as_a_warning() {
+    for (kind, name) in [
+        (HiddenView::BidiControl, "bidi-control"),
+        (HiddenView::Invisible, "invisible"),
+        (HiddenView::Control, "control"),
+        (HiddenView::BlankLines, "blank-lines"),
+    ] {
+        assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
+    }
+    let later: HiddenView = serde_json::from_value(json!("lookalike-script")).unwrap();
+    assert_eq!(later, HiddenView::Unknown);
+}
+
+#[test]
+fn the_owner_hints_round_trip_on_a_run_request() {
+    let wire = json!({
+        "id": 1, "session": "s1", "revision": 1, "state": "asking",
+        "command": "timeout 5 make", "asked_command": null, "cwd": "/p", "reason": "r",
+        "shown_command": {"text": "timeout 5 make", "has_hidden_characters": false,
+            "non_ascii": [], "warnings": ["control"]},
+        "shown_cwd": {"text": "/p", "has_hidden_characters": false, "non_ascii": []},
+        "shown_reason": {"text": "r", "has_hidden_characters": false, "non_ascii": []},
+        "project": "p", "outside_project": false,
+        "folded_command": {"preview": "timeout", "more_lines": 0, "more_chars": 7},
+        "timeout_without_foreground": true,
+        "changed_build_files": ["Makefile"],
+        "digest": "d", "asked_at": 1, "expires_at": 2, "waiting_for_input": false,
+        "result": null, "note": null
+    });
+
+    let view: RunRequestView = serde_json::from_value(wire).unwrap();
+
+    assert_eq!(view.shown_command.warnings, [HiddenView::Control]);
+    assert!(view.shown_cwd.warnings.is_empty());
+    assert!(view.timeout_without_foreground);
+    assert_eq!(view.changed_build_files, Some(vec!["Makefile".to_owned()]));
+    assert_eq!(
+        view.folded_command,
+        Some(FoldedView {
+            preview: "timeout".to_owned(),
+            more_lines: 0,
+            more_chars: 7
+        })
+    );
 }
