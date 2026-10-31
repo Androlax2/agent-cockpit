@@ -81,14 +81,18 @@ impl Handler for FixtureHandler {
 }
 
 struct Home {
-    dir: tempfile::TempDir,
+    _dir: tempfile::TempDir,
+    /// `_dir`, canonical: the agent and tmux paths the daemon records are canonical.
+    root: PathBuf,
     held: Arc<Held>,
 }
 
 impl Home {
     fn new() -> Home {
+        let dir = tempfile::tempdir().unwrap();
         Home {
-            dir: tempfile::tempdir().unwrap(),
+            root: dir.path().canonicalize().unwrap(),
+            _dir: dir,
             held: Arc::new(Held {
                 started: AtomicUsize::new(0),
                 gate: Semaphore::new(0),
@@ -97,7 +101,7 @@ impl Home {
     }
 
     fn path(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap()
+        self.root.clone()
     }
 
     async fn start(&self, limits: Limits) -> Daemon {
@@ -162,8 +166,8 @@ impl Home {
             tokio::spawn(async move { client.request(command, GENEROUS).await });
         }
         self.held.wait_until_started(2).await;
-        assert_eq!(busy_lane(request(client, subscribe()).await), "bulk");
-        assert_eq!(busy_lane(request(client, Command::Ping).await), "control");
+        assert_busy_in(request(client, subscribe()).await, "bulk");
+        assert_busy_in(request(client, Command::Ping).await, "control");
     }
 }
 
@@ -193,7 +197,7 @@ fn git(dir: &Path, arguments: &[&str]) {
     );
 }
 
-fn full_bulk_and_control() -> Limits {
+fn one_place_in_bulk_and_control() -> Limits {
     Limits {
         control: ONE_PLACE,
         bulk: ONE_PLACE,
@@ -219,25 +223,24 @@ fn subscribe() -> Command {
     }
 }
 
-/// The lane a `busy` answer names.
-fn busy_lane(answer: Result<Reply, ClientError>) -> &'static str {
+/// Asserts `answer` is the `busy` refusal of `lane`.
+fn assert_busy_in(answer: Result<Reply, ClientError>, lane: &str) {
     let error = common::refused(answer);
     assert_eq!(error.code, ErrorCode::Busy, "{error:?}");
-    ["bulk", "control", "stop"]
-        .into_iter()
-        .find(|lane| {
-            error
-                .message
-                .starts_with(&format!("the {lane} lane is full"))
-        })
-        .unwrap_or_else(|| panic!("no lane named in {:?}", error.message))
+    assert!(
+        error
+            .message
+            .starts_with(&format!("the {lane} lane is full")),
+        "{:?}",
+        error.message
+    );
 }
 
 /// Starts a session, fills the bulk and control lanes, then sends the stop `stop_of` makes
 /// for that session; returns the session as the stop left it.
 async fn stop_a_session_while_full(stop_of: fn(String) -> Command) -> SessionView {
     let home = Home::new();
-    let daemon = home.start(full_bulk_and_control()).await;
+    let daemon = home.start(one_place_in_bulk_and_control()).await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = match request(
@@ -279,7 +282,7 @@ async fn putting_a_session_to_sleep_is_served_while_the_bulk_and_control_lanes_a
 #[tokio::test(flavor = "multi_thread")]
 async fn stopping_an_execution_is_served_while_the_bulk_and_control_lanes_are_full() {
     let home = Home::new();
-    let daemon = home.start(full_bulk_and_control()).await;
+    let daemon = home.start(one_place_in_bulk_and_control()).await;
     let client = connect(&daemon).await;
     home.fill_bulk_and_control(&client).await;
 
@@ -311,5 +314,5 @@ async fn a_full_stop_lane_answers_busy_naming_the_stop_lane() {
     )
     .await;
 
-    assert_eq!(busy_lane(answer), "stop");
+    assert_busy_in(answer, "stop");
 }
