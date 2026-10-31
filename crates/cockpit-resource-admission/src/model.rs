@@ -28,7 +28,7 @@ pub enum Workload {
 }
 
 impl Workload {
-    pub const ALL: [Workload; 6] = [
+    const ALL: [Workload; 6] = [
         Workload::AgentTurn,
         Workload::Delivery,
         Workload::Approval,
@@ -265,8 +265,8 @@ pub struct Policy {
 }
 
 impl Policy {
-    pub const DEFAULT_FOREGROUND_HEAVY_PERCENT: u64 = 25;
-    pub const DEFAULT_UNSTARTED_EXPIRY: Duration = Duration::from_secs(10 * 60);
+    const DEFAULT_FOREGROUND_HEAVY_PERCENT: u64 = 25;
+    const DEFAULT_UNSTARTED_EXPIRY: Duration = Duration::from_secs(10 * 60);
 
     pub fn for_budget(budget: Demand) -> Policy {
         Policy {
@@ -396,7 +396,8 @@ pub enum Admission {
     Held(Hold),
 }
 
-/// Capacity charged now: every reservation not released, and the heavy ones among them.
+/// Capacity charged now: every running reservation and every unstarted one not past its
+/// expiry, and the heavy ones among them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InUse {
     pub all: Demand,
@@ -497,6 +498,16 @@ pub enum ReservationState {
     Released {
         reason: ReleaseReason,
     },
+}
+
+impl ReservationState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReservationState::Reserved { .. } => "reserved",
+            ReservationState::Running { .. } => "running",
+            ReservationState::Released { .. } => "released",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

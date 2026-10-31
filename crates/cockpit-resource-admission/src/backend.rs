@@ -181,10 +181,7 @@ impl Backend {
 
     /// What new executions get: the controls that hold work when required.
     pub fn support(&self) -> Vec<ControlSupport> {
-        self.support_for(self.launch_containment == LaunchContainment::SystemdScope)
-    }
-
-    fn support_for(&self, in_scope: bool) -> Vec<ControlSupport> {
+        let in_scope = self.launch_containment == LaunchContainment::SystemdScope;
         Control::ALL
             .into_iter()
             .map(|control| ControlSupport {
@@ -242,17 +239,11 @@ impl Backend {
         controller: &str,
         property: &str,
     ) -> Availability {
-        if !in_scope {
-            let why = match &self.cgroups {
-                Cgroups::Unavailable { why } => why.clone(),
-                Cgroups::Delegated { .. } => {
-                    "this execution is a process group, which no cgroup holds".to_owned()
-                }
-            };
-            return Availability::Unsupported { why };
-        }
         match &self.cgroups {
             Cgroups::Unavailable { why } => Availability::Unsupported { why: why.clone() },
+            Cgroups::Delegated { .. } if !in_scope => Availability::Unsupported {
+                why: "this execution is a process group, which no cgroup holds".to_owned(),
+            },
             Cgroups::Delegated {
                 manager,
                 controllers,
@@ -327,47 +318,22 @@ impl Backend {
         let Containment::SystemdScope { unit } = &execution.containment else {
             return Ok(());
         };
+        // An unrequested limit is reset to systemd's default, so a profile change also
+        // removes the ceilings it added.
         let properties: Vec<String> = [
-            (
-                Control::CpuWeight,
-                format!(
-                    "CPUWeight={}",
-                    limits
-                        .cpu_weight
-                        .map_or("100".to_owned(), |w| w.to_string())
-                ),
-            ),
-            (
-                Control::CpuQuota,
-                format!(
-                    "CPUQuota={}",
-                    limits
-                        .cpu_quota_percent
-                        .map_or(String::new(), |quota| format!("{quota}%"))
-                ),
-            ),
-            (
-                Control::MemoryMax,
-                format!(
-                    "MemoryMax={}",
-                    limits
-                        .memory_max_mib
-                        .map_or("infinity".to_owned(), |mib| format!("{mib}M"))
-                ),
-            ),
-            (
-                Control::TasksMax,
-                format!(
-                    "TasksMax={}",
-                    limits
-                        .tasks_max
-                        .map_or("infinity".to_owned(), |tasks| tasks.to_string())
-                ),
-            ),
+            (Control::CpuWeight, "CPUWeight", "100"),
+            (Control::CpuQuota, "CPUQuota", ""),
+            (Control::MemoryMax, "MemoryMax", "infinity"),
+            (Control::TasksMax, "TasksMax", "infinity"),
         ]
         .into_iter()
-        .filter(|(control, _)| self.supports(*control, true))
-        .map(|(_, property)| property)
+        .filter(|(control, _, _)| self.supports(*control, true))
+        .map(|(control, property, default)| {
+            let value = limits
+                .requested(control)
+                .unwrap_or_else(|| default.to_owned());
+            format!("{property}={value}")
+        })
         .collect();
         if properties.is_empty() {
             return Ok(());
@@ -375,6 +341,27 @@ impl Backend {
         let mut arguments = vec!["--user", "set-property", "--runtime", unit.as_str()];
         arguments.extend(properties.iter().map(String::as_str));
         self.systemctl(&arguments).await.map(drop)
+    }
+
+    /// The report for work this backend cannot look at (not started, or its execution
+    /// unreadable): what is requested and supported for new executions, every effective
+    /// value unknown with `why`.
+    pub fn unknown_report(&self, limits: &Limits, why: &str) -> ExecutionReport {
+        ExecutionReport {
+            limits: self
+                .support()
+                .into_iter()
+                .map(|support| LimitReport {
+                    control: support.control,
+                    requested: limits.requested(support.control),
+                    availability: support.availability,
+                    effective: Effective::Unknown {
+                        why: why.to_owned(),
+                    },
+                })
+                .collect(),
+            observed: Observed::default(),
+        }
     }
 
     /// Requested, supported and effective for every control of `execution`, and what it

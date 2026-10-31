@@ -4,7 +4,7 @@
 //! the admission crate; this file maps.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use cockpit_processes::{Escalation, Supervisor, Termination};
 use cockpit_protocol::{
@@ -12,12 +12,12 @@ use cockpit_protocol::{
     Outcome, ProfileView, ProtocolError, Reply, ReservationView, ResourceStatusView, VerdictView,
 };
 use cockpit_resource_admission::{
-    AdmissionRequest, Availability, Backend, Control, Demand, Effective, Error, ExecutionReport,
-    LimitReport, Limits, Observed, Policy, Profile, Reservation, ReservationId, ReservationState,
-    Verdict, Workload,
+    AdmissionRequest, Availability, Backend, Control, Demand, Effective, Error, Limits, Policy,
+    Profile, Reservation, ReservationId, ReservationState, Verdict, Workload,
 };
 use cockpit_turso::Database;
 
+use crate::approvals::now;
 use crate::routes::{Route, WorkClass, refusal};
 
 /// How long a stopped execution may take to end after `SIGTERM`, then after `SIGKILL`.
@@ -143,7 +143,7 @@ pub(crate) fn route(command: Command, resources: Resources) -> Route {
             let ReservationState::Running { execution } = found.state else {
                 return Err(Error::WrongState {
                     reservation: id,
-                    state: "not running",
+                    state: found.state.as_str(),
                     needed: "running",
                 });
             };
@@ -154,7 +154,9 @@ pub(crate) fn route(command: Command, resources: Resources) -> Route {
                 .map_err(Error::Processes)?;
             let observed_ended = matches!(termination, Termination::Confirmed { .. });
             if observed_ended {
-                sweep(&resources.database, &resources.supervisor).await?;
+                let write = resources.database.write().await?;
+                cockpit_resource_admission::release_ended(&write, id, now()).await?;
+                write.commit().await?;
             }
             Ok(Reply::ResourceStopped {
                 reservation,
@@ -271,61 +273,43 @@ async fn reservation_view(
         reservation.limits,
         profile,
     );
-    let (state, execution, limit_views, observed) = match reservation.state {
+    let report = match reservation.state {
         ReservationState::Running { execution } => {
-            let report = match cockpit_processes::execution(&resources.database, execution).await {
+            match cockpit_processes::execution(&resources.database, execution).await {
                 Ok(found) => resources.backend.inspect(&found, &limits).await,
                 // One unreadable execution must not hide the rest of the status.
-                Err(error) => unreadable_execution_report(resources, &limits, &error),
-            };
-            let limit_views = report
-                .limits
-                .into_iter()
-                .map(|line| {
-                    let (supported, _) = availability_parts(line.availability);
-                    LimitView {
-                        control: line.control.as_str().to_owned(),
-                        requested: line.requested,
-                        supported,
-                        effective: match line.effective {
-                            Effective::Value(value) => EffectiveView::Value { value },
-                            Effective::Unknown { why } => EffectiveView::Unknown { why },
-                        },
-                    }
-                })
-                .collect();
-            let observed = ObservedView {
-                memory_bytes: report.observed.memory_bytes,
-                tasks: report.observed.tasks,
-            };
-            ("running", Some(execution.0), limit_views, observed)
+                Err(error) => resources.backend.unknown_report(
+                    &limits,
+                    &format!("its execution could not be read: {error}"),
+                ),
+            }
         }
-        ReservationState::Reserved { .. } | ReservationState::Released { .. } => {
-            let limit_views = resources
-                .backend
-                .support()
-                .into_iter()
-                .map(|support| LimitView {
-                    control: support.control.as_str().to_owned(),
-                    requested: limits.requested(support.control),
-                    supported: availability_parts(support.availability).0,
-                    effective: EffectiveView::Unknown {
-                        why: "the work has not started".to_owned(),
-                    },
-                })
-                .collect();
-            let state = match reservation.state {
-                ReservationState::Reserved { .. } => "reserved",
-                _ => "released",
-            };
-            (state, None, limit_views, ObservedView::default())
-        }
+        ReservationState::Reserved { .. } | ReservationState::Released { .. } => resources
+            .backend
+            .unknown_report(&limits, "the work has not started"),
     };
+    let execution = match reservation.state {
+        ReservationState::Running { execution } => Some(execution.0),
+        _ => None,
+    };
+    let limit_views = report
+        .limits
+        .into_iter()
+        .map(|line| LimitView {
+            control: line.control.as_str().to_owned(),
+            requested: line.requested,
+            supported: availability_parts(line.availability).0,
+            effective: match line.effective {
+                Effective::Value(value) => EffectiveView::Value { value },
+                Effective::Unknown { why } => EffectiveView::Unknown { why },
+            },
+        })
+        .collect();
     Ok(ReservationView {
         id: reservation.id.0,
         label: reservation.label.clone(),
         workload: reservation.workload.as_str().to_owned(),
-        state: state.to_owned(),
+        state: reservation.state.as_str().to_owned(),
         execution,
         reserved: demand_view(reservation.demand),
         required: reservation
@@ -335,31 +319,11 @@ async fn reservation_view(
             .collect(),
         checkpoint_requested: reservation.checkpoint_requested,
         limits: limit_views,
-        observed,
+        observed: ObservedView {
+            memory_bytes: report.observed.memory_bytes,
+            tasks: report.observed.tasks,
+        },
     })
-}
-
-fn unreadable_execution_report(
-    resources: &Resources,
-    limits: &Limits,
-    error: &cockpit_processes::Error,
-) -> ExecutionReport {
-    ExecutionReport {
-        limits: resources
-            .backend
-            .support()
-            .into_iter()
-            .map(|support| LimitReport {
-                control: support.control,
-                requested: limits.requested(support.control),
-                availability: support.availability,
-                effective: Effective::Unknown {
-                    why: format!("its execution could not be read: {error}"),
-                },
-            })
-            .collect(),
-        observed: Observed::default(),
-    }
 }
 
 fn availability_parts(availability: Availability) -> (bool, String) {
@@ -444,12 +408,4 @@ pub(crate) async fn sweep_forever(
             tracing::error!(%error, "the reservations' sweep failed");
         }
     }
-}
-
-/// Seconds since the Unix epoch.
-fn now() -> i64 {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("the clock is after 1970");
-    i64::try_from(elapsed.as_secs()).expect("seconds since 1970 fit in i64")
 }

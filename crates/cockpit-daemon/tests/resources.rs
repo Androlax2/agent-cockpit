@@ -4,7 +4,6 @@
 mod common;
 
 use std::ffi::OsString;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 
 use cockpit_client::{ClientError, Connection};
@@ -17,25 +16,10 @@ use cockpit_resource_admission::{
     Admission, AdmissionRequest, Backend, Demand, HostTools, Limits, Policy, ReservationId,
     Workload,
 };
-use cockpit_turso::Database;
 use common::{GENEROUS, TestHome};
 
 fn state_dir(home: &TestHome) -> PathBuf {
     home.state_home().join("cockpit")
-}
-
-async fn open_database(home: &TestHome) -> Database {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(state_dir(home))
-        .unwrap();
-    Database::open(
-        &state_dir(home).join("state.db"),
-        &cockpit_daemon::MIGRATION_SETS,
-    )
-    .await
-    .unwrap()
 }
 
 /// The supervisor a daemon on this home uses, with process-group containment.
@@ -64,7 +48,7 @@ async fn backend() -> Backend {
 /// A build admitted with `limits`, running as a sleeper started through the shims, as a
 /// scheduler would leave it before the daemon starts.
 async fn running_build(home: &TestHome, limits: Limits) -> (ReservationId, Execution) {
-    let database = open_database(home).await;
+    let database = home.open_state().await;
     let backend = backend().await;
     let write = database.write().await.unwrap();
     let admission = cockpit_resource_admission::admit(
@@ -355,7 +339,7 @@ async fn stop_execution_ends_the_whole_execution_and_releases_its_reservation() 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_of_work_that_never_started_is_refused_as_a_conflict() {
     let home = TestHome::new();
-    let database = open_database(&home).await;
+    let database = home.open_state().await;
     let write = database.write().await.unwrap();
     let Admission::Admitted(reservation) = cockpit_resource_admission::admit(
         &write,
@@ -400,7 +384,7 @@ async fn a_reservation_whose_execution_ended_while_the_daemon_was_down_is_releas
     let home = TestHome::new();
     let (_reservation, execution) = running_build(&home, Limits::default()).await;
     supervisor(&home)
-        .terminate(&open_database(&home).await, execution.id, quick())
+        .terminate(&home.open_state().await, execution.id, quick())
         .await
         .unwrap();
     let _daemon = home.start();

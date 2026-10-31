@@ -219,7 +219,7 @@ async fn require_state(
     needed: &'static str,
 ) -> Result<(), Error> {
     let found = reservation(connection, id).await?;
-    let state = state_name(&found.state);
+    let state = found.state.as_str();
     if state != needed {
         return Err(Error::WrongState {
             reservation: id,
@@ -230,21 +230,13 @@ async fn require_state(
     Ok(())
 }
 
-fn state_name(state: &ReservationState) -> &'static str {
-    match state {
-        ReservationState::Reserved { .. } => "reserved",
-        ReservationState::Running { .. } => "running",
-        ReservationState::Released { .. } => "released",
-    }
-}
-
 /// Releases what is over: unstarted reservations past their expiry, and running ones whose
 /// execution `supervisor` observes ended, looking at the real processes. A running
 /// reservation whose execution is not observed ended stays charged, whatever happened to the
 /// task that started it; one whose execution cannot be observed is reported in
 /// [`Swept::unobserved`] and does not stop the others from being swept.
 pub async fn sweep(database: &Database, supervisor: &Supervisor, now: i64) -> Result<Swept, Error> {
-    let running: Vec<(ReservationId, ExecutionId)> = {
+    let (running, any_expired) = {
         let read = database.read().await?;
         let mut rows = read
             .query(
@@ -257,7 +249,16 @@ pub async fn sweep(database: &Database, supervisor: &Supervisor, now: i64) -> Re
         while let Some(row) = rows.next().await? {
             running.push((ReservationId(row.get(0)?), ExecutionId(row.get(1)?)));
         }
-        running
+        drop(rows);
+        let any_expired: i64 = read
+            .prepare(&format!(
+                "SELECT EXISTS (SELECT 1 FROM resource_reservations WHERE {EXPIRED})"
+            ))
+            .await?
+            .query_row([now])
+            .await?
+            .get(0)?;
+        (running, any_expired != 0)
     };
     let (mut ended, mut unobserved) = (Vec::new(), Vec::new());
     for (reservation, execution) in running {
@@ -267,12 +268,18 @@ pub async fn sweep(database: &Database, supervisor: &Supervisor, now: i64) -> Re
             Err(error) => unobserved.push((reservation, error.to_string())),
         }
     }
+    // Most sweeps release nothing: they then never take the writer.
+    if ended.is_empty() && !any_expired {
+        return Ok(Swept {
+            unobserved,
+            ..Swept::default()
+        });
+    }
     let write = database.write().await?;
     let mut expired = Vec::new();
     let mut rows = write
         .query(
-            "SELECT id FROM resource_reservations WHERE state = 'reserved' AND expires_at <= ?1
-             ORDER BY id",
+            &format!("SELECT id FROM resource_reservations WHERE {EXPIRED} ORDER BY id"),
             [now],
         )
         .await?;
@@ -285,14 +292,7 @@ pub async fn sweep(database: &Database, supervisor: &Supervisor, now: i64) -> Re
         (&ended, "running", ReleaseReason::Ended),
     ] {
         for id in ids {
-            write
-                .execute(
-                    "UPDATE resource_reservations
-                     SET state = 'released', released_reason = ?1, released_at = ?2
-                     WHERE id = ?3 AND state = ?4",
-                    (reason.as_str(), now, id.0, from),
-                )
-                .await?;
+            release(&write, *id, from, reason, now).await?;
         }
     }
     write.commit().await?;
@@ -301,6 +301,38 @@ pub async fn sweep(database: &Database, supervisor: &Supervisor, now: i64) -> Re
         ended,
         unobserved,
     })
+}
+
+/// Releases the running reservation `id` whose execution was just observed ended, without
+/// waiting for the next sweep.
+pub async fn release_ended(
+    write: &WriteTransaction<'_>,
+    id: ReservationId,
+    now: i64,
+) -> Result<(), Error> {
+    release(write, id, "running", ReleaseReason::Ended, now).await
+}
+
+/// Unstarted reservations past their expiry at `?1`: released by the sweep, and no longer
+/// charged by [`in_use`] even before it runs.
+const EXPIRED: &str = "state = 'reserved' AND expires_at <= ?1";
+
+async fn release(
+    write: &WriteTransaction<'_>,
+    id: ReservationId,
+    from: &str,
+    reason: ReleaseReason,
+    now: i64,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "UPDATE resource_reservations
+             SET state = 'released', released_reason = ?1, released_at = ?2
+             WHERE id = ?3 AND state = ?4",
+            (reason.as_str(), now, id.0, from),
+        )
+        .await?;
+    Ok(())
 }
 
 pub async fn settings(connection: &Connection) -> Result<Settings, Error> {
@@ -355,10 +387,11 @@ pub async fn set_queue_paused(
 pub async fn in_use(connection: &Connection, now: i64) -> Result<InUse, Error> {
     let mut rows = connection
         .query(
-            "SELECT workload, coalesce(sum(cpu_millis), 0), coalesce(sum(memory_mib), 0)
-             FROM resource_reservations
-             WHERE state = 'running' OR (state = 'reserved' AND expires_at > ?1)
-             GROUP BY workload",
+            &format!(
+                "SELECT workload, coalesce(sum(cpu_millis), 0), coalesce(sum(memory_mib), 0)
+             FROM resource_reservations WHERE state <> 'released' AND NOT ({EXPIRED})
+             GROUP BY workload"
+            ),
             [now],
         )
         .await?;
@@ -390,8 +423,10 @@ fn reservation_from_row(row: &Row) -> Result<Reservation, Error> {
     let workload_name: String = row.get(2)?;
     let workload = Workload::parse(&workload_name)
         .ok_or_else(|| invalid(format!("workload {workload_name:?}")))?;
+    let number =
+        |value: i64| u64::try_from(value).map_err(|_| invalid(format!("negative value {value}")));
     let optional = |index: usize| -> Result<Option<u64>, Error> {
-        row.get::<Option<i64>>(index)?.map(loaded).transpose()
+        row.get::<Option<i64>>(index)?.map(number).transpose()
     };
     let required_text: String = row.get(11)?;
     let required = required_text
@@ -423,8 +458,8 @@ fn reservation_from_row(row: &Row) -> Result<Reservation, Error> {
         label: row.get(1)?,
         workload,
         demand: Demand {
-            cpu_millis: loaded(row.get(3)?)?,
-            memory_mib: loaded(row.get(4)?)?,
+            cpu_millis: number(row.get(3)?)?,
+            memory_mib: number(row.get(4)?)?,
         },
         limits: Limits {
             cpu_weight: optional(5)?,
