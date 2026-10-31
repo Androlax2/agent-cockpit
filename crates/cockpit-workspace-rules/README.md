@@ -8,9 +8,9 @@ when a member under `crates/`:
 - does not inherit the workspace's edition, `rust-version`, `publish` setting or lint
   policy from the root [Cargo.toml](../../Cargo.toml);
 - does not state its ownership as a one-sentence `description` that its README repeats;
-- depends, directly or through other crates, on a crate that
-  [report 02](../../docs/design/greenfield/02-crate-architecture.md) forbids. The failure
-  names the rule, for example `clients -> persistence`.
+- depends, directly or through other crates, on a crate one of the forbidden edges of
+  [report 02](../../docs/design/greenfield/02-crate-architecture.md) and issue #19 rules
+  out. The failure names the rule, for example `clients -> persistence`.
 
-The forbidden edges are a table in `tests/crate_graph.rs`, keyed by crate name: renaming a
-crate means renaming it there.
+The forbidden edges are a table in `tests/crate_graph.rs`, keyed by crate name. A test fails
+when the table names a crate report 02 no longer lists, so a rename updates both.

@@ -4,6 +4,7 @@
 //! dependencies resolve exactly as Cargo builds them. An edge is forbidden whether it is
 //! direct or goes through other crates; dev-dependencies count for the crate that declares
 //! them only, because Cargo never builds an intermediate crate's dev-dependencies.
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,8 +30,8 @@ const PROVIDERS: &[&str] = &[
 ];
 const USER_INTERFACES: &[&str] = &["cockpit-cli", "cockpit-tui", "cockpit-web"];
 
-/// Report 02 names crates by their current proposal: renaming one means renaming it here,
-/// or its rule silently stops matching.
+/// Crates named by report 02's current table; `every_rule_names_a_crate_from_report_02`
+/// fails when a rename there leaves this table behind.
 const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
     ForbiddenEdge {
         rule: "clients -> persistence",
@@ -70,7 +71,7 @@ fn cargo_tree_packages(manifest_path: &Path, selection: &[&str]) -> Vec<String> 
         .arg("tree")
         .arg("--manifest-path")
         .arg(manifest_path)
-        .args(["--locked", "--offline", "--target", "all"])
+        .args(["--locked", "--target", "all"])
         .args(["--edges", "normal,build,dev", "--prefix", "none"])
         .args(["--format", "{p}"])
         .args(selection)
@@ -101,6 +102,7 @@ fn packages_reachable_from(manifest_path: &Path, member: &str) -> Vec<String> {
 /// One line per forbidden edge in the workspace, naming its rule.
 fn forbidden_edges_in(manifest_path: &Path) -> Vec<String> {
     let members = workspace_members(manifest_path);
+    let mut reachable_by_source: HashMap<&str, Vec<String>> = HashMap::new();
     let mut violations = Vec::new();
     for edge in FORBIDDEN_EDGES {
         for source in edge
@@ -108,7 +110,9 @@ fn forbidden_edges_in(manifest_path: &Path) -> Vec<String> {
             .iter()
             .filter(|crate_name| members.iter().any(|member| member == *crate_name))
         {
-            let reachable = packages_reachable_from(manifest_path, source);
+            let reachable = reachable_by_source
+                .entry(source)
+                .or_insert_with(|| packages_reachable_from(manifest_path, source));
             for target in edge
                 .to
                 .iter()
@@ -116,7 +120,8 @@ fn forbidden_edges_in(manifest_path: &Path) -> Vec<String> {
             {
                 violations.push(format!(
                     "rule `{}`: {source} depends on {target} \
-                     (`cargo tree -p {source} -i {target}` shows the path)",
+                     (`cargo tree --target all -e normal,build,dev -p {source} -i {target}` \
+                     shows the path)",
                     edge.rule
                 ));
             }
@@ -129,6 +134,23 @@ fn forbidden_edges_in(manifest_path: &Path) -> Vec<String> {
 fn the_workspace_has_no_forbidden_dependency_edge() {
     let root_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
     assert_eq!(forbidden_edges_in(&root_manifest), Vec::<String>::new());
+}
+
+/// A rule naming a crate that no longer exists would pass forever without checking anything.
+#[test]
+fn every_rule_names_a_crate_from_report_02() {
+    let report = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/design/greenfield/02-crate-architecture.md"),
+    )
+    .expect("report 02 is readable");
+    let unknown: Vec<&str> = FORBIDDEN_EDGES
+        .iter()
+        .flat_map(|edge| edge.from.iter().chain(edge.to))
+        .copied()
+        .filter(|crate_name| !report.contains(&format!("`{crate_name}`")))
+        .collect();
+    assert_eq!(unknown, Vec::<&str>::new());
 }
 
 /// A throwaway workspace of empty library crates; `crates` pairs each name with the lines of
@@ -197,7 +219,7 @@ fn a_client_depending_on_persistence_fails_naming_the_rule() {
         forbidden_edges_in(&manifest_path),
         [
             "rule `clients -> persistence`: cockpit-cli depends on cockpit-turso \
-          (`cargo tree -p cockpit-cli -i cockpit-turso` shows the path)"
+          (`cargo tree --target all -e normal,build,dev -p cockpit-cli -i cockpit-turso` shows the path)"
         ]
     );
 }
@@ -319,7 +341,7 @@ fn an_intermediate_crates_dev_dependency_is_not_an_edge() {
         forbidden_edges_in(&manifest_path),
         [
             "rule `clients -> persistence`: cockpit-client depends on cockpit-turso \
-          (`cargo tree -p cockpit-client -i cockpit-turso` shows the path)"
+          (`cargo tree --target all -e normal,build,dev -p cockpit-client -i cockpit-turso` shows the path)"
         ]
     );
 }

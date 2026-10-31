@@ -9,10 +9,11 @@ terminals and host tools.
 The greenfield workspace is the root [Cargo.toml](../Cargo.toml), with members under
 [crates/](../crates/) and its own `target/`. It grows beside `apps/` until the M5 cutover
 ([refactoring plan](design/greenfield/20-refactoring-plan.md)); `apps/` is excluded from it.
-Members inherit the root's edition, `rust-version` and lint policy, and state their
-one-sentence ownership as both the `Cargo.toml` description and a line of their README.
+Members inherit the root's edition, `rust-version`, `publish` setting and lint policy,
+and state their one-sentence ownership as the `Cargo.toml` description, repeated in their
+README.
 `cockpit-workspace-rules` fails the tests when one does not, and when the crate graph has
-an edge report 02 forbids (the failure names the rule).
+an edge issue #19 forbids (the failure names the rule).
 
 The Rust toolchain is pinned in [rust-toolchain.toml](../rust-toolchain.toml). Distro
 Rust installations do not read that file; use the same version when running checks.

@@ -132,12 +132,13 @@ fn every_valid_spelling_of_lint_inheritance_counts() {
     }
 }
 
-/// The `description` of a manifest's `[package]` table, when it is a single-line basic string.
+/// The `description` of a manifest's `[package]` table, when it is a single-line string
+/// without escapes.
 fn package_description(manifest: &str) -> Option<String> {
     let mut table = "";
     for line in manifest.lines().map(str::trim) {
         if line.starts_with('[') {
-            table = line;
+            table = line.split('#').next().unwrap().trim();
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -146,8 +147,15 @@ fn package_description(manifest: &str) -> Option<String> {
         if table != "[package]" || key.trim() != "description" {
             continue;
         }
-        let quoted = value.trim().strip_prefix('"')?;
-        let (description, after) = quoted.split_once('"')?;
+        let value = value.trim();
+        let quote = value
+            .chars()
+            .next()
+            .filter(|first| *first == '"' || *first == '\'')?;
+        let (description, after) = value[1..].split_once(quote)?;
+        if description.contains('\\') {
+            return None;
+        }
         let after = after.trim();
         return (after.is_empty() || after.starts_with('#')).then(|| description.to_string());
     }
@@ -160,6 +168,11 @@ fn is_one_sentence(text: &str) -> bool {
         return false;
     };
     !body.trim().is_empty() && !body.contains(". ") && !body.ends_with('.')
+}
+
+/// Markdown is hard-wrapped, so a sentence may span README lines.
+fn words_of(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `name: problem` for each member whose ownership sentence is missing or does not match.
@@ -176,7 +189,9 @@ fn members_without_an_ownership_sentence() -> Vec<String> {
             let manifest = fs::read_to_string(&manifest_path)
                 .unwrap_or_else(|error| panic!("{}: {error}", manifest_path.display()));
             let Some(description) = package_description(&manifest) else {
-                return Some(format!("{name}: no single-line `description` in [package]"));
+                return Some(format!(
+                    "{name}: no single-line `description` without escapes in [package]"
+                ));
             };
             if !is_one_sentence(&description) {
                 return Some(format!(
@@ -186,7 +201,7 @@ fn members_without_an_ownership_sentence() -> Vec<String> {
             let Ok(readme) = fs::read_to_string(member_dir.join("README.md")) else {
                 return Some(format!("{name}: no readable README.md"));
             };
-            if !readme.contains(&description) {
+            if !words_of(&readme).contains(&words_of(&description)) {
                 return Some(format!("{name}: README.md does not state the description"));
             }
             None
@@ -216,6 +231,14 @@ fn a_description_is_read_from_the_package_table_only() {
         ),
         (
             "[package]\nname = \"x\"\n[features]\ndescription = \"No.\"\n",
+            None,
+        ),
+        (
+            "[package] # metadata\ndescription = 'Owns tasks.'\n",
+            Some("Owns tasks."),
+        ),
+        (
+            "[package]\ndescription = \"Owns the \\\"may\\\" answer.\"\n",
             None,
         ),
         ("[package]\ndescription.workspace = true\n", None),
