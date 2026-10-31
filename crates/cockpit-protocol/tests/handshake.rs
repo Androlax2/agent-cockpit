@@ -66,44 +66,37 @@ fn a_hello_without_versions_is_refused_as_a_mismatch() {
 }
 
 #[test]
-fn negotiated_capabilities_are_those_both_sides_offer() {
-    let hello = hello_from_wire(
-        json!({"protocol_versions": [1], "capabilities": ["change-feed", "teleport"]}),
-    );
+fn only_capabilities_both_sides_offer_are_granted_once() {
+    let change_feed = || Capability::ChangeFeed;
+    let cases = [
+        (
+            json!(["change-feed", "teleport"]),
+            vec![change_feed()],
+            vec![change_feed()],
+        ),
+        (json!(["change-feed"]), vec![], vec![]),
+        (
+            json!(["change-feed", "change-feed"]),
+            vec![change_feed()],
+            vec![change_feed()],
+        ),
+        (json!([]), vec![change_feed()], vec![]),
+    ];
 
-    let HandshakeReply::Accepted(welcome) =
-        negotiate(&hello, &SUPPORTED_VERSIONS, &[Capability::ChangeFeed])
-    else {
-        panic!("version 1 is shared");
-    };
+    for (client_capabilities, daemon_capabilities, granted) in cases {
+        let hello =
+            hello_from_wire(json!({"protocol_versions": [1], "capabilities": client_capabilities}));
 
-    assert_eq!(welcome.capabilities, vec![Capability::ChangeFeed]);
-}
-
-#[test]
-fn a_capability_the_daemon_does_not_offer_is_not_granted() {
-    let hello = hello_from_wire(json!({"protocol_versions": [1], "capabilities": ["change-feed"]}));
-
-    let HandshakeReply::Accepted(welcome) = negotiate(&hello, &SUPPORTED_VERSIONS, &[]) else {
-        panic!("version 1 is shared");
-    };
-
-    assert_eq!(welcome.capabilities, Vec::<Capability>::new());
-}
-
-#[test]
-fn a_capability_listed_twice_is_granted_once() {
-    let hello = hello_from_wire(
-        json!({"protocol_versions": [1], "capabilities": ["change-feed", "change-feed"]}),
-    );
-
-    let HandshakeReply::Accepted(welcome) =
-        negotiate(&hello, &SUPPORTED_VERSIONS, &[Capability::ChangeFeed])
-    else {
-        panic!("version 1 is shared");
-    };
-
-    assert_eq!(welcome.capabilities, vec![Capability::ChangeFeed]);
+        let HandshakeReply::Accepted(welcome) =
+            negotiate(&hello, &SUPPORTED_VERSIONS, &daemon_capabilities)
+        else {
+            panic!("version 1 is shared");
+        };
+        assert_eq!(
+            welcome.capabilities, granted,
+            "client {client_capabilities}, daemon {daemon_capabilities:?}"
+        );
+    }
 }
 
 #[test]
@@ -134,11 +127,42 @@ fn unknown_hello_fields_from_a_newer_client_are_ignored() {
 }
 
 #[test]
-fn a_hello_with_a_non_numeric_version_is_malformed() {
-    let parsed =
-        serde_json::from_value::<Hello>(json!({"protocol_versions": ["one"], "capabilities": []}));
+fn a_mismatch_message_does_not_grow_with_the_client_list() {
+    let versions: Vec<u32> = (2..10_000).collect();
+    let hello = hello_from_wire(json!({"protocol_versions": versions, "capabilities": []}));
 
-    assert!(parsed.is_err());
+    let HandshakeReply::Refused(refusal) = negotiate(&hello, &SUPPORTED_VERSIONS, &[]) else {
+        panic!("no version is shared");
+    };
+
+    assert!(refusal.message.len() < 200, "{}", refusal.message);
+}
+
+#[test]
+fn an_unreadable_first_frame_gets_a_malformed_hello_refusal() {
+    for frame in [
+        r#"{"protocol_versions": ["one"], "capabilities": []}"#,
+        r#"{"protocol_versions": [4294967296]}"#,
+        r#"{"capabilities": []}"#,
+        "HELLO 1\n",
+    ] {
+        let refusal = decode_hello(frame, &SUPPORTED_VERSIONS).unwrap_err();
+
+        let wire = serde_json::to_value(HandshakeReply::Refused(refusal)).unwrap();
+        assert_eq!(wire["reason"], "malformed-hello", "{frame}");
+        assert_eq!(
+            wire["supported_versions"],
+            json!(SUPPORTED_VERSIONS),
+            "{frame}"
+        );
+    }
+}
+
+#[test]
+fn a_hello_without_capabilities_asks_for_none() {
+    let hello = decode_hello(r#"{"protocol_versions": [1]}"#, &SUPPORTED_VERSIONS).unwrap();
+
+    assert_eq!(hello.capabilities, Vec::<Capability>::new());
 }
 
 #[test]

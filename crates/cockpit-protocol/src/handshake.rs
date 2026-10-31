@@ -66,16 +66,17 @@ pub enum RefusalReason {
 }
 
 /// Reads the client's first frame; an unreadable one gets a typed refusal to send back.
-pub fn decode_hello(frame: &str) -> Result<Hello, Refusal> {
+/// The daemon passes [`SUPPORTED_VERSIONS`] here and to [`negotiate`].
+pub fn decode_hello(frame: &str, daemon_versions: &[ProtocolVersion]) -> Result<Hello, Refusal> {
     serde_json::from_str(frame).map_err(|error| Refusal {
         reason: RefusalReason::MalformedHello,
         message: format!("the first frame is not a valid hello: {error}"),
-        supported_versions: SUPPORTED_VERSIONS.to_vec(),
+        supported_versions: daemon_versions.to_vec(),
     })
 }
 
 /// Agrees on the highest version both sides speak and the capabilities both offer, in the
-/// daemon's order. The daemon passes [`SUPPORTED_VERSIONS`].
+/// daemon's order.
 pub fn negotiate(
     hello: &Hello,
     daemon_versions: &[ProtocolVersion],
@@ -99,22 +100,16 @@ pub fn negotiate(
     })
 }
 
-/// Names only the client's highest version, so a huge list cannot grow the reply.
+/// Names only the client's highest version, so a huge list cannot grow the reply; the
+/// daemon's versions travel in `supported_versions`.
 fn version_mismatch(hello: &Hello, daemon_versions: &[ProtocolVersion]) -> Refusal {
     let client_offer = match hello.protocol_versions.iter().max() {
         Some(highest) => format!("the client speaks versions up to {}", highest.0),
         None => "the client named no version".to_owned(),
     };
-    let daemon_list = daemon_versions
-        .iter()
-        .map(|version| version.0.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
     Refusal {
         reason: RefusalReason::VersionMismatch,
-        message: format!(
-            "no shared protocol version: {client_offer}; this daemon speaks [{daemon_list}]"
-        ),
+        message: format!("no shared protocol version: {client_offer}"),
         supported_versions: daemon_versions.to_vec(),
     }
 }

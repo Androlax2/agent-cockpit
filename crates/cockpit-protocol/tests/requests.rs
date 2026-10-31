@@ -51,21 +51,24 @@ fn an_unknown_command_is_refused_with_its_kind_and_request_id() {
 }
 
 #[test]
-fn a_malformed_known_command_is_invalid_not_unknown() {
-    let rejection =
-        decode_request(r#"{"id": 3, "command": {"kind": "subscribe", "after": "yesterday"}}"#)
-            .unwrap_err();
+fn a_malformed_frame_is_invalid_and_keeps_any_readable_id() {
+    let cases = [
+        (
+            r#"{"id": 3, "command": {"kind": "subscribe", "after": "yesterday"}}"#,
+            Some(RequestId(3)),
+        ),
+        (r#"{"id": 5, "command": {"kind": 5}}"#, Some(RequestId(5))),
+        (r#"{"id": "six", "command": {"kind": "ping"}}"#, None),
+        (r#"{"command": {"kind": "ping"}}"#, None),
+        ("ping\n", None),
+    ];
 
-    assert_eq!(rejection.id, Some(RequestId(3)));
-    assert_eq!(rejection.error.code, ErrorCode::InvalidRequest);
-}
+    for (frame, readable_id) in cases {
+        let rejection = decode_request(frame).unwrap_err();
 
-#[test]
-fn a_command_kind_that_is_not_a_string_is_invalid() {
-    let rejection = decode_request(r#"{"id": 5, "command": {"kind": 5}}"#).unwrap_err();
-
-    assert_eq!(rejection.id, Some(RequestId(5)));
-    assert_eq!(rejection.error.code, ErrorCode::InvalidRequest);
+        assert_eq!(rejection.error.code, ErrorCode::InvalidRequest, "{frame}");
+        assert_eq!(rejection.id, readable_id, "{frame}");
+    }
 }
 
 #[test]
@@ -76,22 +79,6 @@ fn the_unknown_command_placeholder_cannot_be_sent() {
     };
 
     assert!(serde_json::to_value(request).is_err());
-}
-
-#[test]
-fn a_request_without_an_id_is_rejected_without_one() {
-    let rejection = decode_request(r#"{"command": {"kind": "ping"}}"#).unwrap_err();
-
-    assert_eq!(rejection.id, None);
-    assert_eq!(rejection.error.code, ErrorCode::InvalidRequest);
-}
-
-#[test]
-fn a_frame_that_is_not_json_is_rejected_without_an_id() {
-    let rejection = decode_request("ping\n").unwrap_err();
-
-    assert_eq!(rejection.id, None);
-    assert_eq!(rejection.error.code, ErrorCode::InvalidRequest);
 }
 
 #[test]
