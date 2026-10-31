@@ -434,9 +434,7 @@ impl Sessions {
         for session in active {
             let id = session.id.clone();
             let outcome = match session.state {
-                SessionState::Stopping {
-                    to: to @ (StopTarget::Asleep | StopTarget::Ended),
-                } => match self.finish_stop(&id, to).await {
+                SessionState::Stopping { to } => match self.finish_stop(&id, to).await {
                     Ok(stopped) => Restored::StopFinished(id, stopped.state),
                     Err(error) => Restored::StopNotFinished(id, error.to_string()),
                 },

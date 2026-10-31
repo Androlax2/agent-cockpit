@@ -236,8 +236,8 @@ pub enum Restored {
     /// A stop that was under way was finished.
     StopFinished(SessionId, SessionState),
     /// A stop that was under way could not be finished, for this reason; the session stays
-    /// as the error left it (`stopping`, or `running` when its agent did not stop), and
-    /// `end` finishes it.
+    /// as the error left it (`stopping`, `running` when its agent did not stop, or `failed`
+    /// when a restart's launch failed), and `end` finishes it.
     StopNotFinished(SessionId, String),
     /// Reopening failed; the session is `failed` with this reason and is not retried.
     Failed(SessionId, String),
