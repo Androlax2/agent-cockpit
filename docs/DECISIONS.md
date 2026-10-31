@@ -1,5 +1,32 @@
 # Engineering decisions
 
+## 2026-10-31 — cockpit-authorization: exact scopes, owner-only host actions, one revision
+
+Issue #25. A grant is one permission over one scope held by one session. Scopes do not nest:
+an owner-scope grant covers everything, a session or task grant covers exactly that id, and a
+session grant does not reach the session's tasks. Nesting would need task ownership, which
+the tasks capability owns, and report 02 keeps authorization free of product capabilities;
+a caller-supplied "this task belongs to that session" would be a payload widening a grant.
+Ids compare with `=` only, so no case, wildcard or prefix spelling stretches a grant.
+
+`host-actions` (`handoff-install`, `system-install`) is the owner's alone: `grant` refuses it
+and `evaluate` refuses a session with `owner-only` instead of `no-grant`, because no grant
+would unblock it. `run-commands` lets a session ask the host to run a command; each run still
+needs the owner's approval of that exact command (report 17).
+
+One counter, the authorization revision, increments on every grant and revocation and comes
+back with every decision, so an effect can record what it was authorized against. Nothing
+is cached: a revocation applies from the next evaluation that reads it. Granting an active
+grant again returns it, so a repeated grant leaves no second copy that would survive a
+revocation of the first. Revoked rows stay, with the revision that revoked them.
+
+The acceptance property (prose, payloads and manifests cannot widen a grant) is checked
+against a reference model over a bounded universe of every grantable grant and adversarial
+ids, not with `proptest`, which would be a new third-party dependency. The fixed universe
+reproduces exactly and covers case variants, `%`, an id spelled `owner`, and session/task
+namespace confusion; three injected SQL bugs (`LIKE` on ids or holder, a dropped scope kind)
+each fail it.
+
 ## 2026-10-31 — Greenfield protocol: version lists, open enums, closed change kinds
 
 `cockpit-protocol` (issue #20) negotiates with a list, not a single number: the client's
