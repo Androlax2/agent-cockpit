@@ -88,6 +88,12 @@ jobs:
         with:
           fallback: none
           tool: cargo-nextest@0.9.150
+      # Why main saves and pull requests only restore:
+      # docs/decisions/2026-10-31-127-platform-build-cache.md.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-bin: false
       - name: Start the daemon on a clean home
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-daemon --test startup
       # The process supervisor's macOS paths: ps start tokens, the boot session id and
@@ -97,7 +103,8 @@ jobs:
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
-  # match tools/tests/fixtures/ci-install-action-linux.json (test_ci_bootstrap.py).
+  # match tools/tests/fixtures/ci-install-action-linux.json (test_ci_bootstrap.py). No build
+  # cache, on purpose: docs/decisions/2026-10-31-127-platform-build-cache.md.
   greenfield-wsl2:
     needs: changes
     if: needs.changes.outputs.greenfield == 'true'
