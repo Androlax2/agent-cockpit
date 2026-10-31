@@ -90,6 +90,24 @@ projects, take checkouts or push.
 - **CLI tests.** `nothing -> daemon` forbids a dev-dependency on the daemon, so the CLI's
   entry-point tests build the daemon binary with `cargo build --locked` and run it.
 
+## 2026-10-31 — Gate M0: WSL2 proven in CI through a pinned setup action
+
+Issue #27. Theo has no Windows machine, so he moved the WSL2 proof from a hand-recorded run
+to CI. The `greenfield-wsl2` job runs on `windows-2025`, which ships WSL 2 as the default.
+
+- **`Vampire/setup-wsl`, pinned to v7.2.0's commit**, installs Ubuntu 24.04. A bare
+  `wsl --install -d Ubuntu --no-launch` leaves the distribution unregistered until a first
+  launch whose account setup is interactive, which a hosted runner cannot answer; the action
+  registers it non-interactively and provides the `wsl-bash` step shell. It is a new
+  third-party action, which Theo allowed for this job.
+- **Fail loud on the wrong kernel.** The job stops unless `uname -r` names a WSL 2 kernel, so
+  a silent fallback to WSL 1 cannot pass as WSL 2 evidence.
+- **Linux file system, not DrvFs.** The checkout is copied into the distribution's home
+  before the tests run, and checked out with `core.autocrlf` off, so modes and line endings
+  are the Linux ones the daemon sees on a real install.
+- Rust 1.99.1 comes from rustup and cargo-nextest 0.9.150 from its release archive inside
+  the distribution: the Windows-side toolchain actions do not reach into WSL.
+
 ## 2026-10-31 — Agent channel: launch tokens bound to the process tree, report only (#32)
 
 Issue #32. Theo chose its scope: the authenticated channel, the answers directory, report

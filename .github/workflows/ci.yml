@@ -91,6 +91,53 @@ jobs:
       - name: Supervise processes
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-processes
 
+  # The daemon's startup tests inside WSL 2 on Windows: the M0 gate's WSL2 proof (#27), since
+  # no Windows machine is available for a hand run. Tests run from a copy in the
+  # distribution's own file system, where modes are Linux modes, not DrvFs ones.
+  greenfield-wsl2:
+    needs: changes
+    if: needs.changes.outputs.greenfield == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: wsl-bash {0}
+    steps:
+      - name: Keep LF line endings in the checkout
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          additional-packages: build-essential ca-certificates curl
+      - name: Refuse to run anywhere but WSL 2
+        run: |
+          set -euo pipefail
+          uname -r
+          case "$(uname -r)" in *microsoft-standard-WSL2*) ;; *) exit 1 ;; esac
+      - name: Install Rust 1.99.1 and cargo-nextest 0.9.150
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain 1.99.1
+          curl --proto '=https' --tlsv1.2 -LsSf https://get.nexte.st/0.9.150/linux \
+            | tar zxf - -C "$HOME/.cargo/bin"
+      - name: Copy the checkout into the distribution's file system
+        run: |
+          set -euo pipefail
+          test -f Cargo.toml
+          cp -a . "$HOME/agent-cockpit"
+      - name: Start the daemon on a clean home
+        run: |
+          set -euo pipefail
+          . "$HOME/.cargo/env"
+          cd "$HOME/agent-cockpit"
+          cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-daemon --test startup
+
   # Markdown and spelling, for docs/ and any Markdown file.
   docs:
     needs: changes
