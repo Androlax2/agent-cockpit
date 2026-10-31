@@ -318,7 +318,8 @@ enum FrameError {
     TooLarge,
 }
 
-/// Reads the next line into `frame` without its newline.
+/// Reads the next line into `frame` without its newline. The client's twin is
+/// `cockpit-client/src/framing.rs`; both follow `cockpit-protocol`'s framing rule.
 async fn next_frame<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     frame: &mut Vec<u8>,

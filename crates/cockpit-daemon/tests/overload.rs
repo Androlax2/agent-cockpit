@@ -3,6 +3,8 @@
 //! command does bulk work yet, so the fixture gives `subscribe` that role; `ping` stays the
 //! daemon's own control command.
 
+mod common;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -15,8 +17,8 @@ use cockpit_protocol::{
     Command, CommitRevision, Cursor, DatabaseEpoch, ErrorCode, FeedPosition, MAX_FRAME_BYTES,
     Outcome, ProtocolError, Reply, Welcome,
 };
+use common::GENEROUS;
 
-const GENEROUS: Duration = Duration::from_secs(10);
 /// Report 03's no-stall bound; a control answer slower than this under load is a failure.
 const CONTROL_DEADLINE: Duration = Duration::from_secs(1);
 
@@ -114,6 +116,10 @@ struct Running {
     _home: tempfile::TempDir,
 }
 
+fn lane(workers: usize, waiting: usize) -> LaneLimits {
+    LaneLimits { workers, waiting }
+}
+
 fn options_in(home: &tempfile::TempDir, bulk: LaneLimits) -> Options {
     Options {
         runtime_dir: home.path().join("run/cockpit"),
@@ -162,14 +168,7 @@ fn error_code(result: &Result<Reply, ClientError>) -> Option<ErrorCode> {
 #[tokio::test(flavor = "multi_thread")]
 async fn control_requests_are_answered_while_bulk_work_saturates_its_workers() {
     let fixture = Fixture::new(BulkBehavior::BlockUntilReleased);
-    let running = start(
-        &fixture,
-        LaneLimits {
-            workers: 2,
-            waiting: 1,
-        },
-    )
-    .await;
+    let running = start(&fixture, lane(2, 1)).await;
     let bulk_client = connect(&running).await;
     let running_jobs: Vec<_> = (0..2)
         .map(|_| {
@@ -223,14 +222,7 @@ async fn control_requests_are_answered_while_bulk_work_saturates_its_workers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_job_that_panics_is_answered_internal_and_frees_its_worker() {
     let fixture = Fixture::new(BulkBehavior::PanicInJob);
-    let running = start(
-        &fixture,
-        LaneLimits {
-            workers: 1,
-            waiting: 0,
-        },
-    )
-    .await;
+    let running = start(&fixture, lane(1, 0)).await;
     let client = connect(&running).await;
 
     let mut codes = Vec::new();
@@ -252,14 +244,7 @@ async fn a_job_that_panics_is_answered_internal_and_frees_its_worker() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_panic_while_routing_ends_only_that_connection() {
     let fixture = Fixture::new(BulkBehavior::PanicWhileRouting);
-    let running = start(
-        &fixture,
-        LaneLimits {
-            workers: 1,
-            waiting: 0,
-        },
-    )
-    .await;
+    let running = start(&fixture, lane(1, 0)).await;
     let failing = connect(&running).await;
     let bystander = connect(&running).await;
 

@@ -25,7 +25,8 @@ pub(crate) struct Lanes {
 
 #[derive(Debug)]
 struct Lane {
-    class: WorkClass,
+    /// How a `busy` answer names the lane.
+    name: &'static str,
     limits: LaneLimits,
     workers: Arc<Semaphore>,
     /// Places for admitted requests, running or waiting: `workers + waiting` permits.
@@ -35,8 +36,8 @@ struct Lane {
 impl Lanes {
     pub(crate) fn new(control: LaneLimits, bulk: LaneLimits) -> Lanes {
         Lanes {
-            control: Lane::new(WorkClass::Control, control),
-            bulk: Lane::new(WorkClass::Bulk, bulk),
+            control: Lane::new("control", control),
+            bulk: Lane::new("bulk", bulk),
         }
     }
 
@@ -89,10 +90,10 @@ async fn run_contained(
 }
 
 impl Lane {
-    fn new(class: WorkClass, limits: LaneLimits) -> Lane {
-        assert!(limits.workers > 0, "a lane needs at least one worker");
+    /// `limits` passed `Limits::validate`, so the lane has a worker.
+    fn new(name: &'static str, limits: LaneLimits) -> Lane {
         Lane {
-            class,
+            name,
             limits,
             workers: Arc::new(Semaphore::new(limits.workers)),
             admitted: Arc::new(Semaphore::new(limits.workers + limits.waiting)),
@@ -100,15 +101,11 @@ impl Lane {
     }
 
     fn busy(&self) -> Outcome {
-        let lane = match self.class {
-            WorkClass::Control => "control",
-            WorkClass::Bulk => "bulk",
-        };
         refusal(
             ErrorCode::Busy,
             &format!(
-                "the {lane} lane is full ({} running, {} waiting); retry later",
-                self.limits.workers, self.limits.waiting
+                "the {} lane is full ({} running, {} waiting); retry later",
+                self.name, self.limits.workers, self.limits.waiting
             ),
         )
     }
