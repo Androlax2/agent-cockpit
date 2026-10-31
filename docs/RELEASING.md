@@ -30,10 +30,9 @@ broken release is fixed by the next one.
 ## Channels and what each promises
 
 Each channel opens at a milestone gate of the [refactoring plan](design/greenfield/20-refactoring-plan.md).
-No tag of a channel exists before its gate issue is closed with its proof linked. The gate
-opens the channel; each tag still needs report 13's release gate, which includes clean
-installs on Linux, macOS and WSL2, so the alpha's install promise is checked by the release
-even though the M3 gate itself does not test it.
+No tag of a channel exists before its gate issue is closed with its proof linked. Every tag
+also needs [report 13's release gate](design/greenfield/13-release-upgrades.md#release-gate),
+whose clean installs check the install promises below.
 
 | Channel | Opens after | Promise |
 | --- | --- | --- |
@@ -42,11 +41,7 @@ even though the M3 gate itself does not test it.
 | stable 0.x | M5 gate (#71), per promoted beta | A beta build whose upgrade-keeps-state promise was verified on Linux, macOS and WSL2 |
 | 1.0 | M6 gate and every claim of [report 15](design/greenfield/15-validation-open-questions.md) proven | Report 15's validation list holds for the tagged build; Semantic Versioning's 1.x compatibility applies from then on |
 
-Before the M5 gate every tag is a pre-release: `v0.x.y-alpha.n` after the M3 gate,
-`v0.x.y-beta.n` from M5. After the cutover, a beta build is promoted to the stable tag
-`v0.x.y` once its upgrade-keeps-state promise is verified on Linux, macOS and WSL2; each
-stable 0.x tag is a GitHub release without the pre-release flag. `v1.0.0` waits for the M6
-gate and report 15.
+Until the M5 gate, every tag is a pre-release.
 
 A promise is a release blocker, not an aspiration: an alpha that does not install on one of
 the three platforms, or a beta that loses state on upgrade, is not tagged.
@@ -70,8 +65,7 @@ starts at the greenfield bootstrap commit, `d2d8604` (issue #18, PR #75), includ
 
 Entries are newest first, headed `## <tag> — YYYY-MM-DD` (`## v0.2.0-beta.1 — 2027-03-01`).
 Alpha entries carry a `Known gaps` list; beta and stable entries name any upgrade step.
-Because titles become the changelog, a PR title says what changed for a user or a
-contributor, not how.
+[Contributing](../CONTRIBUTING.md) says how to write a PR title for it.
 
 ## Cutting a release
 
@@ -81,12 +75,12 @@ contributor, not how.
 3. Run report 13's release gate on that merge commit, the one to be tagged; a check that did
    not run is a named gap, not a pass. A failure means no tag: fix it in a new PR and run
    the gate again on the new commit.
-4. Theo tags the commit the gate passed on and creates the GitHub release from the
-   changelog entry, marked pre-release for alpha and beta.
+4. Theo tags the commit the gate passed on and publishes the release from the changelog
+   entry in one step: `gh release create <tag> --target <commit> --title <tag> --notes-file
+   <entry> --prerelease` (no `--prerelease` for stable).
 
-Promoting a beta to stable follows the same steps. Since a tag names the `Cargo.toml`
-version, the promotion PR goes from `0.x.y-beta.n` to `0.x.y` and changes nothing else:
-`git diff --stat v0.x.y-beta.n HEAD` lists only the manifests, `Cargo.lock` and
-`CHANGELOG.md`. That keeps the stable build the beta build whose upgrade was verified.
+Promoting a beta to stable follows the same steps; the promotion PR only changes
+`0.x.y-beta.n` to `0.x.y`, so `git diff --stat v0.x.y-beta.n HEAD` lists only the manifests,
+`Cargo.lock` and `CHANGELOG.md`.
 
 Tagging and publishing are Theo's: agent sessions prepare the PR, they do not tag or publish.

@@ -156,22 +156,17 @@ binary or the protocol, per platform, and lists what did not run as open.
 
 ## 2026-10-31 — Release policy: one version, changelog from squash subjects (#94)
 
-[Releasing](RELEASING.md) implements issue #94 as written: `0.x` semver, alpha/beta/stable
-tags, alpha after the M3 gate, beta at the M5 cutover, 1.0 after M6 and report 15. Theo added
-(on #94) that stable `v0.x.y` tags exist only from the M5 cutover gate (#71): a beta build is
-promoted once its upgrade-keeps-state promise is verified on Linux, macOS and WSL2. Two
-choices the issue leaves open:
+[Releasing](RELEASING.md) implements issue #94 as written, plus Theo's addition on #94:
+stable `v0.x.y` tags exist only from the M5 cutover (#71), as promoted betas. Choices the
+issue leaves open:
 
-- **One version source.** The root `[workspace.package] version` is the release version and
-  the tag names it; crates do not version independently, since Cockpit ships as one bundle
+- **One version source.** Crates do not version independently: Cockpit ships as one bundle
   (report 13) and `publish = false` keeps crates off crates.io.
-- **Changelog from `git log`.** `main` is squash-merged, so commit subjects already are the
-  PR titles followed by their PR numbers; `git log --first-parent` over the tag range
-  produces the entry with no GitHub token or extra tool. The first release starts at the
-  greenfield bootstrap commit (`d2d8604`, issue #18): earlier history is the `apps/` code,
-  which is never tagged.
-- **Gate the tagged commit.** Report 13's release gate runs on the merge commit of the
-  version-bump PR, the commit that is tagged, not on an earlier candidate.
+- **Changelog from `git log`.** Squash-merge subjects already are the PR titles, so the entry
+  needs no GitHub token or extra tool. The first release starts at the greenfield bootstrap:
+  earlier history is the `apps/` code, which is never tagged.
+- **Gate the tagged commit.** The version bump changes the build, so the release gate runs on
+  the commit that is tagged, not on an earlier candidate.
 
 ## 2026-10-31 — cockpit-daemon: a handler seam, two lanes, nothing aborted
 
