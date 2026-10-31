@@ -329,7 +329,7 @@ pub async fn session_work(
     while let Some(row) = rows.next().await? {
         let session = SessionId::new(row.get::<String>(0)?)
             .map_err(|error| invalid_row("tasks_items", error.to_string()))?;
-        work.entry(session).or_default().last_finished_at = Some(row.get::<i64>(1)?);
+        work.entry(session).or_default().last_finished_at = row.get::<Option<i64>>(1)?;
     }
     Ok(work)
 }

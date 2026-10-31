@@ -475,6 +475,9 @@ async fn a_restarted_session_is_finished_again_only_once_it_finishes_new_work() 
     .await;
 
     assert!(!restarted.finished, "{restarted:?}");
+    let running = listed(&client, &started.id).await;
+    assert_eq!(running.state, SessionStateView::Running);
+    assert!(!running.finished);
     let item = home.session_takes_an_item(&client, &started.id).await;
     home.session_finishes(&client, &started.id, item).await;
     assert!(listed(&client, &started.id).await.finished);

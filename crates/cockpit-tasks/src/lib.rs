@@ -98,11 +98,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE tasks_items ADD COLUMN finished_by TEXT CHECK (finished_by <> '');",
         },
         // #226: when an item was finished, so a session the owner relaunches is labelled
-        // finished only by work done since. Items done before it take their last change.
+        // finished only by work done since. Items done before it have none: `changed_at`
+        // moves on edits after the finish, so it could count an old finish as new.
         Migration {
             version: 3,
-            sql: "ALTER TABLE tasks_items ADD COLUMN finished_at INTEGER;
-                UPDATE tasks_items SET finished_at = changed_at WHERE status = 'done';",
+            sql: "ALTER TABLE tasks_items ADD COLUMN finished_at INTEGER;",
         },
     ],
 };

@@ -162,3 +162,26 @@ async fn reopening_the_latest_finish_falls_back_to_the_one_before() {
         })
     );
 }
+
+#[tokio::test]
+async fn an_item_done_before_finish_times_were_kept_gives_its_session_no_finish_time() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session("s1", "app").await;
+    let item = fixture.owner_adds("app", "Fix the login").await;
+    start(&fixture, &session, item.id).await;
+    finish(&fixture, &session, item.id).await;
+    let write = fixture.database.write().await.unwrap();
+    write
+        .execute("UPDATE tasks_items SET finished_at = NULL", ())
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(
+        work_of(&fixture, "s1").await,
+        Some(SessionWork {
+            doing: 0,
+            last_finished_at: None
+        })
+    );
+}

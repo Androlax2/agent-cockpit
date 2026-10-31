@@ -201,11 +201,11 @@ fn is_finished(session: &Session, work: &Work) -> bool {
     ) {
         return false;
     }
-    let id = TaskSession::new(session.id.as_str())
-        .expect("a session id is never empty, so it is a valid task-list session id");
     let Some(launch) = &session.launch else {
         return false;
     };
+    let id = TaskSession::new(session.id.as_str())
+        .expect("a session id is never empty, so it is a valid task-list session id");
     work.get(&id).is_some_and(|work| {
         work.doing == 0
             && work
