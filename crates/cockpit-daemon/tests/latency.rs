@@ -36,7 +36,10 @@ use cockpit_protocol::{
     Capability, Command, ErrorCode, FeedPosition, Hello, ProtocolError, Reply, Request, RequestId,
     SUPPORTED_VERSIONS, SessionStateView,
 };
-use real_daemon::{GENEROUS, Home, SETTLE, is_alive, listed, new_session, wait_for_running};
+use real_daemon::{
+    FLOOD_PROJECT, GENEROUS, Home, Launch, SETTLE, STALL_PROJECT, is_alive, listed, new_session,
+    session_new_command, wait_for_running,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 const PROBE_INTERVAL: Duration = Duration::from_millis(50);
@@ -93,16 +96,10 @@ async fn run(workload: Workload) {
     let home = Home::new();
     let daemon = home.start();
     let client = home.connect().await;
-    let mut dirs = Vec::new();
-    for name in ["flood", "stall", "churn", "tasks"] {
-        dirs.push(home.project(&client, name).await);
-    }
-    let [
-        (flood_dir, _),
-        (stall_dir, _),
-        (churn_dir, _),
-        (_, tasks_project),
-    ] = <[_; 4]>::try_from(dirs).unwrap();
+    let (flood_dir, _) = home.project(&client, FLOOD_PROJECT).await;
+    let (stall_dir, _) = home.project(&client, STALL_PROJECT).await;
+    let (churn_dir, _) = home.project(&client, "churn").await;
+    let (_, tasks_project) = home.project(&client, "tasks").await;
     let flood = new_session(&client, &flood_dir).await;
     let stall = new_session(&client, &stall_dir).await;
     let flood_agent = home.wait_for_launches(&flood.id, 1).await[0].clone();
@@ -174,9 +171,11 @@ async fn run(workload: Workload) {
         restart.reattached,
         "every session kept its agent: {restart:?}"
     );
-    assert_eq!(
-        restart.launches_after, restart.launches_before,
-        "no launch after the restart"
+    assert!(
+        restart.launches_after == restart.launches_before,
+        "no launch after the restart: {} launches before, {} after",
+        restart.launches_before.len(),
+        restart.launches_after.len()
     );
 }
 
@@ -187,15 +186,28 @@ struct Sample {
     error: Option<String>,
 }
 
-/// The control requests the probe cycles through: what a client asks to show status.
+/// The control requests the probe cycles through, as the report names them: what a client
+/// asks to show status.
+const PROBE_REQUESTS: [&str; 5] = [
+    "ping",
+    "session-list",
+    "agent-reports",
+    "approval-queue",
+    "provider-list",
+];
+/// A new connection's handshake and `ping`.
+const FRESH_PING: &str = "connect+ping";
+
 fn probe_command(index: u32) -> (&'static str, Command) {
-    match index % 5 {
-        0 => ("ping", Command::Ping),
-        1 => ("session-list", Command::SessionList { ended: false }),
-        2 => ("agent-reports", Command::AgentReports),
-        3 => ("approval-queue", Command::ApprovalQueue),
-        _ => ("provider-list", Command::ProviderList),
-    }
+    let slot = index as usize % PROBE_REQUESTS.len();
+    let command = match slot {
+        0 => Command::Ping,
+        1 => Command::SessionList { ended: false },
+        2 => Command::AgentReports,
+        3 => Command::ApprovalQueue,
+        _ => Command::ProviderList,
+    };
+    (PROBE_REQUESTS[slot], command)
 }
 
 /// Runs the probe on its own thread and runtime, apart from the loads' tasks.
@@ -222,10 +234,10 @@ async fn probe_held_connection(socket: &Path, duration: Duration) -> Vec<Sample>
     let start = tokio::time::Instant::now();
     let mut samples = Vec::new();
     for index in 0.. {
-        let due = start + PROBE_INTERVAL * index;
-        if due - start >= duration {
+        if PROBE_INTERVAL * index >= duration {
             break;
         }
+        let due = start + PROBE_INTERVAL * index;
         tokio::time::sleep_until(due).await;
         let (request, command) = probe_command(index);
         let answer = client.request(command, GENEROUS).await;
@@ -242,17 +254,17 @@ async fn probe_fresh_connections(socket: &Path, duration: Duration) -> Vec<Sampl
     let start = tokio::time::Instant::now();
     let mut samples = Vec::new();
     for index in 0.. {
-        let due = start + FRESH_CONNECTION_INTERVAL * index;
-        if due - start >= duration {
+        if FRESH_CONNECTION_INTERVAL * index >= duration {
             break;
         }
+        let due = start + FRESH_CONNECTION_INTERVAL * index;
         tokio::time::sleep_until(due).await;
         let answer = match Connection::open(socket, GENEROUS).await {
             Ok(client) => client.request(Command::Ping, GENEROUS).await.map(drop),
             Err(error) => Err(error),
         };
         samples.push(Sample {
-            request: "connect+ping",
+            request: FRESH_PING,
             latency: due.elapsed(),
             error: answer.err().map(|error| error.to_string()),
         });
@@ -326,14 +338,12 @@ async fn start_and_end_back_to_back(
 ) -> Tally {
     let mut tally = Tally::new("start and end a session");
     while !stop.load(Ordering::SeqCst) {
-        let command = Command::SessionNew {
-            dir: dir.display().to_string(),
-            agent: Some("claude".to_owned()),
-            prompt: None,
-            clone: None,
-        };
         let started = tally
-            .record(client.request(command, LOAD_DEADLINE).await)
+            .record(
+                client
+                    .request(session_new_command(&dir), LOAD_DEADLINE)
+                    .await,
+            )
             .await;
         if let Some(Reply::Session { session }) = started {
             let command = Command::SessionEnd {
@@ -388,11 +398,7 @@ async fn stalled_viewer(socket: &Path) -> tokio::io::BufReader<tokio::net::UnixS
         protocol_versions: SUPPORTED_VERSIONS.to_vec(),
         capabilities: vec![Capability::ChangeFeed],
     };
-    let mut frame = serde_json::to_string(&hello).unwrap();
-    frame.push('\n');
-    stream.get_mut().write_all(frame.as_bytes()).await.unwrap();
-    let mut welcome = String::new();
-    stream.read_line(&mut welcome).await.unwrap();
+    let welcome = exchange_line(&mut stream, &hello).await;
     assert!(
         welcome.contains("change-feed"),
         "the feed is offered: {welcome}"
@@ -403,16 +409,25 @@ async fn stalled_viewer(socket: &Path) -> tokio::io::BufReader<tokio::net::UnixS
             from: FeedPosition::Snapshot,
         },
     };
-    let mut frame = serde_json::to_string(&subscribe).unwrap();
-    frame.push('\n');
-    stream.get_mut().write_all(frame.as_bytes()).await.unwrap();
-    let mut subscribed = String::new();
-    stream.read_line(&mut subscribed).await.unwrap();
+    let subscribed = exchange_line(&mut stream, &subscribe).await;
     assert!(
         subscribed.contains("subscribed"),
         "the feed started: {subscribed}"
     );
     stream
+}
+
+/// Sends `frame` as one line and returns the line answered.
+async fn exchange_line(
+    stream: &mut tokio::io::BufReader<tokio::net::UnixStream>,
+    frame: &impl serde::Serialize,
+) -> String {
+    let mut line = serde_json::to_string(frame).unwrap();
+    line.push('\n');
+    stream.get_mut().write_all(line.as_bytes()).await.unwrap();
+    let mut answer = String::new();
+    stream.read_line(&mut answer).await.unwrap();
+    answer
 }
 
 /// The build stand-ins, CPU-bound, each the leader of its own process group so ending it
@@ -500,8 +515,8 @@ fn resident_kib(pid: u32) -> u64 {
 struct Restart {
     ready_after: Duration,
     reattached: bool,
-    launches_before: usize,
-    launches_after: usize,
+    launches_before: Vec<Launch>,
+    launches_after: Vec<Launch>,
 }
 
 /// Kills the daemon while `sessions` run and starts it again.
@@ -515,7 +530,7 @@ async fn restart_with_sessions_running(
     for id in sessions {
         launches_seen.push(listed(&client, id).await.launch);
     }
-    let launches_before = home.launches().len();
+    let launches_before = home.launches();
     drop(client);
     daemon.kill();
     let killed = Instant::now();
@@ -524,16 +539,20 @@ async fn restart_with_sessions_running(
     let client = home.connect().await;
     // A relaunch after the daemon is ready would log its launch within this.
     tokio::time::sleep(SETTLE).await;
+    let launches_after = home.launches();
     let mut reattached = true;
     for (id, launch) in sessions.iter().zip(&launches_seen) {
         let session = listed(&client, id).await;
-        reattached &= session.state == SessionStateView::Running && &session.launch == launch;
+        let latest_agent = launches_after.iter().rfind(|logged| logged.session == **id);
+        reattached &= session.state == SessionStateView::Running
+            && &session.launch == launch
+            && latest_agent.is_some_and(|agent| is_alive(agent.pid));
     }
     Restart {
         ready_after,
         reattached,
         launches_before,
-        launches_after: home.launches().len(),
+        launches_after,
     }
 }
 
@@ -582,17 +601,10 @@ impl Report<'_> {
         let held: Vec<_> = self
             .samples
             .iter()
-            .filter(|sample| sample.request != "connect+ping")
+            .filter(|sample| sample.request != FRESH_PING)
             .collect();
         self.row(&mut text, "all control (held connection)", &held);
-        for request in [
-            "ping",
-            "session-list",
-            "agent-reports",
-            "approval-queue",
-            "provider-list",
-            "connect+ping",
-        ] {
+        for request in PROBE_REQUESTS.into_iter().chain([FRESH_PING]) {
             let samples: Vec<_> = self
                 .samples
                 .iter()
@@ -653,8 +665,8 @@ impl Report<'_> {
                  reattached: {}; agent launches {} before, {} after",
                 restart.ready_after.as_millis(),
                 if restart.reattached { "all" } else { "NOT ALL" },
-                restart.launches_before,
-                restart.launches_after,
+                restart.launches_before.len(),
+                restart.launches_after.len(),
             ),
             None => writeln!(text, "- Restart with sessions running: not done yet"),
         };

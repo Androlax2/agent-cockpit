@@ -7,15 +7,15 @@
     reason = "each test file uses a different part of the fixture"
 )]
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as Process, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use cockpit_client::{ClientError, Connection};
-use cockpit_protocol::{Command, Reply, SessionView};
+use cockpit_client::Connection;
+use cockpit_protocol::{Command, Reply, SessionStateView, SessionView};
 
 /// Long enough never to fire in a passing test, short enough to fail a hung one.
 pub const GENEROUS: Duration = Duration::from_secs(10);
@@ -23,25 +23,32 @@ pub const GENEROUS: Duration = Duration::from_secs(10);
 /// agent logs its launch within milliseconds of being started.
 pub const SETTLE: Duration = Duration::from_secs(1);
 /// A start reconciles what the killed daemon left before it is ready (report 03), and
-/// stopping an agent that ignores `SIGTERM` takes the stop's grace and kill wait (5 s each).
-const READY_WITHIN: Duration = Duration::from_secs(30);
+/// stopping an agent that ignores `SIGTERM` takes the stop's grace and kill wait (5 s each);
+/// a session's stop or launch under way is waited for as long.
+const SETTLED_WITHIN: Duration = Duration::from_secs(30);
 
-/// The agent behaviors, named by the last component of the agent's working directory:
-/// `flood` writes to its terminal without pause, `stall` ignores `SIGTERM` and never ends
-/// on its own, anything else sleeps. `--version` answers the version the adapter's
+/// A project of this name runs an agent that writes to its terminal without pause.
+pub const FLOOD_PROJECT: &str = "flood";
+/// A project of this name runs an agent that ignores `SIGTERM` and never ends on its own.
+pub const STALL_PROJECT: &str = "stall";
+
+/// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
+/// [`STALL_PROJECT`]); anything else sleeps. `--version` answers the version the adapter's
 /// conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
 printf '%s pid=%s\n' "$COCKPIT_SESSION" "$$" >> '@LOG@'
 case "${PWD##*/}" in
-  flood) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
-  stall) trap '' TERM; while :; do sleep 1; done ;;
+  @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
+  @STALL@) trap '' TERM; while :; do sleep 1; done ;;
   *) exec sleep 3600 ;;
 esac
 "#;
 
 pub struct Home {
-    dir: tempfile::TempDir,
+    /// The temporary directory, canonical: the daemon compares paths it is sent with it.
+    root: PathBuf,
+    _dir: tempfile::TempDir,
 }
 
 /// One launch of the fake agent, as it logged it.
@@ -53,8 +60,10 @@ pub struct Launch {
 
 impl Home {
     pub fn new() -> Home {
+        let dir = tempfile::tempdir().expect("a temporary home");
         let home = Home {
-            dir: tempfile::tempdir().expect("a temporary home"),
+            root: dir.path().canonicalize().unwrap(),
+            _dir: dir,
         };
         for dir in ["run", "tmux", "bin"] {
             std::fs::DirBuilder::new()
@@ -66,7 +75,10 @@ impl Home {
         let log = home.launch_log();
         std::fs::write(
             &claude,
-            FAKE_CLAUDE.replace("@LOG@", log.to_str().expect("a UTF-8 path")),
+            FAKE_CLAUDE
+                .replace("@LOG@", log.to_str().expect("a UTF-8 path"))
+                .replace("@FLOOD@", FLOOD_PROJECT)
+                .replace("@STALL@", STALL_PROJECT),
         )
         .unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -74,7 +86,7 @@ impl Home {
     }
 
     pub fn path(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap()
+        self.root.clone()
     }
 
     fn launch_log(&self) -> PathBuf {
@@ -85,13 +97,6 @@ impl Home {
         self.path()
             .join("run/cockpit")
             .join(cockpit_config::DAEMON_SOCKET)
-    }
-
-    pub fn agent_socket_path(&self) -> PathBuf {
-        self.path()
-            .join("run/cockpit")
-            .join(cockpit_config::AGENT_SOCKET_DIR)
-            .join(cockpit_config::AGENT_SOCKET)
     }
 
     /// Every launch the fake agent logged, oldest first.
@@ -134,15 +139,13 @@ impl Home {
         }
     }
 
-    fn tmux(&self) -> Process {
-        let mut tmux = Process::new("tmux");
-        tmux.env_remove("TMUX")
-            .env("TMUX_TMPDIR", self.path().join("tmux"))
-            .args(["-L", "cockpit"]);
-        tmux
+    /// Every daemon's standard error, appended in the order they started.
+    fn stderr_log(&self) -> PathBuf {
+        self.path().join("daemon.stderr")
     }
 
-    /// Starts the daemon binary and waits for its `ready` line.
+    /// Starts the daemon binary and waits for its `ready` line. Its standard output is read
+    /// to the end and its standard error goes to a file, so neither pipe fills and blocks it.
     pub fn start(&self) -> Daemon {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
@@ -157,26 +160,27 @@ impl Home {
             .env("PATH", std::env::join_paths(search).unwrap())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.stderr_log())
+                    .expect("the daemon's standard error file opens"),
+            )
             .spawn()
             .expect("the daemon binary runs");
         let stdout = child.stdout.take().expect("stdout is piped");
         let (lines, ready) = mpsc::channel();
         std::thread::spawn(move || {
-            let mut first = String::new();
-            let _ = BufReader::new(stdout).read_line(&mut first);
-            let _ = lines.send(first);
+            let mut stdout = BufReader::new(stdout).lines();
+            let _ = lines.send(stdout.next().and_then(Result::ok).unwrap_or_default());
+            stdout.for_each(drop);
         });
-        let line = ready.recv_timeout(READY_WITHIN).unwrap_or_default();
-        let mut daemon = Daemon { child };
+        let line = ready.recv_timeout(SETTLED_WITHIN).unwrap_or_default();
+        let daemon = Daemon { child };
         if line.trim() != format!("ready {}", self.socket_path().display()) {
-            let _ = daemon.child.kill();
-            let mut stderr = String::new();
-            let _ = daemon
-                .child
-                .stderr
-                .take()
-                .map(|mut pipe| pipe.read_to_string(&mut stderr));
+            drop(daemon);
+            let stderr = std::fs::read_to_string(self.stderr_log()).unwrap_or_default();
             panic!("the daemon did not report ready: stdout {line:?}, stderr {stderr:?}");
         }
         daemon
@@ -216,7 +220,11 @@ impl Home {
 impl Drop for Home {
     /// The agents live in the private tmux server, which outlives every daemon.
     fn drop(&mut self) {
-        let _ = self.tmux().arg("kill-server").output();
+        let _ = Process::new("tmux")
+            .env_remove("TMUX")
+            .env("TMUX_TMPDIR", self.path().join("tmux"))
+            .args(["-L", "cockpit", "kill-server"])
+            .output();
     }
 }
 
@@ -257,44 +265,49 @@ fn git(dir: &Path, arguments: &[&str]) {
     );
 }
 
-pub async fn new_session(client: &Connection, dir: &Path) -> SessionView {
-    let command = Command::SessionNew {
+/// Starts a session with the fake Claude Code in `dir`, as the owner would.
+pub fn session_new_command(dir: &Path) -> Command {
+    Command::SessionNew {
         dir: dir.display().to_string(),
         agent: Some("claude".to_owned()),
         prompt: None,
         clone: None,
-    };
-    match client.request(command, Duration::from_secs(60)).await {
+    }
+}
+
+pub async fn new_session(client: &Connection, dir: &Path) -> SessionView {
+    let answer = client
+        .request(session_new_command(dir), Duration::from_secs(60))
+        .await;
+    match answer {
         Ok(Reply::Session { session }) => *session,
         other => panic!("session-new in {}: {other:?}", dir.display()),
     }
 }
 
-pub async fn sessions(client: &Connection) -> Result<Vec<SessionView>, ClientError> {
-    match client
-        .request(Command::SessionList { ended: true }, GENEROUS)
-        .await?
-    {
-        Reply::Sessions { sessions } => Ok(sessions),
-        other => panic!("session-list answered {other:?}"),
-    }
-}
-
 pub async fn listed(client: &Connection, id: &str) -> SessionView {
-    sessions(client)
-        .await
-        .expect("session-list is answered")
+    let answer = client
+        .request(Command::SessionList { ended: true }, GENEROUS)
+        .await;
+    let Ok(Reply::Sessions { sessions }) = answer else {
+        panic!("session-list answered {answer:?}");
+    };
+    sessions
         .into_iter()
         .find(|session| session.id == id)
         .unwrap_or_else(|| panic!("session {id} is listed"))
 }
 
-/// Waits until session `id` runs: any stop or launch under way has finished.
-pub async fn wait_for_running(client: &Connection, id: &str) -> SessionView {
-    let deadline = Instant::now() + Duration::from_secs(30);
+/// Waits until session `id` is in a state `wanted` accepts.
+pub async fn wait_for_state(
+    client: &Connection,
+    id: &str,
+    wanted: impl Fn(&SessionStateView) -> bool,
+) -> SessionView {
+    let deadline = Instant::now() + SETTLED_WITHIN;
     loop {
         let session = listed(client, id).await;
-        if session.state == cockpit_protocol::SessionStateView::Running {
+        if wanted(&session.state) {
             return session;
         }
         assert!(
@@ -302,8 +315,13 @@ pub async fn wait_for_running(client: &Connection, id: &str) -> SessionView {
             "session {id} stayed {:?}",
             session.state
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// Waits until session `id` runs: any stop or launch under way has finished.
+pub async fn wait_for_running(client: &Connection, id: &str) -> SessionView {
+    wait_for_state(client, id, |state| *state == SessionStateView::Running).await
 }
 
 /// Whether `pid` runs and is not a zombie.

@@ -6,10 +6,11 @@
 
 mod real_daemon;
 
-use std::time::{Duration, Instant};
-
 use cockpit_protocol::{Command, SessionStateView};
-use real_daemon::{GENEROUS, Home, SETTLE, is_alive, listed, new_session, wait_for_running};
+use real_daemon::{
+    GENEROUS, Home, SETTLE, STALL_PROJECT, is_alive, listed, new_session, wait_for_running,
+    wait_for_state,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_killed_daemon_reattaches_the_running_session_without_launching_it_again() {
@@ -43,9 +44,9 @@ async fn a_daemon_killed_while_it_restarts_a_stalled_agent_leaves_one_agent_runn
     let home = Home::new();
     let daemon = home.start();
     let client = home.connect().await;
-    // The fake agent in a directory named `stall` ignores `SIGTERM`, so the restart waits
-    // out its grace before it kills the agent; the daemon is killed inside that wait.
-    let (root, _) = home.project(&client, "stall").await;
+    // The stalled agent ignores `SIGTERM`, so the restart waits out its grace before it
+    // kills the agent; the daemon is killed inside that wait.
+    let (root, _) = home.project(&client, STALL_PROJECT).await;
     let started = new_session(&client, &root).await;
     home.wait_for_launches(&started.id, 1).await;
     let restarting = tokio::spawn({
@@ -57,7 +58,10 @@ async fn a_daemon_killed_while_it_restarts_a_stalled_agent_leaves_one_agent_runn
                 .await
         }
     });
-    wait_until_stopping(&client, &started.id).await;
+    wait_for_state(&client, &started.id, |state| {
+        matches!(state, SessionStateView::Stopping { .. })
+    })
+    .await;
     drop(client);
     daemon.kill();
     let _ = restarting.await;
@@ -78,16 +82,4 @@ async fn a_daemon_killed_while_it_restarts_a_stalled_agent_leaves_one_agent_runn
         launches.len() <= 2,
         "launched at most once more: {launches:?}"
     );
-}
-
-async fn wait_until_stopping(client: &cockpit_client::Connection, id: &str) {
-    let deadline = Instant::now() + GENEROUS;
-    loop {
-        let state = listed(client, id).await.state;
-        if matches!(state, SessionStateView::Stopping { .. }) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "session {id} stayed {state:?}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 }
