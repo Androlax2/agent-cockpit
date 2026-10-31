@@ -47,6 +47,8 @@ pub struct HostTools {
     /// `chrt` (util-linux), which starts a program under `SCHED_IDLE`; `None` when missing.
     pub chrt: Option<PathBuf>,
     pub nice: Option<PathBuf>,
+    /// The niceness the daemon runs at, which its executions inherit: `nice -n` adds to it.
+    pub own_niceness: i32,
 }
 
 impl HostTools {
@@ -62,6 +64,9 @@ impl HostTools {
                 None
             },
             nice: find_program("nice"),
+            // getpriority on the calling process has no failure case short of a broken libc;
+            // 0 is the niceness every process starts from.
+            own_niceness: rustix::process::getpriority_process(None).unwrap_or(0),
         }
     }
 }
@@ -75,6 +80,14 @@ fn find_program(name: &str) -> Option<PathBuf> {
             .map(|dir| Path::new(dir).join(name))
             .find(|candidate| candidate.is_file())
     })
+}
+
+/// `nice -n` adds to the niceness the daemon runs at, so the increment that lands an
+/// execution on `target` is the difference. `None` when the daemon already runs at least as
+/// nice: its children inherit that, and an unprivileged process cannot lower it.
+fn nice_increment(target: u64, own_niceness: i32) -> Option<i64> {
+    let increment = i64::try_from(target).ok()? - i64::from(own_niceness);
+    (increment > 0).then_some(increment)
 }
 
 /// What the cgroup probe found for this user's manager.
@@ -282,11 +295,16 @@ impl Backend {
     /// `chrt --idle`. Both act before the program runs, so every child inherits them.
     pub fn wrap(&self, spec: LaunchSpec, limits: &Limits) -> LaunchSpec {
         let mut prefix: Vec<OsString> = Vec::new();
-        if let (Some(nice), Some(niceness)) = (&self.tools.nice, limits.nice) {
+        if let (Some(nice), Some(increment)) = (
+            &self.tools.nice,
+            limits
+                .nice
+                .and_then(|target| nice_increment(target, self.tools.own_niceness)),
+        ) {
             prefix.extend([
                 nice.clone().into_os_string(),
                 "-n".into(),
-                niceness.to_string().into(),
+                increment.to_string().into(),
             ]);
         }
         if limits.idle_scheduling

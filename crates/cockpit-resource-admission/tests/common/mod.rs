@@ -180,6 +180,7 @@ exit 0
             proc_root: self.dir.path().join("proc"),
             chrt: Some(PathBuf::from("/usr/bin/chrt")),
             nice: Some(PathBuf::from("/usr/bin/nice")),
+            own_niceness: 0,
         }
     }
 

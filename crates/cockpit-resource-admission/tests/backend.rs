@@ -6,9 +6,11 @@ mod common;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use cockpit_processes::{Containment, Execution, ExecutionId, LaunchSpec, Phase};
+use cockpit_processes::{
+    Containment, Execution, ExecutionId, LaunchContainment, LaunchSpec, Phase,
+};
 use cockpit_resource_admission::{
-    Availability, Backend, Control, Effective, LimitReport, Limits, Observed,
+    Availability, Backend, Control, Effective, HostTools, LimitReport, Limits, Observed,
 };
 use common::*;
 
@@ -32,6 +34,16 @@ fn scope_execution(unit: &str) -> Execution {
         process_group: Some(i32::MAX),
         leader_start: Some("1".to_owned()),
         cancel_requested: false,
+    }
+}
+
+fn make_test() -> LaunchSpec {
+    LaunchSpec {
+        program: PathBuf::from("/usr/bin/make"),
+        arguments: vec![OsString::from("test")],
+        working_dir: PathBuf::from("/"),
+        environment: vec![],
+        terminal: None,
     }
 }
 
@@ -225,13 +237,7 @@ async fn freezing_a_scope_uses_the_cgroup_freezer() {
 async fn the_shims_wrap_the_program_so_every_child_inherits_nice_and_idle_scheduling() {
     let host = FakeHost::new("cpu memory pids\n");
     let backend = host.scope_backend().await;
-    let spec = LaunchSpec {
-        program: PathBuf::from("/usr/bin/make"),
-        arguments: vec![OsString::from("test")],
-        working_dir: PathBuf::from("/"),
-        environment: vec![],
-        terminal: None,
-    };
+    let spec = make_test();
     let limits = Limits {
         idle_scheduling: true,
         nice: Some(19),
@@ -253,6 +259,40 @@ async fn the_shims_wrap_the_program_so_every_child_inherits_nice_and_idle_schedu
             "test"
         ]
         .map(OsString::from)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_nice_shim_adds_only_what_lifts_the_daemons_own_niceness_to_the_target() {
+    let host = FakeHost::new("cpu memory pids\n");
+    let limits = Limits {
+        nice: Some(19),
+        ..Limits::default()
+    };
+    let mut wrapped = Vec::new();
+    for own_niceness in [-10, 5, 19] {
+        let tools = HostTools {
+            own_niceness,
+            ..host.tools()
+        };
+        let backend = Backend::detect(tools, LaunchContainment::SystemdScope)
+            .await
+            .unwrap();
+        let spec = backend.wrap(make_test(), &limits);
+        let mut argv = vec![spec.program.into_os_string()];
+        argv.extend(spec.arguments);
+        wrapped.push(argv);
+    }
+
+    assert_eq!(
+        wrapped,
+        [
+            vec!["/usr/bin/nice", "-n", "29", "/usr/bin/make", "test"],
+            vec!["/usr/bin/nice", "-n", "14", "/usr/bin/make", "test"],
+            vec!["/usr/bin/make", "test"],
+        ]
+        .map(|words| words.into_iter().map(OsString::from).collect::<Vec<_>>())
     );
 }
 
