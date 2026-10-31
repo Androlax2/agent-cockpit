@@ -1,0 +1,43 @@
+name: Greenfield work item
+description: A unit of the greenfield refactor, one pull request's worth of work.
+labels: ["greenfield"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Workflow and rules: [CONTRIBUTING.md](https://github.com/Androlax2/agent-cockpit/blob/main/CONTRIBUTING.md), which summarizes #17.
+  - type: input
+    id: owns
+    attributes:
+      label: Owns
+      description: What this work is responsible for, in one sentence.
+    validations:
+      required: true
+  - type: textarea
+    id: read
+    attributes:
+      label: Read
+      description: The design reports to load, beyond docs/design/greenfield/README.md. Nothing more.
+      placeholder: "- docs/design/greenfield/02-crate-architecture.md"
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in, as a list. Name what is deliberately out.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: Observable results, each provable by a test or a recorded run.
+    validations:
+      required: true
+  - type: input
+    id: depends-on
+    attributes:
+      label: Depends on
+      description: Issues that must be closed (or have an open pull request to stack on) first.
+      placeholder: "#18"
