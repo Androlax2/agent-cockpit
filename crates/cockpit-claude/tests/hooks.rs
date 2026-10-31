@@ -24,7 +24,7 @@ fn session_start_names_the_conversation() {
         kind("session-start"),
         EventKind::Started {
             conversation: Some(
-                ConversationId::new("0b7f3c1e-1f6a-4c55-a2a1-9e3c7c0d1a2b").unwrap()
+                ConversationId::new("49d695c9-4342-47df-a3fc-9cec34484f36").unwrap()
             )
         }
     );
@@ -43,7 +43,7 @@ fn each_pinned_payload_normalizes_to_its_event() {
         (
             "notification-permission-prompt",
             EventKind::NeedsYou {
-                question: Some("Claude needs your permission to use Bash".to_owned()),
+                question: Some("Claude needs your permission".to_owned()),
             },
         ),
         ("notification-idle-prompt", EventKind::Idle),
@@ -122,9 +122,7 @@ fn a_failure_without_its_reason_says_none() {
 /// An auto-compaction fires `SessionStart` in the middle of a turn: it proves no waiting.
 #[test]
 fn a_session_start_after_compaction_is_unknown() {
-    let payload = r#"{"hook_event_name":"SessionStart","session_id":"0b7f3c1e-1f6a-4c55-a2a1-9e3c7c0d1a2b","source":"compact"}"#;
-
-    assert_eq!(hooks::normalize(payload).unwrap().kind, EventKind::Unknown);
+    assert_eq!(kind("session-start-compact"), EventKind::Unknown);
 }
 
 #[test]
@@ -164,7 +162,7 @@ fn each_event_reports_its_state_through_the_agent_channel() {
                 "--state",
                 "waiting",
                 "--needs-input",
-                "Claude needs your permission to use Bash",
+                "Claude needs your permission",
             ]),
         ),
         (

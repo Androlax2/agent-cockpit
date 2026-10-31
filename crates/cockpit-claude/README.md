@@ -17,7 +17,10 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   is named from the start; a resumed one runs `--resume <id>`. `--remote-control` comes
   first (its optional name would take the next plain word), the first message last after
   `--`. Every launch passes `--settings` with the hook bridge; the hooks therefore run only
-  in this conversation, never in a nested `claude` a tool starts.
+  in this conversation, never in a nested `claude` a tool starts. Every launch sets
+  `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`: `/background` and the exit menu's "Move to
+  background" would continue the conversation in Claude Code's shared daemon, whose hooks
+  carry the launch token of whichever session started that daemon (#184).
 - **Hook bridge.** `cockpit-claude-hook <cockpit>` runs on `SessionStart`,
   `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `StopFailure` and `SessionEnd`,
   normalizes the payload (`hooks::normalize`) and reports through `cockpit agent report`.
@@ -44,6 +47,8 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   `tests/fixtures/claude-code-2.1.316/`, and the reports they become.
 - `tests/screen.rs`: the screen-reading fallback.
 - `tests/bridge.rs`: the hook bridge as a process against a fake `cockpit`.
+- `tests/live_hooks.rs` (live test ignored without an installed Claude Code): a real launch's
+  hooks report through the bridge with that launch's own token.
 - `tests/discover.rs`: finding `claude` and its version.
 - `tests/conformance.rs` (ignored without an installed Claude Code): the installed version is
   the pinned one and its `--help` documents every flag the adapter passes.
