@@ -172,12 +172,7 @@ async fn a_crash_before_the_identity_was_committed_is_recovered_from_the_leader_
         .launch(&database, &shell(&home, "exec sleep 300"))
         .await
         .unwrap();
-    set_column(
-        &database,
-        execution.id,
-        "phase = 'launching', process_group = NULL, leader_start = NULL",
-    )
-    .await;
+    forget_identity(&database, execution.id).await;
 
     let reconciled = supervisor.reconcile(&database).await.unwrap();
 
@@ -193,17 +188,14 @@ async fn a_crash_before_the_identity_was_committed_is_recovered_from_the_leader_
 async fn an_intent_with_no_identity_and_no_leader_file_stays_charged() {
     let home = Home::new();
     let database = home.open_database().await;
-    let supervisor = home.process_group_supervisor();
+    let mut supervisor = home.process_group_supervisor();
+    // A stop waits this long for a start confirmation that never comes here.
+    supervisor.launch_timeout = std::time::Duration::from_millis(200);
     let execution = supervisor
         .launch(&database, &shell(&home, "exec sleep 300"))
         .await
         .unwrap();
-    set_column(
-        &database,
-        execution.id,
-        "phase = 'launching', process_group = NULL, leader_start = NULL",
-    )
-    .await;
+    forget_identity(&database, execution.id).await;
     std::fs::remove_file(
         supervisor
             .execution_dir(&database, execution.id)

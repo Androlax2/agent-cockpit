@@ -118,8 +118,8 @@ impl Window {
 #[derive(Debug, Clone)]
 pub struct OutputStream {
     window: Arc<Mutex<Window>>,
-    /// The drained end offset, and whether the drainer finished; viewers wait on it.
-    progress: watch::Receiver<(u64, bool)>,
+    /// Ticks whenever the drainer changed the window; viewers wait on it.
+    progress: watch::Receiver<()>,
 }
 
 impl OutputStream {
@@ -138,7 +138,7 @@ impl OutputStream {
             finished: false,
             failure: None,
         }));
-        let (progress_sender, progress) = watch::channel((0, false));
+        let (progress_sender, progress) = watch::channel(());
         tokio::spawn(drain(
             path,
             limits,
@@ -183,7 +183,7 @@ async fn drain(
     path: PathBuf,
     limits: OutputLimits,
     window: Arc<Mutex<Window>>,
-    progress: watch::Sender<(u64, bool)>,
+    progress: watch::Sender<()>,
     ended: impl Future<Output = ()> + Send + 'static,
 ) {
     let drained = drain_until_ended(&path, limits, &window, &progress, ended).await;
@@ -192,22 +192,20 @@ async fn drain(
         .expect("the window lock is never held across a panic");
     window.finished = true;
     window.failure = drained.err().map(|error| error.to_string());
-    let end = window.end();
-    progress.send_replace((end, true));
+    progress.send_replace(());
 }
 
 async fn drain_until_ended(
     path: &std::path::Path,
     limits: OutputLimits,
     window: &Mutex<Window>,
-    progress: &watch::Sender<(u64, bool)>,
+    progress: &watch::Sender<()>,
     ended: impl Future<Output = ()>,
 ) -> Result<(), Error> {
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(Error::io("open", path))?;
     let mut chunk = vec![0; limits.chunk_bytes];
-    let mut drained: u64 = 0;
     let mut ended = std::pin::pin!(ended);
     let mut has_ended = false;
     loop {
@@ -220,12 +218,11 @@ async fn drain_until_ended(
             .await
             .map_err(Error::io("read", path))?;
         if read > 0 {
-            drained += read as u64;
             window
                 .lock()
                 .expect("the window lock is never held across a panic")
                 .push(&chunk[..read]);
-            progress.send_replace((drained, false));
+            progress.send_replace(());
             continue;
         }
         if has_ended {

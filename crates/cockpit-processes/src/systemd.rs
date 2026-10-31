@@ -33,18 +33,6 @@ impl SystemdTools {
             .is_ok()
     }
 
-    /// The launcher arguments that put the program into `unit` before it runs.
-    pub(crate) fn scope_arguments(unit: &str) -> Vec<String> {
-        vec![
-            "--user".to_owned(),
-            "--scope".to_owned(),
-            "--collect".to_owned(),
-            "--quiet".to_owned(),
-            format!("--unit={unit}"),
-            "--".to_owned(),
-        ]
-    }
-
     /// Signals every process of the scope's cgroup, whatever process group it is in.
     pub(crate) async fn signal(&self, unit: &str, signal: Signal) -> Result<(), Error> {
         let name = match signal {

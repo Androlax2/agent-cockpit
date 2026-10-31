@@ -37,8 +37,13 @@ async fn open_database(home: &TestHome) -> Database {
 
 /// The supervisor a daemon on this home uses, with process-group containment.
 fn supervisor(home: &TestHome) -> Supervisor {
+    let options = cockpit_daemon::Options {
+        runtime_dir: home.socket_dir(),
+        state_dir: state_dir(home),
+        limits: cockpit_daemon::Limits::default(),
+    };
     Supervisor::new(
-        state_dir(home).join("executions"),
+        options.executions_dir(),
         LaunchContainment::ProcessGroup,
         SystemdTools::from_path(),
     )

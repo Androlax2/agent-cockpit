@@ -10,7 +10,6 @@ use std::time::Duration;
 use cockpit_turso::Database;
 use tokio::sync::{OnceCell, oneshot};
 
-use crate::model::{PROCESS_GROUP, SYSTEMD_SCOPE};
 use crate::output::{OutputKind, OutputLimits, OutputStream};
 use crate::platform::{self, LAUNCH_SCRIPT};
 use crate::systemd::SystemdTools;
@@ -51,9 +50,11 @@ pub struct Supervisor {
 
 /// What the system shows of an execution's processes right now.
 enum Presence {
-    /// Positively identified; `confirmed` is the leader file once the program wrote it.
+    /// Positively identified. The row and the leader file merged: `process_group` is known
+    /// for a process-group execution, `leader_start` once the program confirmed its start.
     Ours {
-        confirmed: Option<(i32, String)>,
+        process_group: Option<i32>,
+        leader_start: Option<String>,
     },
     Gone(EndReason),
     /// Neither identified nor observed gone; the reservation stays charged.
@@ -113,13 +114,8 @@ impl Supervisor {
     /// and may still start; [`Supervisor::observe`] or [`Supervisor::reconcile`] decides.
     pub async fn launch(&self, database: &Database, spec: &LaunchSpec) -> Result<Execution, Error> {
         let boot_id = self.boot_id().await?.to_owned();
-        let containment_kind = match self.launch_containment {
-            LaunchContainment::SystemdScope => SYSTEMD_SCOPE,
-            LaunchContainment::ProcessGroup => PROCESS_GROUP,
-        };
-        let unit_prefix = format!("cockpit-{}", database.epoch());
         let (id, containment) =
-            store::record_intent(database, containment_kind, &unit_prefix, &boot_id).await?;
+            store::record_intent(database, self.launch_containment, &boot_id).await?;
         let mut launcher = match self.spawn(self.execution_dir(database, id), &containment, spec) {
             Ok(launcher) => launcher,
             Err(error) => {
@@ -161,15 +157,17 @@ impl Supervisor {
                 .open(&path)
                 .map_err(Error::io("create", path))
         };
-        let mut command = match containment {
-            Containment::SystemdScope { unit } => {
-                let mut command = tokio::process::Command::new(&self.systemd.systemd_run);
-                command.args(SystemdTools::scope_arguments(unit));
-                command.arg("/bin/sh");
-                command
-            }
-            Containment::ProcessGroup => tokio::process::Command::new("/bin/sh"),
+        let program = match containment {
+            Containment::SystemdScope { .. } => self.systemd.systemd_run.clone(),
+            Containment::ProcessGroup => PathBuf::from("/bin/sh"),
         };
+        let mut command = tokio::process::Command::new(&program);
+        if let Containment::SystemdScope { unit } = containment {
+            command
+                .args(["--user", "--scope", "--collect", "--quiet"])
+                .arg(format!("--unit={unit}"))
+                .args(["--", "/bin/sh"]);
+        }
         command
             .arg("-c")
             .arg(LAUNCH_SCRIPT)
@@ -194,10 +192,6 @@ impl Supervisor {
                 }
             }
         }
-        let program = match containment {
-            Containment::SystemdScope { .. } => self.systemd.systemd_run.clone(),
-            Containment::ProcessGroup => PathBuf::from("/bin/sh"),
-        };
         command.spawn().map_err(Error::io("spawn", program))
     }
 
@@ -256,23 +250,23 @@ impl Supervisor {
         store::execution(database, id).await
     }
 
+    /// Looks at the real processes, records a confirmed start or an end, and answers what
+    /// it saw; a gone execution carries the end reason it was recorded with.
     async fn record_presence(
         &self,
         database: &Database,
         execution: &Execution,
     ) -> Result<Presence, Error> {
-        if !execution.phase.is_occupying() {
-            return Ok(Presence::Gone(match execution.phase {
-                Phase::Ended(reason) => reason,
-                _ => unreachable!("not occupying means ended"),
-            }));
+        if let Phase::Ended(reason) = execution.phase {
+            return Ok(Presence::Gone(reason));
         }
         let presence = self.presence(database, execution).await?;
         match &presence {
             Presence::Ours {
-                confirmed: Some((pid, start)),
+                process_group: Some(group),
+                leader_start: Some(start),
             } if execution.phase == Phase::Launching => {
-                store::record_running(database, execution.id, *pid, start).await?;
+                store::record_running(database, execution.id, *group, start).await?;
             }
             Presence::Gone(reason) => {
                 let reason = match reason {
@@ -280,6 +274,7 @@ impl Supervisor {
                     reason => *reason,
                 };
                 store::record_ended(database, execution.id, reason).await?;
+                return Ok(Presence::Gone(reason));
             }
             Presence::Ours { .. } | Presence::Unidentified => {}
         }
@@ -294,61 +289,58 @@ impl Supervisor {
         if execution.boot_id != self.boot_id().await? {
             return Ok(Presence::Gone(EndReason::HostRestarted));
         }
-        let leader_path = self.execution_dir(database, execution.id).join(LEADER_FILE);
-        let leader_file = read_leader_file(&leader_path)
-            .await?
-            .filter(|(pid, _)| execution.process_group.is_none_or(|group| group == *pid));
-        let started = execution.leader_start.is_some() || leader_file.is_some();
-        let gone = Presence::Gone(if started {
+        // Once running, the row holds everything the leader file says.
+        let leader_file = if execution.phase == Phase::Launching {
+            let leader_path = self.execution_dir(database, execution.id).join(LEADER_FILE);
+            read_leader_file(&leader_path)
+                .await?
+                .filter(|(pid, _)| execution.process_group.is_none_or(|group| group == *pid))
+        } else {
+            None
+        };
+        let (file_group, file_start) = leader_file.unzip();
+        let process_group = execution.process_group.or(file_group);
+        let leader_start = execution.leader_start.clone().or(file_start);
+        let gone = Presence::Gone(if leader_start.is_some() {
             EndReason::Exited
         } else {
             EndReason::NeverStarted
         });
+        let ours = Presence::Ours {
+            process_group,
+            leader_start: leader_start.clone(),
+        };
         if let Containment::SystemdScope { unit } = &execution.containment {
             if self.systemd.is_active(unit).await? {
-                return Ok(Presence::Ours {
-                    confirmed: leader_file,
-                });
+                return Ok(ours);
             }
             // Until `systemd-run` registered the scope, the unit reads as unknown, which
             // `systemctl` answers as `inactive`; the launcher's own group is still alive.
             let launcher_alive = execution
                 .process_group
                 .is_some_and(platform::group_has_members);
-            return Ok(if !started && launcher_alive {
+            return Ok(if leader_start.is_none() && launcher_alive {
                 Presence::Unidentified
             } else {
                 gone
             });
         }
-        let Some(process_group) = execution
-            .process_group
-            .or(leader_file.as_ref().map(|(pid, _)| *pid))
-        else {
+        let Some(process_group) = process_group else {
             return Ok(Presence::Unidentified);
         };
         if !platform::group_has_members(process_group) {
             return Ok(gone);
         }
-        let expected_start = execution
-            .leader_start
-            .clone()
-            .or(leader_file.as_ref().map(|(_, start)| start.clone()));
         let current_start = platform::leader_start(process_group).await?;
-        Ok(match (expected_start, current_start) {
-            // The leader exited and its group lives on. A group id is reused only after the
-            // group emptied and a new process with that pid made itself leader, which the
-            // leader-start check below catches while that new leader runs.
-            (_, None) => Presence::Ours {
-                confirmed: leader_file,
-            },
-            (Some(expected), Some(current)) if expected == current => Presence::Ours {
-                confirmed: leader_file,
-            },
-            (Some(_), Some(_)) => gone,
+        Ok(match (leader_start.as_deref(), current_start) {
+            (Some(expected), Some(current)) if expected != current => gone,
             // A pid but no start token: the program has not confirmed its start, so a live
             // process with that pid cannot be told apart from a reused one.
             (None, Some(_)) => Presence::Unidentified,
+            // The same leader, or a leader that exited while its group lives on. A group id
+            // is reused only after the group emptied and a new process with that pid made
+            // itself leader, which the start-token check above catches while it runs.
+            _ => ours,
         })
     }
 
@@ -363,16 +355,17 @@ impl Supervisor {
     ) -> Result<Termination, Error> {
         store::record_cancel_requested(database, id).await?;
         let (execution, presence) = self.identify_for_termination(database, id).await?;
-        let identity = match presence {
+        let process_group = match presence {
             Presence::Gone(_) => return Ok(Termination::Confirmed { after: None }),
             Presence::Unidentified => return Ok(Termination::Unconfirmed),
-            Presence::Ours { confirmed } => SignalTarget::of(&execution, confirmed),
+            Presence::Ours { process_group, .. } => process_group,
         };
         for (signal, wait) in [
             (Signal::Term, escalation.grace),
             (Signal::Kill, escalation.kill_wait),
         ] {
-            self.signal(&identity, signal).await?;
+            self.signal(&execution.containment, process_group, signal)
+                .await?;
             if self.wait_until_ended(database, id, wait).await? {
                 return Ok(Termination::Confirmed {
                     after: Some(signal),
@@ -402,10 +395,18 @@ impl Supervisor {
         }
     }
 
-    async fn signal(&self, target: &SignalTarget, signal: Signal) -> Result<(), Error> {
-        match target {
-            SignalTarget::Unit(unit) => self.systemd.signal(unit, signal).await,
-            SignalTarget::ProcessGroup(group) => platform::signal_group(*group, signal),
+    async fn signal(
+        &self,
+        containment: &Containment,
+        process_group: Option<i32>,
+        signal: Signal,
+    ) -> Result<(), Error> {
+        match containment {
+            Containment::SystemdScope { unit } => self.systemd.signal(unit, signal).await,
+            Containment::ProcessGroup => platform::signal_group(
+                process_group.expect("an identified process-group execution has its group"),
+                signal,
+            ),
         }
     }
 
@@ -418,7 +419,8 @@ impl Supervisor {
     ) -> Result<bool, Error> {
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            if !self.observe(database, id).await?.phase.is_occupying() {
+            let execution = store::execution(database, id).await?;
+            if let Presence::Gone(_) = self.record_presence(database, &execution).await? {
                 return Ok(true);
             }
             if tokio::time::Instant::now() >= deadline {
@@ -439,10 +441,7 @@ impl Supervisor {
             let id = execution.id;
             reconciled.push(match self.record_presence(database, &execution).await {
                 Ok(Presence::Ours { .. }) => Reconciled::Reattached(id),
-                Ok(Presence::Gone(_)) => match store::execution(database, id).await?.phase {
-                    Phase::Ended(reason) => Reconciled::Ended(id, reason),
-                    _ => unreachable!("record_presence ended a gone execution"),
-                },
+                Ok(Presence::Gone(reason)) => Reconciled::Ended(id, reason),
                 Ok(Presence::Unidentified) => Reconciled::Uncertain(id),
                 Err(error @ Error::Database(_)) => return Err(error),
                 Err(error) => Reconciled::Unchecked(id, error.to_string()),
@@ -462,43 +461,22 @@ impl Supervisor {
         let identity = execution.identity().ok_or(Error::NotIdentified {
             execution: execution.id,
         })?;
-        let supervisor = self.clone();
+        let systemd = self.systemd.clone();
         let path = self.output_path(database, execution.id, kind);
         Ok(OutputStream::follow(path, self.output_limits, async move {
-            while supervisor.identity_present(&identity).await {
+            while identity_present(&systemd, &identity).await {
                 tokio::time::sleep(PRESENCE_POLL_INTERVAL).await;
             }
         }))
     }
-
-    /// Whether processes of `identity` remain; a failing query counts as present, so output
-    /// is never cut short by a flaky `systemctl`.
-    async fn identity_present(&self, identity: &Identity) -> bool {
-        match &identity.containment {
-            Containment::SystemdScope { unit } => {
-                self.systemd.is_active(unit).await.unwrap_or(true)
-            }
-            Containment::ProcessGroup => platform::group_has_members(identity.process_group),
-        }
-    }
 }
 
-enum SignalTarget {
-    Unit(String),
-    ProcessGroup(i32),
-}
-
-impl SignalTarget {
-    fn of(execution: &Execution, confirmed: Option<(i32, String)>) -> SignalTarget {
-        match &execution.containment {
-            Containment::SystemdScope { unit } => SignalTarget::Unit(unit.clone()),
-            Containment::ProcessGroup => SignalTarget::ProcessGroup(
-                execution
-                    .process_group
-                    .or(confirmed.map(|(pid, _)| pid))
-                    .expect("an identified process-group execution has its group"),
-            ),
-        }
+/// Whether processes of `identity` remain; a failing query counts as present, so output is
+/// never cut short by a flaky `systemctl`.
+async fn identity_present(systemd: &SystemdTools, identity: &Identity) -> bool {
+    match &identity.containment {
+        Containment::SystemdScope { unit } => systemd.is_active(unit).await.unwrap_or(true),
+        Containment::ProcessGroup => platform::group_has_members(identity.process_group),
     }
 }
 
