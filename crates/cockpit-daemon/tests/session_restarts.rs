@@ -181,7 +181,6 @@ impl Home {
                                     home: Some(self.path().join("home").into()),
                                     ..cockpit_config::Environment::default()
                                 },
-                                cockpit_daemon::runner(Vec::new()).unwrap(),
                             ))
                         })
                         .await
