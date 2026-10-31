@@ -205,8 +205,8 @@ async fn an_intent_with_no_identity_and_no_leader_file_stays_charged() {
     )
     .await;
     std::fs::remove_file(
-        home.executions_dir()
-            .join(execution.id.0.to_string())
+        supervisor
+            .execution_dir(&database, execution.id)
             .join("leader"),
     )
     .unwrap();
@@ -226,5 +226,68 @@ async fn an_intent_with_no_identity_and_no_leader_file_stays_charged() {
         kept.phase.is_occupying() && kept.cancel_requested,
         "{kept:?}"
     );
+    kill_group(execution.process_group.unwrap());
+}
+
+/// A stop that races the launch waits for the start confirmation instead of being lost.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_requested_while_the_launcher_is_slow_terminates_once_it_started() {
+    let home = Home::new();
+    let fakes = FakeSystemd::new();
+    fakes.delay_launch(1);
+    let database = home.open_database().await;
+    let mut supervisor = home.scope_supervisor(&fakes);
+    supervisor.launch_timeout = std::time::Duration::from_millis(100);
+    let error = supervisor
+        .launch(&database, &shell(&home, "exec sleep 300"))
+        .await
+        .unwrap_err();
+    let Error::LaunchTimedOut { execution } = error else {
+        panic!("expected a launch timeout, got {error}");
+    };
+
+    let observed = supervisor.observe(&database, execution).await.unwrap();
+    supervisor.launch_timeout = GENEROUS;
+    let termination = supervisor
+        .terminate(&database, execution, QUICK_ESCALATION)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        observed.phase,
+        Phase::Launching,
+        "an unregistered scope is not gone"
+    );
+    assert_eq!(
+        termination,
+        Termination::Confirmed {
+            after: Some(Signal::Term)
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_execution_that_cannot_be_checked_stays_charged_without_stopping_reconciliation() {
+    let home = Home::new();
+    let fakes = FakeSystemd::new();
+    let database = home.open_database().await;
+    let supervisor = home.scope_supervisor(&fakes);
+    let execution = supervisor
+        .launch(&database, &shell(&home, "exec sleep 300"))
+        .await
+        .unwrap();
+    fakes.break_manager();
+
+    let reconciled = supervisor.reconcile(&database).await.unwrap();
+
+    let [Reconciled::Unchecked(id, reason)] = reconciled.as_slice() else {
+        panic!("expected one unchecked execution, got {reconciled:?}");
+    };
+    assert_eq!(*id, execution.id);
+    assert!(reason.contains("Failed to connect to bus"), "{reason}");
+    let kept = cockpit_processes::execution(&database, execution.id)
+        .await
+        .unwrap();
+    assert!(kept.phase.is_occupying());
     kill_group(execution.process_group.unwrap());
 }

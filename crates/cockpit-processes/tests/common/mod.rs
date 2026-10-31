@@ -184,8 +184,9 @@ if [ -f "$state/fail" ]; then
   echo "Failed to connect to bus: No such file or directory" >&2
   exit 1
 fi
-printf '%s\n' "$$" > "$state/$unit"
+# The unit exists only once the manager registered it, after the (optional) delay.
 if [ -f "$state/delay" ]; then sleep "$(cat "$state/delay")"; fi
+printf '%s\n' "$$" > "$state/$unit"
 exec "$@"
 "#;
 
@@ -200,6 +201,7 @@ case $2 in
     /bin/kill -s "$signal" -- "-$(cat "$state/$5")" 2>/dev/null
     exit 0 ;;
   show)
+    if [ -f "$state/broken" ]; then echo "Failed to connect to bus" >&2; exit 1; fi
     if [ -f "$state/$5" ] && /bin/kill -s 0 -- "-$(cat "$state/$5")" 2>/dev/null; then
       echo active
     else
@@ -237,6 +239,11 @@ impl FakeSystemd {
 
     pub fn fail_launch(&self) {
         std::fs::write(self.dir.path().join("fail"), "").unwrap();
+    }
+
+    /// Makes `systemctl show` fail, as a manager that stopped answering does.
+    pub fn break_manager(&self) {
+        std::fs::write(self.dir.path().join("broken"), "").unwrap();
     }
 
     pub fn without_manager(&self) {

@@ -58,7 +58,7 @@ async fn termination_signals_the_whole_scope_through_systemctl() {
     );
     assert!(
         fakes.calls().contains(&format!(
-            "systemctl --user kill --kill-whom=all --signal=SIGTERM {unit}"
+            "systemctl --user kill --kill-who=all --signal=SIGTERM {unit}"
         )),
         "{:?}",
         fakes.calls()

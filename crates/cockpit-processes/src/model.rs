@@ -159,7 +159,7 @@ pub enum Termination {
 }
 
 /// What startup reconciliation decided for one execution (report 03, restart contract).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciled {
     /// Positively identified as still running: reattached, reservation kept.
     Reattached(ExecutionId),
@@ -167,4 +167,6 @@ pub enum Reconciled {
     Ended(ExecutionId, EndReason),
     /// Neither identified nor observed gone: the reservation stays charged.
     Uncertain(ExecutionId),
+    /// Checking failed (the reason says why): the reservation stays charged.
+    Unchecked(ExecutionId, String),
 }

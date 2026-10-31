@@ -69,8 +69,12 @@ async fn the_environment_is_exactly_the_launch_specs() {
     let execution = supervisor.launch(&database, &spec).await.unwrap();
     wait_until_ended(&supervisor, &database, execution.id).await;
 
-    let printed =
-        std::fs::read_to_string(supervisor.output_path(execution.id, OutputKind::Stdout)).unwrap();
+    let printed = std::fs::read_to_string(supervisor.output_path(
+        &database,
+        execution.id,
+        OutputKind::Stdout,
+    ))
+    .unwrap();
     assert!(printed.contains("COCKPIT_TEST_ONLY=passed"), "{printed}");
     assert!(!printed.contains("HOME="), "{printed}");
 }
@@ -191,9 +195,12 @@ async fn output_is_drained_from_the_files_the_program_writes() {
         .launch(&database, &shell(&home, "echo out; echo err >&2"))
         .await
         .unwrap();
-    let identity = execution.identity().unwrap();
-    let stdout = supervisor.follow_output(identity.clone(), execution.id, OutputKind::Stdout);
-    let stderr = supervisor.follow_output(identity, execution.id, OutputKind::Stderr);
+    let stdout = supervisor
+        .follow_output(&database, &execution, OutputKind::Stdout)
+        .unwrap();
+    let stderr = supervisor
+        .follow_output(&database, &execution, OutputKind::Stderr)
+        .unwrap();
 
     assert_eq!(
         stdout.read(0, 1024).await,

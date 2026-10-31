@@ -134,6 +134,11 @@ async fn reconcile(
                 execution = id.0,
                 "kept an unidentified execution charged; it may still be running"
             ),
+            cockpit_processes::Reconciled::Unchecked(id, reason) => tracing::warn!(
+                execution = id.0,
+                reason,
+                "kept an execution charged that could not be checked"
+            ),
         }
     }
     tracing::info!(executions = reconciled.len(), "reconciled durable state");

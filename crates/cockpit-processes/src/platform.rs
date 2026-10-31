@@ -92,26 +92,17 @@ pub(crate) async fn leader_start(pid: i32) -> Result<Option<String>, Error> {
     Ok((output.status.success() && !start.is_empty()).then_some(start))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GroupState {
-    /// No process has this process group id.
-    Empty,
-    /// The group has members this user may signal.
-    Present,
-    /// The group has members of another user: whatever it is, it is not this user's.
-    Foreign,
-}
-
-pub(crate) fn group_state(process_group: i32) -> GroupState {
+/// Whether any process has this process group id. `EPERM` counts as members: a group whose
+/// remaining members run as another user (a `sudo` child) still holds the execution, and
+/// the leader-start check, not this probe, tells a reused group id apart.
+pub(crate) fn group_has_members(process_group: i32) -> bool {
     let Some(pid) = Pid::from_raw(process_group) else {
-        return GroupState::Empty;
+        return false;
     };
-    match rustix::process::test_kill_process_group(pid) {
-        Ok(()) => GroupState::Present,
-        Err(Errno::SRCH) => GroupState::Empty,
-        // EPERM is the only other answer kill(2) gives a valid signal: members exist.
-        Err(_) => GroupState::Foreign,
-    }
+    !matches!(
+        rustix::process::test_kill_process_group(pid),
+        Err(Errno::SRCH)
+    )
 }
 
 /// Sends `signal` to every member of `process_group`. An empty group is not an error: it is
