@@ -42,7 +42,8 @@ impl Instance {
     ///
     /// Two sockets share the handler and the lanes: the host-only socket, whose peers are
     /// the owner, and the agent socket the sandboxes reach, whose peers are only ever agents
-    /// (report 17). Each has its own connection limit, so agents cannot crowd the owner out.
+    /// (report 17). Each has its own connection limit, so agents cannot take the owner's
+    /// connections; agent requests share the bulk lane with the owner's bulk work.
     pub async fn start(
         self,
         routes: impl FnOnce(Arc<cockpit_turso::Database>) -> Arc<dyn Handler>,

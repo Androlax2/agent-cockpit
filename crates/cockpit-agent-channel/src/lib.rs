@@ -11,7 +11,7 @@ use cockpit_turso::{Migration, MigrationSet};
 pub use answers::{AnswersDirectory, AnswersError, ProjectKey};
 pub use error::{Error, Refusal, Unblock, UnblockedBy};
 pub use launch::{LaunchToken, PeerAncestry, identify, mint, record_root};
-pub use process::{ProcessError, ProcessIdentity, ancestry, identity_of};
+pub use process::{ProcessError, ProcessIdentity, ancestry, ancestry_of, identity_of};
 pub use reports::{AgentState, Report, SessionReport, latest_reports, report};
 
 /// The channel's tables. A launch is pending (`token` set, `bound_at` unset) until a report
@@ -34,8 +34,8 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK ((bound_at IS NULL) = (token IS NOT NULL)),
                 CHECK (bound_at IS NULL OR root_pid IS NOT NULL)
             );
-            CREATE INDEX agent_channel_launch_roots
-                ON agent_channel_launches (root_pid, root_start);
+            CREATE UNIQUE INDEX agent_channel_launch_roots
+                ON agent_channel_launches (root_pid, root_start, root_boot);
             CREATE TABLE agent_channel_reports (
                 session TEXT PRIMARY KEY CHECK (session <> ''),
                 state TEXT CHECK (state IN ('working', 'waiting')),

@@ -15,7 +15,8 @@ there; it never builds against `cockpit-protocol` (crate-graph rule
   alone. Same UID on both, so which socket a connection came through is what separates owner
   from agent; the kernel's peer pid is what separates one agent from another. Each socket has
   its own connection limit, and agent requests run in the bulk lane, so sandboxed senders
-  never take the owner's control capacity (report 03).
+  never take the owner's control capacity (report 03). They share the bulk lane with the
+  owner's bulk work; a separate agent lane waits until measured contention asks for it.
 - **Identity.** A launch is minted for a session (token) and then given its root process
   (`record_root`), since the token must exist before the process does. A process is boot
   id, pid and start time, so a reused pid never matches. The first request carrying the token
@@ -23,7 +24,10 @@ there; it never builds against `cockpit-protocol` (crate-graph rule
   presented from another tree is refused and stays unspent, so a leaked token cannot lock the
   real agent out. Later requests are identified by ancestry alone: the nearest bound root wins,
   which is how nested agents inherit their parent's identity and grants. A process whose
-  parent exited is reparented and loses its identity: fail closed.
+  parent exited is reparented and loses its identity: fail closed. The connecting process is
+  identified (pid and start time) when the daemon accepts the connection, and each request
+  reads the ancestry only while that pid still names it, so a connection handed to another
+  process cannot borrow a session after its pid is reused. A process roots at most one launch.
 - **Tokens are stored as written.** The state database is owner-private and a token lives
   only until its first report; hashing would need a new dependency for no reader that the
   file permissions do not already stop.
@@ -32,7 +36,12 @@ there; it never builds against `cockpit-protocol` (crate-graph rule
   rule. macOS stays `validate` (report 11).
 - **Reports live in the channel until `cockpit-sessions` (#31).** Its table is the session
   state #31 takes over; reporting `working` clears the open question, as today's
-  `cockpit-needs-input` flag clears when the owner answers.
+  `cockpit-needs-input` flag clears when the owner answers, and asking a question marks the
+  session `waiting` (`working` with a question is refused). Text is refused when it carries
+  control characters, characters that reorder or hide text, or the tmux sequences `#(`, `#{`
+  and `#[`; a plain `#` stays, and a tmux renderer escapes it.
+- **Answers are written once.** An answer is published with a hard link, never a rename, so
+  of two writers of one name the second is refused instead of overwriting the first.
 - **Refusals.** `ProtocolError` gained an optional `unblock` (`action`, `by`: `owner`,
   `agent`, `cockpit`) and the codes `unidentified-peer` and `invalid-argument`. A refused
   request changes nothing: the token, if any, stays unspent.

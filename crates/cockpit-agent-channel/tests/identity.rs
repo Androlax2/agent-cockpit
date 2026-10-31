@@ -5,7 +5,8 @@
 mod common;
 
 use cockpit_agent_channel::{
-    Error, PeerAncestry, ProcessError, ProcessIdentity, Refusal, ancestry, identify, mint,
+    Error, PeerAncestry, ProcessError, ProcessIdentity, Refusal, ancestry, ancestry_of, identify,
+    mint,
 };
 use cockpit_authorization::SessionId;
 use cockpit_turso::Database;
@@ -217,6 +218,24 @@ fn the_ancestry_of_an_exited_process_is_gone() {
 }
 
 #[test]
+fn a_pid_now_naming_a_later_process_is_gone() {
+    let mut connector = this_process_identity();
+    connector.start -= 1;
+
+    assert_eq!(
+        ancestry_of(&connector),
+        Err(ProcessError::Gone { pid: connector.pid })
+    );
+}
+
+#[test]
+fn the_ancestry_of_a_live_process_starts_at_it() {
+    let process = this_process_identity();
+
+    assert_eq!(ancestry_of(&process).unwrap()[0], process);
+}
+
+#[test]
 fn the_ancestry_runs_from_the_process_up_to_a_root_without_parent() {
     let chain = this_process().unwrap();
 
@@ -225,4 +244,20 @@ fn the_ancestry_runs_from_the_process_up_to_a_root_without_parent() {
         chain.windows(2).all(|pair| pair[1].start <= pair[0].start),
         "{chain:?}"
     );
+}
+
+#[tokio::test]
+async fn a_process_roots_at_most_one_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = open(dir.path()).await;
+    launch(&database, &session("s1"), &this_process_identity()).await;
+    let write = database.write().await.unwrap();
+    cockpit_agent_channel::mint(&write, &session("s2"))
+        .await
+        .unwrap();
+
+    let recorded =
+        cockpit_agent_channel::record_root(&write, &session("s2"), &this_process_identity()).await;
+
+    assert!(matches!(recorded, Err(Error::Database(_))), "{recorded:?}");
 }

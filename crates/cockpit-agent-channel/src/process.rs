@@ -37,15 +37,28 @@ impl fmt::Display for ProcessError {
 
 impl std::error::Error for ProcessError {}
 
-/// Deepest tree walked; a longer chain means the table changed under the walk.
+/// Deepest tree walked. Linux allows deeper trees in principle; a chain this long is refused
+/// as unverifiable rather than cut short, which could skip the real root.
 const MAX_DEPTH: usize = 4096;
 
 /// `pid` and each of its ancestors, nearest first, ending at the first process without a
 /// parent. The walk stops early at a parent that started after its child: that pid was
 /// reused after the real parent exited, so nothing above it is this process's ancestry.
-/// Blocking: it reads the kernel's process table.
+/// A parent that exits during the walk ends the chain too; any other unreadable entry is an
+/// error, never a shorter chain. Blocking: it reads the kernel's process table.
 pub fn ancestry(pid: u32) -> Result<Vec<ProcessIdentity>, ProcessError> {
     platform::ancestry(pid)
+}
+
+/// The ancestry of `process`, read only while its pid still names it: a pid reused by a later
+/// process reads as [`ProcessError::Gone`], never as that process's tree. Blocking, like
+/// [`ancestry`].
+pub fn ancestry_of(process: &ProcessIdentity) -> Result<Vec<ProcessIdentity>, ProcessError> {
+    let chain = ancestry(process.pid)?;
+    if chain.first() != Some(process) {
+        return Err(ProcessError::Gone { pid: process.pid });
+    }
+    Ok(chain)
 }
 
 /// The identity of the process `pid`. Blocking, like [`ancestry`].
@@ -66,12 +79,18 @@ mod platform {
         let (mut current, mut parent) = stat(pid, &boot)?;
         loop {
             chain.push(current);
-            if parent == 0 || chain.len() == MAX_DEPTH {
+            if parent == 0 {
                 return Ok(chain);
             }
-            let Ok((ancestor, grandparent)) = stat(parent, &boot) else {
-                // The parent exited after the child was read: the chain ends there.
-                return Ok(chain);
+            if chain.len() == MAX_DEPTH {
+                return Err(ProcessError::Unreadable {
+                    reason: format!("process {pid} has more than {MAX_DEPTH} ancestors"),
+                });
+            }
+            let (ancestor, grandparent) = match stat(parent, &boot) {
+                Ok(entry) => entry,
+                Err(ProcessError::Gone { .. }) => return Ok(chain),
+                Err(error) => return Err(error),
             };
             if ancestor.start > chain.last().expect("the chain is never empty").start {
                 return Ok(chain);

@@ -68,6 +68,37 @@ fn a_second_answer_with_the_same_name_is_refused() {
 }
 
 #[test]
+fn of_writers_racing_on_one_name_exactly_one_answers() {
+    let (_runtime, root) = answers_root();
+    let answers = AnswersDirectory::prepare(&root, &project("agent-cockpit")).unwrap();
+
+    let answers = &answers;
+    let outcomes: Vec<_> = std::thread::scope(|scope| {
+        let writers: Vec<_> = (0..8u8)
+            .map(|writer| scope.spawn(move || answers.write("run-1.json", &[writer])))
+            .collect();
+        writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect()
+    });
+
+    let answered: Vec<_> = outcomes.iter().filter(|outcome| outcome.is_ok()).collect();
+    assert_eq!(answered.len(), 1, "{outcomes:?}");
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, Ok(_) | Err(AnswersError::AlreadyAnswered { .. }))),
+        "{outcomes:?}"
+    );
+    let entries: Vec<_> = fs::read_dir(answers.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, vec!["run-1.json"]);
+}
+
+#[test]
 fn answer_names_that_could_leave_the_directory_are_refused() {
     let (_runtime, root) = answers_root();
     let answers = AnswersDirectory::prepare(&root, &project("agent-cockpit")).unwrap();

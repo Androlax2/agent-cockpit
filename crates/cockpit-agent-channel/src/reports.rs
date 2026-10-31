@@ -150,6 +150,11 @@ fn merge(session: &SessionId, previous: Option<SessionReport>, report: Report) -
         needs_input: None,
         reported_at: 0,
     });
+    // A question is only open while the agent waits on it.
+    let state = match &report.needs_input {
+        Some(_) => Some(AgentState::Waiting),
+        None => report.state.or(previous.state),
+    };
     let needs_input = match (report.needs_input, report.state) {
         (Some(question), _) => Some(question),
         (None, Some(AgentState::Working)) => None,
@@ -157,7 +162,7 @@ fn merge(session: &SessionId, previous: Option<SessionReport>, report: Report) -
     };
     SessionReport {
         session: session.clone(),
-        state: report.state.or(previous.state),
+        state,
         label: report.label.or(previous.label),
         doing: report.doing.or(previous.doing),
         needs_input,
@@ -166,10 +171,19 @@ fn merge(session: &SessionId, previous: Option<SessionReport>, report: Report) -
 }
 
 /// Checks each field at the boundary and collapses runs of whitespace. Text reaches terminals
-/// and tmux, so control characters and tmux format openers (`#(`, `#{`) are refused.
+/// and tmux, so control characters, characters that reorder or hide text (bidirectional
+/// overrides, zero-width marks) and the tmux sequences that run or restyle (`#(`, `#{`, `#[`)
+/// are refused. A plain `#` stays ("issue #32"): whatever renders this text into a tmux
+/// format escapes it as `##`.
 fn validate(report: Report) -> Result<Report, Refusal> {
     if report == Report::default() {
         return Err(invalid("report", "names no field to report".to_owned()));
+    }
+    if report.state == Some(AgentState::Working) && report.needs_input.is_some() {
+        return Err(invalid(
+            "state",
+            "is working, but a needs-input question means waiting".to_owned(),
+        ));
     }
     let label = report
         .label
@@ -225,10 +239,35 @@ fn checked_text(field: &'static str, text: &str) -> Result<String, Refusal> {
     if text.chars().any(char::is_control) {
         return Err(invalid(field, "contains control characters".to_owned()));
     }
-    if text.contains("#(") || text.contains("#{") {
+    if text.chars().any(is_invisible_format) {
+        return Err(invalid(
+            field,
+            "contains a character that reorders or hides text".to_owned(),
+        ));
+    }
+    if ["#(", "#{", "#["]
+        .iter()
+        .any(|opener| text.contains(opener))
+    {
         return Err(invalid(field, "contains a tmux format sequence".to_owned()));
     }
     Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Unicode format characters (category Cf) that change how surrounding text displays: soft
+/// hyphen, zero-width marks, bidirectional embeddings, overrides and isolates, word joiners
+/// and the byte-order mark.
+fn is_invisible_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FEFF}'
+    )
 }
 
 fn invalid(field: &'static str, reason: String) -> Refusal {

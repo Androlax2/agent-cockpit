@@ -165,8 +165,41 @@ async fn reporting_working_clears_the_open_question() {
 }
 
 #[tokio::test]
+async fn a_question_marks_a_working_session_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = bound_session(dir.path()).await;
+    grant(&database, &session("s1"), Permission::ChangeState).await;
+    send(&database, &this_process(), doing("writing the tests"))
+        .await
+        .unwrap();
+    let question = Report {
+        needs_input: Some("Which database?".to_owned()),
+        ..Report::default()
+    };
+
+    let recorded = send(&database, &this_process(), question).await.unwrap();
+
+    assert_eq!(recorded.state, Some(AgentState::Waiting));
+}
+
+#[tokio::test]
+async fn a_plain_hash_sign_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = bound_session(dir.path()).await;
+    grant(&database, &session("s1"), Permission::ChangeState).await;
+    let label = Report {
+        label: Some("Agent channel issue #32".to_owned()),
+        ..Report::default()
+    };
+
+    let recorded = send(&database, &this_process(), label).await.unwrap();
+
+    assert_eq!(recorded.label.as_deref(), Some("Agent channel issue #32"));
+}
+
+#[tokio::test]
 async fn an_invalid_report_is_refused_naming_its_field() {
-    let cases: [(Report, &str); 7] = [
+    let cases: [(Report, &str); 10] = [
         (Report::default(), "report"),
         (doing("one"), "doing"),
         (doing(&"word ".repeat(13)), "doing"),
@@ -191,6 +224,22 @@ async fn an_invalid_report_is_refused_naming_its_field() {
                 ..Report::default()
             },
             "needs-input",
+        ),
+        (
+            Report {
+                label: Some("build #[fg=red,blink]".to_owned()),
+                ..Report::default()
+            },
+            "label",
+        ),
+        (doing("reversed \u{202E}txet"), "doing"),
+        (
+            Report {
+                state: Some(AgentState::Working),
+                needs_input: Some("Which database?".to_owned()),
+                ..Report::default()
+            },
+            "state",
         ),
     ];
     let dir = tempfile::tempdir().unwrap();

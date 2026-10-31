@@ -8,6 +8,8 @@ use cockpit_protocol::{
     Command, ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy, Welcome,
 };
 
+use cockpit_agent_channel::{ProcessError, ProcessIdentity};
+
 use crate::agent;
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -35,13 +37,17 @@ pub enum Route {
 
 /// Who is at the other end of a connection, as the socket it came through and the kernel
 /// say; never what a payload claims (report 11).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Peer {
     /// The host-only socket, which no sandbox reaches: the owner.
     Owner,
-    /// The agent socket. `pid` is the kernel's peer process, `None` when it named none; the
-    /// agent channel decides which session, if any, that process acts for.
-    Agent { pid: Option<u32> },
+    /// The agent socket. `connector` is the process the kernel names as having connected,
+    /// identified (pid and start time) when the connection was accepted, so a later process
+    /// that reuses its pid is not taken for it. The agent channel decides which session, if
+    /// any, that process acts for.
+    Agent {
+        connector: Result<ProcessIdentity, ProcessError>,
+    },
 }
 
 /// Turns commands into routes. Capabilities add their commands to [`Routes`]; the seam
@@ -84,19 +90,19 @@ impl Handler for Routes {
                     launch_token,
                     report,
                 },
-                Peer::Agent { pid },
+                Peer::Agent { connector },
             ) => Route::Run {
                 class: WorkClass::Bulk,
                 job: Box::pin(agent::report(
                     Arc::clone(&self.database),
-                    pid,
+                    connector,
                     launch_token,
                     report,
                 )),
             },
             (Command::AgentReport { .. }, Peer::Owner) => {
                 Route::Answer(Outcome::Error(ProtocolError {
-                    code: ErrorCode::InvalidRequest,
+                    code: ErrorCode::NotAuthorized,
                     message: "agent-report is an agent's request; the owner has no session"
                         .to_owned(),
                     unblock: Some(Unblock {

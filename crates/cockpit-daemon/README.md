@@ -42,7 +42,8 @@ not share code.
   process tree. Owner commands there are refused `not-authorized`; `agent-report` on the
   host-only socket is refused.
 - Each socket has its own connection limit. Agent requests run in the bulk lane, so
-  sandboxed senders never take the owner's control capacity.
+  sandboxed senders never take the owner's control capacity. They do share the bulk lane
+  with the owner's bulk work: a flood of agent reports can make it answer `busy`.
 
 ## Requests
 

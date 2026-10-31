@@ -8,6 +8,8 @@ use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const PRIVATE_DIR_MODE: u32 = 0o700;
 /// Answers are never rewritten in place: a sandbox that reaches one through a misconfigured
@@ -87,31 +89,44 @@ impl AnswersDirectory {
             });
         }
         let destination = self.path.join(name);
-        if fs::symlink_metadata(&destination).is_ok() {
-            return Err(AnswersError::AlreadyAnswered { path: destination });
-        }
-        let partial = self
-            .path
-            .join(format!(".{name}.partial-{}", std::process::id()));
+        let partial = self.path.join(partial_name(name));
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(ANSWER_MODE)
             .open(&partial)
             .map_err(AnswersError::io("create", &partial))?;
+        // A hard link, unlike a rename, never replaces an existing file: of two writers of
+        // one name, the second is refused instead of overwriting the first.
         let written = file
             .write_all(contents)
             .and_then(|()| file.sync_all())
             .map_err(AnswersError::io("write", &partial))
-            .and_then(|()| {
-                fs::rename(&partial, &destination)
-                    .map_err(AnswersError::io("publish", &destination))
+            .and_then(|()| match fs::hard_link(&partial, &destination) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    Err(AnswersError::AlreadyAnswered {
+                        path: destination.clone(),
+                    })
+                }
+                Err(error) => Err(AnswersError::io("publish", &destination)(error)),
             });
-        if written.is_err() {
-            let _ = fs::remove_file(&partial);
-        }
+        // Best effort: the outcome is already decided, and a leftover partial is a dot file
+        // under a name no answer can take, so no reader mistakes it for an answer.
+        let _ = fs::remove_file(&partial);
         written.map(|()| destination)
     }
+}
+
+/// A partial file's name, unique to this write: the pid alone would collide between two
+/// threads, and with a crashed writer's leftover once the pid is reused.
+fn partial_name(name: &str) -> String {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let write = WRITES.fetch_add(1, Ordering::Relaxed);
+    format!(".{name}.partial-{}-{nanos}-{write}", std::process::id())
 }
 
 fn create_private_dir(path: &Path, owner_uid: u32) -> Result<(), AnswersError> {

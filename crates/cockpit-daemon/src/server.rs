@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_protocol::{
     ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal, RefusalReason, Response,
     SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello, decode_request, negotiate,
@@ -147,14 +148,14 @@ pub(crate) async fn accept_connections(
         if !is_owner(&stream, shared.owner_uid) {
             continue;
         }
-        let peer = match socket {
-            Socket::HostOnly => Peer::Owner,
-            Socket::Agent => Peer::Agent {
-                pid: peer_pid(&stream),
-            },
-        };
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
+            let peer = match socket {
+                Socket::HostOnly => Peer::Owner,
+                Socket::Agent => Peer::Agent {
+                    connector: connector(&stream).await,
+                },
+            };
             serve_connection(stream, &shared, peer).await;
             drop(connection_place);
         });
@@ -179,10 +180,22 @@ fn is_owner(stream: &UnixStream, owner_uid: u32) -> bool {
     }
 }
 
-/// The peer's process as the kernel recorded it when it connected.
-fn peer_pid(stream: &UnixStream) -> Option<u32> {
-    let pid = stream.peer_cred().ok()?.pid()?;
-    u32::try_from(pid).ok().filter(|pid| *pid > 0)
+/// The process the kernel recorded as connecting, identified now, while the connection holds
+/// its pid. SO_PEERPIDFD (Linux 6.5) would close the gap between connect and this read; a pid
+/// cannot be reused within it without a full wrap of the pid space.
+async fn connector(stream: &UnixStream) -> Result<ProcessIdentity, ProcessError> {
+    let pid = stream
+        .peer_cred()
+        .ok()
+        .and_then(|credentials| credentials.pid())
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| ProcessError::Unreadable {
+            reason: "the kernel named no peer process".to_owned(),
+        })?;
+    tokio::task::spawn_blocking(move || cockpit_agent_channel::identity_of(pid))
+        .await
+        .expect("reading the process table does not panic")
 }
 
 async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
@@ -234,7 +247,10 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         };
         let id = request.id;
         let respond = move |outcome| ServerFrame::Response(Response { id, outcome });
-        let (class, job) = match shared.handler.route(request.command, &welcome, peer) {
+        let (class, job) = match shared
+            .handler
+            .route(request.command, &welcome, peer.clone())
+        {
             Route::Answer(outcome) => {
                 answer.send(respond(outcome));
                 continue;

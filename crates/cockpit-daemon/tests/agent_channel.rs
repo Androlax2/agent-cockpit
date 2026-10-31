@@ -324,7 +324,8 @@ async fn the_host_only_socket_takes_no_agent_report() {
             .await,
     );
 
-    assert_eq!(refusal.code, ErrorCode::InvalidRequest);
+    assert_eq!(refusal.code, ErrorCode::NotAuthorized);
+    assert_eq!(refusal.unblock.unwrap().by, UnblockedBy::Agent);
 }
 
 #[tokio::test]

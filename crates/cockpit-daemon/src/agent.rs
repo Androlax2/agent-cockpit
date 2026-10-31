@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use cockpit_agent_channel::{AgentState, Error, ProcessError, Refusal, Report, SessionReport};
+use cockpit_agent_channel::{
+    AgentState, Error, ProcessError, ProcessIdentity, Refusal, Report, SessionReport,
+};
 use cockpit_protocol::{ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy};
 use cockpit_turso::Database;
 
@@ -13,17 +15,18 @@ use crate::routes::refusal;
 /// transaction. A refusal changes nothing, so a token is spent only by a recorded report.
 pub(crate) async fn report(
     database: Arc<Database>,
-    pid: Option<u32>,
+    connector: Result<ProcessIdentity, ProcessError>,
     launch_token: Option<String>,
     report: cockpit_protocol::AgentReport,
 ) -> Outcome {
-    let peer = match pid {
-        Some(pid) => tokio::task::spawn_blocking(move || cockpit_agent_channel::ancestry(pid))
-            .await
-            .expect("reading the process table does not panic"),
-        None => Err(ProcessError::Unreadable {
-            reason: "the kernel named no peer process".to_owned(),
-        }),
+    let peer_pid = connector.as_ref().ok().map(|process| process.pid);
+    let peer = match connector {
+        Ok(process) => {
+            tokio::task::spawn_blocking(move || cockpit_agent_channel::ancestry_of(&process))
+                .await
+                .expect("reading the process table does not panic")
+        }
+        Err(error) => Err(error),
     };
     let write = match database.write().await {
         Ok(write) => write,
@@ -40,7 +43,7 @@ pub(crate) async fn report(
             Err(error) => internal(&error),
         },
         Err(Error::Refused(refused)) => {
-            tracing::info!(peer_pid = ?pid, reason = %refused, "refused an agent report");
+            tracing::info!(?peer_pid, reason = %refused, "refused an agent report");
             Outcome::Error(refusal_to_wire(&refused))
         }
         Err(error) => internal(&error),
