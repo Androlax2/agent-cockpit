@@ -512,7 +512,12 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit approval list | show ID | decline ID | input ID < LINE\n       \
                  cockpit approval approve ID --revision REVISION --digest DIGEST\n       \
                  cockpit approval edit ID --revision REVISION COMMAND\n       \
-                 cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID\n"
+                 cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID\n       \
+                 cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
+                 cockpit session list [--ended]\n       \
+                 cockpit session restart SESSION|--all\n       \
+                 cockpit session sleep|wake|resume|end SESSION\n       \
+                 cockpit session link SESSION URL\n"
             )
         );
     }

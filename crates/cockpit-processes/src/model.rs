@@ -132,6 +132,14 @@ pub struct LaunchSpec {
     pub environment: Vec<(OsString, OsString)>,
 }
 
+/// A launch a host runs itself (see `Supervisor::prepare_hosted`): its reservation is
+/// committed, and `command` is what the host runs, words never parsed by a shell.
+#[derive(Debug, Clone)]
+pub struct HostedLaunch {
+    pub execution: ExecutionId,
+    pub command: Vec<OsString>,
+}
+
 /// How long termination waits before escalating, and before giving up on confirmation.
 #[derive(Debug, Clone, Copy)]
 pub struct Escalation {

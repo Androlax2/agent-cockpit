@@ -407,6 +407,9 @@ dependencies = [
  "cockpit-processes",
  "cockpit-projects",
  "cockpit-protocol",
+ "cockpit-provider-api",
+ "cockpit-sessions",
+ "cockpit-tmux",
  "cockpit-turso",
  "serde",
  "serde_json",
@@ -450,6 +453,26 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cockpit-provider-api"
+version = "0.1.0"
+
+[[package]]
+name = "cockpit-sessions"
+version = "0.1.0"
+dependencies = [
+ "cockpit-agent-channel",
+ "cockpit-authorization",
+ "cockpit-processes",
+ "cockpit-projects",
+ "cockpit-provider-api",
+ "cockpit-tmux",
+ "cockpit-turso",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

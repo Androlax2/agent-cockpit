@@ -202,3 +202,22 @@ impl Drop for RunningDaemon {
         let _ = self.child.wait();
     }
 }
+
+/// What an in-process daemon is wired with in tests: a private tmux server in `dir`, never
+/// the user's, and `providers`.
+pub fn wiring_in(
+    dir: &Path,
+    providers: Vec<std::sync::Arc<dyn cockpit_provider_api::Provider>>,
+) -> cockpit_daemon::Wiring {
+    cockpit_daemon::Wiring {
+        tmux: cockpit_tmux::ServerSpec {
+            tmux: PathBuf::from("tmux"),
+            socket: cockpit_tmux::Socket::Path(dir.join("tmux.sock")),
+            config_path: dir.join("tmux.conf"),
+        },
+        git: cockpit_projects::Git::from_path(),
+        providers,
+        sessions: cockpit_sessions::Settings::default(),
+        session_tick: Duration::from_secs(3600),
+    }
+}

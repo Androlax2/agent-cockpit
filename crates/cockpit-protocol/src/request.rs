@@ -6,6 +6,7 @@ use crate::approvals::{GuideView, RunRequestView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
+use crate::sessions::{SessionFailure, SessionView};
 
 /// Correlates a [`Response`] with the [`Request`] it answers; chosen by the client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -150,6 +151,48 @@ pub enum Command {
     GuideClose {
         guide: i64,
     },
+    /// Start a session in `dir` (absolute), a directory of a registered project, or in a new
+    /// parallel clone of its project on the branch `clone`. `agent` names the provider;
+    /// without it the daemon's only provider is used. `prompt` is the first message.
+    SessionNew {
+        dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clone: Option<String>,
+    },
+    /// Sessions not ended; with `ended`, the ended ones too (recent first is the
+    /// client's to sort).
+    SessionList {
+        #[serde(default)]
+        ended: bool,
+    },
+    /// Stop the agent and launch the same conversation again, in place.
+    SessionRestart {
+        session: String,
+    },
+    /// Restart every running session, as after a configuration change.
+    SessionRestartAll,
+    SessionSleep {
+        session: String,
+    },
+    SessionWake {
+        session: String,
+    },
+    /// Reopen an ended or failed session's conversation.
+    SessionResume {
+        session: String,
+    },
+    SessionEnd {
+        session: String,
+    },
+    /// Record a design link (an http or https URL) on the session.
+    SessionLink {
+        session: String,
+        url: String,
+    },
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -228,6 +271,16 @@ pub enum Reply {
     ApprovalQueue {
         runs: Vec<RunRequestView>,
         guides: Vec<GuideView>,
+    },
+    Session {
+        session: Box<SessionView>,
+    },
+    Sessions {
+        sessions: Vec<SessionView>,
+    },
+    RestartedAll {
+        restarted: Vec<SessionView>,
+        failed: Vec<SessionFailure>,
     },
 }
 

@@ -10,8 +10,8 @@ mod systemd;
 
 pub use error::Error;
 pub use model::{
-    Containment, EndReason, Escalation, Execution, ExecutionId, Identity, LaunchSpec, Phase,
-    Reconciled, Signal, Termination,
+    Containment, EndReason, Escalation, Execution, ExecutionId, HostedLaunch, Identity, LaunchSpec,
+    Phase, Reconciled, Signal, Termination,
 };
 pub use output::{OutputKind, OutputLimits, OutputRead, OutputStream};
 pub use store::{MIGRATIONS, execution, occupying_executions};

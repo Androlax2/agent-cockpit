@@ -12,7 +12,9 @@ never a dropped task or a timed-out launcher (report 03).
 
 - Linux (WSL2 included): a transient systemd user scope per execution
   (`systemd-run --user --scope`) when this user's manager answers; its cgroup holds every
-  descendant, including one that calls `setsid`.
+  descendant, including one that calls `setsid`. From systemd 258 a scope rewrites `$` in
+  its command unless told `--expand-environment=no`, which exists from 254: the switch is
+  passed where `systemd-run --version` says it is known.
 - macOS, and Linux without a reachable user manager: a process group led by the program.
   A descendant that calls `setsid` leaves it.
 - Each execution records the containment it was launched in, so a fallback is visible and a
@@ -36,6 +38,18 @@ never a dropped task or a timed-out launcher (report 03).
    positively identified, ended when observed gone (`exited`, `terminated`,
    `never-started`, `host-restarted`), and kept charged when neither (`Uncertain`).
 
+A **hosted** execution is one whose program a host starts itself, because it needs a
+terminal: `cockpit-sessions` runs agents in tmux panes (report 05). `prepare_hosted` commits
+the intent and answers the command the host runs: `env -i` with the spec's environment and
+the host variables named (such as `TERM`), the scope wrapper when there is one, and the
+launch script, so the leader file confirms the start as above (`confirm_hosted`). The pane's
+process leads its own process group, so observation and termination are the same as for a
+launched execution. `abandon_hosted` releases a reservation whose host never ran the command.
+Its output stays in the host's terminal. The environment's values never travel in argv,
+where any local process could read them: they are written to a 0600 file in the execution's
+directory, which the host step reads and deletes before the program starts. Names must be
+plain shell names.
+
 Output goes to `stdout` and `stderr` files in `<executions dir>/<database epoch>/<id>/`, not to pipes: a
 pipe whose reader is the daemon would kill the program with `SIGPIPE` after a daemon
 restart. `follow_output` drains a file in bounded chunks into a byte-bounded window; a
@@ -48,7 +62,8 @@ themselves are not size-limited yet.
   (process-group signals without `unsafe`), `tokio`.
 - Depends on no product capability; `tests/crate_graph.rs` enforces it, and the workspace
   rule `verification -> processes` keeps verification from launching processes.
-- Used by: the daemon, which reconciles executions before it accepts requests.
+- Used by: the daemon, which reconciles executions before it accepts requests, and
+  `cockpit-sessions`, whose agents run as hosted executions.
 
 ## Tests
 
@@ -56,6 +71,8 @@ themselves are not size-limited yet.
   escalation on real processes and a real state database.
 - `tests/reattach.rs`: issue #29's orphan fixture (timed-out launcher, process still
   running, reservation kept and reconciled) and the restart cases of reconciliation.
+- `tests/hosted.rs`: an execution a host (playing tmux) starts: confirmed as its own
+  process group, exactly its environment, no value in its command, abandoned launches.
 - `tests/output.rs`: bounded draining and gap markers for a slow viewer.
 - `tests/systemd_scope.rs`: the scope backend through fake `systemd-run` and `systemctl`;
   the real-manager case is `#[ignore]`d (sandboxes and CI have none), run it with

@@ -37,6 +37,10 @@ pub enum Error {
         command: String,
         reason: String,
     },
+    /// A launch spec's environment variable name that is empty or holds `=`.
+    InvalidEnvironment {
+        name: String,
+    },
     Io {
         action: &'static str,
         path: PathBuf,
@@ -74,6 +78,9 @@ impl fmt::Display for Error {
                 formatter,
                 "the launcher of {execution} exited without starting it: {launcher_output:?}"
             ),
+            Error::InvalidEnvironment { name } => {
+                write!(formatter, "{name:?} is not an environment variable name")
+            }
             Error::UnknownExecution { execution } => write!(formatter, "{execution} is unknown"),
             Error::NotIdentified { execution } => {
                 write!(formatter, "{execution} has not confirmed its start yet")

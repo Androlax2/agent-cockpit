@@ -1,0 +1,26 @@
+[package]
+name = "cockpit-sessions"
+description = "Agent sessions: provider conversations and their lifecycle (start, restart, sleep and wake, resume, end, reboot restore) with the session and launch identities."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
+cockpit-agent-channel = { path = "../cockpit-agent-channel", version = "0.1.0" }
+cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
+cockpit-processes = { path = "../cockpit-processes", version = "0.1.0" }
+cockpit-projects = { path = "../cockpit-projects", version = "0.1.0" }
+cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0" }
+cockpit-tmux = { path = "../cockpit-tmux", version = "0.1.0" }
+cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+tokio = { version = "1", features = ["rt", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

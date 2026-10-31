@@ -8,10 +8,12 @@ mod lanes;
 mod projects;
 mod routes;
 mod server;
+mod sessions;
 mod supervisor;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
@@ -23,13 +25,36 @@ pub use routes::{Handler, Job, Peer, Route, Routes, WorkClass, refusal};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 5] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 6] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
     cockpit_processes::MIGRATIONS,
     cockpit_approvals::MIGRATIONS,
+    cockpit_sessions::MIGRATIONS,
 ];
+
+/// What the daemon wires its capabilities with: the host's tools in the binary, fixtures in
+/// tests.
+pub struct Wiring {
+    /// Cockpit's tmux server; opening it is the tmux readiness check.
+    pub tmux: cockpit_tmux::ServerSpec,
+    /// The host Git that project commands and clones run, with the safe settings applied.
+    pub git: cockpit_projects::Git,
+    /// The agent providers sessions may launch.
+    pub providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
+    pub sessions: cockpit_sessions::Settings,
+    /// How often the sessions' periodic pass (exits, idle sleep, expiry) runs.
+    pub session_tick: Duration,
+}
+
+/// The capabilities a started daemon serves, for the [`Handler`] its caller builds.
+#[derive(Clone)]
+pub struct Capabilities {
+    pub database: Arc<cockpit_turso::Database>,
+    pub git: cockpit_projects::Git,
+    pub sessions: Arc<cockpit_sessions::Sessions>,
+}
 
 /// A started daemon: it accepts requests until dropped or the process exits.
 pub struct Daemon {
@@ -37,14 +62,16 @@ pub struct Daemon {
     agent_socket_path: PathBuf,
     accepting: tokio::task::JoinHandle<()>,
     accepting_agents: tokio::task::JoinHandle<()>,
+    ticking: tokio::task::JoinHandle<()>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
 }
 
 impl Instance {
-    /// Runs the restart contract, then serves the handler `routes` builds over the state
-    /// database: open the database (durable state loads with it), reconcile, and only then
-    /// bind and accept (report 03). Nothing is dispatched before reconciliation has finished.
+    /// Runs the restart contract, then serves the handler `routes` builds over the
+    /// capabilities: open the database (durable state loads with it), reconcile executions,
+    /// restore the sessions that were active, and only then bind and accept (report 03).
+    /// Nothing is dispatched before reconciliation and restore have finished.
     ///
     /// Two sockets share the handler and the lanes: the host-only socket, whose peers are
     /// the owner, and the agent socket the sandboxes reach, whose peers are only ever agents
@@ -52,7 +79,8 @@ impl Instance {
     /// connections; agent requests share the bulk lane with the owner's bulk work.
     pub async fn start(
         self,
-        routes: impl FnOnce(Arc<cockpit_turso::Database>) -> Arc<dyn Handler>,
+        wiring: Wiring,
+        routes: impl FnOnce(Capabilities) -> Arc<dyn Handler>,
     ) -> Result<Daemon, StartError> {
         let options = &self.options;
         let database = Arc::new(
@@ -69,6 +97,31 @@ impl Instance {
             "new executions use this containment"
         );
         reconcile(&database, &processes).await?;
+        // A missing or too old tmux leaves the daemon up with sessions refused (report 09);
+        // any other failure to open the server is the daemon's own and stops the start.
+        let tmux = match cockpit_tmux::Server::open(wiring.tmux) {
+            Err(
+                error @ (cockpit_tmux::Error::TmuxNotRunnable { .. }
+                | cockpit_tmux::Error::UnrecognizedVersion { .. }
+                | cockpit_tmux::Error::TmuxTooOld { .. }),
+            ) => {
+                tracing::warn!(%error, "tmux is unavailable: sessions are refused until it is installed and the daemon restarts");
+                Err(error)
+            }
+            Err(error) => return Err(StartError::Tmux(error)),
+            Ok(server) => Ok(server),
+        };
+        let sessions = Arc::new(cockpit_sessions::Sessions::new(
+            Arc::clone(&database),
+            processes,
+            tmux,
+            wiring.git.clone(),
+            wiring.providers,
+            wiring.sessions,
+        ));
+        sessions::restore(&sessions)
+            .await
+            .map_err(StartError::Restore)?;
         let socket_path = options.socket_path();
         let agent_socket_path = options.agent_socket_path();
         let listener = Arc::new(server::bind(&socket_path)?);
@@ -78,8 +131,15 @@ impl Instance {
             owner_uid: self.owner_uid,
             limits,
             lanes: lanes::Lanes::new(limits.control, limits.bulk),
-            handler: routes(Arc::clone(&database)),
+            handler: routes(Capabilities {
+                database: Arc::clone(&database),
+                git: wiring.git,
+                sessions: Arc::clone(&sessions),
+            }),
         });
+        let ticking = tokio::spawn(supervisor::supervise("sessions-tick", move || {
+            sessions::tick_forever(Arc::clone(&sessions), wiring.session_tick)
+        }));
         let accepting = accept(&listener, &shared, server::Socket::HostOnly);
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent);
         tracing::info!(
@@ -92,6 +152,7 @@ impl Instance {
             agent_socket_path,
             accepting,
             accepting_agents,
+            ticking,
             _database: database,
             _instance: self,
         })
@@ -119,7 +180,7 @@ fn accept(
 
 /// Step 2 and 3 of the restart contract: each capability that holds launch intents,
 /// reservations or execution identities reconciles them against the real processes here,
-/// before the socket exists. Processes is the first, then approvals; sessions follow in M1.
+/// before the socket exists. Processes is the first, then approvals; sessions restore after.
 async fn reconcile(
     database: &cockpit_turso::Database,
     processes: &cockpit_processes::Supervisor,
@@ -189,5 +250,6 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         self.accepting.abort();
         self.accepting_agents.abort();
+        self.ticking.abort();
     }
 }

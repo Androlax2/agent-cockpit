@@ -56,6 +56,10 @@ pub(crate) async fn leader_start(pid: i32) -> Result<Option<String>, Error> {
     let stat = match tokio::fs::read_to_string(&path).await {
         Ok(stat) => stat,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // A process reaped between the open and the read answers ESRCH: it is gone too.
+        Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
+            return Ok(None);
+        }
         Err(error) => return Err(Error::io("read", path)(error)),
     };
     // Field 2 (the command) may hold spaces and parentheses; it ends at the last `)`.

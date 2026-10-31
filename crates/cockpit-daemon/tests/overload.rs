@@ -139,12 +139,11 @@ async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
     let home = tempfile::tempdir().unwrap();
     let daemon = Instance::acquire(options_in(&home, bulk))
         .unwrap()
-        .start(|database| {
+        .start(common::wiring_in(home.path(), Vec::new()), |capabilities| {
             Arc::new(FixtureHandler {
                 fixture: Arc::clone(fixture),
                 routes: Routes::new(
-                    database,
-                    cockpit_projects::Git::from_path(),
+                    capabilities,
                     cockpit_config::Environment::default(),
                     cockpit_daemon::runner(Vec::new()).unwrap(),
                 ),

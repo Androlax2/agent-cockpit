@@ -123,6 +123,23 @@ async fn detection_picks_a_scope_when_the_user_manager_answers() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scope_launch_on_systemd_before_254_omits_the_switch_it_does_not_know() {
+    let home = Home::new();
+    let fakes = FakeSystemd::new();
+    fakes.report_version(252);
+    let database = home.open_database().await;
+    let supervisor = home.scope_supervisor(&fakes);
+
+    let execution = supervisor
+        .launch(&database, &shell(&home, "exec sleep 300"))
+        .await
+        .unwrap();
+
+    assert_running(&execution);
+    kill_group(execution.process_group.unwrap());
+}
+
 /// The reason for scopes: a descendant that leaves the process group with `setsid` is still
 /// in the scope's cgroup, so termination reaches it. Needs this user's real systemd manager,
 /// which sandboxes and CI runners lack: run it with `--run-ignored only` on a desktop session.

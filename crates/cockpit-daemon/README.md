@@ -13,10 +13,13 @@ not share code.
 - Depends on: `cockpit-protocol` (wire types and the frame limit), `cockpit-config` (XDG
   layout), `cockpit-diagnostics` (its own log), `cockpit-turso` (the state database it opens
   once), `cockpit-authorization` (whose migrations it runs), `cockpit-agent-channel` (who an
-  agent socket peer is, and its verbs), `cockpit-processes` (whose executions it reconciles)
+  agent socket peer is, and its verbs), `cockpit-processes` (whose executions it reconciles),
   `cockpit-projects` (whose migrations it runs and whose verbs `Routes` serves to the
-  owner) and `cockpit-approvals` (run requests and guides, and the runner of approved
-  commands); `tokio`, `serde`, `serde_json`, `tracing`.
+  owner), `cockpit-approvals` (run requests and guides, and the runner of approved
+  commands), `cockpit-sessions` (whose verbs `Routes` serves to the owner, and whose restore
+  and periodic pass it runs), `cockpit-tmux` (the private server sessions run in) and
+  `cockpit-provider-api` (the providers it is wired with; the adapters arrive with #33);
+  `tokio`, `serde`, `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
   `clients ->` rules of `cockpit-workspace-rules/tests/crate_graph.rs` keep them from
   linking it.
@@ -37,7 +40,11 @@ not share code.
    answers, otherwise a process group; the log names which. `cockpit-approvals` then ends
    the runs a stopped daemon left approved (`not-run`) or running (`outcome-unknown`);
    neither is repeated.
-5. Only then bind `daemon.sock` and `agent/agent.sock` (0600, stale files replaced) and print
+5. Open the private tmux server, then restore the sessions (`cockpit-sessions`): each active
+   session whose agent is gone is reopened, each failure logged and left `failed`. A tmux
+   that cannot be run or is too old is logged instead, and the sessions are left as they
+   are. The sessions' periodic pass (exits, idle sleep, expiry) starts as a supervised worker.
+6. Only then bind `daemon.sock` and `agent/agent.sock` (0600, stale files replaced) and print
    `ready <socket>`.
 
 ## Two sockets (report 17)
@@ -98,3 +105,6 @@ not share code.
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket
   and lanes with a fixture [`Handler`] that blocks or panics on `subscribe` (#108).
+- `tests/sessions.rs`: issue #31's lifecycle through the socket with a fake provider: start
+  in place and in a clone, restart and restart-all, sleep and wake, idle sleep, expiry, an
+  exited agent and resume, end, reboot restore and its failure, design links.
