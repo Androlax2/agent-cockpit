@@ -22,7 +22,8 @@ fits Cockpit's release policy worse than a short workflow of our own. The policy
   #120 removes them; then `cargo update --workspace` and a `--locked` build.
 - **Bundle layout and manifest.** `cockpit-v<version>-<platform>.tar.gz` holds
   `cockpit-v<version>-<platform>/bin/{cockpit,cockpit-daemon}`, `share/cockpit/manifest.json`,
-  `LICENSE`, `README.md`, `CHANGELOG.md`; owner and timestamps are zeroed so a rebuild gives the
+  `LICENSE` and `README.md`, not `CHANGELOG.md`, which lags the tag until release-plz
+  regenerates it (#101; the notes are on the Release); owner and timestamps are zeroed so a rebuild gives the
   same bytes (the gzip header's time too). The manifest (schema 1) names version, channel, platform, source revision,
   helpers (`{}`) and instruction bundle (`null`) until #64 and #97 ship them, and the SHA-256 of
   every file. `cockpit version --all` prints it from `<prefix>/share/cockpit/manifest.json`,

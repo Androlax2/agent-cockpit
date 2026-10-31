@@ -15,6 +15,10 @@ on:
       - .github/workflows/release.yml
       - .github/workflows/prerelease.yml
       - Cargo.toml
+      - Cargo.lock
+      - crates/*/Cargo.toml
+      - crates/cockpit-cli/src/main.rs
+      - crates/cockpit-daemon/src/main.rs
       - tools/release.py
       - tools/tests/test_release.py
       - cliff.toml
@@ -66,10 +70,13 @@ jobs:
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           TAG: ${{ github.ref_name }}
+        # Only a tag push releases; a dispatch or schedule on a tag ref is a dry run like any
+        # other, and the tag-only jobs follow the `tag` output, which a dry run leaves empty.
         run: |
-          if [ "$REF_TYPE" = tag ]; then
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
             # The same gates prerelease.yml reads: a hand-made tag meets every rule too.
             m3=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
             m5=$(gh issue view 66 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
@@ -281,7 +288,7 @@ jobs:
   # A tag only: build provenance over the checksummed archives, then the draft with every
   # asset. Dry runs never attest, so no unreleased build verifies as this repository's.
   draft:
-    if: github.ref_type == 'tag'
+    if: needs.plan.outputs.tag != ''
     needs: [plan, notes, assemble]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -320,7 +327,7 @@ jobs:
   # Report 13's Rust checks, Clippy, dependency and license checks, crate-graph rules and
   # tests, on the tagged commit itself. The same steps as ci.yml's greenfield job.
   gate:
-    if: github.ref_type == 'tag'
+    if: needs.plan.outputs.tag != ''
     needs: plan
     runs-on: ubuntu-26.04
     timeout-minutes: 30
@@ -349,7 +356,7 @@ jobs:
   # Publishing is the last step and needs every gate job; a gate check without a job is a
   # named gap that keeps the release a draft (tools/release.py GATE_CHECKS).
   publish:
-    if: github.ref_type == 'tag'
+    if: needs.plan.outputs.tag != ''
     needs: [plan, draft, gate, install, install-wsl2]
     runs-on: ubuntu-24.04
     timeout-minutes: 10

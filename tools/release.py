@@ -42,7 +42,9 @@ TAG_PATTERN = re.compile(
 STABLE_TAG_REGEX = rf"^v{CORE_PATTERN}$"
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-universal")
 BINARIES = ("cockpit", "cockpit-daemon")
-DOCUMENTS = ("LICENSE", "README.md", "CHANGELOG.md")
+# No CHANGELOG.md: the committed file lags the tag (release-plz regenerates it, #101); the
+# release notes are on the GitHub Release.
+DOCUMENTS = ("LICENSE", "README.md")
 MANIFEST_PATH = "share/cockpit/manifest.json"
 MANIFEST_SCHEMA = 1
 # Alpha notes carry the known gaps (RELEASING.md, Changelog); #97 writes the file.
@@ -100,16 +102,23 @@ def git(*arguments, cwd):
     return result.stdout.strip()
 
 
-def is_ancestor(ancestor, descendant, cwd):
-    result = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=cwd, check=False
-    )
+def git_succeeds(*arguments, cwd):
+    """For git's yes-or-no questions, answered by its exit status."""
+    result = subprocess.run(["git", *arguments], cwd=cwd, capture_output=True, check=False)
     return result.returncode == 0
 
 
-def release_tags(cwd):
-    """Every tag of a release shape; other tags are not releases and are ignored."""
-    tags = git("tag", "--list", "v*", cwd=cwd).splitlines()
+def is_ancestor(ancestor, descendant, cwd):
+    return git_succeeds("merge-base", "--is-ancestor", ancestor, descendant, cwd=cwd)
+
+
+def has_file(commit, path, cwd):
+    return git_succeeds("cat-file", "-e", f"{commit}:{path}", cwd=cwd)
+
+
+def release_tags(cwd, main_ref):
+    """Every tag of a release shape on main; a tag elsewhere was never a release."""
+    tags = git("tag", "--list", "v*", "--merged", main_ref, cwd=cwd).splitlines()
     return [parse_tag(tag) for tag in tags if TAG_PATTERN.fullmatch(tag)]
 
 
@@ -162,7 +171,7 @@ def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
     commit = git("rev-parse", f"{tag}^{{commit}}", cwd=cwd)
     if not is_ancestor(commit, main_ref, cwd):
         raise Refusal(f"{tag}: {commit[:12]} is not on {main_ref}")
-    tags = [other for other in release_tags(cwd) if other["tag"] != tag]
+    tags = [other for other in release_tags(cwd, main_ref) if other["tag"] != tag]
     base = base_of(tags, cwd)
     version_at_tag = workspace_version(cwd, commit)
     outputs = {
@@ -175,6 +184,7 @@ def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
     }
     if parsed["channel"] == "stable":
         refuse_stable(parsed, version_at_tag, base, m5_gate, commit)
+        refuse_released_or_behind(parsed, commit, tags, cwd)
         # One section since the previous stable: its pre-releases are not boundaries.
         outputs["notes_tag_pattern"] = STABLE_TAG_REGEX
     else:
@@ -200,9 +210,8 @@ def refuse_stable(parsed, version_at_tag, base, m5_gate, commit):
         raise Refusal(f"{tag}: not above the previous stable {base['ref']}")
 
 
-def refuse_prerelease(candidate, commit, version_at_commit, tags, base, cwd):
-    """Every pre-release rule of RELEASING.md, Tags, for a tag made or about to be made."""
-    tag = candidate["tag"]
+def refuse_released_or_behind(candidate, commit, tags, cwd):
+    """One release per commit, each descending from the newest release before it."""
     # `tags` leaves out the tag being checked, so a tag never counts against itself.
     known_tags = {other["tag"] for other in tags}
     other_tags_on_commit = [
@@ -212,6 +221,17 @@ def refuse_prerelease(candidate, commit, version_at_commit, tags, base, cwd):
     ]
     if other_tags_on_commit:
         raise Refusal(f"{commit[:12]} is already released as {other_tags_on_commit[0]}")
+    lower = [other for other in tags if version_order(other) < version_order(candidate)]
+    if lower:
+        newest_lower = max(lower, key=version_order)
+        if not is_ancestor(newest_lower["tag"], commit, cwd):
+            raise Refusal(f"{commit[:12]} does not descend from {newest_lower['tag']}")
+
+
+def refuse_prerelease(candidate, commit, version_at_commit, tags, base, cwd):
+    """Every pre-release rule of RELEASING.md, Tags, for a tag made or about to be made."""
+    tag = candidate["tag"]
+    refuse_released_or_behind(candidate, commit, tags, cwd)
     if candidate["channel"] == "alpha" and not has_file(commit, KNOWN_GAPS, cwd):
         # release.yml needs it for the notes, and a tag is never moved or reused.
         raise Refusal(f"{tag}: an alpha needs {KNOWN_GAPS} for its notes (#97)")
@@ -230,15 +250,6 @@ def refuse_prerelease(candidate, commit, version_at_commit, tags, base, cwd):
     newest = max(prereleases, key=version_order)
     if version_order(candidate) <= version_order(newest):
         raise Refusal(f"{tag} is not above the newest pre-release {newest['tag']}")
-    if not is_ancestor(newest["tag"], commit, cwd):
-        raise Refusal(f"{commit[:12]} does not descend from {newest['tag']}")
-
-
-def has_file(commit, path, cwd):
-    result = subprocess.run(
-        ["git", "cat-file", "-e", f"{commit}:{path}"], cwd=cwd, capture_output=True, check=False
-    )
-    return result.returncode == 0
 
 
 def refuse_core_against_base(core, base):
@@ -265,7 +276,7 @@ def next_prerelease(m3_gate, m5_gate, cwd):
     channel = prerelease_channel(m3_gate, m5_gate)
     refuse_shallow(cwd)
     commit = git("rev-parse", "HEAD", cwd=cwd)
-    tags = release_tags(cwd)
+    tags = release_tags(cwd, commit)
     base = base_of(tags, cwd)
     if base["is_stable_tag"]:
         # The version comes from the open release PR, which nothing reads yet (#101).
@@ -280,7 +291,7 @@ def next_prerelease(m3_gate, m5_gate, cwd):
 def dry_run_version(cwd):
     """A version no release tag can have, for builds that are never published."""
     refuse_shallow(cwd)
-    base = base_of(release_tags(cwd), cwd)
+    base = base_of(release_tags(cwd, "HEAD"), cwd)
     count = commits_since(base["ref"], "HEAD", cwd)
     version = f"{workspace_version(cwd)}-dev.{count}"
     return {
@@ -445,14 +456,17 @@ def refuse_changed_contents(root, manifest):
 
 
 def refuse_wrong_version_output(root, manifest, manifest_text, revision, environment):
-    shown = subprocess.run(
-        [str(root / "bin/cockpit"), "version", "--all"],
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    try:
+        shown = subprocess.run(
+            [str(root / "bin/cockpit"), "version", "--all"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as timeout:
+        raise Refusal(f"cockpit version --all did not finish in {timeout.timeout}s") from timeout
     expected_first_line = f"cockpit {manifest['version']} (revision {revision})"
     if shown.returncode != 0 or shown.stdout.splitlines()[:1] != [expected_first_line]:
         raise Refusal(
@@ -569,4 +583,4 @@ def main(arguments, cwd=ROOT):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:], cwd=Path.cwd()))
+    sys.exit(main(sys.argv[1:]))

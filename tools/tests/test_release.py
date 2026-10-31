@@ -300,6 +300,42 @@ class CheckTagTests(ReleaseTestCase):
         self.assertEqual(code, 1)
         self.assertIn("not above the previous stable v0.2.0", error)
 
+    def test_a_pre_release_that_does_not_descend_from_a_lower_one_is_refused(self):
+        self.repository.commits(2)
+        self.repository.tag("v0.1.0-beta.2")
+        self.repository.commits(2)
+        self.repository.tag("v0.1.0-alpha.4")
+        code, _outputs, error = self.check_tag("v0.1.0-beta.2", m5_gate="closed")
+        self.assertEqual(code, 1)
+        self.assertIn("does not descend from v0.1.0-alpha.4", error)
+
+    def test_a_stable_tag_that_does_not_descend_from_the_newest_pre_release_is_refused(self):
+        stable_commit = self.repository.commits(1)
+        self.repository.commits(1)
+        self.repository.tag("v0.1.0-beta.2")
+        self.repository.tag("v0.1.0", stable_commit)
+        code, _outputs, error = self.check_tag("v0.1.0", m5_gate="closed")
+        self.assertEqual(code, 1)
+        self.assertIn("does not descend from v0.1.0-beta.2", error)
+
+    def test_a_stable_tag_on_an_already_released_commit_is_refused(self):
+        self.repository.commits(1)
+        self.repository.tag("v0.1.0-beta.1")
+        self.repository.tag("v0.1.0")
+        code, _outputs, error = self.check_tag("v0.1.0", m5_gate="closed")
+        self.assertEqual(code, 1)
+        self.assertIn("already released as v0.1.0-beta.1", error)
+
+    def test_a_release_shaped_tag_outside_main_does_not_count(self):
+        self.repository.git("checkout", "--quiet", "-b", "side")
+        self.repository.commits(5)
+        self.repository.tag("v0.1.0-alpha.5")
+        self.repository.git("checkout", "--quiet", "main")
+        self.repository.commits(2)
+        self.repository.tag("v0.1.0-alpha.2")
+        code, _outputs, error = self.check_tag("v0.1.0-alpha.2")
+        self.assertEqual(code, 0, error)
+
 
 class NextPrereleaseTests(ReleaseTestCase):
     def test_after_the_m3_gate_the_next_alpha_numbers_the_commits_since_the_bootstrap(self):
@@ -346,17 +382,17 @@ class NextPrereleaseTests(ReleaseTestCase):
         self.assertEqual(code, 1)
         self.assertIn("already released as v0.1.0-alpha.2", error)
 
-    def test_a_commit_that_does_not_descend_from_the_newest_pre_release_is_refused(self):
+    def test_a_pre_release_outside_the_tagged_history_does_not_count(self):
         branch_point = self.repository.commits(1)
         self.repository.commits(3)
         self.repository.tag("v0.1.0-alpha.4")
         self.repository.git("checkout", "--quiet", "-b", "side", branch_point)
         self.repository.commits(4)
-        code, _outputs, error = self.run_release(
+        code, outputs, error = self.run_release(
             "next-prerelease", "--m3-gate", "closed", "--m5-gate", "open"
         )
-        self.assertEqual(code, 1)
-        self.assertIn("does not descend from v0.1.0-alpha.4", error)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(outputs["tag"], "v0.1.0-alpha.5")
 
     def test_a_pre_release_not_above_the_newest_one_is_refused(self):
         self.repository.commits(2)
@@ -492,7 +528,6 @@ class PackageTests(PackagingTestCase):
                 f"{prefix}/share/cockpit/manifest.json",
                 f"{prefix}/LICENSE",
                 f"{prefix}/README.md",
-                f"{prefix}/CHANGELOG.md",
             },
             names,
         )
@@ -614,6 +649,17 @@ class GateGapTests(unittest.TestCase):
             with self.subTest(job=job):
                 self.assertRegex(workflow, rf"\n  {job}:\n")
                 self.assertIn(job, needed)
+
+
+class WorkflowMatrixTests(unittest.TestCase):
+    def test_build_and_install_cover_every_platform(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        for job in ("build", "install"):
+            with self.subTest(job=job):
+                body = re.search(rf"\n  {job}:\n((?:    [^\n]*\n|\n)*)", workflow)
+                self.assertIsNotNone(body, f"expected the {job} job")
+                listed = re.findall(r"- platform: (\S+)", body[1])
+                self.assertEqual(sorted(listed), sorted(release.PLATFORMS))
 
 
 class ChangelogConfigTests(unittest.TestCase):
