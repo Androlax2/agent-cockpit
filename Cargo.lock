@@ -382,6 +382,7 @@ dependencies = [
  "cockpit-client",
  "cockpit-config",
  "cockpit-diagnostics",
+ "cockpit-projects",
  "cockpit-protocol",
  "cockpit-turso",
  "serde",
@@ -399,6 +400,15 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "cockpit-projects"
+version = "0.1.0"
+dependencies = [
+ "cockpit-turso",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

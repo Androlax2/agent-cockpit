@@ -68,6 +68,13 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
         from: &["cockpit-verification"],
         to: &["cockpit-processes"],
     },
+    // Sessions, tasks and scheduling occupy checkouts; projects answering about checkouts
+    // must not call back up into them (#28).
+    ForbiddenEdge {
+        rule: "projects -> sessions/tasks/scheduling",
+        from: &["cockpit-projects"],
+        to: &["cockpit-sessions", "cockpit-tasks", "cockpit-scheduling"],
+    },
 ];
 
 /// Package names of the first column of `cargo tree --prefix none -f {p}` output.
@@ -305,6 +312,21 @@ fn each_rule_catches_its_forbidden_edge() {
             "verification -> processes",
             "cockpit-verification",
             "cockpit-processes",
+        ),
+        (
+            "projects -> sessions/tasks/scheduling",
+            "cockpit-projects",
+            "cockpit-sessions",
+        ),
+        (
+            "projects -> sessions/tasks/scheduling",
+            "cockpit-projects",
+            "cockpit-tasks",
+        ),
+        (
+            "projects -> sessions/tasks/scheduling",
+            "cockpit-projects",
+            "cockpit-scheduling",
         ),
     ] {
         let manifest_path = fixture_workspace(

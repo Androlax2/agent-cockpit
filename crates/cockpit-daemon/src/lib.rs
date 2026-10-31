@@ -4,6 +4,7 @@ mod agent;
 mod error;
 mod instance;
 mod lanes;
+mod projects;
 mod routes;
 mod server;
 mod supervisor;
@@ -20,9 +21,10 @@ pub use routes::{Handler, Job, Peer, Route, Routes, WorkClass, refusal};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 2] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 3] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
+    cockpit_projects::MIGRATIONS,
 ];
 
 /// A started daemon: it accepts requests until dropped or the process exits.

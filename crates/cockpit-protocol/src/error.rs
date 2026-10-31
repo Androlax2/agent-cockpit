@@ -59,6 +59,13 @@ pub enum ErrorCode {
     NotNegotiated,
     /// The daemon has no capacity for this class of work right now; retrying later may work.
     Busy,
+    /// The command names an entity that does not exist.
+    NotFound,
+    /// The command conflicts with the entity's current state, such as another holder's
+    /// occupancy or a name already taken.
+    Conflict,
+    /// A safety rule refused the command; the message names the rule.
+    Refused,
     /// The command was based on an entity revision that is no longer current.
     StaleRevision,
     /// The cursor's epoch or position is no longer retained; the client must take a snapshot.
@@ -68,6 +75,28 @@ pub enum ErrorCode {
     /// A code this version does not know, kept as sent. Never build one with a known name.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ErrorCode {
+    /// The code's name on the wire, such as `not-found`.
+    pub fn as_str(&self) -> &str {
+        match self {
+            ErrorCode::InvalidRequest => "invalid-request",
+            ErrorCode::UnknownCommand => "unknown-command",
+            ErrorCode::NotAuthorized => "not-authorized",
+            ErrorCode::UnidentifiedPeer => "unidentified-peer",
+            ErrorCode::InvalidArgument => "invalid-argument",
+            ErrorCode::NotNegotiated => "not-negotiated",
+            ErrorCode::Busy => "busy",
+            ErrorCode::NotFound => "not-found",
+            ErrorCode::Conflict => "conflict",
+            ErrorCode::Refused => "refused",
+            ErrorCode::StaleRevision => "stale-revision",
+            ErrorCode::ResnapshotRequired => "resnapshot-required",
+            ErrorCode::Internal => "internal",
+            ErrorCode::Unknown(code) => code,
+        }
+    }
 }
 
 /// Longest message built from a peer's input, so a huge frame cannot grow its own rejection.

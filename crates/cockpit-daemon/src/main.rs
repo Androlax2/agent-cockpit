@@ -28,7 +28,8 @@ fn main() -> ExitCode {
 }
 
 fn run(foreground: bool) -> Result<(), StartError> {
-    let options = Options::from_environment(&cockpit_config::Environment::from_process())?;
+    let environment = cockpit_config::Environment::from_process();
+    let options = Options::from_environment(&environment)?;
     // The lock comes first, so a second daemon reports that one is running instead of
     // failing on the log or database lock behind it.
     let instance = Instance::acquire(options)?;
@@ -48,7 +49,13 @@ fn run(foreground: bool) -> Result<(), StartError> {
     let runtime = tokio::runtime::Runtime::new().map_err(StartError::Runtime)?;
     runtime.block_on(async {
         let daemon = instance
-            .start(|database| Arc::new(Routes::new(database)))
+            .start(|database| {
+                Arc::new(Routes::new(
+                    database,
+                    cockpit_projects::Git::from_path(),
+                    environment,
+                ))
+            })
             .await?;
         println!("ready {}", daemon.socket_path().display());
         daemon.wait().await;

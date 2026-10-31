@@ -1,7 +1,9 @@
 //! `cockpit`: the command-line frontend. Verbs that must work without the daemon (report 09)
-//! call their capability crate directly; that list is fixed in report 02 (#77).
+//! call their capability crate directly; that list is fixed in report 02 (#77). Every other
+//! verb goes to the daemon through `cockpit-client`.
 
 mod agent;
+mod projects;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -9,7 +11,16 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE]...
        cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION]
-       cockpit agent reports";
+       cockpit agent reports
+       cockpit project add DIR [--name NAME]
+       cockpit project list
+       cockpit checkout list [PROJECT]
+       cockpit checkout clone PROJECT BRANCH
+       cockpit checkout review PROJECT PULL_REQUEST
+       cockpit checkout claim CHECKOUT HOLDER
+       cockpit checkout release CHECKOUT HOLDER
+       cockpit checkout sweep [--dry-run]
+       cockpit checkout push CHECKOUT";
 
 fn main() -> ExitCode {
     // OsString: a project path need not be UTF-8.
@@ -22,6 +33,12 @@ fn main() -> ExitCode {
         }
         [Some("agent"), Some("reports")] => {
             agent::reports(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
+        [Some(verb @ ("project" | "checkout")), ..] => {
+            match projects::parse(verb, &arguments[1..]) {
+                Ok((command, deadline)) => projects::run(command, deadline),
+                Err(problem) => usage_error(Some(problem)),
+            }
         }
         _ => usage_error(None),
     }

@@ -497,7 +497,16 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  usage: cockpit config show [--project DIR] [--set KEY=VALUE]...\n       \
                  cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] \
                  [--needs-input QUESTION]\n       \
-                 cockpit agent reports\n"
+                 cockpit agent reports\n       \
+                 cockpit project add DIR [--name NAME]\n       \
+                 cockpit project list\n       \
+                 cockpit checkout list [PROJECT]\n       \
+                 cockpit checkout clone PROJECT BRANCH\n       \
+                 cockpit checkout review PROJECT PULL_REQUEST\n       \
+                 cockpit checkout claim CHECKOUT HOLDER\n       \
+                 cockpit checkout release CHECKOUT HOLDER\n       \
+                 cockpit checkout sweep [--dry-run]\n       \
+                 cockpit checkout push CHECKOUT\n"
             )
         );
     }
