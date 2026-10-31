@@ -311,7 +311,7 @@ async fn an_approval_returns_the_request_as_it_now_reads() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "ls").await;
     let write = fixture.database.write().await.unwrap();
-    let (_, approved) = approve_run(&write, run.id, 1, &run.digest(), NOW)
+    let (_, approved) = approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE)
         .await
         .unwrap();
     assert_eq!(approved, stored(&write, run.id).await);
