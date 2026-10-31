@@ -229,19 +229,16 @@ impl Handler for Routes {
                 peer,
             ) => tasks::route(
                 command,
-                match peer {
-                    Peer::Owner => None,
-                    Peer::Agent { connector } => Some(connector),
-                },
+                peer,
                 Arc::clone(&self.database),
                 self.environment.clone(),
             ),
             // Proposals and blocker reports are how a session asks the owner for something.
             (command @ (Command::TaskPropose { .. } | Command::TaskReportBlocker { .. }), peer) => {
                 match peer {
-                    Peer::Agent { connector } => tasks::route(
+                    peer @ Peer::Agent { .. } => tasks::route(
                         command,
-                        Some(connector),
+                        peer,
                         Arc::clone(&self.database),
                         self.environment.clone(),
                     ),
@@ -272,7 +269,7 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => tasks::route(
                     command,
-                    None,
+                    Peer::Owner,
                     Arc::clone(&self.database),
                     self.environment.clone(),
                 ),

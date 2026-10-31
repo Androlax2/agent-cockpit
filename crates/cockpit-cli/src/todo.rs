@@ -36,6 +36,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
                 rest,
                 &["--project", "--notes", "--kind", "--priority"],
                 &["--after"],
+                &[],
             )?;
             let after = flags.many("--after");
             Command::TaskAdd {
@@ -43,33 +44,27 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
                 title: flags.one_positional("a title")?,
                 project: flags.take("--project"),
                 notes: flags.take("--notes").unwrap_or_default(),
-                item_kind: flags.take("--kind").as_deref().map(kind).transpose()?,
-                priority: flags
-                    .take("--priority")
-                    .as_deref()
-                    .map(|level| number(level, "a priority"))
-                    .transpose()?,
-                after: after
-                    .iter()
-                    .map(|id| item_id(id))
-                    .collect::<Result<_, _>>()?,
+                item_kind: flags.kind()?,
+                priority: flags.number("--priority", "a priority")?,
+                after: item_ids(&after)?,
             }
         }
         ("propose", rest) => {
             is_session_only = true;
-            let mut flags = Flags::parse(rest, &["--why", "--project", "--notes", "--kind"], &[])?;
+            let mut flags =
+                Flags::parse(rest, &["--why", "--project", "--notes", "--kind"], &[], &[])?;
             Command::TaskPropose {
                 launch_token: token,
                 title: flags.one_positional("a title")?,
                 why: flags.required("--why", "why it matters")?,
                 project: flags.take("--project"),
                 notes: flags.take("--notes").unwrap_or_default(),
-                item_kind: flags.take("--kind").as_deref().map(kind).transpose()?,
+                item_kind: flags.kind()?,
             }
         }
         ("blocked", rest) => {
             is_session_only = true;
-            let mut flags = Flags::parse(rest, &["--why", "--notes"], &[])?;
+            let mut flags = Flags::parse(rest, &["--why", "--notes"], &[], &[])?;
             Command::TaskReportBlocker {
                 launch_token: token,
                 title: flags.one_positional("what you could not do")?,
@@ -78,7 +73,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
             }
         }
         ("list", rest) => {
-            let mut flags = Flags::parse(rest, &["--project"], &["--all"])?;
+            let mut flags = Flags::parse(rest, &["--project"], &[], &["--all"])?;
             let all = flags.switch("--all");
             flags.no_positional()?;
             Command::TaskList {
@@ -92,19 +87,19 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
             item: item_id(id)?,
         },
         ("edit", [id, rest @ ..]) => {
-            let mut flags =
-                Flags::parse(rest, &["--revision", "--title", "--notes", "--kind"], &[])?;
+            let mut flags = Flags::parse(
+                rest,
+                &["--revision", "--title", "--notes", "--kind"],
+                &[],
+                &[],
+            )?;
             flags.no_positional()?;
             let edit = Command::TaskEdit {
                 item: item_id(id)?,
-                intent_revision: flags
-                    .take("--revision")
-                    .as_deref()
-                    .map(|revision| number(revision, "a revision"))
-                    .transpose()?,
+                intent_revision: flags.number("--revision", "a revision")?,
                 title: flags.take("--title"),
                 notes: flags.take("--notes"),
-                item_kind: flags.take("--kind").as_deref().map(kind).transpose()?,
+                item_kind: flags.kind()?,
             };
             if let Command::TaskEdit {
                 title: None,
@@ -136,7 +131,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
             item: item_id(id)?,
         },
         ("done", [id, rest @ ..]) => {
-            let mut flags = Flags::parse(rest, &["--summary"], &[])?;
+            let mut flags = Flags::parse(rest, &["--summary"], &[], &[])?;
             flags.no_positional()?;
             Command::TaskDone {
                 launch_token: token,
@@ -147,11 +142,11 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
         ("reopen", [id]) => Command::TaskReopen { item: item_id(id)? },
         ("after", [id, on @ ..]) if !on.is_empty() => Command::TaskWait {
             item: item_id(id)?,
-            on: on.iter().map(|id| item_id(id)).collect::<Result<_, _>>()?,
+            on: item_ids(on)?,
         },
         ("unwait", [id, on @ ..]) if !on.is_empty() => Command::TaskUnwait {
             item: item_id(id)?,
-            on: on.iter().map(|id| item_id(id)).collect::<Result<_, _>>()?,
+            on: item_ids(on)?,
         },
         ("delete", [id]) => Command::TaskDelete {
             launch_token: token,
@@ -171,21 +166,21 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
             }
         }
         ("draft", ["save", rest @ ..]) => {
-            let mut flags =
-                Flags::parse(rest, &["--new", "--title", "--notes", "--revision"], &[])?;
+            let mut flags = Flags::parse(
+                rest,
+                &["--new", "--title", "--notes", "--revision"],
+                &[],
+                &[],
+            )?;
             Command::TaskDraftSave {
                 target: draft_target(&mut flags)?,
                 title: flags.take("--title").unwrap_or_default(),
                 notes: flags.take("--notes").unwrap_or_default(),
-                base_intent_revision: flags
-                    .take("--revision")
-                    .as_deref()
-                    .map(|revision| number(revision, "a revision"))
-                    .transpose()?,
+                base_intent_revision: flags.number("--revision", "a revision")?,
             }
         }
         ("draft", ["discard", rest @ ..]) => {
-            let mut flags = Flags::parse(rest, &["--new"], &[])?;
+            let mut flags = Flags::parse(rest, &["--new"], &[], &[])?;
             Command::TaskDraftDiscard {
                 target: draft_target(&mut flags)?,
             }
@@ -207,19 +202,16 @@ pub(crate) fn run(request: Request) -> ExitCode {
         Ok(socket) => socket,
         Err(code) => return code,
     };
-    match exchange(&socket, request.command) {
-        Ok(Reply::TaskImage { data, .. }) if request.image_file.is_some() => {
-            let file = request.image_file.expect("checked by the guard");
-            write_image(&file, &data.0)
-        }
-        Ok(reply) => match render(&reply) {
+    match (exchange(&socket, request.command), request.image_file) {
+        (Ok(Reply::TaskImage { data, .. }), Some(file)) => write_image(&file, &data.0),
+        (Ok(reply), _) => match render(&reply) {
             Some(text) => {
                 print!("{text}");
                 ExitCode::SUCCESS
             }
             None => failed(&socket, Ok(reply)),
         },
-        outcome => failed(&socket, outcome),
+        (outcome, _) => failed(&socket, outcome),
     }
 }
 
@@ -373,17 +365,8 @@ fn draft_target(flags: &mut Flags) -> Result<TaskDraftTargetView, String> {
     }
 }
 
-fn kind(text: &str) -> Result<TaskKindView, String> {
-    TaskKindView::KNOWN
-        .into_iter()
-        .find(|kind| kind.as_str() == text)
-        .ok_or_else(|| {
-            let known: Vec<&str> = TaskKindView::KNOWN
-                .iter()
-                .map(|kind| kind.as_str())
-                .collect();
-            format!("--kind {text}: use one of {}", known.join(", "))
-        })
+fn item_ids(words: &[impl AsRef<str>]) -> Result<Vec<i64>, String> {
+    words.iter().map(|word| item_id(word.as_ref())).collect()
 }
 
 fn item_id(text: &str) -> Result<i64, String> {
@@ -395,7 +378,7 @@ fn number(text: &str, what: &str) -> Result<i64, String> {
 }
 
 /// Words split into positional ones, `--flag value` pairs and switches. `single` flags take
-/// one value at most once; `--after` repeats; `others` are the verb's switches.
+/// one value at most once, `repeated` ones any number of times; `switches` take none.
 struct Flags {
     positional: Vec<String>,
     values: Vec<(String, String)>,
@@ -403,7 +386,12 @@ struct Flags {
 }
 
 impl Flags {
-    fn parse(words: &[&str], single: &[&str], others: &[&str]) -> Result<Flags, String> {
+    fn parse(
+        words: &[&str],
+        single: &[&str],
+        repeated: &[&str],
+        switches: &[&str],
+    ) -> Result<Flags, String> {
         let mut flags = Flags {
             positional: Vec::new(),
             values: Vec::new(),
@@ -412,20 +400,16 @@ impl Flags {
         let mut words = words.iter();
         while let Some(word) = words.next() {
             match *word {
-                "--after" if others.contains(&"--after") => {
-                    let value = words.next().ok_or("--after needs an item id")?;
-                    flags.values.push(((*word).to_owned(), (*value).to_owned()));
-                }
-                flag if single.contains(&flag) => {
+                flag if single.contains(&flag) || repeated.contains(&flag) => {
                     let value = words
                         .next()
                         .ok_or_else(|| format!("{flag} needs a value"))?;
-                    if flags.values.iter().any(|(name, _)| name == flag) {
+                    if single.contains(&flag) && flags.values.iter().any(|(name, _)| name == flag) {
                         return Err(format!("{flag} given twice"));
                     }
                     flags.values.push((flag.to_owned(), (*value).to_owned()));
                 }
-                switch if others.contains(&switch) => flags.switches.push(switch.to_owned()),
+                switch if switches.contains(&switch) => flags.switches.push(switch.to_owned()),
                 flag if flag.starts_with("--") => {
                     return Err(format!("unknown argument {flag}"));
                 }
@@ -443,6 +427,20 @@ impl Flags {
     fn required(&mut self, flag: &str, what: &str) -> Result<String, String> {
         self.take(flag)
             .ok_or_else(|| format!("{flag} is required: {what}"))
+    }
+
+    fn number(&mut self, flag: &str, what: &str) -> Result<Option<i64>, String> {
+        self.take(flag).map(|text| number(&text, what)).transpose()
+    }
+
+    fn kind(&mut self) -> Result<Option<TaskKindView>, String> {
+        self.take("--kind")
+            .map(|text| {
+                TaskKindView::parse(&text).ok_or_else(|| {
+                    format!("--kind {text}: use one of {}", TaskKindView::known_names())
+                })
+            })
+            .transpose()
     }
 
     fn many(&mut self, flag: &str) -> Vec<String> {

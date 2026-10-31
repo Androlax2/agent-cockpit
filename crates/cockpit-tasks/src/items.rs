@@ -107,7 +107,7 @@ pub async fn report_blocker(
         .clone()
         .ok_or(Refusal::NoBlockerProject)?;
     let new = NewItem {
-        project: Some(project.clone()),
+        project: None,
         title: title.to_owned(),
         notes: notes.to_owned(),
         kind: Kind::Task,
@@ -305,8 +305,7 @@ pub async fn list(
 
 /// One item the actor may see.
 pub async fn item(connection: &Connection, actor: &Actor, id: ItemId) -> Result<Item, Error> {
-    authorize(connection, actor).await?;
-    visible(connection, actor, id).await
+    accessible(connection, actor, id).await
 }
 
 /// The owner's change to what is asked. `expected_intent_revision`, when given, must be the
@@ -452,8 +451,7 @@ pub async fn start(
     id: ItemId,
     now: i64,
 ) -> Result<Item, Error> {
-    authorize(write, actor).await?;
-    let item = visible(write, actor, id).await?;
+    let item = accessible(write, actor, id).await?;
     let doing_session = match actor {
         Actor::Owner => None,
         Actor::Session { session, project } => {
@@ -464,14 +462,7 @@ pub async fn start(
         }
     };
     in_status(&item, &[Status::Todo], "start")?;
-    let waiting_on = item.waiting_on();
-    if !waiting_on.is_empty() {
-        return Err(Refusal::Waiting {
-            item: id,
-            on: waiting_on,
-        }
-        .into());
-    }
+    refuse_while_waiting(&item)?;
     write
         .execute(
             "UPDATE tasks_items SET status = 'doing', doing_session = ?2, is_queued = 0,
@@ -496,8 +487,7 @@ pub async fn finish(
         .map(|summary| text::body("summary", summary, SUMMARY_MAX_CHARS))
         .transpose()?
         .filter(|summary| !summary.trim().is_empty());
-    authorize(write, actor).await?;
-    let item = visible(write, actor, id).await?;
+    let item = accessible(write, actor, id).await?;
     match actor {
         Actor::Owner => in_status(&item, &[Status::Todo, Status::Doing], "be finished")?,
         Actor::Session { session, .. } => {
@@ -506,14 +496,7 @@ pub async fn finish(
             }
         }
     }
-    let waiting_on = item.waiting_on();
-    if !waiting_on.is_empty() {
-        return Err(Refusal::Waiting {
-            item: id,
-            on: waiting_on,
-        }
-        .into());
-    }
+    refuse_while_waiting(&item)?;
     write
         .execute(
             "UPDATE tasks_items SET status = 'done', doing_session = NULL, is_queued = 0,
@@ -603,8 +586,7 @@ pub async fn unwait(
 /// Removes an item with its waits, images and draft. The owner deletes any item no open item
 /// waits on; a session only what it filed and nobody started.
 pub async fn delete(write: &WriteTransaction<'_>, actor: &Actor, id: ItemId) -> Result<(), Error> {
-    authorize(write, actor).await?;
-    let item = visible(write, actor, id).await?;
+    let item = accessible(write, actor, id).await?;
     if let Actor::Session { session, .. } = actor {
         if item.filed_by.as_ref() != Some(session) {
             return Err(Refusal::OwnerOnly {
@@ -626,8 +608,16 @@ pub async fn delete(write: &WriteTransaction<'_>, actor: &Actor, id: ItemId) -> 
     Ok(())
 }
 
-/// The open items that wait on `id`.
 /// Deleting or declining an item open items wait on would leave them waiting for ever.
+/// Starting or finishing an item before what it waits on is done would skip the order.
+fn refuse_while_waiting(item: &Item) -> Result<(), Refusal> {
+    let on = item.waiting_on();
+    if on.is_empty() {
+        return Ok(());
+    }
+    Err(Refusal::Waiting { item: item.id, on })
+}
+
 async fn refuse_while_waited_on(connection: &Connection, id: ItemId) -> Result<(), Error> {
     let waiting = open_waiting_on(connection, id).await?;
     if waiting.is_empty() {
@@ -695,6 +685,12 @@ fn is_visible(actor: &Actor, item: &Item) -> bool {
     }
 }
 
+/// The item a request acts on: the session's grant checked first, then whether it may see it.
+async fn accessible(connection: &Connection, actor: &Actor, id: ItemId) -> Result<Item, Error> {
+    authorize(connection, actor).await?;
+    visible(connection, actor, id).await
+}
+
 async fn visible(connection: &Connection, actor: &Actor, id: ItemId) -> Result<Item, Error> {
     match fetch(connection, id).await? {
         Some(item) if is_visible(actor, &item) => Ok(item),
@@ -749,7 +745,6 @@ pub(crate) async fn bump_intent(
     Ok(())
 }
 
-/// An item that can be waited on: one that exists and was not declined.
 /// An item the actor may make another wait on: one it can see that was not declined.
 async fn waitable(connection: &Connection, actor: &Actor, id: ItemId) -> Result<(), Error> {
     let item = visible(connection, actor, id).await?;

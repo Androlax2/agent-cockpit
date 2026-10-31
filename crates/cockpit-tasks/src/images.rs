@@ -32,11 +32,12 @@ pub async fn add_image(
     write: &WriteTransaction<'_>,
     actor: &Actor,
     id: ItemId,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     now: i64,
 ) -> Result<ImageInfo, Error> {
     owner_only(actor, "attach an image")?;
-    let media_type = media_type_of(bytes)?;
+    let media_type = media_type_of(&bytes)?;
+    let size = bytes.len() as u64;
     let item = required(write, id).await?;
     let count = i64::try_from(item.images.len()).unwrap_or(i64::MAX);
     if count >= IMAGES_PER_ITEM_MAX {
@@ -50,14 +51,14 @@ pub async fn add_image(
         .execute(
             "INSERT INTO tasks_images (item, number, media_type, bytes, added_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            (id.0, number, media_type, bytes.to_vec(), now),
+            (id.0, number, media_type, bytes, now),
         )
         .await?;
     bump_intent(write, id, now).await?;
     Ok(ImageInfo {
         number,
         media_type,
-        bytes: bytes.len() as u64,
+        bytes: size,
     })
 }
 
@@ -85,8 +86,7 @@ pub async fn image(
     let media_type = row.get::<String>(0)?;
     Ok(Image {
         number,
-        media_type: known_media_type(&media_type)
-            .ok_or_else(|| invalid_row("tasks_images", format!("media type {media_type:?}")))?,
+        media_type: stored_media_type(&media_type)?,
         bytes: row.get(1)?,
     })
 }
@@ -107,8 +107,7 @@ pub(crate) async fn images_of(
         let media_type = row.get::<String>(1)?;
         images.push(ImageInfo {
             number: row.get(0)?,
-            media_type: known_media_type(&media_type)
-                .ok_or_else(|| invalid_row("tasks_images", format!("media type {media_type:?}")))?,
+            media_type: stored_media_type(&media_type)?,
             bytes: u64::try_from(row.get::<i64>(2)?).unwrap_or(0),
         });
     }
@@ -134,6 +133,11 @@ fn media_type_of(bytes: &[u8]) -> Result<&'static str, Refusal> {
         .ok_or_else(|| Refusal::InvalidImage {
             reason: "it is not a PNG, JPEG, GIF or WebP image".to_owned(),
         })
+}
+
+fn stored_media_type(stored: &str) -> Result<&'static str, Error> {
+    known_media_type(stored)
+        .ok_or_else(|| invalid_row("tasks_images", format!("media type {stored:?}")))
 }
 
 fn known_media_type(stored: &str) -> Option<&'static str> {

@@ -60,6 +60,22 @@ impl TaskKindView {
         TaskKindView::Research,
     ];
 
+    /// The known kind named `text`.
+    pub fn parse(text: &str) -> Option<TaskKindView> {
+        TaskKindView::KNOWN
+            .into_iter()
+            .find(|kind| kind.as_str() == text)
+    }
+
+    /// The known kinds' names, for a usage or refusal message.
+    pub fn known_names() -> String {
+        let names: Vec<&str> = TaskKindView::KNOWN
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
+        names.join(", ")
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             TaskKindView::Task => "task",
@@ -173,15 +189,18 @@ impl std::fmt::Debug for HexBytes {
     }
 }
 
+/// Streams the digits into the serializer, so an image is never held twice as hex text.
 impl Serialize for HexBytes {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        let mut text = String::with_capacity(self.0.len() * 2);
-        for byte in &self.0 {
-            text.push(char::from(DIGITS[usize::from(byte >> 4)]));
-            text.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-        }
-        serializer.serialize_str(&text)
+        serializer.collect_str(self)
+    }
+}
+
+impl std::fmt::Display for HexBytes {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0
+            .iter()
+            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
     }
 }
 

@@ -175,7 +175,10 @@ async fn a_blocker_report_without_a_configured_project_is_refused() {
         cockpit_tasks::report_blocker(
             &write,
             &agent,
-            &Settings::default(),
+            &Settings {
+                blocker_project: None,
+                cross_project_open_max: 2,
+            },
             "Cannot reach the registry",
             "blocked",
             "",

@@ -20,7 +20,7 @@ pub use model::{
 };
 pub use push::{Pushed, push};
 pub use register::register_project;
-pub use store::{MIGRATIONS, checkouts, claim, projects, release};
+pub use store::{MIGRATIONS, checkouts, claim, project_named, projects, release};
 pub use sweep::{Kept, SweepReport, sweep};
 
 /// Where a project's clones live: `<parent of the root>/.parallel/<project>/`, beside the

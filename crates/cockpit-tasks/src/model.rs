@@ -96,11 +96,6 @@ impl Status {
         .into_iter()
         .find(|status| status.as_str() == text)
     }
-
-    /// Still wanted and not finished: what a cross-project cap counts.
-    pub fn is_open(self) -> bool {
-        matches!(self, Status::Proposed | Status::Todo | Status::Doing)
-    }
 }
 
 /// Who acts on the tasks, as the daemon authenticated them; never taken from a payload.
@@ -122,15 +117,6 @@ pub struct Settings {
     pub blocker_project: Option<String>,
     /// Open items one project's sessions may have filed in another project's list.
     pub cross_project_open_max: u32,
-}
-
-impl Default for Settings {
-    fn default() -> Settings {
-        Settings {
-            blocker_project: None,
-            cross_project_open_max: 3,
-        }
-    }
 }
 
 /// An item it waits on, with what its session said when it finished it.

@@ -9,13 +9,12 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use cockpit_agent_channel::{LaunchToken, identity_of};
-use cockpit_authorization::{Permission, Scope, SessionId};
+use cockpit_authorization::Permission;
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, ErrorCode, HexBytes, ProtocolError, Reply, TaskDraftTargetView, TaskStatusView,
-    TaskView, UnblockedBy,
+    Command, ErrorCode, HexBytes, Reply, TaskDraftTargetView, TaskStatusView, TaskView, UnblockedBy,
 };
-use common::{GENEROUS, TestHome};
+use common::{GENEROUS, TestHome, refused};
 
 /// The working directory is the process's: tests that move it take turns. Under nextest each
 /// test is its own process; the lock keeps `cargo test`'s threads apart too.
@@ -51,8 +50,14 @@ async fn started(projects: &[&str], config: &str) -> Tasks {
         .await
         .unwrap();
     }
-    let token = launch(&database).await;
     drop(database);
+    let token = home
+        .launch(
+            "s1",
+            &identity_of(std::process::id()).unwrap(),
+            Some(Permission::ChangeState),
+        )
+        .await;
     if let Some(first) = projects.first() {
         std::env::set_current_dir(home.home().join("projects").join(first)).unwrap();
     }
@@ -79,27 +84,6 @@ fn repository(home: &Path, name: &str) -> PathBuf {
         .unwrap();
     assert!(initialised.success());
     root.canonicalize().unwrap()
-}
-
-/// Launches session `s1` rooted at this test process, holding change-state over itself as a
-/// launched session does.
-async fn launch(database: &cockpit_turso::Database) -> LaunchToken {
-    let session = SessionId::new("s1").unwrap();
-    let write = database.write().await.unwrap();
-    let token = cockpit_agent_channel::mint(&write, &session).await.unwrap();
-    cockpit_agent_channel::record_root(&write, &session, &identity_of(std::process::id()).unwrap())
-        .await
-        .unwrap();
-    cockpit_authorization::grant(
-        &write,
-        &session,
-        Permission::ChangeState,
-        &Scope::Session(session.clone()),
-    )
-    .await
-    .unwrap();
-    write.commit().await.unwrap();
-    token
 }
 
 impl Tasks {
@@ -158,13 +142,6 @@ fn task(reply: Result<Reply, ClientError>) -> TaskView {
     match reply {
         Ok(Reply::Task { task }) => *task,
         other => panic!("expected a task, got {other:?}"),
-    }
-}
-
-fn refused(reply: Result<Reply, ClientError>) -> ProtocolError {
-    match reply {
-        Err(ClientError::Daemon(error)) => error,
-        other => panic!("expected a refusal, got {other:?}"),
     }
 }
 

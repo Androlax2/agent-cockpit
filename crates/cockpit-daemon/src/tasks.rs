@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_protocol::{
     Command, ErrorCode, HexBytes, ProtocolError, Reply, TaskDraftTargetView, TaskDraftView,
     TaskImageView, TaskKindView, TaskNextView, TaskStatusView, TaskView, TaskWaitView, Unblock,
@@ -20,27 +19,28 @@ use cockpit_turso::sql::Connection;
 use cockpit_turso::{Database, WriteTransaction};
 
 use crate::approvals::{Answer, Failed, Sender, job, now};
-use crate::routes::{Route, WorkClass};
+use crate::routes::{Peer, Route, WorkClass};
 
 /// The route for a task command; `routes.rs` sends only those here, after the socket rules.
-/// `connector` is the agent socket's peer, `None` on the owner's socket. Agent requests run
-/// in the bulk lane like every agent request (#32), and so do image transfers.
+/// Agent requests run in the bulk lane like every agent request (#32), and so do image
+/// transfers.
 pub(crate) fn route(
     command: Command,
-    connector: Option<Result<ProcessIdentity, ProcessError>>,
+    peer: Peer,
     database: Arc<Database>,
     environment: cockpit_config::Environment,
 ) -> Route {
-    let class = match (&connector, &command) {
-        (Some(_), _) | (None, Command::TaskImageAdd { .. } | Command::TaskImage { .. }) => {
+    let class = match (&peer, &command) {
+        (Peer::Agent { .. }, _)
+        | (Peer::Owner, Command::TaskImageAdd { .. } | Command::TaskImage { .. }) => {
             WorkClass::Bulk
         }
-        (None, _) => WorkClass::Control,
+        (Peer::Owner, _) => WorkClass::Control,
     };
     let work = async move {
-        let sender = match connector {
-            Some(connector) => Some(Sender::of(connector).await),
-            None => None,
+        let sender = match peer {
+            Peer::Agent { connector } => Some(Sender::of(connector).await),
+            Peer::Owner => None,
         };
         // The owner has no launch token to bind: reads need no write lock (#164).
         if sender.is_none() && is_read(&command) {
@@ -55,7 +55,11 @@ pub(crate) fn route(
                 | Command::TaskPropose { .. }
                 | Command::TaskReportBlocker { .. },
             ) => settings(environment).await?,
-            _ => Settings::default(),
+            // Read by no other request.
+            _ => Settings {
+                blocker_project: None,
+                cross_project_open_max: cockpit_config::CROSS_PROJECT_OPEN_MAX,
+            },
         };
         let write = database.write().await.map_err(|error| internal(&error))?;
         let actor = match &sender {
@@ -102,8 +106,11 @@ async fn dispatch(
                 project,
                 title,
                 notes,
-                kind: kind(item_kind)?,
-                priority: priority_of(priority)?,
+                kind: item_kind.map(kind).transpose()?.unwrap_or(Kind::Task),
+                priority: priority
+                    .map(priority_of)
+                    .transpose()?
+                    .unwrap_or(Priority::NORMAL),
                 after: after.into_iter().map(ItemId).collect(),
             };
             cockpit_tasks::add(write, actor, settings, new, now).await?
@@ -121,7 +128,7 @@ async fn dispatch(
                 project,
                 title,
                 notes,
-                kind: kind(item_kind)?,
+                kind: item_kind.map(kind).transpose()?.unwrap_or(Kind::Task),
                 priority: Priority::NORMAL,
                 after: Vec::new(),
             };
@@ -143,12 +150,12 @@ async fn dispatch(
             let edit = Edit {
                 title,
                 notes,
-                kind: item_kind.map(|known| kind(Some(known))).transpose()?,
+                kind: item_kind.map(kind).transpose()?,
             };
             cockpit_tasks::edit(write, actor, ItemId(item), intent_revision, edit, now).await?
         }
         Command::TaskPriority { item, priority } => {
-            let priority = priority_of(Some(priority))?;
+            let priority = priority_of(priority)?;
             cockpit_tasks::set_priority(write, actor, ItemId(item), priority, now).await?
         }
         Command::TaskQueue { item, queued } => {
@@ -182,7 +189,7 @@ async fn dispatch(
             return Ok(Reply::TaskDeleted { item });
         }
         Command::TaskImageAdd { item, data } => {
-            let image = cockpit_tasks::add_image(write, actor, ItemId(item), &data.0, now).await?;
+            let image = cockpit_tasks::add_image(write, actor, ItemId(item), data.0, now).await?;
             return Ok(Reply::TaskImageAdded {
                 item,
                 image: image_view(&image),
@@ -219,7 +226,7 @@ async fn dispatch(
         other => unreachable!("routes.rs sends only task commands here, not {other:?}"),
     };
     Ok(Reply::Task {
-        task: Box::new(task_view(&item)),
+        task: Box::new(task_view(item)),
     })
 }
 
@@ -242,12 +249,12 @@ async fn read_reply(connection: &Connection, actor: &Actor, command: Command) ->
             };
             let items = cockpit_tasks::list(connection, actor, &filter).await?;
             Reply::Tasks {
-                tasks: items.iter().map(task_view).collect(),
+                tasks: items.into_iter().map(task_view).collect(),
             }
         }
         Command::TaskShow { item, .. } => Reply::Task {
             task: Box::new(task_view(
-                &cockpit_tasks::item(connection, actor, ItemId(item)).await?,
+                cockpit_tasks::item(connection, actor, ItemId(item)).await?,
             )),
         },
         Command::TaskImage { item, number } => {
@@ -312,21 +319,16 @@ async fn registered(connection: &Connection, project: Option<&str>) -> Result<()
     let Some(project) = project else {
         return Ok(());
     };
-    let projects = cockpit_projects::projects(connection)
-        .await
-        .map_err(|error| internal(&error))?;
-    if projects
-        .iter()
-        .any(|registered| registered.name.as_str() == project)
-    {
-        return Ok(());
+    match cockpit_projects::project_named(connection, project).await {
+        Ok(_) => Ok(()),
+        Err(cockpit_projects::Error::UnknownProject { .. }) => Err(refused(
+            ErrorCode::NotFound,
+            format!("no registered project {project}"),
+            "name a project `cockpit project list` shows",
+            UnblockedBy::Agent,
+        )),
+        Err(error) => Err(internal(&error)),
     }
-    Err(refused(
-        ErrorCode::NotFound,
-        format!("no registered project {project}"),
-        "name a project `cockpit project list` shows",
-        UnblockedBy::Agent,
-    ))
 }
 
 fn draft_target(target: TaskDraftTargetView) -> DraftTarget {
@@ -336,28 +338,26 @@ fn draft_target(target: TaskDraftTargetView) -> DraftTarget {
     }
 }
 
-fn kind(view: Option<TaskKindView>) -> Result<Kind, Failed> {
-    let Some(view) = view else {
-        return Ok(Kind::Task);
-    };
-    Kind::parse(view.as_str()).ok_or_else(|| {
-        let known: Vec<&str> = TaskKindView::KNOWN
-            .iter()
-            .map(|kind| kind.as_str())
-            .collect();
-        refused(
-            ErrorCode::InvalidArgument,
-            "item_kind: unknown kind".to_owned(),
-            &format!("use one of {}", known.join(", ")),
-            UnblockedBy::Agent,
-        )
+fn kind(view: TaskKindView) -> Result<Kind, Failed> {
+    Ok(match view {
+        TaskKindView::Task => Kind::Task,
+        TaskKindView::Feature => Kind::Feature,
+        TaskKindView::Bug => Kind::Bug,
+        TaskKindView::Improvement => Kind::Improvement,
+        TaskKindView::Chore => Kind::Chore,
+        TaskKindView::Research => Kind::Research,
+        TaskKindView::Unknown => {
+            return Err(refused(
+                ErrorCode::InvalidArgument,
+                "item_kind: unknown kind".to_owned(),
+                &format!("use one of {}", TaskKindView::known_names()),
+                UnblockedBy::Agent,
+            ));
+        }
     })
 }
 
-fn priority_of(level: Option<i64>) -> Result<Priority, Failed> {
-    let Some(level) = level else {
-        return Ok(Priority::NORMAL);
-    };
+fn priority_of(level: i64) -> Result<Priority, Failed> {
     Priority::new(level).ok_or_else(|| {
         refused(
             ErrorCode::InvalidArgument,
@@ -426,36 +426,48 @@ impl From<cockpit_tasks::Error> for Failed {
     }
 }
 
-fn task_view(item: &Item) -> TaskView {
+fn task_view(item: Item) -> TaskView {
+    let next = match item.next_action() {
+        NextAction::DecideProposal => TaskNextView::DecideProposal,
+        NextAction::FinishDependencies { items } => TaskNextView::FinishDependencies {
+            items: items.iter().map(|item| item.0).collect(),
+        },
+        NextAction::Queue => TaskNextView::Queue,
+        NextAction::AwaitPlacement => TaskNextView::AwaitPlacement,
+        NextAction::InProgress { session } => TaskNextView::InProgress {
+            session: session.map(|session| session.as_str().to_owned()),
+        },
+        NextAction::Nothing => TaskNextView::Nothing,
+    };
     TaskView {
         id: item.id.0,
-        project: item.project.clone(),
-        title: item.title.clone(),
-        notes: item.notes.clone(),
+        project: item.project,
+        title: item.title,
+        notes: item.notes,
         kind: kind_view(item.kind),
         priority: item.priority.level(),
         status: status_view(item.status),
         is_blocker_report: item.is_blocker_report,
-        why: item.why.clone(),
+        why: item.why,
         filed_by: item
             .filed_by
             .as_ref()
             .map(|session| session.as_str().to_owned()),
-        filed_from: item.filed_from.clone(),
+        filed_from: item.filed_from,
         doing_session: item
             .doing_session
             .as_ref()
             .map(|session| session.as_str().to_owned()),
-        summary: item.summary.clone(),
+        summary: item.summary,
         is_queued: item.is_queued,
         waits: item
             .waits
-            .iter()
+            .into_iter()
             .map(|wait| TaskWaitView {
                 item: wait.item.0,
-                title: wait.title.clone(),
+                title: wait.title,
                 status: status_view(wait.status),
-                summary: wait.summary.clone(),
+                summary: wait.summary,
             })
             .collect(),
         images: item.images.iter().map(image_view).collect(),
@@ -463,26 +475,19 @@ fn task_view(item: &Item) -> TaskView {
         state_revision: item.state_revision,
         created_at: item.created_at,
         changed_at: item.changed_at,
-        next: match item.next_action() {
-            NextAction::DecideProposal => TaskNextView::DecideProposal,
-            NextAction::FinishDependencies { items } => TaskNextView::FinishDependencies {
-                items: items.iter().map(|item| item.0).collect(),
-            },
-            NextAction::Queue => TaskNextView::Queue,
-            NextAction::AwaitPlacement => TaskNextView::AwaitPlacement,
-            NextAction::InProgress { session } => TaskNextView::InProgress {
-                session: session.map(|session| session.as_str().to_owned()),
-            },
-            NextAction::Nothing => TaskNextView::Nothing,
-        },
+        next,
     }
 }
 
 fn kind_view(kind: Kind) -> TaskKindView {
-    TaskKindView::KNOWN
-        .into_iter()
-        .find(|view| view.as_str() == kind.as_str())
-        .expect("every kind has a wire name")
+    match kind {
+        Kind::Task => TaskKindView::Task,
+        Kind::Feature => TaskKindView::Feature,
+        Kind::Bug => TaskKindView::Bug,
+        Kind::Improvement => TaskKindView::Improvement,
+        Kind::Chore => TaskKindView::Chore,
+        Kind::Research => TaskKindView::Research,
+    }
 }
 
 fn status_view(status: Status) -> TaskStatusView {

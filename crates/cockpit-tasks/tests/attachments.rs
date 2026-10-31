@@ -13,12 +13,13 @@ async fn an_image_is_numbered_typed_from_its_bytes_and_is_an_intent_revision() {
     let item = fixture.owner_adds("app", "Fix the layout").await;
     let write = fixture.database.write().await.unwrap();
 
-    let first = cockpit_tasks::add_image(&write, &Actor::Owner, item.id, PNG, NOW)
+    let first = cockpit_tasks::add_image(&write, &Actor::Owner, item.id, PNG.to_vec(), NOW)
         .await
         .unwrap();
-    let second = cockpit_tasks::add_image(&write, &Actor::Owner, item.id, b"GIF89a...", NOW)
-        .await
-        .unwrap();
+    let second =
+        cockpit_tasks::add_image(&write, &Actor::Owner, item.id, b"GIF89a...".to_vec(), NOW)
+            .await
+            .unwrap();
     write.commit().await.unwrap();
 
     assert_eq!((first.number, first.media_type), (1, "image/png"));
@@ -38,7 +39,8 @@ async fn bytes_that_are_not_an_image_are_refused() {
     let write = fixture.database.write().await.unwrap();
 
     let refused = refusal(
-        cockpit_tasks::add_image(&write, &Actor::Owner, item.id, b"#!/bin/sh\n", NOW).await,
+        cockpit_tasks::add_image(&write, &Actor::Owner, item.id, b"#!/bin/sh\n".to_vec(), NOW)
+            .await,
     );
 
     assert!(
