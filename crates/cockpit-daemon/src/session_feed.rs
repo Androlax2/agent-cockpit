@@ -131,17 +131,26 @@ async fn write(
 /// The sessions not ended, as `session-list` answers them; an ended one is retracted. A
 /// session whose view cannot be read is logged and kept as published, so one bad session
 /// does not stop the others from reaching the feed.
-async fn session_states(sessions: &Sessions) -> Result<(States, BTreeSet<String>), String> {
-    let work = crate::sessions::task_work(sessions)
-        .await
-        .map_err(|failed| failed.0.message)?;
+async fn session_states(
+    sessions: &Sessions,
+) -> Result<(States, BTreeSet<String>), cockpit_sessions::Error> {
+    let listed = sessions.list(false).await?;
+    // The finished label needs the task list; without it every session is kept as published,
+    // and the checkouts still go out.
+    let work = match crate::sessions::task_work(sessions).await {
+        Ok(work) => work,
+        Err(failed) => {
+            tracing::warn!(error = ?failed.0, "the sessions on the change feed are left unchanged");
+            let kept = listed
+                .iter()
+                .map(|session| session.id.to_string())
+                .collect();
+            return Ok((States::new(), kept));
+        }
+    };
     let mut states = States::new();
     let mut kept = BTreeSet::new();
-    for session in sessions
-        .list(false)
-        .await
-        .map_err(|error| error.to_string())?
-    {
+    for session in listed {
         match crate::sessions::current_view(sessions, &session, &work).await {
             Ok(view) => {
                 states.insert(view.id.clone(), state_of(&view));

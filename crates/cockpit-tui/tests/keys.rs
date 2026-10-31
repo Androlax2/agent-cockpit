@@ -174,20 +174,29 @@ fn a_daemon_outage_is_logged_once_and_its_status_clears_when_the_daemon_answers(
     let problem = "cannot connect: connection refused".to_owned();
 
     for _ in 0..3 {
+        app.feed_lost(problem.clone());
         for command in cockpit_tui::App::refresh_commands() {
             app.answer(&command, Err(problem.clone()), now);
         }
     }
     let outage = app.log().filter(|entry| entry.contains("refused")).count();
     for command in cockpit_tui::App::refresh_commands() {
-        app.answer(
-            &command,
-            Ok(Reply::Projects {
+        let reply = match command {
+            Command::ProjectList => Reply::Projects {
                 projects: Vec::new(),
-            }),
-            now,
-        );
+            },
+            Command::AgentReports => Reply::AgentReports {
+                reports: Vec::new(),
+            },
+            Command::ApprovalQueue => Reply::ApprovalQueue {
+                runs: Vec::new(),
+                guides: Vec::new(),
+            },
+            other => panic!("not a refresh command: {other:?}"),
+        };
+        app.answer(&command, Ok(reply), now);
     }
+    app.apply_changes(&common::snapshot(Vec::new())).unwrap();
 
     assert_eq!(outage, 1);
     assert!(

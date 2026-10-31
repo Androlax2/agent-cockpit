@@ -30,10 +30,11 @@ worker, with the reasons below. Supersedes the polling note of
   as published, so it does not stop the others.
 - **The TUI subscribes on its own connection and drops `session-list` and `checkout-list`
   from its refresh.** Projects, agent reports and the approval queue stay polled every
-  second until they are on the feed. Resync is the feed's own snapshot: a lost feed resumes
-  from the applied cursor, a batch the board refuses starts again from a snapshot. Failures in
-  a row wait 1 s, doubling to 30 s, so a snapshot the board keeps refusing is not resent
-  every second; the problem stays on the status line until a batch applies.
+  second until they are on the feed. Resync is the feed's own snapshot: after a lost feed or
+  a refused batch the TUI subscribes from a snapshot, not its cursor, because a resumed feed
+  with nothing new sends no batch and only an applied batch says the board is current.
+  Failures in a row wait 1 s, doubling to 30 s, so a snapshot the board keeps refusing is not
+  resent every second; the problem stays on the status line until a batch applies.
 - **A command's answer never takes a session back to an older revision, nor brings back one
   the feed took off** (`Board::put_session`): without a polling refresh, a late answer would
   otherwise stay on screen until the next change. Only the feed writes the lists: the

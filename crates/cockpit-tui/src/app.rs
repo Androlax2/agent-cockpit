@@ -155,7 +155,13 @@ impl App {
     /// The change feed stopped: on the status line until a batch applies, logged once per
     /// problem.
     pub fn feed_lost(&mut self, problem: String) {
-        if self.feed_problem.as_ref() != Some(&problem) {
+        // A daemon outage fails the polled commands too: the same problem is logged once.
+        let is_logged = self.feed_problem.as_ref() == Some(&problem)
+            || self
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.problem == problem);
+        if !is_logged {
             self.note(format!("change feed: {problem}"));
         }
         self.feed_problem = Some(problem);
@@ -424,11 +430,12 @@ impl App {
             form.problem = Some(problem.clone());
         }
         let kind = command_label(command);
-        if self
-            .failure
-            .as_ref()
-            .is_none_or(|failure| failure.problem != problem)
-        {
+        let is_logged = self.feed_problem.as_ref() == Some(&problem)
+            || self
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.problem == problem);
+        if !is_logged {
             self.note(format!("{kind}: {problem}"));
         }
         self.failure = Some(Failure { kind, problem });

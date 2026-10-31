@@ -29,9 +29,9 @@ detaching the terminal leaves everything running.
   runs in its own task on one shared connection; answers update the view as they arrive.
 - **State.** Sessions and checkouts come from the change feed (#199): [`follow_feed`]
   subscribes on a connection of its own and [`Board`] applies each batch whole or refuses it
-  whole; the cursor advances only once a batch is applied. A lost feed resumes from that
-  cursor, a refused batch starts again from a snapshot (1 s, doubling to 30 s), and either
-  shows on the status line until a batch applies.
+  whole; the cursor advances only once a batch is applied. A lost feed or a refused batch
+  starts again from a snapshot (after 1 s, doubling to 30 s) and shows on the status line,
+  beside any failed command, until a batch applies.
   What is not on the feed is refreshed every second: `project-list`, `agent-reports` and
   `approval-queue`. A command's answer never takes a session back to an older revision nor
   brings back one the feed took off.

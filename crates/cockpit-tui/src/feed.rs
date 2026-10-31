@@ -32,8 +32,9 @@ pub enum FeedEvent {
     Lost(String),
 }
 
-/// Follows the feed of the daemon at `socket` until `events` is closed. A disconnect resumes
-/// from the last applied batch; a batch the board refused starts again from a snapshot.
+/// Follows the feed of the daemon at `socket` until `events` is closed. After any failure it
+/// starts again from a snapshot rather than resuming from its cursor: a resumed feed with
+/// nothing new sends no batch, and only an applied batch tells the board it is current.
 pub async fn follow_feed(socket: PathBuf, events: mpsc::Sender<FeedEvent>) {
     let from_snapshot = || Subscription::new(socket.clone(), None, SUBSCRIBE_DEADLINE);
     let mut subscription = from_snapshot();
@@ -57,15 +58,13 @@ pub async fn follow_feed(socket: PathBuf, events: mpsc::Sender<FeedEvent>) {
                         retry = FIRST_RETRY;
                         continue;
                     }
-                    Ok(Err(refused)) => {
-                        subscription = from_snapshot();
-                        refused.to_string()
-                    }
+                    Ok(Err(refused)) => refused.to_string(),
                     Err(_) => return,
                 }
             }
         };
         tracing::warn!(problem, "the change feed stopped; subscribing again");
+        subscription = from_snapshot();
         if events.send(FeedEvent::Lost(problem)).await.is_err() {
             return;
         }

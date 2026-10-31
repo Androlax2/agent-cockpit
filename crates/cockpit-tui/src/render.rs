@@ -77,7 +77,11 @@ fn status_line(app: &App) -> String {
         (Some(Confirm::ExitFinished(sessions)), ..) => {
             format!("exit {} finished sessions? y to confirm", sessions.len())
         }
-        (None, Some(failure), _) => format!("{}: {}", failure.kind, failure.problem),
+        (None, Some(failure), Some(problem)) => format!(
+            "{}: {} · change feed: {problem}",
+            failure.kind, failure.problem
+        ),
+        (None, Some(failure), None) => format!("{}: {}", failure.kind, failure.problem),
         (None, None, Some(problem)) => format!("change feed: {problem}"),
         (None, None, None) => "? help".to_owned(),
     }
