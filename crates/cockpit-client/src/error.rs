@@ -51,6 +51,9 @@ pub enum CloseReason {
     RejectedFrame(ProtocolError),
     /// Reading or writing the socket failed.
     Io(String),
+    /// This client stopped reading the connection without the daemon closing it, such as a
+    /// dropped feed or a stopped reader task. A client bug, never the daemon's doing.
+    ClientStopped,
 }
 
 impl fmt::Display for ClientError {
@@ -122,6 +125,7 @@ impl fmt::Display for CloseReason {
                 error.code, error.message
             ),
             Self::Io(detail) => write!(formatter, "socket error: {detail}"),
+            Self::ClientStopped => formatter.write_str("the client stopped reading the connection"),
         }
     }
 }

@@ -9,14 +9,14 @@ use cockpit_protocol::{
     SUPPORTED_VERSIONS, ServerFrame, Welcome,
 };
 use serde::de::DeserializeOwned;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::error::{ClientError, CloseReason};
-use crate::framing::{FrameReader, encode};
+use crate::framing::{encode, next_frame};
 
 /// Frames waiting for the socket; a request that cannot queue waits within its deadline.
 const OUTGOING_QUEUE_FRAMES: usize = 64;
@@ -39,24 +39,25 @@ struct SharedState {
 }
 
 impl Connection {
-    /// Connects to the daemon at `socket_path` and completes the handshake, asking for
-    /// `capabilities`, all within `timeout`.
-    pub async fn open(
-        socket_path: &Path,
-        capabilities: &[Capability],
-        timeout: Duration,
-    ) -> Result<Self, ClientError> {
-        Self::open_with_feed(socket_path, capabilities, timeout, None).await
+    /// Connects to the daemon at `socket_path` and completes the handshake within `timeout`.
+    ///
+    /// It asks for no capability: the change feed is only negotiated by a
+    /// [`crate::Subscription`], so the daemon answers `subscribe` here with `not-negotiated`.
+    pub async fn open(socket_path: &Path, timeout: Duration) -> Result<Self, ClientError> {
+        Self::open_with_feed(socket_path, timeout, None).await
     }
 
-    /// Like [`Connection::open`]; change batches go to `feed`. A connection without a feed
-    /// treats a change batch as a protocol violation and closes.
+    /// Like [`Connection::open`]; with a `feed`, it asks for the change feed and sends batches
+    /// there. A connection without a feed treats a change batch as a protocol violation.
     pub(crate) async fn open_with_feed(
         socket_path: &Path,
-        capabilities: &[Capability],
         timeout: Duration,
         feed: Option<mpsc::Sender<ChangeBatch>>,
     ) -> Result<Self, ClientError> {
+        let capabilities = match feed {
+            Some(_) => vec![Capability::ChangeFeed],
+            None => Vec::new(),
+        };
         let handshake = handshake(socket_path, capabilities);
         let (welcome, frames, write_half) = tokio::time::timeout(timeout, handshake)
             .await
@@ -116,7 +117,16 @@ impl Connection {
     /// The error for an operation that found the connection closed.
     pub(crate) fn closed(&self) -> ClientError {
         let reason = lock(&self.shared).close_reason.clone();
-        ClientError::Closed(reason.unwrap_or(CloseReason::Disconnected))
+        ClientError::Closed(reason.unwrap_or(CloseReason::ClientStopped))
+    }
+}
+
+impl std::fmt::Debug for Connection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Connection")
+            .field("welcome", &self.welcome)
+            .finish_non_exhaustive()
     }
 }
 
@@ -156,8 +166,8 @@ fn close(shared: &Mutex<SharedState>, reason: CloseReason) {
 
 async fn handshake(
     socket_path: &Path,
-    capabilities: &[Capability],
-) -> Result<(Welcome, FrameReader<OwnedReadHalf>, OwnedWriteHalf), ClientError> {
+    capabilities: Vec<Capability>,
+) -> Result<(Welcome, BufReader<OwnedReadHalf>, OwnedWriteHalf), ClientError> {
     let stream = UnixStream::connect(socket_path)
         .await
         .map_err(|source| ClientError::Connect {
@@ -167,14 +177,17 @@ async fn handshake(
     let (read_half, mut write_half) = stream.into_split();
     let hello = Hello {
         protocol_versions: SUPPORTED_VERSIONS.to_vec(),
-        capabilities: capabilities.to_vec(),
+        capabilities,
     };
     write_half
         .write_all(&encode(&hello)?)
         .await
         .map_err(|error| ClientError::Closed(CloseReason::Io(error.to_string())))?;
-    let mut frames = FrameReader::new(read_half);
-    let reply_frame = frames.next_frame().await.map_err(ClientError::Closed)?;
+    let mut frames = BufReader::new(read_half);
+    let mut reply_frame = Vec::new();
+    next_frame(&mut frames, &mut reply_frame)
+        .await
+        .map_err(ClientError::Closed)?;
     match decode::<HandshakeReply>(&reply_frame).map_err(ClientError::Closed)? {
         HandshakeReply::Accepted(welcome) => {
             if !SUPPORTED_VERSIONS.contains(&welcome.protocol_version) {
@@ -196,12 +209,14 @@ fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, CloseReason> {
 /// Routes each reply to its waiting request and each change batch to `feed`, until the
 /// connection fails; then records why.
 async fn read_frames(
-    mut frames: FrameReader<OwnedReadHalf>,
+    mut frames: BufReader<OwnedReadHalf>,
     shared: Arc<Mutex<SharedState>>,
     feed: Option<mpsc::Sender<ChangeBatch>>,
 ) {
+    let mut frame_bytes = Vec::new();
     let reason = loop {
-        let frame = match frames.next_frame().await.and_then(|frame| decode(&frame)) {
+        let read = next_frame(&mut frames, &mut frame_bytes).await;
+        let frame = match read.and_then(|()| decode(&frame_bytes)) {
             Ok(frame) => frame,
             Err(reason) => break reason,
         };
@@ -220,7 +235,7 @@ async fn read_frames(
                     );
                 };
                 if feed.send(batch).await.is_err() {
-                    break CloseReason::Disconnected;
+                    break CloseReason::ClientStopped;
                 }
             }
             ServerFrame::MalformedFrame(error) => break CloseReason::RejectedFrame(error),

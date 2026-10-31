@@ -55,9 +55,12 @@ drop the bound. Oversized, unreadable or truncated frames close the connection.
 - **A subscription owns its connection.** The protocol does not say what a second
   `subscribe` on one connection means, so the client never sends one: a disconnect or a gap
   drops the connection, fails that call, and the next call reconnects and subscribes from
-  the applied cursor. A plain `Connection` that receives a change batch closes as a
-  protocol violation. The cursor advances only through `PendingBatch::applied`, so a batch
-  the caller failed to apply comes back.
+  the applied cursor. Only a subscription's connection asks for `change-feed`, so the
+  daemon refuses `subscribe` elsewhere as `not-negotiated`, and a plain `Connection` that
+  receives a change batch closes as a protocol violation. The cursor advances only
+  through `PendingBatch::applied`; the subscription keeps a batch the caller did not apply
+  and returns it on the next call, without a reconnect. The daemon (#26) must answer
+  `subscribe` before sending that subscription's batches, since the read-ahead is bounded.
 - **`resnapshot-required` is followed, not surfaced.** Answered to a cursor, it makes the
   client subscribe again from a snapshot on the same connection; the snapshot batch says
   `follows: snapshot`, which tells the caller to replace its state.

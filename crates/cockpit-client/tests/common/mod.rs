@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     Capability, Change, ChangeBatch, ChangeEvent, Command, CommitRevision, Cursor, DatabaseEpoch,
-    EntityKind, EntityRef, EntityRevision, ErrorCode, FeedPosition, HandshakeReply, Hello, Outcome,
-    ProtocolError, Reply, Request, RequestId, Response, SUPPORTED_VERSIONS, ServerFrame, negotiate,
+    EntityKind, EntityRef, EntityRevision, ErrorCode, FeedPosition, Hello, Outcome, ProtocolError,
+    Reply, Request, RequestId, Response, SUPPORTED_VERSIONS, ServerFrame, negotiate,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -47,6 +47,24 @@ impl FakeDaemon {
             .expect("a client connects")
             .expect("accept succeeds");
         Peer::new(stream)
+    }
+
+    /// Accepts a client and answers its hello with `reply`; returns the hello as sent.
+    pub async fn answer_hello(&self, reply: &impl serde::Serialize) -> (serde_json::Value, Peer) {
+        let mut peer = self.accept().await;
+        let hello = peer.read_frame().await;
+        peer.send(reply).await;
+        (hello, peer)
+    }
+
+    /// Serves a subscription's start: handshake with the change feed, `subscribed` at the
+    /// end of `first`, then `first`. Returns where the client asked to start.
+    pub async fn serve_feed(&self, first: &ChangeBatch) -> (FeedPosition, Peer) {
+        let mut peer = self.accept_handshake(&[Capability::ChangeFeed]).await;
+        let (id, from) = peer.read_subscribe().await;
+        peer.reply(id, subscribed(first.cursor.clone())).await;
+        peer.send_batch(first).await;
+        (from, peer)
     }
 
     /// Accepts a client and answers its hello as a daemon offering `daemon_capabilities`.
@@ -160,10 +178,8 @@ pub fn cursor(epoch: &str, revision: u64) -> Cursor {
     }
 }
 
-pub fn subscribed(epoch: &str, revision: u64) -> Reply {
-    Reply::Subscribed {
-        cursor: cursor(epoch, revision),
-    }
+pub fn subscribed(cursor: Cursor) -> Reply {
+    Reply::Subscribed { cursor }
 }
 
 /// A batch with one task tombstone per entry of `task_ids`.
@@ -183,11 +199,4 @@ pub fn batch(follows: FeedPosition, ends_at: Cursor, task_ids: &[&str]) -> Chang
             })
             .collect(),
     }
-}
-
-pub fn handshake_reply_accepting(capabilities: Vec<Capability>) -> HandshakeReply {
-    HandshakeReply::Accepted(cockpit_protocol::Welcome {
-        protocol_version: SUPPORTED_VERSIONS[0],
-        capabilities,
-    })
 }

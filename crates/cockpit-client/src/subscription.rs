@@ -18,6 +18,8 @@ pub struct Subscription {
     socket_path: PathBuf,
     timeout: Duration,
     applied: Option<Cursor>,
+    /// A batch handed to the caller and not applied yet; the next call hands it out again.
+    unapplied: Option<ChangeBatch>,
     stream: Option<FeedStream>,
 }
 
@@ -35,6 +37,7 @@ impl Subscription {
             socket_path,
             timeout,
             applied,
+            unapplied: None,
             stream: None,
         }
     }
@@ -44,11 +47,20 @@ impl Subscription {
         self.applied.as_ref()
     }
 
-    /// Waits for the next complete batch, subscribing first when there is no connection.
+    /// The batch not applied yet, or else the next complete batch, subscribing first when
+    /// there is no connection.
     ///
     /// Cancel safe once subscribed. A disconnect or a gap fails this call and drops the
     /// connection; the next call subscribes again from the applied cursor.
     pub async fn next_batch(&mut self) -> Result<PendingBatch<'_>, ClientError> {
+        if self.unapplied.is_none() {
+            let batch = self.receive().await?;
+            self.unapplied = Some(batch);
+        }
+        Ok(PendingBatch { subscription: self })
+    }
+
+    async fn receive(&mut self) -> Result<ChangeBatch, ClientError> {
         let stream = match &mut self.stream {
             Some(stream) => stream,
             None => self.stream.insert(self.subscribe().await?),
@@ -67,21 +79,13 @@ impl Subscription {
                 follows: batch.follows,
             });
         }
-        Ok(PendingBatch {
-            subscription: self,
-            batch,
-        })
+        Ok(batch)
     }
 
     async fn subscribe(&self) -> Result<FeedStream, ClientError> {
         let (feed, batches) = mpsc::channel(FEED_QUEUE_BATCHES);
-        let connection = Connection::open_with_feed(
-            &self.socket_path,
-            &[Capability::ChangeFeed],
-            self.timeout,
-            Some(feed),
-        )
-        .await?;
+        let connection =
+            Connection::open_with_feed(&self.socket_path, self.timeout, Some(feed)).await?;
         if !connection
             .welcome()
             .capabilities
@@ -89,15 +93,16 @@ impl Subscription {
         {
             return Err(ClientError::NotGranted(Capability::ChangeFeed));
         }
-        let from = match &self.applied {
-            Some(cursor) => FeedPosition::Cursor(cursor.clone()),
-            None => FeedPosition::Snapshot,
-        };
+        let from = self
+            .applied
+            .clone()
+            .map_or(FeedPosition::Snapshot, FeedPosition::Cursor);
+        let resumes = matches!(from, FeedPosition::Cursor(_));
         match subscribe_from(&connection, from, self.timeout).await {
             Err(ClientError::Daemon(ProtocolError {
                 code: ErrorCode::ResnapshotRequired,
                 ..
-            })) if self.applied.is_some() => {
+            })) if resumes => {
                 subscribe_from(&connection, FeedPosition::Snapshot, self.timeout).await?;
             }
             result => result?,
@@ -124,23 +129,30 @@ async fn subscribe_from(
 }
 
 /// A batch the caller has not applied yet. Dropping it without [`PendingBatch::applied`]
-/// keeps the cursor, so the batch arrives again after the subscription reconnects.
+/// keeps the cursor, and the next [`Subscription::next_batch`] returns the same batch.
 #[must_use = "a batch only advances the cursor once `applied` is called"]
 pub struct PendingBatch<'a> {
     subscription: &'a mut Subscription,
-    batch: ChangeBatch,
 }
 
 impl PendingBatch<'_> {
     /// The changes to apply. When `follows` is a snapshot, they replace all of the caller's
     /// state.
     pub fn batch(&self) -> &ChangeBatch {
-        &self.batch
+        self.subscription
+            .unapplied
+            .as_ref()
+            .expect("a pending batch exists only while its batch is unapplied")
     }
 
     /// Records that the whole batch, deletions included, is applied, and advances the cursor
     /// to its end.
     pub fn applied(self) {
-        self.subscription.applied = Some(self.batch.cursor);
+        let batch = self
+            .subscription
+            .unapplied
+            .take()
+            .expect("a pending batch exists only while its batch is unapplied");
+        self.subscription.applied = Some(batch.cursor);
     }
 }

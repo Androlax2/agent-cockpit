@@ -3,14 +3,14 @@ mod common;
 use std::time::Duration;
 
 use cockpit_client::{ClientError, CloseReason, Connection, MAX_FRAME_BYTES};
-use cockpit_protocol::{Command, ErrorCode, ProtocolError, Reply, ServerFrame};
+use cockpit_protocol::{Command, ErrorCode, FeedPosition, ProtocolError, Reply, ServerFrame};
 use common::{FakeDaemon, GENEROUS, Peer};
 
 const SHORT_DEADLINE: Duration = Duration::from_millis(150);
 
 async fn connected(daemon: &FakeDaemon) -> (Connection, Peer) {
     let (connection, peer) = tokio::join!(
-        Connection::open(&daemon.socket_path, &[], GENEROUS),
+        Connection::open(&daemon.socket_path, GENEROUS),
         daemon.accept_handshake(&[])
     );
     (connection.expect("the handshake succeeds"), peer)
@@ -136,116 +136,83 @@ async fn requests_in_flight_fail_when_the_daemon_disconnects() {
     );
 }
 
-#[tokio::test]
-async fn a_frame_cut_by_a_disconnect_is_dropped_not_read() {
-    let daemon = FakeDaemon::start();
-    let (connection, mut peer) = connected(&daemon).await;
-    let fake = async {
-        let request = peer.read_request().await;
-        let reply = format!(
-            r#"{{"type":"response","id":{},"outcome":{{"ok":{{"kind":"po"#,
-            request.id.0
-        );
-        peer.send_raw(reply.as_bytes()).await;
-        drop(peer);
-    };
-
-    let (result, ()) = tokio::join!(connection.request(Command::Ping, GENEROUS), fake);
-
-    assert!(
-        matches!(result, Err(ClientError::Closed(CloseReason::Truncated))),
-        "{result:?}"
-    );
+fn line(frame: &ServerFrame) -> Vec<u8> {
+    let mut bytes = serde_json::to_vec(frame).unwrap();
+    bytes.push(b'\n');
+    bytes
 }
 
-#[tokio::test]
-async fn an_oversized_frame_closes_the_connection() {
+/// The daemon answers a request with `answer`, then disconnects when `then_disconnects`.
+async fn request_answered_with(
+    answer: Vec<u8>,
+    then_disconnects: bool,
+) -> Result<Reply, ClientError> {
     let daemon = FakeDaemon::start();
     let (connection, mut peer) = connected(&daemon).await;
     let fake = async {
         peer.read_request().await;
-        peer.send_raw(&vec![b' '; MAX_FRAME_BYTES]).await;
-        peer
+        peer.send_raw(&answer).await;
+        if then_disconnects {
+            drop(peer);
+            None
+        } else {
+            Some(peer)
+        }
     };
-
     let (result, _peer) = tokio::join!(connection.request(Command::Ping, GENEROUS), fake);
-
-    assert!(
-        matches!(result, Err(ClientError::Closed(CloseReason::FrameTooLarge))),
-        "{result:?}"
-    );
+    result
 }
 
-#[tokio::test]
-async fn an_unreadable_frame_closes_the_connection() {
-    let daemon = FakeDaemon::start();
-    let (connection, mut peer) = connected(&daemon).await;
-    let fake = async {
-        peer.read_request().await;
-        peer.send_raw(b"{\"type\":\"telepathy\"}\n").await;
-        peer
-    };
-
-    let (result, _peer) = tokio::join!(connection.request(Command::Ping, GENEROUS), fake);
-
-    assert!(
-        matches!(
-            result,
-            Err(ClientError::Closed(CloseReason::InvalidFrame(_)))
-        ),
-        "{result:?}"
-    );
-}
+type IsExpected = fn(&CloseReason) -> bool;
 
 #[tokio::test]
-async fn a_frame_the_daemon_could_not_read_closes_the_connection_with_its_error() {
-    let daemon = FakeDaemon::start();
-    let (connection, mut peer) = connected(&daemon).await;
+async fn a_frame_the_client_cannot_use_closes_the_connection_with_its_reason() {
     let rejection = ProtocolError {
         code: ErrorCode::InvalidRequest,
         message: "the frame is not JSON".to_owned(),
     };
-    let fake = async {
-        peer.read_request().await;
-        peer.send(&ServerFrame::MalformedFrame(rejection.clone()))
-            .await;
-        peer
-    };
-
-    let (result, _peer) = tokio::join!(connection.request(Command::Ping, GENEROUS), fake);
-
-    match result {
-        Err(ClientError::Closed(CloseReason::RejectedFrame(error))) => {
-            assert_eq!(error, rejection);
-        }
-        other => panic!("expected a rejected frame, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn a_change_batch_without_a_subscription_closes_the_connection() {
-    let daemon = FakeDaemon::start();
-    let (connection, mut peer) = connected(&daemon).await;
-    let fake = async {
-        peer.read_request().await;
-        peer.send_batch(&common::batch(
-            cockpit_protocol::FeedPosition::Snapshot,
-            common::cursor("e1", 1),
-            &[],
-        ))
-        .await;
-        peer
-    };
-
-    let (result, _peer) = tokio::join!(connection.request(Command::Ping, GENEROUS), fake);
-
-    assert!(
-        matches!(
-            result,
-            Err(ClientError::Closed(CloseReason::InvalidFrame(_)))
+    let cases: [(&str, Vec<u8>, bool, IsExpected); 5] = [
+        (
+            "cut by a disconnect",
+            br#"{"type":"response","id":1,"outcome":{"ok":{"kind":"po"#.to_vec(),
+            true,
+            |reason| *reason == CloseReason::Truncated,
         ),
-        "{result:?}"
-    );
+        ("oversized", vec![b' '; MAX_FRAME_BYTES], false, |reason| {
+            *reason == CloseReason::FrameTooLarge
+        }),
+        (
+            "unreadable",
+            b"{\"type\":\"telepathy\"}\n".to_vec(),
+            false,
+            |reason| matches!(reason, CloseReason::InvalidFrame(_)),
+        ),
+        (
+            "a batch without a subscription",
+            line(&ServerFrame::Changes(common::batch(
+                FeedPosition::Snapshot,
+                common::cursor("e1", 1),
+                &[],
+            ))),
+            false,
+            |reason| matches!(reason, CloseReason::InvalidFrame(_)),
+        ),
+        (
+            "the daemon could not read the client's frame",
+            line(&ServerFrame::MalformedFrame(rejection.clone())),
+            false,
+            |reason| matches!(reason, CloseReason::RejectedFrame(error) if error.message == "the frame is not JSON"),
+        ),
+    ];
+
+    for (case, answer, then_disconnects, is_expected) in cases {
+        let result = request_answered_with(answer, then_disconnects).await;
+
+        assert!(
+            matches!(&result, Err(ClientError::Closed(reason)) if is_expected(reason)),
+            "{case}: {result:?}"
+        );
+    }
 }
 
 #[tokio::test]
