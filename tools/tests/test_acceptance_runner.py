@@ -16,8 +16,8 @@ RUNNER_VERBS = {"start", "tui", "cockpit", "session", "kill-daemon", "stop", "cl
 
 
 def guide_steps(text):
-    """The guide's steps as ask-to-guide reads them: unindented lines that are not headings,
-    each with the attributes indented under it."""
+    """The guide's steps as ask-to-guide reads them (its parse_steps): unindented lines other
+    than `# ` and `## ` headings, each with the attributes and text indented under it."""
     steps = []
     for raw in text.splitlines():
         if not raw.strip():
@@ -26,11 +26,12 @@ def guide_steps(text):
         if raw[0] in " \t" and steps:
             attribute = re.match(r"^(open|copy|ask|run):\s*(\S.*)$", line)
             if attribute is None:
-                raise AssertionError(f"indented line is no attribute: {line}")
+                steps[-1]["text"] += "\n" + line
+                continue
             if attribute[1] in steps[-1]:
                 raise AssertionError(f"second {attribute[1]}: on one step: {line}")
             steps[-1][attribute[1]] = attribute[2]
-        elif not line.startswith("#"):
+        elif not line.startswith(("# ", "## ")):
             steps.append({"text": line})
     return steps
 
@@ -51,6 +52,17 @@ class GuideTests(unittest.TestCase):
                 self.assertIn(words[2], RUNNER_VERBS)
 
 
+# Stands in for each program: `cockpit session list` prints $STAND_IN_SESSIONS, another
+# `cockpit session` verb prints itself, anything else prints its directory and environment.
+STAND_IN = """#!/bin/sh
+case "$1 $2" in
+"session list") cat "$STAND_IN_SESSIONS" ;;
+session\\ *) echo "$*" ;;
+*) pwd; env ;;
+esac
+"""
+
+
 class RunnerTests(unittest.TestCase):
     """run.sh copied into a fake clone whose target/release holds stand-ins."""
 
@@ -65,14 +77,16 @@ class RunnerTests(unittest.TestCase):
         self.bin.mkdir(parents=True)
         for name in BINARIES:
             stand_in = self.bin / name
-            stand_in.write_text('#!/bin/sh\npwd\nenv\n')
+            stand_in.write_text(STAND_IN)
             stand_in.chmod(0o755)
         self.scratch = root / "scratch"
+        self.sessions = root / "sessions.tsv"
         self.environment = {
             **os.environ,
             "COCKPIT_ACCEPTANCE_HOME": str(self.scratch),
             "XDG_RUNTIME_DIR": "/run/user/owner",
             "XDG_STATE_HOME": "/home/owner/.local/state",
+            "STAND_IN_SESSIONS": str(self.sessions),
         }
 
     def tearDown(self):
@@ -126,6 +140,41 @@ class RunnerTests(unittest.TestCase):
         result = self.run_script("clean")
         self.assertEqual(result.returncode, 1)
         self.assertTrue(keep.exists())
+
+    def session_rows(self, *rows):
+        """`session list` lines: id, state, then the working directory in column 6."""
+        (self.scratch / "projects").mkdir(parents=True, exist_ok=True)
+        self.sessions.write_text(
+            "".join(
+                f"{session}\t{state}\tclaude\tstart\t-\t{self.scratch / 'projects' / place}\t-\t-\t-\n"
+                for session, state, place in rows
+            )
+        )
+
+    def test_session_acts_on_the_newest_session_of_demo_in_place(self):
+        self.session_rows(
+            ("s-old", "running", "demo"),
+            ("s-new", "running", "demo"),
+            ("s-clone", "running", ".parallel/demo/accept-clone"),
+        )
+        result = self.run_script("session", "sleep")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "session sleep s-new")
+
+    def test_session_refuses_when_the_newest_is_in_another_state(self):
+        self.session_rows(("s-idle", "running", "demo"), ("s-new", "launching", "demo"))
+        result = self.run_script("session", "sleep")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("s-new, is launching, not running", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_session_verbs_need_their_state(self):
+        for verb, state in (("sleep", "running"), ("end", "running"), ("wake", "asleep"), ("resume", "ended")):
+            with self.subTest(verb=verb):
+                self.session_rows(("s-new", state, "demo"))
+                result = self.run_script("session", verb)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), f"session {verb} s-new")
 
     def test_unknown_verbs_print_the_usage(self):
         for arguments in ((), ("deploy",), ("session", "show")):

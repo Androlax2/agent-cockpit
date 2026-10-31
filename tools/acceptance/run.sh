@@ -25,6 +25,7 @@ scratch=${COCKPIT_ACCEPTANCE_HOME:-/tmp/cockpit-acceptance-$(id -u)}
     echo "COCKPIT_ACCEPTANCE_HOME must be an absolute path: $scratch" >&2
     exit 2
 }
+scratch=$(realpath -m "$scratch")
 projects="$scratch/projects"
 demo="$projects/demo"
 pid_file="$scratch/daemon.pid"
@@ -32,6 +33,12 @@ daemon_output="$scratch/daemon.out"
 # `clean` deletes only a directory this script made.
 marker=.cockpit-acceptance
 
+# `systemctl --user` finds the user manager through XDG_RUNTIME_DIR unless the bus address is
+# set: keep the owner's, so sessions get the same systemd scope containment as outside the walk.
+owner_runtime=${XDG_RUNTIME_DIR:-}
+if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} && -n $owner_runtime && -S $owner_runtime/bus ]]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$owner_runtime/bus"
+fi
 export XDG_CONFIG_HOME="$scratch/config"
 export XDG_STATE_HOME="$scratch/state"
 export XDG_CACHE_HOME="$scratch/cache"
@@ -59,11 +66,15 @@ enter_projects() {
     }
 }
 
+# The recorded daemon, when that process still runs this clone's daemon (a rebuild leaves the
+# running one as "<path> (deleted)").
 daemon_pid() {
-    local pid
+    local pid program
     [[ -f $pid_file ]] || return 1
     pid=$(<"$pid_file")
-    [[ $pid =~ ^[0-9]+$ ]] && [[ $(readlink "/proc/$pid/exe" 2>/dev/null) == "$bin/cockpit-daemon" ]] || return 1
+    [[ $pid =~ ^[0-9]+$ ]] || return 1
+    program=$(readlink "/proc/$pid/exe" 2>/dev/null) || return 1
+    [[ ${program% (deleted)} == "$bin/cockpit-daemon" ]] || return 1
     echo "$pid"
 }
 
@@ -93,14 +104,15 @@ start_daemon() {
     fi
     # `setsid` in a non-interactive shell's background job execs in place, so $! is the daemon.
     setsid "$bin/cockpit-daemon" </dev/null >"$daemon_output" 2>&1 &
-    echo $! >"$pid_file"
+    local pid=$!
+    echo "$pid" >"$pid_file"
     disown
     for ((waited = 0; waited < 100; waited++)); do
         if grep -q '^ready ' "$daemon_output"; then
             grep '^ready ' "$daemon_output"
             return
         fi
-        if ! daemon_pid >/dev/null; then
+        if ! kill -0 "$pid" 2>/dev/null; then
             echo "the daemon exited before it was ready:" >&2
             cat "$daemon_output" >&2
             exit 1
@@ -115,7 +127,9 @@ start() {
     require_binaries
     make_scratch
     start_daemon
-    "$bin/cockpit" project list | grep -q "$demo" || "$bin/cockpit" project add "$demo" --name demo
+    if ! "$bin/cockpit" project list | awk -F '\t' -v dir="$demo" '$2 == dir { found = 1 } END { exit !found }'; then
+        "$bin/cockpit" project add "$demo" --name demo
+    fi
     echo "scratch:  $scratch"
     echo "project:  $demo"
     echo "claude:   $(command -v claude || echo 'none on PATH: sessions cannot start')"
@@ -123,25 +137,35 @@ start() {
     echo "TUI:      bash $clone/tools/acceptance/run.sh tui"
 }
 
-# The newest session started in `demo` itself (not in a clone) that `verb` applies to.
+# The newest session started in `demo` itself (not in a clone), when it is in `state`. Never
+# an older one: the guide's steps act on the session it just started.
 newest_demo_session() {
-    local verb=$1 list_flags=() states
-    case $verb in
-    sleep) states=running ;;
-    wake) states=asleep ;;
-    end) states='running|asleep' ;;
-    resume) states=ended list_flags=(--ended) ;;
-    esac
-    "$bin/cockpit" session list "${list_flags[@]}" |
-        awk -F '\t' -v dir="$demo" -v states="^($states)$" \
-            '$6 == dir && $2 ~ states { id = $1 } END { if (id == "") exit 1; print id }'
+    local wanted=$1 sessions id state
+    sessions=$("$bin/cockpit" session list --ended) || exit 1
+    read -r id state < <(awk -F '\t' -v dir="$demo" '$6 == dir { id = $1; state = $2 } END { print id, state }' <<<"$sessions")
+    [[ -n $id ]] || {
+        echo "no session in $demo" >&2
+        exit 1
+    }
+    [[ $state == "$wanted" ]] || {
+        echo "the newest session in $demo, $id, is $state, not $wanted; retry once it is" >&2
+        exit 1
+    }
+    echo "$id"
 }
 
 stop() {
-    local pid
+    local pid waited
     if pid=$(daemon_pid); then
         kill "$pid"
-        while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done
+        for ((waited = 0; waited < 100; waited++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "the daemon did not stop within 10 s; killing it" >&2
+            kill -9 "$pid"
+        fi
     fi
     rm -f "$pid_file"
     tmux -L cockpit kill-server 2>/dev/null || true
@@ -166,10 +190,13 @@ session)
         exit 2
     }
     require_binaries
-    id=$(newest_demo_session "$2") || {
-        echo "no session in $demo to $2" >&2
-        exit 1
-    }
+    enter_projects
+    case $2 in
+    sleep | end) state=running ;;
+    wake) state=asleep ;;
+    resume) state=ended ;;
+    esac
+    id=$(newest_demo_session "$state")
     exec "$bin/cockpit" session "$2" "$id"
     ;;
 kill-daemon)
