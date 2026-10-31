@@ -141,7 +141,6 @@ impl Instance {
         );
         let stopper = processes.clone();
         let sweeper = processes.clone();
-        let manager = Arc::new(Manager::open(wiring.tmux.clone()));
         let providers = wiring
             .providers
             .iter()
@@ -152,20 +151,23 @@ impl Instance {
                     .supports(cockpit_provider_api::Capability::Resume),
             })
             .collect();
-        // A missing or too old tmux leaves the daemon up with sessions refused (report 09);
-        // any other failure to open the server is the daemon's own and stops the start.
+        // Opened once: the sessions and the manager share the handle, so one config write and
+        // one version check decide for both. A missing or too old tmux leaves the daemon up
+        // with sessions and the manager refused (report 09); any other failure to open the
+        // server is the daemon's own and stops the start.
         let tmux = match cockpit_tmux::Server::open(wiring.tmux) {
             Err(
                 error @ (cockpit_tmux::Error::TmuxNotRunnable { .. }
                 | cockpit_tmux::Error::UnrecognizedVersion { .. }
                 | cockpit_tmux::Error::TmuxTooOld { .. }),
             ) => {
-                tracing::warn!(%error, "tmux is unavailable: sessions are refused until it is installed and the daemon restarts");
-                Err(error)
+                tracing::warn!(%error, "tmux is unavailable: sessions and the manager are refused until it is installed and the daemon restarts");
+                Err(error.to_string())
             }
             Err(error) => return Err(StartError::Tmux(error)),
-            Ok(server) => Ok(server),
+            Ok(server) => Ok(Arc::new(server)),
         };
+        let manager = Arc::new(Manager::new(tmux.clone()));
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
             processes,
