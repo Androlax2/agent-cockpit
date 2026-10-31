@@ -25,7 +25,9 @@ pub(crate) fn report(flags: &[OsString]) -> Result<ExitCode, String> {
     let socket = match std::env::var_os(AGENT_SOCKET_VARIABLE).filter(|path| !path.is_empty()) {
         Some(path) => PathBuf::from(path),
         None => match socket_dir() {
-            Ok(dir) => dir.join(cockpit_config::AGENT_SOCKET),
+            Ok(dir) => dir
+                .join(cockpit_config::AGENT_SOCKET_DIR)
+                .join(cockpit_config::AGENT_SOCKET),
             Err(code) => return Ok(code),
         },
     };
@@ -78,11 +80,12 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
                 if report.state.is_some() {
                     return Err("--state given twice".to_owned());
                 }
-                report.state = Some(match value.as_str() {
-                    "working" => AgentState::Working,
-                    "waiting" => AgentState::Waiting,
-                    _ => return Err(format!("--state {value}: use working or waiting")),
-                });
+                report.state = Some(
+                    AgentState::ALL
+                        .into_iter()
+                        .find(|state| state.as_str() == value)
+                        .ok_or_else(|| format!("--state {value}: use working or waiting"))?,
+                );
                 continue;
             }
             "--label" => &mut report.label,
@@ -100,16 +103,16 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
     Ok(report)
 }
 
-/// The daemon's socket directory, or exit 1 when `$HOME` cannot place it.
+/// The daemon's socket directory, or exit 1 when the environment cannot place it.
 fn socket_dir() -> Result<PathBuf, ExitCode> {
     let environment = cockpit_config::Environment::from_process();
-    match environment.home_dir() {
-        Ok(home) => Ok(cockpit_config::Layout::resolve(&environment, &home).socket_dir()),
-        Err(error) => {
+    environment
+        .home_dir()
+        .and_then(|home| cockpit_config::Layout::resolve(&environment, &home).socket_dir())
+        .map_err(|error| {
             eprintln!("cockpit: {error}");
-            Err(ExitCode::FAILURE)
-        }
-    }
+            ExitCode::FAILURE
+        })
 }
 
 fn exchange(socket: &Path, command: Command) -> Result<Reply, ClientError> {
@@ -154,11 +157,7 @@ fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> ExitCode {
 fn render(report: &SessionReport) -> String {
     let mut line = report.session.clone();
     line.push(' ');
-    line.push_str(match report.state {
-        Some(AgentState::Working) => "working",
-        Some(AgentState::Waiting) => "waiting",
-        None => "-",
-    });
+    line.push_str(report.state.map_or("-", AgentState::as_str));
     for (key, value) in [
         ("label", &report.label),
         ("doing", &report.doing),

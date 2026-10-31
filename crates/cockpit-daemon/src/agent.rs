@@ -20,14 +20,11 @@ pub(crate) async fn report(
     report: cockpit_protocol::AgentReport,
 ) -> Outcome {
     let peer_pid = connector.as_ref().ok().map(|process| process.pid);
-    let peer = match connector {
-        Ok(process) => {
-            tokio::task::spawn_blocking(move || cockpit_agent_channel::ancestry_of(&process))
-                .await
-                .expect("reading the process table does not panic")
-        }
-        Err(error) => Err(error),
-    };
+    let peer = tokio::task::spawn_blocking(move || {
+        connector.and_then(|process| cockpit_agent_channel::ancestry_of(&process))
+    })
+    .await
+    .expect("reading the process table does not panic");
     let write = match database.write().await {
         Ok(write) => write,
         Err(error) => return internal(&error),

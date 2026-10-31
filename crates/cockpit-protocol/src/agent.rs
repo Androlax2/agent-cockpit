@@ -18,6 +18,18 @@ pub enum AgentState {
     Waiting,
 }
 
+impl AgentState {
+    pub const ALL: [AgentState; 2] = [AgentState::Working, AgentState::Waiting];
+
+    /// The state's wire name, as serialized.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentState::Working => "working",
+            AgentState::Waiting => "waiting",
+        }
+    }
+}
+
 /// What an agent reports about its session. Every field is optional; one left out keeps its
 /// previous value. The session is never named: the daemon identifies the sender.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

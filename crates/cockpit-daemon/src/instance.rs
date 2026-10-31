@@ -32,14 +32,8 @@ impl Options {
     ) -> Result<Options, StartError> {
         let home = environment.home_dir().map_err(StartError::Config)?;
         let layout = cockpit_config::Layout::resolve(environment, &home);
-        if let cockpit_config::Source::InvalidEnvironment(variable) = layout.runtime_dir.source {
-            return Err(StartError::PrivateDir {
-                path: PathBuf::from(format!("${variable}")),
-                reason: "not an absolute path".to_owned(),
-            });
-        }
         Ok(Options {
-            runtime_dir: layout.socket_dir(),
+            runtime_dir: layout.socket_dir().map_err(StartError::Config)?,
             state_dir: layout.state_dir.value,
             limits: Limits::default(),
         })
@@ -52,7 +46,11 @@ impl Options {
 
     /// The socket sandboxed agents reach; its peers are never the owner.
     pub fn agent_socket_path(&self) -> PathBuf {
-        self.runtime_dir.join(cockpit_config::AGENT_SOCKET)
+        self.agent_socket_dir().join(cockpit_config::AGENT_SOCKET)
+    }
+
+    fn agent_socket_dir(&self) -> PathBuf {
+        self.runtime_dir.join(cockpit_config::AGENT_SOCKET_DIR)
     }
 
     pub(crate) fn database_path(&self) -> PathBuf {
@@ -78,11 +76,7 @@ impl Instance {
         let owner_uid = effective_uid(&options.state_dir)?;
         create_private_dir(&options.state_dir, owner_uid)?;
         create_private_dir(&options.runtime_dir, owner_uid)?;
-        let agent_socket = options.agent_socket_path();
-        let agent_socket_dir = agent_socket
-            .parent()
-            .expect("the agent socket is in a directory of its own");
-        create_private_dir(agent_socket_dir, owner_uid)?;
+        create_private_dir(&options.agent_socket_dir(), owner_uid)?;
         let lock_path = options.runtime_dir.join(LOCK_FILE);
         let lock = OpenOptions::new()
             .create(true)

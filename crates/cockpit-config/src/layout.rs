@@ -89,21 +89,33 @@ impl Layout {
 
     /// Where the daemon's sockets and instance lock live: `$XDG_RUNTIME_DIR/cockpit`, or
     /// `<state dir>/run` without `XDG_RUNTIME_DIR` (macOS, some containers), a fallback the
-    /// XDG spec leaves to the program.
-    pub fn socket_dir(&self) -> PathBuf {
-        self.runtime_dir
+    /// XDG spec leaves to the program. A relative `XDG_RUNTIME_DIR` is refused rather than
+    /// replaced by the fallback, so the daemon and its clients never disagree on the place.
+    pub fn socket_dir(&self) -> Result<PathBuf, ConfigError> {
+        if let Source::InvalidEnvironment(_) = self.runtime_dir.source {
+            return Err(ConfigError::Invalid {
+                key: "paths.runtime_dir".to_owned(),
+                source: self.runtime_dir.source.clone(),
+                reason: "has no value to place the daemon's sockets in".to_owned(),
+            });
+        }
+        Ok(self
+            .runtime_dir
             .value
             .clone()
-            .unwrap_or_else(|| self.state_dir.value.join("run"))
+            .unwrap_or_else(|| self.state_dir.value.join("run")))
     }
 }
 
 /// The host-only socket's file in [`Layout::socket_dir`]: the owner's, never a sandbox's.
 pub const DAEMON_SOCKET: &str = "daemon.sock";
 
-/// The agent socket's path below [`Layout::socket_dir`]. It has a directory of its own, so a
+/// The agent socket's directory in [`Layout::socket_dir`]. It is the socket's alone, so a
 /// sandbox can be given that directory without the host-only socket beside it.
-pub const AGENT_SOCKET: &str = "agent/agent.sock";
+pub const AGENT_SOCKET_DIR: &str = "agent";
+
+/// The agent socket's file in [`AGENT_SOCKET_DIR`].
+pub const AGENT_SOCKET: &str = "agent.sock";
 
 enum XdgValue {
     Absolute(PathBuf),

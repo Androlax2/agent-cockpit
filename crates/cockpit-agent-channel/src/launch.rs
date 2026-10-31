@@ -117,21 +117,29 @@ pub async fn identify(
     {
         return Ok(session);
     }
+    // One row per session: read every bound root once, then take the nearest ancestor's.
+    let mut rows = write
+        .query(
+            "SELECT session, root_boot, root_pid, root_start FROM agent_channel_launches
+             WHERE bound_at IS NOT NULL",
+            (),
+        )
+        .await?;
+    let mut bound_roots = Vec::new();
+    while let Some(row) = rows.next().await? {
+        bound_roots.push((
+            row.get::<String>(1)?,
+            row.get::<i64>(2)?,
+            row.get::<i64>(3)?,
+            session_from(&row)?,
+        ));
+    }
     for process in ancestry {
-        let mut rows = write
-            .query(
-                "SELECT session FROM agent_channel_launches
-                 WHERE bound_at IS NOT NULL AND root_boot = ?1 AND root_pid = ?2
-                   AND root_start = ?3",
-                (
-                    process.boot.as_str(),
-                    i64::from(process.pid),
-                    start_column(process.start)?,
-                ),
-            )
-            .await?;
-        if let Some(row) = rows.next().await? {
-            return session_from(&row);
+        let (pid, start) = (i64::from(process.pid), start_column(process.start)?);
+        if let Some((.., session)) = bound_roots.iter().find(|(boot, root_pid, root_start, _)| {
+            *boot == process.boot && *root_pid == pid && *root_start == start
+        }) {
+            return Ok(session.clone());
         }
     }
     Err(match token {

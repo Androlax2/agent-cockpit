@@ -15,6 +15,10 @@ const DOING_MAX_CHARS: usize = 80;
 const DOING_WORDS: std::ops::RangeInclusive<usize> = 2..=12;
 const QUESTION_MAX_CHARS: usize = 300;
 
+/// The columns `report_from` reads, in its order.
+const SELECT_REPORTS: &str = "SELECT session, state, label, doing, needs_input, reported_at
+     FROM agent_channel_reports";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
     Working,
@@ -111,11 +115,7 @@ pub async fn report(
 /// Every session's latest report, by session id.
 pub async fn latest_reports(connection: &Connection) -> Result<Vec<SessionReport>, Error> {
     let mut rows = connection
-        .query(
-            "SELECT session, state, label, doing, needs_input, reported_at
-             FROM agent_channel_reports ORDER BY session",
-            (),
-        )
+        .query(&format!("{SELECT_REPORTS} ORDER BY session"), ())
         .await?;
     let mut reports = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -130,8 +130,7 @@ async fn latest_report(
 ) -> Result<Option<SessionReport>, Error> {
     let mut rows = connection
         .query(
-            "SELECT session, state, label, doing, needs_input, reported_at
-             FROM agent_channel_reports WHERE session = ?1",
+            &format!("{SELECT_REPORTS} WHERE session = ?1"),
             [session.as_str()],
         )
         .await?;
@@ -187,17 +186,7 @@ fn validate(report: Report) -> Result<Report, Refusal> {
     }
     let label = report
         .label
-        .map(|label| {
-            let label = checked_text("label", &label)?;
-            match label.chars().count() {
-                0 => Err(invalid("label", "is empty".to_owned())),
-                count if count > LABEL_MAX_CHARS => Err(invalid(
-                    "label",
-                    format!("is {count} characters; at most {LABEL_MAX_CHARS}"),
-                )),
-                _ => Ok(label),
-            }
-        })
+        .map(|label| bounded_text("label", &label, LABEL_MAX_CHARS))
         .transpose()?;
     let doing = report
         .doing
@@ -207,7 +196,11 @@ fn validate(report: Report) -> Result<Report, Refusal> {
             if !DOING_WORDS.contains(&words) || doing.chars().count() > DOING_MAX_CHARS {
                 return Err(invalid(
                     "doing",
-                    format!("must be 2 to 12 words and at most {DOING_MAX_CHARS} characters"),
+                    format!(
+                        "must be {} to {} words and at most {DOING_MAX_CHARS} characters",
+                        DOING_WORDS.start(),
+                        DOING_WORDS.end()
+                    ),
                 ));
             }
             Ok(doing)
@@ -215,17 +208,7 @@ fn validate(report: Report) -> Result<Report, Refusal> {
         .transpose()?;
     let needs_input = report
         .needs_input
-        .map(|question| {
-            let question = checked_text("needs-input", &question)?;
-            match question.chars().count() {
-                0 => Err(invalid("needs-input", "is empty".to_owned())),
-                count if count > QUESTION_MAX_CHARS => Err(invalid(
-                    "needs-input",
-                    format!("is {count} characters; at most {QUESTION_MAX_CHARS}"),
-                )),
-                _ => Ok(question),
-            }
-        })
+        .map(|question| bounded_text("needs-input", &question, QUESTION_MAX_CHARS))
         .transpose()?;
     Ok(Report {
         state: report.state,
@@ -233,6 +216,18 @@ fn validate(report: Report) -> Result<Report, Refusal> {
         doing,
         needs_input,
     })
+}
+
+fn bounded_text(field: &'static str, text: &str, max_chars: usize) -> Result<String, Refusal> {
+    let text = checked_text(field, text)?;
+    match text.chars().count() {
+        0 => Err(invalid(field, "is empty".to_owned())),
+        count if count > max_chars => Err(invalid(
+            field,
+            format!("is {count} characters; at most {max_chars}"),
+        )),
+        _ => Ok(text),
+    }
 }
 
 fn checked_text(field: &'static str, text: &str) -> Result<String, Refusal> {

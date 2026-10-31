@@ -105,3 +105,13 @@ fn an_unblocking_party_from_a_newer_daemon_is_kept_as_sent() {
 
     assert_eq!(unblock.by, UnblockedBy::Unknown("chief".to_owned()));
 }
+
+#[test]
+fn each_agent_states_name_is_its_wire_form() {
+    for state in AgentState::ALL {
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::Value::String(state.as_str().to_owned())
+        );
+    }
+}

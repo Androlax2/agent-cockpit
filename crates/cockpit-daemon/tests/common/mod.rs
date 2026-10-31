@@ -72,11 +72,13 @@ impl TestHome {
     }
 
     pub fn socket_path(&self) -> PathBuf {
-        self.socket_dir().join("daemon.sock")
+        self.socket_dir().join(cockpit_config::DAEMON_SOCKET)
     }
 
     pub fn agent_socket_path(&self) -> PathBuf {
-        self.socket_dir().join("agent/agent.sock")
+        self.socket_dir()
+            .join(cockpit_config::AGENT_SOCKET_DIR)
+            .join(cockpit_config::AGENT_SOCKET)
     }
 
     /// The state database the daemon opens, for a test to prepare while no daemon runs.

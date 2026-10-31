@@ -100,23 +100,20 @@ impl Handler for Routes {
                     report,
                 )),
             },
-            (Command::AgentReport { .. }, Peer::Owner) => {
-                Route::Answer(Outcome::Error(ProtocolError {
-                    code: ErrorCode::NotAuthorized,
-                    message: "agent-report is an agent's request; the owner has no session"
-                        .to_owned(),
-                    unblock: Some(Unblock {
-                        action: "send it on the agent socket from a session Cockpit launched"
-                            .to_owned(),
-                        by: UnblockedBy::Agent,
-                    }),
-                }))
-            }
+            (Command::AgentReport { .. }, Peer::Owner) => Route::Answer(wrong_socket(
+                "agent-report is an agent's request; the owner has no session",
+                "send it on the agent socket from a session Cockpit launched",
+                UnblockedBy::Agent,
+            )),
             (Command::AgentReports, Peer::Owner) => Route::Run {
                 class: WorkClass::Control,
                 job: Box::pin(agent::reports(Arc::clone(&self.database))),
             },
-            (Command::AgentReports, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            (Command::AgentReports, Peer::Agent { .. }) => Route::Answer(wrong_socket(
+                "this command is the owner's alone",
+                "ask the owner to run it on the host",
+                UnblockedBy::Owner,
+            )),
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(
                 ErrorCode::UnknownCommand,
@@ -130,14 +127,14 @@ pub fn refusal(code: ErrorCode, message: &str) -> Outcome {
     Outcome::Error(ProtocolError::new(code, message))
 }
 
-/// The answer to an owner's command sent on the agent socket.
-fn owner_only() -> Outcome {
+/// The answer to a command sent on the socket of the party it is not for.
+fn wrong_socket(message: &str, action: &str, by: UnblockedBy) -> Outcome {
     Outcome::Error(ProtocolError {
         code: ErrorCode::NotAuthorized,
-        message: "this command is the owner's alone".to_owned(),
+        message: message.to_owned(),
         unblock: Some(Unblock {
-            action: "ask the owner to run it on the host".to_owned(),
-            by: UnblockedBy::Owner,
+            action: action.to_owned(),
+            by,
         }),
     })
 }
