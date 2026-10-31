@@ -498,7 +498,8 @@ class PackagingTestCase(unittest.TestCase):
         self.binaries.mkdir()
         self.write_fake("cockpit", FAKE_COCKPIT)
         self.write_fake("cockpit-daemon", FAKE_DAEMON)
-        self.write_fake("cockpit-claude-hook", FAKE_HOOK_BRIDGE)
+        for helper in release.HELPERS:
+            self.write_fake(helper, FAKE_HOOK_BRIDGE)
         self.out = self.root / "dist"
         self.out.mkdir()
 
@@ -537,7 +538,8 @@ class PackageTests(PackagingTestCase):
             members = bundle.getmembers()
             self.assertTrue(all(member.mtime == 0 for member in members))
             modes = {member.name.split("/", 1)[-1]: member.mode for member in members}
-        self.assertEqual(modes["bin/cockpit"], 0o755)
+        for binary in release.BINARIES:
+            self.assertEqual(modes[f"bin/{binary}"], 0o755)
         self.assertEqual(modes["README.md"], 0o644)
         prefix = "cockpit-v0.1.0-alpha.7-linux-x86_64"
         self.assertLessEqual(
@@ -586,17 +588,8 @@ class PackageTests(PackagingTestCase):
         self.assertEqual(code, 1)
         self.assertIn("not one of", error)
 
-    def test_the_hook_bridge_ships_executable_beside_the_daemon(self):
-        # The daemon looks for cockpit-claude-hook in its own directory (#185).
-        code, outputs, error = self.package()
-        self.assertEqual(code, 0, error)
-        with tarfile.open(outputs["archive"]) as bundle:
-            modes = {member.name.split("/", 1)[-1]: member.mode for member in bundle}
-        self.assertEqual(modes["bin/cockpit-daemon"], 0o755)
-        self.assertEqual(modes["bin/cockpit-claude-hook"], 0o755)
-
     def test_a_missing_binary_is_refused(self):
-        for binary in ("cockpit", "cockpit-daemon", "cockpit-claude-hook"):
+        for binary in release.BINARIES:
             with self.subTest(binary=binary):
                 (self.binaries / binary).rename(self.root / binary)
                 try:
@@ -612,6 +605,12 @@ class PackageTests(PackagingTestCase):
 class VerifyInstallTests(PackagingTestCase):
     def verify(self, root, revision="0123abcd"):
         return run("verify-install", str(root), "--revision", revision, cwd=ROOT)
+
+    def edit_manifest(self, root, change):
+        manifest_file = Path(root) / release.MANIFEST_PATH
+        manifest = json.loads(manifest_file.read_text())
+        change(manifest)
+        manifest_file.write_text(json.dumps(manifest))
 
     def test_an_unchanged_install_passes(self):
         _code, outputs, _error = self.package()
@@ -638,10 +637,9 @@ class VerifyInstallTests(PackagingTestCase):
 
     def test_a_manifest_that_does_not_list_the_hook_bridge_fails(self):
         _code, outputs, _error = self.package()
-        manifest_file = Path(outputs["root"]) / release.MANIFEST_PATH
-        manifest = json.loads(manifest_file.read_text())
-        del manifest["contents"]["bin/cockpit-claude-hook"]
-        manifest_file.write_text(json.dumps(manifest))
+        self.edit_manifest(
+            outputs["root"], lambda manifest: manifest["contents"].pop("bin/cockpit-claude-hook")
+        )
         (Path(outputs["root"]) / "bin/cockpit-claude-hook").unlink()
         code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
@@ -649,10 +647,7 @@ class VerifyInstallTests(PackagingTestCase):
 
     def test_a_manifest_whose_helpers_record_is_wrong_fails(self):
         _code, outputs, _error = self.package()
-        manifest_file = Path(outputs["root"]) / release.MANIFEST_PATH
-        manifest = json.loads(manifest_file.read_text())
-        manifest["helpers"] = {}
-        manifest_file.write_text(json.dumps(manifest))
+        self.edit_manifest(outputs["root"], lambda manifest: manifest.update(helpers={}))
         code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
         self.assertIn("helpers: {}, expected {'cockpit-claude-hook': '0.1.0-alpha.7'}", error)
