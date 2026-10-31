@@ -95,6 +95,60 @@ jobs:
       - name: Supervise processes
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-processes
 
+  # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
+  # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
+  # match tools/tests/fixtures/ci-install-action-linux.json (test_ci_bootstrap.py).
+  greenfield-wsl2:
+    needs: changes
+    if: needs.changes.outputs.greenfield == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        # setup-wsl's wrapper runs `bash --noprofile --norc -euo pipefail`.
+        shell: wsl-bash {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          wsl-shell-user: cockpit
+          additional-packages: build-essential ca-certificates curl git
+      - name: Refuse to run anywhere but WSL 2, as root
+        run: |
+          uname -r
+          case "$(uname -r)" in *microsoft-standard-WSL2*) ;; *) exit 1 ;; esac
+          test "$(id -u)" -ne 0
+      - name: Install rustup 1.29.2 and cargo-nextest 0.9.150, checksums verified
+        run: |
+          cd "$(mktemp -d)"
+          curl --proto '=https' --tlsv1.2 -fsSLo rustup-init \
+            https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init
+          curl --proto '=https' --tlsv1.2 -fsSLo nextest.tar.gz \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.150/cargo-nextest-0.9.150-x86_64-unknown-linux-gnu.tar.gz
+          sha256sum --check --strict - <<'SUMS'
+          5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  rustup-init
+          b0959bc64232974224cf9fb22c915845398c0e8668fa7831eb5b43fb1eef781f  nextest.tar.gz
+          SUMS
+          chmod +x rustup-init
+          # rust-toolchain.toml picks the toolchain once the build runs in the clone.
+          ./rustup-init -y --profile minimal --default-toolchain none
+          tar -xzf nextest.tar.gz -C "$HOME/.cargo/bin"
+      - name: Clone the checkout into the distribution's file system
+        run: |
+          # DrvFs files are not owned by the job's user; upload-pack checks the .git path.
+          git config --global --add safe.directory "$PWD"
+          git config --global --add safe.directory "$PWD/.git"
+          git clone --quiet "$PWD" "$HOME/agent-cockpit"
+      - name: Start the daemon on a clean home
+        run: |
+          . "$HOME/.cargo/env"
+          cd "$HOME/agent-cockpit"
+          cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-daemon --test startup
+
   # Markdown and spelling, for docs/ and any Markdown file.
   docs:
     needs: changes

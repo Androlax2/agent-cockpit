@@ -1,9 +1,9 @@
 # Gate M0: WSL2 recorded run (checklist)
 
-Open item of [the M0 gate proof](m0-foundation.md). No agent can run WSL2 from the Linux
-sandbox, so Theo runs this on his Windows machine and records what happened. Copy this file
-to `m0-wsl2-recorded-run-<date>.md`, fill in every blank, and link the copy from the proof.
-A blank or skipped step is not a pass.
+Fallback for [the M0 gate proof](m0-foundation.md), whose WSL2 item is the `greenfield-wsl2`
+CI job. Use this for a hand run on a real Windows machine, for example when the CI job and
+a user's machine disagree. Copy this file to `m0-wsl2-recorded-run-<date>.md`, fill in every
+blank, and link the copy from the proof. A blank or skipped step is not a pass.
 
 ## Machine
 
