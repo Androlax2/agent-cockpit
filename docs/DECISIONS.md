@@ -1,4 +1,7 @@
-# Engineering decisions
+# Engineering decisions (frozen 2026-10-31)
+
+This file is history. New decisions are one file each under [docs/decisions/](decisions/README.md),
+so parallel pull requests stop conflicting here.
 
 ## 2026-10-31 — cockpit-processes: scope or process group, output to files, rustix
 

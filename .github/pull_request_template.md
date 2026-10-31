@@ -33,5 +33,5 @@ make greenfield-ci  # exit 0
 
 - [ ] Nothing under `apps/` changed, unless this pull request is a stabilization fix
 - [ ] Coverage map rows this proves are updated with the test name
-- [ ] Non-obvious decisions are recorded in `docs/DECISIONS.md`
+- [ ] Non-obvious decisions are recorded as files under `docs/decisions/` (one per decision)
 - [ ] `validate` claims stay open unless measured here

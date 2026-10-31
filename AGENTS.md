@@ -62,5 +62,5 @@ These workflows refer to canonical policy; they do not grant additional permissi
 - New dependencies, tool installs, host actions and Git operations require the
   authorization specified by the user and [CLAUDE.md](CLAUDE.md).
 
-Record non-obvious architectural decisions in [Decisions](docs/DECISIONS.md). Document
+Record non-obvious architectural decisions as one file each under [docs/decisions/](docs/decisions/README.md). Document
 the code that exists; mark proposals explicitly until their implementation is verified.
