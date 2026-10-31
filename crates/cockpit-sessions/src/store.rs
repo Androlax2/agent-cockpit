@@ -134,6 +134,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             DROP TABLE session_reports;
             ALTER TABLE session_reports_with_sources RENAME TO session_reports;",
         },
+        // #214: a dialog stacks on the agent's own question instead of replacing it; the
+        // agent's question waits beside the dialog and shows again once it is answered.
+        Migration {
+            version: 5,
+            sql: "ALTER TABLE session_reports ADD COLUMN covered_question TEXT
+                CHECK (covered_question IS NULL OR question_source = 'dialog');",
+        },
     ],
 };
 
