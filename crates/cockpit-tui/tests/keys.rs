@@ -164,3 +164,33 @@ fn every_key_counts_as_a_named_command() {
         ]
     );
 }
+
+#[test]
+fn a_daemon_outage_is_logged_once_and_its_status_clears_when_the_daemon_answers() {
+    let now = Instant::now();
+    let mut app = three_sessions(now);
+    let problem = "cannot connect: connection refused".to_owned();
+
+    for _ in 0..3 {
+        for command in cockpit_tui::App::refresh_commands() {
+            app.answer(&command, Err(problem.clone()), now);
+        }
+    }
+    let outage = app.log().filter(|entry| entry.contains("refused")).count();
+    for command in cockpit_tui::App::refresh_commands() {
+        app.answer(
+            &command,
+            Ok(Reply::Sessions {
+                sessions: Vec::new(),
+            }),
+            now,
+        );
+    }
+
+    assert_eq!(outage, 1);
+    assert!(
+        !screen_text(&app, now).contains("connection refused"),
+        "{}",
+        screen_text(&app, now)
+    );
+}

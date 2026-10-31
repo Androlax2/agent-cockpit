@@ -328,3 +328,73 @@ async fn an_agent_may_neither_open_the_manager_nor_list_providers() {
 
     assert_eq!(codes, [ErrorCode::NotAuthorized, ErrorCode::NotAuthorized]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn showing_an_asleep_session_without_a_manager_leaves_it_asleep() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    let started = session(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: None,
+        },
+    )
+    .await;
+    session(
+        &client,
+        Command::SessionSleep {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    let error = refusal(
+        request(
+            &client,
+            Command::SessionShow {
+                session: started.id.clone(),
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(error.code, ErrorCode::NotFound);
+    let listed = match request(&client, Command::SessionList { ended: false }).await {
+        Ok(Reply::Sessions { sessions }) => sessions,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        listed
+            .iter()
+            .find(|listed| listed.id == started.id)
+            .map(|listed| listed.state.clone()),
+        Some(SessionStateView::Asleep)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_manager_that_lost_its_viewer_is_built_again_on_the_next_open() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+    home.tmux(&["kill-pane", "-t", "=cockpit:.1"]);
+
+    let reopened = home.open_manager(&client).await.unwrap();
+
+    assert!(
+        matches!(reopened, Reply::Manager { created: true, .. }),
+        "{reopened:?}"
+    );
+    let panes = home.tmux(&["list-panes", "-t", "=cockpit:", "-F", "#{pane_id}"]);
+    assert_eq!(panes.lines().count(), 2, "{panes}");
+}

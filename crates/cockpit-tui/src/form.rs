@@ -42,6 +42,8 @@ pub struct Form {
     pub(crate) field: Field,
     /// Why the last submit was refused, for the owner.
     pub(crate) problem: Option<String>,
+    /// A submitted `session-new` is unanswered: Enter sends no second one.
+    pub(crate) starting: bool,
 }
 
 impl Form {
@@ -57,6 +59,7 @@ impl Form {
             branch: String::new(),
             field: Field::Project,
             problem: None,
+            starting: false,
         }
     }
 
@@ -158,8 +161,15 @@ impl Form {
 
     /// The `session-new` command, or why the form cannot send one yet.
     fn submit(&mut self) -> FormOutcome {
+        if self.starting {
+            return FormOutcome::Editing;
+        }
         match self.command() {
-            Ok(command) => FormOutcome::Submit(command),
+            Ok(command) => {
+                self.starting = true;
+                self.problem = None;
+                FormOutcome::Submit(command)
+            }
             Err(problem) => {
                 self.problem = Some(problem);
                 FormOutcome::Editing

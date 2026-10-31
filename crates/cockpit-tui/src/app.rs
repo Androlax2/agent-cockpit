@@ -85,6 +85,11 @@ pub struct App {
     pub(crate) log: VecDeque<String>,
     /// The last failure, shown on the status line until the next one or a success.
     pub(crate) status: Option<String>,
+    /// The kind of the command whose failure `status` shows: its next success clears it.
+    pub(crate) status_kind: Option<String>,
+    /// The last failure's problem: the same one again (every refresh while the daemon is
+    /// down) is not logged again.
+    pub(crate) last_problem: Option<String>,
 }
 
 impl App {
@@ -172,7 +177,10 @@ impl App {
                 _ => Step::used("confirm-cancel"),
             };
         }
+        // While the owner types into the pane, every character is text, `?` and `L` too.
+        let is_typing = self.focus == Focus::Pane && self.pane.typing().is_some();
         match key {
+            _ if is_typing => {}
             Key::Tab => return self.switch_focus(now),
             Key::Char('?') => return self.open(Overlay::Help),
             Key::Char('L') => return self.open(Overlay::Log),
@@ -311,6 +319,10 @@ impl App {
             Ok(reply) => reply,
             Err(problem) => return self.failed(command, problem),
         };
+        self.last_problem = None;
+        if self.status_kind.as_deref() == Some(command_label(command).as_str()) {
+            self.status = None;
+        }
         match reply {
             Reply::Projects { projects } => self.board.set_projects(projects),
             Reply::Checkouts { checkouts } => self.board.set_checkouts(checkouts),
@@ -328,7 +340,10 @@ impl App {
             Reply::Session { session } => {
                 let what = match command {
                     Command::SessionNew { .. } => {
-                        self.form = None;
+                        // Only the form that sent it closes: one opened since stays.
+                        if self.form.as_ref().is_some_and(|form| form.starting) {
+                            self.form = None;
+                        }
                         self.selected = Some(session.id.clone());
                         "started"
                     }
@@ -355,14 +370,20 @@ impl App {
     }
 
     fn failed(&mut self, command: &Command, problem: String) {
-        let text = format!("{}: {problem}", command_label(command));
-        if let (Command::SessionNew { .. }, Some(form)) = (command, &mut self.form) {
-            form.problem = Some(problem);
+        let kind = command_label(command);
+        let text = format!("{kind}: {problem}");
+        if let (Command::SessionNew { .. }, Some(form)) = (command, &mut self.form)
+            && form.starting
+        {
+            form.starting = false;
+            form.problem = Some(problem.clone());
         }
-        if self.status.as_deref() != Some(text.as_str()) {
+        if self.last_problem.as_deref() != Some(problem.as_str()) {
             self.note(text.clone());
         }
+        self.last_problem = Some(problem);
         self.status = Some(text);
+        self.status_kind = Some(kind);
     }
 
     /// The pane follows the queue; it takes focus when it shows a request and gives it back

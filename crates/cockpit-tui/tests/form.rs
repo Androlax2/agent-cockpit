@@ -71,12 +71,13 @@ fn a_new_clone_needs_a_branch_and_sends_it() {
     press(&mut app, &[Key::Tab, Key::Tab, Key::Tab, Key::Right], now);
 
     let refused = app.key(Key::Enter, now);
+    let refused_screen = screen_text(&app, now);
     press(&mut app, &[Key::Tab], now);
     typing(&mut app, "feature/x", now);
     let submitted = app.key(Key::Enter, now);
 
     assert!(refused.send.is_empty());
-    assert!(screen_text(&app, now).contains("Cannot start: a new clone needs a branch"));
+    assert!(refused_screen.contains("Cannot start: a new clone needs a branch"));
     assert_eq!(
         submitted.send,
         [Command::SessionNew {
@@ -181,4 +182,37 @@ fn escape_closes_the_form_without_sending() {
 
     assert!(app.form().is_none());
     assert_eq!(sent(&steps), Vec::<Command>::new());
+}
+
+#[test]
+fn a_second_enter_before_the_daemon_answers_sends_no_second_session() {
+    let now = Instant::now();
+    let mut app = form_open(&["fake"], now);
+
+    let steps = press(&mut app, &[Key::Enter, Key::Enter], now);
+
+    assert_eq!(sent(&steps).len(), 1);
+}
+
+#[test]
+fn the_answer_to_an_abandoned_form_leaves_the_form_opened_since() {
+    let now = Instant::now();
+    let mut app = form_open(&["fake"], now);
+    let first = app.key(Key::Enter, now).send.remove(0);
+    press(&mut app, &[Key::Esc, Key::Char('N')], now);
+    answer(&mut app, Command::ProviderList, providers(&["fake"]), now);
+
+    app.answer(
+        &first,
+        Err("refused: the project is not trusted".to_owned()),
+        now,
+    );
+
+    let form = app.form().expect("the form opened since stays");
+    assert!(
+        !screen_text(&app, now).contains("Cannot start"),
+        "{}",
+        screen_text(&app, now)
+    );
+    assert_eq!(form.field(), cockpit_tui::Field::Project);
 }

@@ -287,3 +287,30 @@ fn a_refused_approval_shows_the_daemons_reason_on_the_status_line() {
             .contains("approval-approve: refused: too fast: read it again, then approve")
     );
 }
+
+#[test]
+fn while_the_owner_types_question_marks_and_capital_l_are_text_not_help_or_log() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    queue(
+        &mut app,
+        Vec::new(),
+        vec![guide(4, SESSION, Some("The login?"))],
+        now,
+    );
+    let later = after_grace(now);
+
+    app.key(Key::Char('y'), later);
+    typing(&mut app, "Login?", later);
+    let answered = app.key(Key::Enter, later);
+
+    assert_eq!(app.overlay(), None);
+    assert_eq!(
+        answered.send,
+        [Command::GuideAnswer {
+            guide: 4,
+            step: 0,
+            answer: Some("Login?".to_owned()),
+        }]
+    );
+}

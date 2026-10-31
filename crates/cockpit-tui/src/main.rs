@@ -89,6 +89,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
     let (requests, pending) = mpsc::unbounded_channel::<Command>();
     tokio::spawn(serve(socket, pending, inputs));
     let mut app = App::new();
+    let refresh_commands = App::refresh_commands();
+    // A refresh is sent only once the last one is answered, so a slow daemon gets no pile.
+    let mut unanswered_refreshes = 0_usize;
     let mut refresh = tokio::time::interval(REFRESH);
     let mut redraw = tokio::time::interval(REDRAW);
     loop {
@@ -96,8 +99,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
             .draw(|frame| draw(&app, frame, Instant::now()))
             .map_err(|error| format!("cannot draw: {error}"))?;
         tokio::select! {
-            _ = refresh.tick() => {
-                for command in App::refresh_commands() {
+            _ = refresh.tick(), if unanswered_refreshes == 0 => {
+                unanswered_refreshes = refresh_commands.len();
+                for command in refresh_commands.iter().cloned() {
                     send(&requests, command)?;
                 }
             }
@@ -114,6 +118,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
                 }
                 Some(Input::Answer(answered)) => {
                     let (command, answer) = *answered;
+                    if refresh_commands.contains(&command) {
+                        unanswered_refreshes = unanswered_refreshes.saturating_sub(1);
+                    }
                     app.answer(&command, answer, Instant::now());
                 }
             },
@@ -185,9 +192,17 @@ async fn serve(
                     opened
                 }
                 Err(error) => {
-                    let _ = answers
-                        .send(Input::Answer(Box::new((command, Err(describe(&error))))))
-                        .await;
+                    // Everything already waiting fails with it, rather than each waiting
+                    // out its own connect deadline in turn.
+                    let problem = describe(&error);
+                    let mut failed = vec![command];
+                    while let Ok(waiting) = pending.try_recv() {
+                        failed.push(waiting);
+                    }
+                    for command in failed {
+                        let answer = Input::Answer(Box::new((command, Err(problem.clone()))));
+                        let _ = answers.send(answer).await;
+                    }
                     continue;
                 }
             },

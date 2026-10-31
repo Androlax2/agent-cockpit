@@ -4,11 +4,11 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cockpit_protocol::{Command, ErrorCode, Outcome, ProtocolError, Reply};
 use cockpit_sessions::{SessionId, SessionState, Sessions};
-use cockpit_tmux::{PaneId, SessionLaunch, SessionName, Split};
+use cockpit_tmux::{PaneId, PaneState, SessionLaunch, SessionName, Split};
 
 use crate::routes::{Route, WorkClass, refusal};
 
@@ -21,12 +21,16 @@ const VIEWER_PERCENT: u8 = 70;
 /// A handle on the private tmux server for the manager, or why there is none.
 pub struct Manager {
     tmux: Result<cockpit_tmux::Server, String>,
+    /// Held while the manager is checked and built, so two `cockpit tui` at once build it
+    /// once.
+    opening: Mutex<()>,
 }
 
 impl Manager {
     pub(crate) fn open(spec: cockpit_tmux::ServerSpec) -> Manager {
         Manager {
             tmux: cockpit_tmux::Server::open(spec).map_err(|error| error.to_string()),
+            opening: Mutex::new(()),
         }
     }
 
@@ -82,7 +86,8 @@ fn blocking(work: impl FnOnce() -> Result<Reply, ProtocolError> + Send + 'static
     })
 }
 
-/// Opens the manager session unless it is open already; either way answers how to attach.
+/// Opens the manager session unless a whole one is open already; either way answers how to
+/// attach. A manager missing its viewer or whose column ended is closed and built again.
 fn open(
     manager: &Manager,
     dir: String,
@@ -104,7 +109,19 @@ fn open(
             format!("{} is not an absolute directory", dir.display()),
         ));
     }
-    let created = !tmux.sessions().map_err(tmux_error)?.contains(&name);
+    let _opening = manager
+        .opening
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let created = match manager_state(tmux, &name)? {
+        ManagerState::Whole => false,
+        ManagerState::Absent => true,
+        ManagerState::Broken => {
+            tracing::warn!("the manager session lost its column or viewer: building it again");
+            tmux.close_session(&name).map_err(tmux_error)?;
+            true
+        }
+    };
     if created {
         let column_pane = tmux
             .new_session(&SessionLaunch {
@@ -116,14 +133,20 @@ fn open(
                 rows: 50,
             })
             .map_err(tmux_error)?;
-        tmux.split_pane(
+        let split = tmux.split_pane(
             &column_pane,
             Split::SideBySide {
                 percent: VIEWER_PERCENT,
             },
             &words(viewer),
-        )
-        .map_err(tmux_error)?;
+        );
+        if let Err(error) = split {
+            // A manager without its viewer would be taken as whole by nobody; leave none.
+            if let Err(close) = tmux.close_session(&name) {
+                tracing::error!(%close, "cannot close the half-built manager session");
+            }
+            return Err(tmux_error(error));
+        }
         tracing::info!("opened the manager session");
     }
     Ok(Reply::Manager {
@@ -136,7 +159,33 @@ fn open(
     })
 }
 
+enum ManagerState {
+    Absent,
+    /// Its column runs and its viewer pane is there.
+    Whole,
+    Broken,
+}
+
+fn manager_state(
+    tmux: &cockpit_tmux::Server,
+    name: &SessionName,
+) -> Result<ManagerState, ProtocolError> {
+    if !tmux.sessions().map_err(tmux_error)?.contains(name) {
+        return Ok(ManagerState::Absent);
+    }
+    let panes = tmux.panes(name).map_err(tmux_error)?;
+    let column_runs = panes
+        .first()
+        .is_some_and(|column| column.state == PaneState::Running);
+    Ok(if column_runs && panes.len() >= 2 {
+        ManagerState::Whole
+    } else {
+        ManagerState::Broken
+    })
+}
+
 /// Shows `session` in the viewer, waking it first when it sleeps (row 18: wake on open).
+/// The viewer is checked first: without one, nobody would see the session it woke.
 async fn show(
     sessions: &Sessions,
     manager: Arc<Manager>,
@@ -147,6 +196,10 @@ async fn show(
         .get(&id)
         .await
         .map_err(|error| crate::sessions::protocol_error(&error))?;
+    let viewer = {
+        let manager = Arc::clone(&manager);
+        tmux_blocking(move || viewer_pane(manager.tmux()?)).await?
+    };
     if shown.state == SessionState::Asleep {
         shown = sessions
             .wake(&id, cockpit_sessions::WakeCause::Open)
@@ -154,19 +207,25 @@ async fn show(
             .map_err(|error| crate::sessions::protocol_error(&error))?;
     }
     let target = SessionName::new(id.as_str()).map_err(tmux_error)?;
-    tokio::task::spawn_blocking(move || {
-        let tmux = manager.tmux()?;
-        tmux.show_in_viewer(&viewer_pane(tmux)?, &target)
+    tmux_blocking(move || {
+        manager
+            .tmux()?
+            .show_in_viewer(&viewer, &target)
             .map_err(tmux_error)
     })
-    .await
-    .map_err(|panic| {
-        tracing::error!(%panic, "showing a session panicked");
-        ProtocolError::new(ErrorCode::Internal, "showing the session failed")
-    })??;
+    .await?;
     crate::sessions::session_reply(sessions, &shown)
         .await
         .map_err(|error| crate::sessions::protocol_error(&error))
+}
+
+async fn tmux_blocking<Value: Send + 'static>(
+    work: impl FnOnce() -> Result<Value, ProtocolError> + Send + 'static,
+) -> Result<Value, ProtocolError> {
+    tokio::task::spawn_blocking(work).await.map_err(|panic| {
+        tracing::error!(%panic, "showing a session panicked");
+        ProtocolError::new(ErrorCode::Internal, "showing the session failed")
+    })?
 }
 
 /// The manager's second pane. The column is the first; a manager with fewer panes lost its
@@ -184,7 +243,7 @@ fn viewer_pane(tmux: &cockpit_tmux::Server) -> Result<PaneId, ProtocolError> {
         Some(viewer) => Ok(viewer.id.clone()),
         None => Err(ProtocolError::new(
             ErrorCode::Conflict,
-            "the manager session has lost its viewer pane: close it and run `cockpit tui` again",
+            "the manager session has lost its viewer pane: run `cockpit tui` again to rebuild it",
         )),
     }
 }
