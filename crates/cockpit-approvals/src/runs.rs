@@ -28,7 +28,7 @@ pub(crate) const REASON_MAX_CHARS: usize = 1000;
 /// The columns `run_from` reads, in its order.
 const SELECT_RUNS: &str = "SELECT id, session, revision, command, asked_command, cwd, project,
         project_root, reason, state, asked_at, expires_at, exit_code, output,
-        output_omitted_lines, output_truncated_bytes, redacted, output_file, note
+        output_omitted_lines, output_truncated_bytes, redacted, note
      FROM approvals_runs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -109,8 +109,6 @@ pub struct RunResult {
     pub truncated_bytes: u64,
     /// How many secret-looking values were replaced by `[redacted]`.
     pub redacted: u64,
-    /// The whole kept output, redacted, in the project's answers directory.
-    pub output_file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,14 +203,13 @@ pub async fn ask_run(
 ) -> Result<RunRequest, Error> {
     validate_command("command", &ask.command)?;
     validate_reason(&ask.reason)?;
-    authorize(write, session).await?;
+    may_ask(write, session).await?;
     insert_run(write, session, &ask, now).await
 }
 
-pub(crate) async fn authorize(
-    write: &WriteTransaction<'_>,
-    session: &SessionId,
-) -> Result<(), Error> {
+/// Whether `cockpit-authorization` allows `session` to ask the owner: `run-commands` over
+/// itself. Every ask is evaluated so; `ask check` asks it alone.
+pub async fn may_ask(write: &WriteTransaction<'_>, session: &SessionId) -> Result<(), Error> {
     let decision = cockpit_authorization::evaluate(
         write,
         &Actor::Session(session.clone()),
@@ -441,7 +438,7 @@ pub async fn finish_run(
         run,
         "UPDATE approvals_runs SET state = 'finished', exit_code = ?3, output = ?4,
             output_omitted_lines = ?5, output_truncated_bytes = ?6, redacted = ?7,
-            output_file = ?8, ended_at = ?9
+            ended_at = ?8
          WHERE id = ?1 AND revision = ?2 AND state = 'running'",
         (
             run.id.0,
@@ -451,7 +448,6 @@ pub async fn finish_run(
             count_column(result.omitted_lines),
             count_column(result.truncated_bytes),
             count_column(result.redacted),
-            result.output_file.clone(),
             now,
         ),
     )
@@ -641,7 +637,6 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
             omitted_lines: count_of(row.get(14)?).map_err(invalid_row)?,
             truncated_bytes: count_of(row.get(15)?).map_err(invalid_row)?,
             redacted: count_of(row.get(16)?).map_err(invalid_row)?,
-            output_file: row.get(17)?,
         }),
         None => None,
     };
@@ -658,7 +653,7 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
         asked_at: row.get(10)?,
         expires_at,
         result,
-        note: row.get(18)?,
+        note: row.get(17)?,
     })
 }
 

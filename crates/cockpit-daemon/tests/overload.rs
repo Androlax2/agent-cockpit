@@ -146,6 +146,7 @@ async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
                     database,
                     cockpit_projects::Git::from_path(),
                     cockpit_config::Environment::default(),
+                    cockpit_daemon::runner(Vec::new()).unwrap(),
                 ),
             })
         })

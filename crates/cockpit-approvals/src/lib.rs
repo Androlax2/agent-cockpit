@@ -19,8 +19,8 @@ pub use pty::{Output, Ran, RunSettings, Runner, present, run_leader};
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use runs::{
     Approved, EXPIRES_AFTER_SECONDS, Project, RunAsk, RunId, RunRequest, RunResult, RunState,
-    action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, open_runs, queue_order,
-    reconcile_runs, record_not_run, resolve_cwd, run_request, run_status, start_run,
+    action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, may_ask, open_runs,
+    queue_order, reconcile_runs, record_not_run, resolve_cwd, run_request, run_status, start_run,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an
@@ -51,7 +51,6 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 output_omitted_lines INTEGER CHECK (output_omitted_lines >= 0),
                 output_truncated_bytes INTEGER CHECK (output_truncated_bytes >= 0),
                 redacted INTEGER CHECK (redacted >= 0),
-                output_file TEXT,
                 note TEXT,
                 ended_at INTEGER,
                 CHECK ((project IS NULL) = (project_root IS NULL)),

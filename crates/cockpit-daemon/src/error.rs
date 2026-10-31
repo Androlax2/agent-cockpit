@@ -28,6 +28,8 @@ pub enum StartError {
     Database(cockpit_turso::Error),
     /// Reconciling executions against the real processes failed; nothing was dispatched.
     Reconcile(cockpit_processes::Error),
+    /// Ending the runs a stopped daemon left approved or running failed.
+    Approvals(cockpit_approvals::Error),
 }
 
 impl StartError {
@@ -66,6 +68,7 @@ impl fmt::Display for StartError {
             Self::Diagnostics(error) => write!(formatter, "{error}"),
             Self::Database(error) => write!(formatter, "state database: {error}"),
             Self::Reconcile(error) => write!(formatter, "reconciling executions: {error}"),
+            Self::Approvals(error) => write!(formatter, "reconciling approved runs: {error}"),
         }
     }
 }

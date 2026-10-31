@@ -55,7 +55,7 @@ pub struct RunSettings {
     pub git_config: Vec<String>,
     /// The end of the output kept; what came before is counted, not kept.
     pub kept_bytes: usize,
-    /// Lines of output the agent's answer quotes; the rest is in the output file.
+    /// Lines of output the agent's answer quotes; the rest are counted.
     pub answer_lines: usize,
     pub rows: u16,
     pub columns: u16,
@@ -109,9 +109,7 @@ pub struct Ran {
 /// A run's output as it may reach the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
-    /// Every kept line, redacted: what the answers directory holds.
-    pub whole: String,
-    /// The last lines of `whole`, for the agent's answer.
+    /// The last lines of the kept output, for the agent's answer.
     pub shown: String,
     pub omitted_lines: u64,
     pub truncated_bytes: u64,
@@ -119,14 +117,13 @@ pub struct Output {
 }
 
 impl Ran {
-    pub fn result(&self, output_file: Option<String>) -> RunResult {
+    pub fn result(&self) -> RunResult {
         RunResult {
             exit_code: self.exit_code,
             output: self.output.shown.clone(),
             omitted_lines: self.output.omitted_lines,
             truncated_bytes: self.output.truncated_bytes,
             redacted: self.output.redacted,
-            output_file,
         }
     }
 }
@@ -387,7 +384,6 @@ pub fn present(kept: &[u8], total: u64, answer_lines: usize) -> Output {
         omitted_lines: first_shown as u64,
         truncated_bytes,
         redacted: redacted as u64,
-        whole,
     }
 }
 

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::{AgentReport, SessionReport};
+use crate::approvals::{GuideView, RunRequestView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
@@ -70,6 +71,85 @@ pub enum Command {
     CheckoutPush {
         checkout: i64,
     },
+    /// Agent socket only: ask the owner to run `command` in `cwd` (absolute) on the host.
+    /// `reason` says what it does and why.
+    AskRun {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        command: String,
+        cwd: String,
+        reason: String,
+    },
+    /// Agent socket only: hand the owner `guide`, in the `ask-to-guide` format, to do by hand.
+    AskGuide {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        guide: String,
+        cwd: String,
+    },
+    /// Agent socket only: one of the sender's run requests. Asking keeps it from expiring.
+    AskRunStatus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        request: i64,
+    },
+    /// Agent socket only: one of the sender's guides. Asking keeps it from expiring.
+    AskGuideStatus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        guide: i64,
+    },
+    /// Agent socket only: whether an ask from the sender would reach the owner now.
+    AskCheck {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+    },
+    /// Owner only: what agents ask now, in the order to answer it.
+    ApprovalQueue,
+    /// Owner only: one run request, whatever its state.
+    ApprovalShow {
+        request: i64,
+    },
+    /// Owner only: run the request's `revision`, whose digest is `digest`. Consumed once.
+    ApprovalApprove {
+        request: i64,
+        revision: i64,
+        digest: String,
+    },
+    ApprovalDecline {
+        request: i64,
+    },
+    /// Owner only: replace the command, creating revision `revision + 1`.
+    ApprovalEdit {
+        request: i64,
+        revision: i64,
+        command: String,
+    },
+    /// Owner only: type `text` and Enter into the running command's terminal.
+    ApprovalInput {
+        request: i64,
+        text: String,
+    },
+    /// Owner only: one guide, whatever its state.
+    GuideShow {
+        guide: i64,
+    },
+    /// Owner only: done with step `step`, the one shown now; `answer` when it asks.
+    GuideAnswer {
+        guide: i64,
+        step: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<String>,
+    },
+    /// Owner only: stuck at step `step`; `note` says why.
+    GuideStuck {
+        guide: i64,
+        step: usize,
+        note: String,
+    },
+    GuideClose {
+        guide: i64,
+    },
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -132,6 +212,22 @@ pub enum Reply {
         checkout: i64,
         branch: String,
         remote_url: String,
+    },
+    RunRequest {
+        request: Box<RunRequestView>,
+    },
+    Guide {
+        guide: Box<GuideView>,
+    },
+    /// An ask from the sender would reach the owner: it is identified and may ask.
+    AskReady {
+        session: String,
+    },
+    /// Run requests first: a running command waiting for input, then asking requests oldest
+    /// first, then approved and running ones. Then guides, oldest first.
+    ApprovalQueue {
+        runs: Vec<RunRequestView>,
+        guides: Vec<GuideView>,
     },
 }
 

@@ -35,6 +35,13 @@ the wire. Report 14 treats this contract as stable from the first release.
    The owner reads every session's latest report with `agent-reports`. A refusal the sender
    can act on carries `unblock`: the `action` that would lift it and who can (`owner`,
    `agent`, `cockpit`).
+5. Approvals (#34): on the agent socket, `ask-run` and `ask-guide` file a request and
+   `ask-run-status` / `ask-guide-status` read the sender's own; `ask-check` says whether an
+   ask would reach the owner. The owner reads `approval-queue` and decides with
+   `approval-approve`, which names the `revision` and `digest` it read, `approval-decline`,
+   `approval-edit` (a new revision) and `approval-input`; guides with `guide-answer` and
+   `guide-stuck` (naming the step shown) and `guide-close`. Views carry the display rules'
+   `ShownText` beside the exact text.
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are

@@ -25,7 +25,6 @@ fn result(exit_code: i32) -> RunResult {
         omitted_lines: 0,
         truncated_bytes: 0,
         redacted: 0,
-        output_file: None,
     }
 }
 

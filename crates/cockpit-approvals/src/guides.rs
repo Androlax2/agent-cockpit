@@ -15,7 +15,7 @@ use cockpit_turso::sql::{Connection, Row};
 
 use crate::error::invalid;
 use crate::runs::{
-    EXPIRES_AFTER_SECONDS, Project, REASON_MAX_CHARS, RunAsk, RunId, authorize, insert_run,
+    EXPIRES_AFTER_SECONDS, Project, REASON_MAX_CHARS, RunAsk, RunId, insert_run, may_ask,
     validate_command,
 };
 use crate::{Error, Refusal};
@@ -235,7 +235,7 @@ pub async fn ask_guide(
     project: Option<Project>,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    authorize(write, session).await?;
+    may_ask(write, session).await?;
     let id = write
         .prepare("SELECT coalesce(max(id), 0) + 1 FROM approvals_guides")
         .await?
@@ -368,7 +368,7 @@ pub async fn answer_step(
     }
     let run_request = match &shown.run {
         Some(command) => {
-            authorize(write, &guide.session).await?;
+            may_ask(write, &guide.session).await?;
             let ask = RunAsk {
                 command: command.clone(),
                 cwd: guide.cwd.clone(),

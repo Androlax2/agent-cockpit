@@ -56,7 +56,6 @@ fn the_answer_quotes_the_last_lines_and_counts_the_rest() {
     assert_eq!(presented.shown, "line 4\nline 5");
     assert_eq!(presented.omitted_lines, 3);
     assert_eq!(presented.truncated_bytes, 0);
-    assert_eq!(presented.whole, "line 1\nline 2\nline 3\nline 4\nline 5\n");
 }
 
 #[test]
