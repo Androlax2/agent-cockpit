@@ -91,9 +91,9 @@ jobs:
       - name: Supervise processes
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-processes
 
-  # The daemon's startup tests inside WSL 2 on Windows: the M0 gate's WSL2 proof (#27), since
-  # no Windows machine is available for a hand run. Steps run as an ordinary user, as a real
-  # install would, from a clone in the distribution's own file system rather than DrvFs.
+  # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
+  # exists: docs/DECISIONS.md, "Gate M0: WSL2 proven in CI". cargo-nextest's pin and hash
+  # match tools/tests/fixtures/ci-install-action-linux.json (test_ci_bootstrap.py).
   greenfield-wsl2:
     needs: changes
     if: needs.changes.outputs.greenfield == 'true'

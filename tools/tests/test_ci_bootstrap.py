@@ -66,3 +66,13 @@ class CiBootstrapTests(unittest.TestCase):
                 self.assertEqual(version, metadata["version"])
                 self.assertIn(metadata["platform"], ("x86_64_linux_gnu", "x86_64_linux_musl"))
                 self.assertRegex(metadata["hash"], r"^[0-9a-f]{64}$")
+
+    def test_wsl_job_installs_the_reviewed_nextest_release(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        reviewed = json.loads(FIXTURE.read_text())["tools"]["cargo-nextest"]
+        download = re.search(
+            r"cargo-nextest-([0-9.]+)/cargo-nextest-\1-x86_64-unknown-linux-gnu\.tar\.gz", workflow
+        )
+        self.assertIsNotNone(download, "the WSL job downloads a pinned cargo-nextest release")
+        self.assertEqual(download[1], reviewed["version"])
+        self.assertRegex(workflow, rf"\n +{reviewed['hash']}  nextest\.tar\.gz\n")

@@ -8,7 +8,7 @@ hardware. A platform counts only where it ran; an item without proof stays open 
 
 | Gate item | Proof | Linux | macOS | WSL2 |
 | --- | --- | --- | --- | --- |
-| Daemon starts on a clean home | `cockpit-daemon` `startup::a_daemon_starts_on_a_clean_home_with_only_home_in_its_environment` (only `HOME` set, nothing in it) and `startup::a_daemon_starts_on_a_clean_home_and_answers_ping` (XDG variables set) | run 1 | CI job `greenfield-macos` (`macos-26`, arm64), with the rest of `startup` | pending: CI job `greenfield-wsl2` (`windows-2025`, Ubuntu 24.04 under WSL 2), with the rest of `startup`; counts once green on `main` |
+| Daemon starts on a clean home | `cockpit-daemon` `startup::a_daemon_starts_on_a_clean_home_with_only_home_in_its_environment` (only `HOME` set, nothing in it) and `startup::a_daemon_starts_on_a_clean_home_and_answers_ping` (XDG variables set) | run 1 | CI job `greenfield-macos` (`macos-26`, arm64), with the rest of `startup` | pending: CI job `greenfield-wsl2` (`windows-2025`, Ubuntu 24.04 under WSL 2), with the rest of `startup` |
 | Versioned protocol handshake and version refusal | `cockpit-daemon` `protocol::a_client_sharing_no_version_is_refused_with_the_daemons_versions` over the daemon's socket; `cockpit-protocol` `handshake::*`; `cockpit-client` `handshake::a_refused_handshake_reports_the_daemons_reason` | run 1 | not run | not run |
 | `COCKPIT_LOG_LEVEL` sets the daemon's level | `cockpit-daemon` `startup::cockpit_log_level_decides_which_records_the_daemon_writes`, `startup::an_unreadable_log_level_stops_startup` | run 1 | CI job `greenfield-macos` | pending: `greenfield-wsl2` |
 | Runtime level override with auto-revert | library: `cockpit-diagnostics` `level::an_override_raises_the_running_filter`, `level::an_override_reverts_when_it_expires` | run 1 (library) | not run | not run |
@@ -36,16 +36,15 @@ greenfield job (`tools/ci-jobs.py`). Its first run is linked from the PR that ad
 other gate items have not run on macOS.
 
 **WSL2.** No Windows machine is available for a hand run, so (Theo, 2026-10-31, on #27) the
-`greenfield-wsl2` CI job is the WSL2 proof. It installs Ubuntu 24.04 under WSL 2 on GitHub's
-`windows-2025` runner and, as an ordinary user, refuses to continue unless the kernel is a
-WSL 2 one, clones the checkout into the distribution's own file system and runs the same
-`startup` tests whenever CI selects the greenfield job. The gate counts it once the job is
-green on `main`, with that run linked on #27.
+`greenfield-wsl2` CI job is the WSL2 proof: it runs the same `startup` tests inside Ubuntu
+24.04 under WSL 2 on GitHub's `windows-2025` runner whenever CI selects the greenfield job
+(how and why: the 2026-10-31 WSL2 entry in [Decisions](../DECISIONS.md)). The gate counts
+it once the job is green on `main`, with that run linked on #27.
 [The hand-run checklist](m0-wsl2-recorded-run.md) stays as a fallback, not a gate item.
 
 ## Open items
 
-- **WSL2:** proven by `greenfield-wsl2` once it is green on `main`; until then, open.
+- **WSL2:** open until `greenfield-wsl2` is green on `main`.
 - **`cockpit logs level` and `cockpit support-bundle` verbs:** not wired. The library is
   proven above; the verbs need the host-only channel, which #108 assigned to #32 (M1). The
   coverage-map rows for both stay pending until a test drives them through the CLI.
