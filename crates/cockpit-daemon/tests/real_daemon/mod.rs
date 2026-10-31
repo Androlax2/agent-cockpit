@@ -19,6 +19,9 @@ use cockpit_protocol::{Command, Reply, SessionView};
 
 /// Long enough never to fire in a passing test, short enough to fail a hung one.
 pub const GENEROUS: Duration = Duration::from_secs(10);
+/// How long a test waits after a start for a launch the daemon should not make; the fake
+/// agent logs its launch within milliseconds of being started.
+pub const SETTLE: Duration = Duration::from_secs(1);
 /// A start reconciles what the killed daemon left before it is ready (report 03), and
 /// stopping an agent that ignores `SIGTERM` takes the stop's grace and kill wait (5 s each).
 const READY_WITHIN: Duration = Duration::from_secs(30);
@@ -284,6 +287,23 @@ pub async fn listed(client: &Connection, id: &str) -> SessionView {
         .into_iter()
         .find(|session| session.id == id)
         .unwrap_or_else(|| panic!("session {id} is listed"))
+}
+
+/// Waits until session `id` runs: any stop or launch under way has finished.
+pub async fn wait_for_running(client: &Connection, id: &str) -> SessionView {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let session = listed(client, id).await;
+        if session.state == cockpit_protocol::SessionStateView::Running {
+            return session;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session {id} stayed {:?}",
+            session.state
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Whether `pid` runs and is not a zombie.

@@ -7,7 +7,7 @@
 //! none is launched again.
 //!
 //! The loads (workload decided in docs/decisions/2026-10-31-36-latency-workload.md):
-//! - build: per build process, `head -c 64M /dev/urandom | gzip -1` into a file, looped,
+//! - build: per build process, `head -c 64M /dev/urandom | gzip -1` to nowhere, looped,
 //!   outside the daemon as builds run in agent terminals;
 //! - log flood: a session whose agent writes to its terminal without pause, and a viewer
 //!   that subscribed to the change feed and never reads it;
@@ -36,8 +36,8 @@ use cockpit_protocol::{
     Capability, Command, ErrorCode, FeedPosition, Hello, ProtocolError, Reply, Request, RequestId,
     SUPPORTED_VERSIONS, SessionStateView,
 };
-use real_daemon::{GENEROUS, Home, listed, new_session};
-use tokio::io::AsyncWriteExt;
+use real_daemon::{GENEROUS, Home, SETTLE, is_alive, listed, new_session, wait_for_running};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 const PROBE_INTERVAL: Duration = Duration::from_millis(50);
 const FRESH_CONNECTION_INTERVAL: Duration = Duration::from_secs(1);
@@ -105,26 +105,24 @@ async fn run(workload: Workload) {
     ] = <[_; 4]>::try_from(dirs).unwrap();
     let flood = new_session(&client, &flood_dir).await;
     let stall = new_session(&client, &stall_dir).await;
-    home.wait_for_launches(&flood.id, 1).await;
+    let flood_agent = home.wait_for_launches(&flood.id, 1).await[0].clone();
     home.wait_for_launches(&stall.id, 1).await;
     let _stalled_viewer = stalled_viewer(&home.socket_path()).await;
 
     let stop = Arc::new(AtomicBool::new(false));
     let memory = MemorySampler::start(daemon.pid(), Arc::clone(&stop));
-    let builds = Builds::start(&home.path(), workload.build_processes);
+    let builds = Builds::start(workload.build_processes);
     let probe = probe(home.socket_path(), workload.duration);
-    let mut loads = vec![
-        tokio::spawn(restart_back_to_back(
-            home.connect().await,
-            stall.id.clone(),
-            Arc::clone(&stop),
-        )),
-        tokio::spawn(start_and_end_back_to_back(
-            home.connect().await,
-            churn_dir.clone(),
-            Arc::clone(&stop),
-        )),
-    ];
+    let restarts = tokio::spawn(restart_back_to_back(
+        home.connect().await,
+        stall.id.clone(),
+        Arc::clone(&stop),
+    ));
+    let mut loads = vec![tokio::spawn(start_and_end_back_to_back(
+        home.connect().await,
+        churn_dir.clone(),
+        Arc::clone(&stop),
+    ))];
     for _ in 0..workload.writers {
         loads.push(tokio::spawn(add_and_delete_back_to_back(
             home.connect().await,
@@ -136,36 +134,38 @@ async fn run(workload: Workload) {
         .await
         .unwrap();
     stop.store(true, Ordering::SeqCst);
-    let mut tallies = Vec::new();
+    let mut tallies = vec![restarts.await.expect("the restart load ran")];
     for load in loads {
         tallies.push(load.await.expect("a load task ran"));
     }
     drop(builds);
     let memory = memory.finish();
 
-    // The stalled session's agent logged its start and one launch per answered restart.
-    let stall_launches = 1 + usize::try_from(tallies[0].answered).unwrap();
-    home.wait_for_launches(&stall.id, stall_launches).await;
-    let restart = restart_with_sessions_running(&home, daemon, &[&flood.id, &stall.id]).await;
-
-    let report = Report {
+    let flood_kept_writing = is_alive(flood_agent.pid);
+    let mut report = Report {
         workload: &workload,
         samples: &samples,
         tallies: &tallies,
         memory,
-        restart: &restart,
-    }
-    .to_markdown();
-    println!("{report}");
-    if let Some(path) = std::env::var_os("COCKPIT_LATENCY_REPORT") {
-        std::fs::write(&path, &report).expect("the report is writable");
-    }
+        restart: None,
+    };
+    // Written before the restart, so a failing restart keeps the measured run.
+    report.write();
+    // A restart the client gave up on may still run in the daemon: wait until it settled.
+    // Counting the stalled agent's launches would not do: a restart back to back can end
+    // the new agent before it logged its launch.
+    wait_for_running(&client, &stall.id).await;
+    tokio::time::sleep(SETTLE).await;
+    let restart = restart_with_sessions_running(&home, daemon, &[&flood.id, &stall.id]).await;
+    report.restart = Some(&restart);
+    report.write();
 
     let refused: Vec<_> = samples
         .iter()
         .filter(|sample| sample.error.is_some())
         .collect();
     assert!(refused.is_empty(), "control requests failed: {refused:?}");
+    assert!(flood_kept_writing, "the flooding agent ran to the end");
     assert!(
         tallies.iter().all(|tally| tally.attempts() > 0),
         "every load ran: {tallies:?}"
@@ -379,45 +379,57 @@ async fn add_and_delete_back_to_back(
     tally
 }
 
-/// A connection that subscribed to the change feed and never reads what it is sent.
-async fn stalled_viewer(socket: &Path) -> tokio::net::UnixStream {
-    let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+/// A connection that subscribed to the change feed and never reads what it is sent. The
+/// daemon's welcome is read first, so the subscription is known to be accepted.
+async fn stalled_viewer(socket: &Path) -> tokio::io::BufReader<tokio::net::UnixStream> {
+    let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+    let mut stream = tokio::io::BufReader::new(stream);
     let hello = Hello {
         protocol_versions: SUPPORTED_VERSIONS.to_vec(),
         capabilities: vec![Capability::ChangeFeed],
     };
+    let mut frame = serde_json::to_string(&hello).unwrap();
+    frame.push('\n');
+    stream.get_mut().write_all(frame.as_bytes()).await.unwrap();
+    let mut welcome = String::new();
+    stream.read_line(&mut welcome).await.unwrap();
+    assert!(
+        welcome.contains("change-feed"),
+        "the feed is offered: {welcome}"
+    );
     let subscribe = Request {
         id: RequestId(1),
         command: Command::Subscribe {
             from: FeedPosition::Snapshot,
         },
     };
-    let frames = format!(
-        "{}\n{}\n",
-        serde_json::to_string(&hello).unwrap(),
-        serde_json::to_string(&subscribe).unwrap()
+    let mut frame = serde_json::to_string(&subscribe).unwrap();
+    frame.push('\n');
+    stream.get_mut().write_all(frame.as_bytes()).await.unwrap();
+    let mut subscribed = String::new();
+    stream.read_line(&mut subscribed).await.unwrap();
+    assert!(
+        subscribed.contains("subscribed"),
+        "the feed started: {subscribed}"
     );
-    stream.write_all(frames.as_bytes()).await.unwrap();
     stream
 }
 
-/// The build stand-ins, each the leader of its own process group so ending it ends its
-/// pipeline too.
+/// The build stand-ins, CPU-bound, each the leader of its own process group so ending it
+/// ends its pipeline too. Their output goes nowhere: a test home on tmpfs would hold it in
+/// memory.
 struct Builds {
     processes: Vec<Child>,
 }
 
 impl Builds {
-    fn start(dir: &Path, count: usize) -> Builds {
+    fn start(count: usize) -> Builds {
         use std::os::unix::process::CommandExt;
         let processes = (0..count)
-            .map(|index| {
-                let output = dir.join(format!("build-{index}.gz"));
+            .map(|_| {
                 Process::new("sh")
                     .arg("-c")
-                    .arg(r#"while :; do head -c 64M /dev/urandom | gzip -1 > "$1"; done"#)
-                    .arg("build")
-                    .arg(output)
+                    .arg("while :; do head -c 64M /dev/urandom | gzip -1 > /dev/null; done")
                     .process_group(0)
                     .spawn()
                     .expect("a build stand-in starts")
@@ -510,6 +522,8 @@ async fn restart_with_sessions_running(
     let _daemon = home.start();
     let ready_after = killed.elapsed();
     let client = home.connect().await;
+    // A relaunch after the daemon is ready would log its launch within this.
+    tokio::time::sleep(SETTLE).await;
     let mut reattached = true;
     for (id, launch) in sessions.iter().zip(&launches_seen) {
         let session = listed(&client, id).await;
@@ -528,18 +542,32 @@ struct Report<'a> {
     samples: &'a [Sample],
     tallies: &'a [Tally],
     memory: Memory,
-    restart: &'a Restart,
+    restart: Option<&'a Restart>,
 }
 
 impl Report<'_> {
+    /// Prints the report and writes it to `COCKPIT_LATENCY_REPORT` when that is set.
+    fn write(&self) {
+        let report = self.to_markdown();
+        println!("{report}");
+        if let Some(path) = std::env::var_os("COCKPIT_LATENCY_REPORT") {
+            std::fs::write(&path, &report).expect("the report is writable");
+        }
+    }
+
     fn to_markdown(&self) -> String {
         let mut text = String::new();
         let workload = self.workload;
         let _ = writeln!(
             text,
-            "## Latency run\n\n- Load for {} s; a control request every {} ms on a held \
+            "## Latency run\n\n- Profile: {}\n- Load for {} s; a control request every {} ms on a held \
              connection, a new connection's ping every {} s\n- Build processes: {}; item \
              writers: {}\n",
+            if cfg!(debug_assertions) {
+                "debug (not comparable with the release daemon a user installs)"
+            } else {
+                "release"
+            },
             workload.duration.as_secs(),
             PROBE_INTERVAL.as_millis(),
             FRESH_CONNECTION_INTERVAL.as_secs(),
@@ -610,20 +638,26 @@ impl Report<'_> {
             );
         }
         let memory = self.memory;
-        let restart = self.restart;
         let _ = writeln!(
             text,
             "\n### Daemon\n\n- Resident memory: {} MiB at the start, {} MiB at the peak, {} \
-             MiB at the end\n- Killed with its sessions running, then ready again after {} \
-             ms; sessions reattached: {}; agent launches {} before, {} after",
+             MiB at the end",
             memory.first_kib / 1024,
             memory.peak_kib / 1024,
             memory.last_kib / 1024,
-            restart.ready_after.as_millis(),
-            if restart.reattached { "all" } else { "NOT ALL" },
-            restart.launches_before,
-            restart.launches_after,
         );
+        let _ = match self.restart {
+            Some(restart) => writeln!(
+                text,
+                "- Killed with its sessions running, then ready again after {} ms; sessions \
+                 reattached: {}; agent launches {} before, {} after",
+                restart.ready_after.as_millis(),
+                if restart.reattached { "all" } else { "NOT ALL" },
+                restart.launches_before,
+                restart.launches_after,
+            ),
+            None => writeln!(text, "- Restart with sessions running: not done yet"),
+        };
         text
     }
 

@@ -9,7 +9,7 @@ mod real_daemon;
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{Command, SessionStateView};
-use real_daemon::{GENEROUS, Home, is_alive, listed, new_session};
+use real_daemon::{GENEROUS, Home, SETTLE, is_alive, listed, new_session, wait_for_running};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_killed_daemon_reattaches_the_running_session_without_launching_it_again() {
@@ -24,6 +24,7 @@ async fn a_killed_daemon_reattaches_the_running_session_without_launching_it_aga
 
     let _daemon = home.start();
     let client = home.connect().await;
+    tokio::time::sleep(SETTLE).await;
 
     let kept = listed(&client, &started.id).await;
     assert_eq!(kept.state, SessionStateView::Running);
@@ -64,7 +65,8 @@ async fn a_daemon_killed_while_it_restarts_a_stalled_agent_leaves_one_agent_runn
     let _daemon = home.start();
     let client = home.connect().await;
 
-    let session = listed(&client, &started.id).await;
+    let session = wait_for_running(&client, &started.id).await;
+    tokio::time::sleep(SETTLE).await;
     let launches = home.launches_of(&started.id);
     let running: Vec<_> = launches
         .iter()
