@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-cli"
-description = "Owns the `cockpit` command line: parses verbs, renders results; offline verbs call their capability crate directly."
+description = "Owns the `cockpit` command line: it parses verbs and renders their results."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
