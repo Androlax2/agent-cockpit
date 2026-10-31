@@ -41,7 +41,9 @@ TAG_PATTERN = re.compile(
 # git-cliff's --tag-pattern for a stable release's notes.
 STABLE_TAG_REGEX = rf"^v{CORE_PATTERN}$"
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-universal")
-BINARIES = ("cockpit", "cockpit-daemon")
+# Programs the daemon runs from its own directory, so they ship in bin/ beside it (#185).
+HELPERS = ("cockpit-claude-hook",)
+BINARIES = ("cockpit", "cockpit-daemon", *HELPERS)
 # No CHANGELOG.md: the committed file lags the tag (release-plz regenerates it, #101); the
 # release notes are on the GitHub Release.
 DOCUMENTS = ("LICENSE", "README.md")
@@ -371,9 +373,9 @@ def write_manifest(staging, version, channel, platform, revision):
         "channel": channel,
         "platform": platform,
         "source_revision": revision,
-        # No helper and no instruction bundle ships yet (#64, #97); an empty record is the
-        # truth, and `cockpit version --all` shows it.
-        "helpers": {},
+        # Helpers build from the same revision, so they carry the bundle's version.
+        "helpers": {helper: version for helper in HELPERS},
+        # No instruction bundle ships yet (#97); `cockpit version --all` shows the null.
         "instruction_bundle": None,
         "contents": {path: sha256_of(staging / path) for path in contents},
     }
