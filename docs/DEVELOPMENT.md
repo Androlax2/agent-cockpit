@@ -2,9 +2,15 @@
 
 ## Workspace and prerequisites
 
-The Rust workspace is [apps/Cargo.toml](../apps/Cargo.toml), with `cockpit`, `osd`,
+The current programs' Rust workspace is [apps/Cargo.toml](../apps/Cargo.toml), with `cockpit`, `osd`,
 `crates/cockpit-core`, `crates/cockpit-daemon` and `crates/cockpit-protocol` members. This project targets Linux and integrates with GTK,
 terminals and host tools.
+
+The greenfield workspace is the root [Cargo.toml](../Cargo.toml), with members under
+[crates/](../crates/) and its own `target/`. It grows beside `apps/` until the M5 cutover
+([refactoring plan](design/greenfield/20-refactoring-plan.md)); `apps/` is excluded from it.
+Members inherit the root's edition, `rust-version` and lint policy;
+`cockpit-workspace-rules` fails the tests when one does not.
 
 The Rust toolchain is pinned in [rust-toolchain.toml](../rust-toolchain.toml). Distro
 Rust installations do not read that file; use the same version when running checks.
@@ -31,6 +37,10 @@ make lint-js
 make lint-markdown
 make lint-lua
 make deny
+make crates-build crates-test
+make crates-fmt-check crates-clippy crates-doc crates-deny
+make greenfield-ci
+make docs-ci
 make check-links
 make typos
 make ci
@@ -40,6 +50,10 @@ make ci
 `make test` takes the shared full-suite lock, runs the Python suite, builds the OSD
 classifier, then runs release Rust tests with nextest. Use that entry point for a full
 run; do not bypass the lock to compete with another clone's suite.
+
+The `crates-*` targets run the same checks on the greenfield workspace, in the debug
+profile. `make greenfield-ci` runs them all; `make test` and `make ci` cover `apps/`, `config/`
+and `tools/` only. `make docs-ci` runs the Markdown style, local link and spelling checks.
 
 Rust checks cover every workspace member and target, with warnings treated as errors.
 The language targets use [tools/quality.py](../tools/quality.py) to select tracked files,
@@ -105,7 +119,11 @@ the policy assigns no license to Cockpit itself. Duplicate dependency versions r
 visible warnings, matching the reference policy.
 
 `make ci` runs all checks and the shared full regression suite serially. JavaScript's
-default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml) calls this same target on an
+default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml) splits by changed path
+([tools/ci-jobs.py](../tools/ci-jobs.py)): `legacy` runs `make ci` for `apps/`, `config/`, `tools/` and
+`packaging/`; `greenfield` runs `make greenfield-ci` for `crates/` and the root manifests; `docs`
+runs `make docs-ci` for `docs/` and any Markdown file. The Makefile and `.github/` run both code
+jobs; a path no job claims, and a push to `main`, run every job. Each job runs on an
 Ubuntu 26.04 runner with pinned Rust, Node and checker versions, read-only repository
 permissions and immutable action revisions. Linux runtime libraries, fish and Lua come
 from that Ubuntu release. This workflow has not yet been run on GitHub; activation

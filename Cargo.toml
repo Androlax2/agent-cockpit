@@ -1,0 +1,31 @@
+# The greenfield Cockpit workspace (docs/design/greenfield/02-crate-architecture.md). It grows
+# beside apps/, which keeps its own workspace and apps/target until the M5 cutover.
+[workspace]
+members = ["crates/*"]
+exclude = ["apps"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+
+[profile.release]
+strip = true
+
+# Same reason as apps/Cargo.toml: every clone builds into its own target, and full debug info
+# made each one 6-20G. Line tables keep backtraces and panic locations readable.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

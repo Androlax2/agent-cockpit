@@ -16,7 +16,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  quality:
+  # Which jobs this change needs (tools/ci-jobs.py); a push to main runs every job once.
+  changes:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      greenfield: ${{ steps.select.outputs.greenfield }}
+      legacy: ${{ steps.select.outputs.legacy }}
+      docs: ${{ steps.select.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select the jobs this change needs
+        id: select
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git diff --name-only --no-renames "$BASE_SHA...HEAD" | python3 tools/ci-jobs.py >> "$GITHUB_OUTPUT"
+          else
+            python3 tools/ci-jobs.py --all >> "$GITHUB_OUTPUT"
+          fi
+
+  # apps/, config/, tools/ and packaging/: today's full gate.
+  legacy:
+    needs: changes
+    if: needs.changes.outputs.legacy == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
@@ -59,3 +88,55 @@ jobs:
         run: python3 config/bin/.local/bin/cockpit-game-guard off
       - name: Run the same gate as local development
         run: make ci
+
+  # The root workspace in crates/.
+  greenfield:
+    needs: changes
+    if: needs.changes.outputs.greenfield == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
+        with:
+          fallback: none
+          tool: cargo-nextest@0.9.150,cargo-deny@0.20.2,typos@1.51.1
+      - name: Configure hosted runner admission
+        if: runner.environment == 'github-hosted'
+        # Disposable hosted runners have no workstation game-guard daemon.
+        run: python3 config/bin/.local/bin/cockpit-game-guard off
+      - name: Run the greenfield gate
+        run: make greenfield-ci
+
+  # Markdown and spelling, for docs/ and any Markdown file.
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.0
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
+        with:
+          fallback: none
+          tool: typos@1.51.1
+      - name: Install the pinned Markdown and link checkers
+        run: |
+          npm install --global markdownlint-cli2@0.24.0
+          cargo install --locked --version 0.24.2 lychee
+      - name: Run the docs gate
+        run: make docs-ci
