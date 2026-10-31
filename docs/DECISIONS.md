@@ -87,6 +87,30 @@ process; a locked `cockpit.log.lock` (a writable file, so it also works on NFS) 
 breaking the other's rotation. The crate is a library only: the `cockpit logs level` and `cockpit support-bundle`
 verbs need the daemon's host-only channel (#26) and the CLI.
 
+## 2026-10-31 — cockpit-config: declared start files, snapshots, and a temporary binary
+
+Issue #22. Of today's 17 start files (`apps/crates/cockpit-core/src/sessions.rs`), the
+product declares only the five a provider itself owns (`CLAUDE.md`, Claude `settings` and
+`plugins`, `opencode config`, `codex hooks`). Sandbox launchers, learned profiles, the session
+hook and the ADHD flag are installation paths, so the owner declares them in
+`config.toml` under `[[start_files]]`; report 01 forbids shipping one machine's paths.
+Two of today's pairings are installation wiring too: codex reading `CLAUDE.md`, and
+opencode's `cockpit.ts` plugin, whose install path the opencode adapter will own; Theo's
+config re-declares `CLAUDE.md` with `codex` added and lists the plugin.
+Change detection compares a launch-time snapshot (path, modification time, ctime, inode,
+size) for inequality instead of today's "newer than the session start": a file restored from
+an older copy (even `cp -p`), deleted, created or repointed now counts, and a file declared
+after launch is reported because the session cannot have it.
+
+The project file is `<project>/.cockpit/config.toml`, parsed with the owner file's schema;
+setting an owner key there fails instead of being ignored. `XDG_RUNTIME_DIR` unset leaves
+the runtime directory unset rather than inventing one: the daemon (#26) owns that fallback.
+
+`config show` ships as a `cockpit-config show` binary inside the crate: no M0 issue creates
+a CLI crate, and report 02 lets frontends import only `cockpit-client` and
+`cockpit-protocol`, while report 09 needs config inspection without the daemon. Where
+`cockpit config show` finally lives is a decision for Theo (decision-needed issue).
+
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
 
 Issue #18 asks for `cargo build` and `cargo test` to succeed from the root with no
