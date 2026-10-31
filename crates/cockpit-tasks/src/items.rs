@@ -312,8 +312,8 @@ pub async fn item(connection: &Connection, actor: &Actor, id: ItemId) -> Result<
 }
 
 /// What the list says about each session's work, for the owner's view of sessions (#157):
-/// the items it is doing and those finished while it was doing them. Sessions with neither
-/// are absent.
+/// how many items it is doing, and when it last finished one it was doing (#226). Sessions
+/// with neither are absent.
 pub async fn session_work(
     connection: &Connection,
 ) -> Result<HashMap<SessionId, SessionWork>, Error> {
@@ -323,10 +323,13 @@ pub async fn session_work(
     for (session, count) in counts_by_session(connection, doing).await? {
         work.entry(session).or_default().doing = count;
     }
-    let finished = "SELECT finished_by, count(*) FROM tasks_items
+    let finished = "SELECT finished_by, max(finished_at) FROM tasks_items
         WHERE finished_by IS NOT NULL AND status = 'done' GROUP BY finished_by";
-    for (session, count) in counts_by_session(connection, finished).await? {
-        work.entry(session).or_default().finished = count;
+    let mut rows = connection.query(finished, ()).await?;
+    while let Some(row) = rows.next().await? {
+        let session = SessionId::new(row.get::<String>(0)?)
+            .map_err(|error| invalid_row("tasks_items", error.to_string()))?;
+        work.entry(session).or_default().last_finished_at = Some(row.get::<i64>(1)?);
     }
     Ok(work)
 }
@@ -539,7 +542,7 @@ pub async fn finish(
     refuse_while_waiting(&item)?;
     write
         .execute(
-            "UPDATE tasks_items SET status = 'done', finished_by = doing_session,
+            "UPDATE tasks_items SET status = 'done', finished_by = doing_session, finished_at = ?3,
                 doing_session = NULL, is_queued = 0, summary = ?2, state_revision = state_revision + 1, changed_at = ?3
              WHERE id = ?1",
             (id.0, summary, now),
@@ -561,7 +564,7 @@ pub async fn reopen(
     write
         .execute(
             "UPDATE tasks_items SET status = 'todo', doing_session = NULL, finished_by = NULL,
-                summary = NULL, state_revision = state_revision + 1, changed_at = ?2
+                finished_at = NULL, summary = NULL, state_revision = state_revision + 1, changed_at = ?2
              WHERE id = ?1",
             (id.0, now),
         )

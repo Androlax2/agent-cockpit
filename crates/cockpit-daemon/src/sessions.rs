@@ -186,9 +186,11 @@ pub(crate) async fn task_work(sessions: &Sessions) -> Result<Work, Failed> {
 }
 
 /// The finished label (#157, decided in #201): the task list, never the agent's own state,
-/// says the session's work is done. It is doing no item and finished at least one. A session
-/// mid-launch, mid-stop, failed or ended is not labelled: the failed one needs the owner,
-/// the ended one has nothing left to exit.
+/// says the session's work is done. It is doing no item and finished one since its latest
+/// launch (#226), so a session relaunched to keep working is not finished until it finishes
+/// new work; a finish in the launch's own second does not count. A session mid-launch,
+/// mid-stop, failed or ended is not labelled: the failed one needs the owner, the ended one
+/// has nothing left to exit.
 fn is_finished(session: &Session, work: &Work) -> bool {
     if matches!(
         session.state,
@@ -201,8 +203,15 @@ fn is_finished(session: &Session, work: &Work) -> bool {
     }
     let id = TaskSession::new(session.id.as_str())
         .expect("a session id is never empty, so it is a valid task-list session id");
-    work.get(&id)
-        .is_some_and(|work| work.doing == 0 && work.finished > 0)
+    let Some(launch) = &session.launch else {
+        return false;
+    };
+    work.get(&id).is_some_and(|work| {
+        work.doing == 0
+            && work
+                .last_finished_at
+                .is_some_and(|finished_at| finished_at > launch.launched_at)
+    })
 }
 
 pub(crate) fn protocol_error(error: &Error) -> ProtocolError {
