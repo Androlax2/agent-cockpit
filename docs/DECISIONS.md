@@ -160,13 +160,15 @@ binary or the protocol, per platform, and lists what did not run as open.
 bumped by a release-plz release PR; release-plz tags, and the release workflow owns the
 GitHub Release; git-cliff builds the changelog from conventional squash subjects; a
 dispatched workflow cuts pre-releases on `main` without a bump. Cockpit adds `-alpha.N` from
-M3 to M5. Stable `v0.x.y` tags start at the M5 cutover (#71), as promoted betas. #96 picks
+M3 to M5. Stable `v0.x.y` tags start at the M5 cutover, as promoted betas. Theo's answer
+named the cutover gate #71; that issue is the FigCraft plugin, and the M5 gate is #66, which
+the policy uses. #96 picks
 the tools. Choices the reference leaves open:
 
 - **A base before the first stable.** OpenLogi counts `N` from the previous stable and names
-  the version through a release PR. Cockpit has no stable until M5, so alphas count from the
-  bootstrap commit (earlier history is the untagged `apps/` code) and use the current
-  `0.1.0` without a release PR.
+  the version through a release PR. Cockpit has no stable until M5, so every pre-release before the
+  first stable tag counts from the bootstrap commit (earlier history is the untagged `apps/`
+  code) and uses the current `0.1.0` without a release PR.
 - **Promotion means no drift.** Byte-identical promotion would need the build to ignore the
   version stamp, so a stable release rebuilds the verified beta's unchanged source plus the
   bump.
