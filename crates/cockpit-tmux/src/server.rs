@@ -368,7 +368,8 @@ pub(crate) fn words(list: &[&str]) -> Vec<OsString> {
 }
 
 /// `command` as the arguments of a fixed `sh` script that unsets `TMUX` and `TMUX_PANE`, so
-/// a plain `tmux` in the pane never reaches this server (docs/DECISIONS.md, #30).
+/// a plain `tmux` in the pane never reaches this server.
+/// Why: `docs/decisions/2026-10-31-30-tmux-observation.md`.
 fn pane_command(command: &[OsString]) -> Result<Vec<OsString>, Error> {
     if command.is_empty() {
         return Err(Error::InvalidArgument {
