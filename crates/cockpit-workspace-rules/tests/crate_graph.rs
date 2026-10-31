@@ -178,8 +178,15 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
 const ALLOW_LISTS: &[AllowList] = &[
     AllowList {
         rule: "frontends -> client/protocol only",
-        from: &["cockpit-tui", "cockpit-web"],
+        from: &["cockpit-web"],
         allowed: &["cockpit-client", "cockpit-protocol"],
+    },
+    // #176: the TUI is a long-lived process with its own log (report 12); diagnostics
+    // depends on no other Cockpit crate, so the edge reaches no capability.
+    AllowList {
+        rule: "tui -> client/protocol/diagnostics only",
+        from: &["cockpit-tui"],
+        allowed: &["cockpit-client", "cockpit-protocol", "cockpit-diagnostics"],
     },
     // #77: the CLI's offline verbs import their capability crate. Adding one is a decision.
     AllowList {
@@ -487,9 +494,14 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-tasks",
         ),
         (
-            "frontends -> client/protocol only",
+            "tui -> client/protocol/diagnostics only",
             "cockpit-tui",
             "cockpit-config",
+        ),
+        (
+            "frontends -> client/protocol only",
+            "cockpit-web",
+            "cockpit-diagnostics",
         ),
         (
             "frontends -> client/protocol only",
@@ -610,6 +622,7 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
     for (source, target) in [
         ("cockpit-cli", "cockpit-client"),
         ("cockpit-tui", "cockpit-client"),
+        ("cockpit-tui", "cockpit-diagnostics"),
         ("cockpit-web", "cockpit-protocol"),
         ("cockpit-cli", "cockpit-config"),
         ("cockpit-authorization", "cockpit-turso"),

@@ -1,8 +1,8 @@
-//! `cockpit provider list` and `cockpit session show` (#35) driven as a process against a
+//! `cockpit provider list`, `cockpit session show` and `cockpit tui` (#35) driven as a process against a
 //! scripted daemon socket: each verb's request and its output.
 
 use std::os::unix::fs::DirBuilderExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 mod scripted;
@@ -35,7 +35,25 @@ impl Home {
     }
 
     async fn cockpit(&self, arguments: &[&str]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        self.run(PathBuf::from(env!("CARGO_BIN_EXE_cockpit")), arguments)
+            .await
+    }
+
+    /// A copy of `cockpit` in its own directory, with `cockpit-tui` beside it when asked:
+    /// `cockpit tui` looks for the TUI next to itself.
+    fn installed_cockpit(&self, with_tui: bool) -> PathBuf {
+        let bin = self.dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let cockpit = bin.join("cockpit");
+        std::fs::copy(env!("CARGO_BIN_EXE_cockpit"), &cockpit).unwrap();
+        if with_tui {
+            std::fs::write(bin.join("cockpit-tui"), "").unwrap();
+        }
+        cockpit
+    }
+
+    async fn run(&self, program: PathBuf, arguments: &[&str]) -> Output {
+        let mut command = std::process::Command::new(program);
         command
             .args(arguments)
             .env_clear()
@@ -125,7 +143,7 @@ async fn session_show_without_a_manager_exits_1_with_the_daemons_fix() {
         &home.daemon_socket(),
         Outcome::Error(ProtocolError::new(
             ErrorCode::NotFound,
-            "no manager session is open: start cockpit-tui",
+            "no manager session is open: run `cockpit tui`",
         )),
     );
 
@@ -134,7 +152,7 @@ async fn session_show_without_a_manager_exits_1_with_the_daemons_fix() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "cockpit: not-found: no manager session is open: start cockpit-tui\n"
+        "cockpit: not-found: no manager session is open: run `cockpit tui`\n"
     );
 }
 
@@ -146,4 +164,58 @@ async fn provider_with_anything_but_list_is_a_usage_error() {
 
     assert_eq!(output.status.code(), Some(2));
     assert!(text(&output.stderr).starts_with("cockpit: unknown provider arguments\nusage:"));
+}
+
+#[tokio::test]
+async fn tui_opens_the_manager_with_the_tui_beside_cockpit_and_attaches_to_it() {
+    let home = Home::new();
+    let socket = home.daemon_socket();
+    let cockpit = home.installed_cockpit(true);
+    let daemon = scripted_daemon(
+        &socket,
+        Outcome::Ok(Reply::Manager {
+            attach: vec!["/bin/echo".to_owned(), "attached".to_owned()],
+            created: true,
+        }),
+    );
+
+    let output = home.run(cockpit.clone(), &["tui"]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "attached\n");
+    let tui = path_text(&cockpit.with_file_name("cockpit-tui"));
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::ManagerOpen {
+            dir: path_text(&std::env::current_dir().unwrap()),
+            column: vec![
+                tui.clone(),
+                "--column".to_owned(),
+                "--socket".to_owned(),
+                path_text(&socket),
+            ],
+            viewer: vec![tui, "--viewer".to_owned()],
+        }
+    );
+}
+
+#[tokio::test]
+async fn tui_without_cockpit_tui_beside_it_exits_1_naming_the_missing_file() {
+    let home = Home::new();
+    let cockpit = home.installed_cockpit(false);
+
+    let output = home.run(cockpit.clone(), &["tui"]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        format!(
+            "cockpit: {} is missing: install cockpit-tui beside cockpit\n",
+            cockpit.with_file_name("cockpit-tui").display()
+        )
+    );
+}
+
+fn path_text(path: &Path) -> String {
+    path.to_str().unwrap().to_owned()
 }

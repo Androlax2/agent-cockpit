@@ -307,7 +307,7 @@ async fn showing_a_session_before_the_manager_is_open_is_refused_naming_the_fix(
 
     assert_eq!(error.code, ErrorCode::NotFound);
     assert!(
-        error.message.contains("start cockpit-tui"),
+        error.message.contains("run `cockpit tui`"),
         "{}",
         error.message
     );

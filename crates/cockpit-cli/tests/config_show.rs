@@ -555,8 +555,10 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
                  cockpit session list [--ended]\n       \
                  cockpit session restart SESSION|--all\n       \
-                 cockpit session sleep|wake|resume|end SESSION\n       \
+                 cockpit session sleep|wake|resume|end|show SESSION\n       \
                  cockpit session link SESSION URL\n       \
+                 cockpit provider list\n       \
+                 cockpit tui\n       \
                  cockpit version [--all]\n       \
                  cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \
                  [--priority 1-6] [--after ID]...\n       \

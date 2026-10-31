@@ -176,7 +176,7 @@ fn viewer_pane(tmux: &cockpit_tmux::Server) -> Result<PaneId, ProtocolError> {
     if !tmux.sessions().map_err(tmux_error)?.contains(&name) {
         return Err(ProtocolError::new(
             ErrorCode::NotFound,
-            "no manager session is open: start cockpit-tui",
+            "no manager session is open: run `cockpit tui`",
         ));
     }
     let panes = tmux.panes(&name).map_err(tmux_error)?;
@@ -184,7 +184,7 @@ fn viewer_pane(tmux: &cockpit_tmux::Server) -> Result<PaneId, ProtocolError> {
         Some(viewer) => Ok(viewer.id.clone()),
         None => Err(ProtocolError::new(
             ErrorCode::Conflict,
-            "the manager session has lost its viewer pane: close it and start cockpit-tui again",
+            "the manager session has lost its viewer pane: close it and run `cockpit tui` again",
         )),
     }
 }
