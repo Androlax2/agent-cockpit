@@ -255,10 +255,8 @@ impl Supervisor {
             .current_dir(&spec.working_dir)
             .env_clear()
             .envs(spec.environment.iter().map(|(name, value)| (name, value)));
-        let (stdout, stderr) = (
-            output_file(OutputKind::Stdout)?,
-            output_file(OutputKind::Stderr)?,
-        );
+        // A terminal execution's output, the launcher's errors included, goes to its terminal:
+        // it has no output files.
         match &spec.terminal {
             Some(terminal) => {
                 let device = |device: &OwnedFd| {
@@ -276,8 +274,8 @@ impl Supervisor {
             None => {
                 command
                     .stdin(Stdio::null())
-                    .stdout(stdout)
-                    .stderr(stderr)
+                    .stdout(output_file(OutputKind::Stdout)?)
+                    .stderr(output_file(OutputKind::Stderr)?)
                     .process_group(0);
             }
         }

@@ -67,4 +67,6 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 - `tests/guides.rs`: the guide format and step answers.
 - Mutations return the request as it reads after them, without reading it again; the tests
   compare the returned value with a fresh read.
+- `tests/runner.rs`: a session leader that fails leaves the run not run with what it printed;
+  a run a restart found launching that never started is not run.
 - The pseudo-terminal runs are proven end to end in `cockpit-daemon/tests/approvals.rs`.

@@ -246,15 +246,20 @@ impl Runner {
         let exited = self
             .launch(database, run, execution, terminal, git_config)
             .await;
-        let terminal_held_open = exited.is_ok()
-            && tokio::time::timeout(DRAIN_AFTER_EXIT, drained)
-                .await
-                .is_err();
+        let terminal_held_open = tokio::time::timeout(DRAIN_AFTER_EXIT, drained)
+            .await
+            .is_err();
         self.live
             .lock()
             .expect("the live runs lock is never poisoned")
             .remove(&run.id);
-        let exit_code = exited?;
+        let exit_code = match exited {
+            Ok(exit_code) => exit_code,
+            Err(NoResult::NotStarted(reason)) => {
+                return Err(NoResult::NotStarted(with_terminal_output(reason, &live)));
+            }
+            Err(unobserved) => return Err(unobserved),
+        };
         let left_running = match self.supervisor.observe(database, execution).await {
             Ok(observed) => observed.phase.is_occupying(),
             // Not observed ended, so it stays charged and is watched.
@@ -387,6 +392,20 @@ impl Runner {
             })
             .map(|(id, _)| *id)
             .collect()
+    }
+}
+
+/// `reason`, followed by what the terminal showed: a launcher that failed wrote why there.
+fn with_terminal_output(reason: String, live: &LiveRun) -> String {
+    let kept = live
+        .output
+        .lock()
+        .expect("the output lock is never poisoned");
+    let shown = present(&kept.bytes, kept.total, 5).shown;
+    if shown.is_empty() {
+        reason
+    } else {
+        format!("{reason}; the terminal showed: {shown}")
     }
 }
 

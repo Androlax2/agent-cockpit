@@ -9,9 +9,11 @@ use cockpit_turso::Database;
 use crate::runs::{Interrupted, interrupted_runs, reconcile_run};
 use crate::{Error, NoResult, RunState, Runner};
 
-/// How often a run's execution is looked at while nothing but its end is awaited. Each look
-/// at a systemd scope runs `systemctl`.
-const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+/// How often a run's execution is looked at while nothing but its end is awaited: first
+/// after `WATCH_FIRST`, then twice as long each time up to `WATCH_LONGEST`. Each look at a
+/// systemd scope runs `systemctl`, and a leftover may run for days.
+const WATCH_FIRST: Duration = Duration::from_secs(1);
+const WATCH_LONGEST: Duration = Duration::from_secs(30);
 
 impl Runner {
     /// Startup, after `cockpit-processes` reconciled the executions: ends each run the
@@ -42,18 +44,27 @@ impl Runner {
         Ok(reconciled)
     }
 
-    /// Observes `execution` until it ended, and answers why it ended.
+    /// Observes `execution` until it ended, and answers why it ended. A host query that
+    /// failed (`systemctl`, `/proc`) is asked again at the next look; only the state database
+    /// or the stored row failing ends the watch.
     pub async fn wait_until_ended(
         &self,
         database: &Database,
         execution: ExecutionId,
     ) -> Result<EndReason, Error> {
+        let mut interval = WATCH_FIRST;
         loop {
-            if let Phase::Ended(reason) = self.supervisor.observe(database, execution).await?.phase
-            {
-                return Ok(reason);
+            match self.supervisor.observe(database, execution).await {
+                Ok(observed) => {
+                    if let Phase::Ended(reason) = observed.phase {
+                        return Ok(reason);
+                    }
+                }
+                Err(ProcessesError::HostCommand { .. } | ProcessesError::Io { .. }) => {}
+                Err(error) => return Err(error.into()),
             }
-            tokio::time::sleep(WATCH_INTERVAL).await;
+            tokio::time::sleep(interval).await;
+            interval = (interval * 2).min(WATCH_LONGEST);
         }
     }
 }
@@ -70,17 +81,23 @@ async fn execution_phase(
     }
 }
 
-/// Why a run that outlived a daemon restart has no result, once its execution ended for
-/// `reason`: nobody read its terminal or reaped it since the restart.
+/// Why a run still running at a daemon restart has no result, once its execution ended for
+/// `reason`: nobody read its terminal or reaped it since the restart. An execution that was
+/// still launching may turn out never to have started the command.
 pub fn ended_after_restart(reason: EndReason) -> NoResult {
-    NoResult::Unobserved(format!(
-        "the daemon restarted while the command ran; it ended later ({}), its exit code and \
-         output after the restart were not observed",
-        match reason {
-            EndReason::Exited => "exited",
-            EndReason::Terminated => "terminated",
-            EndReason::NeverStarted => "never started",
-            EndReason::HostRestarted => "the host restarted",
+    let how = match reason {
+        EndReason::NeverStarted => {
+            return NoResult::NotStarted(
+                "the daemon restarted while the command was being launched; it never started"
+                    .to_owned(),
+            );
         }
+        EndReason::Exited => "exited",
+        EndReason::Terminated => "terminated",
+        EndReason::HostRestarted => "the host restarted",
+    };
+    NoResult::Unobserved(format!(
+        "the daemon restarted while the command ran; it ended later ({how}), its exit code and \
+         output after the restart were not observed"
     ))
 }

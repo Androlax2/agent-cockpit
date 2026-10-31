@@ -13,7 +13,7 @@ pub enum Error {
         execution: ExecutionId,
     },
     /// The launcher exited without starting the program; `launcher_output` is the start of
-    /// what it wrote to the execution's stderr.
+    /// what it wrote to the execution's stderr (a terminal execution's went to its terminal).
     LaunchFailed {
         execution: ExecutionId,
         launcher_output: String,
