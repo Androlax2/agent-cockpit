@@ -65,10 +65,23 @@ async fn a_restarted_daemon_reattaches_an_execution_that_kept_running() {
     let home = TestHome::new();
     let execution = launch_sleeper(&home).await;
 
-    home.start().kill();
+    let daemon = home.start();
+    // The log is written in the background: wait for the line before killing the daemon.
+    let deadline = std::time::Instant::now() + GENEROUS;
+    let reattached_logged = || {
+        std::fs::read_to_string(home.log_file())
+            .is_ok_and(|log| log.contains("reattached a running execution"))
+    };
+    while !reattached_logged() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    daemon.kill();
 
-    let log = std::fs::read_to_string(home.log_file()).unwrap();
-    assert!(log.contains("reattached a running execution"), "{log}");
+    assert!(
+        reattached_logged(),
+        "{:?}",
+        std::fs::read_to_string(home.log_file())
+    );
     let database = open_database(&home).await;
     let reattached = cockpit_processes::execution(&database, execution.id)
         .await

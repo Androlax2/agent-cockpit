@@ -56,7 +56,7 @@ pub(crate) async fn record_intent(
     let id = ExecutionId(next.get(0)?);
     let (containment, containment_kind, unit) = match launch_containment {
         LaunchContainment::SystemdScope => {
-            let unit = format!("cockpit-{}-{}.scope", database.epoch(), id.0);
+            let unit = crate::systemd::scope_unit(database.epoch(), id);
             let containment = Containment::SystemdScope { unit: unit.clone() };
             (containment, SYSTEMD_SCOPE, Some(unit))
         }
@@ -122,12 +122,13 @@ pub(crate) async fn record_cancel_requested(
     Ok(write.commit().await?)
 }
 
-/// Releases the reservation. Only an observation calls this, never a dropped task.
+/// Releases the reservation. Only an observation calls this, never a dropped task. Answers
+/// the reason the row holds: an observer that ended it first keeps its reason.
 pub(crate) async fn record_ended(
     database: &Database,
     id: ExecutionId,
     reason: EndReason,
-) -> Result<(), Error> {
+) -> Result<EndReason, Error> {
     let write = database.write().await?;
     write
         .execute(
@@ -137,7 +138,17 @@ pub(crate) async fn record_ended(
             (reason.as_str(), now_ms(), id.0),
         )
         .await?;
-    Ok(write.commit().await?)
+    let row = write
+        .prepare("SELECT ended_reason FROM process_executions WHERE id = ?1")
+        .await?
+        .query_row([id.0])
+        .await?;
+    let stored: String = row.get(0)?;
+    write.commit().await?;
+    EndReason::parse(&stored).ok_or_else(|| Error::InvalidStoredExecution {
+        execution: id,
+        reason: format!("end reason {stored:?}"),
+    })
 }
 
 const COLUMNS: &str = "id, containment, unit, boot_id, phase, process_group, leader_start,
