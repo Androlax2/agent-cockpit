@@ -58,6 +58,27 @@ async fn a_program_that_exits_is_observed_ended_and_releases_its_reservation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn watching_an_execution_answers_why_it_ended() {
+    let home = Home::new();
+    let database = home.open_database().await;
+    let supervisor = home.process_group_supervisor();
+    let execution = supervisor
+        .launch(&database, &shell(&home, "exec sleep 0.2"))
+        .await
+        .unwrap();
+
+    let reason = tokio::time::timeout(
+        GENEROUS,
+        supervisor.watch_until_ended(&database, execution.id),
+    )
+    .await
+    .expect("the watch sees the end")
+    .unwrap();
+
+    assert_eq!(reason, EndReason::Exited);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_environment_is_exactly_the_launch_specs() {
     let home = Home::new();
     let database = home.open_database().await;

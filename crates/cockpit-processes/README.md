@@ -31,6 +31,8 @@ never a dropped task or a timed-out launcher (report 03).
    by the execution itself, is the start confirmation (`running`). A launcher that does not
    confirm in time answers `LaunchTimedOut` and keeps the reservation.
 2. `observe` checks the real processes and records a confirmed start or an end.
+   `watch_until_ended` keeps observing, backing off from 1 s to 30 s, until the end, for
+   an execution that outlives whoever launched it; a failed host query is asked again.
 3. `terminate` records the cancel request, sends `SIGTERM` to the whole containment, then
    `SIGKILL` after the grace period, and answers `Confirmed` only once the execution was
    observed empty; otherwise `Unconfirmed`, reservation kept.

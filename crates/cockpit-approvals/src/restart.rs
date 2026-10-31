@@ -1,19 +1,11 @@
 //! What a daemon restart makes of the runs the previous daemon left behind, from what their
 //! executions were observed to do (#163).
 
-use std::time::Duration;
-
 use cockpit_processes::{EndReason, Error as ProcessesError, ExecutionId, Phase};
 use cockpit_turso::Database;
 
 use crate::runs::{Interrupted, interrupted_runs, reconcile_run};
 use crate::{Error, NoResult, RunState, Runner};
-
-/// How often a run's execution is looked at while nothing but its end is awaited: first
-/// after `WATCH_FIRST`, then twice as long each time up to `WATCH_LONGEST`. Each look at a
-/// systemd scope runs `systemctl`, and a leftover may run for days.
-const WATCH_FIRST: Duration = Duration::from_secs(1);
-const WATCH_LONGEST: Duration = Duration::from_secs(30);
 
 impl Runner {
     /// Startup, after `cockpit-processes` reconciled the executions: ends each run the
@@ -44,28 +36,17 @@ impl Runner {
         Ok(reconciled)
     }
 
-    /// Observes `execution` until it ended, and answers why it ended. A host query that
-    /// failed (`systemctl`, `/proc`) is asked again at the next look; only the state database
-    /// or the stored row failing ends the watch.
+    /// Observes a run's `execution` until it ended
+    /// ([`cockpit_processes::Supervisor::watch_until_ended`]).
     pub async fn wait_until_ended(
         &self,
         database: &Database,
         execution: ExecutionId,
     ) -> Result<EndReason, Error> {
-        let mut interval = WATCH_FIRST;
-        loop {
-            match self.supervisor.observe(database, execution).await {
-                Ok(observed) => {
-                    if let Phase::Ended(reason) = observed.phase {
-                        return Ok(reason);
-                    }
-                }
-                Err(ProcessesError::HostCommand { .. } | ProcessesError::Io { .. }) => {}
-                Err(error) => return Err(error.into()),
-            }
-            tokio::time::sleep(interval).await;
-            interval = (interval * 2).min(WATCH_LONGEST);
-        }
+        Ok(self
+            .supervisor
+            .watch_until_ended(database, execution)
+            .await?)
     }
 }
 

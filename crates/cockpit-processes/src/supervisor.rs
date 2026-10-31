@@ -31,6 +31,11 @@ const OBSERVE_INTERVAL: Duration = Duration::from_millis(20);
 const PRESENCE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// The launcher's stderr quoted in [`Error::LaunchFailed`].
 const LAUNCHER_OUTPUT_QUOTE_BYTES: usize = 2048;
+/// How often [`Supervisor::watch_until_ended`] looks: first after `WATCH_FIRST`, then twice
+/// as long each time up to `WATCH_LONGEST`. Each look at a scope runs `systemctl`, and a
+/// watched execution may run for days.
+const WATCH_FIRST: Duration = Duration::from_secs(1);
+const WATCH_LONGEST: Duration = Duration::from_secs(30);
 
 type LauncherExit = std::io::Result<std::process::ExitStatus>;
 
@@ -201,8 +206,14 @@ impl Supervisor {
             let _ = exited_sender.send(launcher.wait().await);
         });
         store::record_process_group(database, id, process_group).await?;
-        self.confirm_start(database, id, process_group, launcher_exited)
-            .await
+        self.confirm_start(
+            database,
+            id,
+            process_group,
+            launcher_exited,
+            spec.terminal.is_some(),
+        )
+        .await
     }
 
     fn spawn(
@@ -403,6 +414,7 @@ impl Supervisor {
         id: ExecutionId,
         process_group: i32,
         mut launcher_exited: oneshot::Receiver<LauncherExit>,
+        has_terminal: bool,
     ) -> Result<Launched, Error> {
         let leader_path = self.execution_dir(database, id).join(LEADER_FILE);
         let deadline = tokio::time::Instant::now() + self.launch_timeout;
@@ -441,7 +453,11 @@ impl Supervisor {
                 store::record_ended(database, id, EndReason::NeverStarted).await?;
                 return Err(Error::LaunchFailed {
                     execution: id,
-                    launcher_output: self.launcher_output(database, id).await,
+                    launcher_output: if has_terminal {
+                        "(written to its terminal)".to_owned()
+                    } else {
+                        self.launcher_output(database, id).await
+                    },
                 });
             }
             if tokio::time::Instant::now() >= deadline {
@@ -467,6 +483,29 @@ impl Supervisor {
         let execution = store::execution(database, id).await?;
         self.record_presence(database, &execution).await?;
         store::execution(database, id).await
+    }
+
+    /// Observes `id` until it ended, however long that takes, and answers why it ended. A
+    /// host query that failed (`systemctl`, `/proc`) is asked again at the next look; only the
+    /// state database or the stored row failing ends the watch.
+    pub async fn watch_until_ended(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+    ) -> Result<EndReason, Error> {
+        let mut interval = WATCH_FIRST;
+        loop {
+            match self.observe(database, id).await {
+                Ok(Execution {
+                    phase: Phase::Ended(reason),
+                    ..
+                }) => return Ok(reason),
+                Ok(_) | Err(Error::HostCommand { .. } | Error::Io { .. }) => {}
+                Err(error) => return Err(error),
+            }
+            tokio::time::sleep(interval).await;
+            interval = (interval * 2).min(WATCH_LONGEST);
+        }
     }
 
     /// Looks at the real processes, records a confirmed start or an end, and answers what
@@ -536,22 +575,13 @@ impl Supervisor {
             }
             // Until `systemd-run` registered the scope, the unit reads as unknown, which
             // `systemctl` answers as `inactive`; the launcher itself is still alive.
-            let launcher_alive = execution.process_group.is_some_and(launcher_alive);
-            return Ok(if leader_start.is_none() && launcher_alive {
-                Presence::Unidentified
-            } else {
-                gone
-            });
+            return Ok(launching_or(gone, &leader_start, execution.process_group));
         }
         let Some(process_group) = process_group else {
             return Ok(Presence::Unidentified);
         };
         if !platform::group_has_members(process_group) {
-            return Ok(if leader_start.is_none() && launcher_alive(process_group) {
-                Presence::Unidentified
-            } else {
-                gone
-            });
+            return Ok(launching_or(gone, &leader_start, Some(process_group)));
         }
         let current_start = platform::leader_start(process_group).await?;
         Ok(match (leader_start.as_deref(), current_start) {
@@ -693,11 +723,18 @@ impl Supervisor {
     }
 }
 
-/// Whether the launcher whose pid names the execution's group still runs. A terminal
-/// execution's launcher leads that group only once it is the session leader: until then its
-/// pid is alive in the daemon's group and the group has no member yet.
-fn launcher_alive(pid: i32) -> bool {
-    platform::group_has_members(pid) || platform::process_exists(pid)
+/// `gone`, unless the execution has not confirmed its start and its launcher (whose pid names
+/// the group) still runs. A terminal execution's launcher leads that group only once it is
+/// the session leader: until then its pid is alive in the daemon's group and the group has
+/// no member yet.
+fn launching_or(gone: Presence, leader_start: &Option<String>, launcher: Option<i32>) -> Presence {
+    let is_launcher_alive = launcher
+        .is_some_and(|pid| platform::group_has_members(pid) || platform::process_exists(pid));
+    if leader_start.is_none() && is_launcher_alive {
+        Presence::Unidentified
+    } else {
+        gone
+    }
 }
 
 /// Whether processes of `identity` remain; a failing query counts as present, so output is

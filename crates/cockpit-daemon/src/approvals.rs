@@ -481,12 +481,12 @@ async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
                     "a background process kept the terminal open; its later output is lost"
                 );
             }
-            if ran.left_running {
+            if let Some(execution) = ran.leftover {
                 tokio::spawn(watch_leftover(
                     Arc::clone(&database),
                     runner.clone(),
                     request,
-                    ran.execution,
+                    execution,
                 ));
             }
             tracing::info!(

@@ -103,10 +103,9 @@ pub struct Ran {
     /// A process the command left in the background still held the terminal when the
     /// command exited; what it printed afterwards is not in the result.
     pub terminal_held_open: bool,
-    /// The run's execution, and whether a process the command left behind still ran in it
-    /// once the command exited (see [`Runner::wait_until_ended`]).
-    pub execution: ExecutionId,
-    pub left_running: bool,
+    /// The run's execution when a process the command left behind still ran in it once the
+    /// command exited (see [`Runner::wait_until_ended`]).
+    pub leftover: Option<ExecutionId>,
 }
 
 /// A run's output as it may reach the agent.
@@ -260,7 +259,7 @@ impl Runner {
             }
             Err(unobserved) => return Err(unobserved),
         };
-        let left_running = match self.supervisor.observe(database, execution).await {
+        let is_left_running = match self.supervisor.observe(database, execution).await {
             Ok(observed) => observed.phase.is_occupying(),
             // Not observed ended, so it stays charged and is watched.
             Err(_) => true,
@@ -276,8 +275,7 @@ impl Runner {
                 output: present(tail, kept.total, self.settings.answer_lines),
             },
             terminal_held_open,
-            execution,
-            left_running,
+            leftover: is_left_running.then_some(execution),
         })
     }
 
@@ -395,13 +393,16 @@ impl Runner {
     }
 }
 
+/// The terminal lines quoted with a failed launch: enough for the launcher's error.
+const LAUNCH_FAILURE_LINES: usize = 5;
+
 /// `reason`, followed by what the terminal showed: a launcher that failed wrote why there.
 fn with_terminal_output(reason: String, live: &LiveRun) -> String {
     let kept = live
         .output
         .lock()
         .expect("the output lock is never poisoned");
-    let shown = present(&kept.bytes, kept.total, 5).shown;
+    let shown = present(&kept.bytes, kept.total, LAUNCH_FAILURE_LINES).shown;
     if shown.is_empty() {
         reason
     } else {
