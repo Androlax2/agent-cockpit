@@ -46,10 +46,10 @@ impl Resources {
 /// The route for one of the resource commands; `routes.rs` sends only those here. Reads and
 /// setting changes run in the control lane: the owner must be able to pause or switch to the
 /// foreground profile while the bulk lane is full. A stop may wait for the grace period, so
-/// it runs in the bulk lane.
+/// it runs in the stop lane.
 pub(crate) fn route(command: Command, resources: Resources) -> Route {
     let class = match command {
-        Command::ResourceStop { .. } => WorkClass::Bulk,
+        Command::ResourceStop { .. } => WorkClass::Stop,
         _ => WorkClass::Control,
     };
     let job: crate::Job = match command {

@@ -20,8 +20,11 @@ use crate::{
 /// so bulk work can fill its lane without taking capacity from control (report 03).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkClass {
-    /// Input, status, stop and approval: small, latency-bound requests.
+    /// Input, status and approval: small, latency-bound requests.
     Control,
+    /// Ending, sleeping or stopping work. A stop may wait out its grace and kill wait, so it
+    /// neither holds a control worker nor waits behind launches (#217).
+    Stop,
     /// Output, builds, provider calls and anything else that may take long.
     Bulk,
 }

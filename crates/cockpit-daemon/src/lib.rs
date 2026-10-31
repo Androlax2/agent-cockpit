@@ -187,7 +187,7 @@ impl Instance {
         let shared = Arc::new(server::Shared {
             owner_uid: self.owner_uid,
             limits,
-            lanes: lanes::Lanes::new(limits.control, limits.bulk),
+            lanes: lanes::Lanes::new(limits.control, limits.stop, limits.bulk),
             handler: routes(Capabilities {
                 database: Arc::clone(&database),
                 git: wiring.git,

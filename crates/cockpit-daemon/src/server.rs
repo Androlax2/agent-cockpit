@@ -40,6 +40,7 @@ pub struct Limits {
     /// connection until one is answered, so a client that does not read cannot grow memory.
     pub requests_per_connection: usize,
     pub control: LaneLimits,
+    pub stop: LaneLimits,
     pub bulk: LaneLimits,
     /// A connection that has not sent its `hello` by then is closed.
     pub handshake_timeout: Duration,
@@ -53,6 +54,13 @@ impl Default for Limits {
             control: LaneLimits {
                 workers: 8,
                 waiting: 64,
+            },
+            // A session stop takes up to 10 s; with two waiting places the last one admitted
+            // is answered within 20 s, inside the TUI's 30 s deadline, and one more is `busy`
+            // at once instead of timing out while the daemon still stops it (#217).
+            stop: LaneLimits {
+                workers: 2,
+                waiting: 2,
             },
             bulk: LaneLimits {
                 workers: 4,
@@ -73,6 +81,7 @@ impl Limits {
                 "requests_per_connection must be at least 1",
             ),
             (self.control.workers == 0, "the control lane needs a worker"),
+            (self.stop.workers == 0, "the stop lane needs a worker"),
             (self.bulk.workers == 0, "the bulk lane needs a worker"),
             (
                 self.handshake_timeout.is_zero(),

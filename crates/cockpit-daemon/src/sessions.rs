@@ -21,11 +21,12 @@ use crate::approvals::{Answer, Failed, job};
 use crate::routes::{Route, WorkClass, refusal};
 
 /// The route for one of the session commands; `routes.rs` sends only those here. Listing
-/// is a read and runs in the control lane; every other command may launch or stop an agent,
-/// so it runs in the bulk lane.
+/// is a read and runs in the control lane; ending and sleeping only stop an agent, so they
+/// run in the stop lane; every other command may launch an agent, so it runs in the bulk lane.
 pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
     let class = match command {
         Command::SessionList { .. } => WorkClass::Control,
+        Command::SessionEnd { .. } | Command::SessionSleep { .. } => WorkClass::Stop,
         _ => WorkClass::Bulk,
     };
     let job: crate::Job = match command {
