@@ -484,6 +484,9 @@ FAKE_DAEMON = """#!/bin/sh
 echo "ready $HOME/.local/state/cockpit/run/daemon.sock"
 exec sleep 60
 """
+FAKE_HOOK_BRIDGE = """#!/bin/sh
+exit 0
+"""
 
 
 class PackagingTestCase(unittest.TestCase):
@@ -495,6 +498,8 @@ class PackagingTestCase(unittest.TestCase):
         self.binaries.mkdir()
         self.write_fake("cockpit", FAKE_COCKPIT)
         self.write_fake("cockpit-daemon", FAKE_DAEMON)
+        for helper in release.HELPERS:
+            self.write_fake(helper, FAKE_HOOK_BRIDGE)
         self.out = self.root / "dist"
         self.out.mkdir()
 
@@ -533,7 +538,8 @@ class PackageTests(PackagingTestCase):
             members = bundle.getmembers()
             self.assertTrue(all(member.mtime == 0 for member in members))
             modes = {member.name.split("/", 1)[-1]: member.mode for member in members}
-        self.assertEqual(modes["bin/cockpit"], 0o755)
+        for binary in release.BINARIES:
+            self.assertEqual(modes[f"bin/{binary}"], 0o755)
         self.assertEqual(modes["README.md"], 0o644)
         prefix = "cockpit-v0.1.0-alpha.7-linux-x86_64"
         self.assertLessEqual(
@@ -554,7 +560,7 @@ class PackageTests(PackagingTestCase):
         self.assertEqual(manifest["version"], "0.1.0-alpha.7")
         self.assertEqual(manifest["channel"], "alpha")
         self.assertEqual(manifest["source_revision"], "0123abcd")
-        self.assertEqual(manifest["helpers"], {})
+        self.assertEqual(manifest["helpers"], {"cockpit-claude-hook": "0.1.0-alpha.7"})
         self.assertIsNone(manifest["instruction_bundle"])
         self.assertEqual(
             manifest["contents"]["bin/cockpit"],
@@ -583,15 +589,28 @@ class PackageTests(PackagingTestCase):
         self.assertIn("not one of", error)
 
     def test_a_missing_binary_is_refused(self):
-        (self.binaries / "cockpit-daemon").unlink()
-        code, _outputs, error = self.package()
-        self.assertEqual(code, 1)
-        self.assertIn("built binary missing", error)
+        for binary in release.BINARIES:
+            with self.subTest(binary=binary):
+                (self.binaries / binary).rename(self.root / binary)
+                try:
+                    code, _outputs, error = self.package()
+                finally:
+                    (self.root / binary).rename(self.binaries / binary)
+                    shutil.rmtree(self.out)
+                    self.out.mkdir()
+                self.assertEqual(code, 1)
+                self.assertIn(f"{binary}: built binary missing", error)
 
 
 class VerifyInstallTests(PackagingTestCase):
     def verify(self, root, revision="0123abcd"):
         return run("verify-install", str(root), "--revision", revision, cwd=ROOT)
+
+    def edit_manifest(self, root, change):
+        manifest_file = Path(root) / release.MANIFEST_PATH
+        manifest = json.loads(manifest_file.read_text())
+        change(manifest)
+        manifest_file.write_text(json.dumps(manifest))
 
     def test_an_unchanged_install_passes(self):
         _code, outputs, _error = self.package()
@@ -608,6 +627,30 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertEqual(code, 1)
         self.assertIn("README.md: missing", error)
         self.assertIn("bin/cockpit: checksum differs", error)
+
+    def test_an_install_without_the_hook_bridge_fails_naming_it(self):
+        _code, outputs, _error = self.package()
+        (Path(outputs["root"]) / "bin/cockpit-claude-hook").unlink()
+        code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("bin/cockpit-claude-hook: missing", error)
+
+    def test_a_manifest_that_does_not_list_the_hook_bridge_fails(self):
+        _code, outputs, _error = self.package()
+        self.edit_manifest(
+            outputs["root"], lambda manifest: manifest["contents"].pop("bin/cockpit-claude-hook")
+        )
+        (Path(outputs["root"]) / "bin/cockpit-claude-hook").unlink()
+        code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("bin/cockpit-claude-hook: not listed in the manifest", error)
+
+    def test_a_manifest_whose_helpers_record_is_wrong_fails(self):
+        _code, outputs, _error = self.package()
+        self.edit_manifest(outputs["root"], lambda manifest: manifest.update(helpers={}))
+        code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("helpers: {}, expected {'cockpit-claude-hook': '0.1.0-alpha.7'}", error)
 
     def test_a_file_the_manifest_does_not_list_fails_naming_it(self):
         _code, outputs, _error = self.package()
@@ -720,6 +763,25 @@ class WorkflowMatrixTests(unittest.TestCase):
                 self.assertIsNotNone(body, f"expected the {job} job")
                 listed = re.findall(r"- platform: (\S+)", body[1])
                 self.assertEqual(sorted(listed), sorted(release.PLATFORMS))
+
+    def test_the_build_gathers_every_bundled_binary(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        built = re.search(r"cargo build --release --locked [^\n]*", workflow)
+        self.assertIsNotNone(built, "expected the cargo build line")
+        built_binaries = set()
+        for package in re.findall(r"-p (\S+)", built[0]):
+            manifest = tomllib.loads((ROOT / "crates" / package / "Cargo.toml").read_text())
+            built_binaries.update(binary["name"] for binary in manifest.get("bin", []))
+        self.assertLessEqual(set(release.BINARIES), built_binaries)
+        gathered = re.search(r"\n\s*for binary in ([^;\n]*); do\n", workflow)
+        self.assertIsNotNone(gathered, "expected the gather loop")
+        self.assertEqual(gathered[1].split(), list(release.BINARIES))
+
+    def test_the_daemon_looks_for_every_helper_beside_itself(self):
+        daemon = (ROOT / "crates/cockpit-daemon/src/main.rs").read_text()
+        for helper in release.HELPERS:
+            with self.subTest(helper=helper):
+                self.assertIn(f'bin_dir.join("{helper}")', daemon)
 
     def test_every_archive_artifact_named_by_hand_is_a_platform(self):
         workflow = RELEASE_WORKFLOW.read_text()

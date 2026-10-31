@@ -41,7 +41,9 @@ TAG_PATTERN = re.compile(
 # git-cliff's --tag-pattern for a stable release's notes.
 STABLE_TAG_REGEX = rf"^v{CORE_PATTERN}$"
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-universal")
-BINARIES = ("cockpit", "cockpit-daemon")
+# Programs the daemon runs from its own directory, so they ship in bin/ beside it (#185).
+HELPERS = ("cockpit-claude-hook",)
+BINARIES = ("cockpit", "cockpit-daemon", *HELPERS)
 # No CHANGELOG.md: the committed file lags the tag (release-plz regenerates it, #101); the
 # release notes are on the GitHub Release.
 DOCUMENTS = ("LICENSE", "README.md")
@@ -361,6 +363,11 @@ def bundle_files(root):
     return sorted(path for path in relative_paths if path != MANIFEST_PATH)
 
 
+def helper_versions(version):
+    """Helpers build from the same revision, so they carry the bundle's version."""
+    return {helper: version for helper in HELPERS}
+
+
 def write_manifest(staging, version, channel, platform, revision):
     """Report 13's bundle manifest: contents, source revision and component versions."""
     contents = bundle_files(staging)
@@ -371,9 +378,8 @@ def write_manifest(staging, version, channel, platform, revision):
         "channel": channel,
         "platform": platform,
         "source_revision": revision,
-        # No helper and no instruction bundle ships yet (#64, #97); an empty record is the
-        # truth, and `cockpit version --all` shows it.
-        "helpers": {},
+        "helpers": helper_versions(version),
+        # No instruction bundle ships yet (#97); `cockpit version --all` shows the null.
         "instruction_bundle": None,
         "contents": {path: sha256_of(staging / path) for path in contents},
     }
@@ -460,6 +466,9 @@ def refuse_changed_contents(root, manifest):
     for binary in BINARIES:
         if f"bin/{binary}" not in manifest["contents"]:
             problems.append(f"bin/{binary}: not listed in the manifest")
+    expected_helpers = helper_versions(manifest["version"])
+    if manifest.get("helpers") != expected_helpers:
+        problems.append(f"helpers: {manifest.get('helpers')!r}, expected {expected_helpers!r}")
     if problems:
         raise Refusal("; ".join(problems))
 
