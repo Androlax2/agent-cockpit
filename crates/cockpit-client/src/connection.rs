@@ -18,6 +18,10 @@ use tokio::task::JoinHandle;
 use crate::error::{ClientError, CloseReason};
 use crate::framing::{encode, next_frame};
 
+/// Capacity the reader keeps between frames; a larger buffer, left by a big snapshot, is
+/// released instead of being held for the connection's lifetime.
+const RETAINED_FRAME_CAPACITY: usize = 64 * 1024;
+
 /// Frames waiting for the socket; a request that cannot queue waits within its deadline.
 const OUTGOING_QUEUE_FRAMES: usize = 64;
 
@@ -216,7 +220,11 @@ async fn read_frames(
     let mut frame_bytes = Vec::new();
     let reason = loop {
         let read = next_frame(&mut frames, &mut frame_bytes).await;
-        let frame = match read.and_then(|()| decode(&frame_bytes)) {
+        let decoded = read.and_then(|()| decode(&frame_bytes));
+        if frame_bytes.capacity() > RETAINED_FRAME_CAPACITY {
+            frame_bytes = Vec::new();
+        }
+        let frame = match decoded {
             Ok(frame) => frame,
             Err(reason) => break reason,
         };

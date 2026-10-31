@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, CloseReason, Connection};
 use cockpit_protocol::{
-    HandshakeReply, Hello, ProtocolVersion, Refusal, RefusalReason, SUPPORTED_VERSIONS, Welcome,
-    negotiate,
+    Capability, HandshakeReply, ProtocolVersion, Refusal, RefusalReason, SUPPORTED_VERSIONS,
+    Welcome,
 };
 use common::{FakeDaemon, GENEROUS};
 use serde_json::json;
@@ -13,41 +13,39 @@ use serde_json::json;
 /// The client's side of a handshake against a daemon that answers its hello with `reply`.
 async fn open_against(reply: &HandshakeReply) -> Result<Connection, ClientError> {
     let daemon = FakeDaemon::start();
-    let (result, _) = tokio::join!(
+    let (result, _peer) = tokio::join!(
         Connection::open(&daemon.socket_path, GENEROUS),
         daemon.answer_hello(reply)
     );
     result
 }
 
-/// The change feed is negotiated only by a Subscription, so a plain connection's
-/// `subscribe` meets the daemon's `not-negotiated`.
 #[tokio::test]
 async fn a_plain_connection_offers_every_version_and_asks_for_no_capability() {
     let daemon = FakeDaemon::start();
-    let fake = async {
-        let mut peer = daemon.accept().await;
-        let hello = peer.read_frame().await;
-        let parsed: Hello = serde_json::from_value(hello.clone()).unwrap();
-        peer.send(&negotiate(&parsed, &SUPPORTED_VERSIONS, &[]))
-            .await;
-        (hello, peer)
-    };
 
-    let (connection, (hello, _peer)) =
-        tokio::join!(Connection::open(&daemon.socket_path, GENEROUS), fake);
+    let (connection, (hello, _peer)) = tokio::join!(
+        Connection::open(&daemon.socket_path, GENEROUS),
+        daemon.accept_handshake_reading_hello(&[Capability::ChangeFeed])
+    );
 
     assert_eq!(
         hello,
         json!({"protocol_versions": SUPPORTED_VERSIONS, "capabilities": []})
     );
-    assert_eq!(
-        connection.unwrap().welcome(),
-        &Welcome {
-            protocol_version: SUPPORTED_VERSIONS[0],
-            capabilities: vec![],
-        }
-    );
+    assert_eq!(connection.unwrap().welcome().capabilities, vec![]);
+}
+
+#[tokio::test]
+async fn the_client_keeps_the_daemons_welcome() {
+    let welcome = Welcome {
+        protocol_version: SUPPORTED_VERSIONS[0],
+        capabilities: vec![Capability::Unknown("from-a-newer-daemon".to_owned())],
+    };
+
+    let connection = open_against(&HandshakeReply::Accepted(welcome.clone())).await;
+
+    assert_eq!(connection.unwrap().welcome(), &welcome);
 }
 
 #[tokio::test]

@@ -49,12 +49,12 @@ impl FakeDaemon {
         Peer::new(stream)
     }
 
-    /// Accepts a client and answers its hello with `reply`; returns the hello as sent.
-    pub async fn answer_hello(&self, reply: &impl serde::Serialize) -> (serde_json::Value, Peer) {
+    /// Accepts a client and answers its hello with `reply`, whatever the hello says.
+    pub async fn answer_hello(&self, reply: &impl serde::Serialize) -> Peer {
         let mut peer = self.accept().await;
-        let hello = peer.read_frame().await;
+        peer.read_frame().await;
         peer.send(reply).await;
-        (hello, peer)
+        peer
     }
 
     /// Serves a subscription's start: handshake with the change feed, `subscribed` at the
@@ -69,11 +69,22 @@ impl FakeDaemon {
 
     /// Accepts a client and answers its hello as a daemon offering `daemon_capabilities`.
     pub async fn accept_handshake(&self, daemon_capabilities: &[Capability]) -> Peer {
+        self.accept_handshake_reading_hello(daemon_capabilities)
+            .await
+            .1
+    }
+
+    /// [`FakeDaemon::accept_handshake`], also returning the hello as sent.
+    pub async fn accept_handshake_reading_hello(
+        &self,
+        daemon_capabilities: &[Capability],
+    ) -> (serde_json::Value, Peer) {
         let mut peer = self.accept().await;
-        let hello: Hello = serde_json::from_value(peer.read_frame().await).expect("a hello");
+        let sent = peer.read_frame().await;
+        let hello: Hello = serde_json::from_value(sent.clone()).expect("a hello");
         peer.send(&negotiate(&hello, &SUPPORTED_VERSIONS, daemon_capabilities))
             .await;
-        peer
+        (sent, peer)
     }
 }
 

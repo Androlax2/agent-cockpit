@@ -163,56 +163,65 @@ async fn request_answered_with(
     result
 }
 
-type IsExpected = fn(&CloseReason) -> bool;
+/// The reason the connection closed, from a request's failure.
+fn close_reason(result: Result<Reply, ClientError>) -> CloseReason {
+    match result {
+        Err(ClientError::Closed(reason)) => reason,
+        other => panic!("expected a closed connection, got {other:?}"),
+    }
+}
 
 #[tokio::test]
-async fn a_frame_the_client_cannot_use_closes_the_connection_with_its_reason() {
+async fn a_frame_cut_by_a_disconnect_is_dropped_not_read() {
+    let cut = br#"{"type":"response","id":1,"outcome":{"ok":{"kind":"po"#.to_vec();
+
+    let reason = close_reason(request_answered_with(cut, true).await);
+
+    assert_eq!(reason, CloseReason::Truncated);
+}
+
+#[tokio::test]
+async fn an_oversized_frame_closes_the_connection() {
+    let oversized = vec![b' '; MAX_FRAME_BYTES];
+
+    let reason = close_reason(request_answered_with(oversized, false).await);
+
+    assert_eq!(reason, CloseReason::FrameTooLarge);
+}
+
+#[tokio::test]
+async fn an_unreadable_frame_closes_the_connection() {
+    let unknown_type = b"{\"type\":\"telepathy\"}\n".to_vec();
+
+    let reason = close_reason(request_answered_with(unknown_type, false).await);
+
+    assert!(matches!(reason, CloseReason::InvalidFrame(_)), "{reason:?}");
+}
+
+#[tokio::test]
+async fn a_change_batch_without_a_subscription_closes_the_connection() {
+    let batch = line(&ServerFrame::Changes(common::batch(
+        FeedPosition::Snapshot,
+        common::cursor("e1", 1),
+        &[],
+    )));
+
+    let reason = close_reason(request_answered_with(batch, false).await);
+
+    assert!(matches!(reason, CloseReason::InvalidFrame(_)), "{reason:?}");
+}
+
+#[tokio::test]
+async fn a_frame_the_daemon_could_not_read_closes_the_connection_with_its_error() {
     let rejection = ProtocolError {
         code: ErrorCode::InvalidRequest,
         message: "the frame is not JSON".to_owned(),
     };
-    let cases: [(&str, Vec<u8>, bool, IsExpected); 5] = [
-        (
-            "cut by a disconnect",
-            br#"{"type":"response","id":1,"outcome":{"ok":{"kind":"po"#.to_vec(),
-            true,
-            |reason| *reason == CloseReason::Truncated,
-        ),
-        ("oversized", vec![b' '; MAX_FRAME_BYTES], false, |reason| {
-            *reason == CloseReason::FrameTooLarge
-        }),
-        (
-            "unreadable",
-            b"{\"type\":\"telepathy\"}\n".to_vec(),
-            false,
-            |reason| matches!(reason, CloseReason::InvalidFrame(_)),
-        ),
-        (
-            "a batch without a subscription",
-            line(&ServerFrame::Changes(common::batch(
-                FeedPosition::Snapshot,
-                common::cursor("e1", 1),
-                &[],
-            ))),
-            false,
-            |reason| matches!(reason, CloseReason::InvalidFrame(_)),
-        ),
-        (
-            "the daemon could not read the client's frame",
-            line(&ServerFrame::MalformedFrame(rejection.clone())),
-            false,
-            |reason| matches!(reason, CloseReason::RejectedFrame(error) if error.message == "the frame is not JSON"),
-        ),
-    ];
+    let malformed = line(&ServerFrame::MalformedFrame(rejection.clone()));
 
-    for (case, answer, then_disconnects, is_expected) in cases {
-        let result = request_answered_with(answer, then_disconnects).await;
+    let reason = close_reason(request_answered_with(malformed, false).await);
 
-        assert!(
-            matches!(&result, Err(ClientError::Closed(reason)) if is_expected(reason)),
-            "{case}: {result:?}"
-        );
-    }
+    assert_eq!(reason, CloseReason::RejectedFrame(rejection));
 }
 
 #[tokio::test]

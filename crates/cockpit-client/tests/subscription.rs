@@ -135,7 +135,10 @@ async fn a_batch_dropped_unapplied_is_returned_again_without_reconnecting() {
         daemon.serve_feed(&snapshot)
     );
 
-    let again = subscription.next_batch().await.unwrap();
+    let again = tokio::time::timeout(GENEROUS, subscription.next_batch())
+        .await
+        .expect("the unapplied batch comes back without waiting on the daemon")
+        .unwrap();
 
     assert_eq!((&first, again.batch()), (&snapshot, &snapshot));
     again.applied();

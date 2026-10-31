@@ -19,6 +19,9 @@ pub(crate) fn encode(frame: &impl Serialize) -> Result<Vec<u8>, ClientError> {
 
 /// Reads the next frame from `reader` into `frame`, without its newline, or says why the
 /// stream cannot yield one. `frame` is cleared first; reusing it keeps its capacity.
+///
+/// Not cancel safe: bytes of a partly read frame are lost. Callers read from one task and
+/// drop the whole stream when they stop.
 pub(crate) async fn next_frame<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     frame: &mut Vec<u8>,
