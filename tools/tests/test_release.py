@@ -93,6 +93,11 @@ class ReleaseTestCase(unittest.TestCase):
     def run_release(self, *arguments):
         return run(*arguments, cwd=self.repository.path)
 
+    def check_tag(self, tag, m3_gate="closed", m5_gate="open", main="main"):
+        return self.run_release(
+            "check-tag", tag, "--main", main, "--m3-gate", m3_gate, "--m5-gate", m5_gate
+        )
+
 
 class TagGrammarTests(ReleaseTestCase):
     def test_only_the_three_policy_shapes_are_release_tags(self):
@@ -109,7 +114,7 @@ class TagGrammarTests(ReleaseTestCase):
         ]:
             with self.subTest(tag=tag):
                 self.repository.tag(tag)
-                code, _outputs, error = self.run_release("check-tag", tag)
+                code, _outputs, error = self.check_tag(tag)
                 self.assertEqual(code, 1)
                 self.assertIn("not a release tag", error)
 
@@ -118,7 +123,7 @@ class CheckTagTests(ReleaseTestCase):
     def test_an_alpha_before_the_first_stable_counts_from_the_bootstrap_commit(self):
         revision = self.repository.commits(3)
         self.repository.tag("v0.1.0-alpha.3")
-        code, outputs, error = self.run_release("check-tag", "v0.1.0-alpha.3")
+        code, outputs, error = self.check_tag("v0.1.0-alpha.3")
         self.assertEqual(code, 0, error)
         self.assertEqual(
             outputs,
@@ -135,7 +140,7 @@ class CheckTagTests(ReleaseTestCase):
     def test_a_pre_release_whose_number_is_not_the_commit_count_is_refused(self):
         self.repository.commits(3)
         self.repository.tag("v0.1.0-alpha.2")
-        code, _outputs, error = self.run_release("check-tag", "v0.1.0-alpha.2")
+        code, _outputs, error = self.check_tag("v0.1.0-alpha.2")
         self.assertEqual(code, 1)
         self.assertIn("which is 3", error)
 
@@ -143,14 +148,14 @@ class CheckTagTests(ReleaseTestCase):
         self.repository.write_version("0.2.0")
         self.repository.commit("chore: bump by hand")
         self.repository.tag("v0.1.0-alpha.1")
-        code, _outputs, error = self.run_release("check-tag", "v0.1.0-alpha.1")
+        code, _outputs, error = self.check_tag("v0.1.0-alpha.1")
         self.assertEqual(code, 1)
         self.assertIn("must still carry the base's 0.1.0", error)
 
     def test_a_stable_tag_must_equal_the_workspace_version(self):
         self.repository.commits(1)
         self.repository.tag("v0.2.0")
-        code, _outputs, error = self.run_release("check-tag", "v0.2.0")
+        code, _outputs, error = self.check_tag("v0.2.0", m5_gate="closed")
         self.assertEqual(code, 1)
         self.assertIn("a stable tag must equal it", error)
 
@@ -161,7 +166,7 @@ class CheckTagTests(ReleaseTestCase):
         self.repository.write_version("0.2.0")
         revision = self.repository.commit("chore: release v0.2.0")
         self.repository.tag("v0.2.0")
-        code, outputs, error = self.run_release("check-tag", "v0.2.0")
+        code, outputs, error = self.check_tag("v0.2.0", m5_gate="closed")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["channel"], "stable")
         self.assertEqual(outputs["prerelease"], "false")
@@ -173,7 +178,7 @@ class CheckTagTests(ReleaseTestCase):
         self.repository.tag("v0.1.0-alpha.2")
         self.repository.commits(3)
         self.repository.tag("v0.1.0-alpha.5")
-        code, outputs, error = self.run_release("check-tag", "v0.1.0-alpha.5")
+        code, outputs, error = self.check_tag("v0.1.0-alpha.5")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["notes_start"], "v0.1.0-alpha.2")
 
@@ -181,7 +186,7 @@ class CheckTagTests(ReleaseTestCase):
         self.repository.tag("v0.1.0")
         self.repository.commits(4)
         self.repository.tag("v0.2.0-beta.4")
-        code, outputs, error = self.run_release("check-tag", "v0.2.0-beta.4")
+        code, outputs, error = self.check_tag("v0.2.0-beta.4", m5_gate="closed")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["version"], "0.2.0-beta.4")
         self.assertEqual(outputs["notes_start"], "v0.1.0")
@@ -190,7 +195,7 @@ class CheckTagTests(ReleaseTestCase):
         self.repository.tag("v0.1.0")
         self.repository.commits(1)
         self.repository.tag("v0.1.0-beta.1")
-        code, _outputs, error = self.run_release("check-tag", "v0.1.0-beta.1")
+        code, _outputs, error = self.check_tag("v0.1.0-beta.1", m5_gate="closed")
         self.assertEqual(code, 1)
         self.assertIn("not above the previous stable 0.1.0", error)
 
@@ -217,21 +222,94 @@ class CheckTagTests(ReleaseTestCase):
                 cwd=clone,
                 check=True,
             )
-            code, _outputs, error = run("check-tag", "v0.1.0-alpha.2", cwd=clone)
+            code, _outputs, error = run(
+                "check-tag",
+                "v0.1.0-alpha.2",
+                "--main",
+                "origin/main",
+                "--m3-gate",
+                "closed",
+                "--m5-gate",
+                "open",
+                cwd=clone,
+            )
         self.assertEqual(code, 1)
         self.assertIn("shallow clone", error)
 
+    def test_a_tag_on_a_commit_outside_main_is_refused(self):
+        self.repository.git("checkout", "--quiet", "-b", "feature")
+        self.repository.commits(2)
+        self.repository.tag("v0.1.0-alpha.2")
+        code, _outputs, error = self.check_tag("v0.1.0-alpha.2")
+        self.assertEqual(code, 1)
+        self.assertIn("is not on main", error)
+
+    def test_an_alpha_tag_while_the_m3_gate_is_open_is_refused(self):
+        self.repository.commits(1)
+        self.repository.tag("v0.1.0-alpha.1")
+        code, _outputs, error = self.check_tag("v0.1.0-alpha.1", m3_gate="open")
+        self.assertEqual(code, 1)
+        self.assertIn("M3 gate issue (#52) is open", error)
+
+    def test_a_tag_of_the_wrong_channel_for_the_gates_is_refused(self):
+        self.repository.commits(1)
+        self.repository.tag("v0.1.0-beta.1")
+        code, _outputs, error = self.check_tag("v0.1.0-beta.1")
+        self.assertEqual(code, 1)
+        self.assertIn("the gates make this an alpha, not a beta", error)
+
+    def test_a_pre_release_tag_below_the_newest_pre_release_is_refused(self):
+        self.repository.commits(1)
+        self.repository.tag("v0.1.0-beta.1")
+        self.repository.commits(1)
+        self.repository.tag("v0.1.0-alpha.2")
+        code, _outputs, error = self.check_tag("v0.1.0-alpha.2", m5_gate="open")
+        self.assertEqual(code, 1)
+        self.assertIn("not above the newest pre-release v0.1.0-beta.1", error)
+
+    def test_a_stable_tag_while_the_m5_gate_is_open_is_refused(self):
+        self.repository.tag("v0.1.0")
+        code, _outputs, error = self.check_tag("v0.1.0")
+        self.assertEqual(code, 1)
+        self.assertIn("M5 gate issue (#66) is open", error)
+
+    def test_a_stable_tag_not_above_the_previous_stable_is_refused(self):
+        self.repository.tag("v0.2.0", self.repository.bootstrap)
+        self.repository.commits(1)
+        self.repository.tag("v0.1.0")
+        code, _outputs, error = self.check_tag("v0.1.0", m5_gate="closed")
+        self.assertEqual(code, 1)
+        self.assertIn("not above the previous stable v0.2.0", error)
+
 
 class NextPrereleaseTests(ReleaseTestCase):
+    def setUp(self):
+        super().setUp()
+        known_gaps = self.repository.path / release.KNOWN_GAPS
+        known_gaps.parent.mkdir()
+        known_gaps.write_text("## Known gaps\n")
+        self.repository.commit("docs: known gaps")
+        self.repository.commit_count = 0
+
     def test_after_the_m3_gate_the_next_alpha_numbers_the_commits_since_the_bootstrap(self):
-        revision = self.repository.commits(7)
+        revision = self.repository.commits(6)
         code, outputs, error = self.run_release(
             "next-prerelease", "--m3-gate", "closed", "--m5-gate", "open"
         )
         self.assertEqual(code, 0, error)
+        # Six commits after the one that added the known gaps.
         self.assertEqual(
             outputs, {"tag": "v0.1.0-alpha.7", "channel": "alpha", "revision": revision}
         )
+
+    def test_no_alpha_without_its_known_gaps(self):
+        (self.repository.path / release.KNOWN_GAPS).unlink()
+        self.repository.commit("docs: drop the known gaps")
+        code, _outputs, error = self.run_release(
+            "next-prerelease", "--m3-gate", "closed", "--m5-gate", "open"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("an alpha needs docs/KNOWN-GAPS.md", error)
 
     def test_no_alpha_while_the_m3_gate_is_open(self):
         self.repository.commits(1)
@@ -247,7 +325,7 @@ class NextPrereleaseTests(ReleaseTestCase):
             "next-prerelease", "--m3-gate", "closed", "--m5-gate", "closed"
         )
         self.assertEqual(code, 0, error)
-        self.assertEqual(outputs["tag"], "v0.1.0-beta.2")
+        self.assertEqual(outputs["tag"], "v0.1.0-beta.3")
 
     def test_a_commit_that_already_has_a_pre_release_is_refused(self):
         self.repository.commits(2)
@@ -277,7 +355,7 @@ class NextPrereleaseTests(ReleaseTestCase):
             "next-prerelease", "--m3-gate", "closed", "--m5-gate", "open"
         )
         self.assertEqual(code, 1)
-        self.assertIn("v0.1.0-alpha.2 is not above the newest pre-release v0.1.0-beta.1", error)
+        self.assertIn("v0.1.0-alpha.3 is not above the newest pre-release v0.1.0-beta.1", error)
 
     def test_after_a_stable_tag_the_release_pr_version_is_required(self):
         self.repository.tag("v0.1.0")
@@ -387,7 +465,11 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(archive.name, "cockpit-v0.1.0-alpha.7-linux-x86_64.tar.gz")
         with tarfile.open(archive) as bundle:
             names = set(bundle.getnames())
-            self.assertTrue(all(member.mtime == 0 for member in bundle.getmembers()))
+            members = bundle.getmembers()
+            self.assertTrue(all(member.mtime == 0 for member in members))
+            modes = {member.name.split("/", 1)[-1]: member.mode for member in members}
+        self.assertEqual(modes["bin/cockpit"], 0o755)
+        self.assertEqual(modes["README.md"], 0o644)
         prefix = "cockpit-v0.1.0-alpha.7-linux-x86_64"
         self.assertLessEqual(
             {
@@ -414,6 +496,12 @@ class PackageTests(unittest.TestCase):
             manifest["contents"]["bin/cockpit"],
             release.sha256_of(self.binaries / "cockpit"),
         )
+
+    def test_the_gzip_header_carries_no_build_time(self):
+        code, outputs, error = self.package()
+        self.assertEqual(code, 0, error)
+        header = Path(outputs["archive"]).read_bytes()[:10]
+        self.assertEqual(header[4:8], b"\0\0\0\0")
 
     def test_packaging_twice_gives_the_same_bytes(self):
         code, first, error = self.package()
@@ -456,6 +544,22 @@ class VerifyInstallTests(PackageTests):
         self.assertEqual(code, 1)
         self.assertIn("README.md: missing", error)
         self.assertIn("bin/cockpit: checksum differs", error)
+
+    def test_a_file_the_manifest_does_not_list_fails_naming_it(self):
+        _code, outputs, _error = self.package()
+        (Path(outputs["root"]) / "bin/cockpit.debug").write_text("stray")
+        code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("bin/cockpit.debug: not listed in the manifest", error)
+
+    def test_a_daemon_whose_helper_keeps_its_pipes_open_does_not_hang_the_check(self):
+        self.write_fake(
+            "cockpit-daemon",
+            '#!/bin/sh\nsleep 600 &\necho "ready $HOME/daemon.sock"\nexec sleep 600\n',
+        )
+        _code, outputs, _error = self.package()
+        code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 0, error)
 
     def test_a_binary_built_from_another_revision_fails(self):
         _code, outputs, _error = self.package()

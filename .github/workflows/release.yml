@@ -3,8 +3,9 @@ name: Release
 # A release tag (docs/RELEASING.md) builds every archive, attests them, drafts the GitHub
 # Release with every asset, runs report 13's gate on the tagged commit, and publishes last.
 # Pull requests that touch the release machinery, the nightly schedule and a manual dispatch
-# run the same build, install checks and attestation as a dry run: no tag, draft or release.
-# Tool choices: docs/decisions/2026-10-31-96-release-tooling.md.
+# run the same build and install checks as a dry run: no tag, attestation, draft or release.
+# Tool choices: docs/decisions/2026-10-31-96-release-tooling.md; nightlies:
+# docs/decisions/2026-10-31-96-nightly-builds.md.
 
 on:
   push:
@@ -12,17 +13,21 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .github/workflows/prerelease.yml
+      - Cargo.toml
       - tools/release.py
       - tools/tests/test_release.py
       - cliff.toml
       - crates/cockpit-cli/src/version.rs
   schedule:
-    # Nightly from main: a dry run whose archives stay as workflow artifacts (#96).
+    # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
     - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
+  # plan reads the gate issues' state.
+  issues: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -57,11 +62,16 @@ jobs:
       - name: Check the tag, or name the dry run's version
         id: version
         env:
+          GH_TOKEN: ${{ github.token }}
           REF_TYPE: ${{ github.ref_type }}
           TAG: ${{ github.ref_name }}
         run: |
           if [ "$REF_TYPE" = tag ]; then
-            python3 tools/release.py check-tag "$TAG" | tee -a "$GITHUB_OUTPUT"
+            # The same gates prerelease.yml reads: a hand-made tag meets every rule too.
+            m3=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+            m5=$(gh issue view 66 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+            python3 tools/release.py check-tag "$TAG" --main origin/main \
+              --m3-gate "$m3" --m5-gate "$m5" | tee -a "$GITHUB_OUTPUT"
           else
             python3 tools/release.py dry-run-version | tee -a "$GITHUB_OUTPUT"
           fi
@@ -76,14 +86,17 @@ jobs:
           CHANNEL: ${{ steps.version.outputs.channel }}
           NOTES_START: ${{ steps.version.outputs.notes_start }}
         run: |
-          if [ -n "$TAG" ]; then
+          if [ "$CHANNEL" = stable ]; then
+            # One section since the previous stable: its pre-releases are not boundaries.
+            git cliff --config cliff.toml --strip all --tag-pattern '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              "$NOTES_START..$TAG" > notes.md
+          elif [ -n "$TAG" ]; then
             git cliff --config cliff.toml --strip all "$NOTES_START..$TAG" > notes.md
           else
             git cliff --config cliff.toml --strip all --tag "v$VERSION" "$NOTES_START..HEAD" > notes.md
           fi
-          # Alpha notes carry the known gaps (docs/RELEASING.md, Changelog); #97 writes them.
+          # Alpha notes carry the known gaps; prerelease.yml refuses an alpha without them.
           if [ "$CHANNEL" = alpha ]; then
-            test -f docs/KNOWN-GAPS.md || { echo "::error::an alpha needs docs/KNOWN-GAPS.md"; exit 1; }
             { echo; cat docs/KNOWN-GAPS.md; } >> notes.md
           fi
           cat notes.md
@@ -234,11 +247,36 @@ jobs:
           tar -xzf dist/*.tar.gz -C "$prefix"
           python3 tools/release.py verify-install "$prefix"/cockpit-v* --revision "$revision"
 
-  # Checksums and build provenance over every archive; a tag also gets its draft release.
+  # Checksums over every archive, kept as workflow artifacts (the nightly's download).
   assemble:
     needs: [plan, build]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: dist
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  # A tag only: build provenance over the checksummed archives, then the draft with every
+  # asset. Dry runs never attest, so no unreleased build verifies as this repository's.
+  draft:
+    if: github.ref_type == 'tag'
+    needs: [plan, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
       id-token: write
@@ -246,28 +284,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: archive-*
-          merge-multiple: true
+          name: release-assets
           path: dist
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-notes
-      - name: Write SHA256SUMS
-        working-directory: dist
-        run: |
-          sha256sum -- *.tar.gz > SHA256SUMS
-          cat SHA256SUMS
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: dist/SHA256SUMS
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: release-assets
-          path: dist/
-          if-no-files-found: error
-          retention-days: 14
       - name: Draft the release with every asset
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.plan.outputs.tag }}
@@ -312,7 +337,7 @@ jobs:
   # named gap that keeps the release a draft (tools/release.py GATE_CHECKS).
   publish:
     if: github.ref_type == 'tag'
-    needs: [plan, assemble, gate, install, install-wsl2]
+    needs: [plan, draft, gate, install, install-wsl2]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The release workflows' version, packaging and gate steps (docs/RELEASING.md, issue #96).
 
-Usage: release.py check-tag TAG
+Usage: release.py check-tag TAG --main REF --m3-gate open|closed --m5-gate open|closed
        release.py next-prerelease --m3-gate open|closed --m5-gate open|closed
        release.py dry-run-version
        release.py stamp VERSION
@@ -15,10 +15,13 @@ Every refusal exits 1 with the rule it broke; nothing here creates a tag or a re
 """
 
 import argparse
+import contextlib
+import gzip
 import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tarfile
@@ -29,7 +32,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Before the first stable tag, pre-releases count from the greenfield bootstrap (#18, #94).
-BOOTSTRAP_COMMIT = "d2d8604"
+BOOTSTRAP_COMMIT = "d2d860474e55d0e6f815ee33e50162351bbb1495"
 TAG_PATTERN = re.compile(
     r"v(?P<core>(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))"
     r"(?:-(?P<channel>alpha|beta)\.(?P<number>[1-9][0-9]*))?"
@@ -39,6 +42,8 @@ BINARIES = ("cockpit", "cockpit-daemon")
 DOCUMENTS = ("LICENSE", "README.md", "CHANGELOG.md")
 MANIFEST_PATH = "share/cockpit/manifest.json"
 MANIFEST_SCHEMA = 1
+# Alpha notes carry the known gaps (RELEASING.md, Changelog); #97 writes the file.
+KNOWN_GAPS = "docs/KNOWN-GAPS.md"
 
 # Report 13's release gate: each check and the release.yml job that proves it, or None while
 # nothing does. A check without a job is a named gap that blocks publishing (RELEASING.md).
@@ -153,21 +158,36 @@ def notes_start(parsed, tags, commit, cwd):
     return base_of(tags, cwd)["ref"]
 
 
-def check_tag(tag, cwd):
-    """The release workflow's first step: the tag matches the commit's version and count."""
+def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
+    """The release workflow's first step: every rule a tag must meet, however it was made."""
     parsed = parse_tag(tag)
     refuse_shallow(cwd)
     commit = git("rev-parse", f"{tag}^{{commit}}", cwd=cwd)
+    if not is_ancestor(commit, main_ref, cwd):
+        raise Refusal(f"{tag}: {commit[:12]} is not on {main_ref}")
     tags = [other for other in release_tags(cwd) if other["tag"] != tag]
     version_at_tag = workspace_version(cwd, commit)
     if parsed["channel"] == "stable":
+        if m5_gate == "open":
+            raise Refusal(f"{tag}: no stable release while the M5 gate issue (#66) is open")
         if version_at_tag != parsed["core"]:
             raise Refusal(
                 f"{tag}: the workspace version at {commit[:12]} is {version_at_tag}; "
                 "a stable tag must equal it"
             )
+        previous = base_of(tags, cwd)
+        if previous["is_stable_tag"] and parse_core(parsed["core"]) <= parse_core(
+            previous["version"]
+        ):
+            raise Refusal(f"{tag}: not above the previous stable {previous['ref']}")
         version = parsed["core"]
     else:
+        expected_channel = prerelease_channel(m3_gate, m5_gate)
+        if parsed["channel"] != expected_channel:
+            raise Refusal(
+                f"{tag}: the gates make this an {expected_channel}, not a {parsed['channel']}"
+            )
+        refuse_out_of_order(parsed, tags, commit, cwd)
         base = base_of(tags, cwd)
         if version_at_tag != base["version"]:
             raise Refusal(
@@ -189,6 +209,18 @@ def check_tag(tag, cwd):
         "revision": commit,
         "notes_start": notes_start(parsed, tags, commit, cwd),
     }
+
+
+def refuse_out_of_order(candidate, tags, commit, cwd):
+    """A pre-release rises above the newest one and descends from it (RELEASING.md, Tags)."""
+    prereleases = [tag for tag in tags if tag["channel"] != "stable"]
+    if not prereleases:
+        return
+    newest = max(prereleases, key=version_order)
+    if version_order(candidate) <= version_order(newest):
+        raise Refusal(f"{candidate['tag']} is not above the newest pre-release {newest['tag']}")
+    if not is_ancestor(newest["tag"], commit, cwd):
+        raise Refusal(f"{commit[:12]} does not descend from {newest['tag']}")
 
 
 def refuse_core_against_base(core, base):
@@ -224,24 +256,14 @@ def next_prerelease(m3_gate, m5_gate, cwd):
     if base["is_stable_tag"]:
         # The version comes from the open release PR, which nothing reads yet (#101).
         raise Refusal("a pre-release after a stable tag needs the release PR's version (#101)")
+    if channel == "alpha" and not (Path(cwd) / KNOWN_GAPS).is_file():
+        # release.yml would refuse the alpha's notes, and a tag is never moved or reused.
+        raise Refusal(f"an alpha needs {KNOWN_GAPS} for its notes (#97)")
     core = workspace_version(cwd)
     refuse_core_against_base(core, base)
-    if any(tag["channel"] == "stable" and tag["core"] == core for tag in tags):
-        raise Refusal(f"{core} already has a stable tag")
-    candidate = {
-        "tag": None,
-        "core": core,
-        "channel": channel,
-        "number": commits_since(base["ref"], commit, cwd),
-    }
-    candidate["tag"] = f"v{core}-{channel}.{candidate['number']}"
-    prereleases = [tag for tag in tags if tag["channel"] != "stable"]
-    if prereleases:
-        newest = max(prereleases, key=version_order)
-        if version_order(candidate) <= version_order(newest):
-            raise Refusal(f"{candidate['tag']} is not above the newest pre-release {newest['tag']}")
-        if not is_ancestor(newest["tag"], commit, cwd):
-            raise Refusal(f"{commit[:12]} does not descend from {newest['tag']}")
+    number = commits_since(base["ref"], commit, cwd)
+    candidate = parse_tag(f"v{core}-{channel}.{number}")
+    refuse_out_of_order(candidate, tags, commit, cwd)
     return {"tag": candidate["tag"], "channel": channel, "revision": commit}
 
 
@@ -331,6 +353,8 @@ def normalized(member):
     member.uid = member.gid = 0
     member.uname = member.gname = ""
     member.mtime = 0
+    is_executable = member.isdir() or member.name.split("/")[-2:-1] == ["bin"]
+    member.mode = 0o755 if is_executable else 0o644
     return member
 
 
@@ -354,7 +378,12 @@ def package(version, channel, platform, revision, binaries, out, cwd):
         (staging / document).write_bytes((Path(cwd) / document).read_bytes())
     write_manifest(staging, version, channel, platform, revision)
     archive = Path(out) / f"{name}.tar.gz"
-    with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as bundle:
+    # The gzip header's own timestamp is zeroed too, so a rebuild gives the same bytes.
+    with (
+        open(archive, "wb") as raw,
+        gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as compressed,
+        tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as bundle,
+    ):
         for path in sorted([staging, *staging.rglob("*")]):
             bundle.add(path, arcname=str(path.relative_to(out)), recursive=False, filter=normalized)
     return {"archive": str(archive), "root": str(staging)}
@@ -389,6 +418,14 @@ def refuse_changed_contents(root, manifest):
             problems.append(f"{relative}: missing")
         elif sha256_of(path) != expected:
             problems.append(f"{relative}: checksum differs from the manifest")
+    unlisted = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_file()
+        and str(path.relative_to(root)) not in manifest["contents"]
+        and str(path.relative_to(root)) != MANIFEST_PATH
+    )
+    problems.extend(f"{relative}: not listed in the manifest" for relative in unlisted)
     for binary in BINARIES:
         if f"bin/{binary}" not in manifest["contents"]:
             problems.append(f"bin/{binary}: not listed in the manifest")
@@ -417,21 +454,29 @@ def refuse_wrong_version_output(root, manifest, manifest_text, revision, environ
 
 def refuse_daemon_not_ready(root, environment, timeout_seconds=60):
     """cockpit-daemon prints `ready <socket>` once it accepts requests on a clean home."""
-    daemon = subprocess.Popen(
-        [str(root / "bin/cockpit-daemon")],
-        env=environment,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    deadline = threading.Timer(timeout_seconds, daemon.kill)
-    deadline.start()
-    try:
-        first_line = daemon.stdout.readline()
-    finally:
-        deadline.cancel()
-        daemon.kill()
-        _stdout, stderr = daemon.communicate()
+    # Its own process group, so a helper it started dies with it; stderr goes to a file, so
+    # a chatty daemon never blocks on a full pipe.
+    with tempfile.TemporaryFile(mode="w+") as stderr_file:
+        daemon = subprocess.Popen(
+            [str(root / "bin/cockpit-daemon")],
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+            text=True,
+            start_new_session=True,
+        )
+        deadline = threading.Timer(timeout_seconds, os.killpg, (daemon.pid, signal.SIGKILL))
+        deadline.start()
+        try:
+            first_line = daemon.stdout.readline()
+        finally:
+            deadline.cancel()
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(daemon.pid, signal.SIGKILL)
+            daemon.wait(timeout=10)
+            daemon.stdout.close()
+        stderr_file.seek(0)
+        stderr = stderr_file.read()
     if not first_line.startswith("ready "):
         raise Refusal(f"cockpit-daemon did not print `ready <socket>`: {first_line!r} {stderr!r}")
 
@@ -454,7 +499,11 @@ def print_outputs(outputs):
 def parse_arguments(arguments):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("check-tag").add_argument("tag")
+    check_command = commands.add_parser("check-tag")
+    check_command.add_argument("tag")
+    check_command.add_argument("--main", required=True)
+    for gate in ("--m3-gate", "--m5-gate"):
+        check_command.add_argument(gate, choices=("open", "closed"), required=True)
     next_command = commands.add_parser("next-prerelease")
     next_command.add_argument("--m3-gate", choices=("open", "closed"), required=True)
     next_command.add_argument("--m5-gate", choices=("open", "closed"), required=True)
@@ -474,7 +523,9 @@ def main(arguments, cwd=ROOT):
     options = parse_arguments(arguments)
     try:
         if options.command == "check-tag":
-            print_outputs(check_tag(options.tag, cwd))
+            print_outputs(
+                check_tag(options.tag, options.main, options.m3_gate, options.m5_gate, cwd)
+            )
         elif options.command == "next-prerelease":
             print_outputs(next_prerelease(options.m3_gate, options.m5_gate, cwd))
         elif options.command == "dry-run-version":

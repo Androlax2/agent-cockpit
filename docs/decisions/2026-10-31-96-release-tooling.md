@@ -13,7 +13,8 @@ fits Cockpit's release policy worse than a short workflow of our own. The policy
   attestations, is about fifty lines of [release.yml](../../.github/workflows/release.yml).
 - **`tools/release.py` is the `xtask`.** Python, like `tools/ci-jobs.py`, because it is CI
   tooling rather than a product capability, so it gets no crate in report 02's graph. It checks
-  tags (`check-tag`), computes the next pre-release with every refusal of the policy
+  every tag against every rule, so a hand-made tag fails like a wrong one (`check-tag`: on
+  `main`, channel from the gate issues, version, count, order), computes the next pre-release with every refusal of the policy
   (`next-prerelease`), stamps the version (`stamp`), packages (`package`), runs the clean-install
   check (`verify-install`) and lists gate gaps (`gate-gaps`). Tests: `tools/tests/test_release.py`,
   run first by both release workflows.
@@ -22,7 +23,7 @@ fits Cockpit's release policy worse than a short workflow of our own. The policy
 - **Bundle layout and manifest.** `cockpit-v<version>-<platform>.tar.gz` holds
   `cockpit-v<version>-<platform>/bin/{cockpit,cockpit-daemon}`, `share/cockpit/manifest.json`,
   `LICENSE`, `README.md`, `CHANGELOG.md`; owner and timestamps are zeroed so a rebuild gives the
-  same bytes. The manifest (schema 1) names version, channel, platform, source revision,
+  same bytes (the gzip header's time too). The manifest (schema 1) names version, channel, platform, source revision,
   helpers (`{}`) and instruction bundle (`null`) until #64 and #97 ship them, and the SHA-256 of
   every file. `cockpit version --all` prints it from `<prefix>/share/cockpit/manifest.json`,
   `<prefix>` being the parent of the resolved binary's directory.
@@ -41,11 +42,13 @@ fits Cockpit's release policy worse than a short workflow of our own. The policy
   joins with the first stable release PR (#101); before it, `next-prerelease` refuses once a
   stable tag exists instead of guessing the release PR's version. Alpha notes append
   `docs/KNOWN-GAPS.md` (#97); the workflow refuses an alpha without it.
+- **Only tags are attested.** Dry runs (pull requests, nightlies, dispatches) never get
+  `id-token` or `attestations: write`, so no unreleased build verifies as this repository's.
 - **Pre-release tags come from a GitHub App token** (`RELEASE_APP_CLIENT_ID`,
   `RELEASE_APP_PRIVATE_KEY`), which Theo creates; the dry run needs neither.
-- **Nightly builds are dry runs.** The schedule builds, installs and attests `main` as
+- **Nightly builds are dry runs.** The schedule builds and installs `main` as
   `X.Y.Z-dev.N` and keeps the archives as workflow artifacts for 14 days. A rolling `nightly`
-  pre-release would move a tag, which the policy forbids: its own decision issue.
+  pre-release would move a tag: [decided against](2026-10-31-96-nightly-builds.md) in #179.
 - **Rejected:** cargo-dist for the build half only (two release owners for one GitHub
   Release); nfpm and minisign now (packages and signatures belong to #64 and #97, and adding
   them later changes no tag or asset name); a Rust `xtask` crate (outside report 02's graph).
