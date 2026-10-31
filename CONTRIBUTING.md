@@ -7,7 +7,8 @@ greenfield workspace. The working agreement is
 contributor-facing summary.
 
 Coding agents also read [AGENTS.md](AGENTS.md) and the repository's
-[authorization rules](CLAUDE.md). Everyone follows the
+[authorization rules](CLAUDE.md). [Architecture](docs/ARCHITECTURE.md) maps the code that
+exists today under `apps/`. Everyone follows the
 [Code of Conduct](CODE_OF_CONDUCT.md). Security problems go through
 [SECURITY.md](SECURITY.md), never a public issue.
 
@@ -21,7 +22,8 @@ Coding agents also read [AGENTS.md](AGENTS.md) and the repository's
 3. Read the reports named on the issue's **Read** line, and nothing more.
 4. Read [Development](docs/DEVELOPMENT.md) for prerequisites and the check commands.
 
-`decided` reports are settled. `proposed` reports are implemented as written. When a
+`decided` reports are settled. `proposed` reports are implemented unless a later decision
+overrides them. When a
 change needs a decision the reports do not make, open an issue labelled
 `decision-needed` and stop on that point instead of guessing.
 
@@ -29,7 +31,11 @@ change needs a decision the reports do not make, open an issue labelled
 
 - Branch `greenfield/<issue-number>-<slug>` from `main`, one branch per issue.
   Dependent issues may stack on the previous issue's branch.
-- Never touch `apps/` except for a stabilization fix in its own pull request.
+- Never touch `apps/` except for a stabilization fix in its own pull request. Such a fix
+  preserves command paths, request validation, persistent state and host approval
+  boundaries, since `apps/` keeps running until the cutover.
+- Keep mechanical formatting, lint fixes and structural moves in separate commits from
+  behavior changes, so each diff can be reviewed on its own.
 - Work in this order: the crate's one-sentence ownership and dependency edges, the
   crate-graph rule, types, state machine and SQL with real-database tests, daemon wiring,
   CLI verbs, TUI views.
@@ -42,15 +48,19 @@ change needs a decision the reports do not make, open an issue labelled
 - Open the pull request from the template. Reference the issue (`Closes #<n>`), list the
   exact commands you ran with their outcomes, and keep `validate` claims open until
   measured. A skipped check is not a pass; never disable a test to make a check pass.
-- Never force-push a branch under review; add commits instead.
+- Never force-push. Rebase onto `main` before the pull request is opened; once it is open,
+  merge `main` into the branch (or into a stacked branch) instead of rewriting history.
 
 ## Checks
 
 | Change | Run before pushing |
 | --- | --- |
-| A greenfield crate | Its focused tests (`cargo nextest run --manifest-path Cargo.toml --test <name>`) and `make greenfield-ci` |
-| Markdown only | `make docs-ci` |
-| Makefile, CI, root manifest, `tools/` or `apps/` | `make ci` |
+| `crates/`, root `Cargo.toml` or `Cargo.lock` | The crate's focused tests (`cargo nextest run --manifest-path Cargo.toml --test <name>`) and `make greenfield-ci` |
+| `apps/`, `config/`, `tools/` or `packaging/` | `make ci` |
+| `Makefile` or `.github/` | `make greenfield-ci` and `make ci` |
+| Any Markdown file | `make docs-ci` |
+
+`tools/ci-jobs.py` maps changed paths to these CI jobs.
 
 The pull request's CI is the full gate. A pull request is merged only when every check is
 green.
@@ -93,6 +103,12 @@ Each milestone's full description and gate live on GitHub and in the
   until the maintainer deletes it, so the work can be reopened.
 - A branch without a pull request is not reviewed. Open a draft pull request to keep
   work visible.
+
+## Permissions
+
+Permission to edit is not permission to install tools, change dependencies, push workflows
+or run host commands. Those need the maintainer's explicit authorization; agents follow
+[CLAUDE.md](CLAUDE.md).
 
 ## License
 

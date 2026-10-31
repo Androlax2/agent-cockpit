@@ -1,5 +1,6 @@
 <!-- markdownlint-disable-file MD041 -- the pull request title is the heading. -->
-<!-- One issue, one pull request. Branch: greenfield/<issue-number>-<slug>. See CONTRIBUTING.md. -->
+<!-- One issue, one pull request. Branch: greenfield/<issue-number>-<slug>. See CONTRIBUTING.md.
+     For an apps/ stabilization fix, describe the fix under Scope and write "n/a" where a greenfield field does not apply. -->
 
 Closes #
 
