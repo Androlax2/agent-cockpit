@@ -105,19 +105,17 @@ fn forbidden_edges_in(manifest_path: &Path) -> Vec<String> {
     let mut reachable_by_source: HashMap<&str, Vec<String>> = HashMap::new();
     let mut violations = Vec::new();
     for edge in FORBIDDEN_EDGES {
-        for source in edge
-            .from
-            .iter()
-            .filter(|crate_name| members.iter().any(|member| member == *crate_name))
-        {
+        for source in edge.from {
+            if !members.iter().any(|member| member == source) {
+                continue;
+            }
             let reachable = reachable_by_source
                 .entry(source)
                 .or_insert_with(|| packages_reachable_from(manifest_path, source));
-            for target in edge
-                .to
-                .iter()
-                .filter(|crate_name| reachable.iter().any(|package| package == *crate_name))
-            {
+            for target in edge.to {
+                if !reachable.iter().any(|package| package == target) {
+                    continue;
+                }
                 violations.push(format!(
                     "rule `{}`: {source} depends on {target} \
                      (`cargo tree --target all -e normal,build,dev -p {source} -i {target}` \
@@ -151,6 +149,11 @@ fn every_rule_names_a_crate_from_report_02() {
         .filter(|crate_name| !report.contains(&format!("`{crate_name}`")))
         .collect();
     assert_eq!(unknown, Vec::<&str>::new());
+}
+
+/// A `[dependencies]` table with one path dependency on the fixture crate `target`.
+fn depends_on(target: &str) -> String {
+    format!("[dependencies]\n{target} = {{ path = \"../{target}\" }}")
 }
 
 /// A throwaway workspace of empty library crates; `crates` pairs each name with the lines of
@@ -208,10 +211,7 @@ fn a_client_depending_on_persistence_fails_naming_the_rule() {
     let manifest_path = fixture_workspace(
         "client_to_persistence",
         &[
-            (
-                "cockpit-cli",
-                "[dependencies]\ncockpit-turso = { path = \"../cockpit-turso\" }",
-            ),
+            ("cockpit-cli", &depends_on("cockpit-turso")),
             ("cockpit-turso", ""),
         ],
     );
@@ -252,13 +252,7 @@ fn each_rule_catches_its_forbidden_edge() {
     ] {
         let manifest_path = fixture_workspace(
             &format!("{source}_to_{target}"),
-            &[
-                (
-                    source,
-                    &format!("[dependencies]\n{target} = {{ path = \"../{target}\" }}"),
-                ),
-                (target, ""),
-            ],
+            &[(source, &depends_on(target)), (target, "")],
         );
         let violations = forbidden_edges_in(&manifest_path);
         assert_eq!(violations.len(), 1, "{rule}: {violations:?}");
@@ -274,14 +268,8 @@ fn an_edge_through_an_intermediate_crate_is_forbidden() {
     let manifest_path = fixture_workspace(
         "through_intermediate",
         &[
-            (
-                "cockpit-cli",
-                "[dependencies]\ncockpit-middle = { path = \"../cockpit-middle\" }",
-            ),
-            (
-                "cockpit-middle",
-                "[dependencies]\ncockpit-scheduling = { path = \"../cockpit-scheduling\" }",
-            ),
+            ("cockpit-cli", &depends_on("cockpit-middle")),
+            ("cockpit-middle", &depends_on("cockpit-scheduling")),
             ("cockpit-scheduling", ""),
         ],
     );
@@ -322,27 +310,21 @@ fn an_intermediate_crates_dev_dependency_is_not_an_edge() {
     let manifest_path = fixture_workspace(
         "intermediate_dev_dependency",
         &[
-            (
-                "cockpit-cli",
-                "[dependencies]\ncockpit-client = { path = \"../cockpit-client\" }",
-            ),
+            ("cockpit-cli", &depends_on("cockpit-client")),
             (
                 "cockpit-client",
                 "[dev-dependencies]\ncockpit-test-daemon = { path = \"../cockpit-test-daemon\" }",
             ),
-            (
-                "cockpit-test-daemon",
-                "[dependencies]\ncockpit-turso = { path = \"../cockpit-turso\" }",
-            ),
+            ("cockpit-test-daemon", &depends_on("cockpit-turso")),
             ("cockpit-turso", ""),
         ],
     );
-    assert_eq!(
-        forbidden_edges_in(&manifest_path),
-        [
-            "rule `clients -> persistence`: cockpit-client depends on cockpit-turso \
-          (`cargo tree --target all -e normal,build,dev -p cockpit-client -i cockpit-turso` shows the path)"
-        ]
+    let violations = forbidden_edges_in(&manifest_path);
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0]
+            .starts_with("rule `clients -> persistence`: cockpit-client depends on cockpit-turso"),
+        "{violations:?}"
     );
 }
 
@@ -351,10 +333,7 @@ fn an_allowed_edge_passes() {
     let manifest_path = fixture_workspace(
         "allowed_edge",
         &[
-            (
-                "cockpit-cli",
-                "[dependencies]\ncockpit-client = { path = \"../cockpit-client\" }",
-            ),
+            ("cockpit-cli", &depends_on("cockpit-client")),
             ("cockpit-client", ""),
         ],
     );

@@ -64,23 +64,30 @@ fn inherits_from_workspace(manifest: &str, key: &str) -> bool {
         .any(|entry| *entry == dotted || *entry == inline)
 }
 
-/// Names of the members whose `Cargo.toml` does not inherit `key` from the workspace.
-fn members_not_inheriting(key: &str) -> Vec<String> {
+/// Each member's directory name with the text of its `Cargo.toml`.
+fn member_manifests() -> Vec<(PathBuf, String, String)> {
     member_dirs()
         .into_iter()
-        .filter(|member_dir| {
-            let manifest_path = member_dir.join("Cargo.toml");
-            let manifest = fs::read_to_string(&manifest_path)
-                .unwrap_or_else(|error| panic!("{}: {error}", manifest_path.display()));
-            !inherits_from_workspace(&manifest, key)
-        })
         .map(|member_dir| {
-            member_dir
+            let name = member_dir
                 .file_name()
                 .unwrap()
                 .to_string_lossy()
-                .into_owned()
+                .into_owned();
+            let manifest_path = member_dir.join("Cargo.toml");
+            let manifest = fs::read_to_string(&manifest_path)
+                .unwrap_or_else(|error| panic!("{}: {error}", manifest_path.display()));
+            (member_dir, name, manifest)
         })
+        .collect()
+}
+
+/// Names of the members whose `Cargo.toml` does not inherit `key` from the workspace.
+fn members_not_inheriting(key: &str) -> Vec<String> {
+    member_manifests()
+        .into_iter()
+        .filter(|(_, _, manifest)| !inherits_from_workspace(manifest, key))
+        .map(|(_, name, _)| name)
         .collect()
 }
 
@@ -177,17 +184,9 @@ fn words_of(text: &str) -> String {
 
 /// `name: problem` for each member whose ownership sentence is missing or does not match.
 fn members_without_an_ownership_sentence() -> Vec<String> {
-    member_dirs()
+    member_manifests()
         .into_iter()
-        .filter_map(|member_dir| {
-            let name = member_dir
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-            let manifest_path = member_dir.join("Cargo.toml");
-            let manifest = fs::read_to_string(&manifest_path)
-                .unwrap_or_else(|error| panic!("{}: {error}", manifest_path.display()));
+        .filter_map(|(member_dir, name, manifest)| {
             let Some(description) = package_description(&manifest) else {
                 return Some(format!(
                     "{name}: no single-line `description` without escapes in [package]"
