@@ -56,7 +56,8 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 at INTEGER NOT NULL
             );",
         },
-        // #146: agents' reports move here from the agent channel, rows kept; each launch
+        // #146: agents' reports move here from the agent channel, rows kept, with the
+        // launch they were sent from (unknown for the copied rows); each launch
         // records the start files its agent read; a restart may wait for the agent's turn.
         // The copy reads the channel's version 1 table, so the agent channel's migrations
         // run first (the daemon's order).
@@ -68,7 +69,8 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 label TEXT,
                 doing TEXT,
                 needs_input TEXT,
-                reported_at INTEGER NOT NULL
+                reported_at INTEGER NOT NULL,
+                launch_id INTEGER
             );
             INSERT INTO session_reports (session, state, label, doing, needs_input, reported_at)
                 SELECT session, state, label, doing, needs_input, reported_at
@@ -316,17 +318,7 @@ pub(crate) async fn insert_launch(
             (id.as_str(), kind.column(), execution.0, now()),
         )
         .await?;
-    let mut rows = write
-        .query(
-            "SELECT max(id) FROM session_launches WHERE session_id = ?1",
-            [id.as_str()],
-        )
-        .await?;
-    let launch: i64 = match rows.next().await? {
-        Some(row) => row.get(0)?,
-        None => unreachable!("max() answers one row"),
-    };
-    drop(rows);
+    let launch = write.last_insert_rowid();
     for file in &start_files.files {
         insert_start_file(write, launch, file).await?;
     }
@@ -345,12 +337,19 @@ async fn insert_start_file(
             changed_at,
             inode,
             len,
-        } => (
-            "present",
-            Some((nanos_since_epoch(*modified)?, *changed_at, *inode, *len)),
-            None,
-        ),
-        FileState::Unreadable { error } => ("unreadable", None, Some(error.as_str())),
+        } => match nanos_since_epoch(*modified) {
+            Some(modified) => ("present", Some((modified, *changed_at, *inode, *len)), None),
+            // Kept as unreadable rather than failing the launch: the file then reads as
+            // changed on every look, which the owner sees.
+            None => (
+                "unreadable",
+                None,
+                Some(format!(
+                    "its modification time {modified:?} is out of the recorded range"
+                )),
+            ),
+        },
+        FileState::Unreadable { error } => ("unreadable", None, Some(error.clone())),
     };
     write
         .execute(
@@ -368,7 +367,7 @@ async fn insert_start_file(
                 // Stored bit for bit: SQLite integers are signed.
                 integer(present.map(|(_, _, inode, _)| inode.cast_signed())),
                 integer(present.map(|(_, _, _, len)| len.cast_signed())),
-                optional_text(error),
+                optional_text(error.as_deref()),
             ]),
         )
         .await?;
@@ -424,17 +423,13 @@ fn integer(value: Option<i64>) -> Value {
     value.map_or(Value::Null, Value::Integer)
 }
 
-fn nanos_since_epoch(time: SystemTime) -> Result<i64, Error> {
+/// `None` past about the year 2262 either side of 1970, beyond an `i64` of nanoseconds.
+fn nanos_since_epoch(time: SystemTime) -> Option<i64> {
     let nanos = match time.duration_since(UNIX_EPOCH) {
         Ok(after) => i128::try_from(after.as_nanos()),
         Err(before) => i128::try_from(before.duration().as_nanos()).map(|nanos| -nanos),
     };
-    nanos
-        .ok()
-        .and_then(|nanos| i64::try_from(nanos).ok())
-        .ok_or_else(|| Error::InvalidStoredRow {
-            reason: format!("a start file's modification time {time:?} is out of range"),
-        })
+    nanos.ok().and_then(|nanos| i64::try_from(nanos).ok())
 }
 
 fn system_time(nanos: i64) -> SystemTime {
@@ -462,7 +457,8 @@ pub(crate) async fn request_restart(
     Ok(())
 }
 
-/// A launch gives the agent the start files as they are, so it answers any restart request.
+/// A launch gives the agent the start files as they are, so it answers any restart request;
+/// a session that ends or fails has nothing left to restart.
 pub(crate) async fn clear_restart_request(
     write: &WriteTransaction<'_>,
     id: &SessionId,

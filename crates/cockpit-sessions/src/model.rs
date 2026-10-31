@@ -262,9 +262,9 @@ pub struct TickReport {
 #[derive(Debug, Default)]
 pub struct RestartAll {
     pub restarted: Vec<Session>,
-    /// Busy sessions (working, asking, or not yet reporting): each restarts once its agent
-    /// reports waiting at its prompt.
-    pub deferred: Vec<Session>,
+    /// Busy sessions (working, asking, or not yet reporting), with the start files that
+    /// changed: each restarts once its agent reports waiting at its prompt.
+    pub deferred: Vec<(Session, Vec<String>)>,
     pub failed: Vec<(SessionId, Error)>,
 }
 

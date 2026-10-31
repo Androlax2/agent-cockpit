@@ -543,3 +543,56 @@ async fn the_owners_wake_records_the_owner_as_its_cause() {
         Some("woken by the owner")
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ended_session_keeps_no_pending_restart() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root).await;
+    home.edit_start_file();
+    assert_eq!(restart_all(&client).await.deferred.len(), 1);
+
+    request(
+        &client,
+        Command::SessionEnd {
+            session: started.id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(!listed(&client, &started.id).await.restart_pending);
+}
+
+/// Reports carry the launch they were sent from, not only a time in seconds: a report sent
+/// in the same second as the next launch still belongs to the previous agent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_report_from_the_previous_launch_does_not_restart_the_new_agent() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root).await;
+    home.report_as_agent(&home.launches_of(&started.id)[0], AgentState::Waiting, true)
+        .await;
+    request(
+        &client,
+        Command::SessionRestart {
+            session: started.id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    home.edit_start_file();
+
+    let outcome = restart_all(&client).await;
+
+    assert!(outcome.restarted.is_empty());
+    assert_eq!(outcome.deferred[0].id, started.id);
+    assert_eq!(
+        outcome.deferred[0].changed_start_files,
+        vec![START_FILE.to_owned()]
+    );
+}

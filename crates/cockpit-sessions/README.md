@@ -26,7 +26,9 @@ stopped in the middle of one finishes or repairs it at its next start.
 - **Agents' reports.** An agent reports its state (working, waiting), label, doing-now and
   open question through the agent channel, which identifies the sender; this crate checks
   the fields, asks `cockpit-authorization` whether the session may change its own state, and
-  keeps the latest report per session (moved from `cockpit-agent-channel` in #146).
+  keeps the latest report per session with the launch it came from (moved from
+  `cockpit-agent-channel` in #146). Restart and sleep trust only a report of the current
+  launch.
 - **Start files.** Each launch records the state of the start files (`cockpit-config`) its
   provider reads, before the agent runs. A running session whose files changed since shows
   them in `session list`.
@@ -39,7 +41,7 @@ stopped in the middle of one finishes or repairs it at its next start.
   and leaves a running or launching session as it is. Both record the cause in the
   transition history.
 - **Idle sleep.** The periodic pass puts a running session to sleep only when its agent's
-  latest report, sent since the current launch, says it waits at its prompt and asks
+  latest report, sent by the current launch's agent, says it waits at its prompt and asks
   nothing, and the idle window (60 minutes) has passed since that report. With no such
   report it is never put to sleep. The expiry counts from the move to asleep. A session asleep past the expiry (7 days) ends. Both values come from the current
   cockpit's sleep rules.

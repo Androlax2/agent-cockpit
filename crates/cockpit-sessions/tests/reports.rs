@@ -325,6 +325,7 @@ async fn a_report_recorded_before_the_move_survives_the_migration() {
             doing: Some("writing the tests".to_owned()),
             needs_input: Some("Ship it?".to_owned()),
             reported_at: 42,
+            launch: None,
         }]
     );
     let channel_table = database

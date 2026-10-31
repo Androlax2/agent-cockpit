@@ -21,8 +21,13 @@ by the worker, for the reason given.
   start files changed: now when the agent's latest report since its launch says it waits at
   its prompt with no question, otherwise it records a restart request and the periodic pass
   restarts the session once it does. A session that never reports is deferred, never cut.
-  Any launch clears the request. Rejected: automatic restarts (B), they restart an agent the
-  owner may be reading.
+  Any launch clears the request, and so does a move to ended or failed. The decision is made
+  under the session's lock on a fresh read of the session and its report. Rejected: automatic
+  restarts (B), they restart an agent the owner may be reading.
+- **A report names the launch it was sent from** (`session_reports.launch_id`, the session's
+  latest launch when it reported). Restart and idle sleep only trust a report of the current
+  launch; comparing report and launch times in seconds let a report from the previous agent,
+  sent in the launch's second, count for the new one.
 - **Wake paths share one transition.** `wake(id, cause)` is the owner's strict verb;
   `ensure_awake(id, cause)` is for callers that need the agent running (open, message, todo,
   phone) and answers a running or launching session as it is. The cause is the reason of the

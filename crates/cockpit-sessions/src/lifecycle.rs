@@ -148,46 +148,53 @@ impl Sessions {
     /// agent reports waiting, so no turn is cut. One failure does not stop the others.
     pub async fn restart_all(&self) -> Result<RestartAll, Error> {
         self.tmux()?;
-        let (running, agent_reports) = {
+        let running = {
             let read = self.database.read().await?;
-            (
-                store::sessions_in(&read, &["running"]).await?,
-                crate::latest_reports(&read).await?,
-            )
+            store::sessions_in(&read, &["running"]).await?
         };
         let mut outcome = RestartAll::default();
-        for session in running {
-            let id = session.id.clone();
-            match self.restart_if_changed(session, &agent_reports).await {
-                Ok(None) => {}
-                Ok(Some((restarted, true))) => outcome.restarted.push(restarted),
-                Ok(Some((deferred, false))) => outcome.deferred.push(deferred),
-                Err(error) => outcome.failed.push((id, error)),
+        for listed in running {
+            match self.restart_if_changed(&listed.id).await {
+                Ok(RestartStep::Current) => {}
+                Ok(RestartStep::Restarted(restarted)) => outcome.restarted.push(restarted),
+                Ok(RestartStep::Deferred(deferred, changed)) => {
+                    outcome.deferred.push((deferred, changed));
+                }
+                Err(error) => outcome.failed.push((listed.id, error)),
             }
         }
         Ok(outcome)
     }
 
-    /// `restart_all`'s step for one session: `None` when its start files are current,
-    /// otherwise the session and whether it restarted now (`false`: deferred).
-    async fn restart_if_changed(
-        &self,
-        session: Session,
-        agent_reports: &[SessionReport],
-    ) -> Result<Option<(Session, bool)>, Error> {
-        if self.changed_start_files(&session).await?.is_empty() {
-            return Ok(None);
+    /// `restart_all`'s step for one session, decided under its lock on a fresh read of the
+    /// session and its agent's report, so an operation or report since the listing counts.
+    async fn restart_if_changed(&self, id: &SessionId) -> Result<RestartStep, Error> {
+        let _operation = self.lock(id).await;
+        let (session, agent_report) = {
+            let read = self.database.read().await?;
+            let session = store::session(&read, id).await?;
+            let agent_report = crate::reports::latest_report(&read, &as_reporter(id)?).await?;
+            (session, agent_report)
+        };
+        if session.state != SessionState::Running {
+            return Ok(RestartStep::Current);
+        }
+        let changed = self.changed_start_files(&session).await?;
+        if changed.is_empty() {
+            return Ok(RestartStep::Current);
         }
         self.resumable(&session)?;
-        if turn_refusal(&session, report_of(agent_reports, &session.id)).is_none() {
-            return Ok(Some((self.restart(&session.id).await?, true)));
+        if turn_refusal(&session, agent_report.as_ref()).is_none() {
+            let restarted = self
+                .stop(id, &[SessionState::Running], StopTarget::Restart, "restart")
+                .await?;
+            return Ok(RestartStep::Restarted(restarted));
         }
-        let _operation = self.lock(&session.id).await;
         let write = self.database.write().await?;
-        store::request_restart(&write, &session.id).await?;
-        let deferred = store::session(&write, &session.id).await?;
+        store::request_restart(&write, id).await?;
+        let deferred = store::session(&write, id).await?;
         write.commit().await?;
-        Ok(Some((deferred, false)))
+        Ok(RestartStep::Deferred(deferred, changed))
     }
 
     /// The labels of the start files a running session's agent read at launch that changed
@@ -436,7 +443,7 @@ impl Sessions {
     /// end. A failure is reported per session and looked at again on the next pass.
     pub async fn tick(&self) -> Result<TickReport, Error> {
         let mut report = TickReport::default();
-        let (running, asleep, agent_reports) = {
+        let (running, asleep) = {
             let read = self.database.read().await?;
             (
                 // Without tmux a running session's terminal can be neither checked nor
@@ -447,16 +454,16 @@ impl Sessions {
                     Vec::new()
                 },
                 store::sessions_in(&read, &["asleep"]).await?,
-                crate::latest_reports(&read).await?,
             )
         };
         for listed in running {
             let id = listed.id.clone();
             let _operation = self.lock(&id).await;
-            // Re-read under the lock: an owner operation may have replaced the launch since.
-            let session = match self.get(&id).await {
-                Ok(session) if session.state == SessionState::Running => session,
-                Ok(_) => continue,
+            // Re-read under the lock: an owner operation may have replaced the launch since,
+            // and the agent may have reported.
+            let (session, agent_report) = match self.running_with_report(&id).await {
+                Ok(Some(read)) => read,
+                Ok(None) => continue,
                 Err(error) => {
                     report.errors.push((id, error.to_string()));
                     continue;
@@ -465,7 +472,7 @@ impl Sessions {
             match self.end_if_exited(&session).await {
                 Ok(true) => report.exited.push(id),
                 Ok(false) => {
-                    let agent_report = report_of(&agent_reports, &id);
+                    let agent_report = agent_report.as_ref();
                     if session.restart_pending && turn_refusal(&session, agent_report).is_none() {
                         match self
                             .stop(
@@ -505,6 +512,20 @@ impl Sessions {
             }
         }
         Ok(report)
+    }
+
+    /// The session, when it runs, with its agent's latest report.
+    async fn running_with_report(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<(Session, Option<SessionReport>)>, Error> {
+        let read = self.database.read().await?;
+        let session = store::session(&read, id).await?;
+        if session.state != SessionState::Running {
+            return Ok(None);
+        }
+        let agent_report = crate::reports::latest_report(&read, &as_reporter(id)?).await?;
+        Ok(Some((session, agent_report)))
     }
 
     /// Ends an asleep session once it slept `expiry` seconds, counted from its last move to
@@ -665,6 +686,7 @@ impl Sessions {
         )
         .await?;
         revoke_self_grant(&write, id).await?;
+        store::clear_restart_request(&write, id).await?;
         write.commit().await?;
         Ok(failed)
     }
@@ -827,10 +849,17 @@ impl Sessions {
             .processes
             .prepare_hosted(&self.database, &spec, &TERMINAL_VARIABLES)
             .await?;
-        {
+        let recorded = async {
             let write = self.database.write().await?;
             store::insert_launch(&write, id, kind, hosted.execution, &start_files).await?;
             write.commit().await?;
+            Ok::<(), Error>(())
+        };
+        if let Err(error) = recorded.await {
+            self.processes
+                .abandon_hosted(&self.database, hosted.execution)
+                .await?;
+            return Err(error);
         }
         let terminal = SessionLaunch {
             name: terminal_name(id)?,
@@ -1024,26 +1053,22 @@ impl Sessions {
     }
 }
 
-/// The latest report of session `id`'s agent, if it sent one.
-fn report_of<'reports>(
-    agent_reports: &'reports [SessionReport],
-    id: &SessionId,
-) -> Option<&'reports SessionReport> {
-    agent_reports
-        .iter()
-        .find(|agent_report| agent_report.session.as_str() == id.as_str())
+/// What `restart_all` did with one session.
+enum RestartStep {
+    /// Not running, or its start files are current.
+    Current,
+    Restarted(Session),
+    /// Busy; restarts once its agent waits. With the start files that changed.
+    Deferred(Session, Vec<String>),
 }
 
 /// Why the session's agent is not between turns, waiting at its prompt with nothing asked:
-/// its latest report, sent since the current launch, must say so. A report from an earlier
-/// launch says nothing about this agent.
+/// its latest report, sent by the agent of the current launch, must say so. A report from
+/// an earlier launch says nothing about this agent.
 fn turn_refusal(session: &Session, agent_report: Option<&SessionReport>) -> Option<SleepRefusal> {
-    let launched_at = session
-        .launch
-        .as_ref()
-        .map_or(0, |launch| launch.launched_at);
-    let Some(agent_report) =
-        agent_report.filter(|agent_report| agent_report.reported_at >= launched_at)
+    let current_launch = session.launch.as_ref().map(|launch| launch.number);
+    let Some(agent_report) = agent_report
+        .filter(|agent_report| current_launch.is_some() && agent_report.launch == current_launch)
     else {
         return Some(SleepRefusal::NotReady);
     };
@@ -1078,6 +1103,7 @@ async fn give_up_on_end(
     ended: &Session,
 ) -> Result<(), Error> {
     release(write, ended).await?;
+    store::clear_restart_request(write, &ended.id).await?;
     revoke_self_grant(write, &ended.id).await
 }
 
@@ -1098,6 +1124,11 @@ async fn revoke_self_grant(
         cockpit_authorization::revoke(write, grant.id).await?;
     }
     Ok(())
+}
+
+/// The session as its agent's reports name it.
+fn as_reporter(id: &SessionId) -> Result<cockpit_authorization::SessionId, Error> {
+    authorization_session(id)
 }
 
 /// The session as the authorization and agent-channel crates name it.

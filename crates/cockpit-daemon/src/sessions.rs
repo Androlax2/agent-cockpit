@@ -27,7 +27,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
         Command::SessionList { ended } => job(async move {
             let mut views = Vec::new();
             for session in sessions.list(ended).await? {
-                views.push(session_view(&sessions, &session).await?);
+                views.push(current_view(&sessions, &session).await?);
             }
             Ok(Reply::Sessions { sessions: views })
         }),
@@ -49,14 +49,17 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
         }),
         Command::SessionRestartAll => job(async move {
             let outcome = sessions.restart_all().await?;
-            let mut restarted = Vec::new();
-            for session in &outcome.restarted {
-                restarted.push(session_view(&sessions, session).await?);
-            }
-            let mut deferred = Vec::new();
-            for session in &outcome.deferred {
-                deferred.push(session_view(&sessions, session).await?);
-            }
+            // A restarted agent was just launched on the current start files.
+            let restarted = outcome
+                .restarted
+                .iter()
+                .map(|session| session_view(session, Vec::new()))
+                .collect();
+            let deferred = outcome
+                .deferred
+                .into_iter()
+                .map(|(session, changed)| session_view(&session, changed))
+                .collect();
             let failed = outcome
                 .failed
                 .iter()
@@ -210,12 +213,18 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
 
 async fn session_reply(sessions: &Sessions, session: &Session) -> Result<Reply, Error> {
     Ok(Reply::Session {
-        session: Box::new(session_view(sessions, session).await?),
+        session: Box::new(current_view(sessions, session).await?),
     })
 }
 
-async fn session_view(sessions: &Sessions, session: &Session) -> Result<SessionView, Error> {
-    Ok(SessionView {
+/// The session's view with the start files that changed since its launch, compared now.
+async fn current_view(sessions: &Sessions, session: &Session) -> Result<SessionView, Error> {
+    let changed = sessions.changed_start_files(session).await?;
+    Ok(session_view(session, changed))
+}
+
+fn session_view(session: &Session, changed_start_files: Vec<String>) -> SessionView {
+    SessionView {
         id: session.id.to_string(),
         agent: session.provider.to_string(),
         checkout: session.checkout.0,
@@ -252,7 +261,7 @@ async fn session_view(sessions: &Sessions, session: &Session) -> Result<SessionV
             },
             launched_at: launch.launched_at,
         }),
-        changed_start_files: sessions.changed_start_files(session).await?,
+        changed_start_files,
         restart_pending: session.restart_pending,
-    })
+    }
 }
