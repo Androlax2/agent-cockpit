@@ -18,8 +18,7 @@ completed by Theo". The guide is [docs/acceptance/m1.md](../acceptance/m1.md), i
   directory (or `COCKPIT_ACCEPTANCE_CLAUDE`) into the scratch `bin`: the greywall launcher would
   hide this clone's `target/release` from the agent. The agent runs unsandboxed (sandbox
   profiles come later), in the scratch project `demo`.
-- Every stuck step or surprise becomes an issue (label `acceptance`, milestone M1); from Theo's
-  first walk on, at his request, they are recorded in the run below instead. The gate
+- Every stuck step or surprise becomes an issue (label `acceptance`, milestone M1). The gate
   closes when each is fixed and its step re-run, or deferred in writing on #37.
 
 ## Runs
@@ -67,8 +66,10 @@ completed by Theo". The guide is [docs/acceptance/m1.md](../acceptance/m1.md), i
 - 6, latency: "pretty fast", nothing over a second. Idle sleep: not verified; Theo did not wait
   the 30 minutes.
 - Theo's notes:
-  - The tmux status bar (green, at the bottom of the viewer) shows all the time; it should go.
+  - The tmux status bar (green, at the bottom of the viewer) shows all the time; it should go:
+    #302.
   - Next guides should turn off the cockpit window's opacity on Hyprland first: it was hard to
-    see anything.
+    see anything: #304.
 - Seen in the screenshots: the owner's Claude Code stop hooks fail to notify ("Cannot autolaunch
-  D-Bus without X11 $DISPLAY"): daemon-launched agents get no `DISPLAY` or `WAYLAND_DISPLAY`.
+  D-Bus without X11 $DISPLAY"): daemon-launched agents get no `DISPLAY` or `WAYLAND_DISPLAY`:
+  #303.
