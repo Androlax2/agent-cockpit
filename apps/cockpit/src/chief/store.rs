@@ -5545,16 +5545,29 @@ fn require_unreserved(
 ) -> Result<(), TeamError> {
     // Only a pending legacy launch may still pick any session of its project; observed "doing" work
     // without a session reserves its own task, and per-worker busy checks cover whoever runs it.
-    let owner: Option<(String, String)> = connection.query_row(
-        "SELECT owner,worker FROM scheduling_reservations WHERE ((project=?1 OR project='') AND task_id=?2)
-            OR (worker<>'' AND worker=?3) OR ((project=?1 OR project='') AND worker='' AND owner='legacy') LIMIT 1",
-        params![task.project, task.task_id, worker.unwrap_or("")], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(storage_error)?;
-    if let Some((owner, worker)) = owner {
-        return Err(conflict(&format!(
+    // The refusal names its scope, most specific first: the queue stops offering the worker or the
+    // project more items once one of them is refused for it.
+    let owner: Option<(String, String, i64)> = connection.query_row(
+        "SELECT owner,worker,CASE WHEN (project=?1 OR project='') AND task_id=?2 THEN 0
+            WHEN worker<>'' AND worker=?3 THEN 1 ELSE 2 END AS scope
+            FROM scheduling_reservations WHERE ((project=?1 OR project='') AND task_id=?2)
+            OR (worker<>'' AND worker=?3) OR ((project=?1 OR project='') AND worker='' AND owner='legacy')
+            ORDER BY scope LIMIT 1",
+        params![task.project, task.task_id, worker.unwrap_or("")], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(storage_error)?;
+    match owner {
+        None => Ok(()),
+        Some((owner, worker, 0)) => Err(conflict(&format!(
             "work already reserved by {owner}: {worker}"
-        )));
+        ))),
+        Some((owner, _, 1)) => Err(conflict(&format!(
+            "{} ({owner})",
+            crate::queue::WORKER_HOLDS_WORK
+        ))),
+        Some((owner, _, _)) => Err(conflict(&format!(
+            "{} ({owner})",
+            crate::queue::PROJECT_LAUNCH_PENDING
+        ))),
     }
-    Ok(())
 }
 
 /// A resumed conversation takes no new work, so the todo it is already doing (observed) is no

@@ -134,6 +134,56 @@ fn an_unknown_legacy_launch_reserves_its_project_until_the_worker_is_known() {
 }
 
 #[test]
+fn a_refusal_names_whether_the_task_or_the_worker_is_reserved() {
+    let (mut connection, _) = setup();
+    let worker = session('b').session_id;
+    store::reserve_legacy(&mut connection, &task("aaaaaaaa"), Some(&worker), NOW).unwrap();
+    let mut refusal = |id: &str, worker: Option<&str>| {
+        store::reserve_legacy(&mut connection, &task(id), worker, NOW)
+            .unwrap_err()
+            .message
+    };
+    let reserved_task = refusal("aaaaaaaa", Some(&worker));
+    assert!(
+        reserved_task.starts_with("work already reserved by legacy"),
+        "the task is named first: {reserved_task}"
+    );
+    let busy_worker = refusal("dddddddd", Some(&worker));
+    assert!(
+        busy_worker.starts_with(cockpit::queue::WORKER_HOLDS_WORK),
+        "{busy_worker}"
+    );
+}
+
+#[test]
+fn a_launch_without_a_worker_refuses_its_projects_other_tasks_as_project_wide() {
+    let (mut connection, _) = setup();
+    store::reserve_legacy(&mut connection, &task("cccccccc"), None, NOW).unwrap();
+    let refusal = store::reserve_legacy(&mut connection, &task("dddddddd"), None, NOW)
+        .unwrap_err()
+        .message;
+    assert!(
+        refusal.starts_with(cockpit::queue::PROJECT_LAUNCH_PENDING),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn a_worker_holding_work_is_named_before_its_projects_pending_launch() {
+    let (mut connection, _) = setup();
+    let worker = session('b').session_id;
+    store::reserve_legacy(&mut connection, &task("aaaaaaaa"), Some(&worker), NOW).unwrap();
+    store::reserve_legacy(&mut connection, &task("cccccccc"), None, NOW).unwrap();
+    let refusal = store::reserve_legacy(&mut connection, &task("dddddddd"), Some(&worker), NOW)
+        .unwrap_err()
+        .message;
+    assert!(
+        refusal.starts_with(cockpit::queue::WORKER_HOLDS_WORK),
+        "{refusal}"
+    );
+}
+
+#[test]
 fn a_doing_issue_without_a_session_does_not_block_reservations_in_other_projects() {
     let (mut connection, _) = setup();
     let mut todos = cockpit::todo::TodoList::default();

@@ -17,6 +17,11 @@ pub const QUEUE_CHECK_S: f64 = 30.0;
 /// How the host starts refusing an automatic reservation because of the session (or, for a fresh
 /// session, the project), not the item: trying the next item would be refused the same way.
 pub const SESSION_NOT_READY: &str = "automatic legacy admission is no longer ready";
+/// How the host refuses any item to a session that already holds reserved work.
+pub const WORKER_HOLDS_WORK: &str = "the session already holds reserved work";
+/// How the host refuses every item of a project while a launch without a session is pending
+/// there: offering its other items, to this or any other session, is refused the same way.
+pub const PROJECT_LAUNCH_PENDING: &str = "a launch is still pending in this project";
 
 pub struct QueueContext {
     pub now: i64,

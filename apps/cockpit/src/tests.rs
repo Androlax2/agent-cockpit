@@ -16942,6 +16942,11 @@ fn handed_work_starts_each_item_once_after_the_previous_launch_has_a_known_worke
 
 /// A scheduler that refuses every automatic reservation and records each request.
 fn refusing_scheduler(fixture: &Fixture) -> HostRequests {
+    scheduler_refusing_with(fixture, "automatic legacy admission is no longer ready")
+}
+
+/// A scheduler that refuses every reservation with `refusal` and records each request.
+fn scheduler_refusing_with(fixture: &Fixture, refusal: &'static str) -> HostRequests {
     use std::io::{Read, Write};
     let requests = HostRequests::default();
     let recorded = requests.clone();
@@ -16950,10 +16955,16 @@ fn refusing_scheduler(fixture: &Fixture) -> HostRequests {
         let _ = stream.read_to_string(&mut text);
         let request: Value = serde_json::from_str(&text).unwrap();
         let result = if request["request"] == "reserve_task" {
-            json!({"Err": {"code": "conflict", "message": "automatic legacy admission is no longer ready"}})
-        } else { json!({"Ok": {"recorded": true}}) };
+            json!({"Err": {"code": "conflict", "message": refusal}})
+        } else {
+            json!({"Ok": {"recorded": true}})
+        };
         recorded.lock().unwrap().push(request);
-        let _ = stream.write_all(json!({"request_id": "x", "result": result}).to_string().as_bytes());
+        let _ = stream.write_all(
+            json!({"request_id": "x", "result": result})
+                .to_string()
+                .as_bytes(),
+        );
     });
     requests
 }
@@ -16985,6 +16996,117 @@ fn a_refused_handed_item_is_not_asked_for_again_on_every_tick() {
             .status_of(&item_titled(&app.todos, "Refused handoff").id()),
         "todo"
     );
+}
+
+/// Each reservation costs osd a todo list parse and a live-session scan: fifteen handed items
+/// refused one by one, every queue check, kept it over its CPU limit on 2026-10-31.
+#[test]
+fn handed_items_of_a_project_the_host_finds_not_ready_cost_one_reservation_per_check() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    for title in ["First handoff", "Second handoff", "Third handoff"] {
+        file_in_greyproxy(&greywall, title, json!({}));
+    }
+    let requests = scheduler_refusing_with(
+        &fixture,
+        "automatic legacy admission is no longer ready: an ask-to-run or guide request is waiting in this project",
+    );
+    let mut app = fixture.app();
+    app.gaming = || false;
+    app.todos.apply_updates();
+    app.dispatch_queue();
+    app.dispatch_queue();
+    assert_eq!(reserve_requests(&requests), 1);
+    app.queue_checked = 0.0;
+    app.dispatch_queue();
+    assert_eq!(reserve_requests(&requests), 2, "retried at the next check");
+}
+
+#[test]
+fn an_item_the_chief_asked_for_is_still_offered_after_ordinary_handed_work_is_refused() {
+    let fixture = Fixture::new();
+    let (greywall, _) = greywall_and_greyproxy(&fixture);
+    for title in ["Ordinary handoff", "Second ordinary handoff", "Chief asked"] {
+        file_in_greyproxy(&greywall, title, json!({}));
+    }
+    let requests = scheduler_refusing_with(
+        &fixture,
+        "automatic legacy admission is no longer ready: a session of this project is running",
+    );
+    let mut app = fixture.app();
+    app.gaming = || false;
+    app.todos.apply_updates();
+    app.chief_requests_checked = util::now();
+    app.chief_requested
+        .insert(item_titled(&app.todos, "Chief asked").id());
+    app.dispatch_queue();
+    let reserved: Vec<String> = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request["request"] == "reserve_task")
+        .map(|request| request["task_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(reserved.len(), 2, "{reserved:?}");
+    assert!(reserved.contains(&item_titled(&app.todos, "Chief asked").id()));
+}
+
+#[test]
+fn a_project_with_a_pending_launch_is_offered_once_per_check_across_its_idle_sessions() {
+    let fixture = Fixture::new();
+    let idle_since = util::now_secs() - 600;
+    fixture.snapshot(json!([
+        session(SESSION_A, "waiting", "runway", "/r/runway", idle_since),
+        session(SESSION_B, "waiting", "runway", "/r/runway", idle_since),
+    ]));
+    let requests = scheduler_refusing_with(
+        &fixture,
+        "a launch is still pending in this project (legacy)",
+    );
+    let mut app = fixture.app();
+    app.gaming = || false;
+    for text in ["first", "second", "third"] {
+        let id = app.todos.add("runway", "/r/runway", text);
+        app.todos.toggle_queued(&id);
+    }
+    app.dispatch_queue();
+    assert_eq!(reserve_requests(&requests), 1);
+}
+
+#[test]
+fn a_pending_launch_found_for_handed_work_spares_the_projects_idle_sessions_that_check() {
+    let fixture = Fixture::new();
+    let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
+    fixture.snapshot(json!([session(
+        SESSION_B,
+        "waiting",
+        "greyproxy",
+        &greyproxy.display().to_string(),
+        util::now_secs() - 600
+    )]));
+    for title in ["First handoff", "Second handoff"] {
+        file_in_greyproxy(&greywall, title, json!({}));
+    }
+    let requests = scheduler_refusing_with(
+        &fixture,
+        "a launch is still pending in this project (legacy)",
+    );
+    let mut app = fixture.app();
+    app.gaming = || false;
+    app.todos.apply_updates();
+    app.dispatch_queue();
+    assert_eq!(reserve_requests(&requests), 1);
+}
+
+#[test]
+fn a_session_already_holding_reserved_work_is_offered_no_further_item() {
+    let fixture = Fixture::new();
+    let (mut app, _, second) = two_queued_items(&fixture);
+    let requests =
+        scheduler_refusing_with(&fixture, "the session already holds reserved work (legacy)");
+    app.dispatch_queue();
+    assert_eq!(app.todos.status_of(&second), "todo");
+    assert_eq!(reserve_requests(&requests), 1);
 }
 
 #[test]

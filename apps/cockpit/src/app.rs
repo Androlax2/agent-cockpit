@@ -1546,7 +1546,7 @@ pub struct App {
     handed_refused: HashSet<String>,
     /// The todos the Chief asked a fresh session for (chief_session_starts), read again at most
     /// every queue check: they start like handed work, queued or not.
-    chief_requested: HashSet<String>,
+    pub(crate) chief_requested: HashSet<String>,
     pub(crate) chief_requests_checked: f64,
     pub(crate) sleep_checked: f64,
     /// session -> the idle start `cockpit sleep` was asked about: a refusal is not asked again
@@ -2221,7 +2221,8 @@ impl App {
             return;
         }
         let context = self.queue_context();
-        self.start_sessions_for_handed_work(&context, handed);
+        let mut pending_launch_roots = HashSet::new();
+        self.start_sessions_for_handed_work(&context, handed, &mut pending_launch_roots);
         if !is_check_due {
             return;
         }
@@ -2241,14 +2242,26 @@ impl App {
             })
             .collect();
         for session in idle {
-            self.give_queued_work(&session, now);
+            self.give_queued_work(&session, now, &mut pending_launch_roots);
         }
     }
 
     /// Gives the idle session the first of its project's queued items the host lets it take. A
     /// refused item (still reserved, or another team's task) does not hold back the ones after it;
-    /// a refusal of the session itself ends the pass for it.
-    fn give_queued_work(&mut self, session: &Session, now: f64) {
+    /// a refusal of the session itself ends the pass for it, and a refusal of its whole project
+    /// (`pending_launch_roots`, by repository root) ends it for every session of that project.
+    /// Each reservation costs the daemon a todo list parse: offering every item to every session
+    /// of a refused project kept osd over its CPU limit on 2026-10-31.
+    fn give_queued_work(
+        &mut self,
+        session: &Session,
+        now: f64,
+        pending_launch_roots: &mut HashSet<String>,
+    ) {
+        let root = util::repository_root(&session.cwd);
+        if pending_launch_roots.contains(&root) {
+            return;
+        }
         for entry in queue::candidates(
             session,
             &self.todos,
@@ -2271,7 +2284,13 @@ impl App {
                             session.project
                         ),
                     );
-                    if error.starts_with(queue::SESSION_NOT_READY) {
+                    if error.starts_with(queue::PROJECT_LAUNCH_PENDING) {
+                        pending_launch_roots.insert(root);
+                        return;
+                    }
+                    if error.starts_with(queue::SESSION_NOT_READY)
+                        || error.starts_with(queue::WORKER_HOLDS_WORK)
+                    {
                         return;
                     }
                     continue;
@@ -2340,17 +2359,24 @@ impl App {
         handed
     }
 
+    /// A fresh session's readiness depends only on its project, unless the Chief asked for it: once
+    /// the host refuses one ordinary item as not ready, the project's other ordinary items wait for
+    /// the next queue check instead of each costing the daemon a reservation. Items the Chief asked
+    /// for are always offered: the host, not this pass's copy of its requests, decides those.
     fn start_sessions_for_handed_work(
         &mut self,
         context: &queue::QueueContext,
         handed: Vec<Entry>,
+        pending_launch_roots: &mut HashSet<String>,
     ) {
         if !context.enabled || context.gaming || !context.host_available {
             return;
         }
+        let mut not_ready_roots: HashSet<String> = HashSet::new();
         for entry in handed {
             let Entry::Typed(item) = &entry else { continue };
             let project = project_name(&util::repository_root(&item.cwd()));
+            let is_chief_requested = self.chief_requested.contains(&item.id());
             let directory = match start_directory(&item.cwd()) {
                 Ok(directory) => directory,
                 Err(error) => {
@@ -2372,6 +2398,13 @@ impl App {
                     return;
                 }
             };
+            let root = util::repository_root(&directory);
+            if pending_launch_roots.contains(&root)
+                || (!is_chief_requested && not_ready_roots.contains(&root))
+            {
+                self.handed_refused.insert(item.id());
+                continue;
+            }
             let token = match queue::reserve_task(&directory, &item.id(), None, true) {
                 Ok(token) => token,
                 Err(error) => {
@@ -2383,6 +2416,11 @@ impl App {
                         ),
                     );
                     self.handed_refused.insert(item.id());
+                    if error.starts_with(queue::PROJECT_LAUNCH_PENDING) {
+                        pending_launch_roots.insert(root);
+                    } else if !is_chief_requested && error.starts_with(queue::SESSION_NOT_READY) {
+                        not_ready_roots.insert(root);
+                    }
                     continue;
                 }
             };
@@ -2411,7 +2449,6 @@ impl App {
             if let Err(error) = self.record_task_assignment(&entry, None) {
                 self.continuity_error = Some(error);
             }
-            let is_chief_requested = self.chief_requested.contains(&item.id());
             let started_by = if is_chief_requested {
                 "the Chief asked".to_string()
             } else {
