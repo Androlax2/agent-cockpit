@@ -134,14 +134,21 @@ fn claude_code(daemon_program: &Path) -> Option<cockpit_claude::ClaudeCode> {
         hook_program: bin_dir.join("cockpit-claude-hook"),
         cockpit_program: bin_dir.join("cockpit"),
     };
-    for bridge_program in [&bridge.hook_program, &bridge.cockpit_program] {
-        if !bridge_program.is_file() {
-            tracing::warn!(
-                "provider claude: {} is missing, so its hooks cannot report its activity",
-                bridge_program.display()
-            );
-        }
-    }
+    let missing: Vec<String> = [&bridge.hook_program, &bridge.cockpit_program]
+        .into_iter()
+        .filter(|program| !program.is_file())
+        .map(|program| program.display().to_string())
+        .collect();
+    // Without its bridge the adapter subscribes no hooks and does not report `events`.
+    let bridge = if missing.is_empty() {
+        Some(bridge)
+    } else {
+        tracing::warn!(
+            "provider claude: {} missing, so its activity is not reported",
+            missing.join(" and ")
+        );
+        None
+    };
     let claude = match cockpit_claude::ClaudeCode::discover(&program, bridge) {
         Ok(claude) => claude,
         Err(error) => {

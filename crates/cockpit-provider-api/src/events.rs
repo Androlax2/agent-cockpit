@@ -41,9 +41,9 @@ pub struct Observation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOutcome {
     Completed,
-    /// The provider's request failed; `reason` is its own word for why.
+    /// The provider's request failed; `reason` is its own word for why, when it gives one.
     Failed {
-        reason: String,
+        reason: Option<String>,
     },
     /// The plan's usage limit stopped the turn.
     QuotaStopped,

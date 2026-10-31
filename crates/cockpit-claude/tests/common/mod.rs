@@ -17,7 +17,7 @@ pub fn claude() -> ClaudeCode {
     ClaudeCode::new(
         PathBuf::from("/usr/bin/claude"),
         Some(CONFORMANCE_VERSION.to_owned()),
-        bridge(),
+        Some(bridge()),
     )
 }
 

@@ -52,7 +52,7 @@ fn the_interrupt_hint_is_working() {
 
 #[test]
 fn the_bare_prompt_is_waiting_with_low_confidence() {
-    let screen = "● Done.\n\n╭────╮\n│ ❯\u{a0}  │\n╰────╯\n";
+    let screen = "● Done.\n\n────────\n❯\u{a0}\n────────\n";
     assert_eq!(read(screen), seen(Activity::Waiting, Confidence::Low));
 }
 
@@ -60,4 +60,23 @@ fn the_bare_prompt_is_waiting_with_low_confidence() {
 fn a_screen_without_any_pattern_reads_nothing() {
     assert_eq!(read("$ ls\nCargo.toml\n"), None);
     assert_eq!(read(""), None);
+}
+
+#[test]
+fn a_symbol_glued_to_the_spinner_verb_is_working() {
+    assert_eq!(
+        read("✻✻Thinking… (3s)\n"),
+        seen(Activity::Working, Confidence::High)
+    );
+}
+
+#[test]
+fn a_word_before_an_ellipsis_verb_is_not_a_spinner() {
+    assert_eq!(read("Note: Running… (2m ago)\n"), None);
+}
+
+#[test]
+fn a_prompt_sign_without_its_padding_is_not_the_prompt() {
+    assert_eq!(read("❯\n"), None);
+    assert_eq!(read("│ ❯ │\n"), None);
 }

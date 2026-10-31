@@ -24,7 +24,7 @@ fn the_version_claude_prints_decides_the_provenance() {
         &format!("echo '{CONFORMANCE_VERSION} (Claude Code)'"),
     );
 
-    let claude = ClaudeCode::discover(&program, common::bridge()).unwrap();
+    let claude = ClaudeCode::discover(&program, Some(common::bridge())).unwrap();
 
     assert_eq!(claude.version(), Some(CONFORMANCE_VERSION));
     assert_eq!(
@@ -40,7 +40,7 @@ fn a_program_that_fails_its_version_is_not_discovered() {
     let dir = tempfile::tempdir().unwrap();
     let program = script(dir.path(), "claude", "echo broken >&2; exit 3");
 
-    let error = ClaudeCode::discover(&program, common::bridge()).unwrap_err();
+    let error = ClaudeCode::discover(&program, Some(common::bridge())).unwrap_err();
 
     assert!(error.to_string().contains("broken"), "{error}");
 }
@@ -50,7 +50,7 @@ fn a_version_that_is_not_dotted_numbers_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let program = script(dir.path(), "claude", "echo 'Claude Code'");
 
-    assert!(ClaudeCode::discover(&program, common::bridge()).is_err());
+    assert!(ClaudeCode::discover(&program, Some(common::bridge())).is_err());
 }
 
 #[test]
@@ -69,4 +69,26 @@ fn no_claude_on_the_path_finds_nothing() {
     let empty = tempfile::tempdir().unwrap();
 
     assert_eq!(ClaudeCode::find_on_path(empty.path().as_os_str()), None);
+}
+
+/// A wrapper that leaves a background process holding its output must not hold the daemon's
+/// start past the deadline.
+#[test]
+fn a_program_whose_output_never_ends_is_given_up_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = script(
+        dir.path(),
+        "claude",
+        &format!("sleep 60 & echo '{CONFORMANCE_VERSION} (Claude Code)'"),
+    );
+    let started = std::time::Instant::now();
+
+    let outcome = ClaudeCode::discover_within(
+        &program,
+        Some(common::bridge()),
+        std::time::Duration::from_millis(500),
+    );
+
+    assert!(outcome.is_err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }

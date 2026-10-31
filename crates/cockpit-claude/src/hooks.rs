@@ -59,12 +59,17 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
         })?;
     let text = |field: &str| value.get(field).and_then(serde_json::Value::as_str);
     let kind = match name {
+        // After a compaction, possibly automatic in the middle of a turn, it proves no wait.
+        "SessionStart" if text("source") == Some("compact") => EventKind::Unknown,
         "SessionStart" => EventKind::Started {
             conversation: text("session_id").and_then(|id| ConversationId::new(id).ok()),
         },
         "UserPromptSubmit" => EventKind::PromptSubmitted,
-        "PostToolUse" => EventKind::ToolUsed {
-            tool: text("tool_name").unwrap_or_default().to_owned(),
+        "PostToolUse" => match text("tool_name") {
+            Some(tool) => EventKind::ToolUsed {
+                tool: tool.to_owned(),
+            },
+            None => EventKind::Unknown,
         },
         "Notification" => match text("notification_type") {
             Some(kind) if NEEDS_YOU_NOTIFICATIONS.contains(&kind) => EventKind::NeedsYou {
@@ -80,7 +85,7 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
             outcome: match text("error") {
                 Some("rate_limit") => TurnOutcome::QuotaStopped,
                 reason => TurnOutcome::Failed {
-                    reason: reason.unwrap_or("unknown").to_owned(),
+                    reason: reason.map(str::to_owned),
                 },
             },
         },
@@ -119,16 +124,17 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
 
 /// `question` as the agent channel accepts it: one line, at most 300 characters, without
 /// control, invisible formatting or tmux format sequences; otherwise a plain question.
+/// Mirrors `cockpit-agent-channel`'s report validation, which adapters cannot import
+/// (`provider adapters -> provider-api only`); line breaks and tabs become spaces.
 fn channel_question(question: Option<&str>) -> String {
     let Some(question) = question else {
         return PLAIN_QUESTION.to_owned();
     };
-    let is_refused = question
-        .chars()
-        .any(|character| character.is_control() || is_invisible_format(character))
-        || ["#(", "#{", "#["]
-            .iter()
-            .any(|opener| question.contains(opener));
+    let is_refused = question.chars().any(|character| {
+        (character.is_control() && !character.is_whitespace()) || is_invisible_format(character)
+    }) || ["#(", "#{", "#["]
+        .iter()
+        .any(|opener| question.contains(opener));
     let words: Vec<&str> = question.split_whitespace().collect();
     if is_refused || words.is_empty() {
         return PLAIN_QUESTION.to_owned();

@@ -9,6 +9,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{
@@ -49,12 +50,13 @@ pub struct ClaudeCode {
     name: ProviderName,
     program: PathBuf,
     version: Option<String>,
-    bridge: Bridge,
+    /// Without it, launches subscribe no hooks and `events` is not reported.
+    bridge: Option<Bridge>,
 }
 
 impl ClaudeCode {
     /// The adapter for `program`, running `version` when known.
-    pub fn new(program: PathBuf, version: Option<String>, bridge: Bridge) -> ClaudeCode {
+    pub fn new(program: PathBuf, version: Option<String>, bridge: Option<Bridge>) -> ClaudeCode {
         ClaudeCode {
             name: ProviderName::new("claude").expect("`claude` is a valid provider name"),
             program,
@@ -64,12 +66,21 @@ impl ClaudeCode {
     }
 
     /// The adapter for `program`, with the version it prints. Blocks up to 10 seconds.
-    pub fn discover(program: &Path, bridge: Bridge) -> Result<ClaudeCode, DiscoveryError> {
+    pub fn discover(program: &Path, bridge: Option<Bridge>) -> Result<ClaudeCode, DiscoveryError> {
+        ClaudeCode::discover_within(program, bridge, VERSION_DEADLINE)
+    }
+
+    /// [`ClaudeCode::discover`], giving up on `--version` after `deadline`.
+    pub fn discover_within(
+        program: &Path,
+        bridge: Option<Bridge>,
+        deadline: Duration,
+    ) -> Result<ClaudeCode, DiscoveryError> {
         let failed = |reason: String| DiscoveryError {
             program: program.to_path_buf(),
             reason,
         };
-        let output = run_with_deadline(program, "--version", VERSION_DEADLINE).map_err(failed)?;
+        let output = run_with_deadline(program, "--version", deadline).map_err(failed)?;
         let version = output
             .split_whitespace()
             .next()
@@ -102,12 +113,12 @@ impl ClaudeCode {
         }
     }
 
-    /// `--settings` JSON that runs the bridge on every hook event it normalizes.
-    fn hook_settings(&self) -> String {
+    /// `--settings` JSON that runs `bridge` on every hook event it normalizes.
+    fn hook_settings(bridge: &Bridge) -> String {
         let command = format!(
             "{} {}",
-            shell_quoted(&self.bridge.hook_program),
-            shell_quoted(&self.bridge.cockpit_program)
+            shell_quoted(&bridge.hook_program),
+            shell_quoted(&bridge.cockpit_program)
         );
         let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": command }] }]);
         let events: serde_json::Map<String, serde_json::Value> = hooks::HOOK_EVENTS
@@ -128,18 +139,19 @@ impl Provider for ClaudeCode {
     }
 
     fn capabilities(&self) -> Capabilities {
+        // `outcome` waits until the agent channel carries a turn's outcome (#146).
+        let events = self.bridge.as_ref().map(|_| Capability::Events);
         [
             Capability::Resume,
             Capability::Submit,
-            Capability::Events,
             Capability::Cancel,
-            Capability::Outcome,
             Capability::Effort,
             Capability::Compact,
             Capability::RemoteControl,
             Capability::ScreenReading,
         ]
         .into_iter()
+        .chain(events)
         .fold(Capabilities::none(), |capabilities, capability| {
             capabilities.with(capability, self.provenance())
         })
@@ -177,7 +189,12 @@ impl Provider for ClaudeCode {
             }
             arguments.extend(["--effort".into(), effort.into()]);
         }
-        arguments.extend(["--settings".into(), self.hook_settings().into()]);
+        if let Some(bridge) = &self.bridge {
+            arguments.extend([
+                "--settings".into(),
+                ClaudeCode::hook_settings(bridge).into(),
+            ]);
+        }
         if let Some(message) = request.first_message {
             arguments.extend(["--".into(), message.into()]);
         }
@@ -289,7 +306,8 @@ fn new_session_id() -> Result<ConversationId, ProviderError> {
 }
 
 /// The trimmed standard output of `program argument`, or why it failed. Kills it at the
-/// deadline.
+/// deadline, and stops waiting for its output there too: a wrapper may leave a background
+/// process holding its pipes.
 fn run_with_deadline(program: &Path, argument: &str, deadline: Duration) -> Result<String, String> {
     let mut child = Command::new(program)
         .arg(argument)
@@ -298,31 +316,50 @@ fn run_with_deadline(program: &Path, argument: &str, deadline: Duration) -> Resu
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("cannot run it: {error}"))?;
-    let started = Instant::now();
-    while child
-        .try_wait()
-        .map_err(|error| format!("cannot wait for it: {error}"))?
-        .is_none()
-    {
-        if started.elapsed() > deadline {
+    let gave_up = format!(
+        "`{argument}` did not answer within {} ms",
+        deadline.as_millis()
+    );
+    let ends_at = Instant::now() + deadline;
+    let stdout = read_in_background(child.stdout.take());
+    let stderr = read_in_background(child.stderr.take());
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("cannot wait for it: {error}"))?
+        {
+            break status;
+        }
+        if Instant::now() > ends_at {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!(
-                "`{argument}` did not answer within {} seconds",
-                deadline.as_secs()
-            ));
+            return Err(gave_up);
         }
         std::thread::sleep(Duration::from_millis(20));
+    };
+    let remaining = || ends_at.saturating_duration_since(Instant::now());
+    let stdout = stdout
+        .recv_timeout(remaining())
+        .map_err(|_| gave_up.clone())?;
+    let stderr = stderr
+        .recv_timeout(remaining())
+        .map_err(|_| gave_up.clone())?;
+    if !status.success() {
+        return Err(format!("`{argument}` failed ({status}): {}", stderr.trim()));
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("cannot read its output: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`{argument}` failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(stdout.trim().to_owned())
+}
+
+/// The whole of `pipe` as text, read on a thread of its own so a full pipe never stalls
+/// the child.
+fn read_in_background(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+    });
+    receiver
 }

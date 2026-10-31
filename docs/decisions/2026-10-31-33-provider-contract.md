@@ -18,9 +18,12 @@ Issue #33. Decided by the worker, implementing reports 02, 05 and 08 as written.
   running the CLI keeps adapters on `cockpit-provider-api` alone (crate-graph rule
   `provider adapters -> provider-api only`). Hooks are passed with `--settings` on the launch,
   so a nested `claude` a tool starts never reports for the session.
-- **Outcome is normalized but not yet transported.** `TurnEnded` carries completed, failed or
-  quota-stopped; the agent channel's report has no outcome field, so the bridge reports the
-  state only until session reports move into `cockpit-sessions` (#146).
+- **Outcome is normalized but not reported.** `TurnEnded` carries completed, failed or
+  quota-stopped; the agent channel's report has no outcome field, so Claude Code does not
+  report the `outcome` capability until session reports move into `cockpit-sessions` (#146).
+- **No bridge, no `events`.** The daemon wires the adapter without its bridge when
+  `cockpit-claude-hook` or `cockpit` is missing beside it; the capability is then not
+  reported and launches subscribe no hooks, rather than hooks that fail on every event.
 - **Commands, evidence and billing are named capabilities without methods.** No caller
   exists yet; each method arrives with its first caller (commands with #49, evidence with
   #40, billing with #58/#59). Claude Code does not report them meanwhile.

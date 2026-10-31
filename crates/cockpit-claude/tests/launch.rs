@@ -108,7 +108,7 @@ fn every_launch_loads_the_hook_bridge_settings() {
 fn a_bridge_path_with_a_quote_stays_one_shell_word() {
     let mut bridge = common::bridge();
     bridge.hook_program = "/opt/it's/hook".into();
-    let claude = cockpit_claude::ClaudeCode::new("/usr/bin/claude".into(), None, bridge);
+    let claude = cockpit_claude::ClaudeCode::new("/usr/bin/claude".into(), None, Some(bridge));
     let words = words(
         &claude
             .launch(&request(&Conversation::New))
@@ -122,6 +122,19 @@ fn a_bridge_path_with_a_quote_stays_one_shell_word() {
         settings["hooks"]["Stop"][0]["hooks"][0]["command"],
         r"'/opt/it'\''s/hook' '/opt/cockpit/bin/cockpit'"
     );
+}
+
+#[test]
+fn without_its_hook_bridge_a_launch_subscribes_no_hooks() {
+    let claude = cockpit_claude::ClaudeCode::new("/usr/bin/claude".into(), None, None);
+    let words = words(
+        &claude
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+
+    assert!(!words.contains(&"--settings".to_owned()), "{words:?}");
 }
 
 #[test]

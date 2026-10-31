@@ -24,7 +24,7 @@ fn installed() -> PathBuf {
 #[test]
 #[ignore = "needs an installed Claude Code (COCKPIT_CLAUDE_PROGRAM)"]
 fn the_installed_claude_code_is_the_pinned_version() {
-    let claude = ClaudeCode::discover(&installed(), common::bridge()).unwrap();
+    let claude = ClaudeCode::discover(&installed(), Some(common::bridge())).unwrap();
 
     assert_eq!(claude.version(), Some(CONFORMANCE_VERSION));
 }

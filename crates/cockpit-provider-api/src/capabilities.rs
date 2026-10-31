@@ -1,5 +1,7 @@
 //! What a provider can do and how Cockpit knows it (report 08).
 
+use std::collections::BTreeMap;
+
 use crate::ProviderError;
 
 /// One thing a provider may be able to do. Callers key every behavior on these, never on the
@@ -91,7 +93,7 @@ pub enum Availability {
 /// The capabilities a provider reports. One not reported is unavailable.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Capabilities {
-    reported: Vec<(Capability, Provenance)>,
+    reported: BTreeMap<Capability, Provenance>,
 }
 
 impl Capabilities {
@@ -101,9 +103,7 @@ impl Capabilities {
 
     /// Reports `capability`, replacing what was reported for it before.
     pub fn with(mut self, capability: Capability, provenance: Provenance) -> Capabilities {
-        self.reported
-            .retain(|(reported, _)| *reported != capability);
-        self.reported.push((capability, provenance));
+        self.reported.insert(capability, provenance);
         self
     }
 
@@ -113,10 +113,7 @@ impl Capabilities {
     }
 
     pub fn provenance(&self, capability: Capability) -> Option<&Provenance> {
-        self.reported
-            .iter()
-            .find(|(reported, _)| *reported == capability)
-            .map(|(_, provenance)| provenance)
+        self.reported.get(&capability)
     }
 
     pub fn availability(&self, capability: Capability) -> Availability {
@@ -138,7 +135,7 @@ impl Capabilities {
         }
     }
 
-    /// Every reported capability with its provenance, in the order reported.
+    /// Every reported capability with its provenance, in [`Capability`] order.
     pub fn reported(&self) -> impl Iterator<Item = (Capability, &Provenance)> {
         self.reported
             .iter()

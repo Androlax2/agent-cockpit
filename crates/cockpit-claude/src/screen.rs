@@ -71,21 +71,32 @@ fn is_choice_menu_cursor(line: &str) -> bool {
         && !after_number.trim_start().is_empty()
 }
 
-/// "✻ Compiling… (12s": up to two symbols, a capitalized verb with an ellipsis, elapsed time.
+/// "✻ Compiling… (12s": up to two symbols, a capitalized verb with an ellipsis, elapsed
+/// time (`^\s*\S{0,2}\s*[A-Z][a-z]+… \(\d+[smh]`).
 fn is_running_spinner(line: &str) -> bool {
-    let words: Vec<&str> = line.split_whitespace().collect();
-    words.windows(2).take(2).any(|pair| {
-        let Some(verb) = pair[0].strip_suffix('…') else {
-            return false;
-        };
-        let mut letters = verb.chars();
-        let is_capitalized = letters.next().is_some_and(|c| c.is_ascii_uppercase())
-            && letters.clone().next().is_some()
-            && letters.all(|c| c.is_ascii_lowercase());
-        let elapsed = pair[1].strip_prefix('(').unwrap_or("");
-        let digits = elapsed.chars().take_while(char::is_ascii_digit).count();
-        is_capitalized && digits > 0 && elapsed[digits..].starts_with(['s', 'm', 'h'])
+    let line = line.trim_start();
+    (0..=2).any(|symbols| {
+        let mut rest = line.chars();
+        for _ in 0..symbols {
+            if rest.next().is_none_or(char::is_whitespace) {
+                return false;
+            }
+        }
+        starts_with_spinner_verb(rest.as_str().trim_start())
     })
+}
+
+/// "Compiling… (12s" at the start of `text`.
+fn starts_with_spinner_verb(text: &str) -> bool {
+    let Some((verb, elapsed)) = text.split_once("… (") else {
+        return false;
+    };
+    let mut letters = verb.chars();
+    let is_capitalized = letters.next().is_some_and(|c| c.is_ascii_uppercase())
+        && !letters.as_str().is_empty()
+        && letters.all(|c| c.is_ascii_lowercase());
+    let digits = elapsed.chars().take_while(char::is_ascii_digit).count();
+    is_capitalized && digits > 0 && elapsed[digits..].starts_with(['s', 'm', 'h'])
 }
 
 /// "esc to interrupt" (or "enter to interrupt and send") opening a status line.
@@ -94,9 +105,10 @@ fn is_interrupt_hint(line: &str) -> bool {
     line.starts_with("esc to interrupt") || line.starts_with("enter to interrupt")
 }
 
-/// The prompt: `❯` then the space or no-break space Claude Code pads it with.
+/// The prompt: `❯` then the space or no-break space Claude Code pads it with
+/// (`^\s*❯[ \x{a0}]`).
 fn is_prompt_line(line: &str) -> bool {
-    line.trim_start_matches(|c: char| c.is_whitespace() || c == '│')
+    line.trim_start()
         .strip_prefix('❯')
-        .is_some_and(|rest| rest.starts_with([' ', '\u{a0}']) || rest.is_empty())
+        .is_some_and(|rest| rest.starts_with([' ', '\u{a0}']))
 }

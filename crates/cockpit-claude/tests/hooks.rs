@@ -101,10 +101,37 @@ fn a_failure_other_than_the_usage_limit_keeps_its_reason() {
         hooks::normalize(payload).unwrap().kind,
         EventKind::TurnEnded {
             outcome: TurnOutcome::Failed {
-                reason: "server_error".to_owned()
+                reason: Some("server_error".to_owned())
             }
         }
     );
+}
+
+#[test]
+fn a_failure_without_its_reason_says_none() {
+    let payload = r#"{"hook_event_name":"StopFailure"}"#;
+
+    assert_eq!(
+        hooks::normalize(payload).unwrap().kind,
+        EventKind::TurnEnded {
+            outcome: TurnOutcome::Failed { reason: None }
+        }
+    );
+}
+
+/// An auto-compaction fires `SessionStart` in the middle of a turn: it proves no waiting.
+#[test]
+fn a_session_start_after_compaction_is_unknown() {
+    let payload = r#"{"hook_event_name":"SessionStart","session_id":"0b7f3c1e-1f6a-4c55-a2a1-9e3c7c0d1a2b","source":"compact"}"#;
+
+    assert_eq!(hooks::normalize(payload).unwrap().kind, EventKind::Unknown);
+}
+
+#[test]
+fn a_tool_use_that_names_no_tool_is_unknown() {
+    let payload = r#"{"hook_event_name":"PostToolUse","tool_input":{}}"#;
+
+    assert_eq!(hooks::normalize(payload).unwrap().kind, EventKind::Unknown);
 }
 
 #[test]
@@ -172,6 +199,19 @@ fn a_question_the_channel_would_refuse_is_replaced_by_a_plain_one() {
             "{message:?}"
         );
     }
+}
+
+#[test]
+fn a_multi_line_question_is_joined_onto_one_line() {
+    let payload = serde_json::json!({
+        "hook_event_name": "Notification",
+        "notification_type": "elicitation_dialog",
+        "message": "Pick one:\n\tmain or\r\ndevelop",
+    })
+    .to_string();
+    let arguments = hooks::report_arguments(&hooks::normalize(&payload).unwrap()).unwrap();
+
+    assert_eq!(arguments.last().unwrap(), "Pick one: main or develop");
 }
 
 #[test]

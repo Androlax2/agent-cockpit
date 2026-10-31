@@ -7,12 +7,11 @@ use std::path::PathBuf;
 use cockpit_claude::{CONFORMANCE_VERSION, ClaudeCode};
 use cockpit_provider_api::{Availability, Capability, Provenance, Provider};
 
-const REPORTED: [Capability; 9] = [
+const REPORTED: [Capability; 8] = [
     Capability::Resume,
     Capability::Submit,
     Capability::Events,
     Capability::Cancel,
-    Capability::Outcome,
     Capability::Effort,
     Capability::Compact,
     Capability::RemoteControl,
@@ -23,7 +22,7 @@ fn on_version(version: Option<&str>) -> ClaudeCode {
     ClaudeCode::new(
         PathBuf::from("/usr/bin/claude"),
         version.map(str::to_owned),
-        common::bridge(),
+        Some(common::bridge()),
     )
 }
 
