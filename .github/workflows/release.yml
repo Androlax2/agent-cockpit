@@ -2,8 +2,9 @@ name: Release
 
 # A release tag (docs/RELEASING.md) builds every archive, attests them, drafts the GitHub
 # Release with every asset, runs report 13's gate on the tagged commit, and publishes last.
-# Pull requests that touch the release machinery, the nightly schedule and a manual dispatch
-# run the same build and install checks as a dry run: no tag, attestation, draft or release.
+# The nightly schedule and a manual dispatch (the build before a tag) run the same build and
+# install checks as a dry run: no tag, attestation, draft or release. Pull requests start it
+# only when they change the release machinery itself; ci.yml builds and tests crate changes.
 # Tool choices: docs/decisions/2026-10-31-96-release-tooling.md; nightlies:
 # docs/decisions/2026-10-31-96-nightly-builds.md.
 
@@ -14,14 +15,9 @@ on:
     paths:
       - .github/workflows/release.yml
       - .github/workflows/prerelease.yml
-      - Cargo.toml
-      - crates/*/Cargo.toml
-      - crates/cockpit-cli/src/main.rs
-      - crates/cockpit-daemon/src/main.rs
       - tools/release.py
       - tools/tests/test_release.py
       - cliff.toml
-      - crates/cockpit-cli/src/version.rs
   schedule:
     # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
     - cron: "17 3 * * *"

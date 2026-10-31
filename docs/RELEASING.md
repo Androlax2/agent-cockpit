@@ -13,6 +13,11 @@ writes the notes, and release-plz joins with the first stable release PR (#101);
 cargo-dist. The version source, tag grammar, changelog and channel promises here are the
 contract.
 
+The release workflow runs on release tags. Its nightly schedule and a manual dispatch, the
+build before a tag, run it as a dry run: built and installed, never attested or released. A
+pull request starts it only when it changes the release machinery itself (the workflow's
+`pull_request` paths); `ci.yml` builds and tests crate changes.
+
 ## Versions
 
 - Cockpit uses [Semantic Versioning](https://semver.org/) and stays on `0.x` until 1.0.

@@ -674,6 +674,43 @@ class GateGapTests(unittest.TestCase):
                 self.assertIn(job, needed)
 
 
+def pull_request_paths():
+    paths = re.search(
+        r"\n  pull_request:\n    paths:\n((?:      - [^\n]*\n)*)", RELEASE_WORKFLOW.read_text()
+    )
+    assert paths, "expected the pull_request trigger's paths"
+    return re.findall(r"- (\S+)", paths[1])
+
+
+class ReleaseTriggerTests(unittest.TestCase):
+    def test_pull_requests_start_the_release_workflow_only_for_its_own_machinery(self):
+        self.assertEqual(
+            set(pull_request_paths()),
+            {
+                ".github/workflows/release.yml",
+                ".github/workflows/prerelease.yml",
+                "tools/release.py",
+                "tools/tests/test_release.py",
+                "cliff.toml",
+            },
+        )
+
+    def test_every_pull_request_path_exists(self):
+        for path in pull_request_paths():
+            with self.subTest(path=path):
+                self.assertTrue((ROOT / path).is_file())
+
+    def test_tags_the_nightly_and_a_dispatch_still_start_it(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        triggers = re.search(r"\non:\n((?:  [^\n]*\n|\n)*)", workflow)
+        self.assertIsNotNone(triggers, "expected the on: block")
+        self.assertEqual(
+            set(re.findall(r"^  (\w+):", triggers[1], re.MULTILINE)),
+            {"push", "pull_request", "schedule", "workflow_dispatch"},
+        )
+        self.assertRegex(triggers[1], r"tags: \[\s*[\"']v\*[\"']\s*\]")
+
+
 class WorkflowMatrixTests(unittest.TestCase):
     def test_build_and_install_cover_every_platform(self):
         workflow = RELEASE_WORKFLOW.read_text()
