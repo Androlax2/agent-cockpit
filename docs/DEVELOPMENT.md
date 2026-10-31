@@ -121,12 +121,13 @@ its reviewed allowlist. Only unpublished workspace crates skip the license check
 the policy assigns no license to Cockpit itself. Duplicate dependency versions remain
 visible warnings, matching the reference policy.
 
-`make ci` runs all checks and the shared full regression suite serially. JavaScript's
-default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml) splits by changed path
-([tools/ci-jobs.py](../tools/ci-jobs.py)): `legacy` runs `make ci` for `apps/`, `config/`, `tools/` and
-`packaging/`; `greenfield` runs `make greenfield-ci` for `crates/` and the root manifests; `docs`
-runs `make docs-ci` for `docs/` and any Markdown file. The Makefile and `.github/` run both code
-jobs; a path no job claims, and a push to `main`, run every job. Each job runs on an
+`make ci` runs all checks and the shared full regression suite of `apps/` serially, locally
+only: its CI job was removed on 2026-10-31 (it slowed every greenfield change and leaves at the
+cutover). JavaScript's default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml)
+splits by changed path ([tools/ci-jobs.py](../tools/ci-jobs.py)): `greenfield` runs
+`make greenfield-ci` for `crates/`, the root manifests, the Makefile and `.github/`; `docs` runs
+`make docs-ci` for `docs/` and any Markdown file. A path no job claims (`apps/`, `config/`,
+`packaging/` included), and a push to `main`, run every job. Each job runs on an
 Ubuntu 26.04 runner with pinned Rust, Node and checker versions, read-only repository
 permissions and immutable action revisions. Linux runtime libraries, fish and Lua come
 from that Ubuntu release. This workflow has not yet been run on GitHub; activation
