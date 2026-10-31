@@ -39,6 +39,7 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit session list [--ended]
        cockpit session restart SESSION|--all
        cockpit session sleep|wake|resume|end|show SESSION
+       cockpit session end --finished
        cockpit session link SESSION URL
        cockpit provider list
        cockpit tui

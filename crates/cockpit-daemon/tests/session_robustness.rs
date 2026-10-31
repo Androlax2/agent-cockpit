@@ -477,7 +477,7 @@ async fn end_finished_ends_the_finished_sessions_and_keeps_the_others() {
     home.session_finishes(&finished.id, done).await;
     home.session_takes_an_item(&client, &working.id).await;
 
-    let reply = request(&client, Command::SessionEndFinished).await;
+    let reply = request(&client, Command::SessionEndFinished { only: None }).await;
 
     let Ok(Reply::EndedFinished { ended, failed }) = reply else {
         panic!("session-end-finished: {reply:?}");
@@ -494,4 +494,94 @@ async fn end_finished_ends_the_finished_sessions_and_keeps_the_others() {
         SessionStateView::Running
     );
     assert!(!is_alive(home.launches()[0].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn end_finished_with_only_ends_just_the_named_finished_sessions() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let seen = new_session(&client, &root).await;
+    let unseen = new_session(&client, &root).await;
+    for session in [&seen, &unseen] {
+        let item = home.session_takes_an_item(&client, &session.id).await;
+        home.session_finishes(&session.id, item).await;
+    }
+
+    let reply = request(
+        &client,
+        Command::SessionEndFinished {
+            only: Some(vec![seen.id.clone()]),
+        },
+    )
+    .await;
+
+    let Ok(Reply::EndedFinished { ended, .. }) = reply else {
+        panic!("session-end-finished: {reply:?}");
+    };
+    let ended: Vec<&str> = ended.iter().map(|session| session.id.as_str()).collect();
+    assert_eq!(ended, [seen.id.as_str()]);
+    assert_eq!(
+        listed(&client, &unseen.id).await.state,
+        SessionStateView::Running
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_session_is_never_labelled_finished() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root).await;
+    let item = home.session_takes_an_item(&client, &started.id).await;
+    home.session_finishes(&started.id, item).await;
+
+    home.store(
+        "UPDATE sessions SET state = 'failed', reason = 'its relaunch failed' WHERE id = ?1",
+        &started.id,
+    )
+    .await;
+
+    assert!(!listed(&client, &started.id).await.finished);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wake_is_refused_while_another_session_runs_its_conversation() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let first = new_session(&client, &root).await;
+    let second = new_session(&client, &root).await;
+    session_reply(
+        &client,
+        Command::SessionSleep {
+            session: first.id.clone(),
+        },
+    )
+    .await;
+    home.store(
+        "UPDATE sessions SET conversation = 'conversation-1' WHERE id = ?1",
+        &second.id,
+    )
+    .await;
+
+    let refused = refusal(
+        request(
+            &client,
+            Command::SessionWake {
+                session: first.id.clone(),
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert!(refused.message.contains(&second.id), "{}", refused.message);
+    assert_eq!(
+        listed(&client, &first.id).await.state,
+        SessionStateView::Asleep
+    );
 }

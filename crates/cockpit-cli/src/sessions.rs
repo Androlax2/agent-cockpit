@@ -39,7 +39,7 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
         ["resume", id] => Command::SessionResume {
             session: session(id),
         },
-        ["end", "--finished"] => Command::SessionEndFinished,
+        ["end", "--finished"] => Command::SessionEndFinished { only: None },
         ["end", id] => Command::SessionEnd {
             session: session(id),
         },

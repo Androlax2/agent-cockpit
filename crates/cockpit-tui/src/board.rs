@@ -149,7 +149,7 @@ impl Board {
             groups.entry(Some(project.name.as_str())).or_default();
         }
         for session in self.sessions.values() {
-            if session.state == SessionStateView::Ended || session.finished {
+            if session.state == SessionStateView::Ended || self.is_folded(session) {
                 continue;
             }
             groups
@@ -173,13 +173,19 @@ impl Board {
         ordered
     }
 
-    /// The sessions the task list says finished their work and that have not ended,
-    /// folded into one group the owner exits together (#157, decided in #201).
+    /// The sessions the task list says finished their work, that have not ended and do not
+    /// wait on the owner, folded into one group the owner exits together (#157, decided in #201).
     pub fn finished_sessions(&self) -> Vec<&SessionView> {
         self.sessions
             .values()
-            .filter(|session| session.finished && session.state != SessionStateView::Ended)
+            .filter(|session| self.is_folded(session) && session.state != SessionStateView::Ended)
             .collect()
+    }
+
+    /// A finished session folds away unless it waits on the owner: that one stays listed,
+    /// so its question or approval is never hidden behind a count.
+    fn is_folded(&self, session: &SessionView) -> bool {
+        session.finished && !self.needs_you(&session.id)
     }
 
     /// The sessions in list order, flattened across groups.

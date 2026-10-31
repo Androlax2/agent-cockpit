@@ -222,7 +222,7 @@ impl Handler for Routes {
                 | Command::SessionWake { .. }
                 | Command::SessionResume { .. }
                 | Command::SessionEnd { .. }
-                | Command::SessionEndFinished
+                | Command::SessionEndFinished { .. }
                 | Command::SessionLink { .. }),
                 peer,
             ) => match peer {

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use cockpit_protocol::{Command, Reply, SessionStateView, SessionView};
 use cockpit_tui::Key;
-use common::{answer, app_with, press, screen_text, sent, session};
+use common::{answer, app_with, press, queue, run, screen_text, sent, session};
 
 fn finished(id: &str, created_at: i64) -> SessionView {
     SessionView {
@@ -68,7 +68,12 @@ fn x_upper_case_exits_every_finished_session_only_after_y() {
         shown.contains("exit 2 finished sessions? y to confirm"),
         "{shown}"
     );
-    assert_eq!(confirmed.send, [Command::SessionEndFinished]);
+    assert_eq!(
+        confirmed.send,
+        [Command::SessionEndFinished {
+            only: Some(vec!["s00000000000b".to_owned(), "s00000000000c".to_owned()])
+        }]
+    );
 }
 
 #[test]
@@ -92,7 +97,7 @@ fn the_ended_finished_sessions_leave_the_group() {
 
     answer(
         &mut app,
-        Command::SessionEndFinished,
+        Command::SessionEndFinished { only: None },
         Reply::EndedFinished {
             ended: vec![ended("s00000000000b", 2), ended("s00000000000c", 3)],
             failed: Vec::new(),
@@ -102,4 +107,26 @@ fn the_ended_finished_sessions_leave_the_group() {
 
     let shown = screen_text(&app, now);
     assert!(!shown.contains("Finished"), "{shown}");
+}
+
+#[test]
+fn a_finished_session_asking_for_an_approval_stays_listed() {
+    let now = Instant::now();
+    let mut app = one_working_two_finished(now);
+
+    queue(
+        &mut app,
+        vec![run(7, "s00000000000b", "make test")],
+        Vec::new(),
+        now,
+    );
+
+    let shown = screen_text(&app, now);
+    assert!(shown.contains("Finished (1), folded"), "{shown}");
+    assert!(
+        app.board()
+            .listed_sessions()
+            .iter()
+            .any(|listed| listed.id == "s00000000000b")
+    );
 }

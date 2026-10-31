@@ -331,6 +331,34 @@ pub async fn session_work(
     Ok(work)
 }
 
+/// [`session_work`] for one session: what a single session's view needs, without reading
+/// every session's counts.
+pub async fn session_work_of(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<SessionWork, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT
+                (SELECT count(*) FROM tasks_items WHERE doing_session = ?1),
+                (SELECT count(*) FROM tasks_items WHERE finished_by = ?1 AND status = 'done')",
+            (session.as_str(),),
+        )
+        .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| invalid_row("tasks_items", "a count query returned no row".to_owned()))?;
+    let count = |index| {
+        u32::try_from(row.get::<i64>(index)?)
+            .map_err(|error| invalid_row("tasks_items", error.to_string()))
+    };
+    Ok(SessionWork {
+        doing: count(0)?,
+        finished: count(1)?,
+    })
+}
+
 /// The rows of `query`: a session column, then a count.
 async fn counts_by_session(
     connection: &Connection,

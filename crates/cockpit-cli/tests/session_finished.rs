@@ -115,7 +115,10 @@ async fn end_finished_sends_one_request_and_prints_each_ended_session() {
         text(&output.stdout),
         "s000000000001\tended\tclaude\t-\tc-1\t/p/app\t-\t-\t-\n"
     );
-    assert_eq!(daemon.await.unwrap(), Command::SessionEndFinished);
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionEndFinished { only: None }
+    );
 }
 
 #[tokio::test]

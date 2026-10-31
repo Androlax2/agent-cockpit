@@ -557,6 +557,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit session list [--ended]\n       \
                  cockpit session restart SESSION|--all\n       \
                  cockpit session sleep|wake|resume|end|show SESSION\n       \
+                 cockpit session end --finished\n       \
                  cockpit session link SESSION URL\n       \
                  cockpit provider list\n       \
                  cockpit tui\n       \

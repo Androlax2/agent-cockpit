@@ -295,7 +295,12 @@ impl Sessions {
     async fn wake_locked(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
         let session = self.get(id).await?;
         let conversation = self.resumable(&session)?;
-        self.transition(
+        // Waking reopens the conversation as resume does, so it is refused the same way.
+        self.refuse_if_agent_alive_elsewhere(&session).await?;
+        let write = self.database.write().await?;
+        refuse_if_active_elsewhere(&write, &session).await?;
+        store::transition(
+            &write,
             id,
             &[SessionState::Asleep],
             SessionState::Launching,
@@ -303,6 +308,7 @@ impl Sessions {
             "wake",
         )
         .await?;
+        write.commit().await?;
         self.launch(id, LaunchKind::Wake, conversation, None).await
     }
 

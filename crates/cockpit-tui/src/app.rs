@@ -47,8 +47,8 @@ pub enum Overlay {
 pub enum Confirm {
     Restart(String),
     Exit(String),
-    /// Every session in the finished group.
-    ExitFinished,
+    /// The sessions of the finished group as the owner saw it: `y` ends only these.
+    ExitFinished(Vec<String>),
 }
 
 /// What one key did: the command it counts as in diagnostics (decision 17: every command
@@ -180,9 +180,12 @@ impl App {
                 (Key::Char('y'), Confirm::Exit(session)) => {
                     Step::sending("exit", Command::SessionEnd { session })
                 }
-                (Key::Char('y'), Confirm::ExitFinished) => {
-                    Step::sending("exit-finished", Command::SessionEndFinished)
-                }
+                (Key::Char('y'), Confirm::ExitFinished(sessions)) => Step::sending(
+                    "exit-finished",
+                    Command::SessionEndFinished {
+                        only: Some(sessions),
+                    },
+                ),
                 _ => Step::used("confirm-cancel"),
             };
         }
@@ -245,8 +248,14 @@ impl App {
             Key::Char('r') => self.ask_to_confirm(Confirm::Restart, "restart-ask"),
             Key::Char('x') => self.ask_to_confirm(Confirm::Exit, "exit-ask"),
             Key::Char('X') => {
-                if !self.board.finished_sessions().is_empty() {
-                    self.confirm = Some(Confirm::ExitFinished);
+                let finished: Vec<String> = self
+                    .board
+                    .finished_sessions()
+                    .into_iter()
+                    .map(|session| session.id.clone())
+                    .collect();
+                if !finished.is_empty() {
+                    self.confirm = Some(Confirm::ExitFinished(finished));
                 }
                 Step::used("exit-finished-ask")
             }

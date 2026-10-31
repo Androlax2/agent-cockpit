@@ -74,10 +74,9 @@ fn status_line(app: &App) -> String {
     match (&app.confirm, &app.failure) {
         (Some(Confirm::Restart(session)), _) => format!("restart {session}? y to confirm"),
         (Some(Confirm::Exit(session)), _) => format!("exit {session}? y to confirm"),
-        (Some(Confirm::ExitFinished), _) => format!(
-            "exit {} finished sessions? y to confirm",
-            app.board().finished_sessions().len()
-        ),
+        (Some(Confirm::ExitFinished(sessions)), _) => {
+            format!("exit {} finished sessions? y to confirm", sessions.len())
+        }
         (None, Some(failure)) => format!("{}: {}", failure.kind, failure.problem),
         (None, None) => "? help".to_owned(),
     }
