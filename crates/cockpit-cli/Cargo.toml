@@ -1,0 +1,20 @@
+[package]
+name = "cockpit-cli"
+description = "Owns the `cockpit` command line: parses verbs, renders results; offline verbs call their capability crate directly."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cockpit"
+path = "src/main.rs"
+
+[dependencies]
+cockpit-config = { path = "../cockpit-config", version = "0.1.0" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
-//! `cockpit-config show` driven as a process with an isolated home and environment.
+//! `cockpit config show` driven as a process with an isolated home and environment.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,14 +37,14 @@ impl Home {
     }
 
     fn show_with_env(&self, arguments: &[&str], variables: &[(&str, &str)]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_cockpit-config"))
-            .arg("show")
+        Command::new(env!("CARGO_BIN_EXE_cockpit"))
+            .args(["config", "show"])
             .args(arguments)
             .env_clear()
             .env("HOME", self.path())
             .envs(variables.iter().copied())
             .output()
-            .expect("cockpit-config runs")
+            .expect("cockpit runs")
     }
 }
 
@@ -328,7 +328,7 @@ fn a_project_config_cannot_set_owner_settings() {
         assert_eq!(
             stderr,
             format!(
-                "cockpit-config: project config {}:2: `{owner_setting}` is an owner setting; \
+                "cockpit: project config {}:2: `{owner_setting}` is an owner setting; \
                  project configuration describes the project and cannot set it\n",
                 project_config.display()
             )
@@ -445,14 +445,14 @@ fn an_override_must_name_an_overridable_key_with_a_one_line_value() {
 #[test]
 fn a_missing_or_relative_home_fails_instead_of_guessing() {
     for (home_value, expected_message) in [
-        (None, "cockpit-config: HOME is not set\n"),
+        (None, "cockpit: HOME is not set\n"),
         (
             Some("relative"),
-            "cockpit-config: HOME is not an absolute path: relative\n",
+            "cockpit: HOME is not an absolute path: relative\n",
         ),
     ] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_cockpit-config"));
-        command.arg("show").env_clear();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        command.args(["config", "show"]).env_clear();
         if let Some(home_value) = home_value {
             command.env("HOME", home_value);
         }
@@ -468,10 +468,7 @@ fn a_project_that_is_not_a_directory_fails() {
     let stderr = stderr_of_failure(&home.show(&["--project", missing.to_str().unwrap()]));
     assert_eq!(
         stderr,
-        format!(
-            "cockpit-config: project {}: not a directory\n",
-            missing.display()
-        )
+        format!("cockpit: project {}: not a directory\n", missing.display())
     );
 }
 
@@ -481,6 +478,19 @@ fn unknown_arguments_print_usage_and_exit_2() {
     for arguments in [&["--frobnicate", "x"][..], &["--set"][..]] {
         let output = home.show(arguments);
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");
-        assert!(String::from_utf8_lossy(&output.stderr).starts_with("usage: cockpit-config show"));
+        assert!(String::from_utf8_lossy(&output.stderr).starts_with("usage: cockpit config show"));
+    }
+}
+
+#[test]
+fn an_unknown_verb_prints_usage_and_exits_2() {
+    for arguments in [&[][..], &["config"][..], &["configure", "show"][..]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
+            .args(arguments)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).starts_with("usage: cockpit "));
     }
 }

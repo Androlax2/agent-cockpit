@@ -1,5 +1,14 @@
 # Engineering decisions
 
+## 2026-10-31 — Offline CLI verbs import their capability crate (#77)
+
+Report 02 lets frontends import only `cockpit-client` and `cockpit-protocol`, but report 09
+needs config inspection (and later diagnostics) without the daemon. Theo chose one `cockpit`
+binary in `cockpit-cli` that imports a named list of capability crates for those verbs,
+today only `cockpit-config`, over per-capability `cockpit-<name>` binaries (more files in
+the release bundle) or daemon-only verbs (contradicts report 09). The list lives in report 02
+and in `cockpit-cli`'s `dependency_edges` test; extending it is a decision, not a refactor.
+
 ## 2026-10-31 — cockpit-authorization: exact scopes, owner-only host actions, one revision
 
 Issue #25. A grant is one permission over one scope held by one session. Scopes do not nest:
@@ -116,7 +125,7 @@ process; a locked `cockpit.log.lock` (a writable file, so it also works on NFS) 
 breaking the other's rotation. The crate is a library only: the `cockpit logs level` and `cockpit support-bundle`
 verbs need the daemon's host-only channel (#26) and the CLI.
 
-## 2026-10-31 — cockpit-config: declared start files, snapshots, and a temporary binary
+## 2026-10-31 — cockpit-config: declared start files and snapshots
 
 Issue #22. Of today's 17 start files (`apps/crates/cockpit-core/src/sessions.rs`), the
 product declares only the five a provider itself owns (`CLAUDE.md`, Claude `settings` and
@@ -135,10 +144,8 @@ The project file is `<project>/.cockpit/config.toml`, parsed with the owner file
 setting an owner key there fails instead of being ignored. `XDG_RUNTIME_DIR` unset leaves
 the runtime directory unset rather than inventing one: the daemon (#26) owns that fallback.
 
-`config show` ships as a `cockpit-config show` binary inside the crate: no M0 issue creates
-a CLI crate, and report 02 lets frontends import only `cockpit-client` and
-`cockpit-protocol`, while report 09 needs config inspection without the daemon. Where
-`cockpit config show` finally lives is a decision for Theo (decision-needed issue).
+`config show` first shipped as a `cockpit-config show` binary; #77 moved it to
+`cockpit config show` in `cockpit-cli` (entry above).
 
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
 

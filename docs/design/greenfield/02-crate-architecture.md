@@ -64,7 +64,9 @@ its in-sandbox bridge (hooks, plugin, Codex bridge) as assets, not as separate c
   convert explicitly at the boundary.
 - A new crate must own a cohesive lifecycle, a concrete integration or a compatibility
   boundary. Helpers stay with their owner.
-- Frontends import `cockpit-client` and `cockpit-protocol` only.
+- Frontends import `cockpit-client` and `cockpit-protocol` only. Exception (decided, #77):
+  `cockpit-cli` also imports the capability crates whose verbs must work without the daemon
+  (report 09), named in one list: `cockpit-config`. Adding a crate to that list is a decision.
 
 ## Mechanical enforcement (CI)
 
