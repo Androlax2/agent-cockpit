@@ -111,7 +111,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Name migration (`claude-*` aliases, inode-preserving renames) | drop | greenfield has one name |
 | Volume/brightness OSD island | drop | not a Cockpit feature; stays in Theo's dotfiles |
 | Demo fixture + screenshot capture, Arch package staging, `make ci` quality gates | keep | release (13) |
-| Greywall/greyproxy forks built from `packages/` with patches | change | target upstream releases; pins only for verified fixes (15 open) |
+| Greywall/greyproxy forks built from `packages/` with patches | keep | Cockpit's own forks, pinned and built by the release bundle (11, 13) |
 
 ## Gaps this map found in reports 01–15
 

@@ -22,6 +22,9 @@ Status: proposed; platform enforcement `validate`
   rather than rewritten). Greywall is defense in depth, not hostile-code containment.
 - Cockpit keeps a **capability profile per platform and backend**; "Greywall installed" is not
   evidence that a requested policy is enforced.
+- Greywall and greyproxy are consumed as **Cockpit's own patched forks** (decided 2026-10-31):
+  upstream looks unmaintained, so Theo iterates on the forks. The release bundle pins exact fork
+  revisions and builds them; readiness reports the installed fork version.
 - Rootless Docker per project: dedicated engine identity, checkout-specific containers,
   volumes, networks and ports. Same-UID separation is not a hostile-tenant boundary.
 - Windows: everything runs inside the chosen WSL2 distribution. Keep projects on the Linux
