@@ -1,0 +1,13 @@
+[package]
+name = "cockpit-tmux"
+description = "All tmux integration on Cockpit's private server: version check, sessions and panes, control-mode observation and the capture stream."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

@@ -59,6 +59,10 @@ jobs:
         with:
           fallback: none
           tool: cargo-nextest@0.9.150,cargo-deny@0.20.2,typos@1.51.1
+      - name: Install tmux for cockpit-tmux's real-server tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes tmux
       - name: Configure hosted runner admission
         if: runner.environment == 'github-hosted'
         # Disposable hosted runners have no workstation game-guard daemon.
