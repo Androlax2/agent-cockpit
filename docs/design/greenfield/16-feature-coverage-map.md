@@ -112,7 +112,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 
 | Feature | Verdict | Owner |
 | --- | --- | --- |
-| `cockpit doctor`, health-check timer, `cockpit logs`, `reload`, `reset` | keep | readiness (09), diagnostics (12), daemon lifecycle (13); `cockpit logs level` library proven by `cockpit-diagnostics` `level::an_override_reverts_when_it_expires` (verb wiring pending: it needs the host-only channel, #32, decided in #108) |
+| `cockpit doctor`, health-check timer, `cockpit logs`, `reload`, `reset` | keep | readiness (09), diagnostics (12), daemon lifecycle (13); `COCKPIT_LOG_LEVEL` at daemon start proven by `cockpit-daemon` `startup::cockpit_log_level_decides_which_records_the_daemon_writes` (#27); `cockpit logs level` library proven by `cockpit-diagnostics` `level::an_override_reverts_when_it_expires` (verb wiring pending: it needs the host-only channel, #32, decided in #108) |
 | Name migration (`claude-*` aliases, inode-preserving renames) | drop | greenfield has one name |
 | Volume/brightness OSD island | drop | not a Cockpit feature; stays in Theo's dotfiles |
 | Demo fixture + screenshot capture, Arch package staging, `make ci` quality gates | keep | release (13) |

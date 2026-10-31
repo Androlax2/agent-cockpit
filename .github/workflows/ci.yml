@@ -114,6 +114,29 @@ jobs:
       - name: Run the greenfield gate
         run: make greenfield-ci
 
+  # The daemon's clean-home start on macOS (M0 gate, #27); the full greenfield gate stays on
+  # Linux. Plain cargo: the Makefile's agent-build runner is Linux-only.
+  greenfield-macos:
+    needs: changes
+    if: needs.changes.outputs.greenfield == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
+        with:
+          fallback: none
+          tool: cargo-nextest@0.9.150
+      - name: Start the daemon on a clean home
+        run: >-
+          cargo nextest run --locked --manifest-path Cargo.toml
+          -p cockpit-daemon --test startup clean_home
+
   # Markdown and spelling, for docs/ and any Markdown file.
   docs:
     needs: changes
