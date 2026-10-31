@@ -50,9 +50,9 @@ pub fn run_settings(environment: Vec<(OsString, OsString)>) -> std::io::Result<R
 }
 
 /// A request that failed, as the wire tells it.
-struct Failed(ProtocolError);
+pub(crate) struct Failed(pub(crate) ProtocolError);
 
-type Answer = Result<Reply, Failed>;
+pub(crate) type Answer = Result<Reply, Failed>;
 
 impl From<Refusal> for Failed {
     fn from(refused: Refusal) -> Failed {
@@ -123,7 +123,7 @@ fn internal(error: &dyn std::fmt::Display) -> Failed {
     ))
 }
 
-fn job(work: impl Future<Output = Answer> + Send + 'static) -> crate::Job {
+pub(crate) fn job(work: impl Future<Output = Answer> + Send + 'static) -> crate::Job {
     Box::pin(async move {
         match work.await {
             Ok(reply) => Outcome::Ok(reply),
@@ -277,12 +277,12 @@ async fn check_syntax(runner: &Runner, command: &str) -> Result<(), Failed> {
 }
 
 /// The agent at the other end of the socket, as its process tree says.
-struct Sender {
+pub(crate) struct Sender {
     ancestry: PeerAncestry,
 }
 
 impl Sender {
-    async fn of(connector: Result<ProcessIdentity, ProcessError>) -> Sender {
+    pub(crate) async fn of(connector: Result<ProcessIdentity, ProcessError>) -> Sender {
         tokio::task::spawn_blocking(move || Sender {
             ancestry: connector.and_then(|process| cockpit_agent_channel::ancestry_of(&process)),
         })
@@ -300,7 +300,7 @@ impl Sender {
             .expect("reading a link does not panic")
     }
 
-    async fn identify(
+    pub(crate) async fn identify(
         &self,
         write: &WriteTransaction<'_>,
         launch_token: Option<String>,
@@ -310,7 +310,10 @@ impl Sender {
 
     /// The registered checkout the sender works in, deepest first. Until sessions record
     /// their checkout (#31), the sender's working directory is the evidence.
-    async fn project(&self, write: &WriteTransaction<'_>) -> Result<Option<Project>, Failed> {
+    pub(crate) async fn project(
+        &self,
+        write: &WriteTransaction<'_>,
+    ) -> Result<Option<Project>, Failed> {
         let Some(cwd) = self.cwd().await else {
             return Ok(None);
         };

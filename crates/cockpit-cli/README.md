@@ -24,6 +24,13 @@ the capability crates whose verbs must work without the daemon, listed in
 | `cockpit approval list`, `show ID`, `approve ID --revision R --digest D`, `decline ID`, `edit ID --revision R COMMAND`, `input ID` (the line typed comes from standard input) | no | `cockpit-approvals` |
 | `cockpit guide show ID`, `answer ID STEP [ANSWER]`, `stuck ID STEP NOTE`, `close ID` | no | `cockpit-approvals` |
 | `cockpit version [--all]`: version and source revision; `--all` adds the release bundle's manifest (#96) | yes | `cockpit-cli` |
+| `cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...`, `list [--project P] [--all]`, `show ID`, `start ID`, `done ID [--summary TEXT]`, `delete ID` (agent socket in a launched session, else the owner's) | no | `cockpit-tasks` |
+| `cockpit todo propose TITLE --why TEXT [--project P]`, `blocked TITLE --why TEXT` (agent socket) | no | `cockpit-tasks` |
+| `cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]`, `priority ID LEVEL`, `queue`/`unqueue`/`approve`/`decline`/`reopen ID`, `after`/`unwait ID ON...`, `image add ID FILE`, `image get ID NUMBER FILE`, `draft save (ID \| --new PROJECT)`, `drafts`, `draft discard` | no | `cockpit-tasks` |
+
+`cockpit todo` picks its socket from `COCKPIT_LAUNCH_TOKEN`: a launched session's verbs go to
+the agent socket, where the daemon identifies it; without the token they are the owner's.
+`show` ends with `next:`, what has to happen for the item to move.
 
 Usage errors exit 2; configuration errors exit 1 with the file and line at fault. A daemon
 verb's refusal exits 1 as `cockpit: <code>: <message>`.

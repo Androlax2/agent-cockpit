@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
-use crate::{Capabilities, agent, approvals, feed, projects, sessions};
+use crate::{Capabilities, agent, approvals, feed, projects, sessions, tasks};
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
 /// so bulk work can fill its lane without taking capacity from control (report 03).
@@ -216,6 +216,66 @@ impl Handler for Routes {
                 // own verbs once those exist.
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => sessions::route(command, Arc::clone(&self.sessions)),
+            },
+            // What an agent may do to tasks: file, read and work its own items. Whether it may
+            // touch a given item is `cockpit-tasks`' rule, not the socket's.
+            (
+                command @ (Command::TaskAdd { .. }
+                | Command::TaskList { .. }
+                | Command::TaskShow { .. }
+                | Command::TaskStart { .. }
+                | Command::TaskDone { .. }
+                | Command::TaskDelete { .. }),
+                peer,
+            ) => tasks::route(
+                command,
+                match peer {
+                    Peer::Owner => None,
+                    Peer::Agent { connector } => Some(connector),
+                },
+                Arc::clone(&self.database),
+                self.environment.clone(),
+            ),
+            // Proposals and blocker reports are how a session asks the owner for something.
+            (command @ (Command::TaskPropose { .. } | Command::TaskReportBlocker { .. }), peer) => {
+                match peer {
+                    Peer::Agent { connector } => tasks::route(
+                        command,
+                        Some(connector),
+                        Arc::clone(&self.database),
+                        self.environment.clone(),
+                    ),
+                    Peer::Owner => Route::Answer(wrong_socket(
+                        "proposing and reporting a blocker are a session's requests; the owner adds items",
+                        "use `cockpit todo add` on the host",
+                        UnblockedBy::Owner,
+                    )),
+                }
+            }
+            // Deciding, ordering, editing and attaching are the owner's.
+            (
+                command @ (Command::TaskEdit { .. }
+                | Command::TaskPriority { .. }
+                | Command::TaskQueue { .. }
+                | Command::TaskApprove { .. }
+                | Command::TaskDecline { .. }
+                | Command::TaskReopen { .. }
+                | Command::TaskWait { .. }
+                | Command::TaskUnwait { .. }
+                | Command::TaskImageAdd { .. }
+                | Command::TaskImage { .. }
+                | Command::TaskDraftSave { .. }
+                | Command::TaskDrafts
+                | Command::TaskDraftDiscard { .. }),
+                peer,
+            ) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => tasks::route(
+                    command,
+                    None,
+                    Arc::clone(&self.database),
+                    self.environment.clone(),
+                ),
             },
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(

@@ -7,6 +7,9 @@ use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 use crate::sessions::{SessionFailure, SessionView};
+use crate::tasks::{
+    HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
+};
 
 /// Correlates a [`Response`] with the [`Request`] it answers; chosen by the client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -194,6 +197,153 @@ pub enum Command {
         session: String,
         url: String,
     },
+    /// File an item. The owner names `project`; an agent files in its own project's list
+    /// without one, or hands it across to `project`'s. `after` names items it waits on.
+    TaskAdd {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        notes: String,
+        /// `kind` names the command itself; `task` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_kind: Option<TaskKindView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<i64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        after: Vec<i64>,
+    },
+    /// Agent socket only: suggest an item; `why` says why. The owner approves or declines it.
+    TaskPropose {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        title: String,
+        why: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        notes: String,
+        /// `kind` names the command itself; `task` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_kind: Option<TaskKindView>,
+    },
+    /// Agent socket only: report what the setup kept the agent from doing, to the owner's
+    /// configured blocker project.
+    TaskReportBlocker {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        title: String,
+        why: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        notes: String,
+    },
+    /// The open items the sender may see, of one project or all; `all` adds done and
+    /// declined ones.
+    TaskList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default)]
+        all: bool,
+    },
+    TaskShow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        item: i64,
+    },
+    /// Owner only: replace what is given. `intent_revision`, when given, must be current.
+    TaskEdit {
+        item: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent_revision: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notes: Option<String>,
+        /// `kind` names the command itself; `task` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_kind: Option<TaskKindView>,
+    },
+    /// Owner only.
+    TaskPriority {
+        item: i64,
+        priority: i64,
+    },
+    /// Owner only: make a `todo` item available for a session to take, or take it back.
+    TaskQueue {
+        item: i64,
+        queued: bool,
+    },
+    /// Owner only.
+    TaskApprove {
+        item: i64,
+    },
+    /// Owner only: the title stays declined in its project.
+    TaskDecline {
+        item: i64,
+    },
+    TaskStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        item: i64,
+    },
+    /// `summary` is what the items waiting on it read.
+    TaskDone {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        item: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
+    /// Owner only: back to `todo`.
+    TaskReopen {
+        item: i64,
+    },
+    /// Owner only: `item` waits on `on` before it can start.
+    TaskWait {
+        item: i64,
+        on: Vec<i64>,
+    },
+    /// Owner only.
+    TaskUnwait {
+        item: i64,
+        on: Vec<i64>,
+    },
+    /// The owner deletes an item nothing open waits on; an agent what it filed and nobody
+    /// started.
+    TaskDelete {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        item: i64,
+    },
+    /// Owner only: attach an image to the notes; the reply names its number.
+    TaskImageAdd {
+        item: i64,
+        data: HexBytes,
+    },
+    /// Owner only.
+    TaskImage {
+        item: i64,
+        number: i64,
+    },
+    /// Owner only: keep unsaved form text. For an item, `base_intent_revision` is the one
+    /// the form was opened on.
+    TaskDraftSave {
+        target: TaskDraftTargetView,
+        title: String,
+        notes: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_intent_revision: Option<i64>,
+    },
+    /// Owner only.
+    TaskDrafts,
+    /// Owner only.
+    TaskDraftDiscard {
+        target: TaskDraftTargetView,
+    },
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -287,6 +437,34 @@ pub enum Reply {
         deferred: Vec<SessionView>,
         failed: Vec<SessionFailure>,
     },
+    Task {
+        task: Box<TaskView>,
+    },
+    /// In the order work moves (doing, todo, proposed, done, declined), highest priority
+    /// first within each.
+    Tasks {
+        tasks: Vec<TaskView>,
+    },
+    TaskDeleted {
+        item: i64,
+    },
+    TaskImageAdded {
+        item: i64,
+        image: TaskImageView,
+    },
+    TaskImage {
+        item: i64,
+        image: TaskImageView,
+        data: HexBytes,
+    },
+    TaskDraft {
+        draft: TaskDraftView,
+    },
+    /// Oldest save first.
+    TaskDrafts {
+        drafts: Vec<TaskDraftView>,
+    },
+    TaskDraftDiscarded,
 }
 
 /// Every frame the daemon sends after the handshake.

@@ -100,6 +100,10 @@ pub struct EffectiveConfig {
     /// The workflow preset the project asks for; workflows validate the name.
     pub workflow_preset: Sourced<Option<String>>,
     pub start_files: Vec<Sourced<StartFile>>,
+    /// The project sessions' blocker reports go to (owner setting, #38).
+    pub tasks_blocker_project: Sourced<Option<String>>,
+    /// Open items one project's sessions may have filed in another project's list.
+    pub tasks_cross_project_open_max: Sourced<u32>,
 }
 
 impl EffectiveConfig {
@@ -176,6 +180,7 @@ struct SettingsFile {
     projects: Option<Spanned<ProjectsTable>>,
     workflow: Option<WorkflowTable>,
     start_files: Option<Spanned<Vec<Spanned<StartFileEntry>>>>,
+    tasks: Option<Spanned<TasksTable>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +193,13 @@ struct ProjectsTable {
 #[serde(deny_unknown_fields)]
 struct WorkflowTable {
     preset: Option<Spanned<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TasksTable {
+    blocker_project: Option<Spanned<String>>,
+    cross_project_open_max: Option<Spanned<i64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,6 +286,8 @@ pub fn load(
         trusted_projects: trusted_projects(&layers, &home)?,
         workflow_preset: workflow_preset(&layers)?,
         start_files: start_files(&layers, &home)?,
+        tasks_blocker_project: tasks_blocker_project(&layers)?,
+        tasks_cross_project_open_max: tasks_cross_project_open_max(&layers)?,
     })
 }
 
@@ -322,8 +336,15 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
     let SettingsFile {
         projects,
         start_files,
+        tasks,
         workflow: _,
     } = &layer.settings;
+    if let Some(tasks) = tasks {
+        return Err(ConfigError::OwnerOnly {
+            key: "tasks",
+            source: layer.source_at(tasks.span()),
+        });
+    }
     if let Some(projects) = projects {
         return Err(ConfigError::OwnerOnly {
             key: "projects",
@@ -438,6 +459,55 @@ fn workflow_preset(layers: &[Layer]) -> Result<Sourced<Option<String>>, ConfigEr
         preset = Sourced::new(Some(name.get_ref().clone()), source);
     }
     Ok(preset)
+}
+
+/// Product default for [`EffectiveConfig::tasks_cross_project_open_max`].
+pub const CROSS_PROJECT_OPEN_MAX: u32 = 3;
+
+fn tasks_blocker_project(layers: &[Layer]) -> Result<Sourced<Option<String>>, ConfigError> {
+    let mut project = Sourced::new(None, Source::ProductDefault);
+    for layer in layers {
+        let Some(name) = layer
+            .settings
+            .tasks
+            .as_ref()
+            .and_then(|tasks| tasks.get_ref().blocker_project.as_ref())
+        else {
+            continue;
+        };
+        let source = layer.source_at(name.span());
+        if name.get_ref().trim().is_empty() {
+            return Err(ConfigError::Invalid {
+                key: "tasks.blocker_project".to_string(),
+                source,
+                reason: "is empty".to_string(),
+            });
+        }
+        project = Sourced::new(Some(name.get_ref().clone()), source);
+    }
+    Ok(project)
+}
+
+fn tasks_cross_project_open_max(layers: &[Layer]) -> Result<Sourced<u32>, ConfigError> {
+    let mut cap = Sourced::new(CROSS_PROJECT_OPEN_MAX, Source::ProductDefault);
+    for layer in layers {
+        let Some(value) = layer
+            .settings
+            .tasks
+            .as_ref()
+            .and_then(|tasks| tasks.get_ref().cross_project_open_max.as_ref())
+        else {
+            continue;
+        };
+        let source = layer.source_at(value.span());
+        let value = u32::try_from(*value.get_ref()).map_err(|_| ConfigError::Invalid {
+            key: "tasks.cross_project_open_max".to_string(),
+            source: source.clone(),
+            reason: "must be a whole number from 0".to_string(),
+        })?;
+        cap = Sourced::new(value, source);
+    }
+    Ok(cap)
 }
 
 /// Product defaults, then each `[[start_files]]` entry: a new label adds a file, an existing

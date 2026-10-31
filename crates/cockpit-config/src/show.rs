@@ -55,6 +55,22 @@ pub fn render(config: &EffectiveConfig) -> String {
             }),
         &config.workflow_preset.source,
     ));
+    lines.push(line(
+        "tasks.blocker_project",
+        &config
+            .tasks_blocker_project
+            .value
+            .as_ref()
+            .map_or(UNSET.to_string(), |name| {
+                Value::from(name.as_str()).to_string()
+            }),
+        &config.tasks_blocker_project.source,
+    ));
+    lines.push(line(
+        "tasks.cross_project_open_max",
+        &config.tasks_cross_project_open_max.value.to_string(),
+        &config.tasks_cross_project_open_max.source,
+    ));
     for start_file in &config.start_files {
         let mut fields = Table::new();
         fields.insert("path".to_string(), path_toml(&start_file.value.path));

@@ -421,6 +421,7 @@ dependencies = [
  "cockpit-protocol",
  "cockpit-provider-api",
  "cockpit-sessions",
+ "cockpit-tasks",
  "cockpit-tmux",
  "cockpit-turso",
  "serde",

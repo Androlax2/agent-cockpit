@@ -103,6 +103,36 @@ fn a_clean_home_shows_working_defaults_for_every_value() {
         line_for(&shown, "workflow.preset"),
         "workflow.preset = <unset>  # product default"
     );
+    assert_eq!(
+        line_for(&shown, "tasks.blocker_project"),
+        "tasks.blocker_project = <unset>  # product default"
+    );
+    assert_eq!(
+        line_for(&shown, "tasks.cross_project_open_max"),
+        "tasks.cross_project_open_max = 3  # product default"
+    );
+}
+
+#[test]
+fn the_owners_task_settings_name_their_file_and_line() {
+    let home = Home::clean();
+    let user_config = home
+        .write_user_config("[tasks]\nblocker_project = \"dotfiles\"\ncross_project_open_max = 5\n");
+    let shown = stdout(&home.show(&[]));
+    assert_eq!(
+        line_for(&shown, "tasks.blocker_project"),
+        format!(
+            "tasks.blocker_project = \"dotfiles\"  # user config {}:2",
+            user_config.display()
+        )
+    );
+    assert_eq!(
+        line_for(&shown, "tasks.cross_project_open_max"),
+        format!(
+            "tasks.cross_project_open_max = 5  # user config {}:3",
+            user_config.display()
+        )
+    );
 }
 
 #[test]
@@ -320,6 +350,7 @@ fn a_project_config_cannot_set_owner_settings() {
             "start_files",
             "\n[[start_files]]\nlabel = \"x\"\npath = \"/x\"\nproviders = [\"claude\"]\n",
         ),
+        ("tasks", "\n[tasks]\nblocker_project = \"elsewhere\"\n"),
     ] {
         let home = Home::clean();
         let project_config = home.write("project/.cockpit/config.toml", contents);
@@ -386,6 +417,14 @@ fn invalid_configuration_fails_loud_with_its_location() {
         (
             "workflow.preset = \"  \"\n",
             "config.toml:1: `workflow.preset` is empty",
+        ),
+        (
+            "[tasks]\nblocker_project = \"\"\n",
+            "config.toml:2: `tasks.blocker_project` is empty",
+        ),
+        (
+            "[tasks]\ncross_project_open_max = -1\n",
+            "config.toml:2: `tasks.cross_project_open_max` must be a whole number from 0",
         ),
         (
             &start_file("label = \"CLAUDE.md \"\npath = \"/x\"\nproviders = [\"claude\"]"),
@@ -518,7 +557,19 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit session restart SESSION|--all\n       \
                  cockpit session sleep|wake|resume|end SESSION\n       \
                  cockpit session link SESSION URL\n       \
-                 cockpit version [--all]\n"
+                 cockpit version [--all]\n       \
+                 cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \
+                 [--priority 1-6] [--after ID]...\n       \
+                 cockpit todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]\n       \
+                 cockpit todo blocked TITLE --why TEXT [--notes TEXT]\n       \
+                 cockpit todo list [--project P] [--all] | show ID | delete ID\n       \
+                 cockpit todo start ID | done ID [--summary TEXT] | reopen ID\n       \
+                 cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]\n       \
+                 cockpit todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID\n       \
+                 cockpit todo after ID ON... | unwait ID ON...\n       \
+                 cockpit todo image add ID FILE | image get ID NUMBER FILE\n       \
+                 cockpit todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]\n       \
+                 cockpit todo drafts | draft discard (ID | --new PROJECT)\n"
             )
         );
     }

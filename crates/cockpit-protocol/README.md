@@ -50,6 +50,13 @@ the wire. Report 14 treats this contract as stable from the first release.
    `session-restart-all`, `session-sleep`, `session-wake`, `session-resume`, `session-end` and
    `session-link` answer a `session` view, `sessions`, or `restarted-all` with each
    session that could not restart. Owner socket only.
+7. Tasks (#38): `task-add`, `task-list`, `task-show`, `task-start`, `task-done` and
+   `task-delete` serve both sockets (an agent acts on its own project's items and what it
+   filed); `task-propose` and `task-report-blocker` are the agent's; `task-edit`,
+   `task-priority`, `task-queue`, `task-approve`, `task-decline`, `task-reopen`, `task-wait`,
+   `task-unwait`, `task-image-add`, `task-image`, `task-draft-save`, `task-drafts` and
+   `task-draft-discard` the owner's. A `TaskView` carries `next`, what has to happen for the
+   item to move. Image bytes travel as lower-case hexadecimal text (`HexBytes`).
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are
