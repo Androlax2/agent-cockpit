@@ -351,6 +351,17 @@ async fn insert_start_file(
         },
         FileState::Unreadable { error } => ("unreadable", None, Some(error.clone())),
     };
+    // Stored bit for bit: SQLite integers are signed.
+    let (modified_ns, changed_s, changed_ns, inode, len) = match present {
+        Some((modified, (seconds, nanos), inode, len)) => (
+            Some(modified),
+            Some(seconds),
+            Some(nanos),
+            Some(inode.cast_signed()),
+            Some(len.cast_signed()),
+        ),
+        None => (None, None, None, None, None),
+    };
     write
         .execute(
             "INSERT INTO session_start_files (launch_id, label, path, file_state, modified_ns,
@@ -361,12 +372,11 @@ async fn insert_start_file(
                 Value::Text(file.label.clone()),
                 Value::Text(path_text(&file.path)?.to_owned()),
                 Value::Text(file_state.to_owned()),
-                integer(present.map(|(modified, ..)| modified)),
-                integer(present.map(|(_, (seconds, _), ..)| seconds)),
-                integer(present.map(|(_, (_, nanos), ..)| nanos)),
-                // Stored bit for bit: SQLite integers are signed.
-                integer(present.map(|(_, _, inode, _)| inode.cast_signed())),
-                integer(present.map(|(_, _, _, len)| len.cast_signed())),
+                integer(modified_ns),
+                integer(changed_s),
+                integer(changed_ns),
+                integer(inode),
+                integer(len),
                 optional_text(error.as_deref()),
             ]),
         )

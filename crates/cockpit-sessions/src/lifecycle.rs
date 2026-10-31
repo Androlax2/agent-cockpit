@@ -138,6 +138,11 @@ impl Sessions {
         let _operation = self.lock(id).await;
         let session = self.get(id).await?;
         self.resumable(&session)?;
+        self.restart_locked(id).await
+    }
+
+    /// Restarts a running session's agent; the caller holds its lock.
+    async fn restart_locked(&self, id: &SessionId) -> Result<Session, Error> {
         self.stop(id, &[SessionState::Running], StopTarget::Restart, "restart")
             .await
     }
@@ -170,25 +175,16 @@ impl Sessions {
     /// session and its agent's report, so an operation or report since the listing counts.
     async fn restart_if_changed(&self, id: &SessionId) -> Result<RestartStep, Error> {
         let _operation = self.lock(id).await;
-        let (session, agent_report) = {
-            let read = self.database.read().await?;
-            let session = store::session(&read, id).await?;
-            let agent_report = crate::reports::latest_report(&read, &as_reporter(id)?).await?;
-            (session, agent_report)
-        };
-        if session.state != SessionState::Running {
+        let Some((session, agent_report)) = self.running_with_report(id).await? else {
             return Ok(RestartStep::Current);
-        }
+        };
         let changed = self.changed_start_files(&session).await?;
         if changed.is_empty() {
             return Ok(RestartStep::Current);
         }
         self.resumable(&session)?;
         if turn_refusal(&session, agent_report.as_ref()).is_none() {
-            let restarted = self
-                .stop(id, &[SessionState::Running], StopTarget::Restart, "restart")
-                .await?;
-            return Ok(RestartStep::Restarted(restarted));
+            return Ok(RestartStep::Restarted(self.restart_locked(id).await?));
         }
         let write = self.database.write().await?;
         store::request_restart(&write, id).await?;
@@ -474,15 +470,7 @@ impl Sessions {
                 Ok(false) => {
                     let agent_report = agent_report.as_ref();
                     if session.restart_pending && turn_refusal(&session, agent_report).is_none() {
-                        match self
-                            .stop(
-                                &id,
-                                &[SessionState::Running],
-                                StopTarget::Restart,
-                                "restart",
-                            )
-                            .await
-                        {
+                        match self.restart_locked(&id).await {
                             Ok(_) => report.restarted.push(id),
                             Err(error) => report.errors.push((id, error.to_string())),
                         }
@@ -524,7 +512,8 @@ impl Sessions {
         if session.state != SessionState::Running {
             return Ok(None);
         }
-        let agent_report = crate::reports::latest_report(&read, &as_reporter(id)?).await?;
+        let agent_report =
+            crate::reports::latest_report(&read, &authorization_session(id)?).await?;
         Ok(Some((session, agent_report)))
     }
 
@@ -1124,11 +1113,6 @@ async fn revoke_self_grant(
         cockpit_authorization::revoke(write, grant.id).await?;
     }
     Ok(())
-}
-
-/// The session as its agent's reports name it.
-fn as_reporter(id: &SessionId) -> Result<cockpit_authorization::SessionId, Error> {
-    authorization_session(id)
 }
 
 /// The session as the authorization and agent-channel crates name it.

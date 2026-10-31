@@ -90,8 +90,8 @@ pub async fn report(
         return Err(refused(Refusal::NotAuthorized(refusal)));
     }
     let previous = latest_report(write, &session).await?;
-    let mut merged = merge(&session, previous, report);
-    merged.launch = latest_launch(write, &session).await?;
+    let launch = latest_launch(write, &session).await?;
+    let merged = merge(&session, previous, report, launch);
     write
         .execute(
             "DELETE FROM session_reports WHERE session = ?1",
@@ -160,7 +160,12 @@ async fn latest_launch(connection: &Connection, session: &SessionId) -> Result<O
     }
 }
 
-fn merge(session: &SessionId, previous: Option<SessionReport>, report: Report) -> SessionReport {
+fn merge(
+    session: &SessionId,
+    previous: Option<SessionReport>,
+    report: Report,
+    launch: Option<i64>,
+) -> SessionReport {
     let previous = previous.unwrap_or(SessionReport {
         session: session.clone(),
         state: None,
@@ -187,7 +192,7 @@ fn merge(session: &SessionId, previous: Option<SessionReport>, report: Report) -
         doing: report.doing.or(previous.doing),
         needs_input,
         reported_at: now(),
-        launch: None,
+        launch,
     }
 }
 
