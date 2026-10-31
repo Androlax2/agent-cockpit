@@ -186,10 +186,30 @@ fn every_launch_turns_off_claude_codes_background_daemon() {
     for conversation in [Conversation::New, Conversation::Resume(resumed)] {
         let command = common::claude().launch(&request(&conversation)).unwrap();
 
-        assert_eq!(
-            command.environment,
-            [("CLAUDE_CODE_DISABLE_AGENT_VIEW".into(), "1".into())],
-            "{conversation:?}"
+        assert!(
+            command
+                .environment
+                .contains(&("CLAUDE_CODE_DISABLE_AGENT_VIEW".into(), "1".into())),
+            "{conversation:?}: {:?}",
+            command.environment
         );
     }
+}
+
+/// See `LAUNCH_ENVIRONMENT` (#219): Claude Code kills a `SessionEnd` hook after 1.5 s by
+/// default, which would lose the end a `/clear` announces while the daemon is busy.
+#[test]
+fn every_launch_gives_the_session_end_hook_the_reports_deadline() {
+    let command = common::claude()
+        .launch(&request(&Conversation::New))
+        .unwrap();
+
+    assert!(
+        command.environment.contains(&(
+            "CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS".into(),
+            "10000".into()
+        )),
+        "{:?}",
+        command.environment
+    );
 }

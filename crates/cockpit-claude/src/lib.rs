@@ -38,7 +38,14 @@ pub const LAUNCH_FLAGS: [&str; 5] = [
 /// `/background` and the exit menu's "Move to background" would continue the conversation
 /// in the daemon's process, whose environment, launch token included, is whichever session
 /// started the daemon, so its hooks would report as another Cockpit session (#184).
-pub const LAUNCH_ENVIRONMENT: [(&str, &str); 1] = [("CLAUDE_CODE_DISABLE_AGENT_VIEW", "1")];
+/// `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` gives a `SessionEnd` hook the agent channel's
+/// 10 s report deadline instead of the 1.5 s after which Claude Code kills it and runs the
+/// next `SessionStart` anyway (measured on 2.1.316): the end a `/clear` announces must reach
+/// the daemon before the new conversation reports (#219).
+pub const LAUNCH_ENVIRONMENT: [(&str, &str); 2] = [
+    ("CLAUDE_CODE_DISABLE_AGENT_VIEW", "1"),
+    ("CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS", "10000"),
+];
 
 /// How long `claude --version` may take at discovery.
 const VERSION_DEADLINE: Duration = Duration::from_secs(10);

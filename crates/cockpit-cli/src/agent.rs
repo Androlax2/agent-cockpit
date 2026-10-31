@@ -120,12 +120,20 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
     // The conversation only says where a report comes from; it reports nothing alone.
     let reported = AgentReport {
         conversation: None,
+        is_conversation_ending: false,
         ..report.clone()
     };
-    if reported == AgentReport::default() {
+    let is_reporting = reported != AgentReport::default();
+    if report.is_conversation_ending {
+        if is_reporting {
+            return Err("--conversation-ends reports nothing else".to_owned());
+        }
+        return Ok(report);
+    }
+    if !is_reporting {
         return Err(
             "name at least one of --state, --label, --doing, --needs-input, --dialog, --prompt, \
-             --outcome, --conversation-ends"
+             --outcome or --conversation-ends"
                 .to_owned(),
         );
     }

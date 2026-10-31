@@ -78,7 +78,9 @@ fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
     assert!(status.success(), "{status}: {stderr}");
     let reports = std::fs::read_to_string(dir.path().join("reports"))
         .unwrap_or_else(|error| panic!("no hook reported ({error}): {stderr}"));
-    let conversation = launch.conversation.expect("a new launch names its conversation");
+    let conversation = launch
+        .conversation
+        .expect("a new launch names its conversation");
     assert_eq!(
         reports.lines().collect::<Vec<_>>(),
         [

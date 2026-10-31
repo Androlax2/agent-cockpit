@@ -117,7 +117,14 @@ async fn a_conversation_announces_its_end_alone() {
 
 #[tokio::test]
 async fn malformed_conversation_arguments_exit_2_before_any_connection() {
-    let cases: [&[&str]; 4] = [
+    let cases: [&[&str]; 5] = [
+        &[
+            "--conversation",
+            "c-1",
+            "--conversation-ends",
+            "--state",
+            "waiting",
+        ],
         &["--conversation-ends"],
         &["--conversation", "c-1"],
         &[
