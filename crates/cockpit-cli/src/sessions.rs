@@ -39,6 +39,7 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
         ["resume", id] => Command::SessionResume {
             session: session(id),
         },
+        ["end", "--finished"] => Command::SessionEndFinished,
         ["end", id] => Command::SessionEnd {
             session: session(id),
         },
@@ -80,8 +81,9 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
 }
 
 /// Sends `command` and prints the sessions it answers, one line each. Exit 1 when the
-/// daemon refuses, or when `restart --all` could neither restart nor defer every session;
-/// a deferred session prints with its pending restart.
+/// daemon refuses, when `restart --all` could neither restart nor defer every session, or
+/// when `end --finished` could not end every finished session; a deferred session prints
+/// with its pending restart.
 pub fn run(command: Command) -> ExitCode {
     let deadline = match command {
         Command::SessionList { .. } | Command::ProviderList => CONTROL_DEADLINE,
@@ -113,7 +115,18 @@ pub fn run(command: Command) -> ExitCode {
                 print!("{}", session_line(session));
             });
             failed.iter().for_each(|failure| {
-                eprint!("{}", failure_line(failure));
+                eprint!("{}", failure_line(failure, "restarted"));
+            });
+            if !failed.is_empty() {
+                return ExitCode::FAILURE;
+            }
+        }
+        Reply::EndedFinished { ended, failed } => {
+            ended.iter().for_each(|session| {
+                print!("{}", session_line(session));
+            });
+            failed.iter().for_each(|failure| {
+                eprint!("{}", failure_line(failure, "ended"));
             });
             if !failed.is_empty() {
                 return ExitCode::FAILURE;
@@ -124,9 +137,10 @@ pub fn run(command: Command) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `id  state  agent  launch  conversation  working-dir  reason  restart`, tab-separated.
-/// `restart` is `-`, `changed:<start files>` when the session runs on old start files, or
-/// `pending:<start files>` once `restart --all` deferred its restart.
+/// `id  state  agent  launch  conversation  working-dir  reason  restart  work`,
+/// tab-separated. `restart` is `-`, `changed:<start files>` when the session runs on old
+/// start files, or `pending:<start files>` once `restart --all` deferred its restart.
+/// `work` is `finished` when the task list says its work is done (#157), `-` otherwise.
 fn session_line(session: &SessionView) -> String {
     let launch = session
         .launch
@@ -138,8 +152,9 @@ fn session_line(session: &SessionView) -> String {
         (false, false) => format!("changed:{changed}"),
         (false, true) => "-".to_owned(),
     };
+    let work = if session.finished { "finished" } else { "-" };
     format!(
-        "{}\t{}\t{}\t{launch}\t{}\t{}\t{}\t{restart}\n",
+        "{}\t{}\t{}\t{launch}\t{}\t{}\t{}\t{restart}\t{work}\n",
         session.id,
         session.state,
         session.agent,
@@ -149,9 +164,10 @@ fn session_line(session: &SessionView) -> String {
     )
 }
 
-fn failure_line(failure: &SessionFailure) -> String {
+/// `outcome` is what did not happen to the session: `restarted`, `ended`.
+fn failure_line(failure: &SessionFailure, outcome: &str) -> String {
     format!(
-        "cockpit: {} not restarted: {}: {}\n",
+        "cockpit: {} not {outcome}: {}: {}\n",
         failure.session,
         failure.error.code.as_str(),
         failure.error.message

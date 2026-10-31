@@ -47,6 +47,8 @@ pub enum Overlay {
 pub enum Confirm {
     Restart(String),
     Exit(String),
+    /// Every session in the finished group.
+    ExitFinished,
 }
 
 /// What one key did: the command it counts as in diagnostics (decision 17: every command
@@ -178,6 +180,9 @@ impl App {
                 (Key::Char('y'), Confirm::Exit(session)) => {
                     Step::sending("exit", Command::SessionEnd { session })
                 }
+                (Key::Char('y'), Confirm::ExitFinished) => {
+                    Step::sending("exit-finished", Command::SessionEndFinished)
+                }
                 _ => Step::used("confirm-cancel"),
             };
         }
@@ -239,6 +244,12 @@ impl App {
             }
             Key::Char('r') => self.ask_to_confirm(Confirm::Restart, "restart-ask"),
             Key::Char('x') => self.ask_to_confirm(Confirm::Exit, "exit-ask"),
+            Key::Char('X') => {
+                if !self.board.finished_sessions().is_empty() {
+                    self.confirm = Some(Confirm::ExitFinished);
+                }
+                Step::used("exit-finished-ask")
+            }
             _ => Step::used("unbound"),
         }
     }
@@ -361,6 +372,18 @@ impl App {
                 self.note(format!("{what} {} in {}", session.id, session.working_dir));
                 self.board.put_session(*session);
                 self.failure = None;
+            }
+            Reply::EndedFinished { ended, failed } => {
+                self.note(format!("exited {} finished sessions", ended.len()));
+                for session in ended {
+                    self.board.put_session(session);
+                }
+                for failure in failed {
+                    self.note(format!(
+                        "{} not exited: {}",
+                        failure.session, failure.error.message
+                    ));
+                }
             }
             Reply::RunRequest { request } => {
                 self.note(format!("request {} is {:?}", request.id, request.state));

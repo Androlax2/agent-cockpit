@@ -196,6 +196,21 @@ pub(crate) async fn session(connection: &Connection, id: &SessionId) -> Result<S
         })
 }
 
+/// The sessions other than `except` that hold `provider`'s conversation `conversation`.
+pub(crate) async fn conversation_holders(
+    connection: &Connection,
+    provider: &ProviderName,
+    conversation: &ConversationId,
+    except: &SessionId,
+) -> Result<Vec<Session>, Error> {
+    query_sessions(
+        connection,
+        "s.provider = ?1 AND s.conversation = ?2 AND s.id <> ?3",
+        (provider.as_str(), conversation.as_str(), except.as_str()),
+    )
+    .await
+}
+
 pub(crate) struct NewSession<'values> {
     pub(crate) id: &'values SessionId,
     pub(crate) provider: &'values ProviderName,

@@ -141,14 +141,15 @@ impl Board {
     }
 
     /// Sessions grouped by project name, projects sorted by name; the sessions of an
-    /// unknown checkout come last, under no project, so they are never hidden.
+    /// unknown checkout come last, under no project, so they are never hidden. Finished
+    /// sessions are not in them: they fold into [`Board::finished_sessions`].
     pub fn groups(&self) -> Vec<ProjectGroup<'_>> {
         let mut groups: BTreeMap<Option<&str>, Vec<&SessionView>> = BTreeMap::new();
         for project in &self.projects {
             groups.entry(Some(project.name.as_str())).or_default();
         }
         for session in self.sessions.values() {
-            if session.state == SessionStateView::Ended {
+            if session.state == SessionStateView::Ended || session.finished {
                 continue;
             }
             groups
@@ -170,6 +171,15 @@ impl Board {
             ordered.rotate_left(1);
         }
         ordered
+    }
+
+    /// The sessions the task list says finished their work and that have not ended,
+    /// folded into one group the owner exits together (#157, decided in #201).
+    pub fn finished_sessions(&self) -> Vec<&SessionView> {
+        self.sessions
+            .values()
+            .filter(|session| session.finished && session.state != SessionStateView::Ended)
+            .collect()
     }
 
     /// The sessions in list order, flattened across groups.

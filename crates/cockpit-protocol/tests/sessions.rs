@@ -59,6 +59,7 @@ fn a_session_view_names_its_state_and_latest_launch_on_the_wire() {
         }),
         changed_start_files: Vec::new(),
         restart_pending: false,
+        finished: false,
     };
 
     let wire = serde_json::to_value(Reply::Session {

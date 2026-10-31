@@ -10,6 +10,8 @@
 //! launch, and acts only on its own project's items and those it filed; filing in another
 //! project's list counts against that pair's cap.
 
+use std::collections::HashMap;
+
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
@@ -17,13 +19,14 @@ use cockpit_turso::sql::{Connection, Row};
 use crate::error::invalid;
 use crate::text::{self, NOTES_MAX_CHARS, SUMMARY_MAX_CHARS, WHY_MAX_CHARS};
 use crate::{
-    Actor, Edit, Error, Item, ItemId, Kind, NewItem, Priority, Refusal, Settings, Status, Wait,
+    Actor, Edit, Error, Item, ItemId, Kind, NewItem, Priority, Refusal, SessionWork, Settings,
+    Status, Wait,
 };
 
 /// The columns `item_from` reads, in its order.
 const SELECT_ITEMS: &str = "SELECT id, project, title, notes, kind, priority, status,
         is_blocker_report, why, filed_by, filed_from, doing_session, summary, is_queued,
-        intent_revision, state_revision, created_at, changed_at
+        intent_revision, state_revision, created_at, changed_at, finished_by
      FROM tasks_items";
 
 /// What `list` returns.
@@ -308,6 +311,43 @@ pub async fn item(connection: &Connection, actor: &Actor, id: ItemId) -> Result<
     accessible(connection, actor, id).await
 }
 
+/// What the list says about each session's work, for the owner's view of sessions (#157):
+/// the items it is doing and those finished while it was doing them. Sessions with neither
+/// are absent.
+pub async fn session_work(
+    connection: &Connection,
+) -> Result<HashMap<SessionId, SessionWork>, Error> {
+    let mut work: HashMap<SessionId, SessionWork> = HashMap::new();
+    let doing = "SELECT doing_session, count(*) FROM tasks_items
+        WHERE doing_session IS NOT NULL GROUP BY doing_session";
+    for (session, count) in counts_by_session(connection, doing).await? {
+        work.entry(session).or_default().doing = count;
+    }
+    let finished = "SELECT finished_by, count(*) FROM tasks_items
+        WHERE finished_by IS NOT NULL AND status = 'done' GROUP BY finished_by";
+    for (session, count) in counts_by_session(connection, finished).await? {
+        work.entry(session).or_default().finished = count;
+    }
+    Ok(work)
+}
+
+/// The rows of `query`: a session column, then a count.
+async fn counts_by_session(
+    connection: &Connection,
+    query: &str,
+) -> Result<Vec<(SessionId, u32)>, Error> {
+    let mut rows = connection.query(query, ()).await?;
+    let mut counts = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let session = SessionId::new(row.get::<String>(0)?)
+            .map_err(|error| invalid_row("tasks_items", error.to_string()))?;
+        let count = u32::try_from(row.get::<i64>(1)?)
+            .map_err(|error| invalid_row("tasks_items", error.to_string()))?;
+        counts.push((session, count));
+    }
+    Ok(counts)
+}
+
 /// The owner's change to what is asked. `expected_intent_revision`, when given, must be the
 /// current one, so an edit made on an older reading is refused instead of overwriting.
 pub async fn edit(
@@ -499,8 +539,8 @@ pub async fn finish(
     refuse_while_waiting(&item)?;
     write
         .execute(
-            "UPDATE tasks_items SET status = 'done', doing_session = NULL, is_queued = 0,
-                summary = ?2, state_revision = state_revision + 1, changed_at = ?3
+            "UPDATE tasks_items SET status = 'done', finished_by = doing_session,
+                doing_session = NULL, is_queued = 0, summary = ?2, state_revision = state_revision + 1, changed_at = ?3
              WHERE id = ?1",
             (id.0, summary, now),
         )
@@ -520,8 +560,8 @@ pub async fn reopen(
     in_status(&item, &[Status::Doing, Status::Done], "be reopened")?;
     write
         .execute(
-            "UPDATE tasks_items SET status = 'todo', doing_session = NULL, summary = NULL,
-                state_revision = state_revision + 1, changed_at = ?2
+            "UPDATE tasks_items SET status = 'todo', doing_session = NULL, finished_by = NULL,
+                summary = NULL, state_revision = state_revision + 1, changed_at = ?2
              WHERE id = ?1",
             (id.0, now),
         )
@@ -865,6 +905,7 @@ fn item_from(row: &Row) -> Result<Item, Error> {
         state_revision: row.get(15)?,
         created_at: row.get(16)?,
         changed_at: row.get(17)?,
+        finished_by: session_of(row.get(18)?)?,
     })
 }
 

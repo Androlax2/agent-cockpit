@@ -155,6 +155,9 @@ pub struct Item {
     pub filed_from: Option<String>,
     /// The session doing it; `None` while nobody is, or when the owner started it.
     pub doing_session: Option<SessionId>,
+    /// The session that was doing it when it was finished; `None` before it is done, or
+    /// when nobody was (#157: the task evidence a session's "finished" label reads).
+    pub finished_by: Option<SessionId>,
     /// What its session said it did when it finished it.
     pub summary: Option<String>,
     /// The owner made it available for a session to take.
@@ -169,6 +172,13 @@ pub struct Item {
     pub state_revision: i64,
     pub created_at: i64,
     pub changed_at: i64,
+}
+
+/// One session's items: those it is doing, and those finished while it was doing them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionWork {
+    pub doing: u32,
+    pub finished: u32,
 }
 
 impl Item {

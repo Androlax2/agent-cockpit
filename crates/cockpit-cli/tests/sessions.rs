@@ -75,6 +75,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         }),
         changed_start_files: Vec::new(),
         restart_pending: false,
+        finished: false,
     }
 }
 
@@ -109,7 +110,7 @@ async fn session_new_sends_an_absolute_dir_with_its_options_and_prints_the_sessi
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\n"
+        "s0123456789ab\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
     );
     assert_eq!(
         daemon.await.unwrap(),
@@ -149,8 +150,8 @@ async fn session_list_ended_asks_for_ended_sessions_and_prints_one_line_each() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "s000000000001\tstopping:asleep\tclaude\tstart\tc-1\t/p/app\t-\t-\n\
-         s000000000002\tended\tclaude\tstart\tc-1\t/p/app\tits agent exited\t-\n"
+        "s000000000001\tstopping:asleep\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n\
+         s000000000002\tended\tclaude\tstart\tc-1\t/p/app\tits agent exited\t-\t-\n"
     );
     assert_eq!(daemon.await.unwrap(), Command::SessionList { ended: true });
 }
@@ -240,7 +241,7 @@ async fn restart_all_exits_1_naming_each_session_it_could_not_restart() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stdout),
-        "s000000000001\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\n"
+        "s000000000001\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
     );
     assert_eq!(
         text(&output.stderr),

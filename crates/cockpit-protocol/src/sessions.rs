@@ -34,6 +34,10 @@ pub struct SessionView {
     /// `restart --all` deferred its restart until its agent waits at its prompt.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub restart_pending: bool,
+    /// The task list says its work is finished: it is doing no item and finished at least
+    /// one (#157, decided in #201). Never read from the agent's own state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finished: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,7 +133,8 @@ impl LaunchKindView {
     }
 }
 
-/// A session `session-restart-all` could neither restart nor defer, and why.
+/// A session `session-restart-all` could neither restart nor defer, or
+/// `session-end-finished` could not end, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionFailure {
     pub session: String,

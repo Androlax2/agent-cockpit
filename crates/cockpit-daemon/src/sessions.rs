@@ -1,6 +1,7 @@
 //! Routes the session commands to `cockpit-sessions` and converts its types to the wire at
 //! this boundary, and runs its periodic pass. The rules live in that crate; this file maps.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +13,9 @@ use cockpit_sessions::{
     Error, LaunchKind, Restored, Session, SessionId, SessionState, Sessions, StartRequest,
     StopTarget, WakeCause,
 };
+
+use cockpit_authorization::SessionId as TaskSession;
+use cockpit_tasks::SessionWork;
 
 use crate::routes::{Route, WorkClass, refusal};
 
@@ -25,9 +29,10 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
     };
     let job: crate::Job = match command {
         Command::SessionList { ended } => job(async move {
+            let work = task_work(&sessions).await?;
             let mut views = Vec::new();
             for session in sessions.list(ended).await? {
-                views.push(current_view(&sessions, &session).await?);
+                views.push(current_view(&sessions, &session, &work).await?);
             }
             Ok(Reply::Sessions { sessions: views })
         }),
@@ -49,16 +54,17 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
         }),
         Command::SessionRestartAll => job(async move {
             let outcome = sessions.restart_all().await?;
+            let work = task_work(&sessions).await?;
             // A restarted agent was just launched on the current start files.
             let restarted = outcome
                 .restarted
                 .iter()
-                .map(|session| session_view(session, Vec::new()))
+                .map(|session| session_view(session, Vec::new(), &work))
                 .collect();
             let deferred = outcome
                 .deferred
                 .into_iter()
-                .map(|(session, changed)| session_view(&session, changed))
+                .map(|(session, changed)| session_view(&session, changed, &work))
                 .collect();
             let failed = outcome
                 .failed
@@ -89,6 +95,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
         Command::SessionEnd { session } => one(session, sessions, |sessions, id| async move {
             sessions.end(&id).await
         }),
+        Command::SessionEndFinished => job(end_finished(sessions)),
         Command::SessionLink { session, url } => {
             one(session, sessions, |sessions, id| async move {
                 sessions.link(&id, &url).await
@@ -124,13 +131,91 @@ where
     })
 }
 
-fn job(work: impl Future<Output = Result<Reply, Error>> + Send + 'static) -> crate::Job {
+fn job(work: impl Future<Output = Result<Reply, Failed>> + Send + 'static) -> crate::Job {
     Box::pin(async move {
         match work.await {
             Ok(reply) => Outcome::Ok(reply),
-            Err(error) => Outcome::Error(protocol_error(&error)),
+            Err(failed) => Outcome::Error(failed.into()),
         }
     })
+}
+
+/// Why a session job failed: the session operation, or the task list read for the
+/// finished label.
+pub(crate) enum Failed {
+    Sessions(Error),
+    Tasks(cockpit_tasks::Error),
+}
+
+impl From<Error> for Failed {
+    fn from(error: Error) -> Failed {
+        Failed::Sessions(error)
+    }
+}
+
+impl From<cockpit_tasks::Error> for Failed {
+    fn from(error: cockpit_tasks::Error) -> Failed {
+        Failed::Tasks(error)
+    }
+}
+
+impl From<Failed> for ProtocolError {
+    fn from(failed: Failed) -> ProtocolError {
+        match failed {
+            Failed::Sessions(error) => protocol_error(&error),
+            Failed::Tasks(error) => {
+                tracing::error!(%error, "reading the task list for a session view failed");
+                ProtocolError::new(ErrorCode::Internal, format!("the task list: {error}"))
+            }
+        }
+    }
+}
+
+/// `session-end-finished`: ends each finished session that has not ended, one at a time;
+/// one that cannot end is listed with why and does not stop the others.
+async fn end_finished(sessions: Arc<Sessions>) -> Result<Reply, Failed> {
+    let work = task_work(&sessions).await?;
+    let finished: Vec<Session> = sessions
+        .list(false)
+        .await?
+        .into_iter()
+        .filter(|session| is_finished(session, &work))
+        .collect();
+    let mut ended = Vec::new();
+    let mut failed = Vec::new();
+    for session in finished {
+        match sessions.end(&session.id).await {
+            Ok(over) => ended.push(session_view(&over, Vec::new(), &work)),
+            Err(error) => failed.push(SessionFailure {
+                session: session.id.to_string(),
+                error: protocol_error(&error),
+            }),
+        }
+    }
+    Ok(Reply::EndedFinished { ended, failed })
+}
+
+/// Each session's items, as the task list records them.
+async fn task_work(sessions: &Sessions) -> Result<HashMap<TaskSession, SessionWork>, Failed> {
+    let read = sessions.database().read().await.map_err(Error::from)?;
+    Ok(cockpit_tasks::session_work(&read).await?)
+}
+
+/// The finished label (#157, decided in #201): the task list, never the agent's own state,
+/// says the session's work is done. It is doing no item and finished at least one; a session
+/// mid-launch or mid-stop is not labelled.
+fn is_finished(session: &Session, work: &HashMap<TaskSession, SessionWork>) -> bool {
+    if matches!(
+        session.state,
+        SessionState::Launching | SessionState::Stopping { .. }
+    ) {
+        return false;
+    }
+    let Ok(id) = TaskSession::new(session.id.as_str()) else {
+        return false;
+    };
+    work.get(&id)
+        .is_some_and(|work| work.doing == 0 && work.finished > 0)
 }
 
 pub(crate) fn protocol_error(error: &Error) -> ProtocolError {
@@ -211,19 +296,28 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
     }
 }
 
-pub(crate) async fn session_reply(sessions: &Sessions, session: &Session) -> Result<Reply, Error> {
+pub(crate) async fn session_reply(sessions: &Sessions, session: &Session) -> Result<Reply, Failed> {
+    let work = task_work(sessions).await?;
     Ok(Reply::Session {
-        session: Box::new(current_view(sessions, session).await?),
+        session: Box::new(current_view(sessions, session, &work).await?),
     })
 }
 
 /// The session's view with the start files that changed since its launch, compared now.
-async fn current_view(sessions: &Sessions, session: &Session) -> Result<SessionView, Error> {
+async fn current_view(
+    sessions: &Sessions,
+    session: &Session,
+    work: &HashMap<TaskSession, SessionWork>,
+) -> Result<SessionView, Error> {
     let changed = sessions.changed_start_files(session).await?;
-    Ok(session_view(session, changed))
+    Ok(session_view(session, changed, work))
 }
 
-fn session_view(session: &Session, changed_start_files: Vec<String>) -> SessionView {
+fn session_view(
+    session: &Session,
+    changed_start_files: Vec<String>,
+    work: &HashMap<TaskSession, SessionWork>,
+) -> SessionView {
     SessionView {
         id: session.id.to_string(),
         agent: session.provider.to_string(),
@@ -263,5 +357,6 @@ fn session_view(session: &Session, changed_start_files: Vec<String>) -> SessionV
         }),
         changed_start_files,
         restart_pending: session.restart_pending,
+        finished: is_finished(session, work),
     }
 }

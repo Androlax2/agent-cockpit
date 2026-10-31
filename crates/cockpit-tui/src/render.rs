@@ -25,6 +25,7 @@ Sessions
   N                  new session (project, agent, first message, in place or new clone)
   r                  restart the selected session (confirm with y)
   x                  exit the selected session (confirm with y)
+  X                  exit every finished session (confirm with y)
 Approval pane (Tab moves between the list and the pane)
   y                  approve the command shown / done with the guide step
   x                  decline the command / close the guide
@@ -73,6 +74,10 @@ fn status_line(app: &App) -> String {
     match (&app.confirm, &app.failure) {
         (Some(Confirm::Restart(session)), _) => format!("restart {session}? y to confirm"),
         (Some(Confirm::Exit(session)), _) => format!("exit {session}? y to confirm"),
+        (Some(Confirm::ExitFinished), _) => format!(
+            "exit {} finished sessions? y to confirm",
+            app.board().finished_sessions().len()
+        ),
         (None, Some(failure)) => format!("{}: {}", failure.kind, failure.problem),
         (None, None) => "? help".to_owned(),
     }
@@ -98,6 +103,13 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
                 line
             });
         }
+    }
+    let finished = board.finished_sessions().len();
+    if finished > 0 {
+        lines.push(
+            Line::from(format!("Finished ({finished}), folded: X exits them"))
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        );
     }
     if lines.is_empty() {
         lines.push(Line::from("No project yet: cockpit project add DIR"));

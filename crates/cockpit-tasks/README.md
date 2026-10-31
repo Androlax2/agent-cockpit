@@ -44,6 +44,11 @@ Kinds: `task`, `feature`, `bug`, `improvement`, `chore`, `research`. Priority 1 
 
 Item ids are never reused: a deleted item's id names nothing afterwards.
 
+- **Who finished it.** `finish` keeps the session that was doing the item (`finished_by`);
+  `reopen` clears it. `session_work` answers, per session, how many items it is doing and
+  how many it finished: the daemon's "finished" label for a session reads it (#157, decided
+  in #201).
+
 ## Who may do what
 
 The owner does everything. A session needs `change-state` over itself (granted at launch,
@@ -68,5 +73,6 @@ owner's.
 - `tests/items.rs`: statuses, proposals, decline memory, waits, caps, blocker reports and
   revisions on a real state database.
 - `tests/attachments.rs`: images and drafts.
+- `tests/finished_by.rs`: the finishing session and `session_work`.
 - `cockpit todo` end to end: `cockpit-cli/tests/todo.rs` (owner) and
   `cockpit-daemon/tests/tasks.rs` (agent socket).
