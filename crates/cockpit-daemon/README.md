@@ -96,9 +96,9 @@ not share code.
   `resnapshot-required` when that cursor cannot resume; nothing is skipped.
 - A supervised worker keeps the newest 100,000 change rows, hourly.
 - Sessions and checkouts (#199): a supervised worker publishes their wire views
-  (`session-list`, `checkout-list`) after every commit and retracts ended sessions and
-  removed checkouts. The daemon is the only producer of those kinds; a pass that changes
-  nothing rolls back, so it does not wake itself (`src/session_feed.rs`,
+  (`session-list`, `checkout-list`) after every commit and every 5 s, and retracts ended
+  sessions and removed checkouts. The daemon is the only producer of those kinds; a pass
+  that derives what the last one wrote takes no write transaction, so it does not wake itself (`src/session_feed.rs`,
   `docs/decisions/2026-10-31-199-change-feed-projector.md`).
 
 ## Tasks (#38)
@@ -148,7 +148,8 @@ not share code.
   discarded history, one feed per connection, none on the agent socket, batches with one
   answer place, an oversized snapshot closing the connection.
 - `tests/session_feed.rs`: issue #199's sessions and checkouts reaching a subscriber as
-  they start, sleep and end, each in the exact state the command answered.
+  they start, sleep and end, each in the exact state the command answered; a foreign
+  `session` entity retracted; a broken owner configuration holding back checkouts only.
 - `tests/tasks.rs`: issue #38's agent side on the binary's sockets: a proposal approved,
   the cross-project cap, blocker reports and their configuration, a summary read by the item
   waiting on it, and socket roles.

@@ -362,8 +362,6 @@ impl App {
         }
         match reply {
             Reply::Projects { projects } => self.board.set_projects(projects),
-            Reply::Checkouts { checkouts } => self.board.set_checkouts(checkouts),
-            Reply::Sessions { sessions } => self.board.set_sessions(sessions),
             Reply::AgentReports { reports } => self.board.set_reports(reports),
             Reply::ApprovalQueue { runs, guides } => {
                 self.board.set_queue(runs, guides);
@@ -395,7 +393,7 @@ impl App {
                 };
                 self.note(format!("{what} {} in {}", session.id, session.working_dir));
                 self.board.put_session(*session);
-                self.failure = None;
+                self.clear_command_failure();
             }
             Reply::EndedFinished { ended, failed } => {
                 self.note(format!("exited {} finished sessions", ended.len()));
@@ -411,11 +409,11 @@ impl App {
             }
             Reply::RunRequest { request } => {
                 self.note(format!("request {} is {:?}", request.id, request.state));
-                self.failure = None;
+                self.clear_command_failure();
             }
             Reply::Guide { guide } => {
                 self.note(format!("guide {} is {:?}", guide.id, guide.state));
-                self.failure = None;
+                self.clear_command_failure();
             }
             other => self.note(format!("unexpected answer {other:?}")),
         }
@@ -449,6 +447,18 @@ impl App {
             (false, true) => self.focus = Focus::Pane,
             (_, false) => self.focus = Focus::List,
             _ => {}
+        }
+    }
+
+    /// A command went through: a failed command no longer shows. A lost change feed still
+    /// does, since only an applied batch says the list is current again.
+    fn clear_command_failure(&mut self) {
+        if self
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.kind != FEED_LABEL)
+        {
+            self.failure = None;
         }
     }
 

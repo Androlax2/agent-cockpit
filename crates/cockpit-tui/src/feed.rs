@@ -13,8 +13,11 @@ use crate::FeedError;
 
 /// Bounds each connect and subscribe exchange.
 const SUBSCRIBE_DEADLINE: Duration = Duration::from_secs(2);
-/// How long a lost or refused feed waits before it subscribes again.
-const RETRY: Duration = Duration::from_secs(1);
+/// How long a lost or refused feed first waits before it subscribes again; each failure in a
+/// row doubles it up to [`LONGEST_RETRY`], so a snapshot the board keeps refusing is not sent
+/// every second.
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+const LONGEST_RETRY: Duration = Duration::from_secs(30);
 
 /// What the feed hands the loop that owns the board.
 #[derive(Debug)]
@@ -33,6 +36,7 @@ pub enum FeedEvent {
 /// from the last applied batch; a batch the board refused starts again from a snapshot.
 pub async fn follow_feed(socket: PathBuf, events: mpsc::Sender<FeedEvent>) {
     let mut subscription = Subscription::new(socket.clone(), None, SUBSCRIBE_DEADLINE);
+    let mut retry = FIRST_RETRY;
     loop {
         let problem = match subscription.next_batch().await {
             Err(error) => error.to_string(),
@@ -49,6 +53,7 @@ pub async fn follow_feed(socket: PathBuf, events: mpsc::Sender<FeedEvent>) {
                 match outcome.await {
                     Ok(Ok(())) => {
                         pending.applied();
+                        retry = FIRST_RETRY;
                         continue;
                     }
                     Ok(Err(refused)) => {
@@ -63,6 +68,7 @@ pub async fn follow_feed(socket: PathBuf, events: mpsc::Sender<FeedEvent>) {
         if events.send(FeedEvent::Lost(problem)).await.is_err() {
             return;
         }
-        tokio::time::sleep(RETRY).await;
+        tokio::time::sleep(retry).await;
+        retry = (retry * 2).min(LONGEST_RETRY);
     }
 }

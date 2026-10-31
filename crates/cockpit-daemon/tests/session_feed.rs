@@ -10,6 +10,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::sync::Arc;
@@ -38,6 +39,34 @@ impl Home {
 
     fn path(&self) -> PathBuf {
         self.dir.path().canonicalize().unwrap()
+    }
+
+    /// The owner's configuration file the daemon reads (`wiring_in`'s home).
+    fn config_file(&self) -> PathBuf {
+        self.path().join("home/.config/cockpit/config.toml")
+    }
+
+    /// Publishes a `session` entity on the daemon's state while no daemon runs, as a
+    /// producer other than the daemon would.
+    async fn publish_foreign_session(&self, id: &str) {
+        let state_dir = self.path().join("state/cockpit");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&state_dir)
+            .unwrap();
+        let database = cockpit_turso::Database::open(
+            &state_dir.join("state.db"),
+            &cockpit_daemon::MIGRATION_SETS,
+        )
+        .await
+        .unwrap();
+        let write = database.write().await.unwrap();
+        let state = serde_json::json!({"id": id});
+        cockpit_messaging::publish(&write, "session", id, state.as_object().unwrap())
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
     }
 
     async fn start(&self) -> Daemon {
@@ -73,6 +102,15 @@ impl Home {
         std::fs::write(root.join("README"), "fixture\n").unwrap();
         git(&root, &["add", "."]);
         git(&root, &["commit", "--quiet", "-m", "initial"]);
+        let origin = self.path().join("origin.git");
+        git(
+            &self.path(),
+            &["init", "--quiet", "--bare", origin.to_str().unwrap()],
+        );
+        git(
+            &root,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         request(
             client,
             Command::ProjectAdd {
@@ -127,6 +165,14 @@ struct Followed {
 }
 
 impl Followed {
+    /// The state of `kind` `id` as last applied: `None` when never seen, `Some(None)` once
+    /// retracted.
+    fn state(&self, kind: EntityKind, id: &str) -> Option<Option<&Map<String, Value>>> {
+        self.entities
+            .get(&(kind, id.to_owned()))
+            .map(Option::as_ref)
+    }
+
     /// Applies batches until `kind` `id` is in the state `expected` (`None`: retracted).
     async fn until(
         &mut self,
@@ -252,6 +298,90 @@ async fn a_registered_projects_checkout_reaches_a_subscriber() {
             EntityKind::Checkout,
             &main.id.to_string(),
             Some(&state_of(main)),
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_entity_the_daemon_did_not_derive_is_retracted() {
+    let home = Home::new();
+    home.publish_foreign_session("s-foreign").await;
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let mut feed = Subscription::new(daemon.socket_path().to_path_buf(), None, GENEROUS);
+    let mut followed = Followed::default();
+
+    // A later commit's checkout is a fence: the first pass, which retracts, came before it.
+    home.project(&client).await;
+    let checkouts = match request(&client, Command::CheckoutList { project: None }).await {
+        Reply::Checkouts { checkouts } => checkouts,
+        other => panic!("{other:?}"),
+    };
+    followed
+        .until(
+            &mut feed,
+            EntityKind::Checkout,
+            &checkouts[0].id.to_string(),
+            Some(&state_of(&checkouts[0])),
+        )
+        .await;
+
+    let foreign = followed.state(EntityKind::Session, "s-foreign");
+    assert!(matches!(foreign, None | Some(None)), "{foreign:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_broken_owner_config_holds_back_checkouts_but_not_sessions() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    let mut feed = Subscription::new(daemon.socket_path().to_path_buf(), None, GENEROUS);
+    let mut followed = Followed::default();
+    std::fs::create_dir_all(home.config_file().parent().unwrap()).unwrap();
+    std::fs::write(home.config_file(), "this is not toml = = =\n").unwrap();
+
+    let started = session_reply(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: Some("work".to_owned()),
+        },
+    )
+    .await;
+    followed
+        .until(
+            &mut feed,
+            EntityKind::Session,
+            &started.id,
+            Some(&state_of(&started)),
+        )
+        .await;
+    let clone = started.checkout.to_string();
+    assert_eq!(followed.state(EntityKind::Checkout, &clone), None);
+
+    // Once the configuration reads again, the next pass (a commit or the period) publishes it.
+    std::fs::remove_file(home.config_file()).unwrap();
+    let checkouts = match request(&client, Command::CheckoutList { project: None }).await {
+        Reply::Checkouts { checkouts } => checkouts,
+        other => panic!("{other:?}"),
+    };
+    let clone_view = checkouts
+        .iter()
+        .find(|checkout| checkout.id == started.checkout)
+        .unwrap();
+    followed
+        .until(
+            &mut feed,
+            EntityKind::Checkout,
+            &clone,
+            Some(&state_of(clone_view)),
         )
         .await;
 }

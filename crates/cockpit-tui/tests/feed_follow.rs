@@ -11,43 +11,20 @@ use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
-    Capability, Change, ChangeBatch, ChangeEvent, Command, CommitRevision, Cursor, DatabaseEpoch,
-    EntityKind, EntityRef, EntityRevision, FeedPosition, Hello, Outcome, Reply, Request, Response,
-    SUPPORTED_VERSIONS, ServerFrame, SessionView, negotiate,
+    Capability, ChangeBatch, Command, EntityKind, FeedPosition, Hello, Outcome, Reply, Request,
+    Response, SUPPORTED_VERSIONS, ServerFrame, SessionView, negotiate,
 };
 use cockpit_tui::{App, FeedEvent, follow_feed};
-use common::{checkout, screen_text, session};
-use serde_json::Value;
+use common::{after_snapshot, checkout, screen_text, session, snapshot, tombstone, upsert};
 use tokio::sync::mpsc;
 
 const GENEROUS: Duration = Duration::from_secs(5);
 
-fn upsert(kind: EntityKind, id: &str, view: &impl serde::Serialize) -> ChangeEvent {
-    let Value::Object(state) = serde_json::to_value(view).unwrap() else {
-        panic!("a view is a JSON object");
-    };
-    ChangeEvent {
-        entity: EntityRef {
-            kind,
-            id: id.to_owned(),
-        },
-        entity_revision: EntityRevision(1),
-        change: Change::Upsert { state },
-    }
-}
-
 fn snapshot_with(session: &SessionView) -> ChangeBatch {
-    ChangeBatch {
-        follows: FeedPosition::Snapshot,
-        cursor: Cursor {
-            epoch: DatabaseEpoch("e1".to_owned()),
-            revision: CommitRevision(7),
-        },
-        changes: vec![
-            upsert(EntityKind::Checkout, "1", &checkout(1, "web")),
-            upsert(EntityKind::Session, &session.id, session),
-        ],
-    }
+    snapshot(vec![
+        upsert(EntityKind::Checkout, "1", &checkout(1, "web")),
+        upsert(EntityKind::Session, &session.id, session),
+    ])
 }
 
 /// A daemon that offers the change feed, answers `subscribe` with `first`, then keeps the
@@ -153,15 +130,8 @@ fn a_late_answer_does_not_take_a_session_back_to_an_older_revision() {
     let mut older = newer.clone();
     older.revision = 4;
     older.state = cockpit_protocol::SessionStateView::Running;
-    app.apply_changes(&ChangeBatch {
-        follows: FeedPosition::Snapshot,
-        cursor: Cursor {
-            epoch: DatabaseEpoch("e1".to_owned()),
-            revision: CommitRevision(9),
-        },
-        changes: vec![upsert(EntityKind::Session, "s-1", &newer)],
-    })
-    .unwrap();
+    app.apply_changes(&snapshot(vec![upsert(EntityKind::Session, "s-1", &newer)]))
+        .unwrap();
 
     common::answer(
         &mut app,
@@ -177,5 +147,52 @@ fn a_late_answer_does_not_take_a_session_back_to_an_older_revision() {
     assert_eq!(
         app.board().listed_sessions()[0].state,
         cockpit_protocol::SessionStateView::Asleep
+    );
+}
+
+#[test]
+fn a_late_answer_does_not_bring_back_a_session_the_feed_took_off() {
+    let mut app = App::new();
+    let shown = session("s-1", 1, 100);
+    app.apply_changes(&snapshot(vec![upsert(EntityKind::Session, "s-1", &shown)]))
+        .unwrap();
+    app.apply_changes(&after_snapshot(vec![tombstone(EntityKind::Session, "s-1")]))
+        .unwrap();
+
+    common::answer(
+        &mut app,
+        Command::SessionShow {
+            session: "s-1".to_owned(),
+        },
+        Reply::Session {
+            session: Box::new(shown),
+        },
+        Instant::now(),
+    );
+
+    assert!(app.board().listed_sessions().is_empty());
+}
+
+#[test]
+fn a_lost_feed_stays_on_the_status_line_after_a_command_goes_through() {
+    let started = session("s-1", 1, 100);
+    let mut app = common::app_with(&["web"], vec![started.clone()], Instant::now());
+    app.feed_lost("the daemon closed the connection".to_owned());
+
+    common::answer(
+        &mut app,
+        Command::SessionRestart {
+            session: "s-1".to_owned(),
+        },
+        Reply::Session {
+            session: Box::new(started),
+        },
+        Instant::now(),
+    );
+
+    assert!(
+        screen_text(&app, Instant::now()).contains("the daemon closed the connection"),
+        "{}",
+        screen_text(&app, Instant::now())
     );
 }
