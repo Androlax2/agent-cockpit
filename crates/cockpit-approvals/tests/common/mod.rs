@@ -59,6 +59,17 @@ impl Fixture {
         run
     }
 
+    /// The revision of the last commit: unchanged when nothing was written.
+    pub async fn revision(&self) -> i64 {
+        self.database
+            .read()
+            .await
+            .unwrap()
+            .revision()
+            .await
+            .unwrap()
+    }
+
     pub fn ask(&self, command: &str) -> RunAsk {
         RunAsk {
             command: command.to_owned(),

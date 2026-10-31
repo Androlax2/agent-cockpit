@@ -11,34 +11,10 @@ use cockpit_agent_channel::{LaunchToken, identity_of};
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, ErrorCode, GuideStateView, GuideView, HiddenView, ProtocolError, Reply,
-    RunRequestView, RunStateView, UnblockedBy,
+    Command, ErrorCode, GuideStateView, GuideView, HiddenView, Reply, RunRequestView, RunStateView,
+    UnblockedBy,
 };
-use common::{GENEROUS, TestHome};
-
-/// Launches session `s1` rooted at this test process, granted `run-commands` or not, while
-/// no daemon runs.
-async fn launch(home: &TestHome, granted: bool) -> LaunchToken {
-    let session = SessionId::new("s1").unwrap();
-    let database = home.open_state().await;
-    let write = database.write().await.unwrap();
-    let token = cockpit_agent_channel::mint(&write, &session).await.unwrap();
-    cockpit_agent_channel::record_root(&write, &session, &identity_of(std::process::id()).unwrap())
-        .await
-        .unwrap();
-    if granted {
-        cockpit_authorization::grant(
-            &write,
-            &session,
-            Permission::RunCommands,
-            &Scope::Session(session.clone()),
-        )
-        .await
-        .unwrap();
-    }
-    write.commit().await.unwrap();
-    token
-}
+use common::{GENEROUS, TestHome, refused};
 
 /// Fields drop in order: the daemon stops before its home is deleted.
 struct Asking {
@@ -53,7 +29,13 @@ struct Asking {
 
 async fn started(granted: bool) -> Asking {
     let home = TestHome::new();
-    let token = launch(&home, granted).await;
+    let token = home
+        .launch(
+            "s1",
+            &identity_of(std::process::id()).unwrap(),
+            granted.then_some(Permission::RunCommands),
+        )
+        .await;
     let daemon = home.start();
     let agent = home.connect_agent().await;
     let owner = home.connect().await;
@@ -181,13 +163,6 @@ fn guide(reply: Result<Reply, ClientError>) -> GuideView {
     match reply {
         Ok(Reply::Guide { guide }) => *guide,
         other => panic!("expected a guide, got {other:?}"),
-    }
-}
-
-fn refused(reply: Result<Reply, ClientError>) -> ProtocolError {
-    match reply {
-        Err(ClientError::Daemon(error)) => error,
-        other => panic!("expected a refusal, got {other:?}"),
     }
 }
 
@@ -691,7 +666,13 @@ async fn a_new_request_queues_behind_a_command_waiting_for_input() {
 #[tokio::test]
 async fn an_agent_waiting_on_an_approval_keeps_working_on_the_channel() {
     let home = TestHome::new();
-    let token = launch(&home, true).await;
+    let token = home
+        .launch(
+            "s1",
+            &identity_of(std::process::id()).unwrap(),
+            Some(Permission::RunCommands),
+        )
+        .await;
     {
         let database = home.open_state().await;
         let write = database.write().await.unwrap();

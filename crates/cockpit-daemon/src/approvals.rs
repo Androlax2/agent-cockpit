@@ -278,24 +278,25 @@ async fn check_syntax(runner: &Runner, command: &str) -> Result<(), Failed> {
 /// The agent at the other end of the socket, as its process tree says.
 struct Sender {
     ancestry: PeerAncestry,
-    /// The connecting process's working directory, which says which checkout it works in.
-    cwd: Option<PathBuf>,
 }
 
 impl Sender {
     async fn of(connector: Result<ProcessIdentity, ProcessError>) -> Sender {
-        tokio::task::spawn_blocking(move || {
-            let ancestry =
-                connector.and_then(|process| cockpit_agent_channel::ancestry_of(&process));
-            // Read after the ancestry verified the pid's start time; only the display's
-            // "outside the project" flag depends on it.
-            let cwd = ancestry.as_ref().ok().and_then(|chain| {
-                std::fs::read_link(format!("/proc/{}/cwd", chain.first()?.pid)).ok()
-            });
-            Sender { ancestry, cwd }
+        tokio::task::spawn_blocking(move || Sender {
+            ancestry: connector.and_then(|process| cockpit_agent_channel::ancestry_of(&process)),
         })
         .await
         .expect("reading the process table does not panic")
+    }
+
+    /// The connecting process's working directory, which says which checkout it works in.
+    /// Read from the verified ancestry; only the display's "outside the project" flag
+    /// depends on it.
+    async fn cwd(&self) -> Option<PathBuf> {
+        let pid = self.ancestry.as_ref().ok()?.first()?.pid;
+        tokio::task::spawn_blocking(move || std::fs::read_link(format!("/proc/{pid}/cwd")).ok())
+            .await
+            .expect("reading a link does not panic")
     }
 
     async fn identify(
@@ -309,7 +310,7 @@ impl Sender {
     /// The registered checkout the sender works in, deepest first. Until sessions record
     /// their checkout (#31), the sender's working directory is the evidence.
     async fn project(&self, write: &WriteTransaction<'_>) -> Result<Option<Project>, Failed> {
-        let Some(cwd) = &self.cwd else {
+        let Some(cwd) = self.cwd().await else {
             return Ok(None);
         };
         let checkouts = cockpit_projects::checkouts(write, None)
@@ -456,9 +457,8 @@ async fn approve(
     digest: &str,
 ) -> Answer {
     let write = database.write().await?;
-    let approved =
+    let (approved, run) =
         cockpit_approvals::approve_run(&write, RunId(request), revision, digest, now()).await?;
-    let run = existing_run(&write, request).await?;
     write.commit().await?;
     tracing::info!(request, revision, "the owner approved a run");
     let reply = run_reply(&run, &runner);
@@ -491,13 +491,13 @@ async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
             }
             tracing::info!(
                 request,
-                exit_code = ran.exit_code,
+                exit_code = ran.result.exit_code,
                 "an approved run finished"
             );
         }
         Err(no_result) => tracing::warn!(request, ?no_result, "an approved run has no result"),
     }
-    let ended = ended.map(|ran| ran.result());
+    let ended = ended.map(|ran| ran.result);
     record_end_or_log(&database, &approved, &ended).await;
 }
 
@@ -705,10 +705,10 @@ fn run_view(
         waiting_for_input: run.state == RunState::Running && waiting_for_input.contains(&run.id),
         result: run.result.as_ref().map(|result| RunResultView {
             exit_code: result.exit_code,
-            output: result.output.clone(),
-            omitted_lines: result.omitted_lines,
-            truncated_bytes: result.truncated_bytes,
-            redacted: result.redacted,
+            output: result.output.shown.clone(),
+            omitted_lines: result.output.omitted_lines,
+            truncated_bytes: result.output.truncated_bytes,
+            redacted: result.output.redacted,
         }),
         note: run.note.clone(),
     }

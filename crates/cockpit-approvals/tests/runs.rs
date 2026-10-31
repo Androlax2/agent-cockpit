@@ -4,10 +4,10 @@
 mod common;
 
 use cockpit_approvals::{
-    Approved, EXPIRES_AFTER_SECONDS, Error, Refusal, RunResult, RunState, action_digest,
-    approve_run, ask_run, decline_run, edit_run, finish_run, open_runs, queue_order,
-    reconcile_runs, record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
-    start_run,
+    Approved, EXPIRES_AFTER_SECONDS, Error, Output, Refusal, RunId, RunRequest, RunResult,
+    RunState, action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, open_runs,
+    queue_order, reconcile_runs, record_not_run, record_outcome_unknown, resolve_cwd, run_request,
+    run_status, start_run,
 };
 use cockpit_authorization::Permission;
 use common::{Fixture, NOW, session};
@@ -22,17 +22,19 @@ fn refusal<T: std::fmt::Debug>(result: Result<T, Error>) -> Refusal {
 fn result(exit_code: i32) -> RunResult {
     RunResult {
         exit_code,
-        output: "done".to_owned(),
-        omitted_lines: 0,
-        truncated_bytes: 0,
-        redacted: 0,
+        output: Output {
+            shown: "done".to_owned(),
+            omitted_lines: 0,
+            truncated_bytes: 0,
+            redacted: 0,
+        },
     }
 }
 
 async fn approve(fixture: &Fixture, id: cockpit_approvals::RunId) -> Approved {
     let write = fixture.database.write().await.unwrap();
     let run = run_request(&write, id, NOW).await.unwrap().unwrap();
-    let approved = approve_run(&write, id, run.revision, &run.digest(), AFTER_GRACE)
+    let (approved, _) = approve_run(&write, id, run.revision, &run.digest(), AFTER_GRACE)
         .await
         .unwrap();
     write.commit().await.unwrap();
@@ -187,7 +189,7 @@ async fn an_offline_approval_of_an_edited_request_fails_its_revision_then_the_re
         "the stale approval changed nothing"
     );
     let write = fixture.database.write().await.unwrap();
-    let approved = approve_run(
+    let (approved, _) = approve_run(
         &write,
         replayed.id,
         replayed.revision,
@@ -243,6 +245,76 @@ async fn an_agent_waiting_for_its_answer_keeps_the_request_from_expiring() {
     approve_run(&write, run.id, 1, &run.digest(), past_the_first_expiry)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_poll_while_the_expiry_is_fresh_writes_nothing() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let before = fixture.revision().await;
+
+    let write = fixture.database.write().await.unwrap();
+    let seen = run_status(&write, &session("s1"), run.id, NOW + 59)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(seen, run);
+    assert_eq!(fixture.revision().await, before);
+}
+
+#[tokio::test]
+async fn a_poll_a_minute_after_the_last_refresh_moves_the_expiry() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let polled_at = NOW + 60;
+
+    let write = fixture.database.write().await.unwrap();
+    let seen = run_status(&write, &session("s1"), run.id, polled_at)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(seen.expires_at, polled_at + EXPIRES_AFTER_SECONDS);
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(
+        run_request(&read, run.id, polled_at).await.unwrap(),
+        Some(seen)
+    );
+}
+
+/// The request `id` as stored at `NOW`, for comparing with what a mutation returned.
+async fn stored(write: &cockpit_turso::WriteTransaction<'_>, id: RunId) -> RunRequest {
+    run_request(write, id, NOW).await.unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn an_edit_returns_the_request_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let write = fixture.database.write().await.unwrap();
+    let edited = edit_run(&write, run.id, 1, "ls -la", NOW).await.unwrap();
+    assert_eq!(edited, stored(&write, run.id).await);
+}
+
+#[tokio::test]
+async fn a_decline_returns_the_request_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let write = fixture.database.write().await.unwrap();
+    let declined = decline_run(&write, run.id, NOW).await.unwrap();
+    assert_eq!(declined, stored(&write, run.id).await);
+}
+
+#[tokio::test]
+async fn an_approval_returns_the_request_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let write = fixture.database.write().await.unwrap();
+    let (_, approved) = approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE)
+        .await
+        .unwrap();
+    assert_eq!(approved, stored(&write, run.id).await);
 }
 
 #[tokio::test]

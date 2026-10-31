@@ -5,7 +5,7 @@ mod common;
 
 use cockpit_approvals::{
     Error, GuideId, GuideRequest, GuideState, Refusal, RunState, answer_step, ask_guide,
-    close_guide, guide_status, open_guides, parse_guide, report_stuck, run_request,
+    close_guide, guide_request, guide_status, open_guides, parse_guide, report_stuck, run_request,
 };
 use common::{Fixture, NOW, session};
 
@@ -291,6 +291,101 @@ async fn a_run_step_request_stays_before_the_owner_while_the_agent_waits_on_the_
 
     let run = run_request(&write, filed, expiry).await.unwrap().unwrap();
     assert_eq!(run.state, RunState::Asking);
+}
+
+#[tokio::test]
+async fn a_guide_poll_while_the_expiry_is_fresh_writes_nothing() {
+    let fixture = Fixture::new().await;
+    let guide = asked(&fixture, GUIDE).await;
+    let before = fixture.revision().await;
+
+    let write = fixture.database.write().await.unwrap();
+    let seen = guide_status(&write, &session("s1"), guide.id, NOW + 59)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(seen, guide);
+    assert_eq!(fixture.revision().await, before);
+}
+
+#[tokio::test]
+async fn the_owner_sees_each_open_guide_with_its_own_steps() {
+    let fixture = Fixture::new().await;
+    let first = asked(&fixture, "# First\nOne\nTwo\n").await;
+    let closed = asked(&fixture, "# Closed\nThree\n").await;
+    let last = asked(&fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    close_guide(&write, closed.id, NOW).await.unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(open_guides(&read, NOW).await.unwrap(), [first, last]);
+}
+
+/// The guide `id` as stored at `NOW`, for comparing with what a mutation returned.
+async fn stored(write: &cockpit_turso::WriteTransaction<'_>, id: GuideId) -> GuideRequest {
+    guide_request(write, id, NOW).await.unwrap().unwrap()
+}
+
+/// `GUIDE`'s steps in order: an `open:` step, an `ask:` step, then a `run:` step.
+async fn answered_up_to(fixture: &Fixture, last_step: usize) -> (GuideRequest, GuideRequest) {
+    let guide = asked(fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    let mut answered = None;
+    for step in 0..=last_step {
+        let answer = (step == 1).then(|| "42".to_owned());
+        answered = Some(
+            answer_step(&write, guide.id, step, answer, NOW)
+                .await
+                .unwrap(),
+        );
+    }
+    let stored = stored(&write, guide.id).await;
+    write.commit().await.unwrap();
+    (answered.unwrap(), stored)
+}
+
+#[tokio::test]
+async fn answering_an_open_step_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let (answered, stored) = answered_up_to(&fixture, 0).await;
+    assert_eq!(answered, stored);
+}
+
+#[tokio::test]
+async fn answering_a_question_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let (answered, stored) = answered_up_to(&fixture, 1).await;
+    assert_eq!(answered, stored);
+}
+
+#[tokio::test]
+async fn answering_the_last_run_step_returns_the_done_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let (answered, stored) = answered_up_to(&fixture, 2).await;
+    assert_eq!(answered.state, GuideState::Done);
+    assert_eq!(answered, stored);
+}
+
+#[tokio::test]
+async fn being_stuck_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let guide = asked(&fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    let reported = report_stuck(&write, guide.id, 0, "no such menu", NOW)
+        .await
+        .unwrap();
+    assert_eq!(reported, stored(&write, guide.id).await);
+}
+
+#[tokio::test]
+async fn closing_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let guide = asked(&fixture, GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    let closed = close_guide(&write, guide.id, NOW).await.unwrap();
+    assert_eq!(closed, stored(&write, guide.id).await);
 }
 
 #[tokio::test]

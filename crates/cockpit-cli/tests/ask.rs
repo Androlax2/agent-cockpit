@@ -4,16 +4,17 @@
 
 use std::io::Write;
 use std::os::unix::fs::DirBuilderExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Output, Stdio};
 
+mod scripted;
+
 use cockpit_protocol::{
-    Command, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView, HandshakeReply,
-    HiddenView, Outcome, ProtocolError, ProtocolVersion, Reply, Request, Response, RunRequestView,
-    RunResultView, RunStateView, ServerFrame, ShownText, Unblock, UnblockedBy, Welcome,
+    Command, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView, Outcome,
+    ProtocolError, Reply, RunRequestView, RunResultView, RunStateView, ShownText, Unblock,
+    UnblockedBy,
 };
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
+use scripted::{scripted_conversation, text};
 
 struct Home {
     dir: tempfile::TempDir,
@@ -81,43 +82,6 @@ impl Home {
     fn cwd(&self) -> String {
         self.dir.path().to_str().unwrap().to_owned()
     }
-}
-
-/// Accepts one connection on `socket`, answers the handshake, then each request with the
-/// next of `outcomes`, and returns the commands it received.
-fn scripted_daemon(socket: &Path, outcomes: Vec<Outcome>) -> tokio::task::JoinHandle<Vec<Command>> {
-    let listener = UnixListener::bind(socket).unwrap();
-    tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let (read_half, mut write_half) = stream.into_split();
-        let mut lines = BufReader::new(read_half).lines();
-        lines.next_line().await.unwrap().expect("a hello");
-        let welcome = HandshakeReply::Accepted(Welcome {
-            protocol_version: ProtocolVersion(1),
-            capabilities: Vec::new(),
-        });
-        send(&mut write_half, serde_json::to_value(welcome).unwrap()).await;
-        let mut received = Vec::new();
-        for outcome in outcomes {
-            let Some(line) = lines.next_line().await.unwrap() else {
-                break;
-            };
-            let request: Request = serde_json::from_str(&line).unwrap();
-            received.push(request.command);
-            let response = ServerFrame::Response(Response {
-                id: request.id,
-                outcome,
-            });
-            send(&mut write_half, serde_json::to_value(response).unwrap()).await;
-        }
-        received
-    })
-}
-
-async fn send(writer: &mut tokio::net::unix::OwnedWriteHalf, frame: serde_json::Value) {
-    let mut line = serde_json::to_vec(&frame).unwrap();
-    line.push(b'\n');
-    writer.write_all(&line).await.unwrap();
 }
 
 fn shown(text: &str) -> ShownText {
@@ -213,14 +177,10 @@ fn guide_view(state: GuideStateView) -> GuideView {
     }
 }
 
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8(bytes.to_vec()).unwrap()
-}
-
 #[tokio::test]
 async fn ask_run_files_the_request_with_the_token_and_exits_with_the_commands_code() {
     let home = Home::new();
-    let daemon = scripted_daemon(
+    let daemon = scripted_conversation(
         &home.agent_socket(),
         vec![
             run_reply(request(RunStateView::Asking)),
@@ -268,7 +228,7 @@ async fn each_answer_keeps_its_exit_code() {
     ] {
         let home = Home::new();
         // A request still asking is polled until the wait ends: answer every poll.
-        let daemon = scripted_daemon(&home.agent_socket(), vec![outcome; 20]);
+        let daemon = scripted_conversation(&home.agent_socket(), vec![outcome; 20]);
 
         let output = home.cockpit(&["ask", "run", "--wait", "7"], "").await;
 
@@ -285,7 +245,7 @@ async fn each_answer_keeps_its_exit_code() {
 #[tokio::test]
 async fn a_pending_request_names_the_command_that_waits_on() {
     let home = Home::new();
-    let _daemon = scripted_daemon(
+    let _daemon = scripted_conversation(
         &home.agent_socket(),
         vec![run_reply(request(RunStateView::Asking)); 20],
     );
@@ -318,7 +278,7 @@ async fn an_unreachable_daemon_exits_126_with_the_fix() {
 #[tokio::test]
 async fn ask_check_reports_a_refusal_with_what_unblocks_it() {
     let home = Home::new();
-    let daemon = scripted_daemon(
+    let daemon = scripted_conversation(
         &home.agent_socket(),
         vec![Outcome::Error(ProtocolError {
             code: ErrorCode::NotAuthorized,
@@ -349,7 +309,7 @@ async fn ask_check_reports_a_refusal_with_what_unblocks_it() {
 #[tokio::test]
 async fn ask_guide_sends_standard_input_and_exits_3_when_the_owner_is_stuck() {
     let home = Home::new();
-    let daemon = scripted_daemon(
+    let daemon = scripted_conversation(
         &home.agent_socket(),
         vec![guide(GuideStateView::Asking), guide(GuideStateView::Stuck)],
     );
@@ -383,7 +343,7 @@ async fn an_ask_without_its_reason_is_a_usage_error() {
 async fn the_owner_approves_naming_the_revision_and_digest_read() {
     let home = Home::new();
     let digest = "d".repeat(64);
-    let daemon = scripted_daemon(
+    let daemon = scripted_conversation(
         &home.owner_socket(),
         vec![run_reply(request(RunStateView::Approved))],
     );
@@ -418,7 +378,7 @@ async fn the_owner_approves_naming_the_revision_and_digest_read() {
 #[tokio::test]
 async fn the_owner_reads_a_request_with_its_warnings() {
     let home = Home::new();
-    let _daemon = scripted_daemon(
+    let _daemon = scripted_conversation(
         &home.owner_socket(),
         vec![run_reply(RunRequestView {
             shown_command: ShownText {
@@ -455,7 +415,7 @@ async fn the_owner_reads_a_request_with_its_warnings() {
 #[tokio::test]
 async fn the_owner_reads_a_guides_directory_escaped_and_placed_against_the_project() {
     let home = Home::new();
-    let _daemon = scripted_daemon(
+    let _daemon = scripted_conversation(
         &home.owner_socket(),
         vec![guide_reply(GuideView {
             shown_cwd: ShownText {
@@ -487,7 +447,7 @@ async fn the_owner_reads_a_guides_directory_escaped_and_placed_against_the_proje
 #[tokio::test]
 async fn the_owner_types_input_from_standard_input_not_the_command_line() {
     let home = Home::new();
-    let daemon = scripted_daemon(
+    let daemon = scripted_conversation(
         &home.owner_socket(),
         vec![run_reply(request(RunStateView::Running))],
     );
@@ -521,7 +481,7 @@ async fn empty_standard_input_is_refused_rather_than_pressing_enter() {
 #[tokio::test]
 async fn guide_steps_count_from_one_for_the_owner() {
     let home = Home::new();
-    let daemon = scripted_daemon(&home.owner_socket(), vec![guide(GuideStateView::Done)]);
+    let daemon = scripted_conversation(&home.owner_socket(), vec![guide(GuideStateView::Done)]);
 
     let output = home
         .cockpit(&["guide", "answer", "3", "2", "1234"], "")
@@ -540,7 +500,7 @@ async fn guide_steps_count_from_one_for_the_owner() {
 
 async fn shown_to_owner(request: RunRequestView) -> String {
     let home = Home::new();
-    let _daemon = scripted_daemon(&home.owner_socket(), vec![run_reply(request)]);
+    let _daemon = scripted_conversation(&home.owner_socket(), vec![run_reply(request)]);
     let output = home.cockpit(&["approval", "show", "7"], "").await;
     assert!(output.status.success(), "{}", text(&output.stderr));
     text(&output.stdout)
@@ -590,7 +550,7 @@ async fn the_owner_gets_the_timeout_hint_before_approving() {
 #[tokio::test]
 async fn the_queue_folds_a_long_command_behind_an_explicit_more() {
     let home = Home::new();
-    let _daemon = scripted_daemon(
+    let _daemon = scripted_conversation(
         &home.owner_socket(),
         vec![Outcome::Ok(Reply::ApprovalQueue {
             runs: vec![RunRequestView {
@@ -617,7 +577,7 @@ async fn the_queue_folds_a_long_command_behind_an_explicit_more() {
 #[tokio::test]
 async fn ask_run_no_wait_files_the_request_and_returns_at_once_with_how_to_wait() {
     let home = Home::new();
-    let daemon = scripted_daemon(
+    let daemon = scripted_conversation(
         &home.agent_socket(),
         vec![
             run_reply(request(RunStateView::Asking)),
@@ -649,7 +609,7 @@ async fn ask_run_no_wait_files_the_request_and_returns_at_once_with_how_to_wait(
 
 async fn queue_line(shown_command: ShownText, folded_command: Option<FoldedView>) -> String {
     let home = Home::new();
-    let _daemon = scripted_daemon(
+    let _daemon = scripted_conversation(
         &home.owner_socket(),
         vec![Outcome::Ok(Reply::ApprovalQueue {
             runs: vec![RunRequestView {

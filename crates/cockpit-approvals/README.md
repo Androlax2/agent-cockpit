@@ -25,7 +25,8 @@ request here, so nothing is re-read from the sandbox.
    transaction; a second decision, an older revision or another digest is refused. The
    owner's `edit_run` creates a new revision. An approval within `APPROVAL_GRACE_SECONDS` of
    the revision appearing (ask or edit) is refused `TooSoon` (#156, #166). Asking requests expire
-   `EXPIRES_AFTER_SECONDS` after the agent last asked about them (`run_status`).
+   `EXPIRES_AFTER_SECONDS` after the agent last asked about them (`run_status`); a poll
+   moves the expiry at most once a minute, so the others write nothing.
 4. `Runner::run` runs the approved revision in a pseudo-terminal through `run_leader`
    (a session leader, so prompts and `sudo` work), Git hooks off and program-running Git
    settings reset, and returns the end of the output without terminal controls and with
@@ -59,4 +60,6 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 - `tests/runs.rs`: the run state machine on a real state database, report 04's
   stale-approval walkthrough included.
 - `tests/guides.rs`: the guide format and step answers.
+- Mutations return the request as it reads after them, without reading it again; the tests
+  compare the returned value with a fresh read.
 - The pseudo-terminal runs are proven end to end in `cockpit-daemon/tests/approvals.rs`.
