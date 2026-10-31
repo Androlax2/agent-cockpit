@@ -28,8 +28,8 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   to 300 characters. A turn's end reports its outcome (`--outcome completed` or `failed`);
   a failure's reason the channel would refuse is left out, a long one cut to 80 characters.
   `StopFailure` `rate_limit` is `failed`, never `quota-stopped`: Claude Code sends it for a
-  spent plan window and a transient 429 alike (#212). A `SessionStart` after a compaction reports nothing: an automatic one
-  happens in the middle of a turn.
+  spent plan window and a transient 429 alike (#212). A `SessionStart` after a compaction
+  reports nothing: an automatic one happens in the middle of a turn.
 - **Terminal actions.** A message is typed then entered at the prompt, queued with Ctrl-X
   Enter during a turn, and refused while a dialog is open or the activity is unknown.
   Cancel presses Escape; compact types `/compact` at the prompt only.
