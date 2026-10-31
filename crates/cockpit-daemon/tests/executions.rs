@@ -26,10 +26,7 @@ async fn open_database(home: &TestHome) -> Database {
         .unwrap();
     Database::open(
         &state_dir(home).join("state.db"),
-        &[
-            cockpit_authorization::MIGRATIONS,
-            cockpit_processes::MIGRATIONS,
-        ],
+        &cockpit_daemon::MIGRATION_SETS,
     )
     .await
     .unwrap()

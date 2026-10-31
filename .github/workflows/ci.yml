@@ -134,6 +134,10 @@ jobs:
           tool: cargo-nextest@0.9.150
       - name: Start the daemon on a clean home
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-daemon --test startup
+      # The process supervisor's macOS paths: ps start tokens, the boot session id and
+      # process-group containment.
+      - name: Supervise processes
+        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-processes
 
   # Markdown and spelling, for docs/ and any Markdown file.
   docs:
