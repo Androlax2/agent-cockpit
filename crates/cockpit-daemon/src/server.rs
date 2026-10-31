@@ -4,7 +4,6 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
@@ -16,7 +15,7 @@ use cockpit_protocol::{
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Semaphore, mpsc, oneshot, watch};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::StartError;
 use crate::lanes::{LaneLimits, Lanes};
@@ -202,15 +201,6 @@ async fn connector(stream: &UnixStream) -> Result<ProcessIdentity, ProcessError>
         .expect("reading the process table does not panic")
 }
 
-/// What a change feed hands the connection's writer. Its own channel, apart from answers, so
-/// a client that keeps every answer place busy still gets its batches.
-enum FeedFrame {
-    Batch(ChangeBatch),
-    /// The feed stopped: closing tells the client to subscribe again, instead of leaving it
-    /// waiting for batches that never come.
-    Close,
-}
-
 async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -232,12 +222,12 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
         }
     };
     let (outgoing, frames) = mpsc::channel(shared.limits.requests_per_connection);
-    let (feed_frames, feed) = mpsc::channel(1);
-    let writer = tokio::spawn(write_frames(write_half, frames, feed));
-    // Set while a `subscribe` runs or its feed streams: one feed per connection.
-    let following = Arc::new(AtomicBool::new(false));
-    // Dropped when the client stops sending, which stops the feed forwarding to it.
-    let (connection_open, connection_closed) = watch::channel(());
+    // A started feed's batches go to the writer apart from answers, so a client that keeps
+    // every answer place busy still gets them.
+    let (feeds, started_feeds) = mpsc::channel(1);
+    let writer = tokio::spawn(write_frames(write_half, frames, started_feeds));
+    // One feed per connection: held while a `subscribe` runs, kept once its feed started.
+    let feed_place = Arc::new(Semaphore::new(1));
     loop {
         // A place for this request's answer, taken before reading it: the connection is
         // read only while it has room for another answer.
@@ -280,14 +270,14 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
                 }
                 Route::Run { class, job } => (class, job, None),
                 Route::Stream { job } => {
-                    if following.swap(true, Ordering::SeqCst) {
+                    let Ok(place) = Arc::clone(&feed_place).try_acquire_owned() else {
                         answer.send(respond(refusal(
                             ErrorCode::InvalidRequest,
                             "this connection follows the change feed already; subscribe on a \
                          new connection",
                         )));
                         continue;
-                    }
+                    };
                     let (started, start) = oneshot::channel();
                     let job: Job = Box::pin(async move {
                         let (outcome, batches) = job.await;
@@ -296,75 +286,40 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
                         }
                         outcome
                     });
-                    (WorkClass::Bulk, job, Some(start))
+                    (WorkClass::Bulk, job, Some((start, place, feeds.clone())))
                 }
             };
-        let is_stream = stream_start.is_some();
-        match shared.lanes.admit(class, job) {
-            Ok(run) => {
-                let feed = stream_start.map(|start| {
-                    (
-                        start,
-                        feed_frames.clone(),
-                        connection_closed.clone(),
-                        Arc::clone(&following),
-                    )
-                });
-                tokio::spawn(async move {
-                    let outcome = run.await;
-                    let Some((start, feed_frames, connection_closed, following)) = feed else {
-                        answer.send(respond(outcome));
-                        return;
-                    };
-                    // The job has finished, so whether it started a stream is known now.
-                    let batches = start.await.ok();
-                    if batches.is_none() {
-                        following.store(false, Ordering::SeqCst);
-                    }
-                    // The answer is queued before the first batch, as the client expects.
-                    answer.send(respond(outcome));
-                    if let Some(batches) = batches {
-                        forward(batches, feed_frames, connection_closed).await;
-                    }
-                });
-            }
+        // Refused `busy`, a subscribe's place is released with it.
+        let run = match shared.lanes.admit(class, job) {
+            Ok(run) => run,
             Err(busy) => {
-                if is_stream {
-                    following.store(false, Ordering::SeqCst);
-                }
                 answer.send(respond(busy));
+                continue;
             }
-        }
+        };
+        tokio::spawn(async move {
+            let outcome = run.await;
+            let Some((start, place, feeds)) = stream_start else {
+                answer.send(respond(outcome));
+                return;
+            };
+            // The job has finished, so whether it started a stream is known now.
+            let batches = start.await.ok();
+            if batches.is_some() {
+                place.forget();
+            }
+            // The answer is queued before the first batch, as the client expects.
+            answer.send(respond(outcome));
+            if let Some(batches) = batches {
+                let _ = feeds.send(batches).await;
+            }
+        });
     }
     // Requests still running keep their answer places, so the writer delivers their
-    // answers before it stops; a feed stops forwarding here.
-    drop(connection_open);
-    drop(feed_frames);
+    // answers before it stops.
+    drop(feeds);
     drop(outgoing);
     let _ = writer.await;
-}
-
-/// Sends the feed's batches on the connection until the feed or the connection stops. A feed
-/// that stops first closes the connection.
-async fn forward(
-    mut batches: mpsc::Receiver<ChangeBatch>,
-    feed_frames: mpsc::Sender<FeedFrame>,
-    mut connection_closed: watch::Receiver<()>,
-) {
-    loop {
-        let batch = tokio::select! {
-            batch = batches.recv() => batch,
-            _ = connection_closed.changed() => return,
-        };
-        let frame = match batch {
-            Some(batch) => FeedFrame::Batch(batch),
-            None => FeedFrame::Close,
-        };
-        let is_close = matches!(frame, FeedFrame::Close);
-        if feed_frames.send(frame).await.is_err() || is_close {
-            return;
-        }
-    }
 }
 
 /// Reads the `hello` and answers it, granting what both sides offer of `offered`; `None`
@@ -400,15 +355,17 @@ async fn handshake(
     }
 }
 
-/// Writes answers and feed batches until every answer is written. Answers go first, so a
-/// `subscribe` answer precedes its first batch. A stopped feed, or a batch too large to send,
-/// closes the connection: skipping one would leave the client applying changes onto a gap.
+/// Writes answers and the started feed's batches until every answer is written; stopping
+/// drops the feed, which ends its stream. Answers go first, so a `subscribe` answer precedes
+/// its first batch. A stopped feed, or a batch too large to send, closes the connection:
+/// waiting for batches that never come, or skipping one, would leave the client behind.
 async fn write_frames(
     mut writer: OwnedWriteHalf,
     mut frames: mpsc::Receiver<ServerFrame>,
-    mut feed: mpsc::Receiver<FeedFrame>,
+    mut started_feeds: mpsc::Receiver<mpsc::Receiver<ChangeBatch>>,
 ) {
-    let mut is_feed_open = true;
+    let mut feed = None;
+    let mut can_start_feed = true;
     loop {
         let line = tokio::select! {
             biased;
@@ -419,27 +376,36 @@ async fn write_frames(
                 },
                 None => return,
             },
-            feed_frame = feed.recv(), if is_feed_open => match feed_frame {
-                Some(FeedFrame::Batch(batch)) => {
+            batch = next_batch(&mut feed) => match batch {
+                Some(batch) => {
                     let Some(line) = encode(&ServerFrame::Changes(batch)) else {
                         tracing::error!("a change batch exceeds the frame limit; closing its feed");
                         return;
                     };
                     line
                 }
-                Some(FeedFrame::Close) => {
+                None => {
                     tracing::info!("a change feed stopped; closing its connection");
                     return;
                 }
-                None => {
-                    is_feed_open = false;
-                    continue;
-                }
             },
+            started = started_feeds.recv(), if can_start_feed => {
+                can_start_feed = false;
+                feed = started;
+                continue;
+            }
         };
         if writer.write_all(&line).await.is_err() {
             return;
         }
+    }
+}
+
+/// The started feed's next batch, `None` once it stopped; never ready without a feed.
+async fn next_batch(feed: &mut Option<mpsc::Receiver<ChangeBatch>>) -> Option<ChangeBatch> {
+    match feed {
+        Some(batches) => batches.recv().await,
+        None => std::future::pending().await,
     }
 }
 

@@ -12,7 +12,7 @@ use cockpit_turso::sql::Connection;
 use cockpit_turso::{Database, ReadTransaction, WriteTransaction};
 
 use crate::entities::{self, EntityChange};
-use crate::error::{Error, Refusal, ResnapshotReason, invalid_row};
+use crate::error::{Error, Refusal, ResnapshotReason, invalid_row, stored_revision};
 
 /// A position in the feed: every change up to `revision` of the database `epoch` is applied.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -129,7 +129,7 @@ impl Feed {
         let retained_after = retained_after(read).await?;
         if self.scanned < retained_after {
             return Err(resnapshot(ResnapshotReason::Discarded {
-                retained_after: retained_after.unsigned_abs(),
+                retained_after: stored_revision("messaging_feed_retention", retained_after)?,
             }));
         }
         let changes = changed_entities(read, self.scanned).await?;
@@ -209,8 +209,7 @@ async fn retained_after(connection: &Connection) -> Result<i64, Error> {
 }
 
 fn revision(revision: i64) -> Result<u64, Error> {
-    u64::try_from(revision)
-        .map_err(|_| invalid_row("turso_cdc", format!("negative revision {revision}")))
+    stored_revision("turso_cdc", revision)
 }
 
 fn resnapshot(reason: ResnapshotReason) -> Error {

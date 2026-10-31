@@ -124,3 +124,8 @@ pub(crate) fn invalid_row(table: &'static str, reason: impl Into<String>) -> Err
         reason: reason.into(),
     }
 }
+
+/// A revision `table` stores as an SQLite integer, which is never negative.
+pub(crate) fn stored_revision(table: &'static str, revision: i64) -> Result<u64, Error> {
+    u64::try_from(revision).map_err(|_| invalid_row(table, format!("negative revision {revision}")))
+}

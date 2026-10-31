@@ -8,7 +8,7 @@ use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::Connection;
 use serde_json::{Map, Value};
 
-use crate::error::{Error, invalid, invalid_row};
+use crate::error::{Error, invalid, invalid_row, stored_revision};
 
 pub(crate) const TABLE: &str = "messaging_entities";
 const LONGEST_KIND: usize = 64;
@@ -148,7 +148,7 @@ fn entity_change(row: &cockpit_turso::sql::Row) -> Result<EntityChange, Error> {
     Ok(EntityChange {
         kind: row.get(0)?,
         id: row.get(1)?,
-        revision: unsigned(row.get(2)?)?,
+        revision: stored_revision(TABLE, row.get(2)?)?,
         state,
     })
 }
@@ -169,7 +169,7 @@ async fn stored(connection: &Connection, kind: &str, id: &str) -> Result<Option<
         return Ok(None);
     };
     Ok(Some(Stored {
-        revision: unsigned(row.get(0)?)?,
+        revision: stored_revision(TABLE, row.get(0)?)?,
         state: row
             .get::<Option<String>>(1)?
             .map(|text| parse_state(&text))
@@ -206,10 +206,6 @@ fn validate(kind: &str, id: &str) -> Result<(), Error> {
         ));
     }
     Ok(())
-}
-
-fn unsigned(revision: i64) -> Result<u64, Error> {
-    u64::try_from(revision).map_err(|_| invalid_row(TABLE, format!("revision {revision}")))
 }
 
 /// Entity revisions are stored as SQLite integers; one past `i64::MAX` is out of reach.

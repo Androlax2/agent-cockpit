@@ -10,7 +10,7 @@
 
 use std::future::Future;
 
-use cockpit_turso::sql::{Connection, Row};
+use cockpit_turso::sql::{Connection, IntoParams, Row};
 use cockpit_turso::{Database, WriteTransaction};
 
 use crate::error::{Error, Refusal, invalid, invalid_row};
@@ -223,19 +223,12 @@ pub async fn claim_due(
         )
         .await?;
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let mut rows = write
-        .query(
-            &format!(
-                "SELECT {ENVELOPE_COLUMNS} FROM messaging_envelopes
-                 WHERE state = 'queued' AND due_at <= ?1 ORDER BY due_at, id LIMIT ?2"
-            ),
-            (now, limit),
-        )
-        .await?;
-    let mut due = Vec::new();
-    while let Some(row) = rows.next().await? {
-        due.push(stored(&row)?);
-    }
+    let due = envelopes_where(
+        write,
+        "state = 'queued' AND due_at <= ?1 ORDER BY due_at, id LIMIT ?2",
+        (now, limit),
+    )
+    .await?;
     let mut claims = Vec::with_capacity(due.len());
     for envelope in due {
         let attempt = envelope.attempts + 1;
@@ -298,6 +291,7 @@ pub async fn record_delivery(
         .ok_or(Refusal::NotFound { envelope: id.0 })?;
     match delivery {
         Delivery::Received { receipt } => {
+            // Checked before the shortcut: an empty receipt is refused in every state.
             if receipt.is_empty() {
                 return Err(invalid("receipt", "a receipt is not empty"));
             }
@@ -323,19 +317,7 @@ pub async fn reconcile_deliveries(
     write: &WriteTransaction<'_>,
     now: i64,
 ) -> Result<Vec<(EnvelopeId, DeliveryState)>, Error> {
-    let mut rows = write
-        .query(
-            &format!(
-                "SELECT {ENVELOPE_COLUMNS} FROM messaging_envelopes
-                 WHERE state = 'submitting' ORDER BY id"
-            ),
-            (),
-        )
-        .await?;
-    let mut interrupted = Vec::new();
-    while let Some(row) = rows.next().await? {
-        interrupted.push(stored(&row)?);
-    }
+    let interrupted = envelopes_where(write, "state = 'submitting' ORDER BY id", ()).await?;
     let mut reconciled = Vec::with_capacity(interrupted.len());
     for envelope in interrupted {
         let failure = Failure::Unacknowledged {
@@ -378,9 +360,6 @@ pub async fn resolve_uncertain(
     }
     match resolution {
         Resolution::Received { receipt } => {
-            if receipt.is_empty() {
-                return Err(invalid("receipt", "a receipt is not empty"));
-            }
             set_received(write, id, receipt, now).await?;
             Ok(DeliveryState::Received)
         }
@@ -427,31 +406,12 @@ pub async fn envelope(
     connection: &Connection,
     id: EnvelopeId,
 ) -> Result<Option<StoredEnvelope>, Error> {
-    let mut rows = connection
-        .query(
-            &format!("SELECT {ENVELOPE_COLUMNS} FROM messaging_envelopes WHERE id = ?1"),
-            [id.0],
-        )
-        .await?;
-    rows.next().await?.map(|row| stored(&row)).transpose()
+    Ok(envelopes_where(connection, "id = ?1", [id.0]).await?.pop())
 }
 
 /// The deliveries waiting for a lookup or the owner's decision, oldest first.
 pub async fn uncertain_envelopes(connection: &Connection) -> Result<Vec<StoredEnvelope>, Error> {
-    let mut rows = connection
-        .query(
-            &format!(
-                "SELECT {ENVELOPE_COLUMNS} FROM messaging_envelopes
-                 WHERE state = 'uncertain' ORDER BY id"
-            ),
-            (),
-        )
-        .await?;
-    let mut uncertain = Vec::new();
-    while let Some(row) = rows.next().await? {
-        uncertain.push(stored(&row)?);
-    }
-    Ok(uncertain)
+    envelopes_where(connection, "state = 'uncertain' ORDER BY id", ()).await
 }
 
 /// Delivers one claimed envelope to its receiver and reports what it observed. It runs
@@ -574,6 +534,9 @@ async fn set_received(
     receipt: &str,
     now: i64,
 ) -> Result<(), Error> {
+    if receipt.is_empty() {
+        return Err(invalid("receipt", "a receipt is not empty"));
+    }
     write
         .execute(
             "UPDATE messaging_envelopes SET state = 'received', receipt = ?2, note = NULL,
@@ -605,13 +568,28 @@ async fn by_effect_key(
     connection: &Connection,
     effect_key: &str,
 ) -> Result<Option<StoredEnvelope>, Error> {
+    Ok(envelopes_where(connection, "effect_key = ?1", [effect_key])
+        .await?
+        .pop())
+}
+
+/// The envelopes matching `condition`, a `WHERE` clause with its ordering.
+async fn envelopes_where(
+    connection: &Connection,
+    condition: &str,
+    params: impl IntoParams,
+) -> Result<Vec<StoredEnvelope>, Error> {
     let mut rows = connection
         .query(
-            &format!("SELECT {ENVELOPE_COLUMNS} FROM messaging_envelopes WHERE effect_key = ?1"),
-            [effect_key],
+            &format!("SELECT {ENVELOPE_COLUMNS} FROM messaging_envelopes WHERE {condition}"),
+            params,
         )
         .await?;
-    rows.next().await?.map(|row| stored(&row)).transpose()
+    let mut envelopes = Vec::new();
+    while let Some(row) = rows.next().await? {
+        envelopes.push(stored(&row)?);
+    }
+    Ok(envelopes)
 }
 
 async fn waiting_in_slot(
