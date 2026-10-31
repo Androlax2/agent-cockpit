@@ -9,6 +9,7 @@ mod common;
 
 use cockpit_agent_channel::Refusal;
 use cockpit_authorization::Permission;
+use cockpit_provider_api::TurnOutcome;
 use cockpit_sessions::{AgentState, Error, QuestionSource, Report, SessionReport, report};
 use cockpit_turso::Database;
 use common::{grant, launch, open, session, this_process, this_process_identity};
@@ -71,10 +72,15 @@ fn label(text: &str) -> Report {
 }
 
 /// The reports the bridge and the agent send after a question, other than a new prompt.
-fn later_reports() -> [Report; 3] {
+fn later_reports() -> [Report; 4] {
     [
         state(AgentState::Working),
         state(AgentState::Waiting),
+        Report {
+            state: Some(AgentState::Waiting),
+            outcome: Some(TurnOutcome::Completed),
+            ..Report::default()
+        },
         label("Agent channel issue"),
     ]
 }
