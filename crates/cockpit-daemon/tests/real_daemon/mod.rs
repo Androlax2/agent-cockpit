@@ -31,9 +31,16 @@ const SETTLED_WITHIN: Duration = Duration::from_secs(30);
 pub const FLOOD_PROJECT: &str = "flood";
 /// A project of this name runs an agent that ignores `SIGTERM` and never ends on its own.
 pub const STALL_PROJECT: &str = "stall";
+/// A project of this name runs an agent that reports through the `cockpit` built beside the
+/// daemon, as the Claude hook bridge does, appending its output to [`Home::report_log`]. It
+/// retries for 5 s: a report before the daemon recorded the launch's process tree is
+/// refused (#279).
+pub const REPORT_PROJECT: &str = "report";
+/// The label the [`REPORT_PROJECT`] agent reports.
+pub const REPORTED_LABEL: &str = "reported from the agent";
 
 /// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
-/// [`STALL_PROJECT`]); anything else sleeps. `--version` answers the version the adapter's
+/// [`STALL_PROJECT`], [`REPORT_PROJECT`]); anything else sleeps. `--version` answers the version the adapter's
 /// conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
@@ -41,6 +48,10 @@ printf '%s pid=%s\n' "$COCKPIT_SESSION" "$$" >> '@LOG@'
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
   @STALL@) trap '' TERM; while :; do sleep 1; done ;;
+  @REPORT@) tries=0
+    until '@COCKPIT@' agent report --state working --label '@LABEL@' >> '@REPORT_LOG@' 2>&1 \
+      || [ "$tries" -ge 50 ]; do tries=$((tries + 1)); sleep 0.1; done
+    exec sleep 3600 ;;
   *) exec sleep 3600 ;;
 esac
 "#;
@@ -72,13 +83,17 @@ impl Home {
                 .expect("the home's directories are creatable");
         }
         let claude = home.path().join("bin/claude");
-        let log = home.launch_log();
+        let utf8 = |path: &Path| path.to_str().expect("a UTF-8 path").to_owned();
         std::fs::write(
             &claude,
             FAKE_CLAUDE
-                .replace("@LOG@", log.to_str().expect("a UTF-8 path"))
+                .replace("@LOG@", &utf8(&home.launch_log()))
                 .replace("@FLOOD@", FLOOD_PROJECT)
-                .replace("@STALL@", STALL_PROJECT),
+                .replace("@STALL@", STALL_PROJECT)
+                .replace("@REPORT@", REPORT_PROJECT)
+                .replace("@COCKPIT@", &utf8(&cockpit_program()))
+                .replace("@LABEL@", REPORTED_LABEL)
+                .replace("@REPORT_LOG@", &utf8(&home.report_log())),
         )
         .unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -91,6 +106,11 @@ impl Home {
 
     fn launch_log(&self) -> PathBuf {
         self.path().join("launches.log")
+    }
+
+    /// What the [`REPORT_PROJECT`] agent's `cockpit agent report` printed.
+    pub fn report_log(&self) -> PathBuf {
+        self.path().join("reports.log")
     }
 
     pub fn socket_path(&self) -> PathBuf {
@@ -230,6 +250,13 @@ impl Drop for Home {
 
 pub struct Daemon {
     child: Child,
+}
+
+/// The `cockpit` program beside the daemon's, where the daemon looks for it too. Cargo
+/// builds it there for the workspace run (`make crates-test`), not for a run of this
+/// package alone.
+pub fn cockpit_program() -> PathBuf {
+    Path::new(env!("CARGO_BIN_EXE_cockpit-daemon")).with_file_name("cockpit")
 }
 
 impl Daemon {
