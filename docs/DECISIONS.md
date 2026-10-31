@@ -38,6 +38,36 @@ reproduces exactly and covers case variants, `%`, an id spelled `owner`, and ses
 namespace confusion; three injected SQL bugs (`LIKE` on ids or holder, a dropped scope kind)
 each fail it.
 
+## 2026-10-31 — cockpit-client: line framing, caller-side cancellation, one connection per feed
+
+Issue #21. `cockpit-protocol` left framing to the client and daemon issues; the client
+fixes it as one JSON value per line, at most `MAX_FRAME_BYTES` (16 MiB, newline included)
+each way. Line framing needs no new dependency and serde_json never writes a raw newline.
+The limit has to hold a whole snapshot, which is one batch; if a real snapshot outgrows
+it, the daemon issue (#26) must raise the limit or split snapshots under a new rule, not
+drop the bound. Oversized, unreadable or truncated frames close the connection.
+
+- **Cancellation is the caller's fact only.** The protocol has no cancel command, so a
+  deadline or a dropped request future means "stopped waiting" (report 03); the error says
+  the operation may have taken effect. Frames go through a writer task, so a cancelled
+  request never leaves half a frame on the socket, and a late reply finds no waiting slot
+  and is discarded instead of answering a later request.
+- **A subscription owns its connection.** The protocol does not say what a second
+  `subscribe` on one connection means, so the client never sends one: a disconnect or a gap
+  drops the connection, fails that call, and the next call reconnects and subscribes from
+  the applied cursor. Only a subscription's connection asks for `change-feed`, so the
+  daemon refuses `subscribe` elsewhere as `not-negotiated`, and a plain `Connection` that
+  receives a change batch closes as a protocol violation. The cursor advances only
+  through `PendingBatch::applied`; the subscription keeps a batch the caller did not apply
+  and returns it on the next call, without a reconnect. The daemon (#26) must answer
+  `subscribe` before sending that subscription's batches, since the read-ahead is bounded.
+- **`resnapshot-required` is followed, not surfaced.** Answered to a cursor, it makes the
+  client subscribe again from a snapshot on the same connection; the snapshot batch says
+  `follows: snapshot`, which tells the caller to replace its state.
+
+`tokio`'s `net` feature adds `mio` and `socket2` to the root `Cargo.lock`; `apps/` already
+builds both.
+
 ## 2026-10-31 — Greenfield protocol: version lists, open enums, closed change kinds
 
 `cockpit-protocol` (issue #20) negotiates with a list, not a single number: the client's
