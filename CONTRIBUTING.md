@@ -44,6 +44,9 @@ instead of guessing.
 - Open the pull request from the template. Reference the issue (`Closes #<n>`), list the
   exact commands you ran with their outcomes, and keep `validate` claims open until
   measured. A skipped check is not a pass; never disable a test to make a check pass.
+- Title the pull request as a conventional commit subject, `type(scope): description`: it
+  becomes a `CHANGELOG.md` entry ([Releasing](docs/RELEASING.md#changelog)). Say what
+  changed, not how; the issue goes in the body.
 - Never force-push. Rebase onto `main` before the pull request is opened; once it is open,
   merge `main` into the branch (or into a stacked branch) instead of rewriting history.
 
