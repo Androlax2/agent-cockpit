@@ -435,7 +435,9 @@ pub(crate) fn decide(
             in_use.heavy,
         ));
     }
-    for (limited_by, capacity, used) in limits {
+    // Every capacity is checked for what can never fit before any is checked for room, so a
+    // caller is never told to wait for room that would still not be enough.
+    for &(limited_by, capacity, _) in &limits {
         for resource in [Resource::Cpu, Resource::Memory] {
             let demand = request.demand.get(resource);
             let capacity = capacity.get(resource);
@@ -447,7 +449,12 @@ pub(crate) fn decide(
                     limited_by,
                 });
             }
-            let available = capacity.saturating_sub(used.get(resource));
+        }
+    }
+    for (limited_by, capacity, used) in limits {
+        for resource in [Resource::Cpu, Resource::Memory] {
+            let demand = request.demand.get(resource);
+            let available = capacity.get(resource).saturating_sub(used.get(resource));
             if demand > available {
                 return Verdict::Held(Hold::NoRoom {
                     resource,
@@ -542,4 +549,7 @@ pub struct Reservation {
 pub struct Swept {
     pub expired: Vec<ReservationId>,
     pub ended: Vec<ReservationId>,
+    /// Running reservations whose execution could not be observed, with why; they stay
+    /// charged, and the others are still swept.
+    pub unobserved: Vec<(ReservationId, String)>,
 }

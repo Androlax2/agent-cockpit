@@ -69,12 +69,12 @@ impl HostTools {
 /// The daemon's `PATH`, then the system directories: an execution's environment is cleared,
 /// so the shim must be an absolute path.
 fn find_program(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .iter()
-        .flat_map(std::env::split_paths)
-        .chain([PathBuf::from("/usr/bin"), PathBuf::from("/bin")])
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+    cockpit_processes::find_in_path(name).or_else(|| {
+        ["/usr/bin", "/bin"]
+            .into_iter()
+            .map(|dir| Path::new(dir).join(name))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 /// What the cgroup probe found for this user's manager.

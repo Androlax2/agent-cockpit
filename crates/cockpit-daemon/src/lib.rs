@@ -134,6 +134,7 @@ impl Instance {
             "probed what this host enforces"
         );
         let stopper = processes.clone();
+        let sweeper = processes.clone();
         // A missing or too old tmux leaves the daemon up with sessions refused (report 09);
         // any other failure to open the server is the daemon's own and stops the start.
         let tmux = match cockpit_tmux::Server::open(wiring.tmux) {
@@ -186,7 +187,11 @@ impl Instance {
         }));
         let swept_database = Arc::clone(&database);
         let sweeping = tokio::spawn(supervisor::supervise("resources-sweep", move || {
-            resources::sweep_forever(Arc::clone(&swept_database), RESOURCE_SWEEP_INTERVAL)
+            resources::sweep_forever(
+                Arc::clone(&swept_database),
+                sweeper.clone(),
+                RESOURCE_SWEEP_INTERVAL,
+            )
         }));
         let accepting = accept(&listener, &shared, server::Socket::HostOnly);
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent);
@@ -260,7 +265,7 @@ async fn reconcile(
     tracing::info!(executions = reconciled.len(), "reconciled durable state");
     // Reservations follow their executions: one that ended while the daemon was down is
     // released before anything is admitted.
-    resources::sweep(database)
+    resources::sweep(database, processes)
         .await
         .map_err(StartError::Admission)?;
     approvals::reconcile_runs(database, runner)

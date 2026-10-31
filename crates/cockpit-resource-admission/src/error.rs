@@ -28,6 +28,10 @@ pub enum Error {
         reservation: ReservationId,
         reason: String,
     },
+    /// A stored setting or sum breaks this crate's schema rules; `reason` says how.
+    InvalidStoredState {
+        reason: String,
+    },
     /// A host command this crate depends on (`systemctl`, `ps`, `sysctl`) failed or did not
     /// answer in time.
     HostCommand {
@@ -77,6 +81,9 @@ impl fmt::Display for Error {
                 reservation,
                 reason,
             } => write!(formatter, "{reservation} is stored invalid: {reason}"),
+            Error::InvalidStoredState { reason } => {
+                write!(formatter, "the stored resource state is invalid: {reason}")
+            }
             Error::HostCommand { command, reason } => write!(formatter, "`{command}`: {reason}"),
             Error::Io {
                 action,

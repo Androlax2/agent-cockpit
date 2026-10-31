@@ -12,8 +12,9 @@ use cockpit_protocol::{
     Outcome, ProfileView, ProtocolError, Reply, ReservationView, ResourceStatusView, VerdictView,
 };
 use cockpit_resource_admission::{
-    AdmissionRequest, Availability, Backend, Control, Demand, Effective, Error, Limits, Policy,
-    Profile, Reservation, ReservationId, ReservationState, Verdict, Workload,
+    AdmissionRequest, Availability, Backend, Control, Demand, Effective, Error, ExecutionReport,
+    LimitReport, Limits, Observed, Policy, Profile, Reservation, ReservationId, ReservationState,
+    Verdict, Workload,
 };
 use cockpit_turso::Database;
 
@@ -31,6 +32,9 @@ pub(crate) struct Resources {
     pub(crate) database: Arc<Database>,
     pub(crate) backend: Arc<Backend>,
     pub(crate) supervisor: Supervisor,
+    /// Held from a profile's commit until its limits are applied, so two concurrent changes
+    /// cannot leave running work under the limits of the profile that lost.
+    pub(crate) profile_change: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Resources {
@@ -60,10 +64,12 @@ pub(crate) fn route(command: Command, resources: Resources) -> Route {
                     });
                 }
             };
+            let changing = resources.profile_change.lock().await;
             let write = resources.database.write().await?;
             cockpit_resource_admission::set_profile(&write, profile, now()).await?;
             write.commit().await?;
             apply_profile(&resources, profile).await?;
+            drop(changing);
             status(&resources).await
         }),
         Command::ResourceQueue { paused } => job(async move {
@@ -103,6 +109,7 @@ pub(crate) fn route(command: Command, resources: Resources) -> Route {
                 &request,
                 &resources.policy(),
                 &resources.backend.support(),
+                now(),
             )
             .await?;
             Ok(Reply::ResourceVerdict {
@@ -147,7 +154,7 @@ pub(crate) fn route(command: Command, resources: Resources) -> Route {
                 .map_err(Error::Processes)?;
             let observed_ended = matches!(termination, Termination::Confirmed { .. });
             if observed_ended {
-                cockpit_resource_admission::sweep(&resources.database, now()).await?;
+                sweep(&resources.database, &resources.supervisor).await?;
             }
             Ok(Reply::ResourceStopped {
                 reservation,
@@ -212,7 +219,7 @@ async fn settings_profile(resources: &Resources) -> Result<Profile, Error> {
 async fn status(resources: &Resources) -> Result<Reply, Error> {
     let read = resources.database.read().await?;
     let settings = cockpit_resource_admission::settings(&read).await?;
-    let in_use = cockpit_resource_admission::in_use(&read).await?;
+    let in_use = cockpit_resource_admission::in_use(&read, now()).await?;
     let reservations = cockpit_resource_admission::reservations(&read).await?;
     drop(read);
     let policy = resources.policy();
@@ -266,10 +273,11 @@ async fn reservation_view(
     );
     let (state, execution, limit_views, observed) = match reservation.state {
         ReservationState::Running { execution } => {
-            let found = cockpit_processes::execution(&resources.database, execution)
-                .await
-                .map_err(Error::Processes)?;
-            let report = resources.backend.inspect(&found, &limits).await;
+            let report = match cockpit_processes::execution(&resources.database, execution).await {
+                Ok(found) => resources.backend.inspect(&found, &limits).await,
+                // One unreadable execution must not hide the rest of the status.
+                Err(error) => unreadable_execution_report(resources, &limits, &error),
+            };
             let limit_views = report
                 .limits
                 .into_iter()
@@ -331,6 +339,29 @@ async fn reservation_view(
     })
 }
 
+fn unreadable_execution_report(
+    resources: &Resources,
+    limits: &Limits,
+    error: &cockpit_processes::Error,
+) -> ExecutionReport {
+    ExecutionReport {
+        limits: resources
+            .backend
+            .support()
+            .into_iter()
+            .map(|support| LimitReport {
+                control: support.control,
+                requested: limits.requested(support.control),
+                availability: support.availability,
+                effective: Effective::Unknown {
+                    why: format!("its execution could not be read: {error}"),
+                },
+            })
+            .collect(),
+        observed: Observed::default(),
+    }
+}
+
 fn availability_parts(availability: Availability) -> (bool, String) {
     match availability {
         Availability::Supported { how } => (true, how),
@@ -376,8 +407,15 @@ fn protocol_error(error: &Error) -> ProtocolError {
 
 /// Releases expired and ended reservations: at startup, before requests are accepted, and
 /// then periodically.
-pub(crate) async fn sweep(database: &Database) -> Result<(), Error> {
-    let swept = cockpit_resource_admission::sweep(database, now()).await?;
+pub(crate) async fn sweep(database: &Database, supervisor: &Supervisor) -> Result<(), Error> {
+    let swept = cockpit_resource_admission::sweep(database, supervisor, now()).await?;
+    for (id, why) in &swept.unobserved {
+        tracing::warn!(
+            reservation = id.0,
+            why,
+            "kept a reservation charged whose execution could not be observed"
+        );
+    }
     for id in &swept.expired {
         tracing::info!(
             reservation = id.0,
@@ -393,12 +431,16 @@ pub(crate) async fn sweep(database: &Database) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) async fn sweep_forever(database: Arc<Database>, interval: Duration) {
+pub(crate) async fn sweep_forever(
+    database: Arc<Database>,
+    supervisor: Supervisor,
+    interval: Duration,
+) {
     let mut ticks = tokio::time::interval(interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticks.tick().await;
-        if let Err(error) = sweep(&database).await {
+        if let Err(error) = sweep(&database, &supervisor).await {
             tracing::error!(%error, "the reservations' sweep failed");
         }
     }

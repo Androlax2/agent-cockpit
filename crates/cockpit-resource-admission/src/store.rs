@@ -2,7 +2,7 @@
 //! in-memory permit: it outlives the Rust task that asked for it and a daemon restart
 //! (report 03), and only an expiry, a withdrawal or an observed end releases it.
 
-use cockpit_processes::{ExecutionId, Phase};
+use cockpit_processes::{ExecutionId, Phase, Supervisor};
 use cockpit_turso::sql::{Connection, Row};
 use cockpit_turso::{Database, Migration, MigrationSet, WriteTransaction};
 
@@ -65,7 +65,7 @@ pub async fn admit(
     support: &[ControlSupport],
     now: i64,
 ) -> Result<Admission, Error> {
-    if let Verdict::Held(hold) = check(write, request, policy, support).await? {
+    if let Verdict::Held(hold) = check(write, request, policy, support, now).await? {
         return Ok(Admission::Held(hold));
     }
     let limits = request.limits;
@@ -110,10 +110,11 @@ pub async fn check(
     request: &AdmissionRequest,
     policy: &Policy,
     support: &[ControlSupport],
+    now: i64,
 ) -> Result<Verdict, Error> {
     validate(request)?;
     let settings = settings(connection).await?;
-    let in_use = in_use(connection).await?;
+    let in_use = in_use(connection, now).await?;
     Ok(decide(request, settings, in_use, policy, support))
 }
 
@@ -238,9 +239,11 @@ fn state_name(state: &ReservationState) -> &'static str {
 }
 
 /// Releases what is over: unstarted reservations past their expiry, and running ones whose
-/// execution `cockpit-processes` observed ended. A running reservation whose execution is
-/// not observed ended stays charged, whatever happened to the task that started it.
-pub async fn sweep(database: &Database, now: i64) -> Result<Swept, Error> {
+/// execution `supervisor` observes ended, looking at the real processes. A running
+/// reservation whose execution is not observed ended stays charged, whatever happened to the
+/// task that started it; one whose execution cannot be observed is reported in
+/// [`Swept::unobserved`] and does not stop the others from being swept.
+pub async fn sweep(database: &Database, supervisor: &Supervisor, now: i64) -> Result<Swept, Error> {
     let running: Vec<(ReservationId, ExecutionId)> = {
         let read = database.read().await?;
         let mut rows = read
@@ -256,15 +259,12 @@ pub async fn sweep(database: &Database, now: i64) -> Result<Swept, Error> {
         }
         running
     };
-    let mut ended = Vec::new();
+    let (mut ended, mut unobserved) = (Vec::new(), Vec::new());
     for (reservation, execution) in running {
-        if matches!(
-            cockpit_processes::execution(database, execution)
-                .await?
-                .phase,
-            Phase::Ended(_)
-        ) {
-            ended.push(reservation);
+        match supervisor.observe(database, execution).await {
+            Ok(observed) if matches!(observed.phase, Phase::Ended(_)) => ended.push(reservation),
+            Ok(_) => {}
+            Err(error) => unobserved.push((reservation, error.to_string())),
         }
     }
     let write = database.write().await?;
@@ -296,7 +296,11 @@ pub async fn sweep(database: &Database, now: i64) -> Result<Swept, Error> {
         }
     }
     write.commit().await?;
-    Ok(Swept { expired, ended })
+    Ok(Swept {
+        expired,
+        ended,
+        unobserved,
+    })
 }
 
 pub async fn settings(connection: &Connection) -> Result<Settings, Error> {
@@ -307,7 +311,7 @@ pub async fn settings(connection: &Connection) -> Result<Settings, Error> {
         .await?;
     let profile: String = row.get(0)?;
     Ok(Settings {
-        profile: Profile::parse(&profile).ok_or_else(|| Error::InvalidRequest {
+        profile: Profile::parse(&profile).ok_or_else(|| Error::InvalidStoredState {
             reason: format!("the stored profile {profile:?} is unknown"),
         })?,
         queue_paused: row.get::<i64>(1)? != 0,
@@ -345,13 +349,17 @@ pub async fn set_queue_paused(
     Ok(())
 }
 
-/// Capacity charged now: every reservation not released, and the heavy ones among them.
-pub async fn in_use(connection: &Connection) -> Result<InUse, Error> {
+/// Capacity charged at `now`: every running reservation and every unstarted one not yet
+/// past its expiry, and the heavy ones among them. An expired one no longer charges, even
+/// before the sweep releases it.
+pub async fn in_use(connection: &Connection, now: i64) -> Result<InUse, Error> {
     let mut rows = connection
         .query(
             "SELECT workload, coalesce(sum(cpu_millis), 0), coalesce(sum(memory_mib), 0)
-             FROM resource_reservations WHERE state <> 'released' GROUP BY workload",
-            (),
+             FROM resource_reservations
+             WHERE state = 'running' OR (state = 'reserved' AND expires_at > ?1)
+             GROUP BY workload",
+            [now],
         )
         .await?;
     let mut in_use = InUse::default();
@@ -447,7 +455,7 @@ fn stored(value: u64) -> Result<i64, Error> {
 }
 
 fn loaded(value: i64) -> Result<u64, Error> {
-    u64::try_from(value).map_err(|_| Error::InvalidRequest {
+    u64::try_from(value).map_err(|_| Error::InvalidStoredState {
         reason: format!("the stored value {value} is negative"),
     })
 }

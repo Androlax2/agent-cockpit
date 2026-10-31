@@ -18,7 +18,7 @@ pub use output::{OutputKind, OutputLimits, OutputRead, OutputStream};
 pub use session::run_session_leader;
 pub use store::{MIGRATIONS, execution, occupying_executions};
 pub use supervisor::{LaunchContainment, Launched, Supervisor};
-pub use systemd::SystemdTools;
+pub use systemd::{SystemdTools, find_in_path};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("cockpit-processes supports Linux (WSL2 included) and macOS (report 01)");
