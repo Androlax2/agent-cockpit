@@ -189,8 +189,6 @@ async fn an_intent_with_no_identity_and_no_leader_file_stays_charged() {
     let home = Home::new();
     let database = home.open_database().await;
     let mut supervisor = home.process_group_supervisor();
-    // A stop waits this long for a start confirmation that never comes here.
-    supervisor.launch_timeout = std::time::Duration::from_millis(200);
     let execution = supervisor
         .launch(&database, &shell(&home, "exec sleep 300"))
         .await
@@ -203,6 +201,8 @@ async fn an_intent_with_no_identity_and_no_leader_file_stays_charged() {
     )
     .unwrap();
 
+    // A stop waits this long for a start confirmation that never comes here.
+    supervisor.launch_timeout = std::time::Duration::from_millis(200);
     let reconciled = supervisor.reconcile(&database).await.unwrap();
     let termination = supervisor
         .terminate(&database, execution.id, QUICK_ESCALATION)

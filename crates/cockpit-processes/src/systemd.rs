@@ -33,6 +33,16 @@ impl SystemdTools {
             .is_ok()
     }
 
+    /// `systemd-run` set up to put the program it execs into `unit` before it runs.
+    pub(crate) fn scope_launcher(&self, unit: &str) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(&self.systemd_run);
+        command
+            .args(["--user", "--scope", "--collect", "--quiet"])
+            .arg(format!("--unit={unit}"))
+            .arg("--");
+        command
+    }
+
     /// Signals every process of the scope's cgroup, whatever process group it is in.
     pub(crate) async fn signal(&self, unit: &str, signal: Signal) -> Result<(), Error> {
         let name = match signal {
@@ -74,4 +84,10 @@ fn resolve_in_path(program: &str) -> PathBuf {
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
         .unwrap_or_else(|| PathBuf::from(program))
+}
+
+/// The scope of one execution. It embeds the database epoch and the row id, so a restart
+/// finds the unit from the row alone and two state databases never share a unit.
+pub(crate) fn scope_unit(epoch: &str, id: crate::ExecutionId) -> String {
+    format!("cockpit-{epoch}-{}.scope", id.0)
 }

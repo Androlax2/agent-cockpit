@@ -161,13 +161,14 @@ impl Supervisor {
             Containment::SystemdScope { .. } => self.systemd.systemd_run.clone(),
             Containment::ProcessGroup => PathBuf::from("/bin/sh"),
         };
-        let mut command = tokio::process::Command::new(&program);
-        if let Containment::SystemdScope { unit } = containment {
-            command
-                .args(["--user", "--scope", "--collect", "--quiet"])
-                .arg(format!("--unit={unit}"))
-                .args(["--", "/bin/sh"]);
-        }
+        let mut command = match containment {
+            Containment::SystemdScope { unit } => {
+                let mut command = self.systemd.scope_launcher(unit);
+                command.arg("/bin/sh");
+                command
+            }
+            Containment::ProcessGroup => tokio::process::Command::new(&program),
+        };
         command
             .arg("-c")
             .arg(LAUNCH_SCRIPT)
@@ -273,8 +274,8 @@ impl Supervisor {
                     EndReason::Exited if execution.cancel_requested => EndReason::Terminated,
                     reason => *reason,
                 };
-                store::record_ended(database, execution.id, reason).await?;
-                return Ok(Presence::Gone(reason));
+                let recorded = store::record_ended(database, execution.id, reason).await?;
+                return Ok(Presence::Gone(recorded));
             }
             Presence::Ours { .. } | Presence::Unidentified => {}
         }
@@ -289,7 +290,8 @@ impl Supervisor {
         if execution.boot_id != self.boot_id().await? {
             return Ok(Presence::Gone(EndReason::HostRestarted));
         }
-        // Once running, the row holds everything the leader file says.
+        // Once running, the row holds everything the leader file says: the table's CHECK
+        // refuses a running row without its process group and start token.
         let leader_file = if execution.phase == Phase::Launching {
             let leader_path = self.execution_dir(database, execution.id).join(LEADER_FILE);
             read_leader_file(&leader_path)
