@@ -122,26 +122,24 @@ fn run_line(run: &RunRequestView) -> String {
     } else {
         crate::ask::state_name(run.state)
     };
-    let first_line = run.shown_command.text.lines().next().unwrap_or("");
-    let more = match &run.folded_command {
-        Some(folded) if folded.more_lines > 0 => format!("{} lines", folded.more_lines),
-        Some(folded) => format!("{} characters", folded.more_chars),
-        None if run.shown_command.text.lines().nth(1).is_some() => {
-            format!("{} lines", run.shown_command.text.lines().count() - 1)
-        }
-        None => {
-            return format!("run\t{}\t{state}\t{}\t{first_line}", run.id, run.session);
-        }
-    };
-    let preview = run
-        .folded_command
-        .as_ref()
-        .and_then(|folded| folded.preview.lines().next())
-        .unwrap_or(first_line);
-    format!(
-        "run\t{}\t{state}\t{}\t{preview} [more: {more}; cockpit approval show {}]",
-        run.id, run.session, run.id
-    )
+    let line = format!("run\t{}\t{state}\t{}\t", run.id, run.session);
+    let shown = &run.shown_command.text;
+    let lines = shown.lines().count();
+    if lines > 1 {
+        let first_line = shown.lines().next().unwrap_or("");
+        return format!(
+            "{line}{first_line} [more: {} lines; cockpit approval show {}]",
+            lines - 1,
+            run.id
+        );
+    }
+    match &run.folded_command {
+        Some(folded) => format!(
+            "{line}{} [more: {} characters; cockpit approval show {}]",
+            folded.preview, folded.more_chars, run.id
+        ),
+        None => format!("{line}{}", shown.lines().next().unwrap_or("")),
+    }
 }
 
 fn guide_line(guide: &GuideView) -> String {
@@ -201,7 +199,7 @@ fn run_hints(run: &RunRequestView) -> String {
         Some(files) if !files.is_empty() => {
             let _ = writeln!(
                 text,
-                "  ! runs files changed in this checkout and on no remote: {}",
+                "  ! runs files changed in this checkout, not on the default branch: {}",
                 files.join(", ")
             );
         }

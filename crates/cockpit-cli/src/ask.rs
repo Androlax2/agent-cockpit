@@ -107,6 +107,7 @@ fn parse_ask_run(words: &[&str]) -> Result<(RunAsked, bool), String> {
                 waits = false;
                 continue;
             }
+            "--no-wait" => return Err("--no-wait given twice".to_owned()),
             "--cwd" => &mut cwd,
             "--reason" => &mut reason,
             _ if command.is_none() => {

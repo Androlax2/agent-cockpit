@@ -3,6 +3,7 @@
 //! where `cockpit-agent-channel` identifies the sender; the owner decides on the host-only
 //! socket. The rules live in those crates; this file maps, and starts approved runs.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -333,12 +334,15 @@ pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: 
             Command::ApprovalQueue => {
                 let read = database.read().await?;
                 let mut runs = cockpit_approvals::open_runs(&read, now()).await?;
+                let guides = cockpit_approvals::open_guides(&read, now()).await?;
+                // Git runs below; the database is not held meanwhile.
+                drop(read);
                 let waiting = runner.waiting_for_input();
                 cockpit_approvals::queue_order(&mut runs, &waiting);
-                let guides = cockpit_approvals::open_guides(&read, now()).await?;
+                let mut changes = CheckoutChanges::default();
                 let mut views = Vec::with_capacity(runs.len());
                 for run in &runs {
-                    views.push(run_view(run, &waiting, changed_build_files(run).await));
+                    views.push(run_view(run, &waiting, changes.build_files_run(run).await));
                 }
                 Ok(Reply::ApprovalQueue {
                     runs: views,
@@ -347,7 +351,9 @@ pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: 
             }
             Command::ApprovalShow { request } => {
                 let read = database.read().await?;
-                Ok(owner_run_reply(&existing_run(&read, request).await?, &runner).await)
+                let run = existing_run(&read, request).await?;
+                drop(read);
+                Ok(owner_run_reply(&run, &runner).await)
             }
             Command::ApprovalApprove {
                 request,
@@ -577,33 +583,48 @@ fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
 /// A run request as the owner reads it before deciding: with the changed build files it
 /// would run, read now.
 async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
-    let changed = changed_build_files(run).await;
+    let mut changes = CheckoutChanges::default();
+    let changed = changes.build_files_run(run).await;
     Reply::RunRequest {
         request: Box::new(run_view(run, &runner.waiting_for_input(), changed)),
     }
 }
 
-/// The build files and scripts `run` would run that work in its project's checkout changed
-/// and no remote has (#156). Read when the owner looks, not when the agent asked: a file
-/// changed after the ask still shows. `None` when the request is decided, its project is
-/// unknown, or Git could not read the checkout (logged).
-async fn changed_build_files(run: &RunRequest) -> Option<Vec<String>> {
-    if run.state != RunState::Asking {
-        return None;
+/// The changed files of each checkout the owner's view reads, each read once per view: a
+/// queue of requests from one project runs Git once.
+#[derive(Default)]
+struct CheckoutChanges {
+    read: HashMap<PathBuf, Option<Vec<String>>>,
+}
+
+impl CheckoutChanges {
+    /// The build files and scripts `run` would run that work in its project's checkout
+    /// changed (`Git::changed_files`, #156). Read when the owner looks, not when the agent
+    /// asked: a file changed after the ask still shows. `None` when the request is decided,
+    /// its project is unknown, or Git could not read the checkout; the owner's view says so.
+    async fn build_files_run(&mut self, run: &RunRequest) -> Option<Vec<String>> {
+        if run.state != RunState::Asking {
+            return None;
+        }
+        let root = &run.project.as_ref()?.root;
+        if !self.read.contains_key(root) {
+            let changed = changed_files(root.clone()).await;
+            self.read.insert(root.clone(), changed);
+        }
+        let changed = self.read[root].as_deref()?;
+        Some(cockpit_approvals::build_files_run(&run.command, changed))
     }
-    let root = run.project.as_ref()?.root.clone();
+}
+
+async fn changed_files(root: PathBuf) -> Option<Vec<String>> {
     let read = tokio::task::spawn_blocking(move || {
         cockpit_projects::Git::from_path().changed_files(&root)
     })
     .await
     .expect("reading a checkout's changes does not panic");
-    match read {
-        Ok(changed) => Some(cockpit_approvals::build_files_run(&run.command, &changed)),
-        Err(error) => {
-            tracing::warn!(request = run.id.0, %error, "cannot read the checkout's changed files");
-            None
-        }
-    }
+    // Debug, not warn: the owner's views poll, and each already shows the read failed.
+    read.inspect_err(|error| tracing::debug!(%error, "cannot read a checkout's changed files"))
+        .ok()
 }
 
 fn guide_reply(guide: &GuideRequest) -> Reply {
@@ -636,7 +657,7 @@ fn shown(text: &str) -> ShownText {
 }
 
 /// `waiting_for_input`: the runs the runner sees waiting at a prompt. `changed_build_files`:
-/// see [`changed_build_files`]; agents' views leave it out.
+/// see [`CheckoutChanges::build_files_run`]; agents' views leave it out.
 fn run_view(
     run: &RunRequest,
     waiting_for_input: &[RunId],

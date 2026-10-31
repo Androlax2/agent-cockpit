@@ -11,6 +11,10 @@ fn timeout_without_foreground_gets_the_hint() {
         "timeout -s KILL 5 make test",
         "cd x && /usr/bin/timeout 5 read -r line",
         "echo a; timeout --kill-after=3 10 ./run.sh",
+        "env FOO=1 timeout 5 sudo x",
+        "sudo -E timeout 5s read -r x",
+        "if true; then timeout 1.5m sudo x; fi",
+        "nohup timeout -k 3 9 ./job",
     ] {
         assert!(timeout_without_foreground(command), "{command:?}");
     }
@@ -22,6 +26,9 @@ fn timeout_with_foreground_or_no_timeout_gets_no_hint() {
         "timeout --foreground 60 sudo pacman -Syu",
         "timeout -k 3 --foreground 10 make",
         "timeout --fore 10 make",
+        "timeout -f 30 sudo make install",
+        "timeout -fk 5 30 sudo make install",
+        "timeout -v --foreground 30 make",
         "make timeout-test",
         "echo timeout",
         "cargo test -- timeout",
@@ -103,4 +110,13 @@ fn a_command_that_runs_nothing_changed_gets_no_warning() {
             "{command:?}"
         );
     }
+}
+
+#[test]
+fn a_file_inside_a_changed_directory_counts() {
+    let changed_files = changed(&["build/", "deploy.sh"]);
+    assert_eq!(
+        build_files_run("./build/run.sh && make", &changed_files),
+        changed(&["build/"])
+    );
 }

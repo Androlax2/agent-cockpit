@@ -62,7 +62,8 @@ pub fn fold(text: &str) -> Option<Folded> {
         .nth(FOLD_CHARS)
         .map_or(text.len(), |(index, _)| index);
     let end = lines_end.min(chars_end);
-    if end == text.len() {
+    // A newline ending the text adds no line to show.
+    if text[end..].is_empty() || &text[end..] == "\n" {
         return None;
     }
     let (preview, rest) = text.split_at(end);
@@ -88,7 +89,7 @@ pub fn show(text: &str) -> Shown {
         })
         .collect();
     let shown = collapse_blank_runs(&escaped);
-    if shown.len() != escaped.len() {
+    if shown != escaped {
         warnings.push(Hidden::BlankLines);
     }
     warnings.sort();

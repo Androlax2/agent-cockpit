@@ -28,7 +28,7 @@ marker is refused as `Replaced` instead of being acted on.
 - **Host Git.** Every call runs with `SAFE_CONFIG` (hooks off, program-running and
   signature settings reset), every filter, diff and merge driver the configuration names reset, no `GIT_*`
   variable from the daemon's environment and no terminal prompt. `Git::changed_files` reads
-  what work in a checkout changed and no remote has, for the approvals' build-file warning
+  what work in a checkout changed outside the default branch, for the approvals' build-file warning
   (#156).
 - **Push.** Only the current branch, only to an `origin` with one URL that pushes to one URL,
   both on GitHub after every rewrite, with no local or worktree redirect or `http.*` setting, only as `refs/heads/B:refs/heads/B` without force, so a rewrite is

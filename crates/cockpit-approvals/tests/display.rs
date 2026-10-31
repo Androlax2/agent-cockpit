@@ -136,3 +136,18 @@ fn a_command_on_one_very_long_line_is_folded_with_the_characters_left_out_counte
     assert_eq!(folded.more_lines, 0);
     assert_eq!(folded.more_chars, 50);
 }
+
+#[test]
+fn collapsed_blank_lines_are_named_even_when_the_length_is_unchanged() {
+    let shown = show("       \n       ");
+    assert_eq!(shown.text, "[2 blank lines]");
+    assert_eq!(shown.warnings, [cockpit_approvals::Hidden::BlankLines]);
+}
+
+#[test]
+fn a_trailing_newline_after_the_last_shown_line_is_not_folded() {
+    let command: String = (1..=cockpit_approvals::FOLD_LINES)
+        .map(|line| format!("echo {line}\n"))
+        .collect();
+    assert_eq!(cockpit_approvals::fold(&command), None);
+}

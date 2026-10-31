@@ -555,8 +555,9 @@ async fn the_owner_is_warned_of_the_changed_build_files_a_command_runs() {
     .await;
 
     assert!(
-        shown
-            .contains("! runs files changed in this checkout and on no remote: Makefile, build.rs"),
+        shown.contains(
+            "! runs files changed in this checkout, not on the default branch: Makefile, build.rs"
+        ),
         "{shown}"
     );
 }
@@ -644,4 +645,75 @@ async fn ask_run_no_wait_files_the_request_and_returns_at_once_with_how_to_wait(
         "no status poll after the ask: {received:?}"
     );
     assert!(matches!(received[0], Command::AskRun { .. }));
+}
+
+async fn queue_line(shown_command: ShownText, folded_command: Option<FoldedView>) -> String {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.owner_socket(),
+        vec![Outcome::Ok(Reply::ApprovalQueue {
+            runs: vec![RunRequestView {
+                shown_command,
+                folded_command,
+                ..request(RunStateView::Asking)
+            }],
+            guides: Vec::new(),
+        })],
+    );
+    text(&home.cockpit(&["approval", "list"], "").await.stdout)
+}
+
+#[tokio::test]
+async fn the_queue_counts_every_line_its_one_line_leaves_out() {
+    let command: Vec<String> = (1..=10).map(|line| format!("echo {line}")).collect();
+    let line = queue_line(
+        shown(&command.join("\n")),
+        Some(FoldedView {
+            preview: command[..8].join("\n"),
+            more_lines: 2,
+            more_chars: 14,
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        line,
+        "run\t7\tasking\ts1\techo 1 [more: 9 lines; cockpit approval show 7]\n"
+    );
+}
+
+#[tokio::test]
+async fn the_queue_folds_one_long_line_by_characters() {
+    let line = queue_line(
+        shown(&"x".repeat(700)),
+        Some(FoldedView {
+            preview: "x".repeat(600),
+            more_lines: 0,
+            more_chars: 100,
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        line,
+        format!(
+            "run\t7\tasking\ts1\t{} [more: 100 characters; cockpit approval show 7]\n",
+            "x".repeat(600)
+        )
+    );
+}
+
+#[tokio::test]
+async fn no_wait_given_twice_is_a_usage_error() {
+    let home = Home::new();
+
+    let output = home
+        .cockpit(
+            &["ask", "run", "--no-wait", "--no-wait", "--reason", "r"],
+            "",
+        )
+        .await;
+
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+    assert!(text(&output.stderr).contains("--no-wait given twice"));
 }

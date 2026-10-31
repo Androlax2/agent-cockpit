@@ -7,44 +7,67 @@ use std::path::Path;
 
 /// Whether the command runs `timeout` without `--foreground`. Without it `timeout` puts the
 /// command in a background process group: a prompt (`sudo`, `read`) stops it instead of
-/// reading the terminal, and the run hangs until the timeout.
+/// reading the terminal, and the run hangs until the timeout. `timeout` counts as run
+/// wherever its options and a duration follow it (`env X=1 timeout 5 …`, `then timeout …`).
 pub fn timeout_without_foreground(command: &str) -> bool {
     let words = words(command);
     words.iter().enumerate().any(|(index, word)| {
-        program_name(word) == "timeout"
-            && is_command_position(&words, index)
-            && !options(&words[index + 1..]).any(is_foreground_option)
+        if program_name(word) != "timeout" {
+            return false;
+        }
+        let after = &words[index + 1..];
+        let options: Vec<&str> = options(after).collect();
+        let Some(duration) = after.get(option_words(after)) else {
+            return false;
+        };
+        is_duration(duration) && !options.iter().any(|option| is_foreground_option(option))
     })
 }
 
-/// The options before `timeout`'s duration, skipping the values `-s`/`--signal` and
-/// `-k`/`--kill-after` take as the next word.
+/// `--foreground` or an unambiguous abbreviation of it (`--f`), or `-f` alone or in a
+/// cluster of short options (`-fk`).
+fn is_foreground_option(option: &str) -> bool {
+    match option.strip_prefix("--") {
+        Some(long) => !long.is_empty() && "foreground".starts_with(long),
+        None => option[1..].contains('f'),
+    }
+}
+
+/// Whether `option` takes the next word as its value: `-s`/`--signal`, `-k`/`--kill-after`,
+/// or a short cluster ending in one of them (`-fk 5`).
+fn takes_value(option: &str) -> bool {
+    matches!(option, "--signal" | "--kill-after")
+        || (!option.starts_with("--") && (option.ends_with('s') || option.ends_with('k')))
+}
+
+/// The options before `timeout`'s duration, their values skipped.
 fn options<'a>(after: &'a [&'a str]) -> impl Iterator<Item = &'a str> {
-    let mut takes_value = false;
-    after
+    after[..option_words(after)]
         .iter()
         .copied()
-        .take_while(move |word| {
-            let is_value = std::mem::take(&mut takes_value);
-            takes_value = matches!(*word, "-s" | "-k" | "--signal" | "--kill-after");
-            is_value || word.starts_with('-')
-        })
         .filter(|word| word.starts_with('-'))
 }
 
-/// `--foreground`, or an unambiguous abbreviation of it (`--f` is one for GNU `timeout`).
-fn is_foreground_option(option: &str) -> bool {
-    option.len() >= 3 && "--foreground".starts_with(option)
+/// How many words the options before the duration take, values included.
+fn option_words(after: &[&str]) -> usize {
+    let mut index = 0;
+    while let Some(word) = after.get(index) {
+        if !word.starts_with('-') || word.len() < 2 {
+            break;
+        }
+        index += if takes_value(word) { 2 } else { 1 };
+    }
+    index.min(after.len())
 }
 
-/// `timeout` as a program, not as an argument (`echo timeout`, `make timeout-test`): first
-/// word, or right after an operator or a word that runs the next one.
-fn is_command_position(words: &[&str], index: usize) -> bool {
-    index == 0
-        || matches!(
-            words[index - 1],
-            "sudo" | "exec" | "nice" | "env" | "time" | ";"
-        )
+/// `5`, `1.5`, `30s`, `2m`, `1h`, `1d`: `timeout`'s duration.
+fn is_duration(word: &str) -> bool {
+    let number = word.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(word);
+    !number.is_empty()
+        && number.chars().any(|character| character.is_ascii_digit())
+        && number
+            .chars()
+            .all(|character| character.is_ascii_digit() || character == '.')
 }
 
 /// Which of `changed_files` (paths from the checkout's root) `command` runs: build files of
@@ -93,9 +116,13 @@ fn tool_runs(program: &str, changed: &str) -> bool {
 }
 
 /// Whether `word` names `changed`: the same path, or one ending in the other at a `/` (the
-/// command may run from a subdirectory, or name the file absolutely).
+/// command may run from a subdirectory, or name the file absolutely). A changed directory
+/// (`build/`) is named by any path inside it.
 fn names_file(word: &str, changed: &str) -> bool {
     let word = word.trim_start_matches("./");
+    if let Some(directory) = changed.strip_suffix('/') {
+        return word.starts_with(changed) || word.contains(&format!("/{directory}/"));
+    }
     !word.is_empty()
         && (word == changed
             || changed.ends_with(&format!("/{word}"))

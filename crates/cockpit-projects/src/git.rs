@@ -103,10 +103,12 @@ impl Git {
         Ok(settings)
     }
 
-    /// Files work in the checkout at `dir` changed that no remote has: uncommitted (staged,
-    /// unstaged, untracked) and touched by commits on no remote branch. Paths from the
-    /// repository root, sorted, each once (#156: an approval names the changed build files a
-    /// command would run). Without any remote, every commit counts as changed.
+    /// Files the work in the checkout at `dir` may have changed outside review: uncommitted
+    /// (staged, unstaged, untracked), ignored (a directory as `dir/`), hidden from `status`
+    /// by skip-worktree or assume-unchanged, and touched by commits the remote's default
+    /// branch (`origin/HEAD`) lacks; a pushed feature branch still counts. Without
+    /// `origin/HEAD`, every commit counts. Paths from the repository root, sorted, each once
+    /// (#156: an approval names the changed build files a command would run).
     pub fn changed_files(&self, dir: &Path) -> Result<Vec<String>, Error> {
         let status = self.run(
             dir,
@@ -115,6 +117,7 @@ impl Git {
                 arg("--porcelain=v1"),
                 arg("-z"),
                 arg("--untracked-files=all"),
+                arg("--ignored=matching"),
                 arg("--no-renames"),
             ],
         )?;
@@ -125,32 +128,25 @@ impl Git {
             .filter(|path| !path.is_empty())
             .map(str::to_owned)
             .collect();
-        let has_commit = self
-            .output(
-                dir,
-                &[
-                    arg("rev-parse"),
-                    arg("--verify"),
-                    arg("--quiet"),
-                    arg("HEAD"),
-                ],
-            )?
-            .status
-            .success();
-        if has_commit {
-            let committed = self.run(
-                dir,
-                &[
-                    arg("log"),
-                    arg("--format="),
-                    arg("--name-only"),
-                    arg("--no-renames"),
-                    arg("-z"),
-                    arg("HEAD"),
-                    arg("--not"),
-                    arg("--remotes"),
-                ],
-            )?;
+        let tagged = self.run(dir, &[arg("ls-files"), arg("-v"), arg("-z")])?;
+        // `S` marks skip-worktree, a lower-case tag assume-unchanged: `status` hides both.
+        changed.extend(tagged.split('\0').filter_map(|entry| {
+            let (tag, path) = entry.split_once(' ')?;
+            (tag == "S" || tag.chars().all(|tag| tag.is_ascii_lowercase())).then(|| path.to_owned())
+        }));
+        if self.verifies(dir, "HEAD")? {
+            let mut log = vec![
+                arg("log"),
+                arg("--format="),
+                arg("--name-only"),
+                arg("--no-renames"),
+                arg("-z"),
+                arg("HEAD"),
+            ];
+            if self.verifies(dir, "refs/remotes/origin/HEAD")? {
+                log.extend([arg("--not"), arg("refs/remotes/origin/HEAD")]);
+            }
+            let committed = self.run(dir, &log)?;
             changed.extend(
                 committed
                     .split('\0')
@@ -161,6 +157,20 @@ impl Git {
         changed.sort();
         changed.dedup();
         Ok(changed)
+    }
+
+    /// Whether `revision` names a commit in the repository at `dir`.
+    fn verifies(&self, dir: &Path, revision: &str) -> Result<bool, Error> {
+        let output = self.output(
+            dir,
+            &[
+                arg("rev-parse"),
+                arg("--verify"),
+                arg("--quiet"),
+                arg(revision),
+            ],
+        )?;
+        Ok(output.status.success())
     }
 
     /// An empty value for every program-running driver the configuration seen from `dir`

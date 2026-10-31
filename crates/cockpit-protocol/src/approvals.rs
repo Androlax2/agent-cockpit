@@ -89,7 +89,7 @@ pub struct RunRequestView {
     /// The command runs `timeout` without `--foreground`: a prompt in it would stop it.
     #[serde(default)]
     pub timeout_without_foreground: bool,
-    /// Build files and scripts changed in the project's checkout and no remote has that the
+    /// Build files and scripts changed in the project's checkout outside its default branch that the
     /// command runs (Makefiles for `make`, `build.rs` for `cargo`, files it names). Read for
     /// the owner's views of an asking request; `None` when it was not or could not be read.
     #[serde(default)]

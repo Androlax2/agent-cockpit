@@ -13,15 +13,18 @@ the rest by the worker, for the reasons below.
   with an owner unblock. It holds for every client, the phone and the CLI included. Times are
   whole seconds, so the grace lasts between one and two seconds; `approve_run` takes the clock
   as an argument, which the crate tests set. Declining has no grace: it is the safe answer.
-- **"Changed by the session" is "changed in the checkout and on no remote"**
-  (`Git::changed_files`: uncommitted, untracked included, plus files of commits on no remote
-  branch). The daemon cannot tell which session wrote a file; a checkout belongs to one
-  session at a time, and a file pushed already was reviewable elsewhere. A repository with no
-  remote counts every commit, so its warnings are many rather than missing.
+- **"Changed by the session" is "changed in the checkout outside the default branch"**
+  (`Git::changed_files`): uncommitted and untracked files, ignored ones (a directory as
+  `dir/`), files hidden from `status` by skip-worktree or assume-unchanged, and files of
+  commits `origin/HEAD` lacks. The daemon cannot tell which session wrote a file, and a
+  checkout belongs to one session at a time. A pushed feature branch still counts: sessions
+  push their own branches, and nobody has reviewed them yet. Without `origin/HEAD` every
+  commit counts, so the warnings are many rather than missing.
 - **Changed build files are read when the owner looks** (`approval show`, the queue, an
   edit), not when the agent asks, so a file changed after the ask still shows. Only asking
-  requests in a known project are read; otherwise the field is `None` and the CLI says it
-  could not tell.
+  requests in a known project are read, each checkout once per view and without holding the
+  database; otherwise the field is `None` and the CLI says it could not tell. A failed read
+  is logged at debug level: views poll, and each already shows the failure.
 - **Which files a command runs is read from its words, generously** (`build_files_run`): a
   tool's build files (`make`, `cargo`, package managers, `gh`/`act`, `git` and hook
   managers) and any changed file the command names. A warning too many is read and
