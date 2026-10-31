@@ -17,9 +17,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, Routes};
-use cockpit_protocol::{
-    Command, ErrorCode, LaunchKindView, ProtocolError, Reply, SessionStateView, SessionView,
-};
+use cockpit_protocol::{Command, ErrorCode, LaunchKindView, Reply, SessionStateView, SessionView};
 use cockpit_provider_api::ProviderName;
 use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
 use common::GENEROUS;
@@ -219,13 +217,6 @@ async fn session_reply(client: &Connection, command: Command) -> SessionView {
     }
 }
 
-fn refusal(result: Result<Reply, ClientError>) -> ProtocolError {
-    match result {
-        Err(ClientError::Daemon(error)) => error,
-        other => panic!("expected a refusal, got {other:?}"),
-    }
-}
-
 async fn new_session(client: &Connection, dir: &Path) -> SessionView {
     session_reply(
         client,
@@ -273,18 +264,10 @@ async fn resume_is_refused_while_another_session_runs_its_conversation_and_names
     let home = Home::new();
     let daemon = home.start().await;
     let client = connect(&daemon).await;
-    let root = home.project(&client).await;
-    let first = new_session(&client, &root).await;
-    let second = new_session(&client, &root).await;
+    let (first, second) = sharing_one_conversation(&home, &client, "").await;
     end(&client, &first.id).await;
-    // A provider that named the first conversation again for the second session.
-    home.store(
-        "UPDATE sessions SET conversation = 'conversation-1' WHERE id = ?1",
-        &second.id,
-    )
-    .await;
 
-    let refused = refusal(
+    let refused = common::refused(
         request(
             &client,
             Command::SessionResume {
@@ -308,19 +291,12 @@ async fn resume_is_refused_while_a_failed_session_s_agent_of_its_conversation_is
     let home = Home::new();
     let daemon = home.start().await;
     let client = connect(&daemon).await;
-    let root = home.project(&client).await;
-    let first = new_session(&client, &root).await;
-    let second = new_session(&client, &root).await;
-    end(&client, &first.id).await;
     // A launch that failed after its agent started, as its record says, on the first
     // session's conversation: its state says nothing runs, its execution says otherwise.
-    home.store(
-        "UPDATE sessions SET conversation = 'conversation-1', state = 'failed' WHERE id = ?1",
-        &second.id,
-    )
-    .await;
+    let (first, second) = sharing_one_conversation(&home, &client, ", state = 'failed'").await;
+    end(&client, &first.id).await;
 
-    let refused = refusal(
+    let refused = common::refused(
         request(
             &client,
             Command::SessionResume {
@@ -344,15 +320,8 @@ async fn resume_reopens_the_conversation_once_the_other_session_holding_it_ended
     let home = Home::new();
     let daemon = home.start().await;
     let client = connect(&daemon).await;
-    let root = home.project(&client).await;
-    let first = new_session(&client, &root).await;
-    let second = new_session(&client, &root).await;
+    let (first, second) = sharing_one_conversation(&home, &client, "").await;
     end(&client, &first.id).await;
-    home.store(
-        "UPDATE sessions SET conversation = 'conversation-1' WHERE id = ?1",
-        &second.id,
-    )
-    .await;
     end(&client, &second.id).await;
 
     let resumed = session_reply(
@@ -552,9 +521,7 @@ async fn wake_is_refused_while_another_session_runs_its_conversation() {
     let home = Home::new();
     let daemon = home.start().await;
     let client = connect(&daemon).await;
-    let root = home.project(&client).await;
-    let first = new_session(&client, &root).await;
-    let second = new_session(&client, &root).await;
+    let (first, second) = sharing_one_conversation(&home, &client, "").await;
     session_reply(
         &client,
         Command::SessionSleep {
@@ -562,13 +529,8 @@ async fn wake_is_refused_while_another_session_runs_its_conversation() {
         },
     )
     .await;
-    home.store(
-        "UPDATE sessions SET conversation = 'conversation-1' WHERE id = ?1",
-        &second.id,
-    )
-    .await;
 
-    let refused = refusal(
+    let refused = common::refused(
         request(
             &client,
             Command::SessionWake {
@@ -584,4 +546,22 @@ async fn wake_is_refused_while_another_session_runs_its_conversation() {
         listed(&client, &first.id).await.state,
         SessionStateView::Asleep
     );
+}
+
+/// Two sessions of one project whose provider named the first one's conversation again for
+/// the second; `more` adds to the second's stored row (`, state = 'failed'`).
+async fn sharing_one_conversation(
+    home: &Home,
+    client: &Connection,
+    more: &str,
+) -> (SessionView, SessionView) {
+    let root = home.project(client).await;
+    let first = new_session(client, &root).await;
+    let second = new_session(client, &root).await;
+    home.store(
+        &format!("UPDATE sessions SET conversation = 'conversation-1'{more} WHERE id = ?1"),
+        &second.id,
+    )
+    .await;
+    (first, second)
 }

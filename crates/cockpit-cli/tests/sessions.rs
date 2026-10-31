@@ -294,3 +294,82 @@ async fn malformed_session_arguments_exit_2_before_any_connection() {
         );
     }
 }
+
+// #157 (decided in #201): which sessions are finished is the daemon's rule, proven in
+// `cockpit-daemon/tests/session_robustness.rs`; these prove the column and the verb.
+
+#[tokio::test]
+async fn session_list_marks_a_finished_session_in_its_work_column() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Sessions {
+            sessions: vec![
+                SessionView {
+                    finished: true,
+                    ..view("s000000000001", SessionStateView::Running)
+                },
+                view("s000000000002", SessionStateView::Running),
+            ],
+        }),
+    );
+
+    let output = home.cockpit(home.dir.path(), &["session", "list"]).await;
+
+    assert_eq!(
+        text(&output.stdout),
+        "s000000000001\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\tfinished\n\
+         s000000000002\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
+    );
+}
+
+#[tokio::test]
+async fn end_finished_sends_one_request_and_prints_each_ended_session() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::EndedFinished {
+            ended: vec![view("s000000000001", SessionStateView::Ended)],
+            failed: Vec::new(),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "end", "--finished"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "s000000000001\tended\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionEndFinished { only: None }
+    );
+}
+
+#[tokio::test]
+async fn end_finished_exits_1_naming_each_session_it_could_not_end() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::EndedFinished {
+            ended: Vec::new(),
+            failed: vec![SessionFailure {
+                session: "s000000000002".to_owned(),
+                error: ProtocolError::new(ErrorCode::Conflict, "its agent did not stop"),
+            }],
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "end", "--finished"])
+        .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "cockpit: s000000000002 not ended: conflict: its agent did not stop\n"
+    );
+}

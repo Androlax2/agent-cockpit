@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    Command, ErrorCode, LaunchKindView, LaunchView, Outcome, ProtocolError, Reply, SessionFailure,
+    Command, ErrorCode, LaunchKindView, LaunchView, ProtocolError, Reply, SessionFailure,
     SessionStateView, SessionView, StopTargetView,
 };
 use cockpit_sessions::{
@@ -17,6 +17,7 @@ use cockpit_sessions::{
 use cockpit_authorization::SessionId as TaskSession;
 use cockpit_tasks::SessionWork;
 
+use crate::approvals::{Answer, Failed, job};
 use crate::routes::{Route, WorkClass, refusal};
 
 /// The route for one of the session commands; `routes.rs` sends only those here. Listing
@@ -32,8 +33,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             let work = task_work(&sessions).await?;
             let mut views = Vec::new();
             for session in sessions.list(ended).await? {
-                let finished = is_finished(&session, work_in(&work, &session));
-                views.push(current_view(&sessions, &session, finished).await?);
+                views.push(current_view(&sessions, &session, &work).await?);
             }
             Ok(Reply::Sessions { sessions: views })
         }),
@@ -61,18 +61,12 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             let restarted = outcome
                 .restarted
                 .iter()
-                .map(|session| {
-                    let finished = is_finished(session, work_in(&work, session));
-                    session_view(session, Vec::new(), finished)
-                })
+                .map(|session| session_view(session, Vec::new(), &work))
                 .collect();
             let deferred = outcome
                 .deferred
                 .into_iter()
-                .map(|(session, changed)| {
-                    let finished = is_finished(&session, work_in(&work, &session));
-                    session_view(&session, changed, finished)
-                })
+                .map(|(session, changed)| session_view(&session, changed, &work))
                 .collect();
             let failed = outcome
                 .failed
@@ -139,43 +133,9 @@ where
     })
 }
 
-fn job(work: impl Future<Output = Result<Reply, Failed>> + Send + 'static) -> crate::Job {
-    Box::pin(async move {
-        match work.await {
-            Ok(reply) => Outcome::Ok(reply),
-            Err(failed) => Outcome::Error(failed.into()),
-        }
-    })
-}
-
-/// Why a session job failed: the session operation, or the task list read for the
-/// finished label.
-pub(crate) enum Failed {
-    Sessions(Error),
-    Tasks(cockpit_tasks::Error),
-}
-
 impl From<Error> for Failed {
     fn from(error: Error) -> Failed {
-        Failed::Sessions(error)
-    }
-}
-
-impl From<cockpit_tasks::Error> for Failed {
-    fn from(error: cockpit_tasks::Error) -> Failed {
-        Failed::Tasks(error)
-    }
-}
-
-impl From<Failed> for ProtocolError {
-    fn from(failed: Failed) -> ProtocolError {
-        match failed {
-            Failed::Sessions(error) => protocol_error(&error),
-            Failed::Tasks(error) => {
-                tracing::error!(%error, "reading the task list for a session view failed");
-                ProtocolError::new(ErrorCode::Internal, format!("the task list: {error}"))
-            }
-        }
+        Failed(protocol_error(&error))
     }
 }
 
@@ -183,7 +143,8 @@ impl From<Failed> for ProtocolError {
 /// given), one at a time; one that cannot end is listed with why and does not stop the
 /// others. Each is checked again just before it ends, so one that took an item while another
 /// was ending is kept.
-async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Result<Reply, Failed> {
+async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Answer {
+    let work = task_work(&sessions).await?;
     let candidates: Vec<Session> = sessions
         .list(false)
         .await?
@@ -191,17 +152,18 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Res
         .filter(|session| {
             only.as_ref()
                 .is_none_or(|only| only.iter().any(|id| id == session.id.as_str()))
+                && is_finished(session, &work)
         })
         .collect();
     let mut ended = Vec::new();
     let mut failed = Vec::new();
     for session in candidates {
         let current = sessions.get(&session.id).await?;
-        if !is_finished(&current, work_of(&sessions, &current).await?) {
+        if !is_finished(&current, &task_work(&sessions).await?) {
             continue;
         }
         match sessions.end(&session.id).await {
-            Ok(over) => ended.push(session_view(&over, Vec::new(), false)),
+            Ok(over) => ended.push(session_view(&over, Vec::new(), &Work::new())),
             Err(error) => failed.push(SessionFailure {
                 session: session.id.to_string(),
                 error: protocol_error(&error),
@@ -212,42 +174,27 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Res
 }
 
 /// Each session's items, as the task list records them.
-async fn task_work(sessions: &Sessions) -> Result<HashMap<TaskSession, SessionWork>, Failed> {
-    let read = sessions.database().read().await.map_err(Error::from)?;
+type Work = HashMap<TaskSession, SessionWork>;
+
+async fn task_work(sessions: &Sessions) -> Result<Work, Failed> {
+    let read = sessions.database().read().await?;
     Ok(cockpit_tasks::session_work(&read).await?)
-}
-
-/// One session's items, as the task list records them.
-async fn work_of(sessions: &Sessions, session: &Session) -> Result<SessionWork, Failed> {
-    let Some(id) = task_session(session) else {
-        return Ok(SessionWork::default());
-    };
-    let read = sessions.database().read().await.map_err(Error::from)?;
-    Ok(cockpit_tasks::session_work_of(&read, &id).await?)
-}
-
-fn work_in(work: &HashMap<TaskSession, SessionWork>, session: &Session) -> SessionWork {
-    task_session(session)
-        .and_then(|id| work.get(&id).copied())
-        .unwrap_or_default()
-}
-
-/// The session's id as the task list records it; every session id is a valid one.
-fn task_session(session: &Session) -> Option<TaskSession> {
-    TaskSession::new(session.id.as_str()).ok()
 }
 
 /// The finished label (#157, decided in #201): the task list, never the agent's own state,
 /// says the session's work is done. It is doing no item and finished at least one. A session
 /// mid-launch, mid-stop or failed is not labelled: the failed one needs the owner.
-fn is_finished(session: &Session, work: SessionWork) -> bool {
+fn is_finished(session: &Session, work: &Work) -> bool {
     if matches!(
         session.state,
         SessionState::Launching | SessionState::Stopping { .. } | SessionState::Failed
     ) {
         return false;
     }
-    work.doing == 0 && work.finished > 0
+    let id = TaskSession::new(session.id.as_str())
+        .expect("a session id is never empty, so it is a valid task-list session id");
+    work.get(&id)
+        .is_some_and(|work| work.doing == 0 && work.finished > 0)
 }
 
 pub(crate) fn protocol_error(error: &Error) -> ProtocolError {
@@ -328,10 +275,10 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
     }
 }
 
-pub(crate) async fn session_reply(sessions: &Sessions, session: &Session) -> Result<Reply, Failed> {
-    let finished = is_finished(session, work_of(sessions, session).await?);
+pub(crate) async fn session_reply(sessions: &Sessions, session: &Session) -> Answer {
+    let work = task_work(sessions).await?;
     Ok(Reply::Session {
-        session: Box::new(current_view(sessions, session, finished).await?),
+        session: Box::new(current_view(sessions, session, &work).await?),
     })
 }
 
@@ -339,17 +286,13 @@ pub(crate) async fn session_reply(sessions: &Sessions, session: &Session) -> Res
 async fn current_view(
     sessions: &Sessions,
     session: &Session,
-    finished: bool,
+    work: &Work,
 ) -> Result<SessionView, Error> {
     let changed = sessions.changed_start_files(session).await?;
-    Ok(session_view(session, changed, finished))
+    Ok(session_view(session, changed, work))
 }
 
-fn session_view(
-    session: &Session,
-    changed_start_files: Vec<String>,
-    finished: bool,
-) -> SessionView {
+fn session_view(session: &Session, changed_start_files: Vec<String>, work: &Work) -> SessionView {
     SessionView {
         id: session.id.to_string(),
         agent: session.provider.to_string(),
@@ -389,6 +332,6 @@ fn session_view(
         }),
         changed_start_files,
         restart_pending: session.restart_pending,
-        finished,
+        finished: is_finished(session, work),
     }
 }

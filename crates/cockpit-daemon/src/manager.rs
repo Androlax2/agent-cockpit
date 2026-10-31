@@ -220,7 +220,7 @@ async fn show(
     .await?;
     crate::sessions::session_reply(sessions, &shown)
         .await
-        .map_err(ProtocolError::from)
+        .map_err(|crate::approvals::Failed(error)| error)
 }
 
 /// The manager's viewer pane, or why it cannot show a session: only reopening the manager

@@ -23,7 +23,7 @@ stopped in the middle of one finishes or repairs it at its next start.
 - **Restart, sleep, wake and resume** relaunch the same conversation, so each needs a
   provider with the `resume` capability that named the conversation; otherwise they are
   refused before anything stops.
-- **Resume refuses a conversation alive elsewhere** (#157): while another session's agent
+- **Resume and wake refuse a conversation alive elsewhere** (#157): while another session's agent
   of the same conversation is observed alive by `cockpit-processes`, or another session
   holding it is launching, running or stopping, with the session named in the reason.
 - **Restart from an unknown status** (#157): a session an error or a crash left
