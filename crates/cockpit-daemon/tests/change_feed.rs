@@ -62,7 +62,6 @@ impl Home {
                                 Arc::new(Routes::new(
                                     capabilities,
                                     cockpit_config::Environment::default(),
-                                    cockpit_daemon::runner(Vec::new()).unwrap(),
                                 ))
                             },
                         )
