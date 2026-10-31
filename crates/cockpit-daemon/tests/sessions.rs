@@ -995,6 +995,46 @@ async fn a_stop_interrupted_by_a_daemon_crash_is_finished_on_start() {
     assert!(!is_alive(home.launches()[0].pid));
 }
 
+/// #205: the stop of an interrupted restart is finished, and a relaunch that then fails is
+/// a failed reopen, as for any restore: `failed`, not retried on the next start.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_restart_whose_relaunch_fails_on_start_is_left_failed() {
+    let home = Home::new();
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    drop(client);
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE sessions SET state = 'stopping', stopping_to = 'restart' WHERE id = ?1",
+            [started.id.as_str()],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(database);
+    home.stop(daemon);
+
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    let failed = sessions(&client, false).await;
+    assert_eq!(failed[0].state, SessionStateView::Failed, "{failed:?}");
+    assert!(!is_alive(home.launches()[0].pid), "the old agent was stopped");
+    drop(client);
+    home.stop(daemon);
+
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    assert_eq!(
+        sessions(&client, false).await[0].state,
+        SessionStateView::Failed
+    );
+    assert_eq!(home.launches().len(), 1, "never launched again");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_design_link_is_kept_on_the_session_and_anything_but_a_url_is_refused() {
     let home = Home::new();

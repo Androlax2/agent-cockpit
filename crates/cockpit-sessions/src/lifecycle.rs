@@ -436,6 +436,10 @@ impl Sessions {
             let outcome = match session.state {
                 SessionState::Stopping { to } => match self.finish_stop(&id, to).await {
                     Ok(stopped) => Restored::StopFinished(id, stopped.state),
+                    // A restart's stop finished but its launch failed: a failed reopen.
+                    Err(error) if self.get(&id).await?.state == SessionState::Failed => {
+                        Restored::Failed(id, format!("restore failed: {error}"))
+                    }
                     Err(error) => Restored::StopNotFinished(id, error.to_string()),
                 },
                 _ => match self.restore_one(&session).await {
