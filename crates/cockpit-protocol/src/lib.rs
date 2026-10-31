@@ -39,7 +39,8 @@ pub use resources::{
     ReservationView, ResourceStatusView, VerdictView,
 };
 pub use sessions::{
-    LaunchKindView, LaunchView, SessionFailure, SessionStateView, SessionView, StopTargetView,
+    LaunchKindView, LaunchView, ProviderView, SessionFailure, SessionStateView, SessionView,
+    StopTargetView,
 };
 pub use tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,

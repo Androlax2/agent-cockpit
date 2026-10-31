@@ -57,6 +57,11 @@ the wire. Report 14 treats this contract as stable from the first release.
    `task-unwait`, `task-image-add`, `task-image`, `task-draft-save`, `task-drafts` and
    `task-draft-discard` the owner's. A `TaskView` carries `next`, what has to happen for the
    item to move. Image bytes travel as lower-case hexadecimal text (`HexBytes`).
+8. Frontends (#35): `provider-list` answers `providers` (each name `session-new` takes, and
+   whether it resumes); `manager-open` opens or finds the manager tmux session (`column` and
+   `viewer` words, from `dir`) and answers `manager` with the words that attach a terminal;
+   `session-show` shows a session in the manager's viewer, waking it when asleep, and
+   answers its `session` view. Owner socket only.
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are

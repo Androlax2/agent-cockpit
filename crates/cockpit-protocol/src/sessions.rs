@@ -115,3 +115,12 @@ pub struct SessionFailure {
     pub session: String,
     pub error: ProtocolError,
 }
+
+/// A provider a session may be started with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderView {
+    /// As `session-new` takes it in `agent`.
+    pub name: String,
+    /// It can reopen a conversation it started: restart, sleep and resume work.
+    pub resume: bool,
+}

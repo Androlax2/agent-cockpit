@@ -7,7 +7,7 @@ use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 use crate::resources::{ProfileView, ReservationView, ResourceStatusView, VerdictView};
-use crate::sessions::{SessionFailure, SessionView};
+use crate::sessions::{ProviderView, SessionFailure, SessionView};
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
 };
@@ -375,6 +375,20 @@ pub enum Command {
     ResourceStop {
         reservation: i64,
     },
+    /// Show the session in the manager's viewer pane, waking it first when it is asleep.
+    SessionShow {
+        session: String,
+    },
+    /// The providers `session-new` may name in `agent`: those the daemon was started with.
+    ProviderList,
+    /// Open the manager tmux session, or find the one already open. `column` (the TUI) runs
+    /// in its left pane and `viewer` in the pane beside it until a session is shown there,
+    /// both from `dir` (absolute). Words are never parsed by a shell.
+    ManagerOpen {
+        dir: String,
+        column: Vec<String>,
+        viewer: Vec<String>,
+    },
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -510,6 +524,15 @@ pub enum Reply {
     ResourceStopped {
         reservation: i64,
         observed_ended: bool,
+    },
+    Providers {
+        providers: Vec<ProviderView>,
+    },
+    /// The manager session: `attach` are the words that attach a terminal to it; `created`
+    /// says whether this request opened it.
+    Manager {
+        attach: Vec<String>,
+        created: bool,
     },
 }
 

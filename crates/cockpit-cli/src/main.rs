@@ -37,8 +37,9 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
        cockpit session list [--ended]
        cockpit session restart SESSION|--all
-       cockpit session sleep|wake|resume|end SESSION
+       cockpit session sleep|wake|resume|end|show SESSION
        cockpit session link SESSION URL
+       cockpit provider list
        cockpit version [--all]
        cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...
        cockpit todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]
@@ -98,6 +99,10 @@ fn main() -> ExitCode {
         },
         [Some("resources"), ..] => match resources::parse(&arguments[1..]) {
             Ok(command) => resources::run(command),
+            Err(problem) => usage_error(Some(problem)),
+        },
+        [Some("provider"), ..] => match sessions::parse_provider(&arguments[1..]) {
+            Ok(command) => sessions::run(command),
             Err(problem) => usage_error(Some(problem)),
         },
         _ => usage_error(None),

@@ -133,7 +133,7 @@ fn job(work: impl Future<Output = Result<Reply, Error>> + Send + 'static) -> cra
     })
 }
 
-fn protocol_error(error: &Error) -> ProtocolError {
+pub(crate) fn protocol_error(error: &Error) -> ProtocolError {
     let code = error_code(error);
     if code == ErrorCode::Internal {
         tracing::error!(%error, "a session command failed");
@@ -211,7 +211,7 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
     }
 }
 
-async fn session_reply(sessions: &Sessions, session: &Session) -> Result<Reply, Error> {
+pub(crate) async fn session_reply(sessions: &Sessions, session: &Session) -> Result<Reply, Error> {
     Ok(Reply::Session {
         session: Box::new(current_view(sessions, session).await?),
     })
