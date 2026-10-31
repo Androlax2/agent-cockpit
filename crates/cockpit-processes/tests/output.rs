@@ -26,11 +26,9 @@ async fn a_slow_viewer_reads_a_gap_marker_then_the_bytes_still_held() {
         )
         .await
         .unwrap();
-    let stream = supervisor.follow_output(
-        execution.identity().unwrap(),
-        execution.id,
-        OutputKind::Stdout,
-    );
+    let stream = supervisor
+        .follow_output(&database, &execution, OutputKind::Stdout)
+        .unwrap();
     let held_start = WRITTEN - WINDOW as u64;
     // The viewer reads nothing until everything was drained.
     assert_eq!(stream.read(WRITTEN, usize::MAX).await, OutputRead::Finished);
@@ -58,11 +56,9 @@ async fn a_viewer_reads_at_most_the_bytes_it_asked_for() {
         .launch(&database, &shell(&home, "printf abcdef"))
         .await
         .unwrap();
-    let stream = supervisor.follow_output(
-        execution.identity().unwrap(),
-        execution.id,
-        OutputKind::Stdout,
-    );
+    let stream = supervisor
+        .follow_output(&database, &execution, OutputKind::Stdout)
+        .unwrap();
 
     let mut read = Vec::new();
     let mut cursor = 0;

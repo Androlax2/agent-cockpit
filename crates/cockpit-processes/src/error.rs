@@ -18,6 +18,10 @@ pub enum Error {
         execution: ExecutionId,
         launcher_output: String,
     },
+    /// The execution has not confirmed its start, so it has no identity to follow yet.
+    NotIdentified {
+        execution: ExecutionId,
+    },
     /// No execution has this id.
     UnknownExecution {
         execution: ExecutionId,
@@ -71,6 +75,9 @@ impl fmt::Display for Error {
                 "the launcher of {execution} exited without starting it: {launcher_output:?}"
             ),
             Error::UnknownExecution { execution } => write!(formatter, "{execution} is unknown"),
+            Error::NotIdentified { execution } => {
+                write!(formatter, "{execution} has not confirmed its start yet")
+            }
             Error::InvalidStoredExecution { execution, reason } => {
                 write!(formatter, "the stored {execution} is invalid: {reason}")
             }

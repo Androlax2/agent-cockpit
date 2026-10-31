@@ -14,11 +14,13 @@ pub struct SystemdTools {
 }
 
 impl SystemdTools {
-    /// `systemd-run` and `systemctl` from `PATH`.
+    /// `systemd-run` and `systemctl` resolved in the daemon's `PATH` now: an execution's
+    /// environment is cleared, so a bare name would be looked up in the execution's `PATH`.
+    /// A program not found keeps its bare name, and using it fails loud.
     pub fn from_path() -> SystemdTools {
         SystemdTools {
-            systemd_run: PathBuf::from("systemd-run"),
-            systemctl: PathBuf::from("systemctl"),
+            systemd_run: resolve_in_path("systemd-run"),
+            systemctl: resolve_in_path("systemctl"),
         }
     }
 
@@ -50,7 +52,7 @@ impl SystemdTools {
             Signal::Kill => "--signal=SIGKILL",
         };
         match self
-            .systemctl(&["--user", "kill", "--kill-whom=all", name, unit])
+            .systemctl(&["--user", "kill", "--kill-who=all", name, unit])
             .await
         {
             Ok(_) => Ok(()),
@@ -75,4 +77,13 @@ impl SystemdTools {
     async fn systemctl(&self, arguments: &[&str]) -> Result<String, Error> {
         host_command(&self.systemctl.to_string_lossy(), arguments).await
     }
+}
+
+fn resolve_in_path(program: &str) -> PathBuf {
+    std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| PathBuf::from(program))
 }

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
 
 use crate::Error;
@@ -99,13 +99,7 @@ impl Window {
         }
         if cursor < self.end() {
             let skip = usize::try_from(cursor - self.start).expect("inside the window");
-            let bytes: Vec<u8> = self
-                .bytes
-                .iter()
-                .skip(skip)
-                .take(max_bytes)
-                .copied()
-                .collect();
+            let bytes: Vec<u8> = self.bytes.range(skip..).take(max_bytes).copied().collect();
             return Some(OutputRead::Bytes {
                 offset: cursor,
                 bytes,
@@ -130,7 +124,7 @@ pub struct OutputStream {
 
 impl OutputStream {
     /// Starts draining `path` from its beginning until `ended` resolves and the file has no
-    /// more bytes. `ended` resolves once the execution was observed empty: after that no
+    /// more bytes, or until every clone of the stream is dropped. `ended` resolves once the execution was observed empty: after that no
     /// process can append, so the last drain is complete.
     pub(crate) fn follow(
         path: PathBuf,
@@ -217,9 +211,10 @@ async fn drain_until_ended(
     let mut ended = std::pin::pin!(ended);
     let mut has_ended = false;
     loop {
-        file.seek(std::io::SeekFrom::Start(drained))
-            .await
-            .map_err(Error::io("seek", path))?;
+        // Nobody can read the window any more: stop instead of draining for no one.
+        if progress.is_closed() {
+            return Ok(());
+        }
         let read = file
             .read(&mut chunk)
             .await

@@ -36,7 +36,7 @@ never a dropped task or a timed-out launcher (report 03).
    positively identified, ended when observed gone (`exited`, `terminated`,
    `never-started`, `host-restarted`), and kept charged when neither (`Uncertain`).
 
-Output goes to `stdout` and `stderr` files in the execution's directory, not to pipes: a
+Output goes to `stdout` and `stderr` files in `<executions dir>/<database epoch>/<id>/`, not to pipes: a
 pipe whose reader is the daemon would kill the program with `SIGPIPE` after a daemon
 restart. `follow_output` drains a file in bounded chunks into a byte-bounded window; a
 viewer that falls behind reads a gap marker naming the bytes it missed. The files
