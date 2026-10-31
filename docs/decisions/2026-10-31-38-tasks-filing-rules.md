@@ -24,6 +24,8 @@ behaviour where one existed and fails loud where it did not.
 - **Filing in another project queues the item there and counts against the cap per
   (filing project, target project), over open non-blocker items.** Blocker reports go
   where the owner configured and are not capped.
+  A session outside every registered project, which the cap cannot count, files only
+  blocker reports.
 - **Decline memory is the declined row itself,** matched on the title with case and spacing
   ignored, and applies to every session filing in that project, not only proposals.
   **Rejected:** a separate memory table, which could drift from the items it describes.

@@ -443,3 +443,92 @@ async fn the_owners_decisions_are_refused_to_a_session() {
         assert!(matches!(refused, Refusal::OwnerOnly { .. }), "{refused:?}");
     }
 }
+
+#[tokio::test]
+async fn a_session_outside_every_project_cannot_hand_items_across() {
+    let fixture = Fixture::new().await;
+    let Actor::Session { session, .. } = fixture.session("s1", "app").await else {
+        unreachable!("a fixture session is a session");
+    };
+    let homeless = Actor::Session {
+        session,
+        project: None,
+    };
+
+    let refused = refusal(
+        fixture
+            .add(&homeless, new_item(Some("lib"), "Anything"))
+            .await,
+    );
+
+    assert_eq!(refused, Refusal::NoProject);
+}
+
+#[tokio::test]
+async fn a_session_cannot_wait_on_an_item_it_cannot_see() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.session("s1", "app").await;
+    let hidden = fixture.owner_adds("lib", "Private").await;
+    let mut probe = new_item(None, "Probe");
+    probe.after = vec![hidden.id];
+
+    let refused = refusal(fixture.add(&agent, probe).await);
+
+    assert_eq!(refused, Refusal::NotFound { item: hidden.id });
+}
+
+#[tokio::test]
+async fn a_deleted_items_id_is_never_given_to_another() {
+    let fixture = Fixture::new().await;
+    let deleted = fixture.owner_adds("app", "Newest").await;
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::delete(&write, &Actor::Owner, deleted.id)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let next = fixture.owner_adds("app", "Next").await;
+
+    assert_ne!(next.id, deleted.id);
+}
+
+#[tokio::test]
+async fn declining_a_proposal_open_items_wait_on_is_refused() {
+    let fixture = Fixture::new().await;
+    let agent = fixture.session("s1", "app").await;
+    let proposal = fixture.propose(&agent, None, "Idea").await.unwrap();
+    let mut waiting = new_item(Some("app"), "After the idea");
+    waiting.after = vec![proposal.id];
+    let waiting = fixture.add(&Actor::Owner, waiting).await.unwrap();
+    let write = fixture.database.write().await.unwrap();
+
+    let refused = refusal(cockpit_tasks::decline(&write, &Actor::Owner, proposal.id, NOW).await);
+
+    assert_eq!(
+        refused,
+        Refusal::WaitedOn {
+            item: proposal.id,
+            by: vec![waiting.id]
+        }
+    );
+}
+
+#[tokio::test]
+async fn the_owner_cannot_finish_an_item_that_still_waits() {
+    let fixture = Fixture::new().await;
+    let first = fixture.owner_adds("app", "Schema").await;
+    let mut second = new_item(Some("app"), "Backfill");
+    second.after = vec![first.id];
+    let second = fixture.add(&Actor::Owner, second).await.unwrap();
+    let write = fixture.database.write().await.unwrap();
+
+    let refused = refusal(cockpit_tasks::finish(&write, &Actor::Owner, second.id, None, NOW).await);
+
+    assert_eq!(
+        refused,
+        Refusal::Waiting {
+            item: second.id,
+            on: vec![first.id]
+        }
+    );
+}

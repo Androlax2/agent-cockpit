@@ -14,7 +14,7 @@ happen for it to move.
 | Status | Means | Leaves by |
 | --- | --- | --- |
 | `proposed` | a session suggested it | the owner's `approve` (`todo`) or `decline` |
-| `todo` | wanted | `start` (`doing`), refused while it waits on unfinished items |
+| `todo` | wanted | `start` (`doing`) or the owner's `finish`, both refused while it waits on unfinished items |
 | `doing` | a session (or the owner) works on it | `finish` (`done`, with a summary) or the owner's `reopen` |
 | `done` | finished; its summary is what the items waiting on it read | the owner's `reopen` |
 | `declined` | the owner said no | never: the title stays declined in its project |
@@ -26,10 +26,12 @@ Kinds: `task`, `feature`, `bug`, `improvement`, `chore`, `research`. Priority 1 
   declined in a project (case and spacing ignored) cannot be filed there by a session again.
 - **Waits.** `add --after` and the owner's `wait` make an item wait on others; a chain that
   comes back to the item is refused. An item waits while one of them is not done, and lists
-  their summaries once they are. Deleting an item open items wait on is refused.
+  their summaries once they are. Deleting or declining an item open items wait on is refused.
+  A session may wait only on items it can see.
 - **Across projects.** A session files in its own project's list. Filing in another one
   queues the item there (handed across) and counts against
-  `Settings::cross_project_open_max` open items per (filing project, target project).
+  `Settings::cross_project_open_max` open items per (filing project, target project). A
+  session outside every registered project files only blocker reports.
 - **Blocker reports.** What a session could not do because of the setup goes, with its
   reason, to `Settings::blocker_project`, queued; without one configured, it is refused.
 - **Revisions.** Title, notes, kind, waits and images are intent: each change increments
@@ -39,6 +41,8 @@ Kinds: `task`, `feature`, `bug`, `improvement`, `chore`, `research`. Priority 1 
   the bytes, 4 MiB, 20 per item); `[Image N]` in the notes names image N. A draft keeps
   unsaved form text for a project's new item or for an item, and says when the item's intent
   changed since the form was opened.
+
+Item ids are never reused: a deleted item's id names nothing afterwards.
 
 ## Who may do what
 

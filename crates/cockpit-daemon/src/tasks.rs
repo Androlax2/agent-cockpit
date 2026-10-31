@@ -16,6 +16,7 @@ use cockpit_tasks::{
     Actor, Draft, DraftTarget, Edit, ImageInfo, Item, ItemId, Kind, ListFilter, NewItem,
     NextAction, Priority, Refusal, Settings, Status,
 };
+use cockpit_turso::sql::Connection;
 use cockpit_turso::{Database, WriteTransaction};
 
 use crate::approvals::{Answer, Failed, Sender, job, now};
@@ -41,13 +42,22 @@ pub(crate) fn route(
             Some(connector) => Some(Sender::of(connector).await),
             None => None,
         };
-        let settings = match command {
-            Command::TaskAdd { .. }
-            | Command::TaskPropose { .. }
-            | Command::TaskReportBlocker { .. } => settings(environment).await?,
+        // The owner has no launch token to bind: reads need no write lock (#164).
+        if sender.is_none() && is_read(&command) {
+            let read = database.read().await.map_err(|error| internal(&error))?;
+            return read_reply(&read, &Actor::Owner, command).await;
+        }
+        // Only a session's filings are bounded by the owner's settings.
+        let settings = match (&sender, &command) {
+            (
+                Some(_),
+                Command::TaskAdd { .. }
+                | Command::TaskPropose { .. }
+                | Command::TaskReportBlocker { .. },
+            ) => settings(environment).await?,
             _ => Settings::default(),
         };
-        let write = database.write().await?;
+        let write = database.write().await.map_err(|error| internal(&error))?;
         let actor = match &sender {
             None => Actor::Owner,
             Some(sender) => {
@@ -56,8 +66,12 @@ pub(crate) fn route(
                 Actor::Session { session, project }
             }
         };
-        let reply = dispatch(&write, &actor, &settings, command).await?;
-        write.commit().await?;
+        let reply = if is_read(&command) {
+            read_reply(&write, &actor, command).await?
+        } else {
+            dispatch(&write, &actor, &settings, command).await?
+        };
+        write.commit().await.map_err(|error| internal(&error))?;
         Ok(reply)
     };
     Route::Run {
@@ -119,17 +133,6 @@ async fn dispatch(
             registered(write, settings.blocker_project.as_deref()).await?;
             cockpit_tasks::report_blocker(write, actor, settings, &title, &why, &notes, now).await?
         }
-        Command::TaskList { project, all, .. } => {
-            let filter = ListFilter {
-                project,
-                include_closed: all,
-            };
-            let items = cockpit_tasks::list(write, actor, &filter).await?;
-            return Ok(Reply::Tasks {
-                tasks: items.iter().map(task_view).collect(),
-            });
-        }
-        Command::TaskShow { item, .. } => cockpit_tasks::item(write, actor, ItemId(item)).await?,
         Command::TaskEdit {
             item,
             intent_revision,
@@ -185,29 +188,19 @@ async fn dispatch(
                 image: image_view(&image),
             });
         }
-        Command::TaskImage { item, number } => {
-            let image = cockpit_tasks::image(write, actor, ItemId(item), number).await?;
-            return Ok(Reply::TaskImage {
-                item,
-                image: TaskImageView {
-                    number: image.number,
-                    media_type: image.media_type.to_owned(),
-                    bytes: image.bytes.len() as u64,
-                },
-                data: HexBytes(image.bytes),
-            });
-        }
         Command::TaskDraftSave {
             target,
             title,
             notes,
             base_intent_revision,
         } => {
-            let target = draft_target(write, target).await?;
+            if let TaskDraftTargetView::New { project } = &target {
+                registered(write, Some(project)).await?;
+            }
             let draft = cockpit_tasks::save_draft(
                 write,
                 actor,
-                &target,
+                &draft_target(target),
                 &title,
                 &notes,
                 base_intent_revision,
@@ -218,21 +211,64 @@ async fn dispatch(
                 draft: draft_view(&draft),
             });
         }
-        Command::TaskDrafts => {
-            let drafts = cockpit_tasks::drafts(write, actor).await?;
-            return Ok(Reply::TaskDrafts {
-                drafts: drafts.iter().map(draft_view).collect(),
-            });
-        }
         Command::TaskDraftDiscard { target } => {
-            let target = draft_target(write, target).await?;
-            cockpit_tasks::discard_draft(write, actor, &target).await?;
+            // No registration check: a project removed since keeps its draft discardable.
+            cockpit_tasks::discard_draft(write, actor, &draft_target(target)).await?;
             return Ok(Reply::TaskDraftDiscarded);
         }
         other => unreachable!("routes.rs sends only task commands here, not {other:?}"),
     };
     Ok(Reply::Task {
         task: Box::new(task_view(&item)),
+    })
+}
+
+fn is_read(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::TaskList { .. }
+            | Command::TaskShow { .. }
+            | Command::TaskImage { .. }
+            | Command::TaskDrafts
+    )
+}
+
+async fn read_reply(connection: &Connection, actor: &Actor, command: Command) -> Answer {
+    Ok(match command {
+        Command::TaskList { project, all, .. } => {
+            let filter = ListFilter {
+                project,
+                include_closed: all,
+            };
+            let items = cockpit_tasks::list(connection, actor, &filter).await?;
+            Reply::Tasks {
+                tasks: items.iter().map(task_view).collect(),
+            }
+        }
+        Command::TaskShow { item, .. } => Reply::Task {
+            task: Box::new(task_view(
+                &cockpit_tasks::item(connection, actor, ItemId(item)).await?,
+            )),
+        },
+        Command::TaskImage { item, number } => {
+            let image = cockpit_tasks::image(connection, actor, ItemId(item), number).await?;
+            Reply::TaskImage {
+                item,
+                image: TaskImageView {
+                    number: image.number,
+                    media_type: image.media_type.to_owned(),
+                    bytes: image.bytes.len() as u64,
+                },
+                data: HexBytes(image.bytes),
+            }
+        }
+        Command::TaskDrafts => {
+            let drafts = cockpit_tasks::drafts(connection, actor).await?;
+            Reply::TaskDrafts {
+                drafts: drafts.iter().map(draft_view).collect(),
+            }
+        }
+        other => unreachable!("is_read admits only reads, not {other:?}"),
     })
 }
 
@@ -272,11 +308,11 @@ async fn settings(environment: cockpit_config::Environment) -> Result<Settings, 
 }
 
 /// Refuses a project name that is not a registered project.
-async fn registered(write: &WriteTransaction<'_>, project: Option<&str>) -> Result<(), Failed> {
+async fn registered(connection: &Connection, project: Option<&str>) -> Result<(), Failed> {
     let Some(project) = project else {
         return Ok(());
     };
-    let projects = cockpit_projects::projects(write)
+    let projects = cockpit_projects::projects(connection)
         .await
         .map_err(|error| internal(&error))?;
     if projects
@@ -293,17 +329,11 @@ async fn registered(write: &WriteTransaction<'_>, project: Option<&str>) -> Resu
     ))
 }
 
-async fn draft_target(
-    write: &WriteTransaction<'_>,
-    target: TaskDraftTargetView,
-) -> Result<DraftTarget, Failed> {
-    Ok(match target {
-        TaskDraftTargetView::New { project } => {
-            registered(write, Some(&project)).await?;
-            DraftTarget::New { project }
-        }
+fn draft_target(target: TaskDraftTargetView) -> DraftTarget {
+    match target {
+        TaskDraftTargetView::New { project } => DraftTarget::New { project },
         TaskDraftTargetView::Item { item } => DraftTarget::Item(ItemId(item)),
-    })
+    }
 }
 
 fn kind(view: Option<TaskKindView>) -> Result<Kind, Failed> {

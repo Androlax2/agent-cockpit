@@ -148,46 +148,46 @@ async fn file(
             .into());
         }
         // A blocker report goes where the owner configured; the cap is for choices sessions
-        // make about another project's list.
-        if !filing.is_blocker_report
-            && let Some(from) = filed_from.filter(|from| *from != project)
-        {
-            check_cap(write, settings, from, project).await?;
+        // make about another project's list, so a session outside every project, which the
+        // cap cannot count, files nothing else.
+        if !filing.is_blocker_report {
+            let from = filed_from.ok_or(Refusal::NoProject)?;
+            if from != project {
+                check_cap(write, settings, from, project).await?;
+            }
         }
     }
     for waited in &new.after {
-        waitable(write, *waited).await?;
+        waitable(write, actor, *waited).await?;
     }
+    // AUTOINCREMENT: a deleted item's id is never given to another, so a `Todo:` trailer or
+    // a command naming it cannot reach a different item.
     let id = write
-        .prepare("SELECT coalesce(max(id), 0) + 1 FROM tasks_items")
-        .await?
-        .query_row(())
-        .await?
-        .get::<i64>(0)?;
-    write
-        .execute(
-            "INSERT INTO tasks_items (id, project, title, title_key, notes, kind, priority,
+        .prepare(
+            "INSERT INTO tasks_items (project, title, title_key, notes, kind, priority,
                 status, is_blocker_report, why, filed_by, filed_from, is_queued,
                 intent_revision, state_revision, created_at, changed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, 1, ?14, ?14)",
-            (
-                id,
-                project,
-                title.as_str(),
-                title_key.as_str(),
-                notes.as_str(),
-                new.kind.as_str(),
-                new.priority.level(),
-                filing.status.as_str(),
-                i64::from(filing.is_blocker_report),
-                filing.why,
-                filed_by,
-                filed_from,
-                i64::from(filing.is_queued),
-                now,
-            ),
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, ?13, ?13)
+             RETURNING id",
         )
-        .await?;
+        .await?
+        .query_row((
+            project,
+            title.as_str(),
+            title_key.as_str(),
+            notes.as_str(),
+            new.kind.as_str(),
+            new.priority.level(),
+            filing.status.as_str(),
+            i64::from(filing.is_blocker_report),
+            filing.why,
+            filed_by,
+            filed_from,
+            i64::from(filing.is_queued),
+            now,
+        ))
+        .await?
+        .get::<i64>(0)?;
     for waited in dedup(new.after) {
         insert_wait(write, ItemId(id), waited).await?;
     }
@@ -269,25 +269,33 @@ pub async fn list(
     filter: &ListFilter,
 ) -> Result<Vec<Item>, Error> {
     authorize(connection, actor).await?;
+    let (session, own_project) = match actor {
+        Actor::Owner => (None, None),
+        Actor::Session { session, project } => (Some(session), project.as_deref()),
+    };
     let mut rows = connection
         .query(
             &format!(
                 "{SELECT_ITEMS}
                  WHERE (?1 IS NULL OR project = ?1)
                     AND (?2 = 1 OR status IN ('proposed', 'todo', 'doing'))
+                    AND (?3 = 0 OR project IS ?4 OR filed_by IS ?5)
                  ORDER BY CASE status WHEN 'doing' THEN 0 WHEN 'todo' THEN 1
                     WHEN 'proposed' THEN 2 WHEN 'done' THEN 3 ELSE 4 END,
                     priority DESC, id"
             ),
-            (filter.project.as_deref(), i64::from(filter.include_closed)),
+            (
+                filter.project.as_deref(),
+                i64::from(filter.include_closed),
+                i64::from(session.is_some()),
+                own_project,
+                session.map(SessionId::as_str),
+            ),
         )
         .await?;
     let mut items = Vec::new();
     while let Some(row) = rows.next().await? {
-        let item = item_from(&row)?;
-        if is_visible(actor, &item) {
-            items.push(item);
-        }
+        items.push(item_from(&row)?);
     }
     for item in &mut items {
         complete(connection, item).await?;
@@ -424,6 +432,7 @@ pub async fn decline(
     now: i64,
 ) -> Result<Item, Error> {
     owner_only(actor, "decline a proposal")?;
+    refuse_while_waited_on(write, id).await?;
     move_status(
         write,
         id,
@@ -497,6 +506,14 @@ pub async fn finish(
             }
         }
     }
+    let waiting_on = item.waiting_on();
+    if !waiting_on.is_empty() {
+        return Err(Refusal::Waiting {
+            item: id,
+            on: waiting_on,
+        }
+        .into());
+    }
     write
         .execute(
             "UPDATE tasks_items SET status = 'done', doing_session = NULL, is_queued = 0,
@@ -544,7 +561,7 @@ pub async fn wait(
     }
     required(write, id).await?;
     for waited in dedup(on) {
-        waitable(write, waited).await?;
+        waitable(write, actor, waited).await?;
         if waited == id || reaches(write, waited, id).await? {
             return Err(Refusal::Cycle {
                 item: id,
@@ -597,14 +614,7 @@ pub async fn delete(write: &WriteTransaction<'_>, actor: &Actor, id: ItemId) -> 
         }
         in_status(&item, &[Status::Proposed, Status::Todo], "be deleted")?;
     }
-    let waiting = open_waiting_on(write, id).await?;
-    if !waiting.is_empty() {
-        return Err(Refusal::WaitedOn {
-            item: id,
-            by: waiting,
-        }
-        .into());
-    }
+    refuse_while_waited_on(write, id).await?;
     for statement in [
         "DELETE FROM tasks_waits WHERE item = ?1 OR waits_on = ?1",
         "DELETE FROM tasks_images WHERE item = ?1",
@@ -617,6 +627,19 @@ pub async fn delete(write: &WriteTransaction<'_>, actor: &Actor, id: ItemId) -> 
 }
 
 /// The open items that wait on `id`.
+/// Deleting or declining an item open items wait on would leave them waiting for ever.
+async fn refuse_while_waited_on(connection: &Connection, id: ItemId) -> Result<(), Error> {
+    let waiting = open_waiting_on(connection, id).await?;
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    Err(Refusal::WaitedOn {
+        item: id,
+        by: waiting,
+    }
+    .into())
+}
+
 async fn open_waiting_on(connection: &Connection, id: ItemId) -> Result<Vec<ItemId>, Error> {
     let mut rows = connection
         .query(
@@ -727,10 +750,9 @@ pub(crate) async fn bump_intent(
 }
 
 /// An item that can be waited on: one that exists and was not declined.
-async fn waitable(connection: &Connection, id: ItemId) -> Result<(), Error> {
-    let item = fetch(connection, id)
-        .await?
-        .ok_or(Refusal::NotFound { item: id })?;
+/// An item the actor may make another wait on: one it can see that was not declined.
+async fn waitable(connection: &Connection, actor: &Actor, id: ItemId) -> Result<(), Error> {
+    let item = visible(connection, actor, id).await?;
     if item.status == Status::Declined {
         return Err(Refusal::WrongStatus {
             item: id,

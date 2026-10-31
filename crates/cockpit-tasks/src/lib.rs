@@ -30,7 +30,7 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
     migrations: &[Migration {
         version: 1,
         sql: "CREATE TABLE tasks_items (
-                id INTEGER PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project TEXT NOT NULL CHECK (project <> ''),
                 title TEXT NOT NULL CHECK (title <> ''),
                 title_key TEXT NOT NULL CHECK (title_key <> ''),

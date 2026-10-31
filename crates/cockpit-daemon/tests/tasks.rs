@@ -435,3 +435,27 @@ async fn an_agent_outside_every_registered_project_must_name_one() {
 
     assert_eq!(refusal.code, ErrorCode::Refused);
 }
+
+#[tokio::test]
+async fn the_owner_files_even_when_the_owner_config_does_not_load() {
+    let tasks = started(&["app"], "[tasks]\ncross_project_open_max = -1\n").await;
+
+    let added = tasks.owner_adds("app", "Fix the config", Vec::new()).await;
+
+    assert_eq!(added.status, TaskStatusView::Todo);
+}
+
+#[tokio::test]
+async fn a_draft_of_a_project_that_is_not_registered_can_still_be_discarded() {
+    let tasks = started(&["app"], "").await;
+
+    let discarded = tasks
+        .as_owner(Command::TaskDraftDiscard {
+            target: TaskDraftTargetView::New {
+                project: "gone".to_owned(),
+            },
+        })
+        .await;
+
+    assert_eq!(discarded.unwrap(), Reply::TaskDraftDiscarded);
+}
