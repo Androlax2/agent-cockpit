@@ -318,6 +318,12 @@ impl Server {
         self.run_for_pane_id(&arguments)
     }
 
+    /// Makes `pane` its window's active pane, the one an attached client's keys go to.
+    pub fn select_pane(&self, pane: &PaneId) -> Result<(), Error> {
+        self.run(&words(&["select-pane", "-t", pane.as_str()]))
+            .map(drop)
+    }
+
     /// The approval pane: a split under the viewer, focused so the human answers there.
     /// [`CONFIG`] keeps an exited pane, so its owner closes it with [`Server::close_pane`].
     pub fn split_approval_pane(

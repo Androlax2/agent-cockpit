@@ -231,6 +231,25 @@ fn the_approval_pane_opens_focused_below_the_viewer() {
 }
 
 #[test]
+fn selecting_a_pane_makes_it_the_one_keys_go_to() {
+    let fixture = TestServer::new();
+    let (_, left) = fixture.start_shell("cockpit", "sleep 60");
+    fixture
+        .server
+        .split_pane(
+            &left,
+            cockpit_tmux::Split::SideBySide { percent: 70 },
+            &shell("sleep 60"),
+        )
+        .expect("splits");
+
+    fixture.server.select_pane(&left).expect("selects");
+
+    let active = fixture.tmux(&["display-message", "-p", "-t", "=cockpit:", "#{pane_id}"]);
+    assert_eq!(active.trim(), left.as_str());
+}
+
+#[test]
 fn the_server_starts_with_cockpits_own_config() {
     let fixture = TestServer::new();
     fixture.start_shell("agent-1", "sleep 30");

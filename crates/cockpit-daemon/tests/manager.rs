@@ -318,6 +318,47 @@ async fn the_manager_opens_a_column_and_a_viewer_once_and_answers_how_to_attach(
     );
 }
 
+/// The pane an attached client's keys go to: the window's active pane.
+fn focused_pane_command(home: &Home) -> String {
+    home.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "=cockpit:",
+        "#{pane_start_command}",
+    ])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_manager_answers_with_its_column_focused() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    home.open_manager(&client).await.unwrap();
+
+    let focused = focused_pane_command(&home);
+    assert!(focused.contains("600"), "{focused}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reopening_the_manager_focuses_its_column_again() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+    home.tmux(&["select-pane", "-t", "=cockpit:.1"]);
+
+    home.open_manager(&client).await.unwrap();
+
+    let focused = focused_pane_command(&home);
+    assert!(focused.contains("600"), "{focused}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn showing_an_asleep_session_wakes_it_and_attaches_the_viewer_to_it() {
     let home = Home::new();

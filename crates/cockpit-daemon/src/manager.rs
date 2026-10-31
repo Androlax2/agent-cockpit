@@ -122,37 +122,23 @@ fn open(
         .opening
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let created = match manager_state(tmux, &name)? {
-        ManagerState::Whole { .. } => false,
-        ManagerState::Absent => true,
+    let existing_column = match manager_state(tmux, &name)? {
+        ManagerState::Whole { column, .. } => Some(column),
+        ManagerState::Absent => None,
         ManagerState::Broken => {
             tracing::warn!("the manager session lost its column or viewer: building it again");
             tmux.close_session(&name).map_err(tmux_error)?;
-            true
+            None
         }
     };
-    if created {
-        let column_pane = tmux
-            .new_session(&SessionLaunch {
-                name: name.clone(),
-                working_dir: dir,
-                command: words(column),
-                environment: Vec::new(),
-                columns: 200,
-                rows: 50,
-            })
-            .map_err(tmux_error)?;
-        // Should this fail, the manager lacks its viewer: the next open rebuilds it.
-        tmux.split_pane(
-            &column_pane,
-            Split::SideBySide {
-                percent: VIEWER_PERCENT,
-            },
-            &words(viewer),
-        )
-        .map_err(tmux_error)?;
-        tracing::info!("opened the manager session");
-    }
+    let created = existing_column.is_none();
+    let column_pane = match existing_column {
+        Some(column) => column,
+        None => build(tmux, &name, dir, column, viewer)?,
+    };
+    // Whoever attaches types into the list first, also after the owner left the viewer
+    // focused (#271).
+    tmux.select_pane(&column_pane).map_err(tmux_error)?;
     Ok(Reply::Manager {
         attach: tmux
             .attach_command(&name)
@@ -163,10 +149,43 @@ fn open(
     })
 }
 
+/// Builds the manager session: the column, then the viewer split beside it. Returns the
+/// column's pane.
+fn build(
+    tmux: &cockpit_tmux::Server,
+    name: &SessionName,
+    dir: PathBuf,
+    column: &[String],
+    viewer: &[String],
+) -> Result<PaneId, ProtocolError> {
+    let column_pane = tmux
+        .new_session(&SessionLaunch {
+            name: name.clone(),
+            working_dir: dir,
+            command: words(column),
+            environment: Vec::new(),
+            columns: 200,
+            rows: 50,
+        })
+        .map_err(tmux_error)?;
+    // Should this fail, the manager lacks its viewer: the next open rebuilds it.
+    tmux.split_pane(
+        &column_pane,
+        Split::SideBySide {
+            percent: VIEWER_PERCENT,
+        },
+        &words(viewer),
+    )
+    .map_err(tmux_error)?;
+    tracing::info!("opened the manager session");
+    Ok(column_pane)
+}
+
 enum ManagerState {
     Absent,
     /// Its column runs and its viewer pane is there.
     Whole {
+        column: PaneId,
         viewer: PaneId,
     },
     Broken,
@@ -182,6 +201,7 @@ fn manager_state(
     let panes = tmux.panes(name).map_err(tmux_error)?;
     Ok(match panes.as_slice() {
         [column, viewer, ..] if column.state == PaneState::Running => ManagerState::Whole {
+            column: column.id.clone(),
             viewer: viewer.id.clone(),
         },
         _ => ManagerState::Broken,
@@ -227,7 +247,7 @@ async fn show(
 /// mends a broken one.
 fn viewer_pane(tmux: &cockpit_tmux::Server) -> Result<PaneId, ProtocolError> {
     match manager_state(tmux, &manager_name())? {
-        ManagerState::Whole { viewer } => Ok(viewer),
+        ManagerState::Whole { viewer, .. } => Ok(viewer),
         ManagerState::Absent => Err(ProtocolError::new(
             ErrorCode::NotFound,
             "no manager session is open: run `cockpit tui`",
