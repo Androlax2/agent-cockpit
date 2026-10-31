@@ -5,10 +5,10 @@ mod common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use cockpit_tmux::{Error, PaneState, SessionLaunch, SessionName};
+use cockpit_tmux::{Error, PaneId, PaneState, SessionLaunch, SessionName};
 use common::{TestServer, eventually, shell};
 
-fn screen_contains(fixture: &TestServer, pane: &cockpit_tmux::PaneId, text: &str) -> bool {
+fn screen_contains(fixture: &TestServer, pane: &PaneId, text: &str) -> bool {
     let screen = fixture.server.capture(pane, 0).expect("the pane exists");
     String::from_utf8_lossy(&screen).contains(text)
 }
@@ -38,7 +38,7 @@ fn a_session_runs_its_command_in_its_directory_with_its_environment() {
 #[test]
 fn a_one_word_command_runs_directly_even_with_shell_characters_in_its_path() {
     let fixture = TestServer::new();
-    let directory = fixture.home.path().join("dir with 'quote' $HOME");
+    let directory = fixture.home.path().join("dir with 'quote' $HOME a=b");
     fs::create_dir(&directory).expect("creatable");
     let program = directory.join("agent;true");
     fs::write(&program, "#!/bin/sh\necho program-ran\nsleep 30\n").expect("writable");
@@ -247,4 +247,81 @@ fn a_session_cockpit_did_not_name_is_left_out_of_the_list() {
     let names = fixture.server.sessions().expect("lists");
 
     assert_eq!(names, vec![SessionName::new("agent-1").expect("valid")]);
+}
+
+/// A shell line that reports the pane's tmux variables and whether a plain `tmux` reaches
+/// a server. Without `TMUX`, tmux falls back to its default socket; `TMUX_TMPDIR` keeps that
+/// one in the temporary directory too, never the user's server.
+fn tmux_probe(fixture: &TestServer) -> String {
+    let elsewhere = fixture.home.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).expect("creatable");
+    format!(
+        "echo \"TMUX=${{TMUX-unset}} TMUX_PANE=${{TMUX_PANE-unset}}\"; \
+         TMUX_TMPDIR='{}' tmux list-sessions; echo \"listed=$?\"",
+        elsewhere.display()
+    )
+}
+
+fn assert_pane_cannot_reach_the_server(fixture: &TestServer, pane: &PaneId) {
+    eventually("the probe finished", || {
+        screen_contains(fixture, pane, "listed=1") || screen_contains(fixture, pane, "listed=0")
+    });
+    let screen =
+        String::from_utf8_lossy(&fixture.server.capture(pane, 0).expect("captures")).into_owned();
+    assert!(screen.contains("TMUX=unset TMUX_PANE=unset"), "{screen}");
+    assert!(screen.contains("listed=1"), "{screen}");
+    assert!(
+        screen.contains("no server running") || screen.contains("error connecting"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn an_agent_pane_cannot_list_the_servers_sessions() {
+    let fixture = TestServer::new();
+    let script = format!("{}; sleep 30", tmux_probe(&fixture));
+
+    let (_, pane) = fixture.start_shell("agent-1", &script);
+
+    assert_pane_cannot_reach_the_server(&fixture, &pane);
+}
+
+#[test]
+fn an_approval_pane_cannot_list_the_servers_sessions() {
+    let fixture = TestServer::new();
+    let (_, viewer) = fixture.start_shell("cockpit", "sleep 60");
+    let script = format!("{}; sleep 30", tmux_probe(&fixture));
+
+    let approval = fixture
+        .server
+        .split_approval_pane(&viewer, &shell(&script))
+        .expect("splits");
+
+    assert_pane_cannot_reach_the_server(&fixture, &approval);
+}
+
+#[test]
+fn a_pane_opened_by_hand_cannot_list_the_servers_sessions() {
+    let fixture = TestServer::new();
+    fixture.start_shell("agent-1", "sleep 60");
+    let opened = fixture.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        "=agent-1:",
+        "-P",
+        "-F",
+        "#{pane_id}",
+    ]);
+    let pane = PaneId::parse(opened.trim()).expect("a pane id");
+
+    fixture.tmux(&[
+        "send-keys",
+        "-t",
+        pane.as_str(),
+        &tmux_probe(&fixture),
+        "Enter",
+    ]);
+
+    assert_pane_cannot_reach_the_server(&fixture, &pane);
 }

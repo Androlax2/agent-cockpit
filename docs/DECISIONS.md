@@ -23,6 +23,15 @@ order with the output; they answer the consumer's own commands, so they stay bou
 - **Std only.** tmux calls are processes and the reader is a dedicated thread (report 03), so
   the crate has no dependency; a test keeps it that way. Clients may not link it
   (`clients -> tmux` in the crate-graph rule): they get the capture stream from the daemon.
+- **Panes lose `TMUX` and `TMUX_PANE`.** tmux sets both in every pane, `new-session` ignores
+  `-e TMUX=` (measured on tmux 3.8; `respawn-pane` and `split-window` apply it, which the
+  viewer's nested attach relies on), and nothing clears `TMUX_PANE`. So a plain `tmux` an
+  agent runs would list, read or kill Cockpit's sessions. Each pane command runs as
+  `/bin/sh -c 'unset TMUX TMUX_PANE; exec "$@"' sh <command>`: one mechanism for every pane,
+  argv passed unparsed (`env -u` would read a `=` in the program path as an assignment), and
+  `/bin/sh` is already required by `default-shell`. `default-command` does the same for a
+  pane a human opens in the viewer. This removes the inherited pointer only: the same user
+  can still find and name the socket, which is the sandbox's to forbid, not this crate's.
 - **No daemon wiring or CLI verb yet.** Which sessions exist is `cockpit-sessions`' (#31),
   readiness reporting and the session verbs come with #31 and #35; this issue delivers the
   library they call, proven against real tmux.

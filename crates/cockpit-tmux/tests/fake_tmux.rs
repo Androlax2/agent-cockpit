@@ -159,7 +159,7 @@ fn every_command_uses_the_private_cockpit_server_and_its_config() {
 }
 
 #[test]
-fn a_new_session_runs_its_command_directly_with_its_environment() {
+fn a_new_session_runs_its_command_without_tmux_variables_with_its_environment() {
     let fake = FakeTmux::printing_version("tmux 3.4");
     let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
 
@@ -172,7 +172,17 @@ fn a_new_session_runs_its_command_directly_with_its_environment() {
         .iter()
         .position(|argument| argument == "--")
         .expect("--");
-    assert_eq!(call[after_options + 1..], ["claude", "--resume"]);
+    assert_eq!(
+        call[after_options + 1..],
+        [
+            "/bin/sh",
+            "-c",
+            "unset TMUX TMUX_PANE; exec \"$@\"",
+            "sh",
+            "claude",
+            "--resume"
+        ]
+    );
     assert!(
         call.windows(2)
             .any(|pair| pair == ["-e", "COCKPIT_SESSION=s1"]),

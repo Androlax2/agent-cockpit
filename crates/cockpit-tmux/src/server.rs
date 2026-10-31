@@ -19,6 +19,8 @@ set-option -g remain-on-exit on
 set-option -g history-limit 50000
 # Anything tmux runs through a shell uses sh, never the user's login shell.
 set-option -g default-shell /bin/sh
+# A pane opened by hand (prefix c in the viewer) must not reach this server either.
+set-option -g default-command 'unset TMUX TMUX_PANE; exec /bin/sh'
 # The TUI runs in a pane: an Escape key must not wait for the rest of a sequence.
 set-option -s escape-time 0
 ";
@@ -199,13 +201,13 @@ impl Server {
             arguments.push(environment_assignment(name, value)?);
         }
         arguments.push("--".into());
-        arguments.extend(direct_command(&launch.command)?);
+        arguments.extend(pane_command(&launch.command)?);
         self.run_for_pane_id(&arguments)
     }
 
     /// Every session on the server whose name a [`SessionName`] admits, sorted by name;
-    /// empty when no server runs. A session with any other name is not Cockpit's (an agent
-    /// can reach this server through its pane's `TMUX`), so it is left out.
+    /// empty when no server runs. A session with any other name is not Cockpit's, so it is
+    /// left out.
     pub fn sessions(&self) -> Result<Vec<SessionName>, Error> {
         let Some(printed) =
             self.run_if_server(&words(&["list-sessions", "-F", "#{session_name}"]))?
@@ -281,7 +283,7 @@ impl Server {
             "#{pane_id}",
             "--",
         ]);
-        arguments.extend(direct_command(command)?);
+        arguments.extend(pane_command(command)?);
         self.run_for_pane_id(&arguments)
     }
 
@@ -297,7 +299,7 @@ impl Server {
 
     /// Nested attach: replaces whatever runs in the `viewer` pane with a tmux client of
     /// this server attached to `session`. `TMUX` is emptied for that client only, which is
-    /// how tmux allows the nesting.
+    /// how tmux allows the nesting (`respawn-pane`, unlike `new-session`, applies `-e TMUX=`).
     pub fn show_in_viewer(&self, viewer: &PaneId, session: &SessionName) -> Result<(), Error> {
         let mut arguments = words(&[
             "respawn-pane",
@@ -372,21 +374,20 @@ pub(crate) fn words(list: &[&str]) -> Vec<OsString> {
     list.iter().map(OsString::from).collect()
 }
 
-/// tmux runs a lone argument through its `default-shell` but several arguments directly,
-/// so a one-word command is handed to `sh` as `$0` of a fixed script: nothing is quoted.
-fn direct_command(command: &[OsString]) -> Result<Vec<OsString>, Error> {
-    match command {
-        [] => Err(Error::InvalidArgument {
+/// tmux sets `TMUX` and `TMUX_PANE` in every pane, and `new-session` ignores `-e TMUX=`,
+/// so a plain `tmux` an agent runs would reach this server. The command runs as the
+/// arguments of a fixed `sh` script that unsets both: nothing is quoted or parsed, and with
+/// several words tmux never uses its own shell.
+fn pane_command(command: &[OsString]) -> Result<Vec<OsString>, Error> {
+    if command.is_empty() {
+        return Err(Error::InvalidArgument {
             what: "pane command (empty)",
             value: String::new(),
-        }),
-        [program] => {
-            let mut wrapped = words(&["/bin/sh", "-c", "exec \"$0\""]);
-            wrapped.push(program.clone());
-            Ok(wrapped)
-        }
-        _ => Ok(command.to_vec()),
+        });
     }
+    let mut wrapped = words(&["/bin/sh", "-c", "unset TMUX TMUX_PANE; exec \"$@\"", "sh"]);
+    wrapped.extend_from_slice(command);
+    Ok(wrapped)
 }
 
 fn environment_assignment(name: &str, value: &OsStr) -> Result<OsString, Error> {

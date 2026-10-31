@@ -25,10 +25,13 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   caller's `TMUX`/`TMUX_PANE` are removed so a daemon started inside tmux cannot reach it.
 - **Sessions.** One session per agent. [`SessionName`] admits only `A-Z a-z 0-9 _ -`, and
   every target is `=name:` so `agent-1` never reaches `agent-12`. A missing working directory
-  is refused (tmux would start the pane in `$HOME`). A command runs directly, never through
-  a shell. Sessions with names Cockpit would not choose are not listed. An exited pane stays,
-  with its exit status and its last screen in its history, until its owner closes it
-  (`remain-on-exit`); this observation proves nothing about the work.
+  is refused (tmux would start the pane in `$HOME`). A command's words are never parsed by
+  a shell, and it runs with `TMUX` and `TMUX_PANE` unset; a pane opened by hand gets the
+  same (`default-command`). That removes the inherited pointer to this server, not the
+  socket: keeping an agent from naming it is the sandbox's job. Sessions with names Cockpit
+  would not choose are not listed. An exited pane stays, with its exit status and its last
+  screen in its history, until its owner closes it (`remain-on-exit`); this observation
+  proves nothing about the work.
 - **Viewer and approvals.** [`Server::show_in_viewer`] respawns the viewer pane as a nested
   client attached to an agent session (`TMUX` emptied for it only).
   [`Server::split_approval_pane`] splits a focused pane under the viewer.
