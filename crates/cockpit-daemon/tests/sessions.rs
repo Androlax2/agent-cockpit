@@ -1,0 +1,1204 @@
+//! Issue #31 at the daemon's socket: every session lifecycle transition through the protocol,
+//! against a fake provider that implements only the baseline `cockpit-provider-api`
+//! contract, a real state database, real processes and a private tmux server.
+//!
+//! The daemon runs in this process (as in `overload.rs`) because the fake provider is a test
+//! type the binary does not link. Its agent is a shell script: it appends one line per launch
+//! to a log (session, conversation mode and id, first message, pid, launch token), then
+//! sleeps until stopped.
+#![cfg(target_os = "linux")]
+
+mod common;
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::Command as Process;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use cockpit_client::{ClientError, Connection};
+use cockpit_daemon::{Capabilities, Daemon, Instance, Limits, Options, Routes, Wiring};
+use cockpit_protocol::{Command, ErrorCode, LaunchKindView, Reply, SessionStateView, SessionView};
+use cockpit_provider_api::{
+    Capabilities as ProviderCapabilities, Conversation, ConversationId, LaunchCommand,
+    LaunchRequest, Provider, ProviderError, ProviderName,
+};
+use common::GENEROUS;
+
+const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s\n' "$COCKPIT_SESSION" "$1" "$2" "${3:-}" "$$" "$COCKPIT_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
+exec sleep 600"#;
+
+/// A provider with the baseline contract only: it launches a new or resumed conversation.
+struct FakeProvider {
+    name: ProviderName,
+    log: PathBuf,
+    can_resume: bool,
+    names_conversation: bool,
+    conversations: AtomicUsize,
+}
+
+impl Provider for FakeProvider {
+    fn name(&self) -> &ProviderName {
+        &self.name
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            resume: self.can_resume,
+        }
+    }
+
+    fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
+        let (mode, conversation) = match request.conversation {
+            Conversation::New => {
+                let number = self.conversations.fetch_add(1, Ordering::SeqCst) + 1;
+                let id = ConversationId::new(format!("conversation-{number}")).unwrap();
+                ("new", id)
+            }
+            Conversation::Resume(id) => ("resume", id.clone()),
+        };
+        let mut arguments: Vec<OsString> = vec![
+            "-c".into(),
+            AGENT_SCRIPT.into(),
+            "fake-agent".into(),
+            mode.into(),
+            conversation.as_str().into(),
+        ];
+        arguments.extend(request.first_message.map(OsString::from));
+        Ok(LaunchCommand {
+            program: "/bin/sh".into(),
+            arguments,
+            environment: vec![
+                ("PATH".into(), "/usr/bin:/bin".into()),
+                ("FAKE_AGENT_LOG".into(), self.log.clone().into()),
+            ],
+            conversation: self.names_conversation.then_some(conversation),
+        })
+    }
+}
+
+/// One launch line of the fake agent's log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentLaunch {
+    session: String,
+    mode: String,
+    conversation: String,
+    message: String,
+    pid: i32,
+    token: String,
+}
+
+struct Home {
+    dir: tempfile::TempDir,
+    /// The state database of the running daemon, for the agent-report fixture.
+    database: Mutex<Option<Arc<cockpit_turso::Database>>>,
+}
+
+#[derive(Clone, Copy)]
+struct Variant {
+    can_resume: bool,
+    names_conversation: bool,
+}
+
+const BASELINE: Variant = Variant {
+    can_resume: true,
+    names_conversation: true,
+};
+
+/// A provider that resumes but never names the conversation, so a restore cannot reopen it.
+const UNNAMED: Variant = Variant {
+    can_resume: true,
+    names_conversation: false,
+};
+
+impl Home {
+    fn new() -> Home {
+        Home {
+            dir: tempfile::tempdir().unwrap(),
+            database: Mutex::new(None),
+        }
+    }
+
+    fn path(&self) -> PathBuf {
+        self.dir.path().canonicalize().unwrap()
+    }
+
+    fn agent_log(&self) -> PathBuf {
+        self.path().join("agent.log")
+    }
+
+    fn launches(&self) -> Vec<AgentLaunch> {
+        std::fs::read_to_string(self.agent_log())
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let words: Vec<&str> = line.split(' ').collect();
+                let field = |prefix: &str| {
+                    words
+                        .iter()
+                        .find_map(|word| word.strip_prefix(prefix))
+                        .unwrap()
+                        .to_owned()
+                };
+                AgentLaunch {
+                    session: words[0].to_owned(),
+                    mode: words[1].to_owned(),
+                    conversation: words[2].to_owned(),
+                    message: words[3].to_owned(),
+                    pid: field("pid=").parse().unwrap(),
+                    token: field("token="),
+                }
+            })
+            .collect()
+    }
+
+    fn wiring(&self, variant: Variant, settings: cockpit_sessions::Settings) -> Wiring {
+        let provider = FakeProvider {
+            name: ProviderName::new("fake").unwrap(),
+            log: self.agent_log(),
+            can_resume: variant.can_resume,
+            names_conversation: variant.names_conversation,
+            conversations: AtomicUsize::new(self.launches().len()),
+        };
+        let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
+        wiring.sessions = settings;
+        wiring.session_tick = Duration::from_millis(100);
+        wiring
+    }
+
+    /// Starts a daemon on this home's state. A daemon dropped just before releases its
+    /// database once its aborted tasks are gone, so the start is retried until then.
+    async fn start(&self, variant: Variant, settings: cockpit_sessions::Settings) -> Daemon {
+        self.start_wired(|| self.wiring(variant, settings.clone()))
+            .await
+    }
+
+    /// Starts a daemon whose tmux cannot be run.
+    async fn start_without_tmux(&self) -> Daemon {
+        self.start_wired(|| {
+            let mut wiring = self.wiring(BASELINE, settings());
+            wiring.tmux.tmux = self.path().join("no-tmux-here");
+            wiring
+        })
+        .await
+    }
+
+    /// Starts a daemon on this home's state with the wiring `wiring` builds, once per try.
+    async fn start_wired(&self, wiring: impl Fn() -> Wiring) -> Daemon {
+        let deadline = Instant::now() + GENEROUS;
+        loop {
+            let options = Options {
+                runtime_dir: self.path().join("run/cockpit"),
+                state_dir: self.path().join("state/cockpit"),
+                limits: Limits::default(),
+            };
+            let started = match Instance::acquire(options) {
+                Ok(instance) => {
+                    instance
+                        .start(wiring(), |capabilities| {
+                            self.keep_database(&capabilities);
+                            Arc::new(Routes::new(
+                                capabilities,
+                                cockpit_config::Environment {
+                                    home: Some(self.path().join("home").into()),
+                                    ..cockpit_config::Environment::default()
+                                },
+                                cockpit_daemon::runner(Vec::new()).unwrap(),
+                            ))
+                        })
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            match started {
+                Ok(daemon) => return daemon,
+                Err(_) if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => panic!("the daemon did not start: {error}"),
+            }
+        }
+    }
+
+    fn keep_database(&self, capabilities: &Capabilities) {
+        *self.database.lock().unwrap() = Some(Arc::clone(&capabilities.database));
+    }
+
+    /// Stops `daemon` as a crash would leave things: its agents keep running.
+    fn stop(&self, daemon: Daemon) {
+        drop(daemon);
+        self.database.lock().unwrap().take();
+    }
+
+    /// A Git project registered through the daemon, returning its root.
+    async fn project(&self, client: &Connection) -> PathBuf {
+        let root = self.path().join("projects/app");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        git(&root, &["init", "--quiet", "--initial-branch=main"]);
+        std::fs::write(root.join("src/README"), "fixture\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "--quiet", "-m", "initial"]);
+        let origin = self.path().join("origin.git");
+        git(
+            &self.path(),
+            &["init", "--quiet", "--bare", origin.to_str().unwrap()],
+        );
+        git(
+            &root,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        request(
+            client,
+            Command::ProjectAdd {
+                path: root.display().to_string(),
+                name: None,
+            },
+        )
+        .await
+        .unwrap();
+        root
+    }
+
+    fn tmux_sessions(&self) -> Vec<String> {
+        let output = Process::new("tmux")
+            .arg("-S")
+            .arg(self.path().join("tmux.sock"))
+            .args(["list-sessions", "-F", "#{session_name}"])
+            .env_remove("TMUX")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The machine reboots, as far as the agents can tell: the tmux server and every
+    /// agent in it are gone.
+    fn lose_every_agent(&self) {
+        let _ = Process::new("tmux")
+            .arg("-S")
+            .arg(self.path().join("tmux.sock"))
+            .arg("kill-server")
+            .env_remove("TMUX")
+            .output();
+    }
+
+    /// Whether `session` may change its own state: the check the agent channel makes before
+    /// it accepts a report.
+    async fn may_report(&self, session: &str) -> bool {
+        let database = self.database.lock().unwrap().clone().unwrap();
+        let read = database.read().await.unwrap();
+        let session = cockpit_authorization::SessionId::new(session).unwrap();
+        let decision = cockpit_authorization::evaluate(
+            &read,
+            &cockpit_authorization::Actor::Session(session.clone()),
+            cockpit_authorization::Permission::ChangeState,
+            &cockpit_authorization::Scope::Session(session),
+        )
+        .await
+        .unwrap();
+        matches!(decision.outcome, cockpit_authorization::Outcome::Allowed(_))
+    }
+
+    /// Starts a session whose agent names no conversation, then restarts the daemon with
+    /// every agent gone, so the session's restore fails. Returns the session's id and the
+    /// restarted daemon.
+    async fn fail_a_restore(&self) -> (String, Daemon) {
+        let daemon = self.start(UNNAMED, settings()).await;
+        let client = connect(&daemon).await;
+        let root = self.project(&client).await;
+        let started = new_session(&client, &root, None).await;
+        drop(client);
+        self.stop(daemon);
+        self.lose_every_agent();
+        (started.id, self.start(UNNAMED, settings()).await)
+    }
+
+    /// Reports `report` as the agent `launch` would, through the agent channel's API with
+    /// that agent's real process tree and launch token.
+    async fn report_as_agent(
+        &self,
+        launch: &AgentLaunch,
+        state: cockpit_agent_channel::AgentState,
+    ) {
+        let database = self.database.lock().unwrap().clone().unwrap();
+        let write = database.write().await.unwrap();
+        let agent = cockpit_agent_channel::identity_of(u32::try_from(launch.pid).unwrap());
+        let peer = cockpit_agent_channel::ancestry_of(&agent.unwrap());
+        cockpit_agent_channel::report(
+            &write,
+            &peer,
+            Some(&launch.token),
+            cockpit_agent_channel::Report {
+                state: Some(state),
+                ..cockpit_agent_channel::Report::default()
+            },
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
+    }
+}
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        self.lose_every_agent();
+    }
+}
+
+fn git(dir: &Path, arguments: &[&str]) {
+    let output = Process::new("git")
+        .current_dir(dir)
+        .args(["-c", "user.name=Fixture", "-c", "user.email=f@example.com"])
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn connect(daemon: &Daemon) -> Connection {
+    Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap()
+}
+
+async fn request(client: &Connection, command: Command) -> Result<Reply, ClientError> {
+    client.request(command, Duration::from_secs(60)).await
+}
+
+async fn session_reply(client: &Connection, command: Command) -> SessionView {
+    match request(client, command.clone()).await {
+        Ok(Reply::Session { session }) => *session,
+        other => panic!("{command:?}: {other:?}"),
+    }
+}
+
+fn refusal(result: Result<Reply, ClientError>) -> cockpit_protocol::ProtocolError {
+    match result {
+        Err(ClientError::Daemon(error)) => error,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+fn refusal_code(result: Result<Reply, ClientError>) -> ErrorCode {
+    refusal(result).code
+}
+
+async fn new_session(client: &Connection, dir: &Path, prompt: Option<&str>) -> SessionView {
+    session_reply(
+        client,
+        Command::SessionNew {
+            dir: dir.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: prompt.map(str::to_owned),
+            clone: None,
+        },
+    )
+    .await
+}
+
+async fn sessions(client: &Connection, ended: bool) -> Vec<SessionView> {
+    match request(client, Command::SessionList { ended }).await {
+        Ok(Reply::Sessions { sessions }) => sessions,
+        other => panic!("session-list: {other:?}"),
+    }
+}
+
+async fn wait_for_state(client: &Connection, id: &str, state: SessionStateView) -> SessionView {
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        let session = sessions(client, true)
+            .await
+            .into_iter()
+            .find(|session| session.id == id)
+            .unwrap();
+        if session.state == state {
+            return session;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session {id} stayed {:?}",
+            session.state
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn is_alive(pid: i32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+        && !std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap_or_default()
+            .contains(") Z ")
+}
+
+fn settings() -> cockpit_sessions::Settings {
+    cockpit_sessions::Settings {
+        stop: cockpit_processes::Escalation {
+            grace: Duration::from_secs(2),
+            kill_wait: Duration::from_secs(5),
+        },
+        ..cockpit_sessions::Settings::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_session_runs_its_agent_in_place_with_its_first_message() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let session = new_session(&client, &root.join("src"), Some("hello")).await;
+
+    assert_eq!(session.state, SessionStateView::Running);
+    assert_eq!(session.agent, "fake");
+    assert_eq!(session.working_dir, root.join("src").display().to_string());
+    assert!(!session.holds_checkout);
+    assert_eq!(session.conversation.as_deref(), Some("conversation-1"));
+    assert_eq!(session.launch.unwrap().kind, LaunchKindView::Start);
+    let launches = home.launches();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(
+        (launches[0].session.as_str(), launches[0].mode.as_str()),
+        (session.id.as_str(), "new")
+    );
+    assert_eq!(launches[0].message, "hello");
+    assert!(is_alive(launches[0].pid));
+    assert_eq!(home.tmux_sessions(), [session.id]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_session_in_a_clone_occupies_a_parallel_clone_on_its_branch() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let session = session_reply(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: None,
+            prompt: None,
+            clone: Some("feature/x".to_owned()),
+        },
+    )
+    .await;
+
+    assert_eq!(session.state, SessionStateView::Running);
+    assert!(session.holds_checkout);
+    let clone = PathBuf::from(&session.working_dir);
+    assert_ne!(clone, root);
+    let checkouts = match request(&client, Command::CheckoutList { project: None }).await {
+        Ok(Reply::Checkouts { checkouts }) => checkouts,
+        other => panic!("{other:?}"),
+    };
+    let occupied = checkouts
+        .iter()
+        .find(|checkout| checkout.id == session.checkout)
+        .unwrap();
+    assert_eq!(occupied.occupant.as_deref(), Some(session.id.as_str()));
+    assert_eq!(occupied.path, session.working_dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_directory_in_no_registered_project_is_refused() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+
+    let refused = request(
+        &client,
+        Command::SessionNew {
+            dir: home.path().display().to_string(),
+            agent: None,
+            prompt: None,
+            clone: None,
+        },
+    )
+    .await;
+
+    assert_eq!(refusal_code(refused), ErrorCode::NotFound);
+    assert!(home.launches().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_stops_the_agent_and_resumes_the_same_conversation_in_place() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let restarted = session_reply(
+        &client,
+        Command::SessionRestart {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert_eq!(restarted.id, started.id);
+    assert_eq!(restarted.state, SessionStateView::Running);
+    assert_eq!(restarted.launch.unwrap().kind, LaunchKindView::Restart);
+    let launches = home.launches();
+    assert_eq!(launches.len(), 2);
+    assert_eq!(
+        (launches[1].mode.as_str(), launches[1].conversation.as_str()),
+        ("resume", "conversation-1")
+    );
+    assert!(!is_alive(launches[0].pid));
+    assert!(is_alive(launches[1].pid));
+    assert_ne!(launches[0].token, launches[1].token);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_all_restarts_every_running_session() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let first = new_session(&client, &root, None).await;
+    let second = new_session(&client, &root, None).await;
+
+    let (restarted, failed) = match request(&client, Command::SessionRestartAll).await {
+        Ok(Reply::RestartedAll { restarted, failed }) => (restarted, failed),
+        other => panic!("{other:?}"),
+    };
+
+    assert!(failed.is_empty(), "{failed:?}");
+    let mut ids: Vec<String> = restarted.into_iter().map(|session| session.id).collect();
+    ids.sort();
+    let mut expected = vec![first.id, second.id];
+    expected.sort();
+    assert_eq!(ids, expected);
+    assert_eq!(
+        home.launches()
+            .iter()
+            .filter(|launch| launch.mode == "resume")
+            .count(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sleep_stops_the_agent_and_wake_resumes_its_conversation() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let asleep = session_reply(
+        &client,
+        Command::SessionSleep {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(asleep.state, SessionStateView::Asleep);
+    assert!(!is_alive(home.launches()[0].pid));
+    assert!(home.tmux_sessions().is_empty());
+
+    let awake = session_reply(
+        &client,
+        Command::SessionWake {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(awake.state, SessionStateView::Running);
+    assert_eq!(awake.launch.unwrap().kind, LaunchKindView::Wake);
+    let launches = home.launches();
+    assert_eq!(
+        (launches[1].mode.as_str(), launches[1].conversation.as_str()),
+        ("resume", "conversation-1")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_whose_provider_cannot_resume_is_refused_sleep_and_keeps_running() {
+    let home = Home::new();
+    let variant = Variant {
+        can_resume: false,
+        names_conversation: true,
+    };
+    let daemon = home.start(variant, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let refused = request(
+        &client,
+        Command::SessionSleep {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert_eq!(refusal_code(refused), ErrorCode::Conflict);
+    assert!(is_alive(home.launches()[0].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waking_a_running_session_is_refused_as_a_conflict() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let refused = request(
+        &client,
+        Command::SessionWake {
+            session: started.id,
+        },
+    )
+    .await;
+
+    assert_eq!(refusal_code(refused), ErrorCode::Conflict);
+    assert_eq!(home.launches().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_waits_at_its_prompt_past_the_idle_window_is_put_to_sleep() {
+    let home = Home::new();
+    let idle_at_once = cockpit_sessions::Settings {
+        idle_sleep_after: Duration::ZERO,
+        ..settings()
+    };
+    let daemon = home.start(BASELINE, idle_at_once).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    // Without a report that it waits, the agent is not ready: passes go by, it runs on.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        sessions(&client, false).await[0].state,
+        SessionStateView::Running
+    );
+    home.report_as_agent(
+        &home.launches()[0],
+        cockpit_agent_channel::AgentState::Waiting,
+    )
+    .await;
+
+    wait_for_state(&client, &started.id, SessionStateView::Asleep).await;
+    assert!(!is_alive(home.launches()[0].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_working_agent_is_not_put_to_sleep_however_long_it_works() {
+    let home = Home::new();
+    let idle_at_once = cockpit_sessions::Settings {
+        idle_sleep_after: Duration::ZERO,
+        ..settings()
+    };
+    let daemon = home.start(BASELINE, idle_at_once).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    new_session(&client, &root, None).await;
+
+    home.report_as_agent(
+        &home.launches()[0],
+        cockpit_agent_channel::AgentState::Working,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(
+        sessions(&client, false).await[0].state,
+        SessionStateView::Running
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_from_the_previous_launch_does_not_put_the_restarted_agent_to_sleep() {
+    let home = Home::new();
+    let idle_at_once = cockpit_sessions::Settings {
+        idle_sleep_after: Duration::ZERO,
+        ..settings()
+    };
+    let daemon = home.start(BASELINE, idle_at_once).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    home.report_as_agent(
+        &home.launches()[0],
+        cockpit_agent_channel::AgentState::Working,
+    )
+    .await;
+    session_reply(
+        &client,
+        Command::SessionRestart {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    // The report is rewritten as waiting, dated before the restart's launch.
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE agent_channel_reports SET state = 'waiting', reported_at = 0",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert_eq!(
+        sessions(&client, false).await[0].state,
+        SessionStateView::Running
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn end_finishes_a_stop_an_error_left_unfinished() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE sessions SET state = 'stopping', stopping_to = 'asleep' WHERE id = ?1",
+            [started.id.as_str()],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let ended = session_reply(
+        &client,
+        Command::SessionEnd {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert_eq!(ended.state, SessionStateView::Ended);
+    assert!(!is_alive(home.launches()[0].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_asleep_session_past_the_expiry_ends() {
+    let home = Home::new();
+    let expire_at_once = cockpit_sessions::Settings {
+        asleep_expiry: Duration::ZERO,
+        ..settings()
+    };
+    let daemon = home.start(BASELINE, expire_at_once).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    session_reply(
+        &client,
+        Command::SessionSleep {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    let ended = wait_for_state(&client, &started.id, SessionStateView::Ended).await;
+
+    assert!(ended.reason.unwrap().contains("expiry"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_exits_ends_its_session_and_resume_reopens_the_conversation() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    Process::new("kill")
+        .arg(home.launches()[0].pid.to_string())
+        .status()
+        .unwrap();
+    let ended = wait_for_state(&client, &started.id, SessionStateView::Ended).await;
+    assert!(ended.reason.unwrap().contains("exited"));
+    assert!(sessions(&client, false).await.is_empty());
+
+    let resumed = session_reply(
+        &client,
+        Command::SessionResume {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(resumed.state, SessionStateView::Running);
+    assert_eq!(resumed.launch.unwrap().kind, LaunchKindView::Resume);
+    assert_eq!(home.launches()[1].conversation, "conversation-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_tmux_the_daemon_starts_and_refuses_new_sessions_naming_tmux() {
+    let home = Home::new();
+    let daemon = home.start_without_tmux().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let refused = request(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: None,
+            prompt: None,
+            clone: None,
+        },
+    )
+    .await;
+
+    let error = refusal(refused);
+    assert_eq!(error.code, ErrorCode::Refused);
+    assert!(error.message.contains("tmux"), "{}", error.message);
+    assert!(home.launches().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_tmux_waking_is_refused_and_the_session_stays_asleep() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    session_reply(
+        &client,
+        Command::SessionSleep {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    drop(client);
+    home.stop(daemon);
+    let daemon = home.start_without_tmux().await;
+    let client = connect(&daemon).await;
+
+    let refused = request(
+        &client,
+        Command::SessionWake {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert_eq!(refusal_code(refused), ErrorCode::Refused);
+    assert_eq!(
+        sessions(&client, false).await[0].state,
+        SessionStateView::Asleep
+    );
+    assert_eq!(home.launches().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_tmux_a_running_session_is_left_unrestored_until_tmux_is_back() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    drop(client);
+    home.stop(daemon);
+
+    let daemon = home.start_without_tmux().await;
+    let client = connect(&daemon).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let left = sessions(&client, false).await;
+    assert_eq!(left[0].launch, started.launch);
+    assert_eq!(left[0].state, SessionStateView::Running);
+    assert!(is_alive(home.launches()[0].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launched_session_holds_change_state_over_itself() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let started = new_session(&client, &root, None).await;
+
+    assert!(home.may_report(&started.id).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ending_a_session_revokes_its_change_state_over_itself() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    session_reply(
+        &client,
+        Command::SessionEnd {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert!(!home.may_report(&started.id).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_exits_loses_change_state_over_its_session() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    Process::new("kill")
+        .arg(home.launches()[0].pid.to_string())
+        .status()
+        .unwrap();
+    wait_for_state(&client, &started.id, SessionStateView::Ended).await;
+
+    assert!(!home.may_report(&started.id).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_that_fails_to_restore_loses_change_state_over_itself() {
+    let home = Home::new();
+
+    let (session, daemon) = home.fail_a_restore().await;
+
+    let client = connect(&daemon).await;
+    wait_for_state(&client, &session, SessionStateView::Failed).await;
+    assert!(!home.may_report(&session).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn end_stops_the_agent_and_releases_the_clone() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = session_reply(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: None,
+            prompt: None,
+            clone: Some("work".to_owned()),
+        },
+    )
+    .await;
+
+    let ended = session_reply(
+        &client,
+        Command::SessionEnd {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert_eq!(ended.state, SessionStateView::Ended);
+    assert!(!is_alive(home.launches()[0].pid));
+    let checkouts = match request(&client, Command::CheckoutList { project: None }).await {
+        Ok(Reply::Checkouts { checkouts }) => checkouts,
+        other => panic!("{other:?}"),
+    };
+    let clone = checkouts
+        .iter()
+        .find(|checkout| checkout.id == started.checkout)
+        .unwrap();
+    assert_eq!(clone.occupant, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_daemon_start_a_session_whose_agent_is_gone_is_reopened_without_a_request() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    drop(client);
+    home.stop(daemon);
+    home.lose_every_agent();
+
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+
+    let restored = sessions(&client, false).await;
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].id, started.id);
+    assert_eq!(restored[0].state, SessionStateView::Running);
+    assert_eq!(
+        restored[0].launch.as_ref().unwrap().kind,
+        LaunchKindView::Restore
+    );
+    let launches = home.launches();
+    assert_eq!(
+        (launches[1].mode.as_str(), launches[1].conversation.as_str()),
+        ("resume", "conversation-1")
+    );
+    assert!(is_alive(launches[1].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_daemon_start_a_session_whose_agent_still_runs_keeps_it() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    drop(client);
+    home.stop(daemon);
+
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+
+    let kept = sessions(&client, false).await;
+    assert_eq!(kept[0].launch, started.launch);
+    assert_eq!(kept[0].state, SessionStateView::Running);
+    assert_eq!(home.launches().len(), 1);
+    assert!(is_alive(home.launches()[0].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_restore_is_reported_and_not_retried() {
+    let home = Home::new();
+
+    let (session, daemon) = home.fail_a_restore().await;
+
+    let client = connect(&daemon).await;
+    let failed = sessions(&client, false).await;
+    assert_eq!(failed[0].id, session);
+    assert_eq!(failed[0].state, SessionStateView::Failed);
+    assert!(
+        failed[0].reason.as_ref().unwrap().contains("restore"),
+        "{failed:?}"
+    );
+    drop(client);
+    home.stop(daemon);
+
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    assert_eq!(
+        sessions(&client, false).await[0].state,
+        SessionStateView::Failed
+    );
+    assert_eq!(home.launches().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_interrupted_by_a_daemon_crash_is_finished_on_start() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    drop(client);
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE sessions SET state = 'stopping', stopping_to = 'asleep' WHERE id = ?1",
+            [started.id.as_str()],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(database);
+    home.stop(daemon);
+
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+
+    let finished = sessions(&client, false).await;
+    assert_eq!(finished[0].state, SessionStateView::Asleep);
+    assert!(!is_alive(home.launches()[0].pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_design_link_is_kept_on_the_session_and_anything_but_a_url_is_refused() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let linked = session_reply(
+        &client,
+        Command::SessionLink {
+            session: started.id.clone(),
+            url: "https://claude.ai/design/canvas-1".to_owned(),
+        },
+    )
+    .await;
+    let refused = request(
+        &client,
+        Command::SessionLink {
+            session: started.id.clone(),
+            url: "file:///etc/passwd".to_owned(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        linked.design_link.as_deref(),
+        Some("https://claude.ai/design/canvas-1")
+    );
+    assert!(linked.revision > started.revision);
+    assert_eq!(refusal_code(refused), ErrorCode::InvalidArgument);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agent_socket_refuses_every_session_command() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let agent = Connection::open(daemon.agent_socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let session = "s000000000000".to_owned();
+
+    for command in [
+        Command::SessionNew {
+            dir: "/".to_owned(),
+            agent: None,
+            prompt: None,
+            clone: None,
+        },
+        Command::SessionList { ended: false },
+        Command::SessionRestart {
+            session: session.clone(),
+        },
+        Command::SessionRestartAll,
+        Command::SessionSleep {
+            session: session.clone(),
+        },
+        Command::SessionWake {
+            session: session.clone(),
+        },
+        Command::SessionResume {
+            session: session.clone(),
+        },
+        Command::SessionEnd {
+            session: session.clone(),
+        },
+        Command::SessionLink {
+            session: session.clone(),
+            url: "https://example.com".to_owned(),
+        },
+    ] {
+        assert_eq!(
+            refusal_code(request(&agent, command).await),
+            ErrorCode::NotAuthorized
+        );
+    }
+}

@@ -20,6 +20,9 @@ cockpit-diagnostics = { path = "../cockpit-diagnostics", version = "0.1.0" }
 cockpit-processes = { path = "../cockpit-processes", version = "0.1.0" }
 cockpit-projects = { path = "../cockpit-projects", version = "0.1.0" }
 cockpit-protocol = { path = "../cockpit-protocol", version = "0.1.0" }
+cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0" }
+cockpit-sessions = { path = "../cockpit-sessions", version = "0.1.0" }
+cockpit-tmux = { path = "../cockpit-tmux", version = "0.1.0" }
 cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
 serde = "1.0.229"
 serde_json = "1.0.154"

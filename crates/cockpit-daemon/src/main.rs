@@ -4,9 +4,16 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use cockpit_daemon::{Instance, Options, RUN_LEADER_FLAG, Routes, StartError};
+use std::time::Duration;
+
+use cockpit_daemon::{Instance, Options, RUN_LEADER_FLAG, Routes, StartError, Wiring};
 
 const USAGE: &str = "usage: cockpit-daemon [--foreground]";
+/// Variables of the daemon's own environment every agent starts with; the provider adds its
+/// own after them.
+const AGENT_BASE_VARIABLES: [&str; 8] = [
+    "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
+];
 
 fn main() -> ExitCode {
     let mut raw_arguments = std::env::args_os().skip(1);
@@ -59,14 +66,27 @@ fn run(foreground: bool) -> Result<(), StartError> {
         })?;
     let runtime = tokio::runtime::Runtime::new().map_err(StartError::Runtime)?;
     runtime.block_on(async {
+        let wiring = Wiring {
+            tmux: cockpit_tmux::ServerSpec {
+                tmux: "tmux".into(),
+                socket: cockpit_tmux::Socket::cockpit(),
+                config_path: instance.options().state_dir.join("tmux.conf"),
+            },
+            git: cockpit_projects::Git::from_path(),
+            // The adapters arrive with #33; until then no agent can be started.
+            providers: Vec::new(),
+            sessions: cockpit_sessions::Settings {
+                base_environment: AGENT_BASE_VARIABLES
+                    .iter()
+                    .filter_map(|name| Some(((*name).into(), std::env::var_os(name)?)))
+                    .collect(),
+                ..cockpit_sessions::Settings::default()
+            },
+            session_tick: Duration::from_secs(30),
+        };
         let daemon = instance
-            .start(|database| {
-                Arc::new(Routes::new(
-                    database,
-                    cockpit_projects::Git::from_path(),
-                    environment,
-                    runner,
-                ))
+            .start(wiring, |capabilities| {
+                Arc::new(Routes::new(capabilities, environment, runner))
             })
             .await?;
         println!("ready {}", daemon.socket_path().display());

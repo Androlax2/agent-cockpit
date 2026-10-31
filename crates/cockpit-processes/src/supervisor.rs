@@ -1,7 +1,9 @@
 //! Launch, observe, terminate and reconcile executions against the real processes.
 
+use std::ffi::OsString;
 use std::fs::{DirBuilder, OpenOptions};
-use std::os::unix::fs::DirBuilderExt;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -14,11 +16,13 @@ use crate::output::{OutputKind, OutputLimits, OutputStream};
 use crate::platform::{self, LAUNCH_SCRIPT};
 use crate::systemd::SystemdTools;
 use crate::{
-    Containment, EndReason, Error, Escalation, Execution, ExecutionId, Identity, LaunchSpec, Phase,
-    Reconciled, Signal, Termination, store,
+    Containment, EndReason, Error, Escalation, Execution, ExecutionId, HostedLaunch, Identity,
+    LaunchSpec, Phase, Reconciled, Signal, Termination, store,
 };
 
 const LEADER_FILE: &str = "leader";
+/// A hosted launch's environment, read and deleted by its host step before the program runs.
+const ENVIRONMENT_FILE: &str = "environment";
 /// How often a wait for a launch confirmation or for an empty execution looks again.
 const OBSERVE_INTERVAL: Duration = Duration::from_millis(20);
 /// How often a followed stream checks whether its execution emptied. Slower than
@@ -46,6 +50,8 @@ pub struct Supervisor {
     pub output_limits: OutputLimits,
     /// Read once: the boot id cannot change while this process runs.
     boot_id: Arc<OnceCell<String>>,
+    /// Asked once, at the first scope launch.
+    takes_expand_environment: Arc<OnceCell<bool>>,
 }
 
 /// What the system shows of an execution's processes right now.
@@ -74,6 +80,7 @@ impl Supervisor {
             launch_timeout: Duration::from_secs(10),
             output_limits: OutputLimits::default(),
             boot_id: Arc::new(OnceCell::new()),
+            takes_expand_environment: Arc::new(OnceCell::new()),
         }
     }
 
@@ -91,6 +98,18 @@ impl Supervisor {
             LaunchContainment::ProcessGroup
         };
         Supervisor::new(executions_dir, containment, systemd)
+    }
+
+    /// Whether a launch in `containment` passes `--expand-environment=no`: a scope whose
+    /// `systemd-run` knows the switch. Asked once.
+    async fn scope_takes_expand_environment(&self, containment: &Containment) -> bool {
+        if !matches!(containment, Containment::SystemdScope { .. }) {
+            return false;
+        }
+        *self
+            .takes_expand_environment
+            .get_or_init(|| self.systemd.takes_expand_environment())
+            .await
     }
 
     pub fn launch_containment(&self) -> LaunchContainment {
@@ -116,7 +135,13 @@ impl Supervisor {
         let boot_id = self.boot_id().await?.to_owned();
         let (id, containment) =
             store::record_intent(database, self.launch_containment, &boot_id).await?;
-        let mut launcher = match self.spawn(self.execution_dir(database, id), &containment, spec) {
+        let takes_expand_environment = self.scope_takes_expand_environment(&containment).await;
+        let mut launcher = match self.spawn(
+            self.execution_dir(database, id),
+            &containment,
+            takes_expand_environment,
+            spec,
+        ) {
             Ok(launcher) => launcher,
             Err(error) => {
                 store::record_ended(database, id, EndReason::NeverStarted).await?;
@@ -142,6 +167,7 @@ impl Supervisor {
         &self,
         dir: PathBuf,
         containment: &Containment,
+        takes_expand_environment: bool,
         spec: &LaunchSpec,
     ) -> Result<tokio::process::Child, Error> {
         DirBuilder::new()
@@ -159,7 +185,7 @@ impl Supervisor {
         };
         let (mut command, program) = match containment {
             Containment::SystemdScope { unit } => {
-                let mut command = self.systemd.scope_launcher(unit);
+                let mut command = self.systemd.scope_launcher(unit, takes_expand_environment);
                 command.arg("/bin/sh");
                 (command, self.systemd.systemd_run.clone())
             }
@@ -183,16 +209,120 @@ impl Supervisor {
             .stderr(output_file(OutputKind::Stderr)?)
             .process_group(0);
         if let Containment::SystemdScope { .. } = containment {
-            // `systemd-run --user` finds this user's manager through these; with `--scope`
-            // it execs the program, which inherits them. A spec's own value wins.
-            for name in ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] {
-                let spec_sets_it = spec.environment.iter().any(|(set, _)| set == name);
-                if let (false, Some(value)) = (spec_sets_it, std::env::var_os(name)) {
-                    command.env(name, value);
-                }
-            }
+            command.envs(scope_manager_variables(&spec.environment));
         }
         command.spawn().map_err(Error::io("spawn", program))
+    }
+
+    /// Commits the launch intent of an execution whose program a host starts itself: a tmux
+    /// pane, whose terminal the program needs (report 05). The host runs the returned
+    /// command in `spec.working_dir` as the leader of a new process group (tmux makes each
+    /// pane's process one); [`Supervisor::confirm_hosted`] then waits for its start, or
+    /// [`Supervisor::abandon_hosted`] releases the reservation when the host could not start
+    /// it. The command clears the host's environment, so the program gets exactly
+    /// `spec.environment` plus the `host_variables` the host has set: those describe the
+    /// host itself, as `TERM` names the terminal tmux emulates. Output goes to the host's
+    /// terminal, not to the output files.
+    pub async fn prepare_hosted(
+        &self,
+        database: &Database,
+        spec: &LaunchSpec,
+        host_variables: &[&str],
+    ) -> Result<HostedLaunch, Error> {
+        let environment = self.launch_environment(spec)?;
+        let host_script = host_script(host_variables, &environment)?;
+        let boot_id = self.boot_id().await?.to_owned();
+        let (id, containment) =
+            store::record_intent(database, self.launch_containment, &boot_id).await?;
+        let dir = self.execution_dir(database, id);
+        if let Err(error) = DirBuilder::new().recursive(true).mode(0o700).create(&dir) {
+            store::record_ended(database, id, EndReason::NeverStarted).await?;
+            return Err(Error::io("create", dir)(error));
+        }
+        // Values travel in a private file, never in argv, where any local process could
+        // read them: the launch token among them.
+        let environment_file = dir.join(ENVIRONMENT_FILE);
+        if let Err(error) = write_environment_file(&environment_file, &environment) {
+            store::record_ended(database, id, EndReason::NeverStarted).await?;
+            return Err(Error::io("write", environment_file)(error));
+        }
+        let mut command = ["/bin/sh", "-c", &host_script, "cockpit-host"]
+            .map(OsString::from)
+            .to_vec();
+        command.push(environment_file.into_os_string());
+        if let Containment::SystemdScope { unit } = &containment {
+            let takes_expand_environment = self.scope_takes_expand_environment(&containment).await;
+            command.extend(
+                self.systemd
+                    .scope_launcher_words(unit, takes_expand_environment),
+            );
+        }
+        command.extend(["/bin/sh", "-c", LAUNCH_SCRIPT, "cockpit-launch"].map(OsString::from));
+        command.push(dir.join(LEADER_FILE).into_os_string());
+        command.push(spec.program.clone().into_os_string());
+        command.extend(spec.arguments.iter().cloned());
+        Ok(HostedLaunch {
+            execution: id,
+            command,
+        })
+    }
+
+    /// The environment a hosted program gets: `spec.environment`, plus what `systemd-run`
+    /// needs to reach the manager when the execution runs in a scope. Refuses a name that is
+    /// not a plain shell name, and a value holding a NUL byte.
+    fn launch_environment(&self, spec: &LaunchSpec) -> Result<Vec<(OsString, OsString)>, Error> {
+        let mut environment = spec.environment.clone();
+        if let Some((name, _)) = environment.iter().find(|(name, value)| {
+            !name.to_str().is_some_and(is_shell_name) || value.as_encoded_bytes().contains(&0)
+        }) {
+            return Err(Error::InvalidEnvironment {
+                name: name.to_string_lossy().into_owned(),
+            });
+        }
+        if self.launch_containment == LaunchContainment::SystemdScope {
+            let manager = scope_manager_variables(&environment);
+            environment.extend(manager);
+        }
+        Ok(environment)
+    }
+
+    /// Waits for a hosted execution's start confirmation, the leader file its command
+    /// writes; the leader's pid is its process group. On [`Error::LaunchTimedOut`] the
+    /// execution keeps its reservation, as for [`Supervisor::launch`].
+    pub async fn confirm_hosted(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+    ) -> Result<Execution, Error> {
+        let leader_path = self.execution_dir(database, id).join(LEADER_FILE);
+        let deadline = tokio::time::Instant::now() + self.launch_timeout;
+        loop {
+            if let Some((pid, start)) = read_leader_file(&leader_path).await? {
+                store::record_running(database, id, pid, &start).await?;
+                return store::execution(database, id).await;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::LaunchTimedOut { execution: id });
+            }
+            tokio::time::sleep(OBSERVE_INTERVAL).await;
+        }
+    }
+
+    /// Releases a hosted execution's reservation when its host never ran the command: no
+    /// leader file exists, so no process of it can. A command that did start is left to
+    /// [`Supervisor::observe`].
+    pub async fn abandon_hosted(&self, database: &Database, id: ExecutionId) -> Result<(), Error> {
+        let dir = self.execution_dir(database, id);
+        if read_leader_file(&dir.join(LEADER_FILE)).await?.is_some() {
+            return Ok(());
+        }
+        match tokio::fs::remove_file(dir.join(ENVIRONMENT_FILE)).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(Error::io("remove", dir.join(ENVIRONMENT_FILE))(error)),
+        }
+        store::record_ended(database, id, EndReason::NeverStarted).await?;
+        Ok(())
     }
 
     async fn confirm_start(
@@ -479,6 +609,75 @@ async fn identity_present(systemd: &SystemdTools, identity: &Identity) -> bool {
         Containment::SystemdScope { unit } => systemd.is_active(unit).await.unwrap_or(true),
         Containment::ProcessGroup => platform::group_has_members(identity.process_group),
     }
+}
+
+/// The daemon's variables `systemd-run --user` finds this user's manager through, for those
+/// `environment` does not set: with `--scope` it execs the program, which inherits them, and
+/// a spec's own value wins.
+fn scope_manager_variables(environment: &[(OsString, OsString)]) -> Vec<(OsString, OsString)> {
+    ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]
+        .into_iter()
+        .filter(|name| !environment.iter().any(|(set, _)| set == name))
+        .filter_map(|name| Some((name.into(), std::env::var_os(name)?)))
+        .collect()
+}
+
+/// The host's shell step of a hosted command. It reads the environment file (its first
+/// argument) and deletes it, then runs `env -i` with each of `host_names` the host has set and
+/// each name of `environment`, then the words after the file. Names are refused unless they
+/// are plain shell names, since they are written into the script.
+fn host_script(host_names: &[&str], environment: &[(OsString, OsString)]) -> Result<String, Error> {
+    let mut script =
+        String::from("set -e; . \"$1\"; /bin/rm -f -- \"$1\"; shift; set +e; exec /usr/bin/env -i");
+    for name in host_names {
+        if !is_shell_name(name) {
+            return Err(Error::InvalidEnvironment {
+                name: (*name).to_owned(),
+            });
+        }
+        script.push_str(&format!(" ${{{name}+\"{name}=${name}\"}}"));
+    }
+    for (name, _) in environment {
+        // launch_environment admitted only shell names.
+        let name = name.to_string_lossy();
+        script.push_str(&format!(" \"{name}=${name}\""));
+    }
+    script.push_str(" \"$@\"");
+    Ok(script)
+}
+
+fn is_shell_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+/// Writes `environment` as shell assignments, each value single-quoted, readable by this
+/// user only.
+fn write_environment_file(
+    path: &Path,
+    environment: &[(OsString, OsString)],
+) -> std::io::Result<()> {
+    let mut contents = Vec::new();
+    for (name, value) in environment {
+        contents.extend_from_slice(name.as_encoded_bytes());
+        contents.extend_from_slice(b"='");
+        for &byte in value.as_encoded_bytes() {
+            match byte {
+                b'\'' => contents.extend_from_slice(b"'\\''"),
+                byte => contents.push(byte),
+            }
+        }
+        contents.extend_from_slice(b"'\n");
+    }
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(&contents)
 }
 
 /// The launch confirmation the program wrote: its pid and start token. `None` until written;

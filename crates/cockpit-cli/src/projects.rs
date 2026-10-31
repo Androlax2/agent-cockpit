@@ -4,23 +4,15 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{CheckoutKindView, CheckoutView, Command, KeptReason, Reply, TrustView};
 
-/// Control verbs answer within this; the daemon answers `busy` at once when it is saturated.
-const CONTROL_DEADLINE: Duration = Duration::from_secs(30);
-/// Cloning or pushing a large repository can take minutes.
-const BULK_DEADLINE: Duration = Duration::from_secs(30 * 60);
+use crate::daemon::{
+    BULK_DEADLINE, CONTROL_DEADLINE, absolute_dir, request, unexpected, utf8_words,
+};
 
 /// A verb's command, or the usage problem that stops it.
 pub fn parse(verb: &str, arguments: &[OsString]) -> Result<(Command, Duration), String> {
-    let words: Vec<&str> = arguments
-        .iter()
-        .map(|word| {
-            word.to_str()
-                .ok_or_else(|| format!("{}: not UTF-8", word.to_string_lossy()))
-        })
-        .collect::<Result<_, _>>()?;
+    let words = utf8_words(arguments)?;
     let control = |command| Ok((command, CONTROL_DEADLINE));
     let bulk = |command| Ok((command, BULK_DEADLINE));
     match (verb, words.as_slice()) {
@@ -58,16 +50,9 @@ pub fn parse(verb: &str, arguments: &[OsString]) -> Result<(Command, Duration), 
     }
 }
 
-/// The daemon resolves nothing relative to its own directory: a relative `dir` is made
-/// absolute against this command's working directory here.
 fn project_add(dir: &str, name: Option<&str>) -> Result<Command, String> {
-    let path = std::path::absolute(dir).map_err(|error| format!("{dir}: {error}"))?;
-    let path = path
-        .to_str()
-        .ok_or_else(|| format!("{}: not UTF-8", path.display()))?
-        .to_owned();
     Ok(Command::ProjectAdd {
-        path,
+        path: absolute_dir(dir)?,
         name: name.map(str::to_owned),
     })
 }
@@ -80,39 +65,17 @@ fn checkout_id(text: &str) -> Result<i64, String> {
 /// Sends `command` to the daemon and prints its answer; exit 1 when the daemon refuses or
 /// cannot be reached.
 pub fn run(command: Command, deadline: Duration) -> ExitCode {
-    let socket = match crate::agent::socket_dir() {
-        Ok(dir) => dir.join(cockpit_config::DAEMON_SOCKET),
+    let reply = match request(command, deadline) {
+        Ok(reply) => reply,
         Err(code) => return code,
     };
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => return fail(&format!("cannot start the client runtime: {error}")),
-    };
-    let answer = runtime.block_on(async {
-        let connection = Connection::open(&socket, CONTROL_DEADLINE).await?;
-        connection.request(command, deadline).await
-    });
-    match answer {
-        Ok(reply) => match render(&reply) {
-            Some(text) => {
-                print!("{text}");
-                ExitCode::SUCCESS
-            }
-            None => fail(&format!("the daemon answered with an unexpected {reply:?}")),
-        },
-        Err(ClientError::Daemon(error)) => {
-            fail(&format!("{}: {}", error.code.as_str(), error.message))
+    match render(&reply) {
+        Some(text) => {
+            print!("{text}");
+            ExitCode::SUCCESS
         }
-        Err(error) => fail(&error.to_string()),
+        None => unexpected(&reply),
     }
-}
-
-fn fail(problem: &str) -> ExitCode {
-    eprintln!("cockpit: {problem}");
-    ExitCode::FAILURE
 }
 
 /// The reply as printed, or `None` when it is not one a project verb gets.

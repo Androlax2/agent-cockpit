@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use crate::platform::host_command;
 use crate::{Error, Signal};
 
+/// The first systemd whose `systemd-run` takes `--expand-environment`.
+const MINIMUM_SYSTEMD: u32 = 254;
+
 /// The programs that talk to this user's systemd manager. Paths, not lookups: the daemon
 /// resolves them once and tests point them at fakes.
 #[derive(Debug, Clone)]
@@ -33,14 +36,58 @@ impl SystemdTools {
             .is_ok()
     }
 
+    /// Whether `systemd-run` takes `--expand-environment=` (systemd 254 and later). Before
+    /// 258 a scope never expanded `$`; from 258 it does unless told `no`.
+    pub(crate) async fn takes_expand_environment(&self) -> bool {
+        let Ok(printed) = host_command(&self.systemd_run.to_string_lossy(), &["--version"]).await
+        else {
+            return false;
+        };
+        printed
+            .split_whitespace()
+            .nth(1)
+            .and_then(|version| version.parse::<u32>().ok())
+            .is_some_and(|version| version >= MINIMUM_SYSTEMD)
+    }
+
     /// `systemd-run` set up to put the program it execs into `unit` before it runs.
-    pub(crate) fn scope_launcher(&self, unit: &str) -> tokio::process::Command {
+    pub(crate) fn scope_launcher(
+        &self,
+        unit: &str,
+        takes_expand_environment: bool,
+    ) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.systemd_run);
+        command.args(Self::scope_arguments(unit, takes_expand_environment));
         command
-            .args(["--user", "--scope", "--collect", "--quiet"])
-            .arg(format!("--unit={unit}"))
-            .arg("--");
-        command
+    }
+
+    /// [`SystemdTools::scope_launcher`] as words, for a host that runs the command itself.
+    pub(crate) fn scope_launcher_words(
+        &self,
+        unit: &str,
+        takes_expand_environment: bool,
+    ) -> Vec<std::ffi::OsString> {
+        let mut words = vec![self.systemd_run.clone().into_os_string()];
+        words.extend(
+            Self::scope_arguments(unit, takes_expand_environment)
+                .into_iter()
+                .map(std::ffi::OsString::from),
+        );
+        words
+    }
+
+    /// `--expand-environment=no` where `systemd-run` takes it: from systemd 258 a scope
+    /// rewrites `$` in the command it runs (`$$` becomes `$`), which breaks the launch
+    /// script.
+    fn scope_arguments(unit: &str, takes_expand_environment: bool) -> Vec<String> {
+        let mut arguments: Vec<String> = ["--user", "--scope", "--collect", "--quiet"]
+            .map(str::to_owned)
+            .into();
+        if takes_expand_environment {
+            arguments.push("--expand-environment=no".to_owned());
+        }
+        arguments.extend([format!("--unit={unit}"), "--".to_owned()]);
+        arguments
     }
 
     /// Signals every process of the scope's cgroup, whatever process group it is in.

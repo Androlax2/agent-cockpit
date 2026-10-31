@@ -1,0 +1,10 @@
+[package]
+name = "cockpit-provider-api"
+description = "The contract every agent provider adapter implements: its capabilities and how to launch, or resume, one of its conversations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

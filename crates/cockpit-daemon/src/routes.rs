@@ -10,7 +10,7 @@ use cockpit_protocol::{
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
-use crate::{agent, approvals, projects};
+use crate::{Capabilities, agent, approvals, projects, sessions};
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
 /// so bulk work can fill its lane without taking capacity from control (report 03).
@@ -64,6 +64,7 @@ pub struct Routes {
     database: Arc<cockpit_turso::Database>,
     /// The host Git that project commands run, with the safe settings applied.
     git: cockpit_projects::Git,
+    sessions: Arc<cockpit_sessions::Sessions>,
     /// Read for `projects.trusted` on each answer, so a changed owner config applies at once.
     environment: cockpit_config::Environment,
     /// Runs what the owner approved, and holds the runs in progress.
@@ -72,14 +73,14 @@ pub struct Routes {
 
 impl Routes {
     pub fn new(
-        database: Arc<cockpit_turso::Database>,
-        git: cockpit_projects::Git,
+        capabilities: Capabilities,
         environment: cockpit_config::Environment,
         runner: cockpit_approvals::Runner,
     ) -> Routes {
         Routes {
-            database,
-            git,
+            database: capabilities.database,
+            git: capabilities.git,
+            sessions: capabilities.sessions,
             environment,
             runner,
         }
@@ -187,6 +188,23 @@ impl Handler for Routes {
                     Arc::clone(&self.database),
                     self.runner.clone(),
                 ),
+            },
+            (
+                command @ (Command::SessionNew { .. }
+                | Command::SessionList { .. }
+                | Command::SessionRestart { .. }
+                | Command::SessionRestartAll
+                | Command::SessionSleep { .. }
+                | Command::SessionWake { .. }
+                | Command::SessionResume { .. }
+                | Command::SessionEnd { .. }
+                | Command::SessionLink { .. }),
+                peer,
+            ) => match peer {
+                // Starting and stopping agents is the owner's; agents ask through their
+                // own verbs once those exist.
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => sessions::route(command, Arc::clone(&self.sessions)),
             },
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(

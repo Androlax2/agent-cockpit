@@ -174,21 +174,43 @@ pub fn assert_running(execution: &Execution) {
 
 /// Fake `systemd-run` and `systemctl` sharing a state directory. `systemd-run` records the
 /// unit's process group, optionally fails or waits, then execs the command like `--scope`
-/// does. `systemctl` logs its arguments and answers `kill` and `show` from that record.
+/// does. Like the real one, it rejects `--expand-environment=` before systemd 254 and, from
+/// 258, rewrites `$` in the command unless told `no`; it refuses such a command instead,
+/// since the rewrite breaks it. `systemctl` logs its arguments and answers `kill` and `show` from that record.
 pub struct FakeSystemd {
     pub dir: tempfile::TempDir,
 }
 
 const FAKE_SYSTEMD_RUN: &str = r#"#!/bin/sh
 state=@STATE@
+version=$(cat "$state/version" 2>/dev/null || echo 262)
+if [ "$1" = --version ]; then
+  echo "systemd $version (fake)"
+  exit 0
+fi
 unit=
+# From 258 a scope expands `$` by default; 254 added the switch.
+if [ "$version" -ge 258 ]; then expand=yes; else expand=no; fi
 while [ $# -gt 0 ]; do
   case $1 in
     --unit=*) unit=${1#--unit=} ;;
+    --expand-environment=*)
+      if [ "$version" -lt 254 ]; then
+        echo "systemd-run: unrecognized option '$1'" >&2
+        exit 1
+      fi
+      expand=${1#--expand-environment=} ;;
     --) shift; break ;;
   esac
   shift
 done
+if [ "$expand" = yes ]; then
+  for word in "$@"; do
+    case $word in
+      *'$'*) echo "fake systemd-run: would expand \$ in: $word" >&2; exit 1 ;;
+    esac
+  done
+fi
 echo "systemd-run $unit" >> "$state/calls"
 if [ -f "$state/fail" ]; then
   echo "Failed to connect to bus: No such file or directory" >&2
@@ -254,6 +276,11 @@ impl FakeSystemd {
     /// Makes `systemctl show` fail, as a manager that stopped answering does.
     pub fn break_manager(&self) {
         std::fs::write(self.dir.path().join("broken"), "").unwrap();
+    }
+
+    /// Makes `systemd-run --version` report `version`.
+    pub fn report_version(&self, version: u32) {
+        std::fs::write(self.dir.path().join("version"), version.to_string()).unwrap();
     }
 
     pub fn without_manager(&self) {

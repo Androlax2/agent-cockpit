@@ -6,13 +6,13 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+mod scripted;
+
 use cockpit_protocol::{
-    AgentReport, AgentState, Command, ErrorCode, HandshakeReply, Outcome, ProtocolError,
-    ProtocolVersion, Reply, Request, Response, ServerFrame, SessionReport, Unblock, UnblockedBy,
-    Welcome,
+    AgentReport, AgentState, Command, ErrorCode, Outcome, ProtocolError, Reply, SessionReport,
+    Unblock, UnblockedBy,
 };
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
+use scripted::{scripted_daemon, text};
 
 struct Home {
     dir: tempfile::TempDir,
@@ -57,37 +57,6 @@ impl Home {
     }
 }
 
-/// Accepts one connection on `socket`, answers the handshake, then answers its one request
-/// with `outcome`, and returns the command it received.
-fn scripted_daemon(socket: &Path, outcome: Outcome) -> tokio::task::JoinHandle<Command> {
-    let listener = UnixListener::bind(socket).unwrap();
-    tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let (read_half, mut write_half) = stream.into_split();
-        let mut lines = BufReader::new(read_half).lines();
-        lines.next_line().await.unwrap().expect("a hello");
-        let welcome = HandshakeReply::Accepted(Welcome {
-            protocol_version: ProtocolVersion(1),
-            capabilities: Vec::new(),
-        });
-        send(&mut write_half, serde_json::to_value(welcome).unwrap()).await;
-        let request: Request =
-            serde_json::from_str(&lines.next_line().await.unwrap().expect("a request")).unwrap();
-        let response = ServerFrame::Response(Response {
-            id: request.id,
-            outcome,
-        });
-        send(&mut write_half, serde_json::to_value(response).unwrap()).await;
-        request.command
-    })
-}
-
-async fn send(writer: &mut tokio::net::unix::OwnedWriteHalf, frame: serde_json::Value) {
-    let mut line = serde_json::to_vec(&frame).unwrap();
-    line.push(b'\n');
-    writer.write_all(&line).await.unwrap();
-}
-
 fn session_report(session: &str) -> SessionReport {
     SessionReport {
         session: session.to_owned(),
@@ -97,10 +66,6 @@ fn session_report(session: &str) -> SessionReport {
         needs_input: Some("Start now?".to_owned()),
         reported_at: 1,
     }
-}
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 #[tokio::test]

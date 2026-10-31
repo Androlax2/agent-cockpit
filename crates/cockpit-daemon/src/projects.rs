@@ -176,7 +176,7 @@ fn job(work: impl Future<Output = Result<Reply, Error>> + Send + 'static) -> cra
     })
 }
 
-fn error_code(error: &Error) -> ErrorCode {
+pub(crate) fn error_code(error: &Error) -> ErrorCode {
     match error {
         Error::InvalidName { .. }
         | Error::InvalidHolder { .. }

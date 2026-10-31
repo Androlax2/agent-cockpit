@@ -5,7 +5,9 @@
 mod agent;
 mod approvals;
 mod ask;
+mod daemon;
 mod projects;
+mod sessions;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -28,7 +30,12 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit approval list | show ID | decline ID | input ID < LINE
        cockpit approval approve ID --revision REVISION --digest DIGEST
        cockpit approval edit ID --revision REVISION COMMAND
-       cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID";
+       cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
+       cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
+       cockpit session list [--ended]
+       cockpit session restart SESSION|--all
+       cockpit session sleep|wake|resume|end SESSION
+       cockpit session link SESSION URL";
 
 fn main() -> ExitCode {
     // OsString: a project path need not be UTF-8.
@@ -60,6 +67,10 @@ fn main() -> ExitCode {
                 Err(problem) => usage_error(Some(problem)),
             }
         }
+        [Some("session"), ..] => match sessions::parse(&arguments[1..]) {
+            Ok(command) => sessions::run(command),
+            Err(problem) => usage_error(Some(problem)),
+        },
         _ => usage_error(None),
     }
 }

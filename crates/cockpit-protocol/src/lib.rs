@@ -7,6 +7,7 @@ mod error;
 mod handshake;
 mod projects;
 mod request;
+mod sessions;
 
 pub use agent::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, LAUNCH_TOKEN_VARIABLE, SessionReport,
@@ -30,6 +31,9 @@ pub use projects::{
 pub use request::{
     Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,
     decode_request,
+};
+pub use sessions::{
+    LaunchKindView, LaunchView, SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 
 /// Longest frame either side may send, newline included. Frames are one JSON value per line,

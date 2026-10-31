@@ -130,6 +130,13 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
             "cockpit-projects",
         ],
     },
+    // Sessions drive every provider through the `cockpit-provider-api` contract alone; no
+    // provider's type or path reaches them (#31).
+    ForbiddenEdge {
+        rule: "sessions -> provider adapters",
+        from: Sources::Named(&["cockpit-sessions"]),
+        to: &["cockpit-claude", "cockpit-codex", "cockpit-opencode"],
+    },
 ];
 
 /// Report 02 states these rules as what a crate may import, not what it may not.
@@ -462,6 +469,21 @@ fn each_rule_catches_its_forbidden_edge() {
             "approvals -> wire types/channel/projects",
             "cockpit-approvals",
             "cockpit-projects",
+        ),
+        (
+            "sessions -> provider adapters",
+            "cockpit-sessions",
+            "cockpit-claude",
+        ),
+        (
+            "sessions -> provider adapters",
+            "cockpit-sessions",
+            "cockpit-codex",
+        ),
+        (
+            "sessions -> provider adapters",
+            "cockpit-sessions",
+            "cockpit-opencode",
         ),
     ] {
         let manifest_path = fixture_workspace(

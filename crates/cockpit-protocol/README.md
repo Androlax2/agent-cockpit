@@ -42,6 +42,11 @@ the wire. Report 14 treats this contract as stable from the first release.
    `approval-edit` (a new revision) and `approval-input`; guides with `guide-answer` and
    `guide-stuck` (naming the step shown) and `guide-close`. Views carry the display rules'
    `ShownText` beside the exact text.
+6. Sessions (#31): `session-new` (an absolute `dir`, optional `agent`, `prompt` and
+   `clone` branch), `session-list` (`ended` adds the ended ones), `session-restart`,
+   `session-restart-all`, `session-sleep`, `session-wake`, `session-resume`, `session-end` and
+   `session-link` answer a `session` view, `sessions`, or `restarted-all` with each
+   session that could not restart. Owner socket only.
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are
