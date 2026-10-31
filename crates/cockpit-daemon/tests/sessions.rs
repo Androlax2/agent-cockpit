@@ -2,92 +2,24 @@
 //! against a fake provider that implements only the baseline `cockpit-provider-api`
 //! contract, a real state database, real processes and a private tmux server.
 //!
-//! The daemon runs in this process (as in `overload.rs`) because the fake provider is a test
-//! type the binary does not link. Its agent is a shell script: it appends one line per launch
-//! to a log (session, conversation mode and id, first message, pid, launch token), then
-//! sleeps until stopped.
+//! The daemon runs in this process (as in `overload.rs`) because the fake provider
+//! (`cockpit-provider-api`'s `fake` feature) is a test type the binary does not link. Its
+//! agent is a shell script that logs each launch, then sleeps until stopped.
 #![cfg(target_os = "linux")]
 
 mod common;
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Capabilities, Daemon, Instance, Limits, Options, Routes, Wiring};
 use cockpit_protocol::{Command, ErrorCode, LaunchKindView, Reply, SessionStateView, SessionView};
-use cockpit_provider_api::{
-    Capabilities as ProviderCapabilities, Conversation, ConversationId, LaunchCommand,
-    LaunchRequest, Provider, ProviderError, ProviderName,
-};
+use cockpit_provider_api::ProviderName;
+use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
 use common::GENEROUS;
-
-const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s\n' "$COCKPIT_SESSION" "$1" "$2" "${3:-}" "$$" "$COCKPIT_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
-exec sleep 600"#;
-
-/// A provider with the baseline contract only: it launches a new or resumed conversation.
-struct FakeProvider {
-    name: ProviderName,
-    log: PathBuf,
-    can_resume: bool,
-    names_conversation: bool,
-    conversations: AtomicUsize,
-}
-
-impl Provider for FakeProvider {
-    fn name(&self) -> &ProviderName {
-        &self.name
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            resume: self.can_resume,
-        }
-    }
-
-    fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
-        let (mode, conversation) = match request.conversation {
-            Conversation::New => {
-                let number = self.conversations.fetch_add(1, Ordering::SeqCst) + 1;
-                let id = ConversationId::new(format!("conversation-{number}")).unwrap();
-                ("new", id)
-            }
-            Conversation::Resume(id) => ("resume", id.clone()),
-        };
-        let mut arguments: Vec<OsString> = vec![
-            "-c".into(),
-            AGENT_SCRIPT.into(),
-            "fake-agent".into(),
-            mode.into(),
-            conversation.as_str().into(),
-        ];
-        arguments.extend(request.first_message.map(OsString::from));
-        Ok(LaunchCommand {
-            program: "/bin/sh".into(),
-            arguments,
-            environment: vec![
-                ("PATH".into(), "/usr/bin:/bin".into()),
-                ("FAKE_AGENT_LOG".into(), self.log.clone().into()),
-            ],
-            conversation: self.names_conversation.then_some(conversation),
-        })
-    }
-}
-
-/// One launch line of the fake agent's log.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AgentLaunch {
-    session: String,
-    mode: String,
-    conversation: String,
-    message: String,
-    pid: i32,
-    token: String,
-}
 
 struct Home {
     dir: tempfile::TempDir,
@@ -129,38 +61,17 @@ impl Home {
     }
 
     fn launches(&self) -> Vec<AgentLaunch> {
-        std::fs::read_to_string(self.agent_log())
-            .unwrap_or_default()
-            .lines()
-            .map(|line| {
-                let words: Vec<&str> = line.split(' ').collect();
-                let field = |prefix: &str| {
-                    words
-                        .iter()
-                        .find_map(|word| word.strip_prefix(prefix))
-                        .unwrap()
-                        .to_owned()
-                };
-                AgentLaunch {
-                    session: words[0].to_owned(),
-                    mode: words[1].to_owned(),
-                    conversation: words[2].to_owned(),
-                    message: words[3].to_owned(),
-                    pid: field("pid=").parse().unwrap(),
-                    token: field("token="),
-                }
-            })
-            .collect()
+        FakeProvider::launches(&self.agent_log())
     }
 
     fn wiring(&self, variant: Variant, settings: cockpit_sessions::Settings) -> Wiring {
-        let provider = FakeProvider {
-            name: ProviderName::new("fake").unwrap(),
-            log: self.agent_log(),
-            can_resume: variant.can_resume,
-            names_conversation: variant.names_conversation,
-            conversations: AtomicUsize::new(self.launches().len()),
-        };
+        let mut provider = FakeProvider::new(ProviderName::new("fake").unwrap(), self.agent_log());
+        if !variant.can_resume {
+            provider = provider.without_resume();
+        }
+        if !variant.names_conversation {
+            provider = provider.unnamed_conversations();
+        }
         let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
         wiring.sessions = settings;
         wiring.session_tick = Duration::from_millis(100);

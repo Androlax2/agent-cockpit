@@ -1,8 +1,20 @@
 #![doc = include_str!("../README.md")]
 
+mod capabilities;
+mod events;
+#[cfg(feature = "fake")]
+pub mod fake;
+mod terminal;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+pub use capabilities::{Availability, Capabilities, Capability, Provenance};
+pub use events::{
+    Activity, Confidence, EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
+};
+pub use terminal::{Action, Key, TerminalInput};
 
 /// Longest provider name; it is typed on the command line (`--agent`).
 const MAX_NAME_BYTES: usize = 32;
@@ -74,14 +86,6 @@ impl fmt::Display for ConversationId {
     }
 }
 
-/// What a provider can do, as it reports it. Callers key behavior on these, never on the
-/// provider's name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Capabilities {
-    /// It can launch a conversation it started before, with its history.
-    pub resume: bool,
-}
-
 /// Which conversation a launch runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Conversation {
@@ -95,6 +99,27 @@ pub struct LaunchRequest<'request> {
     pub conversation: &'request Conversation,
     /// The owner's first message, submitted with a new conversation.
     pub first_message: Option<&'request str>,
+    /// The reasoning effort, in the provider's own words; needs [`Capability::Effort`].
+    pub effort: Option<&'request str>,
+    /// Turn the provider's own remote control on; needs [`Capability::RemoteControl`].
+    pub remote_control: bool,
+}
+
+impl LaunchRequest<'_> {
+    /// The capabilities a provider must report to launch this request.
+    pub fn needed_capabilities(&self) -> Vec<Capability> {
+        let mut needed = Vec::new();
+        if matches!(self.conversation, Conversation::Resume(_)) {
+            needed.push(Capability::Resume);
+        }
+        if self.effort.is_some() {
+            needed.push(Capability::Effort);
+        }
+        if self.remote_control {
+            needed.push(Capability::RemoteControl);
+        }
+        needed
+    }
 }
 
 /// The program that runs the conversation in its terminal. `environment` is all it gets
@@ -113,16 +138,54 @@ pub struct LaunchCommand {
 pub trait Provider: Send + Sync + 'static {
     fn name(&self) -> &ProviderName;
 
+    /// The harness version running, when the adapter discovered it.
+    fn version(&self) -> Option<&str> {
+        None
+    }
+
     fn capabilities(&self) -> Capabilities;
 
-    /// The command for `request`. Must not block: it builds words, it starts nothing.
+    /// The command for `request`. Must not block: it builds words, it starts nothing. It
+    /// refuses a request that needs a capability it does not report
+    /// ([`LaunchRequest::needed_capabilities`]).
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError>;
+
+    /// The terminal input that takes `action` while the agent is in `activity` (`None`:
+    /// unknown). Refuses an action whose capability it does not report, and one the
+    /// activity makes unsafe, such as typing into an open dialog.
+    fn input(
+        &self,
+        action: &Action<'_>,
+        activity: Option<Activity>,
+    ) -> Result<Vec<TerminalInput>, ProviderError> {
+        let _ = activity;
+        Err(ProviderError::unsupported(action.capability()))
+    }
+
+    /// The agent's activity read from the end of its terminal, for when no event says it
+    /// ([`Capability::ScreenReading`]). Never proof that a task completed.
+    fn read_screen(&self, screen: &str) -> Option<Observation> {
+        let _ = screen;
+        None
+    }
 }
 
 /// The provider cannot launch the request; `reason` says why, for the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderError {
     pub reason: String,
+}
+
+impl ProviderError {
+    /// An operation that needs `capability`, which the provider does not report.
+    pub fn unsupported(capability: Capability) -> ProviderError {
+        ProviderError {
+            reason: format!(
+                "it does not report the `{}` capability",
+                capability.as_str()
+            ),
+        }
+    }
 }
 
 impl fmt::Display for ProviderError {

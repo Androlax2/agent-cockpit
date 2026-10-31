@@ -365,6 +365,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-claude"
+version = "0.1.0"
+dependencies = [
+ "cockpit-provider-api",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cockpit-cli"
 version = "0.1.0"
 dependencies = [
@@ -402,6 +411,7 @@ dependencies = [
  "cockpit-agent-channel",
  "cockpit-approvals",
  "cockpit-authorization",
+ "cockpit-claude",
  "cockpit-client",
  "cockpit-config",
  "cockpit-diagnostics",
@@ -459,6 +469,10 @@ dependencies = [
 [[package]]
 name = "cockpit-provider-api"
 version = "0.1.0"
+dependencies = [
+ "cockpit-provider-api",
+ "tempfile",
+]
 
 [[package]]
 name = "cockpit-sessions"

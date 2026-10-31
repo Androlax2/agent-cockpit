@@ -1,12 +1,14 @@
 //! `cockpit-daemon`: this user's one Cockpit daemon (report 03). `--foreground` also prints
 //! the log to stderr. It prints `ready <socket>` on stdout once it accepts requests.
 
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use std::time::Duration;
 
 use cockpit_daemon::{Instance, Options, RUN_LEADER_FLAG, Routes, StartError, Wiring};
+use cockpit_provider_api::{Capability, Provenance, Provider};
 
 const USAGE: &str = "usage: cockpit-daemon [--foreground]";
 /// Variables of the daemon's own environment every agent starts with; the provider adds its
@@ -70,6 +72,16 @@ fn run(foreground: bool) -> Result<(), StartError> {
     let start_files = cockpit_config::load(&environment, None, &[])
         .map_err(StartError::Config)?
         .declared_start_files();
+    // Discovery runs programs and may block for seconds, so it comes before the runtime.
+    let daemon_program = std::env::current_exe().map_err(|source| StartError::Io {
+        action: "find the daemon's own program",
+        path: "/proc/self/exe".into(),
+        source,
+    })?;
+    let providers: Vec<Arc<dyn Provider>> = claude_code(&daemon_program)
+        .into_iter()
+        .map(|claude| Arc::new(claude) as Arc<dyn Provider>)
+        .collect();
     let runtime = tokio::runtime::Runtime::new().map_err(StartError::Runtime)?;
     runtime.block_on(async {
         let wiring = Wiring {
@@ -79,8 +91,7 @@ fn run(foreground: bool) -> Result<(), StartError> {
                 config_path: instance.options().state_dir.join("tmux.conf"),
             },
             git: cockpit_projects::Git::from_path(),
-            // The adapters arrive with #33; until then no agent can be started.
-            providers: Vec::new(),
+            providers,
             sessions: cockpit_sessions::Settings {
                 base_environment: AGENT_BASE_VARIABLES
                     .iter()
@@ -101,4 +112,50 @@ fn run(foreground: bool) -> Result<(), StartError> {
         daemon.wait().await;
         Ok(())
     })
+}
+
+/// The Claude Code adapter for the `claude` on the daemon's `PATH`, with the hook bridge and
+/// the `cockpit` program installed beside the daemon. `None`, logged, when there is none
+/// or it does not answer its version.
+fn claude_code(daemon_program: &Path) -> Option<cockpit_claude::ClaudeCode> {
+    let unavailable = |reason: &dyn std::fmt::Display| {
+        tracing::warn!("provider claude unavailable: {reason}");
+    };
+    let Some(program) =
+        std::env::var_os("PATH").and_then(|path| cockpit_claude::ClaudeCode::find_on_path(&path))
+    else {
+        unavailable(&"no `claude` on PATH");
+        return None;
+    };
+    let bin_dir = daemon_program
+        .parent()
+        .expect("the daemon's program is a file in a directory");
+    let bridge = cockpit_claude::Bridge {
+        hook_program: bin_dir.join("cockpit-claude-hook"),
+        cockpit_program: bin_dir.join("cockpit"),
+    };
+    for bridge_program in [&bridge.hook_program, &bridge.cockpit_program] {
+        if !bridge_program.is_file() {
+            tracing::warn!(
+                "provider claude: {} is missing, so its hooks cannot report its activity",
+                bridge_program.display()
+            );
+        }
+    }
+    let claude = match cockpit_claude::ClaudeCode::discover(&program, bridge) {
+        Ok(claude) => claude,
+        Err(error) => {
+            unavailable(&error);
+            return None;
+        }
+    };
+    let provenance = match claude.capabilities().provenance(Capability::Resume) {
+        Some(Provenance::Tested { .. }) => "tested",
+        _ => "unverified",
+    };
+    tracing::info!(
+        "provider claude ready version={} provenance={provenance}",
+        claude.version().unwrap_or("unknown")
+    );
+    Some(claude)
 }

@@ -56,6 +56,7 @@ struct AllowList {
 const DAEMON: &str = "cockpit-daemon";
 /// Clients that are not frontends; the frontends' allow-lists are stricter.
 const CLIENTS: &[&str] = &["cockpit-client", "cockpit-notify"];
+const PROVIDER_ADAPTERS: &[&str] = &["cockpit-claude", "cockpit-codex", "cockpit-opencode"];
 const PROVIDERS: &[&str] = &[
     "cockpit-provider-api",
     "cockpit-claude",
@@ -135,7 +136,15 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
     ForbiddenEdge {
         rule: "sessions -> provider adapters",
         from: Sources::Named(&["cockpit-sessions"]),
-        to: &["cockpit-claude", "cockpit-codex", "cockpit-opencode"],
+        to: PROVIDER_ADAPTERS,
+    },
+    // #33: no adapter type reaches a capability; the daemon wires each adapter in as a
+    // `cockpit-provider-api` provider, and everything above keys on its capabilities.
+    ForbiddenEdge {
+        rule: "capabilities -> provider adapters",
+        // Sessions' own rule above names this edge for them.
+        from: Sources::MembersExcept(&[&[DAEMON, "cockpit-sessions"], PROVIDER_ADAPTERS]),
+        to: PROVIDER_ADAPTERS,
     },
 ];
 
@@ -165,6 +174,13 @@ const ALLOW_LISTS: &[AllowList] = &[
         rule: "config -> nothing product-level",
         from: &["cockpit-config"],
         allowed: &[],
+    },
+    // #33: an adapter sees Cockpit through the provider contract alone; its in-sandbox
+    // bridge reaches the daemon through the `cockpit` CLI as a program, not as a crate.
+    AllowList {
+        rule: "provider adapters -> provider-api only",
+        from: PROVIDER_ADAPTERS,
+        allowed: &["cockpit-provider-api"],
     },
 ];
 
@@ -406,7 +422,7 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-scheduling",
         ),
         ("clients -> tmux", "cockpit-notify", "cockpit-tmux"),
-        ("providers -> UI", "cockpit-claude", "cockpit-web"),
+        ("providers -> UI", "cockpit-provider-api", "cockpit-web"),
         (
             "capabilities -> scheduling",
             "cockpit-workflows",
@@ -497,6 +513,21 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-sessions",
             "cockpit-opencode",
         ),
+        (
+            "capabilities -> provider adapters",
+            "cockpit-tasks",
+            "cockpit-claude",
+        ),
+        (
+            "capabilities -> provider adapters",
+            "cockpit-agent-channel",
+            "cockpit-claude",
+        ),
+        (
+            "provider adapters -> provider-api only",
+            "cockpit-claude",
+            "cockpit-sessions",
+        ),
     ] {
         let manifest_path = fixture_workspace(
             &format!("{source}_to_{target}"),
@@ -519,6 +550,8 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-web", "cockpit-protocol"),
         ("cockpit-cli", "cockpit-config"),
         ("cockpit-authorization", "cockpit-turso"),
+        ("cockpit-daemon", "cockpit-claude"),
+        ("cockpit-claude", "cockpit-provider-api"),
     ] {
         let manifest_path = fixture_workspace(
             &format!("allowed_{source}_to_{target}"),
