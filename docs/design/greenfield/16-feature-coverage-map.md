@@ -14,7 +14,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Feature | Verdict | Owner (report) |
 | --- | --- | --- |
 | Start session (blank, with prompt, in own clone), background/detached, terminal-in-place | keep | sessions, projects, tmux (05) |
-| Restart in place with same conversation; restart-all after config change (17 start files) | keep | sessions; config change detection in config (09) |
+| Restart in place with same conversation; restart-all after config change (17 start files) | keep | sessions; config change detection in config (09): detection proven by `cockpit-config` test `start_file_changes::every_kind_of_change_to_a_read_file_is_reported` (#22); restart-all pending |
 | Sleep after idle, wake on open/message/todo/phone, sleep refusals, asleep notes 7 d | keep | sessions; permits via messaging (07) |
 | Reboot restore (`B`), ended/recent sessions, resume past session (`H`) | keep | sessions |
 | Effort, model/variant pickers, billing toggle (credits vs subscription), `/compact`, Remote Control | keep | provider adapters expose as capabilities (08); UI generic |

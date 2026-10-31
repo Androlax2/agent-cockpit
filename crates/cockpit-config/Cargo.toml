@@ -1,0 +1,17 @@
+[package]
+name = "cockpit-config"
+description = "Owns the effective configuration and where each value came from: XDG layout, owner settings, precedence, provenance and start-file change detection."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
