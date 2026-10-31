@@ -210,6 +210,9 @@ pub struct Session {
     pub created_at: i64,
     pub changed_at: i64,
     pub launch: Option<Launch>,
+    /// `restart --all` deferred its restart until the agent waits at its prompt; the
+    /// periodic pass restarts it then.
+    pub restart_pending: bool,
 }
 
 /// `cockpit session new`: a directory of a registered project, in place or in a new
@@ -248,8 +251,48 @@ pub struct TickReport {
     pub slept: Vec<SessionId>,
     /// Asleep sessions nobody woke within the expiry, now ended.
     pub expired: Vec<SessionId>,
+    /// Sessions whose deferred restart ran once their agent waited at its prompt.
+    pub restarted: Vec<SessionId>,
     /// Sessions a step failed for, with the reason; the next tick looks again.
     pub errors: Vec<(SessionId, String)>,
+}
+
+/// What [`crate::Sessions::restart_all`] did: only sessions whose start files changed since
+/// their launch are restarted, now when their agent waits at its prompt, later otherwise.
+#[derive(Debug, Default)]
+pub struct RestartAll {
+    pub restarted: Vec<Session>,
+    /// Busy sessions (working, asking, or not yet reporting): each restarts once its agent
+    /// reports waiting at its prompt.
+    pub deferred: Vec<Session>,
+    pub failed: Vec<(SessionId, Error)>,
+}
+
+/// What wakes an asleep session; recorded as the reason of its move to launching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeCause {
+    /// `cockpit session wake`.
+    Owner,
+    /// A client opened the session's terminal.
+    Open,
+    /// A message was sent to the session.
+    Message,
+    /// A todo was handed to the session.
+    Todo,
+    /// The owner woke it from the phone.
+    Phone,
+}
+
+impl WakeCause {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            WakeCause::Owner => "woken by the owner",
+            WakeCause::Open => "woken on open",
+            WakeCause::Message => "woken by a message",
+            WakeCause::Todo => "woken by a todo",
+            WakeCause::Phone => "woken from the phone",
+        }
+    }
 }
 
 /// Why a session may not sleep now.
@@ -304,6 +347,9 @@ pub struct Settings {
     /// Variables every agent gets before its provider's own, such as `HOME` and `PATH`;
     /// the daemon passes its own values.
     pub base_environment: Vec<(OsString, OsString)>,
+    /// The files agents read only at launch (`cockpit-config`); each launch records their
+    /// state, and `restart --all` restarts the sessions whose files changed since.
+    pub start_files: Vec<cockpit_config::StartFile>,
 }
 
 impl Default for Settings {
@@ -319,6 +365,7 @@ impl Default for Settings {
             columns: 200,
             rows: 50,
             base_environment: Vec::new(),
+            start_files: Vec::new(),
         }
     }
 }

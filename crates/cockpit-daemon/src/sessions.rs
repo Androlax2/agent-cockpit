@@ -10,7 +10,7 @@ use cockpit_protocol::{
 };
 use cockpit_sessions::{
     Error, LaunchKind, Restored, Session, SessionId, SessionState, Sessions, StartRequest,
-    StopTarget,
+    StopTarget, WakeCause,
 };
 
 use crate::routes::{Route, WorkClass, refusal};
@@ -25,10 +25,11 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
     };
     let job: crate::Job = match command {
         Command::SessionList { ended } => job(async move {
-            let sessions = sessions.list(ended).await?;
-            Ok(Reply::Sessions {
-                sessions: sessions.iter().map(session_view).collect(),
-            })
+            let mut views = Vec::new();
+            for session in sessions.list(ended).await? {
+                views.push(session_view(&sessions, &session).await?);
+            }
+            Ok(Reply::Sessions { sessions: views })
         }),
         Command::SessionNew {
             dir,
@@ -44,21 +45,31 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                     clone_branch: clone,
                 })
                 .await?;
-            Ok(session_reply(&started))
+            session_reply(&sessions, &started).await
         }),
         Command::SessionRestartAll => job(async move {
+            let outcome = sessions.restart_all().await?;
             let mut restarted = Vec::new();
-            let mut failed = Vec::new();
-            for (id, outcome) in sessions.restart_all().await? {
-                match outcome {
-                    Ok(session) => restarted.push(session_view(&session)),
-                    Err(error) => failed.push(SessionFailure {
-                        session: id.to_string(),
-                        error: protocol_error(&error),
-                    }),
-                }
+            for session in &outcome.restarted {
+                restarted.push(session_view(&sessions, session).await?);
             }
-            Ok(Reply::RestartedAll { restarted, failed })
+            let mut deferred = Vec::new();
+            for session in &outcome.deferred {
+                deferred.push(session_view(&sessions, session).await?);
+            }
+            let failed = outcome
+                .failed
+                .iter()
+                .map(|(id, error)| SessionFailure {
+                    session: id.to_string(),
+                    error: protocol_error(error),
+                })
+                .collect();
+            Ok(Reply::RestartedAll {
+                restarted,
+                deferred,
+                failed,
+            })
         }),
         Command::SessionRestart { session } => one(session, sessions, |sessions, id| async move {
             sessions.restart(&id).await
@@ -67,7 +78,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             sessions.sleep(&id).await
         }),
         Command::SessionWake { session } => one(session, sessions, |sessions, id| async move {
-            sessions.wake(&id).await
+            sessions.wake(&id, WakeCause::Owner).await
         }),
         Command::SessionResume { session } => one(session, sessions, |sessions, id| async move {
             sessions.resume(&id).await
@@ -105,8 +116,8 @@ where
 {
     job(async move {
         let id = SessionId::parse(&session)?;
-        let changed = operation(sessions, id).await?;
-        Ok(session_reply(&changed))
+        let changed = operation(Arc::clone(&sessions), id).await?;
+        session_reply(&sessions, &changed).await
     })
 }
 
@@ -185,6 +196,9 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
                 for id in &report.expired {
                     tracing::info!(session = %id, "an asleep session expired; it ended");
                 }
+                for id in &report.restarted {
+                    tracing::info!(session = %id, "a deferred restart ran at the end of a turn");
+                }
                 for (id, reason) in &report.errors {
                     tracing::warn!(session = %id, reason, "a session's periodic step failed");
                 }
@@ -194,14 +208,14 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
     }
 }
 
-fn session_reply(session: &Session) -> Reply {
-    Reply::Session {
-        session: Box::new(session_view(session)),
-    }
+async fn session_reply(sessions: &Sessions, session: &Session) -> Result<Reply, Error> {
+    Ok(Reply::Session {
+        session: Box::new(session_view(sessions, session).await?),
+    })
 }
 
-fn session_view(session: &Session) -> SessionView {
-    SessionView {
+async fn session_view(sessions: &Sessions, session: &Session) -> Result<SessionView, Error> {
+    Ok(SessionView {
         id: session.id.to_string(),
         agent: session.provider.to_string(),
         checkout: session.checkout.0,
@@ -238,5 +252,7 @@ fn session_view(session: &Session) -> SessionView {
             },
             launched_at: launch.launched_at,
         }),
-    }
+        changed_start_files: sessions.changed_start_files(session).await?,
+        restart_pending: session.restart_pending,
+    })
 }

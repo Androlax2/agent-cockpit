@@ -1,12 +1,11 @@
-//! The agent socket's commands: wire types converted to and from `cockpit-agent-channel`'s,
-//! which decides who the sender is and what it may do.
+//! The agent socket's commands: wire types converted to and from `cockpit-sessions`' reports.
+//! `cockpit-agent-channel` decides who the sender is; sessions decide what a report records.
 
 use std::sync::Arc;
 
-use cockpit_agent_channel::{
-    AgentState, Error, ProcessError, ProcessIdentity, Refusal, Report, SessionReport,
-};
+use cockpit_agent_channel::{ProcessError, ProcessIdentity, Refusal};
 use cockpit_protocol::{ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy};
+use cockpit_sessions::{AgentState, Error, Report, SessionReport};
 use cockpit_turso::Database;
 
 use crate::routes::refusal;
@@ -30,8 +29,7 @@ pub(crate) async fn report(
         Err(error) => return internal(&error),
     };
     let recorded =
-        cockpit_agent_channel::report(&write, &peer, launch_token.as_deref(), from_wire(report))
-            .await;
+        cockpit_sessions::report(&write, &peer, launch_token.as_deref(), from_wire(report)).await;
     match recorded {
         Ok(recorded) => match write.commit().await {
             Ok(()) => Outcome::Ok(Reply::AgentReported {
@@ -39,7 +37,7 @@ pub(crate) async fn report(
             }),
             Err(error) => internal(&error),
         },
-        Err(Error::Refused(refused)) => {
+        Err(Error::AgentChannel(cockpit_agent_channel::Error::Refused(refused))) => {
             tracing::info!(?peer_pid, reason = %refused, "refused an agent report");
             Outcome::Error(refusal_to_wire(&refused))
         }
@@ -53,7 +51,7 @@ pub(crate) async fn reports(database: Arc<Database>) -> Outcome {
         Ok(read) => read,
         Err(error) => return internal(&error),
     };
-    match cockpit_agent_channel::latest_reports(&read).await {
+    match cockpit_sessions::latest_reports(&read).await {
         Ok(reports) => Outcome::Ok(Reply::AgentReports {
             reports: reports.into_iter().map(to_wire).collect(),
         }),

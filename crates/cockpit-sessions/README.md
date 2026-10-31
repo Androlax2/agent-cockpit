@@ -23,6 +23,21 @@ stopped in the middle of one finishes or repairs it at its next start.
 - **Restart, sleep, wake and resume** relaunch the same conversation, so each needs a
   provider with the `resume` capability that named the conversation; otherwise they are
   refused before anything stops.
+- **Agents' reports.** An agent reports its state (working, waiting), label, doing-now and
+  open question through the agent channel, which identifies the sender; this crate checks
+  the fields, asks `cockpit-authorization` whether the session may change its own state, and
+  keeps the latest report per session (moved from `cockpit-agent-channel` in #146).
+- **Start files.** Each launch records the state of the start files (`cockpit-config`) its
+  provider reads, before the agent runs. A running session whose files changed since shows
+  them in `session list`.
+- **Restart-all** restarts only the running sessions whose start files changed: now when
+  the agent's latest report since its launch says it waits at its prompt with no question,
+  otherwise once it does (the periodic pass runs the deferred restart). Nothing restarts by
+  itself (#177).
+- **Wake paths.** `wake` is the owner's verb and refuses a session that is not asleep;
+  `ensure_awake` is for callers that need the agent running (open, message, todo, phone)
+  and leaves a running or launching session as it is. Both record the cause in the
+  transition history.
 - **Idle sleep.** The periodic pass puts a running session to sleep only when its agent's
   latest report, sent since the current launch, says it waits at its prompt and asks
   nothing, and the idle window (60 minutes) has passed since that report. With no such
@@ -55,8 +70,11 @@ stopped in the middle of one finishes or repairs it at its next start.
 - Depends on: `cockpit-provider-api` (the only view of a provider), `cockpit-processes`
   (hosted executions, termination), `cockpit-tmux` (the agent's terminal),
   `cockpit-projects` (checkouts, clones, occupancy), `cockpit-agent-channel` (launch tokens,
-  the agent's root identity, its reports), `cockpit-authorization` (the session id the
-  channel keys on, the self grant), `cockpit-turso`, `tokio`, `tracing`.
+  the agent's root identity, identifying a report's sender), `cockpit-authorization` (the
+  session id the channel keys on, the self grant), `cockpit-config` (start files and their
+  change detection), `cockpit-turso`, `tokio`, `tracing`.
+- Migrations: version 2 moves the agent channel's reports, so the channel's migrations are
+  applied first (the daemon's order).
 - Must not depend on a provider adapter (`cockpit-claude`, `cockpit-codex`,
   `cockpit-opencode`): `sessions -> provider adapters` in the crate-graph rule.
 - Used by: the daemon, whose `Routes` serve the `session` verbs to the owner and which runs
@@ -65,7 +83,10 @@ stopped in the middle of one finishes or repairs it at its next start.
 ## Tests
 
 - `tests/schema.rs`: the stored state's constraints on a real database, and the id format.
+- `tests/reports.rs`: report validation, merging, authorization and the migration that
+  moved the reports here.
 - `cockpit-daemon/tests/sessions.rs`: every lifecycle transition through the daemon's
   socket, against a fake provider with only the baseline contract, real processes and a
-  private tmux server.
+  private tmux server; `session_restarts.rs`: restart-all after a start file changed, and
+  the wake paths.
 - `cockpit-cli/tests/sessions.rs`: each `cockpit session` verb's request and output.

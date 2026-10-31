@@ -2,7 +2,9 @@
 //! history (report 04: current state + transition history, no event sourcing).
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use cockpit_config::{FileState, RecordedFile, StartFileSnapshot};
 
 use cockpit_processes::ExecutionId;
 use cockpit_projects::CheckoutId;
@@ -16,9 +18,10 @@ use crate::{Error, Launch, LaunchKind, Session, SessionId, SessionState};
 /// ended. `stopping_to` is where a stop under way leads.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "sessions",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE sessions (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE sessions (
                 id TEXT PRIMARY KEY CHECK (id <> ''),
                 provider TEXT NOT NULL CHECK (provider <> ''),
                 checkout_id INTEGER NOT NULL,
@@ -52,7 +55,50 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 reason TEXT,
                 at INTEGER NOT NULL
             );",
-    }],
+        },
+        // #146: agents' reports move here from the agent channel, rows kept; each launch
+        // records the start files its agent read; a restart may wait for the agent's turn.
+        // The copy reads the channel's version 1 table, so the agent channel's migrations
+        // run first (the daemon's order).
+        Migration {
+            version: 2,
+            sql: "CREATE TABLE session_reports (
+                session TEXT PRIMARY KEY CHECK (session <> ''),
+                state TEXT CHECK (state IN ('working', 'waiting')),
+                label TEXT,
+                doing TEXT,
+                needs_input TEXT,
+                reported_at INTEGER NOT NULL
+            );
+            INSERT INTO session_reports (session, state, label, doing, needs_input, reported_at)
+                SELECT session, state, label, doing, needs_input, reported_at
+                FROM agent_channel_reports;
+            DROP TABLE agent_channel_reports;
+            CREATE TABLE session_start_files (
+                launch_id INTEGER NOT NULL,
+                label TEXT NOT NULL CHECK (label <> ''),
+                path TEXT NOT NULL CHECK (path <> ''),
+                file_state TEXT NOT NULL CHECK (file_state IN ('missing', 'present', 'unreadable')),
+                modified_ns INTEGER,
+                changed_s INTEGER,
+                changed_ns INTEGER,
+                inode INTEGER,
+                len INTEGER,
+                error TEXT,
+                PRIMARY KEY (launch_id, label),
+                CHECK ((file_state = 'present') = (modified_ns IS NOT NULL)),
+                CHECK ((modified_ns IS NULL) = (changed_s IS NULL)
+                    AND (changed_s IS NULL) = (changed_ns IS NULL)
+                    AND (changed_ns IS NULL) = (inode IS NULL)
+                    AND (inode IS NULL) = (len IS NULL)),
+                CHECK ((file_state = 'unreadable') = (error IS NOT NULL))
+            );
+            CREATE TABLE session_restart_requests (
+                session_id TEXT PRIMARY KEY CHECK (session_id <> ''),
+                requested_at INTEGER NOT NULL
+            );",
+        },
+    ],
 };
 
 pub(crate) fn now() -> i64 {
@@ -75,7 +121,8 @@ fn optional_text(text: Option<&str>) -> Value {
 
 const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout, s.working_dir,
     s.conversation, s.design_link, s.state, s.stopping_to, s.reason, s.revision, s.created_at,
-    s.changed_at, l.id, l.kind, l.execution_id, l.launched_at";
+    s.changed_at, l.id, l.kind, l.execution_id, l.launched_at,
+    EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id)";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)";
 
@@ -254,17 +301,176 @@ pub(crate) async fn entered_asleep_at(
     }
 }
 
+/// Records a launch and the start files its agent reads, as they were just before it ran.
 pub(crate) async fn insert_launch(
     write: &WriteTransaction<'_>,
     id: &SessionId,
     kind: LaunchKind,
     execution: ExecutionId,
+    start_files: &StartFileSnapshot,
 ) -> Result<(), Error> {
     write
         .execute(
             "INSERT INTO session_launches (session_id, kind, execution_id, launched_at)
              VALUES (?1, ?2, ?3, ?4)",
             (id.as_str(), kind.column(), execution.0, now()),
+        )
+        .await?;
+    let mut rows = write
+        .query(
+            "SELECT max(id) FROM session_launches WHERE session_id = ?1",
+            [id.as_str()],
+        )
+        .await?;
+    let launch: i64 = match rows.next().await? {
+        Some(row) => row.get(0)?,
+        None => unreachable!("max() answers one row"),
+    };
+    drop(rows);
+    for file in &start_files.files {
+        insert_start_file(write, launch, file).await?;
+    }
+    Ok(())
+}
+
+async fn insert_start_file(
+    write: &WriteTransaction<'_>,
+    launch: i64,
+    file: &RecordedFile,
+) -> Result<(), Error> {
+    let (file_state, present, error) = match &file.state {
+        FileState::Missing => ("missing", None, None),
+        FileState::Present {
+            modified,
+            changed_at,
+            inode,
+            len,
+        } => (
+            "present",
+            Some((nanos_since_epoch(*modified)?, *changed_at, *inode, *len)),
+            None,
+        ),
+        FileState::Unreadable { error } => ("unreadable", None, Some(error.as_str())),
+    };
+    write
+        .execute(
+            "INSERT INTO session_start_files (launch_id, label, path, file_state, modified_ns,
+                 changed_s, changed_ns, inode, len, error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            cockpit_turso::sql::params_from_iter([
+                Value::Integer(launch),
+                Value::Text(file.label.clone()),
+                Value::Text(path_text(&file.path)?.to_owned()),
+                Value::Text(file_state.to_owned()),
+                integer(present.map(|(modified, ..)| modified)),
+                integer(present.map(|(_, (seconds, _), ..)| seconds)),
+                integer(present.map(|(_, (_, nanos), ..)| nanos)),
+                // Stored bit for bit: SQLite integers are signed.
+                integer(present.map(|(_, _, inode, _)| inode.cast_signed())),
+                integer(present.map(|(_, _, _, len)| len.cast_signed())),
+                optional_text(error),
+            ]),
+        )
+        .await?;
+    Ok(())
+}
+
+/// The start files the launch numbered `launch` recorded for its `provider`. A launch from
+/// before they were recorded has none, so every file its provider reads counts as changed.
+pub(crate) async fn start_files(
+    connection: &Connection,
+    launch: i64,
+    provider: &str,
+) -> Result<StartFileSnapshot, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT label, path, file_state, modified_ns, changed_s, changed_ns, inode, len, error
+             FROM session_start_files WHERE launch_id = ?1 ORDER BY label",
+            [launch],
+        )
+        .await?;
+    let mut files = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let label: String = row.get(0)?;
+        let file_state: String = row.get(2)?;
+        let state = match file_state.as_str() {
+            "missing" => FileState::Missing,
+            "present" => FileState::Present {
+                modified: system_time(row.get(3)?),
+                changed_at: (row.get(4)?, row.get(5)?),
+                inode: row.get::<i64>(6)?.cast_unsigned(),
+                len: row.get::<i64>(7)?.cast_unsigned(),
+            },
+            "unreadable" => FileState::Unreadable { error: row.get(8)? },
+            other => {
+                return Err(Error::InvalidStoredRow {
+                    reason: format!("start file {label:?} of launch {launch}: state {other:?}"),
+                });
+            }
+        };
+        files.push(RecordedFile {
+            label,
+            path: PathBuf::from(row.get::<String>(1)?),
+            state,
+        });
+    }
+    Ok(StartFileSnapshot {
+        provider: provider.to_owned(),
+        files,
+    })
+}
+
+fn integer(value: Option<i64>) -> Value {
+    value.map_or(Value::Null, Value::Integer)
+}
+
+fn nanos_since_epoch(time: SystemTime) -> Result<i64, Error> {
+    let nanos = match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => i128::try_from(after.as_nanos()),
+        Err(before) => i128::try_from(before.duration().as_nanos()).map(|nanos| -nanos),
+    };
+    nanos
+        .ok()
+        .and_then(|nanos| i64::try_from(nanos).ok())
+        .ok_or_else(|| Error::InvalidStoredRow {
+            reason: format!("a start file's modification time {time:?} is out of range"),
+        })
+}
+
+fn system_time(nanos: i64) -> SystemTime {
+    let magnitude = Duration::from_nanos(nanos.unsigned_abs());
+    if nanos >= 0 {
+        UNIX_EPOCH + magnitude
+    } else {
+        UNIX_EPOCH - magnitude
+    }
+}
+
+/// Asks for the session to restart once its agent waits at its prompt; asking twice keeps
+/// the first request.
+pub(crate) async fn request_restart(
+    write: &WriteTransaction<'_>,
+    id: &SessionId,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "INSERT OR IGNORE INTO session_restart_requests (session_id, requested_at)
+             VALUES (?1, ?2)",
+            (id.as_str(), now()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// A launch gives the agent the start files as they are, so it answers any restart request.
+pub(crate) async fn clear_restart_request(
+    write: &WriteTransaction<'_>,
+    id: &SessionId,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "DELETE FROM session_restart_requests WHERE session_id = ?1",
+            [id.as_str()],
         )
         .await?;
     Ok(())
@@ -330,6 +536,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
             })
         }
     };
+    let restart_pending = row.get::<i64>(17)? == 1;
     Ok(Session {
         id,
         provider,
@@ -344,5 +551,6 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         created_at: row.get(11)?,
         changed_at: row.get(12)?,
         launch,
+        restart_pending,
     })
 }

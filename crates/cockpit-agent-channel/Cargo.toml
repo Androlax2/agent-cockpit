@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-agent-channel"
-description = "Owns the one authenticated channel between sandboxed agents and the daemon: launch tokens, the verified process tree behind each sender, agents' reports and the per-project answers directories."
+description = "Owns the one authenticated channel between sandboxed agents and the daemon: launch tokens, the verified process tree behind each sender and the per-project answers directories."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

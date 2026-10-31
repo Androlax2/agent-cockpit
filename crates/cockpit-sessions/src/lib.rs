@@ -3,14 +3,16 @@
 mod error;
 mod lifecycle;
 mod model;
+mod reports;
 mod store;
 
 pub use error::Error;
 pub use lifecycle::Sessions;
 pub use model::{
-    Launch, LaunchKind, Restored, Session, SessionId, SessionState, Settings, SleepRefusal,
-    StartRequest, StopTarget, TickReport,
+    Launch, LaunchKind, RestartAll, Restored, Session, SessionId, SessionState, Settings,
+    SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
+pub use reports::{AgentState, Report, SessionReport, latest_reports, report};
 pub use store::MIGRATIONS;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

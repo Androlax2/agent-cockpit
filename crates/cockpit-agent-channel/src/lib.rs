@@ -4,7 +4,6 @@ mod answers;
 mod error;
 mod launch;
 mod process;
-mod reports;
 
 use cockpit_turso::{Migration, MigrationSet};
 
@@ -12,11 +11,12 @@ pub use answers::{AnswersDirectory, AnswersError, ProjectKey};
 pub use error::{Error, Refusal, Unblock, UnblockedBy};
 pub use launch::{LaunchToken, PeerAncestry, identify, mint, record_root};
 pub use process::{ProcessError, ProcessIdentity, ancestry, ancestry_of, identity_of};
-pub use reports::{AgentState, Report, SessionReport, latest_reports, report};
 
 /// The channel's tables. A launch is pending (`token` set, `bound_at` unset) until a report
 /// from its tree binds it; binding clears the token, so it is spent. The root columns are the
-/// process the launcher started, unset until `record_root`.
+/// process the launcher started, unset until `record_root`. Version 1's
+/// `agent_channel_reports` moved to `cockpit-sessions`, whose version 2 copies and drops it
+/// (#146); applied migrations are never edited.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "agent-channel",
     migrations: &[Migration {

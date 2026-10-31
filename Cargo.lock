@@ -466,6 +466,7 @@ version = "0.1.0"
 dependencies = [
  "cockpit-agent-channel",
  "cockpit-authorization",
+ "cockpit-config",
  "cockpit-processes",
  "cockpit-projects",
  "cockpit-provider-api",

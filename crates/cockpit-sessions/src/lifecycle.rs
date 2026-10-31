@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use cockpit_agent_channel::{AgentState, SessionReport};
 use cockpit_authorization::{Permission, Scope};
+use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
 use cockpit_provider_api::{Conversation, LaunchRequest, Provider, ProviderError};
@@ -17,8 +17,8 @@ use cockpit_turso::Database;
 use crate::model::validate_link;
 use crate::store::{self, NewSession};
 use crate::{
-    Error, LaunchKind, Restored, Session, SessionId, SessionState, Settings, SleepRefusal,
-    StartRequest, StopTarget, TickReport,
+    AgentState, Error, LaunchKind, RestartAll, Restored, Session, SessionId, SessionReport,
+    SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
 
 /// Variables of the terminal tmux emulates, kept from the pane: they describe the host.
@@ -142,20 +142,80 @@ impl Sessions {
             .await
     }
 
-    /// Restarts every running session, as after a configuration change; one failure does
-    /// not stop the others.
-    pub async fn restart_all(&self) -> Result<Vec<(SessionId, Result<Session, Error>)>, Error> {
+    /// Restarts the running sessions whose start files changed since their launch, so
+    /// they run on the current ones (#146, decided in #177). One whose agent waits at its
+    /// prompt restarts now; a busy one is marked, and the periodic pass restarts it once its
+    /// agent reports waiting, so no turn is cut. One failure does not stop the others.
+    pub async fn restart_all(&self) -> Result<RestartAll, Error> {
         self.tmux()?;
-        let running = {
+        let (running, agent_reports) = {
             let read = self.database.read().await?;
-            store::sessions_in(&read, &["running"]).await?
+            (
+                store::sessions_in(&read, &["running"]).await?,
+                crate::latest_reports(&read).await?,
+            )
         };
-        let mut restarted = Vec::new();
+        let mut outcome = RestartAll::default();
         for session in running {
-            let outcome = self.restart(&session.id).await;
-            restarted.push((session.id, outcome));
+            let id = session.id.clone();
+            match self.restart_if_changed(session, &agent_reports).await {
+                Ok(None) => {}
+                Ok(Some((restarted, true))) => outcome.restarted.push(restarted),
+                Ok(Some((deferred, false))) => outcome.deferred.push(deferred),
+                Err(error) => outcome.failed.push((id, error)),
+            }
         }
-        Ok(restarted)
+        Ok(outcome)
+    }
+
+    /// `restart_all`'s step for one session: `None` when its start files are current,
+    /// otherwise the session and whether it restarted now (`false`: deferred).
+    async fn restart_if_changed(
+        &self,
+        session: Session,
+        agent_reports: &[SessionReport],
+    ) -> Result<Option<(Session, bool)>, Error> {
+        if self.changed_start_files(&session).await?.is_empty() {
+            return Ok(None);
+        }
+        self.resumable(&session)?;
+        if turn_refusal(&session, report_of(agent_reports, &session.id)).is_none() {
+            return Ok(Some((self.restart(&session.id).await?, true)));
+        }
+        let _operation = self.lock(&session.id).await;
+        let write = self.database.write().await?;
+        store::request_restart(&write, &session.id).await?;
+        let deferred = store::session(&write, &session.id).await?;
+        write.commit().await?;
+        Ok(Some((deferred, false)))
+    }
+
+    /// The labels of the start files a running session's agent read at launch that changed
+    /// since, as `cockpit-config` compares them. A session in any other state launches with
+    /// the current files when it runs again, so it has none.
+    pub async fn changed_start_files(&self, session: &Session) -> Result<Vec<String>, Error> {
+        let Some(launch) = &session.launch else {
+            return Ok(Vec::new());
+        };
+        if !matches!(
+            session.state,
+            SessionState::Running | SessionState::Launching
+        ) {
+            return Ok(Vec::new());
+        }
+        let snapshot = {
+            let read = self.database.read().await?;
+            store::start_files(&read, launch.number, session.provider.as_str()).await?
+        };
+        let start_files = self.settings.start_files.clone();
+        blocking(move || {
+            Ok(snapshot
+                .changed(&start_files)
+                .into_iter()
+                .map(str::to_owned)
+                .collect())
+        })
+        .await
     }
 
     /// Stops the agent and keeps the conversation to wake later. The owner may put a
@@ -174,18 +234,39 @@ impl Sessions {
             .await
     }
 
-    /// Launches an asleep session's conversation again: the one path every wake (open,
-    /// message, todo, phone) takes.
-    pub async fn wake(&self, id: &SessionId) -> Result<Session, Error> {
+    /// Launches an asleep session's conversation again: the one path every wake (owner,
+    /// open, message, todo, phone) takes; `cause` is kept in its transition history. A
+    /// session that is not asleep is refused.
+    pub async fn wake(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
         self.tmux()?;
         let _operation = self.lock(id).await;
+        self.wake_locked(id, cause).await
+    }
+
+    /// For callers that need the agent running, whatever its state now (opening its
+    /// terminal, delivering a message or a todo): wakes an asleep session and answers a
+    /// launching or running one as it is. Any other state is refused, as by [`Self::wake`].
+    pub async fn ensure_awake(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
+        let _operation = self.lock(id).await;
+        let session = self.get(id).await?;
+        if matches!(
+            session.state,
+            SessionState::Running | SessionState::Launching
+        ) {
+            return Ok(session);
+        }
+        self.tmux()?;
+        self.wake_locked(id, cause).await
+    }
+
+    async fn wake_locked(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
         let session = self.get(id).await?;
         let conversation = self.resumable(&session)?;
         self.transition(
             id,
             &[SessionState::Asleep],
             SessionState::Launching,
-            None,
+            Some(cause.reason()),
             "wake",
         )
         .await?;
@@ -366,7 +447,7 @@ impl Sessions {
                     Vec::new()
                 },
                 store::sessions_in(&read, &["asleep"]).await?,
-                cockpit_agent_channel::latest_reports(&read).await?,
+                crate::latest_reports(&read).await?,
             )
         };
         for listed in running {
@@ -384,9 +465,22 @@ impl Sessions {
             match self.end_if_exited(&session).await {
                 Ok(true) => report.exited.push(id),
                 Ok(false) => {
-                    let agent_report = agent_reports
-                        .iter()
-                        .find(|agent_report| agent_report.session.as_str() == id.as_str());
+                    let agent_report = report_of(&agent_reports, &id);
+                    if session.restart_pending && turn_refusal(&session, agent_report).is_none() {
+                        match self
+                            .stop(
+                                &id,
+                                &[SessionState::Running],
+                                StopTarget::Restart,
+                                "restart",
+                            )
+                            .await
+                        {
+                            Ok(_) => report.restarted.push(id),
+                            Err(error) => report.errors.push((id, error.to_string())),
+                        }
+                        continue;
+                    }
                     if self.idle_sleep_refusal(&session, agent_report).is_some() {
                         continue;
                     }
@@ -498,24 +592,10 @@ impl Sessions {
         if let Some(refusal) = self.sleep_refusal(session) {
             return Some(refusal);
         }
-        let launched_at = session
-            .launch
-            .as_ref()
-            .map_or(0, |launch| launch.launched_at);
-        // A report from an earlier launch says nothing about this agent.
-        let Some(agent_report) =
-            agent_report.filter(|agent_report| agent_report.reported_at >= launched_at)
-        else {
-            return Some(SleepRefusal::NotReady);
-        };
-        if agent_report.needs_input.is_some() {
-            return Some(SleepRefusal::NeedsInput);
+        if let Some(refusal) = turn_refusal(session, agent_report) {
+            return Some(refusal);
         }
-        match agent_report.state {
-            Some(AgentState::Working) => return Some(SleepRefusal::Working),
-            Some(AgentState::Waiting) => {}
-            None => return Some(SleepRefusal::NotReady),
-        }
+        let agent_report = agent_report?;
         let window = i64::try_from(self.settings.idle_sleep_after.as_secs()).unwrap_or(i64::MAX);
         let remaining = agent_report.reported_at.saturating_add(window) - store::now();
         if remaining > 0 {
@@ -737,13 +817,19 @@ impl Sessions {
             environment,
             terminal: None,
         };
+        // Taken before the agent runs: a file changed between the two reads as changed.
+        let start_files = {
+            let declared = self.settings.start_files.clone();
+            let provider = session.provider.as_str().to_owned();
+            blocking(move || Ok(StartFileSnapshot::capture(&declared, &provider))).await?
+        };
         let hosted = self
             .processes
             .prepare_hosted(&self.database, &spec, &TERMINAL_VARIABLES)
             .await?;
         {
             let write = self.database.write().await?;
-            store::insert_launch(&write, id, kind, hosted.execution).await?;
+            store::insert_launch(&write, id, kind, hosted.execution, &start_files).await?;
             write.commit().await?;
         }
         let terminal = SessionLaunch {
@@ -776,6 +862,7 @@ impl Sessions {
         if let Some(named) = &command.conversation {
             store::set_conversation(&write, id, named).await?;
         }
+        store::clear_restart_request(&write, id).await?;
         let running = store::transition(
             &write,
             id,
@@ -934,6 +1021,39 @@ impl Sessions {
             .ok_or_else(|| Error::NotInProject {
                 dir: dir.to_path_buf(),
             })
+    }
+}
+
+/// The latest report of session `id`'s agent, if it sent one.
+fn report_of<'reports>(
+    agent_reports: &'reports [SessionReport],
+    id: &SessionId,
+) -> Option<&'reports SessionReport> {
+    agent_reports
+        .iter()
+        .find(|agent_report| agent_report.session.as_str() == id.as_str())
+}
+
+/// Why the session's agent is not between turns, waiting at its prompt with nothing asked:
+/// its latest report, sent since the current launch, must say so. A report from an earlier
+/// launch says nothing about this agent.
+fn turn_refusal(session: &Session, agent_report: Option<&SessionReport>) -> Option<SleepRefusal> {
+    let launched_at = session
+        .launch
+        .as_ref()
+        .map_or(0, |launch| launch.launched_at);
+    let Some(agent_report) =
+        agent_report.filter(|agent_report| agent_report.reported_at >= launched_at)
+    else {
+        return Some(SleepRefusal::NotReady);
+    };
+    if agent_report.needs_input.is_some() {
+        return Some(SleepRefusal::NeedsInput);
+    }
+    match agent_report.state {
+        Some(AgentState::Working) => Some(SleepRefusal::Working),
+        Some(AgentState::Waiting) => None,
+        None => Some(SleepRefusal::NotReady),
     }
 }
 

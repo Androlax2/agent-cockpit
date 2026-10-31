@@ -173,7 +173,8 @@ pub enum Command {
     SessionRestart {
         session: String,
     },
-    /// Restart every running session, as after a configuration change.
+    /// Restart the running sessions whose start files changed since their launch: now when
+    /// their agent waits at its prompt, at the end of its turn otherwise (#177).
     SessionRestartAll,
     SessionSleep {
         session: String,
@@ -278,8 +279,12 @@ pub enum Reply {
     Sessions {
         sessions: Vec<SessionView>,
     },
+    /// Only sessions whose start files changed are restarted; busy ones are `deferred`
+    /// until their agent waits at its prompt.
     RestartedAll {
         restarted: Vec<SessionView>,
+        #[serde(default)]
+        deferred: Vec<SessionView>,
         failed: Vec<SessionFailure>,
     },
 }
