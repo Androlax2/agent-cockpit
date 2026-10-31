@@ -90,7 +90,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | --- | --- | --- |
 | Parallel clones (`--no-local`, trust, hooks, memory set-aside), clones sweep, `K` check | keep | projects (02) |
 | lazygit in sandbox, `U` push with safe git config (GitHub-only origin, no rewrites, hooks off) | keep | projects + `cockpit-github`; host git safety rules unchanged |
-| Reviewed repos: clone vs running copy, `.outgoing` patches, `cockpit apply`, `after-apply` | change | optional "protected checkout" policy in projects; apply stays host-reviewed (15 open) |
+| Reviewed repos: clone vs running copy, `.outgoing` patches, `cockpit apply`, `after-apply` | drop | Theo-only tooling outside the product (decided 2026-10-31); lives in his dotfiles, uses public CLI verbs only |
 | Per-project rootless Docker (system units, per-project users, nftables, relays), `agent-docker-build` CA trust, forwards | keep | containers + sandbox (11); system install optional, reported by readiness |
 | GitHub tokens (repo-only, board), protect/check, PR review | keep | `cockpit-github` |
 

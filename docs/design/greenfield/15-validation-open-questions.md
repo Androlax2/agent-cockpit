@@ -39,8 +39,6 @@ acceptance scenarios, and the questions still open.
 - When to turn on Turso encryption at rest (after it leaves experimental).
 - Whether the phone/web client stays in the first release or follows the designed UI.
 - Hardware and workload definition for the latency targets.
-- Protected checkouts (`dotfiles`, `agent-cockpit`, `vitals` apply flow): product feature with
-  a generic "protected checkout" policy, or Theo-only tooling outside the product?
 
 ## Out of scope for this design
 

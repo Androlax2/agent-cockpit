@@ -55,6 +55,7 @@ Each file is under 120 lines, except the coverage map (16), which is a checklist
 13. Build the new workspace beside `apps/` and cut over once at milestone M5 (report 20).
 14. Accounts switch only at launch and at a quota-stop restart; no mid-turn routing gates.
 15. Greywall and greyproxy are Cockpit's own patched forks, pinned and built by the release.
+16. The protected-checkout apply flow is Theo-only tooling outside the product.
 
 ## Relation to earlier documents
 
