@@ -5,6 +5,7 @@
 #
 #   run.sh start              start the daemon, register the scratch project `demo`
 #   run.sh tui                attach this terminal to the TUI
+#   run.sh tui-window         open the TUI in its own opaque kitty window (Hyprland)
 #   run.sh cockpit ARGS...    run this clone's `cockpit`, from the scratch projects directory
 #   run.sh session new ARGS   start a session in `demo` (`cockpit session new` options), remember it
 #   run.sh session VERB       sleep|wake|resume|end the session `session new` remembered
@@ -17,7 +18,7 @@
 # uses the owner's Claude Code login.
 set -euo pipefail
 
-usage="usage: run.sh start|tui|kill-daemon|stop|clean | cockpit ARGS... | session new [OPTIONS] | session sleep|wake|resume|end"
+usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | cockpit ARGS... | session new [OPTIONS] | session sleep|wake|resume|end"
 
 clone=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 bin="$clone/target/release"
@@ -46,8 +47,10 @@ export XDG_CACHE_HOME="$scratch/cache"
 export XDG_RUNTIME_DIR="$scratch/runtime"
 # The daemon's tmux server is `-L cockpit` in tmux's per-user directory: a private one here.
 export TMUX_TMPDIR="$scratch/tmux"
-# Agents inherit the daemon's PATH: their `cockpit` must be this clone's, not the installed one.
-export PATH="$bin:$PATH"
+# Agents inherit the daemon's PATH: their `cockpit` must be this clone's, not the installed one,
+# and their `claude` the one start linked into $scratch/bin (see link_claude).
+owner_path=$PATH
+export PATH="$scratch/bin:$bin:$PATH"
 unset TMUX
 
 require_binaries() {
@@ -121,16 +124,43 @@ start_daemon() {
     exit 1
 }
 
+# The daemon launches the `claude` on its PATH. A greywall launcher there would hide this clone's
+# target/release and the scratch sockets from the agent, so the walk runs Claude Code itself,
+# unsandboxed in the scratch project: COCKPIT_ACCEPTANCE_CLAUDE, else the first `claude` on the
+# owner's PATH outside a greywall-agents directory.
+link_claude() {
+    local claude=${COCKPIT_ACCEPTANCE_CLAUDE:-} candidate
+    if [[ -n $claude ]]; then
+        claude=$(readlink -f "$claude")
+    else
+        while read -r candidate; do
+            # Resolved, so a link to the launcher is skipped too.
+            candidate=$(readlink -f "$candidate")
+            [[ $candidate == */greywall-agents/* ]] || {
+                claude=$candidate
+                break
+            }
+        done < <(PATH=$owner_path type -ap claude)
+    fi
+    [[ -n $claude && -x $claude ]] || {
+        echo "no claude outside greywall on PATH; set COCKPIT_ACCEPTANCE_CLAUDE" >&2
+        exit 1
+    }
+    mkdir -p "$scratch/bin"
+    ln -sfn "$claude" "$scratch/bin/claude"
+}
+
 start() {
     require_binaries
     make_scratch
+    link_claude
     start_daemon
     if ! "$bin/cockpit" project list | awk -F '\t' -v dir="$demo" '$2 == dir { found = 1 } END { exit !found }'; then
         "$bin/cockpit" project add "$demo" --name demo
     fi
     echo "scratch:  $scratch"
     echo "project:  $demo"
-    echo "claude:   $(command -v claude || echo 'none on PATH: sessions cannot start')"
+    echo "claude:   $(readlink "$scratch/bin/claude") (outside greywall)"
     echo "commit:   $(git -C "$clone" rev-parse HEAD)"
     echo "TUI:      bash $clone/tools/acceptance/run.sh tui"
 }
@@ -152,8 +182,30 @@ stop() {
     tmux -L cockpit kill-server 2>/dev/null || true
 }
 
+# The owner's Hyprland draws windows at 0.95 / 0.9 opacity, too faint for the walk: the TUI gets
+# its own kitty window, made opaque by a rule on its class (the same rule as hypr/apps/craft.lua),
+# added for this Hyprland session only.
+tui_window() {
+    local class=cockpit-acceptance rule
+    require_binaries
+    enter_projects
+    rule="hl.window_rule({ match = { class = \"^($class)\$\" }, opacity = \"1 1\" })"
+    # hyprctl and kitty find the compositor through the owner's runtime directory.
+    XDG_RUNTIME_DIR=$owner_runtime hyprctl eval "$rule" >/dev/null || {
+        echo "hyprctl could not make the window opaque; nothing opened" >&2
+        exit 1
+    }
+    # kitty reads the owner's own configuration; `run.sh tui` sets the scratch home again inside it.
+    env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME -u TMUX_TMPDIR \
+        XDG_RUNTIME_DIR="$owner_runtime" PATH="$owner_path" \
+        setsid -f kitty --class "$class" bash "$clone/tools/acceptance/run.sh" tui \
+        </dev/null >/dev/null 2>&1
+    echo "opened the TUI in an opaque kitty window (class $class)"
+}
+
 case ${1:-} in
 start) start ;;
+tui-window) tui_window ;;
 tui)
     require_binaries
     enter_projects

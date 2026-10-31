@@ -12,7 +12,13 @@ GUIDE = REPO / "docs/acceptance/m1.md"
 BINARIES = ("cockpit", "cockpit-daemon", "cockpit-tui", "cockpit-claude-hook")
 # ask-to-guide's limit (apps/cockpit/src/bin/ask-to-guide.rs MAX_STEPS).
 MAX_STEPS = 60
-RUNNER_VERBS = {"start", "tui", "cockpit", "session", "kill-daemon", "stop", "clean"}
+BASH = shutil.which("bash")
+# What `run.sh start` runs, for the tests that give it a PATH without the host's claude programs.
+START_TOOLS = (
+    "awk", "bash", "cat", "chmod", "dirname", "env", "git", "grep", "id", "ln", "mkdir",
+    "readlink", "realpath", "setsid", "sleep", "touch",
+)
+RUNNER_VERBS = {"start", "tui", "tui-window", "cockpit", "session", "kill-daemon", "stop", "clean"}
 
 
 def guide_steps(text):
@@ -68,7 +74,7 @@ class RunnerTests(unittest.TestCase):
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        root = Path(self.directory.name)
+        self.root = root = Path(self.directory.name)
         self.clone = root / "clone"
         self.script = self.clone / "tools/acceptance/run.sh"
         self.script.parent.mkdir(parents=True)
@@ -92,7 +98,7 @@ class RunnerTests(unittest.TestCase):
 
     def run_script(self, *arguments, **overrides):
         return subprocess.run(
-            ["bash", str(self.script), *arguments],
+            [BASH, str(self.script), *arguments],
             env={**self.environment, **overrides},
             capture_output=True,
             text=True,
@@ -114,7 +120,87 @@ class RunnerTests(unittest.TestCase):
         ):
             with self.subTest(variable=name):
                 self.assertEqual(variables[name], str(self.scratch / place))
-        self.assertEqual(variables["PATH"].split(":")[0], str(self.bin))
+        self.assertEqual(
+            variables["PATH"].split(":")[:2], [str(self.scratch / "bin"), str(self.bin)]
+        )
+
+    def make_program(self, relative, body=""):
+        program = self.root / relative
+        program.parent.mkdir(parents=True, exist_ok=True)
+        program.write_text(f"#!/bin/sh\n{body}\n")
+        program.chmod(0o755)
+        return program
+
+    def start_with_path(self, *directories, **overrides):
+        """run.sh start with the given directories (relative to the temporary directory) first on
+        PATH and a daemon stand-in that is ready at once."""
+        # Alive a moment after ready, like a real daemon, so start's liveness check holds.
+        (self.bin / "cockpit-daemon").write_text("#!/bin/sh\necho 'ready stand-in'\nexec sleep 2\n")
+        # The host's own PATH holds claude programs: give the script only the tools it uses.
+        tools = self.root / "tools"
+        tools.mkdir()
+        for tool in START_TOOLS:
+            (tools / tool).symlink_to(shutil.which(tool))
+        path = [str(self.root / directory) for directory in directories] + [str(tools)]
+        return self.run_script("start", PATH=":".join(path), **overrides)
+
+    def linked_claude(self):
+        return Path(os.readlink(self.scratch / "bin/claude"))
+
+    def test_start_links_the_first_claude_outside_greywall(self):
+        self.make_program("greywall-agents/claude")
+        real = self.make_program("real/claude")
+        result = self.start_with_path("greywall-agents", "real")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.linked_claude(), real)
+
+    def test_start_skips_a_claude_that_links_to_the_greywall_launcher(self):
+        launcher = self.make_program("greywall-agents/claude")
+        (self.root / "shim").mkdir()
+        (self.root / "shim/claude").symlink_to(launcher)
+        real = self.make_program("real/claude")
+        result = self.start_with_path("shim", "real")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.linked_claude(), real)
+
+    def test_start_links_the_claude_the_owner_names(self):
+        self.make_program("real/claude")
+        chosen = self.make_program("chosen/claude")
+        result = self.start_with_path("real", COCKPIT_ACCEPTANCE_CLAUDE=str(chosen))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.linked_claude(), chosen)
+
+    def test_start_without_a_claude_outside_greywall_fails(self):
+        self.make_program("greywall-agents/claude")
+        result = self.start_with_path("greywall-agents")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("COCKPIT_ACCEPTANCE_CLAUDE", result.stderr)
+
+    def open_tui_window(self, hyprctl_exit=0):
+        """run.sh tui-window with stand-ins for hyprctl and setsid that record their calls."""
+        (self.scratch / "projects").mkdir(parents=True)
+        calls = self.root / "calls"
+        self.make_program("fakes/hyprctl", f'echo "hyprctl $XDG_RUNTIME_DIR $*" >> {calls}\nexit {hyprctl_exit}')
+        self.make_program("fakes/setsid", f'echo "setsid ${{XDG_CONFIG_HOME:-unset}} $XDG_RUNTIME_DIR $*" >> {calls}')
+        result = self.run_script("tui-window", PATH=f"{self.root / 'fakes'}:{os.environ['PATH']}")
+        return result, calls.read_text().splitlines()
+
+    def test_tui_window_opens_the_tui_in_an_opaque_window_of_its_own(self):
+        result, (hyprctl, setsid) = self.open_tui_window()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(hyprctl.startswith("hyprctl /run/user/owner eval hl.window_rule("))
+        self.assertIn('class = "^(cockpit-acceptance)$"', hyprctl)
+        self.assertIn('opacity = "1 1"', hyprctl)
+        self.assertEqual(
+            setsid,
+            f"setsid unset /run/user/owner -f kitty --class cockpit-acceptance bash {self.script} tui",
+        )
+
+    def test_tui_window_opens_nothing_when_hyprctl_fails(self):
+        result, calls = self.open_tui_window(hyprctl_exit=1)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].startswith("hyprctl "))
 
     def test_cockpit_before_start_says_to_start_first(self):
         result = self.run_script("cockpit", "version")
