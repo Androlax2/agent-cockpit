@@ -109,6 +109,8 @@ fn from_wire(report: cockpit_protocol::AgentReport) -> Report {
         }),
         dialog: report.dialog,
         is_new_prompt: report.is_new_prompt,
+        conversation: report.conversation,
+        is_conversation_ending: report.is_conversation_ending,
     }
 }
 

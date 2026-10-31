@@ -17,8 +17,9 @@ use cockpit_protocol::{
 const DEADLINE: Duration = Duration::from_secs(10);
 
 /// `--state working|waiting`, `--label`, `--doing`, `--needs-input`, `--dialog`, the
-/// value-less `--prompt`, `--outcome completed|failed|quota-stopped` and `--outcome-reason`
-/// (with `failed` only), each at most once.
+/// value-less `--prompt`, `--outcome completed|failed|quota-stopped`, `--outcome-reason`
+/// (with `failed` only), `--conversation` and the value-less `--conversation-ends` (with
+/// `--conversation` only), each at most once.
 pub(crate) fn report(flags: &[OsString]) -> Result<ExitCode, String> {
     let report = parse_report(flags)?;
     let launch_token = launch_token();
@@ -73,6 +74,13 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
             report.is_new_prompt = true;
             continue;
         }
+        if name == "--conversation-ends" {
+            if report.is_conversation_ending {
+                return Err("--conversation-ends given twice".to_owned());
+            }
+            report.is_conversation_ending = true;
+            continue;
+        }
         let value = flags
             .next()
             .ok_or_else(|| format!("{name} needs a value"))?
@@ -98,6 +106,7 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
             "--outcome" => &mut outcome,
             "--outcome-reason" => &mut outcome_reason,
             "--dialog" => &mut report.dialog,
+            "--conversation" => &mut report.conversation,
             _ => return Err(format!("unknown argument {name}")),
         };
         if field.replace(value).is_some() {
@@ -105,10 +114,18 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
         }
     }
     report.outcome = turn_outcome(outcome, outcome_reason)?;
-    if report == AgentReport::default() {
+    if report.is_conversation_ending && report.conversation.is_none() {
+        return Err("--conversation-ends needs --conversation".to_owned());
+    }
+    // The conversation only says where a report comes from; it reports nothing alone.
+    let reported = AgentReport {
+        conversation: None,
+        ..report.clone()
+    };
+    if reported == AgentReport::default() {
         return Err(
             "name at least one of --state, --label, --doing, --needs-input, --dialog, --prompt, \
-             --outcome"
+             --outcome, --conversation-ends"
                 .to_owned(),
         );
     }

@@ -135,6 +135,41 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     Some(arguments)
 }
 
+/// `SessionEnd` reasons where the same agent goes on in another conversation: `/clear` and
+/// an in-session `/resume` (measured on 2.1.316, #219). Its `SessionStart` follows.
+const CONVERSATION_CHANGES: [&str; 2] = ["clear", "resume"];
+
+/// The `cockpit` arguments the bridge runs for `event`: its report ([`report_arguments`])
+/// naming the conversation the payload comes from (`--conversation`), so the daemon refuses
+/// a report of a conversation that is not the session's (#219). A `SessionEnd` of `/clear`
+/// or an in-session `/resume` announces `--conversation-ends` instead, which lets the
+/// session follow the conversation the next report names. `None` when nothing is reported;
+/// a payload that names no valid conversation reports without one.
+pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
+    let payload: Option<serde_json::Value> = serde_json::from_str(&event.raw).ok();
+    let text = |field: &str| {
+        payload
+            .as_ref()
+            .and_then(|payload| payload.get(field))
+            .and_then(serde_json::Value::as_str)
+    };
+    let conversation = text("session_id")
+        .and_then(|id| ConversationId::new(id).ok())
+        .map(|id| ["--conversation".to_owned(), id.as_str().to_owned()]);
+    if event.kind == EventKind::Ended {
+        let is_changing =
+            text("reason").is_some_and(|reason| CONVERSATION_CHANGES.contains(&reason));
+        let ending = conversation.filter(|_| is_changing)?;
+        let mut arguments = vec!["agent".to_owned(), "report".to_owned()];
+        arguments.extend(ending);
+        arguments.push("--conversation-ends".to_owned());
+        return Some(arguments);
+    }
+    let mut arguments = report_arguments(event)?;
+    arguments.extend(conversation.into_iter().flatten());
+    Some(arguments)
+}
+
 /// `--outcome` and, for a failure with a reason the channel accepts, `--outcome-reason`. A
 /// reason it would refuse is left out, so the outcome still arrives.
 fn outcome_arguments(outcome: &TurnOutcome) -> Vec<String> {

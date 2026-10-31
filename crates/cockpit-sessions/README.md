@@ -38,6 +38,13 @@ stopped in the middle of one finishes or repairs it at its next start.
   only a report of the current launch. A dialog the bridge saw clears on the next report;
   the agent's own question waits for a new prompt or launch (#182) and stays beneath a
   dialog, open again once the dialog is answered (#214).
+- **Reports bound to their conversation** (#219). A report that names its conversation is
+  refused unless it is the session's, so a hook run with another launch's environment cannot
+  move this session's state. The session follows a legitimate change (`/clear`, an
+  in-session `/resume`) only after the current conversation announced its end in the same
+  launch, once; the session's conversation then becomes the new one, which restart, sleep
+  and resume reopen. A session whose provider never named its conversation takes the first
+  one reported.
 - **Start files.** Each launch records the state of the start files (`cockpit-config`) its
   provider reads, before the agent runs. A running session whose files changed since shows
   them in `session list`.

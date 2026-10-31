@@ -23,6 +23,10 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - **Hook bridge.** `cockpit-claude-hook <cockpit>` runs on `SessionStart`,
   `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `StopFailure` and `SessionEnd`,
   normalizes the payload (`hooks::normalize`) and reports through `cockpit agent report`.
+  Every report names the conversation it comes from (`--conversation`, the payload's
+  `session_id`); a `SessionEnd` of `/clear` or an in-session `/resume` reports
+  `--conversation-ends` for the conversation that ends, so the daemon follows the next one
+  and refuses a report of any other (#219).
   It prints nothing on standard output and never exits 2. A question the agent channel
   would refuse is replaced by a plain one; line breaks become spaces and a long one is cut
   to 300 characters. A turn's end reports its outcome (`--outcome completed` or `failed`);
@@ -49,6 +53,8 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   `tests/fixtures/claude-code-2.1.316/`, and the reports they become.
 - `tests/screen.rs`: the screen-reading fallback.
 - `tests/bridge.rs`: the hook bridge as a process against a fake `cockpit`.
+- `tests/conversation.rs`: the conversation each report names, and the end a `/clear` or an
+  in-session `/resume` announces.
 - `tests/live_hooks.rs` (live test ignored without an installed Claude Code): a real launch's
   hooks report through the bridge with that launch's own token.
 - `tests/discover.rs`: finding `claude` and its version.
