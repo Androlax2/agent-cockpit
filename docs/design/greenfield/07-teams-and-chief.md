@@ -1,7 +1,6 @@
 # 07. Teams and Chief
 
-Status: proposed; keep/drop list final after the 2026-10-31 read-only review, awaiting
-Theo's confirmation.
+Status: decided (2026-10-31, after the read-only implementation review)
 
 ## Why revisit
 
@@ -100,7 +99,7 @@ Session links as a separate subsystem: a link is a task message with scheduling 
 - Tests exercise the stores directly far more than the socket; the new tests drive the CLI
   and protocol (02).
 
-Status after review: list final; `decided` once Theo confirms in chat.
+Confirmed by Theo on 2026-10-31.
 
 ## Sources
 

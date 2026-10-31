@@ -33,7 +33,6 @@ acceptance scenarios, and the questions still open.
 
 ## Open questions (owner: Theo unless noted)
 
-- Teams/Chief: confirm the keep/drop list in report 07.
 - Which workflow presets ship by default and which gates each requires.
 - Exact rotation budgets for logs and change-feed retention window (defaults proposed in 12 and 04).
 - When to turn on Turso encryption at rest (after it leaves experimental).

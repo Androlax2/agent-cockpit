@@ -23,7 +23,7 @@ Each file is under 120 lines, except the coverage map (16), which is a checklist
 | 04 | [state-durability](04-state-durability.md) | Turso (SQLite-compatible), identities, recovery, change feed | decided |
 | 05 | [terminal-and-tui](05-terminal-and-tui.md) | tmux hosting, Ratatui reference TUI, UI last | decided |
 | 06 | [tasks-workflows-verification](06-tasks-workflows-verification.md) | Workflow presets, change kinds, evidence-bound completion | proposed |
-| 07 | [teams-and-chief](07-teams-and-chief.md) | Teams as workflow instances, Chief as decider | proposed |
+| 07 | [teams-and-chief](07-teams-and-chief.md) | Teams as workflow instances, Chief as decider | decided |
 | 08 | [agent-onboarding-context](08-agent-onboarding-context.md) | Shipped guidance, launch brief, provider capability negotiation | proposed |
 | 09 | [project-setup-readiness](09-project-setup-readiness.md) | Project config, readiness report, verification receipts | proposed |
 | 10 | [resources-scheduling](10-resources-scheduling.md) | Shared budget, verified limits, fairness, pause semantics | proposed |
