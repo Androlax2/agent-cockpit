@@ -230,13 +230,8 @@ impl Home {
             .await
     }
 
-    /// Whether `session` may ask the owner to run a command or follow a guide: the check
+    /// Whether `session` holds `permission` over itself: `run-commands` is the check
     /// `cockpit-approvals` makes before it files an ask.
-    async fn may_ask(&self, session: &str) -> bool {
-        self.may(session, cockpit_authorization::Permission::RunCommands)
-            .await
-    }
-
     async fn may(&self, session: &str, permission: cockpit_authorization::Permission) -> bool {
         let database = self.database.lock().unwrap().clone().unwrap();
         let read = database.read().await.unwrap();
@@ -972,7 +967,10 @@ async fn ending_a_session_revokes_its_run_commands_over_itself() {
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
-    assert!(home.may_ask(&started.id).await);
+    assert!(
+        home.may(&started.id, cockpit_authorization::Permission::RunCommands)
+            .await
+    );
 
     session_reply(
         &client,
@@ -982,7 +980,11 @@ async fn ending_a_session_revokes_its_run_commands_over_itself() {
     )
     .await;
 
-    assert!(!home.may_ask(&started.id).await);
+    assert!(
+        !home
+            .may(&started.id, cockpit_authorization::Permission::RunCommands)
+            .await
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -993,7 +995,11 @@ async fn a_session_that_fails_to_restore_loses_run_commands_over_itself() {
 
     let client = connect(&daemon).await;
     wait_for_state(&client, &session, SessionStateView::Failed).await;
-    assert!(!home.may_ask(&session).await);
+    assert!(
+        !home
+            .may(&session, cockpit_authorization::Permission::RunCommands)
+            .await
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

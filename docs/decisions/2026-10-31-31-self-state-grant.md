@@ -18,8 +18,9 @@ Issue #31, question #143. Decided by Theo (option A).
   too.
 - **Audited like any grant.** It is an ordinary `cockpit-authorization` grant: the grant
   and its revocation each advance the authorization revision and stay in
-  `authorization_grants`. Nothing else is granted on the owner's behalf; every other
-  permission stays the owner's to give.
+  `authorization_grants`. Nothing else is granted on the owner's behalf except
+  `run-commands` over itself (#270, `2026-10-31-270-self-run-commands-grant.md`); every
+  other permission stays the owner's to give.
 - **Proof:** `crates/cockpit-daemon/tests/sessions.rs`
   `a_launched_session_holds_change_state_over_itself`,
   `ending_a_session_revokes_its_change_state_over_itself`,
