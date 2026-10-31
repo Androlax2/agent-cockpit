@@ -154,6 +154,20 @@ binary or the protocol, per platform, and lists what did not run as open.
   daemon start and the override and bundle in the library; the CLI verbs need the
   host-only channel #108 assigned to #32, so the gate lists them as open, not proven.
 
+## 2026-10-31 — Release policy: one version, changelog from squash subjects (#94)
+
+[Releasing](RELEASING.md) implements issue #94 as written: `0.x` semver, alpha/beta/stable
+tags, alpha after the M3 gate, beta at the M5 cutover, 1.0 after M6 and report 15. Two
+choices the issue leaves open:
+
+- **One version source.** The root `[workspace.package] version` is the release version and
+  the tag names it; crates do not version independently, since Cockpit ships as one bundle
+  (report 13) and `publish = false` keeps crates off crates.io.
+- **Changelog from `git log`.** `main` is squash-merged, so commit subjects already are the
+  PR titles with their numbers; `git log --format='- %s' <previous-tag>..HEAD` produces the
+  entry with no GitHub token or extra tool. The first release lists PRs since the greenfield
+  bootstrap (#18): earlier history is the `apps/` code, which is never tagged.
+
 ## 2026-10-31 — cockpit-daemon: a handler seam, two lanes, nothing aborted
 
 Issue #26. The daemon routes every command through a `Handler` that answers at once or
