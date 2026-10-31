@@ -111,3 +111,9 @@ pub fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}

@@ -190,17 +190,6 @@ impl Server {
         session: &SessionName,
         options: ObserveOptions,
     ) -> Result<Observer, Error> {
-        self.panes(session)?;
-        self.observe_listed_session(session, options)
-    }
-
-    /// [`Server::observe`] for a session the caller has just listed the panes of: tmux
-    /// reports a missing session to `attach-session -C` only on stderr, after it started.
-    pub(crate) fn observe_listed_session(
-        &self,
-        session: &SessionName,
-        options: ObserveOptions,
-    ) -> Result<Observer, Error> {
         if options.pause_after_seconds == 0 || options.capacity == 0 {
             return Err(Error::InvalidArgument {
                 what: "observe options (pause_after_seconds and capacity must be at least 1)",
@@ -243,19 +232,13 @@ impl Server {
         let attach = observer
             .inbox
             .wait_until(deadline_after(ATTACH_TIMEOUT), |state| {
-                state.attach.is_some() || state.is_closed
+                state.attach.is_some()
             })
             .attach
             .clone();
         let failure = match attach {
             Some(Ok(())) => return Ok(observer),
             Some(Err(message)) => message,
-            None if observer.inbox.lock().is_closed => {
-                match observer.inbox.lock().events.pop_back() {
-                    Some(ControlEvent::Exit { reason }) => reason.unwrap_or_default(),
-                    _ => String::new(),
-                }
-            }
             None => format!("no answer within {ATTACH_TIMEOUT:?}"),
         };
         Err(Error::CommandFailed {
@@ -274,8 +257,16 @@ impl Observer {
     /// The next event, or `None` if none arrived within `timeout`. After the
     /// [`ControlEvent::Exit`] event, fails with [`Error::ObserverClosed`].
     pub fn next_event(&self, timeout: Duration) -> Result<Option<ControlEvent>, Error> {
+        self.next_event_before(deadline_after(timeout))
+    }
+
+    /// [`Observer::next_event`] with a deadline (`None`: wait without limit).
+    pub(crate) fn next_event_before(
+        &self,
+        deadline: Option<Instant>,
+    ) -> Result<Option<ControlEvent>, Error> {
         let mut event = None;
-        let state = self.inbox.wait_until(deadline_after(timeout), |state| {
+        let state = self.inbox.wait_until(deadline, |state| {
             event = state.pop();
             event.is_some() || state.is_closed
         });
@@ -365,13 +356,13 @@ fn read_control_stream(stdout: impl Read, mut stderr: impl Read, inbox: &Inbox) 
         if line.last() == Some(&b'\n') {
             line.pop();
         }
-        let event = parser.feed(&line);
-        if let Some(answer) = parser.attach_answer.take() {
-            inbox.update(|state| state.attach = Some(answer));
-        }
-        if let Some(event) = event {
-            has_exited |= matches!(event, ControlEvent::Exit { .. });
-            inbox.update(|state| state.push(event));
+        match parser.feed(&line) {
+            Some(Parsed::Attached(answer)) => inbox.update(|state| state.attach = Some(answer)),
+            Some(Parsed::Event(event)) => {
+                has_exited |= matches!(event, ControlEvent::Exit { .. });
+                inbox.update(|state| state.push(event));
+            }
+            None => {}
         }
     }
     let mut message = String::new();
@@ -382,6 +373,8 @@ fn read_control_stream(stdout: impl Read, mut stderr: impl Read, inbox: &Inbox) 
         .collect::<Vec<_>>()
         .join("; ");
     inbox.update(|state| {
+        // tmux reports a missing session to `attach-session -C` only on stderr.
+        state.attach.get_or_insert_with(|| Err(reason.clone()));
         if !has_exited {
             state.push(ControlEvent::Exit {
                 reason: Some(reason).filter(|reason| !reason.is_empty()),
@@ -396,10 +389,14 @@ fn read_control_stream(stdout: impl Read, mut stderr: impl Read, inbox: &Inbox) 
 #[derive(Default)]
 struct Parser {
     block: Option<Block>,
-    /// tmux's answer to the `attach-session` the client was started with, once it came
-    /// and until the reader took it.
-    attach_answer: Option<Result<(), String>>,
     has_attached: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Parsed {
+    Event(ControlEvent),
+    /// tmux's answer to the `attach-session` the client was started with.
+    Attached(Result<(), String>),
 }
 
 struct Block {
@@ -412,7 +409,7 @@ struct Block {
 }
 
 impl Parser {
-    fn feed(&mut self, line: &[u8]) -> Option<ControlEvent> {
+    fn feed(&mut self, line: &[u8]) -> Option<Parsed> {
         if let Some(block) = &mut self.block {
             let closing = [&b"%end "[..], b"%error "]
                 .into_iter()
@@ -427,18 +424,21 @@ impl Parser {
                 let message = String::from_utf8_lossy(&block.lines.join(&b'\n')).into_owned();
                 if !self.has_attached {
                     self.has_attached = true;
-                    self.attach_answer = Some(if is_error { Err(message) } else { Ok(()) });
-                    return None;
+                    return Some(Parsed::Attached(if is_error {
+                        Err(message)
+                    } else {
+                        Ok(())
+                    }));
                 }
-                return is_error.then_some(ControlEvent::Notification {
+                return is_error.then_some(Parsed::Event(ControlEvent::Notification {
                     name: "error".to_string(),
                     arguments: message,
-                });
+                }));
             }
-            return Some(ControlEvent::Reply {
+            return Some(Parsed::Event(ControlEvent::Reply {
                 is_error,
                 lines: block.lines,
-            });
+            }));
         }
         if let Some(guard) = line.strip_prefix(b"%begin ") {
             self.block = Some(Block {
@@ -448,7 +448,7 @@ impl Parser {
             });
             return None;
         }
-        parse_notification(line)
+        parse_notification(line).map(Parsed::Event)
     }
 }
 
@@ -535,13 +535,13 @@ mod tests {
         assert_eq!(parser.feed(b"%end 1 6 1"), None);
         assert_eq!(
             parser.feed(b"%end 1 7 1"),
-            Some(ControlEvent::Reply {
+            Some(Parsed::Event(ControlEvent::Reply {
                 is_error: false,
                 lines: vec![
                     b"%output %3 not a notification".to_vec(),
                     b"%end 1 6 1".to_vec()
                 ],
-            })
+            }))
         );
     }
 }

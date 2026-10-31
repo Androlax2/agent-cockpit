@@ -17,7 +17,7 @@ pub const CONFIG: &str = "\
 set-option -g remain-on-exit on
 # Agent transcripts are long; the default 2000 lines loses most of a build log.
 set-option -g history-limit 50000
-# A one-word command runs through this shell, quoted for sh; never the user's login shell.
+# Anything tmux runs through a shell uses sh, never the user's login shell.
 set-option -g default-shell /bin/sh
 # The TUI runs in a pane: an Escape key must not wait for the rest of a sequence.
 set-option -s escape-time 0
@@ -56,8 +56,7 @@ pub struct ServerSpec {
     pub config_path: PathBuf,
 }
 
-/// The parts of a new tmux session. `command` runs as given: several words directly, a
-/// single word quoted for `/bin/sh` (tmux runs a lone word through its `default-shell`).
+/// The parts of a new tmux session. `command` runs directly, never through a shell.
 #[derive(Clone, Debug)]
 pub struct SessionLaunch {
     pub name: SessionName,
@@ -151,6 +150,15 @@ impl Server {
         Ok(output.stdout)
     }
 
+    /// [`Server::run`], with `None` when no server runs.
+    fn run_if_server(&self, arguments: &[OsString]) -> Result<Option<Vec<u8>>, Error> {
+        match self.run(arguments) {
+            Ok(printed) => Ok(Some(printed)),
+            Err(error) if is_no_server(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Runs a command whose output is one pane id.
     fn run_for_pane_id(&self, arguments: &[OsString]) -> Result<PaneId, Error> {
         let printed = self.run(arguments)?;
@@ -164,12 +172,6 @@ impl Server {
     /// Creates a detached session running `launch.command`, starting the server if needed,
     /// and returns the id of its one pane. Fails if the name is taken.
     pub fn new_session(&self, launch: &SessionLaunch) -> Result<PaneId, Error> {
-        if launch.command.is_empty() {
-            return Err(Error::InvalidArgument {
-                what: "session command (empty)",
-                value: String::new(),
-            });
-        }
         // tmux starts the pane in $HOME, and still succeeds, when the directory is missing.
         if !launch.working_dir.is_dir() {
             return Err(Error::InvalidArgument {
@@ -177,27 +179,27 @@ impl Server {
                 value: launch.working_dir.display().to_string(),
             });
         }
-        let mut arguments: Vec<OsString> = vec![
-            "new-session".into(),
-            "-d".into(),
-            "-P".into(),
-            "-F".into(),
-            "#{pane_id}".into(),
-            "-s".into(),
-            launch.name.as_str().into(),
-            "-c".into(),
-            launch.working_dir.clone().into(),
-            "-x".into(),
-            launch.columns.to_string().into(),
-            "-y".into(),
-            launch.rows.to_string().into(),
-        ];
+        let mut arguments = words(&[
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-s",
+            launch.name.as_str(),
+            "-x",
+            &launch.columns.to_string(),
+            "-y",
+            &launch.rows.to_string(),
+            "-c",
+        ]);
+        arguments.push(launch.working_dir.clone().into());
         for (name, value) in &launch.environment {
             arguments.push("-e".into());
             arguments.push(environment_assignment(name, value)?);
         }
         arguments.push("--".into());
-        arguments.extend(direct_command(&launch.command));
+        arguments.extend(direct_command(&launch.command)?);
         self.run_for_pane_id(&arguments)
     }
 
@@ -205,15 +207,10 @@ impl Server {
     /// empty when no server runs. A session with any other name is not Cockpit's (an agent
     /// can reach this server through its pane's `TMUX`), so it is left out.
     pub fn sessions(&self) -> Result<Vec<SessionName>, Error> {
-        let arguments: Vec<OsString> = vec![
-            "list-sessions".into(),
-            "-F".into(),
-            "#{session_name}".into(),
-        ];
-        let printed = match self.run(&arguments) {
-            Ok(printed) => printed,
-            Err(error) if is_no_server(&error) => return Ok(Vec::new()),
-            Err(error) => return Err(error),
+        let Some(printed) =
+            self.run_if_server(&words(&["list-sessions", "-F", "#{session_name}"]))?
+        else {
+            return Ok(Vec::new());
         };
         let mut names: Vec<SessionName> = String::from_utf8_lossy(&printed)
             .lines()
@@ -225,14 +222,14 @@ impl Server {
 
     /// The panes of every window of `session`.
     pub fn panes(&self, session: &SessionName) -> Result<Vec<PaneInfo>, Error> {
-        let arguments: Vec<OsString> = vec![
-            "list-panes".into(),
-            "-s".into(),
-            "-t".into(),
-            session.target().into(),
-            "-F".into(),
-            "#{pane_id} #{pane_pid} #{pane_dead} #{pane_dead_status}".into(),
-        ];
+        let arguments = words(&[
+            "list-panes",
+            "-s",
+            "-t",
+            &session.target(),
+            "-F",
+            "#{pane_id} #{pane_pid} #{pane_dead} #{pane_dead_status}",
+        ]);
         let printed = self.run(&arguments)?;
         String::from_utf8_lossy(&printed)
             .lines()
@@ -248,12 +245,12 @@ impl Server {
     /// Closes a session and its panes; tmux sends their processes `SIGHUP`. Ending the
     /// process tree for certain belongs to `cockpit-processes`.
     pub fn close_session(&self, session: &SessionName) -> Result<(), Error> {
-        self.run(&["kill-session".into(), "-t".into(), session.target().into()])
+        self.run(&words(&["kill-session", "-t", &session.target()]))
             .map(drop)
     }
 
     pub fn close_pane(&self, pane: &PaneId) -> Result<(), Error> {
-        self.run(&["kill-pane".into(), "-t".into(), pane.as_str().into()])
+        self.run(&words(&["kill-pane", "-t", pane.as_str()]))
             .map(drop)
     }
 
@@ -265,12 +262,6 @@ impl Server {
         split: Split,
         command: &[OsString],
     ) -> Result<PaneId, Error> {
-        if command.is_empty() {
-            return Err(Error::InvalidArgument {
-                what: "pane command (empty)",
-                value: String::new(),
-            });
-        }
         let percent = split.percent();
         if !(1..=99).contains(&percent) {
             return Err(Error::InvalidArgument {
@@ -278,19 +269,19 @@ impl Server {
                 value: percent.to_string(),
             });
         }
-        let mut arguments: Vec<OsString> = vec![
-            "split-window".into(),
-            split.direction_flag().into(),
-            "-l".into(),
-            format!("{percent}%").into(),
-            "-t".into(),
-            parent.as_str().into(),
-            "-P".into(),
-            "-F".into(),
-            "#{pane_id}".into(),
-            "--".into(),
-        ];
-        arguments.extend(direct_command(command));
+        let mut arguments = words(&[
+            "split-window",
+            split.direction_flag(),
+            "-l",
+            &format!("{percent}%"),
+            "-t",
+            parent.as_str(),
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "--",
+        ]);
+        arguments.extend(direct_command(command)?);
         self.run_for_pane_id(&arguments)
     }
 
@@ -308,22 +299,18 @@ impl Server {
     /// this server attached to `session`. `TMUX` is emptied for that client only, which is
     /// how tmux allows the nesting.
     pub fn show_in_viewer(&self, viewer: &PaneId, session: &SessionName) -> Result<(), Error> {
-        let mut arguments: Vec<OsString> = vec![
-            "respawn-pane".into(),
-            "-k".into(),
-            "-t".into(),
-            viewer.as_str().into(),
-            "-e".into(),
-            "TMUX=".into(),
-            "--".into(),
-            self.spec.tmux.clone().into(),
-        ];
-        arguments.extend(self.spec.socket.arguments().map(OsString::from));
-        arguments.extend([
-            "attach-session".into(),
-            "-t".into(),
-            session.target().into(),
+        let mut arguments = words(&[
+            "respawn-pane",
+            "-k",
+            "-t",
+            viewer.as_str(),
+            "-e",
+            "TMUX=",
+            "--",
         ]);
+        arguments.push(self.spec.tmux.clone().into());
+        arguments.extend(self.spec.socket.arguments().map(OsString::from));
+        arguments.extend(words(&["attach-session", "-t", &session.target()]));
         self.run(&arguments).map(drop)
     }
 
@@ -335,11 +322,9 @@ impl Server {
 
     /// The server's process id, or `None` when no server runs.
     pub fn server_pid(&self) -> Result<Option<u32>, Error> {
-        let arguments: Vec<OsString> = vec!["display-message".into(), "-p".into(), "#{pid}".into()];
-        let printed = match self.run(&arguments) {
-            Ok(printed) => printed,
-            Err(error) if is_no_server(&error) => return Ok(None),
-            Err(error) => return Err(error),
+        let arguments = words(&["display-message", "-p", "#{pid}"]);
+        let Some(printed) = self.run_if_server(&arguments)? else {
+            return Ok(None);
         };
         let printed = String::from_utf8_lossy(&printed);
         printed
@@ -376,45 +361,32 @@ impl Split {
 }
 
 pub(crate) fn capture_arguments(pane: &PaneId, history_lines: u32) -> Vec<OsString> {
-    let mut arguments: Vec<OsString> = vec![
-        "capture-pane".into(),
-        "-p".into(),
-        "-e".into(),
-        "-t".into(),
-        pane.as_str().into(),
-    ];
+    let mut arguments = words(&["capture-pane", "-p", "-e", "-t", pane.as_str()]);
     if history_lines > 0 {
-        arguments.push("-S".into());
-        arguments.push(format!("-{history_lines}").into());
+        arguments.extend(words(&["-S", &format!("-{history_lines}")]));
     }
     arguments
 }
 
-/// tmux runs a lone argument through `sh -c` but several arguments directly, so a
-/// one-word command is quoted for that shell and run with `exec`.
-fn direct_command(command: &[OsString]) -> Vec<OsString> {
-    match command {
-        [program] => {
-            let mut line = OsString::from("exec ");
-            line.push(shell_quoted(program));
-            vec![line]
-        }
-        _ => command.to_vec(),
-    }
+pub(crate) fn words(list: &[&str]) -> Vec<OsString> {
+    list.iter().map(OsString::from).collect()
 }
 
-fn shell_quoted(word: &OsStr) -> OsString {
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
-    let mut quoted = vec![b'\''];
-    for &byte in word.as_bytes() {
-        if byte == b'\'' {
-            quoted.extend_from_slice(b"'\\''");
-        } else {
-            quoted.push(byte);
+/// tmux runs a lone argument through its `default-shell` but several arguments directly,
+/// so a one-word command is handed to `sh` as `$0` of a fixed script: nothing is quoted.
+fn direct_command(command: &[OsString]) -> Result<Vec<OsString>, Error> {
+    match command {
+        [] => Err(Error::InvalidArgument {
+            what: "pane command (empty)",
+            value: String::new(),
+        }),
+        [program] => {
+            let mut wrapped = words(&["/bin/sh", "-c", "exec \"$0\""]);
+            wrapped.push(program.clone());
+            Ok(wrapped)
         }
+        _ => Ok(command.to_vec()),
     }
-    quoted.push(b'\'');
-    OsString::from_vec(quoted)
 }
 
 fn environment_assignment(name: &str, value: &OsStr) -> Result<OsString, Error> {

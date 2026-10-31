@@ -57,7 +57,7 @@ impl Server {
         options: CaptureOptions,
     ) -> Result<CaptureStream, Error> {
         let panes = self.panes(session)?;
-        let observer = self.observe_listed_session(session, options.observe)?;
+        let observer = self.observe(session, options.observe)?;
         let mut stream = CaptureStream {
             observer,
             awaiting_replies: VecDeque::new(),
@@ -76,10 +76,7 @@ impl CaptureStream {
     pub fn next_frame(&mut self, timeout: Duration) -> Result<Option<CaptureFrame>, Error> {
         let deadline = Instant::now().checked_add(timeout);
         loop {
-            let remaining = deadline.map_or(Duration::MAX, |deadline| {
-                deadline.saturating_duration_since(Instant::now())
-            });
-            let Some(event) = self.observer.next_event(remaining)? else {
+            let Some(event) = self.observer.next_event_before(deadline)? else {
                 return Ok(None);
             };
             match event {
@@ -133,18 +130,17 @@ impl CaptureStream {
                 output: "a control-mode reply to no command this stream sent".to_string(),
             });
         };
-        let (Request::Snapshot(pane) | Request::Resume(pane)) = &request;
-        let pane = pane.clone();
-        if is_error {
-            // Usually the pane closed after the request; the other panes stream on.
-            self.needs_another_snapshot.remove(&pane);
-            return Ok(Some(CaptureFrame::PaneUnavailable {
-                pane,
-                message: String::from_utf8_lossy(&lines.join(&b'\n')).into_owned(),
-            }));
-        }
-        let Request::Snapshot(_) = request else {
-            return Ok(None);
+        let pane = match request {
+            Request::Snapshot(pane) | Request::Resume(pane) if is_error => {
+                // Usually the pane closed after the request; the other panes stream on.
+                self.needs_another_snapshot.remove(&pane);
+                return Ok(Some(CaptureFrame::PaneUnavailable {
+                    pane,
+                    message: String::from_utf8_lossy(&lines.join(&b'\n')).into_owned(),
+                }));
+            }
+            Request::Resume(_) => return Ok(None),
+            Request::Snapshot(pane) => pane,
         };
         if self.needs_another_snapshot.remove(&pane) {
             self.request_snapshot(pane.clone())?;

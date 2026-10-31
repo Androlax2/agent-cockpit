@@ -5,7 +5,25 @@ mod common;
 use std::time::{Duration, Instant};
 
 use cockpit_tmux::{ControlEvent, Error, ObserveOptions, Observer, PaneId, SessionName};
-use common::{GENEROUS, TestServer, wait_for};
+use common::{GENEROUS, TestServer, contains, wait_for};
+
+/// The first event `matches` accepts, failing after [`GENEROUS`] with `what`.
+fn first_event(
+    observer: &Observer,
+    what: &str,
+    matches: impl Fn(&ControlEvent) -> bool,
+) -> ControlEvent {
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "timed out waiting for {what}");
+        if let Some(event) = observer.next_event(remaining).expect("observing")
+            && matches(&event)
+        {
+            return event;
+        }
+    }
+}
 
 /// Bytes `pane` wrote until `until` holds for them, failing after [`GENEROUS`].
 fn output_until(observer: &Observer, pane: &PaneId, until: impl Fn(&[u8]) -> bool) -> Vec<u8> {
@@ -26,12 +44,6 @@ fn output_until(observer: &Observer, pane: &PaneId, until: impl Fn(&[u8]) -> boo
         }
     }
     output
-}
-
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
 }
 
 #[test]
@@ -102,17 +114,10 @@ fn a_consumer_that_falls_behind_loses_output_and_is_told_so() {
     fixture.release("go");
     std::thread::sleep(Duration::from_secs(1));
 
-    let deadline = Instant::now() + GENEROUS;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "the loss was never reported");
-        if let Some(ControlEvent::OutputLost { pane: lost, .. }) =
-            observer.next_event(remaining).expect("observing")
-        {
-            assert_eq!(lost, pane);
-            break;
-        }
-    }
+    let lost = first_event(&observer, "the loss report", |event| {
+        matches!(event, ControlEvent::OutputLost { .. })
+    });
+    assert!(matches!(lost, ControlEvent::OutputLost { pane: from, .. } if from == pane));
 }
 
 #[test]
@@ -148,15 +153,9 @@ fn closing_the_session_ends_the_observer() {
 
     fixture.server.close_session(&session).expect("closes");
 
-    let deadline = Instant::now() + GENEROUS;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "no exit event");
-        if let Some(ControlEvent::Exit { .. }) = observer.next_event(remaining).expect("observing")
-        {
-            break;
-        }
-    }
+    first_event(&observer, "the exit event", |event| {
+        matches!(event, ControlEvent::Exit { .. })
+    });
     assert!(matches!(
         observer.next_event(GENEROUS),
         Err(Error::ObserverClosed)

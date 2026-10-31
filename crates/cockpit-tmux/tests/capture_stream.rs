@@ -5,19 +5,13 @@ mod common;
 use std::time::{Duration, Instant};
 
 use cockpit_tmux::{CaptureFrame, CaptureOptions, CaptureStream, ObserveOptions};
-use common::{GENEROUS, TestServer, wait_for};
+use common::{GENEROUS, TestServer, contains, wait_for};
 
 fn next(stream: &mut CaptureStream) -> CaptureFrame {
     stream
         .next_frame(GENEROUS)
         .expect("streaming")
         .expect("a frame in time")
-}
-
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
 }
 
 #[test]
