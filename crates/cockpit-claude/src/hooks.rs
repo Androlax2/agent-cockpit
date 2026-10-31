@@ -83,12 +83,11 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
         "Stop" => EventKind::TurnEnded {
             outcome: TurnOutcome::Completed,
         },
+        // Not `QuotaStopped`, even for `rate_limit`: Claude Code sends that error both when
+        // the plan's window is spent and for a transient 429 (#212).
         "StopFailure" => EventKind::TurnEnded {
-            outcome: match text("error") {
-                Some("rate_limit") => TurnOutcome::QuotaStopped,
-                reason => TurnOutcome::Failed {
-                    reason: reason.map(str::to_owned),
-                },
+            outcome: TurnOutcome::Failed {
+                reason: text("error").map(str::to_owned),
             },
         },
         "SessionEnd" => EventKind::Ended,

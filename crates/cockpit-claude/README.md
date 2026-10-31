@@ -25,9 +25,10 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   normalizes the payload (`hooks::normalize`) and reports through `cockpit agent report`.
   It prints nothing on standard output and never exits 2. A question the agent channel
   would refuse is replaced by a plain one; line breaks become spaces and a long one is cut
-  to 300 characters. A turn's end reports its outcome (`--outcome completed`, `failed` or
-  `quota-stopped`); a failure's reason the channel would refuse is left out, a long one cut
-  to 80 characters. A `SessionStart` after a compaction reports nothing: an automatic one
+  to 300 characters. A turn's end reports its outcome (`--outcome completed` or `failed`);
+  a failure's reason the channel would refuse is left out, a long one cut to 80 characters.
+  `StopFailure` `rate_limit` is `failed`, never `quota-stopped`: Claude Code sends it for a
+  spent plan window and a transient 429 alike (#212). A `SessionStart` after a compaction reports nothing: an automatic one
   happens in the middle of a turn.
 - **Terminal actions.** A message is typed then entered at the prompt, queued with Ctrl-X
   Enter during a turn, and refused while a dialog is open or the activity is unknown.
@@ -46,6 +47,7 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - `tests/launch.rs`, `tests/capabilities.rs`, `tests/input.rs`: the contract's words.
 - `tests/hooks.rs`: conformance with the hook payloads pinned in
   `tests/fixtures/claude-code-2.1.316/`, and the reports they become.
+- `tests/rate_limit.rs`: both kinds of `rate_limit` stop report a failed turn.
 - `tests/screen.rs`: the screen-reading fallback.
 - `tests/bridge.rs`: the hook bridge as a process against a fake `cockpit`.
 - `tests/live_hooks.rs` (live test ignored without an installed Claude Code): a real launch's
