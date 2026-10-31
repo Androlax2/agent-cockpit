@@ -345,8 +345,12 @@ dependencies = [
 name = "cockpit-cli"
 version = "0.1.0"
 dependencies = [
+ "cockpit-client",
  "cockpit-config",
+ "cockpit-protocol",
+ "serde_json",
  "tempfile",
+ "tokio",
  "toml",
 ]
 

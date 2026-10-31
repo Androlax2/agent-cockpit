@@ -83,7 +83,7 @@ fn answer_names_that_could_leave_the_directory_are_refused() {
 
 #[test]
 fn project_keys_outside_letters_digits_and_dashes_are_refused() {
-    for key in ["", ".", "..", "a/b", "a_b", "proj ect", &"x".repeat(256)] {
+    for key in ["", ".", "..", "a/b", "a_b", "two words", &"x".repeat(256)] {
         assert!(ProjectKey::new(key).is_err(), "{key:?}");
     }
 }

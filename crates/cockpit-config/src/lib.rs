@@ -17,7 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 use toml::Spanned;
 
-pub use layout::{Environment, Layout};
+pub use layout::{AGENT_SOCKET, DAEMON_SOCKET, Environment, Layout};
 pub use show::render;
 pub use start_files::{FileState, KNOWN_PROVIDERS, RecordedFile, StartFile, StartFileSnapshot};
 

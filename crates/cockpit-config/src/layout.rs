@@ -86,7 +86,24 @@ impl Layout {
     pub fn user_config_file(&self) -> PathBuf {
         self.config_dir.value.join("config.toml")
     }
+
+    /// Where the daemon's sockets and instance lock live: `$XDG_RUNTIME_DIR/cockpit`, or
+    /// `<state dir>/run` without `XDG_RUNTIME_DIR` (macOS, some containers), a fallback the
+    /// XDG spec leaves to the program.
+    pub fn socket_dir(&self) -> PathBuf {
+        self.runtime_dir
+            .value
+            .clone()
+            .unwrap_or_else(|| self.state_dir.value.join("run"))
+    }
 }
+
+/// The host-only socket's file in [`Layout::socket_dir`]: the owner's, never a sandbox's.
+pub const DAEMON_SOCKET: &str = "daemon.sock";
+
+/// The agent socket's path below [`Layout::socket_dir`]. It has a directory of its own, so a
+/// sandbox can be given that directory without the host-only socket beside it.
+pub const AGENT_SOCKET: &str = "agent/agent.sock";
 
 enum XdgValue {
     Absolute(PathBuf),

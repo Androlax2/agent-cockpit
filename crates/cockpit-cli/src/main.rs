@@ -1,11 +1,15 @@
 //! `cockpit`: the command-line frontend. Verbs that must work without the daemon (report 09)
 //! call their capability crate directly; that list is fixed in report 02 (#77).
 
+mod agent;
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE]...";
+const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE]...
+       cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION]
+       cockpit agent reports";
 
 fn main() -> ExitCode {
     // OsString: a project path need not be UTF-8.
@@ -13,6 +17,12 @@ fn main() -> ExitCode {
     let verb: Vec<Option<&str>> = arguments.iter().take(2).map(|word| word.to_str()).collect();
     match verb[..] {
         [Some("config"), Some("show")] => config_show(&arguments[2..]),
+        [Some("agent"), Some("report")] => {
+            agent::report(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
+        [Some("agent"), Some("reports")] => {
+            agent::reports(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
         _ => usage_error(None),
     }
 }

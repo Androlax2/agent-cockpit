@@ -1,5 +1,42 @@
 # Engineering decisions
 
+## 2026-10-31 — Agent channel: launch tokens bound to the process tree, report only (#32)
+
+Issue #32. Theo chose its scope: the authenticated channel, the answers directory, report
+17's refusal shape and the `report` verb end to end. `todo`, `task`, `ask run`, `ask guide`,
+`evidence` and `message` are not wired; each arrives with the issue that owns its capability
+(#34 approvals, #44 tasks, #53 teams) and answers with the same refusal shape until then.
+The channel needed an owner report 02 did not list, so `cockpit-agent-channel` was added
+there; it never builds against `cockpit-protocol` (crate-graph rule
+`agent-channel -> wire types`), and the daemon converts at its boundary.
+
+- **Two sockets.** `daemon.sock` is host-only: its peers are the owner. Agents use
+  `agent/agent.sock`, in a 0700 directory of its own so a sandbox is given that directory
+  alone. Same UID on both, so which socket a connection came through is what separates owner
+  from agent; the kernel's peer pid is what separates one agent from another. Each socket has
+  its own connection limit, and agent requests run in the bulk lane, so sandboxed senders
+  never take the owner's control capacity (report 03).
+- **Identity.** A launch is minted for a session (token) and then given its root process
+  (`record_root`), since the token must exist before the process does. A process is boot
+  id, pid and start time, so a reused pid never matches. The first request carrying the token
+  binds it only from the root or a descendant and spends it (the column is cleared). A token
+  presented from another tree is refused and stays unspent, so a leaked token cannot lock the
+  real agent out. Later requests are identified by ancestry alone: the nearest bound root wins,
+  which is how nested agents inherit their parent's identity and grants. A process whose
+  parent exited is reparented and loses its identity: fail closed.
+- **Tokens are stored as written.** The state database is owner-private and a token lives
+  only until its first report; hashing would need a new dependency for no reader that the
+  file permissions do not already stop.
+- **Linux only for now.** Ancestry comes from `/proc`; on other platforms every agent is
+  refused `unidentified-peer` with an unblock owned by Cockpit, never identified by a weaker
+  rule. macOS stays `validate` (report 11).
+- **Reports live in the channel until `cockpit-sessions` (#31).** Its table is the session
+  state #31 takes over; reporting `working` clears the open question, as today's
+  `cockpit-needs-input` flag clears when the owner answers.
+- **Refusals.** `ProtocolError` gained an optional `unblock` (`action`, `by`: `owner`,
+  `agent`, `cockpit`) and the codes `unidentified-peer` and `invalid-argument`. A refused
+  request changes nothing: the token, if any, stays unspent.
+
 ## 2026-10-31 — Gate M0: proof per platform, macOS in CI, WSL2 by hand
 
 Issue #27. [The gate proof](gates/m0-foundation.md) links each item to a test that drives the
