@@ -340,14 +340,8 @@ pub async fn run_status(
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = match run_request(write, id, now).await? {
-        Some(run) if run.session == *session => run,
-        _ => return Err(not_found(KIND, id.0).into()),
-    };
-    if run.state != RunState::Asking {
-        return Ok(run);
-    }
-    if let Some(expires_at) = refreshed_expiry(run.expires_at, now) {
+    let mut run = run_of(write, session, id, now).await?;
+    if let Some(expires_at) = moved_expiry(&run, now) {
         write
             .execute(
                 "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1",
@@ -357,6 +351,38 @@ pub async fn run_status(
         run.expires_at = expires_at;
     }
     Ok(run)
+}
+
+/// [`run_status`] when the poll writes nothing, read in any transaction; `None` when the
+/// poll must keep the request from expiring, which only [`run_status`] may do.
+pub async fn run_status_if_fresh(
+    connection: &Connection,
+    session: &SessionId,
+    id: RunId,
+    now: i64,
+) -> Result<Option<RunRequest>, Error> {
+    let run = run_of(connection, session, id, now).await?;
+    Ok(moved_expiry(&run, now).is_none().then_some(run))
+}
+
+/// The expiry a poll of `run` at `now` stores: only a request still asking has one to move.
+fn moved_expiry(run: &RunRequest, now: i64) -> Option<i64> {
+    (run.state == RunState::Asking)
+        .then(|| refreshed_expiry(run.expires_at, now))
+        .flatten()
+}
+
+/// The request `id`, which only its asking session may see.
+async fn run_of(
+    connection: &Connection,
+    session: &SessionId,
+    id: RunId,
+    now: i64,
+) -> Result<RunRequest, Error> {
+    match run_request(connection, id, now).await? {
+        Some(run) if run.session == *session => Ok(run),
+        _ => Err(not_found(KIND, id.0).into()),
+    }
 }
 
 /// The owner's edit: `command` replaces the current one as a new revision, so a decision

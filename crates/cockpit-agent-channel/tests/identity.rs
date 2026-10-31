@@ -5,30 +5,12 @@
 mod common;
 
 use cockpit_agent_channel::{
-    Error, PeerAncestry, ProcessError, ProcessIdentity, Refusal, ancestry, ancestry_of, identify,
-    mint,
+    Error, ProcessError, ProcessIdentity, Refusal, ancestry, ancestry_of, mint,
 };
-use cockpit_authorization::SessionId;
-use cockpit_turso::Database;
-use common::{Process, launch, open, session, this_process, this_process_identity};
-
-async fn identify_committed(
-    database: &Database,
-    peer: &PeerAncestry,
-    token: Option<&str>,
-) -> Result<SessionId, Error> {
-    let write = database.write().await.unwrap();
-    let identified = identify(&write, peer, token).await;
-    write.commit().await.unwrap();
-    identified
-}
-
-fn refusal(result: Result<SessionId, Error>) -> Refusal {
-    match result {
-        Err(Error::Refused(refusal)) => refusal,
-        other => panic!("expected a refusal, got {other:?}"),
-    }
-}
+use common::{
+    Process, identify_committed, launch, open, refusal, session, this_process,
+    this_process_identity,
+};
 
 #[tokio::test]
 async fn a_token_binds_from_its_root_and_then_the_tree_alone_identifies() {

@@ -16,18 +16,18 @@ pub use display::{FOLD_CHARS, FOLD_LINES, Folded, Hidden, Shown, fold, is_outsid
 pub use error::{Error, Refusal, UnblockedBy};
 pub use guides::{
     Guide, GuideId, GuideRequest, GuideState, GuideStep, Step, answer_step, ask_guide, close_guide,
-    guide_request, guide_status, open_guides, parse_guide, report_stuck,
+    guide_request, guide_status, guide_status_if_fresh, open_guides, parse_guide, report_stuck,
 };
 pub use hints::{build_files_run, timeout_without_foreground};
 pub use pty::{NoResult, Output, Ran, RunSettings, Runner, present};
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
-pub use rows::{EXPIRES_AFTER_SECONDS, Project};
+pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
 pub use runs::{
     APPROVAL_GRACE_SECONDS, Approved, Interrupted, RunAsk, RunId, RunRequest, RunResult, RunState,
     action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, interrupted_runs,
     may_ask, open_runs, queue_order, reconcile_run, record_not_run, record_outcome_unknown,
-    resolve_cwd, run_request, run_status, start_run,
+    resolve_cwd, run_request, run_status, run_status_if_fresh, start_run,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an

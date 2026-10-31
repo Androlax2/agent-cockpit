@@ -16,7 +16,7 @@ pub const EXPIRES_AFTER_SECONDS: i64 = 15 * 60;
 /// A poll moves the expiry forward only once it is this much older than a fresh one, so
 /// polls inside that window write nothing: an asking request outlives the last poll by at
 /// least `EXPIRES_AFTER_SECONDS - REFRESH_AFTER_SECONDS`.
-const REFRESH_AFTER_SECONDS: i64 = 60;
+pub const REFRESH_AFTER_SECONDS: i64 = 60;
 
 /// The registered project the asking agent works in, as the daemon found it.
 #[derive(Debug, Clone, PartialEq, Eq)]

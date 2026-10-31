@@ -21,6 +21,7 @@ use cockpit_protocol::{
     ProtocolError, Reply, RunRequestView, RunResultView, RunStateView, ShownText, Unblock,
     UnblockedBy,
 };
+use cockpit_turso::sql::Connection;
 use cockpit_turso::{Database, WriteTransaction};
 
 use crate::routes::{Route, WorkClass};
@@ -168,25 +169,16 @@ pub(crate) fn route_ask(
                 launch_token,
                 request,
             } => {
-                let sender = Sender::of(connector).await;
-                let write = database.write().await?;
-                let session = sender.identify(&write, launch_token).await?;
                 let run =
-                    cockpit_approvals::run_status(&write, &session, RunId(request), now()).await?;
-                write.commit().await?;
+                    poll_run_status(&database, connector, launch_token, RunId(request)).await?;
                 Ok(run_reply(&run, &runner))
             }
             Command::AskGuideStatus {
                 launch_token,
                 guide,
             } => {
-                let sender = Sender::of(connector).await;
-                let write = database.write().await?;
-                let session = sender.identify(&write, launch_token).await?;
                 let guide =
-                    cockpit_approvals::guide_status(&write, &session, GuideId(guide), now())
-                        .await?;
-                write.commit().await?;
+                    poll_guide_status(&database, connector, launch_token, GuideId(guide)).await?;
                 Ok(guide_reply(&guide))
             }
             Command::AskCheck { launch_token } => {
@@ -206,6 +198,57 @@ pub(crate) fn route_ask(
         class: WorkClass::Bulk,
         job: work,
     }
+}
+
+/// Polled every half second by each waiting agent (#174): it reads, and takes the writer only
+/// when the sender's launch must bind or the request's expiry must move.
+async fn poll_run_status(
+    database: &Database,
+    connector: Result<ProcessIdentity, ProcessError>,
+    launch_token: Option<String>,
+    id: RunId,
+) -> Result<RunRequest, Failed> {
+    let sender = Sender::of(connector).await;
+    let read = database.read().await?;
+    if let Some(session) = sender
+        .identify_bound(&read, launch_token.as_deref())
+        .await?
+        && let Some(run) =
+            cockpit_approvals::run_status_if_fresh(&read, &session, id, now()).await?
+    {
+        return Ok(run);
+    }
+    drop(read);
+    let write = database.write().await?;
+    let session = sender.identify(&write, launch_token).await?;
+    let run = cockpit_approvals::run_status(&write, &session, id, now()).await?;
+    write.commit().await?;
+    Ok(run)
+}
+
+/// [`poll_run_status`] for a guide.
+async fn poll_guide_status(
+    database: &Database,
+    connector: Result<ProcessIdentity, ProcessError>,
+    launch_token: Option<String>,
+    id: GuideId,
+) -> Result<GuideRequest, Failed> {
+    let sender = Sender::of(connector).await;
+    let read = database.read().await?;
+    if let Some(session) = sender
+        .identify_bound(&read, launch_token.as_deref())
+        .await?
+        && let Some(guide) =
+            cockpit_approvals::guide_status_if_fresh(&read, &session, id, now()).await?
+    {
+        return Ok(guide);
+    }
+    drop(read);
+    let write = database.write().await?;
+    let session = sender.identify(&write, launch_token).await?;
+    let guide = cockpit_approvals::guide_status(&write, &session, id, now()).await?;
+    write.commit().await?;
+    Ok(guide)
 }
 
 async fn ask_run(
@@ -306,6 +349,15 @@ impl Sender {
         launch_token: Option<String>,
     ) -> Result<SessionId, Failed> {
         Ok(cockpit_agent_channel::identify(write, &self.ancestry, launch_token.as_deref()).await?)
+    }
+
+    /// [`Sender::identify`] read-only; `None` when only a write may bind the launch.
+    async fn identify_bound(
+        &self,
+        connection: &Connection,
+        launch_token: Option<&str>,
+    ) -> Result<Option<SessionId>, Failed> {
+        Ok(cockpit_agent_channel::identify_bound(connection, &self.ancestry, launch_token).await?)
     }
 
     /// The registered checkout the sender works in, deepest first. Until sessions record

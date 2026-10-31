@@ -5,7 +5,9 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use cockpit_agent_channel::{LaunchToken, PeerAncestry, ProcessIdentity, ancestry, identity_of};
+use cockpit_agent_channel::{
+    Error, LaunchToken, PeerAncestry, ProcessIdentity, Refusal, ancestry, identify, identity_of,
+};
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_turso::Database;
 
@@ -38,6 +40,25 @@ pub async fn launch(
         .unwrap();
     write.commit().await.unwrap();
     token
+}
+
+/// Identifies the sender in a write transaction and commits it, as the daemon does.
+pub async fn identify_committed(
+    database: &Database,
+    peer: &PeerAncestry,
+    token: Option<&str>,
+) -> Result<SessionId, Error> {
+    let write = database.write().await.unwrap();
+    let identified = identify(&write, peer, token).await;
+    write.commit().await.unwrap();
+    identified
+}
+
+pub fn refusal<T: std::fmt::Debug>(result: Result<T, Error>) -> Refusal {
+    match result {
+        Err(Error::Refused(refusal)) => refusal,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
 }
 
 pub async fn grant(database: &Database, holder: &SessionId, permission: Permission) {

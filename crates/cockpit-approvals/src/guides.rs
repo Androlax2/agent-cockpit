@@ -391,14 +391,8 @@ pub async fn guide_status(
     id: GuideId,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut guide = match guide_request(write, id, now).await? {
-        Some(guide) if guide.session == *session => guide,
-        _ => return Err(not_found(KIND, id.0).into()),
-    };
-    if guide.state != GuideState::Asking {
-        return Ok(guide);
-    }
-    if let Some(expires_at) = refreshed_expiry(guide.expires_at, now) {
+    let mut guide = guide_of(write, session, id, now).await?;
+    if let Some(expires_at) = moved_expiry(&guide, now) {
         write
             .execute(
                 "UPDATE approvals_guides SET expires_at = ?2 WHERE id = ?1",
@@ -418,6 +412,38 @@ pub async fn guide_status(
         guide.expires_at = expires_at;
     }
     Ok(guide)
+}
+
+/// [`guide_status`] when the poll writes nothing, read in any transaction; `None` when the
+/// poll must keep the guide from expiring, which only [`guide_status`] may do.
+pub async fn guide_status_if_fresh(
+    connection: &Connection,
+    session: &SessionId,
+    id: GuideId,
+    now: i64,
+) -> Result<Option<GuideRequest>, Error> {
+    let guide = guide_of(connection, session, id, now).await?;
+    Ok(moved_expiry(&guide, now).is_none().then_some(guide))
+}
+
+/// The expiry a poll of `guide` at `now` stores: only a guide still asking has one to move.
+fn moved_expiry(guide: &GuideRequest, now: i64) -> Option<i64> {
+    (guide.state == GuideState::Asking)
+        .then(|| refreshed_expiry(guide.expires_at, now))
+        .flatten()
+}
+
+/// The guide `id`, which only its asking session may see.
+async fn guide_of(
+    connection: &Connection,
+    session: &SessionId,
+    id: GuideId,
+    now: i64,
+) -> Result<GuideRequest, Error> {
+    match guide_request(connection, id, now).await? {
+        Some(guide) if guide.session == *session => Ok(guide),
+        _ => Err(not_found(KIND, id.0).into()),
+    }
 }
 
 /// The owner's answer to step `step`, the one shown now. A step that asks a question needs

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cockpit_authorization::SessionId;
 use cockpit_turso::WriteTransaction;
-use cockpit_turso::sql::Row;
+use cockpit_turso::sql::{Connection, Row};
 
 use crate::process::{ProcessError, ProcessIdentity};
 use crate::{Error, Refusal};
@@ -109,16 +109,52 @@ pub async fn identify(
     peer: &PeerAncestry,
     token: Option<&str>,
 ) -> Result<SessionId, Error> {
-    let ancestry = peer
-        .as_ref()
-        .map_err(|error| Refusal::PeerUnverifiable(error.clone()))?;
-    if let Some(token) = token.filter(|token| LaunchToken::is_well_formed(token))
+    let ancestry = verified(peer)?;
+    if let Some(token) = well_formed(token)
         && let Some(session) = bind(write, ancestry, token).await?
     {
         return Ok(session);
     }
+    bound_session(write, ancestry, token).await
+}
+
+/// [`identify`] without binding, for requests that would otherwise write nothing (status
+/// polls): it reads, so it runs in a read transaction and never waits for the writer.
+/// `None` when a well-formed `token` would bind its pending launch: only [`identify`], in a
+/// write transaction, may spend it. Every other outcome, refusals of a pending token
+/// included, is the one [`identify`] gives.
+pub async fn identify_bound(
+    connection: &Connection,
+    peer: &PeerAncestry,
+    token: Option<&str>,
+) -> Result<Option<SessionId>, Error> {
+    let ancestry = verified(peer)?;
+    if let Some(token) = well_formed(token)
+        && bindable(connection, ancestry, token).await?.is_some()
+    {
+        return Ok(None);
+    }
+    bound_session(connection, ancestry, token).await.map(Some)
+}
+
+fn verified(peer: &PeerAncestry) -> Result<&[ProcessIdentity], Error> {
+    peer.as_deref()
+        .map_err(|error| Refusal::PeerUnverifiable(error.clone()).into())
+}
+
+fn well_formed(token: Option<&str>) -> Option<&str> {
+    token.filter(|token| LaunchToken::is_well_formed(token))
+}
+
+/// The session whose bound root is the sender's nearest ancestor. `token` only chooses the
+/// refusal when none is.
+async fn bound_session(
+    connection: &Connection,
+    ancestry: &[ProcessIdentity],
+    token: Option<&str>,
+) -> Result<SessionId, Error> {
     // One row per session: read every bound root once, then take the nearest ancestor's.
-    let mut rows = write
+    let mut rows = connection
         .query(
             "SELECT session, root_boot, root_pid, root_start FROM agent_channel_launches
              WHERE bound_at IS NOT NULL",
@@ -149,15 +185,33 @@ pub async fn identify(
     .into())
 }
 
-/// Binds the pending launch `token` names, or `None` when no launch waits for it. A token
-/// presented from outside its tree is refused and stays unspent, so a leaked token cannot be
-/// used to lock the real agent out.
+/// Binds the pending launch `token` names, or `None` when no launch waits for it.
 async fn bind(
     write: &WriteTransaction<'_>,
     ancestry: &[ProcessIdentity],
     token: &str,
 ) -> Result<Option<SessionId>, Error> {
-    let mut rows = write
+    let Some(session) = bindable(write, ancestry, token).await? else {
+        return Ok(None);
+    };
+    write
+        .execute(
+            "UPDATE agent_channel_launches SET token = NULL, bound_at = ?2 WHERE session = ?1",
+            (session.as_str(), unix_seconds()),
+        )
+        .await?;
+    Ok(Some(session))
+}
+
+/// The session whose pending launch `token` would bind from `ancestry`, without binding it;
+/// `None` when no launch waits for it. A token presented from outside its tree is refused and
+/// stays unspent, so a leaked token cannot be used to lock the real agent out.
+async fn bindable(
+    connection: &Connection,
+    ancestry: &[ProcessIdentity],
+    token: &str,
+) -> Result<Option<SessionId>, Error> {
+    let mut rows = connection
         .query(
             "SELECT session, root_boot, root_pid, root_start FROM agent_channel_launches
              WHERE token = ?1",
@@ -183,12 +237,6 @@ async fn bind(
     if !is_in_tree {
         return Err(Refusal::OutsideLaunchTree.into());
     }
-    write
-        .execute(
-            "UPDATE agent_channel_launches SET token = NULL, bound_at = ?2 WHERE session = ?1",
-            (session.as_str(), unix_seconds()),
-        )
-        .await?;
     Ok(Some(session))
 }
 
