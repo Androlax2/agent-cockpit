@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE]...
-       cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT]
+       cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
        cockpit agent reports
        cockpit project add DIR [--name NAME]
        cockpit project list

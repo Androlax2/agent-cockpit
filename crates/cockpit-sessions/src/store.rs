@@ -141,6 +141,16 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE session_reports ADD COLUMN covered_question TEXT
                 CHECK (covered_question IS NULL OR question_source = 'dialog');",
         },
+        // #219: a session's conversation that announced its end (`/clear`, an in-session
+        // `/resume`) in the launch it names; the session follows the next one reported.
+        Migration {
+            version: 6,
+            sql: "CREATE TABLE session_conversation_ends (
+                session_id TEXT PRIMARY KEY CHECK (session_id <> ''),
+                conversation TEXT NOT NULL CHECK (conversation <> ''),
+                launch_id INTEGER
+            );",
+        },
     ],
 };
 
@@ -547,6 +557,23 @@ pub(crate) async fn set_conversation(
         .execute(
             "UPDATE sessions SET conversation = ?2 WHERE id = ?1",
             (id.as_str(), conversation.as_str()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Records that the session's agent now runs `conversation`, as a change clients see; unlike
+/// [`set_conversation`], whose launch transaction records its own transition.
+pub(crate) async fn change_conversation(
+    write: &WriteTransaction<'_>,
+    id: &SessionId,
+    conversation: &ConversationId,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "UPDATE sessions SET conversation = ?2, revision = revision + 1, changed_at = ?3
+             WHERE id = ?1",
+            (id.as_str(), conversation.as_str(), now()),
         )
         .await?;
     Ok(())

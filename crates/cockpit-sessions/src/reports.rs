@@ -3,12 +3,12 @@
 
 use cockpit_agent_channel::{PeerAncestry, Refusal};
 use cockpit_authorization::{Actor, Outcome, Permission, Scope, SessionId};
-use cockpit_provider_api::TurnOutcome;
+use cockpit_provider_api::{ConversationId, TurnOutcome};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
-use crate::Error;
 use crate::store::now;
+use crate::{Error, conversations};
 
 const LABEL_MAX_CHARS: usize = 60;
 const DOING_MAX_CHARS: usize = 80;
@@ -84,6 +84,12 @@ pub struct Report {
     /// How the agent's turn ended; it means waiting. Reporting `working` clears it: a new
     /// turn started. A failure's reason is at most 80 characters.
     pub outcome: Option<TurnOutcome>,
+    /// The provider's conversation the report comes from; a report of another conversation
+    /// than the session's is refused (#219). Left out, nothing is checked.
+    pub conversation: Option<String>,
+    /// `conversation` ends and the agent goes on in another (`/clear`, `/resume`): the session
+    /// follows the next conversation reported. Comes alone with `conversation`.
+    pub is_conversation_ending: bool,
 }
 
 /// A session's report as the channel last recorded it.
@@ -119,7 +125,7 @@ pub async fn report(
     token: Option<&str>,
     report: Report,
 ) -> Result<SessionReport, Error> {
-    let report = validate(report).map_err(refused)?;
+    let (report, conversation) = validate(report).map_err(refused)?;
     let session = cockpit_agent_channel::identify(write, peer, token).await?;
     let decision = cockpit_authorization::evaluate(
         write,
@@ -133,6 +139,20 @@ pub async fn report(
     }
     let previous = latest_report(write, &session).await?;
     let launch = latest_launch(write, &session).await?;
+    if let Some(conversation) = &conversation {
+        conversations::check(
+            write,
+            &session,
+            launch,
+            conversation,
+            report.is_conversation_ending,
+        )
+        .await?;
+    }
+    // An announced end reports nothing about the agent: the latest report stays as it is.
+    if report.is_conversation_ending {
+        return Ok(previous.unwrap_or_else(|| unreported(&session)));
+    }
     let merged = merge(&session, previous, report, launch);
     write
         .execute(
@@ -211,13 +231,9 @@ async fn latest_launch(connection: &Connection, session: &SessionId) -> Result<O
     }
 }
 
-fn merge(
-    session: &SessionId,
-    previous: Option<SessionReport>,
-    report: Report,
-    launch: Option<i64>,
-) -> SessionReport {
-    let previous = previous.unwrap_or(SessionReport {
+/// A session no report was recorded for.
+fn unreported(session: &SessionId) -> SessionReport {
+    SessionReport {
         session: session.clone(),
         state: None,
         label: None,
@@ -228,7 +244,16 @@ fn merge(
         outcome: None,
         reported_at: 0,
         launch: None,
-    });
+    }
+}
+
+fn merge(
+    session: &SessionId,
+    previous: Option<SessionReport>,
+    report: Report,
+    launch: Option<i64>,
+) -> SessionReport {
+    let previous = previous.unwrap_or_else(|| unreported(session));
     let is_asking = report.needs_input.is_some() || report.dialog.is_some();
     // A report after a dialog means the dialog was answered and the agent goes on, so a
     // stateless one leaves it working rather than in the waiting the dialog forced.
@@ -284,9 +309,40 @@ fn merge(
 /// and tmux, so control characters, characters that reorder or hide text (bidirectional
 /// overrides, zero-width marks) and the tmux sequences that run or restyle (`#(`, `#{`, `#[`)
 /// are refused. A plain `#` stays ("issue #32"): whatever renders this text into a tmux
-/// format escapes it as `##`.
-fn validate(report: Report) -> Result<Report, Refusal> {
-    if report == Report::default() {
+/// format escapes it as `##`. Returns the conversation apart, checked as an id; the report
+/// keeps none.
+fn validate(report: Report) -> Result<(Report, Option<ConversationId>), Refusal> {
+    let conversation = report
+        .conversation
+        .clone()
+        .map(ConversationId::new)
+        .transpose()
+        .map_err(|error| invalid("conversation", error.to_string()))?;
+    let reported = Report {
+        conversation: None,
+        is_conversation_ending: false,
+        ..report.clone()
+    };
+    if report.is_conversation_ending {
+        if conversation.is_none() {
+            return Err(invalid(
+                "conversation-ends",
+                "names no conversation that ends".to_owned(),
+            ));
+        }
+        if reported != Report::default() {
+            return Err(invalid(
+                "conversation-ends",
+                "comes with fields to report; an announced end reports nothing else".to_owned(),
+            ));
+        }
+        let ending = Report {
+            is_conversation_ending: true,
+            ..Report::default()
+        };
+        return Ok((ending, conversation));
+    }
+    if reported == Report::default() {
         return Err(invalid("report", "names no field to report".to_owned()));
     }
     let is_asking = report.needs_input.is_some() || report.dialog.is_some();
@@ -362,20 +418,25 @@ fn validate(report: Report) -> Result<Report, Refusal> {
         }),
         outcome => outcome,
     };
-    Ok(Report {
-        // A new prompt means working, so its report clears what a new turn clears.
-        state: if report.is_new_prompt {
-            Some(AgentState::Working)
-        } else {
-            report.state
+    Ok((
+        Report {
+            // A new prompt means working, so its report clears what a new turn clears.
+            state: if report.is_new_prompt {
+                Some(AgentState::Working)
+            } else {
+                report.state
+            },
+            label,
+            doing,
+            needs_input,
+            dialog,
+            is_new_prompt: report.is_new_prompt,
+            outcome,
+            conversation: None,
+            is_conversation_ending: false,
         },
-        label,
-        doing,
-        needs_input,
-        dialog,
-        is_new_prompt: report.is_new_prompt,
-        outcome,
-    })
+        conversation,
+    ))
 }
 
 fn bounded_text(field: &'static str, text: &str, max_chars: usize) -> Result<String, Refusal> {
@@ -426,11 +487,11 @@ fn is_invisible_format(character: char) -> bool {
 }
 
 /// A refusal keeps the agent channel's shape, so every agent request is refused alike.
-fn refused(refusal: Refusal) -> Error {
+pub(crate) fn refused(refusal: Refusal) -> Error {
     Error::AgentChannel(refusal.into())
 }
 
-fn invalid(field: &'static str, reason: String) -> Refusal {
+pub(crate) fn invalid(field: &'static str, reason: String) -> Refusal {
     Refusal::InvalidRequest { field, reason }
 }
 

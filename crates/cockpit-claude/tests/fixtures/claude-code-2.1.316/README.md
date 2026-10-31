@@ -7,6 +7,12 @@ the idle notification after 60 seconds, `/compact`, `/exit`) and a `-p --resume`
 Only the home directory, working directory and file owner were renamed (`/home/owner`,
 `/work`, `owner`); field names, order and values are as written.
 
+`session-end-clear.json`, `session-start-clear.json`, `session-end-resume.json` and
+`session-start-resume-switch.json` come from a second interactive run (#219): `/clear`, then
+`/resume <id>` of another conversation inside the same session. Each change is a `SessionEnd`
+of the old conversation followed by a `SessionStart` of the new one, from the same process
+with the same launch token.
+
 The two `stop-failure-rate-limit-*.json` payloads are the exception: a rate limit cannot be
 provoked on demand, so they are written from 2.1.316's code (#212): its `StopFailure` hook
 input (`error`, then the optional `error_details` and `last_assistant_message`) and the

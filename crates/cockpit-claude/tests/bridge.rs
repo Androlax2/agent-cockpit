@@ -80,7 +80,9 @@ fn a_stop_reports_a_completed_turn_through_the_cockpit_program() {
             "--state",
             "waiting",
             "--outcome",
-            "completed"
+            "completed",
+            "--conversation",
+            "49d695c9-4342-47df-a3fc-9cec34484f36"
         ]
     );
     assert_eq!(cockpit.token(), "token-1");
@@ -96,6 +98,28 @@ fn the_reports_answer_never_reaches_claudes_context() {
         output.stdout.is_empty(),
         "{:?}",
         String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn a_clear_announces_the_conversation_ending_through_the_cockpit_program() {
+    let cockpit = FakeCockpit::exiting_with(0);
+    let output = run_hook(
+        &cockpit.program(),
+        &common::fixture("session-end-clear"),
+        Some("token-1"),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        cockpit.arguments().unwrap(),
+        [
+            "agent",
+            "report",
+            "--conversation",
+            "003eb9a6-45b4-40b6-9555-20f4c6c02655",
+            "--conversation-ends"
+        ]
     );
 }
 

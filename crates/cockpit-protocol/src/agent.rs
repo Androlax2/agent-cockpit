@@ -76,6 +76,15 @@ pub struct AgentReport {
     /// The owner sent a new prompt: the agent works and its own question is answered.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_new_prompt: bool,
+    /// The provider's conversation the report comes from (Claude Code's `session_id`). The
+    /// daemon refuses a report whose conversation is not the session's (#219).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+    /// `conversation` ends and the same agent goes on in another (`/clear`, an in-session
+    /// `/resume`): the session follows the next conversation a report names. Needs
+    /// `conversation`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_conversation_ending: bool,
 }
 
 /// A session's latest report as the daemon recorded it.

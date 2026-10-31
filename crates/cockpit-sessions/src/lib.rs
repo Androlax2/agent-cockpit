@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod conversations;
 mod error;
 mod lifecycle;
 mod model;
