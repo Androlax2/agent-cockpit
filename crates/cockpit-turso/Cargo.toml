@@ -1,0 +1,19 @@
+[package]
+name = "cockpit-turso"
+description = "The state database's connections, transactions, migrations, backup and change capture."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Report 04: SQLite-compatible mode only. The default features add FTS and mimalloc; neither is
+# part of that mode.
+turso = { version = "=0.8.3", default-features = false }
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

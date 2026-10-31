@@ -1,5 +1,34 @@
 # Engineering decisions
 
+## 2026-10-31 — cockpit-turso: one opener, one writer, full change capture
+
+Issue #24. `cockpit-turso` pins `turso = "=0.8.3"` (the newest non-pre-release) without its
+default features, which add FTS and mimalloc; report 04 wants SQLite-compatible mode only.
+Its tests measured report 04's adoption checks on that version: online backup, crash
+recovery and single opener pass, and the closed file passes plain `sqlite3`'s integrity check.
+
+- **Single opener.** Turso's own lock on the database file is a process-scoped `fcntl`
+  lock, which a second opener in the same process does not see. `Database::open` also takes
+  an exclusive `File::try_lock` on `<db>.lock`, per open file, so both cases are refused.
+- **One writer.** Writes go through one connection behind an async mutex; writers queue there
+  instead of on SQLite's busy lock. A dropped `WriteTransaction` rolls back when the next
+  write starts (the approach `turso::Transaction` itself takes), since `Drop` cannot await.
+- **Change capture `full`.** The writer runs `PRAGMA capture_data_changes_conn('full')`
+  (CDC v2: a `change_txn_id` per row and a COMMIT row per transaction). Before and after
+  images can be dropped later; images never captured cannot be recovered. A commit's
+  revision is its COMMIT row's `change_id`. In WAL mode Turso allocates `change_id` as
+  max + 1, so the change feed's retention must keep the newest COMMIT row, or revisions repeat.
+- **Migrations.** A ledger row per (owner, version) stores the applied SQL. Startup refuses
+  an unknown owner, a version newer than the binary knows, or an applied migration whose SQL
+  changed, before applying anything. Each migration commits with its ledger row.
+- **Backup and restore.** Backup is `VACUUM INTO`, which Turso does not gate behind an
+  experimental flag. Restore is offline: it takes the single-opener lock, checks the copy's
+  integrity, gives it a new database epoch so earlier change-feed cursors are recognisably
+  stale (report 04), folds its WAL and renames it over the target.
+- **Edges.** `cockpit-turso` depends on no `cockpit-*` crate, and no other member depends on
+  `turso`: capabilities run SQL through the re-exported `cockpit_turso::turso`. Both rules are
+  tests in `crates/cockpit-turso/tests/crate_graph.rs`, beside the crate they protect.
+
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
 
 Issue #18 asks for `cargo build` and `cargo test` to succeed from the root with no
