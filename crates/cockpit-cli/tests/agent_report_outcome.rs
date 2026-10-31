@@ -130,7 +130,7 @@ async fn malformed_outcome_arguments_exit_2_before_any_connection() {
 }
 
 #[tokio::test]
-async fn a_misspelled_outcome_is_named_even_with_a_reason() {
+async fn an_unknown_outcome_is_named_even_with_a_reason() {
     let home = tempfile::tempdir().unwrap();
 
     let output = cockpit(
@@ -139,7 +139,7 @@ async fn a_misspelled_outcome_is_named_even_with_a_reason() {
             "agent",
             "report",
             "--outcome",
-            "falied",
+            "finished",
             "--outcome-reason",
             "x",
         ],
@@ -147,7 +147,7 @@ async fn a_misspelled_outcome_is_named_even_with_a_reason() {
     .await;
 
     assert!(
-        text(&output.stderr).starts_with("cockpit: --outcome falied: use completed"),
+        text(&output.stderr).starts_with("cockpit: --outcome finished: use completed"),
         "{}",
         text(&output.stderr)
     );
