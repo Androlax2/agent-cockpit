@@ -13,21 +13,10 @@ use cockpit_daemon::{
 use cockpit_provider_api::{Provenance, Provider};
 
 const USAGE: &str = "usage: cockpit-daemon [--foreground]";
-/// Variables of the daemon's own environment every agent starts with; the provider adds its
-/// own after them. The XDG layout ones let the agent's `cockpit` reach this daemon's sockets
-/// rather than the default layout's (#268).
-const AGENT_BASE_VARIABLES: [&str; 11] = [
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "PATH",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "XDG_RUNTIME_DIR",
-    "XDG_STATE_HOME",
-    "XDG_CONFIG_HOME",
+/// Variables of the daemon's own environment every agent starts with, beside its XDG layout;
+/// the provider adds its own after them.
+const AGENT_BASE_VARIABLES: [&str; 8] = [
+    "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
 ];
 
 fn main() -> ExitCode {
@@ -112,6 +101,11 @@ fn run(foreground: bool) -> Result<(), StartError> {
                 base_environment: AGENT_BASE_VARIABLES
                     .iter()
                     .filter_map(|name| Some(((*name).into(), std::env::var_os(name)?)))
+                    .chain(
+                        environment
+                            .layout_variables()
+                            .map(|(name, value)| (name.into(), value.clone())),
+                    )
                     .collect(),
                 start_files,
                 ..session_settings(&config)

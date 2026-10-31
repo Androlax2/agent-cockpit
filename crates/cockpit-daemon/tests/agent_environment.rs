@@ -6,7 +6,7 @@ mod real_daemon;
 
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{Command, Reply, SessionReport};
+use cockpit_protocol::{Command, Reply};
 use real_daemon::{GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_program, new_session};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -29,7 +29,7 @@ async fn a_launched_agent_reports_to_a_daemon_on_a_scratch_layout() {
             Ok(Reply::AgentReports { reports }) => reports,
             other => panic!("agent-reports answered {other:?}"),
         };
-        let landed = reports.iter().any(|report: &SessionReport| {
+        let landed = reports.iter().any(|report| {
             report.session == session.id && report.label.as_deref() == Some(REPORTED_LABEL)
         });
         if landed {

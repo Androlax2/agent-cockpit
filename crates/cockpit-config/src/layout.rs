@@ -27,6 +27,19 @@ impl Environment {
         }
     }
 
+    /// The XDG variables that place Cockpit's directories, with their values where set. A
+    /// process Cockpit launches gets them, so its `cockpit` resolves this layout (#268).
+    pub fn layout_variables(&self) -> impl Iterator<Item = (&'static str, &OsString)> {
+        [
+            ("XDG_CONFIG_HOME", &self.xdg_config_home),
+            ("XDG_STATE_HOME", &self.xdg_state_home),
+            ("XDG_CACHE_HOME", &self.xdg_cache_home),
+            ("XDG_RUNTIME_DIR", &self.xdg_runtime_dir),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| Some((name, value.as_ref()?)))
+    }
+
     /// `$HOME`, which every default below `~` needs: unset or relative fails instead of
     /// guessing a directory.
     pub fn home_dir(&self) -> Result<PathBuf, ConfigError> {
