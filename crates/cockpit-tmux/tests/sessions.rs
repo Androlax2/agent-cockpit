@@ -232,6 +232,19 @@ fn the_server_starts_with_cockpits_own_config() {
     fixture.start_shell("agent-1", "sleep 30");
 
     let history_limit = fixture.tmux(&["show-options", "-gv", "history-limit"]);
+    let default_shell = fixture.tmux(&["show-options", "-gv", "default-shell"]);
 
     assert_eq!(history_limit.trim(), "50000");
+    assert_eq!(default_shell.trim(), "/bin/sh");
+}
+
+#[test]
+fn a_session_cockpit_did_not_name_is_left_out_of_the_list() {
+    let fixture = TestServer::new();
+    fixture.start_shell("agent-1", "sleep 30");
+    fixture.tmux(&["new-session", "-d", "-s", "my.project", "sleep 30"]);
+
+    let names = fixture.server.sessions().expect("lists");
+
+    assert_eq!(names, vec![SessionName::new("agent-1").expect("valid")]);
 }

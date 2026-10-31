@@ -24,8 +24,10 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   tests use `-S` in a temporary directory). The user's `~/.tmux.conf` never applies, and the
   caller's `TMUX`/`TMUX_PANE` are removed so a daemon started inside tmux cannot reach it.
 - **Sessions.** One session per agent. [`SessionName`] admits only `A-Z a-z 0-9 _ -`, and
-  every target is `=name:` so `agent-1` never reaches `agent-12`. A command runs directly,
-  never through a shell. An exited pane stays, with its exit status and its last screen in
+  every target is `=name:` so `agent-1` never reaches `agent-12`. A missing working directory
+  is refused (tmux would start the pane in `$HOME`). A command of several words runs
+  directly; a single word is quoted for `/bin/sh`, the server's `default-shell`. Sessions
+  with names Cockpit would not choose are not listed. An exited pane stays, with its exit status and its last screen in
   its history, until its owner closes it (`remain-on-exit`); this observation proves nothing
   about the work.
 - **Viewer and approvals.** [`Server::show_in_viewer`] respawns the viewer pane as a nested
@@ -37,8 +39,10 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   and would slow the agent. Past [`ObserveOptions::capacity`] it drops output and reports
   [`ControlEvent::OutputLost`]; tmux's `pause-after` remains as a backstop.
 - **Capture stream.** [`Server::capture_stream`] gives clients a [`CaptureFrame::Snapshot`] of
-  each pane, then [`CaptureFrame::Output`], and a fresh snapshot after any loss. Snapshots are
-  taken by the observing client itself, so they are ordered with the output.
+  each pane, then [`CaptureFrame::Output`], and a fresh snapshot after any loss (at most two
+  outstanding per pane). Snapshots are taken by the observing client itself, so they are
+  ordered with the output. A pane that closed before its snapshot is reported
+  [`CaptureFrame::PaneUnavailable`]; the stream goes on.
 - **Restart.** The tmux server is not a child of the process that started it, and a [`Server`]
   holds no process: a restarted daemon opens a new handle, lists the sessions and observes
   them again, with the same panes and processes.

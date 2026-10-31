@@ -149,7 +149,7 @@ fn every_command_uses_the_private_cockpit_server_and_its_config() {
     let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
 
     server
-        .new_session(&launch("agent-1", Path::new("/work")))
+        .new_session(&launch("agent-1", fake.directory.path()))
         .expect("the fake prints a pane id");
 
     let calls = fake.calls();
@@ -164,7 +164,7 @@ fn a_new_session_runs_its_command_directly_with_its_environment() {
     let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
 
     server
-        .new_session(&launch("agent-1", Path::new("/work")))
+        .new_session(&launch("agent-1", fake.directory.path()))
         .expect("the fake prints a pane id");
 
     let call = &fake.calls()[0];
@@ -178,8 +178,10 @@ fn a_new_session_runs_its_command_directly_with_its_environment() {
             .any(|pair| pair == ["-e", "COCKPIT_SESSION=s1"]),
         "{call:?}"
     );
+    let working_dir = fake.directory.path().display().to_string();
     assert!(
-        call.windows(2).any(|pair| pair == ["-c", "/work"]),
+        call.windows(2)
+            .any(|pair| pair == ["-c", working_dir.as_str()]),
         "{call:?}"
     );
 }
@@ -224,10 +226,26 @@ fn a_session_name_tmux_would_read_as_a_target_is_refused() {
 fn an_environment_name_that_is_not_a_shell_name_is_refused() {
     let fake = FakeTmux::printing_version("tmux 3.4");
     let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
-    let mut bad_launch = launch("agent-1", Path::new("/work"));
+    let mut bad_launch = launch("agent-1", fake.directory.path());
     bad_launch.environment = vec![("A=B".to_string(), "x".into())];
 
     let error = server.new_session(&bad_launch).expect_err("A=B is no name");
+
+    assert!(matches!(error, Error::InvalidArgument { .. }), "{error:?}");
+    assert_eq!(fake.calls(), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_session_in_a_missing_directory_is_refused_before_tmux_runs() {
+    let fake = FakeTmux::printing_version("tmux 3.4");
+    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+
+    let error = server
+        .new_session(&launch(
+            "agent-1",
+            &fake.directory.path().join("removed-worktree"),
+        ))
+        .expect_err("the directory does not exist");
 
     assert!(matches!(error, Error::InvalidArgument { .. }), "{error:?}");
     assert_eq!(fake.calls(), Vec::<Vec<String>>::new());

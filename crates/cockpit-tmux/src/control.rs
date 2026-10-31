@@ -8,11 +8,11 @@
 //! [`ControlEvent::OutputLost`]; memory stays bounded by [`ObserveOptions::capacity`]. The
 //! consumer re-captures the pane's screen, which [`crate::CaptureStream`] does.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -62,14 +62,114 @@ impl Default for ObserveOptions {
 /// How long [`Server::observe`] waits for tmux to attach its control client.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// What the reader hands the consumer: an event, or a nudge to look at the lost panes.
-enum Delivery {
-    Event(ControlEvent),
-    LossRecorded,
+/// What the reader thread hands the consumer. The reader never waits on the consumer: it
+/// only appends here, so it always drains tmux.
+#[derive(Default)]
+struct Inbox {
+    state: Mutex<InboxState>,
+    changed: Condvar,
 }
 
-/// Panes whose output was lost and not yet reported, in the order it happened.
-type Losses = Arc<Mutex<Vec<(PaneId, bool)>>>;
+#[derive(Default)]
+struct InboxState {
+    /// Events in tmux's order. Replies and the exit are always kept: replies answer the
+    /// consumer's own commands, so they are bounded by what it sent.
+    events: VecDeque<ControlEvent>,
+    /// Outputs and notifications in `events`; past `capacity` new ones are dropped.
+    droppable: usize,
+    capacity: usize,
+    /// Panes whose output was lost and not yet reported, in the order it happened.
+    losses: Vec<(PaneId, bool)>,
+    /// tmux's answer to the `attach-session` the client was started with.
+    attach: Option<Result<(), String>>,
+    /// The reader ended: nothing more will be appended.
+    is_closed: bool,
+}
+
+impl Inbox {
+    fn lock(&self) -> MutexGuard<'_, InboxState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn update(&self, change: impl FnOnce(&mut InboxState)) {
+        change(&mut self.lock());
+        self.changed.notify_all();
+    }
+
+    /// Waits until `is_ready` holds or `deadline` passes (`None`: no deadline).
+    fn wait_until(
+        &self,
+        deadline: Option<Instant>,
+        mut is_ready: impl FnMut(&mut InboxState) -> bool,
+    ) -> MutexGuard<'_, InboxState> {
+        let mut state = self.lock();
+        while !is_ready(&mut state) {
+            state = match deadline {
+                None => self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    self.changed
+                        .wait_timeout(state, remaining)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+            };
+        }
+        state
+    }
+}
+
+impl InboxState {
+    fn push(&mut self, event: ControlEvent) {
+        match event {
+            ControlEvent::OutputLost { pane, is_paused } => self.record_loss(pane, is_paused),
+            ControlEvent::Output { pane, .. } if self.droppable >= self.capacity => {
+                self.record_loss(pane, false);
+            }
+            ControlEvent::Notification { .. } if self.droppable >= self.capacity => {}
+            ControlEvent::Output { .. } | ControlEvent::Notification { .. } => {
+                self.droppable += 1;
+                self.events.push_back(event);
+            }
+            ControlEvent::Reply { .. } | ControlEvent::Exit { .. } => self.events.push_back(event),
+        }
+    }
+
+    fn record_loss(&mut self, pane: PaneId, is_paused: bool) {
+        match self.losses.iter_mut().find(|(lost, _)| *lost == pane) {
+            Some((_, was_paused)) => *was_paused |= is_paused,
+            None => self.losses.push((pane, is_paused)),
+        }
+    }
+
+    /// A loss first: the consumer re-captures, and a capture is ordered after every event
+    /// still queued, so reporting it early is safe.
+    fn pop(&mut self) -> Option<ControlEvent> {
+        if !self.losses.is_empty() {
+            let (pane, is_paused) = self.losses.remove(0);
+            return Some(ControlEvent::OutputLost { pane, is_paused });
+        }
+        let event = self.events.pop_front()?;
+        if matches!(
+            event,
+            ControlEvent::Output { .. } | ControlEvent::Notification { .. }
+        ) {
+            self.droppable -= 1;
+        }
+        Some(event)
+    }
+}
+
+/// `now + timeout`, or `None` when that is too far away to represent: wait without limit.
+fn deadline_after(timeout: Duration) -> Option<Instant> {
+    Instant::now().checked_add(timeout)
+}
 
 /// A read-only control-mode client attached to one session. It never resizes the session
 /// (`ignore-size`) and cannot type into it (`read-only`). Dropping it ends the client and
@@ -77,15 +177,26 @@ type Losses = Arc<Mutex<Vec<(PaneId, bool)>>>;
 pub struct Observer {
     child: Child,
     stdin: ChildStdin,
-    deliveries: Option<Receiver<Delivery>>,
-    losses: Losses,
+    inbox: Arc<Inbox>,
     reader: Option<JoinHandle<()>>,
 }
 
 impl Server {
-    /// Attaches a control-mode client to `session`. Only output written after it attached
-    /// arrives; take a [`Server::capture`] or use [`Server::capture_stream`] for the screen.
+    /// Attaches a control-mode client to `session` and returns once tmux has attached it.
+    /// Only output written after that arrives; take a [`Server::capture`] or use
+    /// [`Server::capture_stream`] for the screen.
     pub fn observe(
+        &self,
+        session: &SessionName,
+        options: ObserveOptions,
+    ) -> Result<Observer, Error> {
+        self.panes(session)?;
+        self.observe_listed_session(session, options)
+    }
+
+    /// [`Server::observe`] for a session the caller has just listed the panes of: tmux
+    /// reports a missing session to `attach-session -C` only on stderr, after it started.
+    pub(crate) fn observe_listed_session(
         &self,
         session: &SessionName,
         options: ObserveOptions,
@@ -96,9 +207,6 @@ impl Server {
                 value: format!("{options:?}"),
             });
         }
-        // `attach-session -C` on a missing session only says so on stderr after it started;
-        // asking first makes that a plain command error.
-        self.panes(session)?;
         let client_flags = format!(
             "read-only,ignore-size,pause-after={}",
             options.pause_after_seconds
@@ -118,52 +226,47 @@ impl Server {
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let stderr = child.stderr.take().expect("stderr is piped");
-        let (sender, deliveries) = sync_channel(options.capacity);
-        let losses = Losses::default();
-        let reader_losses = Arc::clone(&losses);
-        let (attached, has_attached) = sync_channel(1);
+        let inbox = Arc::new(Inbox::default());
+        inbox.lock().capacity = options.capacity;
+        let reader_inbox = Arc::clone(&inbox);
         let reader = std::thread::Builder::new()
             .name(format!("tmux-observe-{session}"))
-            .spawn(move || {
-                read_control_stream(stdout, stderr, &sender, &reader_losses, attached);
-            })
+            .spawn(move || read_control_stream(stdout, stderr, &reader_inbox))
             .map_err(Error::io("start the reader thread for", "tmux".as_ref()))?;
         let observer = Observer {
             child,
             stdin,
-            deliveries: Some(deliveries),
-            losses,
+            inbox,
             reader: Some(reader),
         };
-        // Output a pane writes before tmux has attached the client never reaches it, so the
-        // observer is returned only once the attach has been answered.
-        match has_attached.recv_timeout(ATTACH_TIMEOUT) {
-            Ok(()) => Ok(observer),
-            Err(RecvTimeoutError::Disconnected) => {
-                let reason = match observer.next_event(Duration::ZERO) {
-                    Ok(Some(ControlEvent::Exit { reason })) => reason,
-                    _ => None,
-                };
-                Err(Error::CommandFailed {
-                    arguments: vec![
-                        "-C".into(),
-                        "attach-session".into(),
-                        session.target().into(),
-                    ],
-                    status: None,
-                    stderr: reason.unwrap_or_default(),
-                })
+        // Output a pane writes before tmux has attached the client never reaches it.
+        let attach = observer
+            .inbox
+            .wait_until(deadline_after(ATTACH_TIMEOUT), |state| {
+                state.attach.is_some() || state.is_closed
+            })
+            .attach
+            .clone();
+        let failure = match attach {
+            Some(Ok(())) => return Ok(observer),
+            Some(Err(message)) => message,
+            None if observer.inbox.lock().is_closed => {
+                match observer.inbox.lock().events.pop_back() {
+                    Some(ControlEvent::Exit { reason }) => reason.unwrap_or_default(),
+                    _ => String::new(),
+                }
             }
-            Err(RecvTimeoutError::Timeout) => Err(Error::CommandFailed {
-                arguments: vec![
-                    "-C".into(),
-                    "attach-session".into(),
-                    session.target().into(),
-                ],
-                status: None,
-                stderr: format!("no answer within {ATTACH_TIMEOUT:?}"),
-            }),
-        }
+            None => format!("no answer within {ATTACH_TIMEOUT:?}"),
+        };
+        Err(Error::CommandFailed {
+            arguments: vec![
+                "-C".into(),
+                "attach-session".into(),
+                session.target().into(),
+            ],
+            status: None,
+            stderr: failure,
+        })
     }
 }
 
@@ -171,34 +274,16 @@ impl Observer {
     /// The next event, or `None` if none arrived within `timeout`. After the
     /// [`ControlEvent::Exit`] event, fails with [`Error::ObserverClosed`].
     pub fn next_event(&self, timeout: Duration) -> Result<Option<ControlEvent>, Error> {
-        let deliveries = self
-            .deliveries
-            .as_ref()
-            .expect("deliveries live until drop");
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(event) = self.take_loss() {
-                return Ok(Some(event));
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match deliveries.recv_timeout(remaining) {
-                Ok(Delivery::Event(event)) => return Ok(Some(event)),
-                Ok(Delivery::LossRecorded) => {}
-                Err(RecvTimeoutError::Timeout) => return Ok(None),
-                Err(RecvTimeoutError::Disconnected) => {
-                    return self.take_loss().map(Some).ok_or(Error::ObserverClosed);
-                }
-            }
+        let mut event = None;
+        let state = self.inbox.wait_until(deadline_after(timeout), |state| {
+            event = state.pop();
+            event.is_some() || state.is_closed
+        });
+        match event {
+            Some(event) => Ok(Some(event)),
+            None if state.is_closed => Err(Error::ObserverClosed),
+            None => Ok(None),
         }
-    }
-
-    fn take_loss(&self) -> Option<ControlEvent> {
-        let mut losses = self.losses.lock().unwrap_or_else(PoisonError::into_inner);
-        if losses.is_empty() {
-            return None;
-        }
-        let (pane, is_paused) = losses.remove(0);
-        Some(ControlEvent::OutputLost { pane, is_paused })
     }
 
     /// Lets tmux send a paused pane's output again; tmux answers with a [`ControlEvent::Reply`].
@@ -221,17 +306,19 @@ impl Observer {
         self.stdin
             .write_all(&line)
             .and_then(|()| self.stdin.flush())
-            .map_err(|_| Error::ObserverClosed)
+            .map_err(Error::io(
+                "write a command to",
+                "the tmux control client".as_ref(),
+            ))
     }
 }
 
 impl Drop for Observer {
     fn drop(&mut self) {
-        // Killing the client closes its stdout, which ends the reader; dropping the
-        // receiver first unblocks a reader waiting on a full channel.
+        // Killing the client closes its stdout, which ends the reader; it never waits on
+        // the consumer, so joining it cannot hang.
         let _ = self.child.kill();
         let _ = self.child.wait();
-        self.deliveries = None;
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -259,84 +346,49 @@ fn tmux_quoted(word: &OsString) -> Result<Vec<u8>, Error> {
     Ok(quoted)
 }
 
-fn read_control_stream(
-    stdout: impl Read,
-    mut stderr: impl Read,
-    sender: &SyncSender<Delivery>,
-    losses: &Losses,
-    attached: SyncSender<()>,
-) {
-    let mut attached = Some(attached);
+fn read_control_stream(stdout: impl Read, mut stderr: impl Read, inbox: &Inbox) {
     let mut lines = BufReader::new(stdout);
     let mut parser = Parser::default();
     let mut has_exited = false;
+    let mut read_error = None;
     let mut line = Vec::new();
     loop {
         line.clear();
         match lines.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(_) => {}
+            Err(error) => {
+                read_error = Some(format!("reading the tmux control client failed: {error}"));
+                break;
+            }
         }
         if line.last() == Some(&b'\n') {
             line.pop();
         }
         let event = parser.feed(&line);
-        if parser.has_attached
-            && let Some(attached) = attached.take()
-        {
-            let _ = attached.send(());
+        if let Some(answer) = parser.attach_answer.take() {
+            inbox.update(|state| state.attach = Some(answer));
         }
-        let Some(event) = event else {
-            continue;
-        };
-        has_exited |= matches!(event, ControlEvent::Exit { .. });
-        if !deliver(event, sender, losses) {
-            return;
+        if let Some(event) = event {
+            has_exited |= matches!(event, ControlEvent::Exit { .. });
+            inbox.update(|state| state.push(event));
         }
     }
-    if !has_exited {
-        let mut message = String::new();
-        let _ = stderr.read_to_string(&mut message);
-        let reason = Some(message.trim().to_string()).filter(|message| !message.is_empty());
-        let _ = sender.send(Delivery::Event(ControlEvent::Exit { reason }));
-    }
-}
-
-/// Hands one event to the consumer without ever waiting on it, except for a reply or the
-/// exit: replies answer the consumer's own commands, so they are bounded by what it sent.
-/// Returns false once the consumer is gone.
-fn deliver(event: ControlEvent, sender: &SyncSender<Delivery>, losses: &Losses) -> bool {
-    match event {
-        ControlEvent::OutputLost { pane, is_paused } => {
-            record_loss(losses, pane, is_paused);
-            !matches!(
-                sender.try_send(Delivery::LossRecorded),
-                Err(TrySendError::Disconnected(_))
-            )
+    let mut message = String::new();
+    let _ = stderr.read_to_string(&mut message);
+    let reason = [read_error.unwrap_or_default(), message.trim().to_string()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    inbox.update(|state| {
+        if !has_exited {
+            state.push(ControlEvent::Exit {
+                reason: Some(reason).filter(|reason| !reason.is_empty()),
+            });
         }
-        ControlEvent::Reply { .. } | ControlEvent::Exit { .. } => {
-            sender.send(Delivery::Event(event)).is_ok()
-        }
-        ControlEvent::Output { .. } | ControlEvent::Notification { .. } => {
-            match sender.try_send(Delivery::Event(event)) {
-                Ok(()) => true,
-                Err(TrySendError::Full(Delivery::Event(ControlEvent::Output { pane, .. }))) => {
-                    record_loss(losses, pane, false);
-                    true
-                }
-                Err(TrySendError::Full(_)) => true,
-                Err(TrySendError::Disconnected(_)) => false,
-            }
-        }
-    }
-}
-
-fn record_loss(losses: &Losses, pane: PaneId, is_paused: bool) {
-    let mut losses = losses.lock().unwrap_or_else(PoisonError::into_inner);
-    match losses.iter_mut().find(|(lost, _)| *lost == pane) {
-        Some((_, was_paused)) => *was_paused |= is_paused,
-        None => losses.push((pane, is_paused)),
-    }
+        state.is_closed = true;
+    });
 }
 
 /// Turns control-mode lines into events. Lines between `%begin` and its `%end`/`%error` are
@@ -344,7 +396,9 @@ fn record_loss(losses: &Losses, pane: PaneId, is_paused: bool) {
 #[derive(Default)]
 struct Parser {
     block: Option<Block>,
-    /// tmux answered the `attach-session` the client was started with.
+    /// tmux's answer to the `attach-session` the client was started with, once it came
+    /// and until the reader took it.
+    attach_answer: Option<Result<(), String>>,
     has_attached: bool,
 }
 
@@ -370,10 +424,15 @@ impl Parser {
             let block = self.block.take().expect("a block is open");
             let is_error = closing == b"%error ";
             if !block.is_from_this_client {
-                self.has_attached = true;
-                return is_error.then(|| ControlEvent::Notification {
+                let message = String::from_utf8_lossy(&block.lines.join(&b'\n')).into_owned();
+                if !self.has_attached {
+                    self.has_attached = true;
+                    self.attach_answer = Some(if is_error { Err(message) } else { Ok(()) });
+                    return None;
+                }
+                return is_error.then_some(ControlEvent::Notification {
                     name: "error".to_string(),
-                    arguments: String::from_utf8_lossy(&block.lines.join(&b'\n')).into_owned(),
+                    arguments: message,
                 });
             }
             return Some(ControlEvent::Reply {

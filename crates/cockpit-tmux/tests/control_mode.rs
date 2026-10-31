@@ -194,3 +194,22 @@ fn dropping_the_observer_leaves_the_session_running() {
     assert_eq!(fixture.tmux(&["list-clients"]), "");
     assert_eq!(fixture.server.sessions().expect("lists"), vec![session]);
 }
+
+#[test]
+fn waiting_without_a_limit_returns_when_the_next_event_comes() {
+    let fixture = TestServer::new();
+    let (session, _) = fixture.start_shell("agent-1", "sleep 30");
+    let observer = fixture
+        .server
+        .observe(&session, ObserveOptions::default())
+        .expect("attaches");
+    fixture.server.close_session(&session).expect("closes");
+
+    loop {
+        match observer.next_event(Duration::MAX).expect("observing") {
+            Some(ControlEvent::Exit { .. }) => break,
+            Some(_) => {}
+            None => panic!("a wait without limit returned nothing"),
+        }
+    }
+}

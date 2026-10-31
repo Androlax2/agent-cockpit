@@ -17,6 +17,8 @@ pub const CONFIG: &str = "\
 set-option -g remain-on-exit on
 # Agent transcripts are long; the default 2000 lines loses most of a build log.
 set-option -g history-limit 50000
+# A one-word command runs through this shell, quoted for sh; never the user's login shell.
+set-option -g default-shell /bin/sh
 # The TUI runs in a pane: an Escape key must not wait for the rest of a sequence.
 set-option -s escape-time 0
 ";
@@ -54,7 +56,8 @@ pub struct ServerSpec {
     pub config_path: PathBuf,
 }
 
-/// The parts of a new tmux session. `command` runs directly, never through a shell.
+/// The parts of a new tmux session. `command` runs as given: several words directly, a
+/// single word quoted for `/bin/sh` (tmux runs a lone word through its `default-shell`).
 #[derive(Clone, Debug)]
 pub struct SessionLaunch {
     pub name: SessionName,
@@ -167,6 +170,13 @@ impl Server {
                 value: String::new(),
             });
         }
+        // tmux starts the pane in $HOME, and still succeeds, when the directory is missing.
+        if !launch.working_dir.is_dir() {
+            return Err(Error::InvalidArgument {
+                what: "session working directory (not a directory)",
+                value: launch.working_dir.display().to_string(),
+            });
+        }
         let mut arguments: Vec<OsString> = vec![
             "new-session".into(),
             "-d".into(),
@@ -191,7 +201,9 @@ impl Server {
         self.run_for_pane_id(&arguments)
     }
 
-    /// Every session on the server, sorted by name; empty when no server runs.
+    /// Every session on the server whose name a [`SessionName`] admits, sorted by name;
+    /// empty when no server runs. A session with any other name is not Cockpit's (an agent
+    /// can reach this server through its pane's `TMUX`), so it is left out.
     pub fn sessions(&self) -> Result<Vec<SessionName>, Error> {
         let arguments: Vec<OsString> = vec![
             "list-sessions".into(),
@@ -203,10 +215,10 @@ impl Server {
             Err(error) if is_no_server(&error) => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
-        let mut names = String::from_utf8_lossy(&printed)
+        let mut names: Vec<SessionName> = String::from_utf8_lossy(&printed)
             .lines()
-            .map(SessionName::new)
-            .collect::<Result<Vec<_>, _>>()?;
+            .filter_map(|name| SessionName::new(name).ok())
+            .collect();
         names.sort();
         Ok(names)
     }

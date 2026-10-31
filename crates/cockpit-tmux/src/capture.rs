@@ -2,7 +2,7 @@
 //! its output as it arrives, and a fresh snapshot whenever flow control dropped output.
 //! A slow client therefore costs a re-capture, never an unbounded backlog.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::Error;
@@ -17,6 +17,9 @@ pub enum CaptureFrame {
     Snapshot { pane: PaneId, screen: Vec<u8> },
     /// Bytes the pane's program wrote after the last snapshot of that pane.
     Output { pane: PaneId, bytes: Vec<u8> },
+    /// tmux could not capture or resume this pane, usually because it closed; the stream
+    /// goes on for the session's other panes.
+    PaneUnavailable { pane: PaneId, message: String },
     /// The session closed or the server stopped; the stream has nothing more.
     Ended { reason: Option<String> },
 }
@@ -30,10 +33,19 @@ pub struct CaptureOptions {
 
 pub struct CaptureStream {
     observer: Observer,
-    /// One entry per command sent and not yet answered, in sending order: the pane a
-    /// capture was for, or `None` for a resume.
-    awaiting_replies: VecDeque<Option<PaneId>>,
+    /// The commands sent and not yet answered, in sending order.
+    awaiting_replies: VecDeque<Request>,
+    /// Panes that lost output while a snapshot of them was already requested: that snapshot
+    /// may predate the loss, so another follows it. At most two snapshots of a pane are
+    /// ever outstanding, however long the client stays behind.
+    needs_another_snapshot: HashSet<PaneId>,
     history_lines: u32,
+}
+
+#[derive(Debug)]
+enum Request {
+    Snapshot(PaneId),
+    Resume(PaneId),
 }
 
 impl Server {
@@ -44,13 +56,15 @@ impl Server {
         session: &SessionName,
         options: CaptureOptions,
     ) -> Result<CaptureStream, Error> {
-        let observer = self.observe(session, options.observe)?;
+        let panes = self.panes(session)?;
+        let observer = self.observe_listed_session(session, options.observe)?;
         let mut stream = CaptureStream {
             observer,
             awaiting_replies: VecDeque::new(),
+            needs_another_snapshot: HashSet::new(),
             history_lines: options.history_lines,
         };
-        for pane in self.panes(session)? {
+        for pane in panes {
             stream.request_snapshot(pane.id)?;
         }
         Ok(stream)
@@ -60,9 +74,11 @@ impl Server {
 impl CaptureStream {
     /// The next frame, or `None` if none is ready within `timeout`.
     pub fn next_frame(&mut self, timeout: Duration) -> Result<Option<CaptureFrame>, Error> {
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now().checked_add(timeout);
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.map_or(Duration::MAX, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
             let Some(event) = self.observer.next_event(remaining)? else {
                 return Ok(None);
             };
@@ -73,9 +89,14 @@ impl CaptureStream {
                 ControlEvent::OutputLost { pane, is_paused } => {
                     if is_paused {
                         self.observer.resume(&pane)?;
-                        self.awaiting_replies.push_back(None);
+                        self.awaiting_replies
+                            .push_back(Request::Resume(pane.clone()));
                     }
-                    self.request_snapshot(pane)?;
+                    if self.is_snapshot_pending(&pane) {
+                        self.needs_another_snapshot.insert(pane);
+                    } else {
+                        self.request_snapshot(pane)?;
+                    }
                 }
                 ControlEvent::Reply { is_error, lines } => {
                     if let Some(frame) = self.frame_for_reply(is_error, lines)? {
@@ -88,10 +109,16 @@ impl CaptureStream {
         }
     }
 
+    fn is_snapshot_pending(&self, pane: &PaneId) -> bool {
+        self.awaiting_replies
+            .iter()
+            .any(|request| matches!(request, Request::Snapshot(pending) if pending == pane))
+    }
+
     fn request_snapshot(&mut self, pane: PaneId) -> Result<(), Error> {
         self.observer
             .send(&capture_arguments(&pane, self.history_lines))?;
-        self.awaiting_replies.push_back(Some(pane));
+        self.awaiting_replies.push_back(Request::Snapshot(pane));
         Ok(())
     }
 
@@ -106,21 +133,24 @@ impl CaptureStream {
                 output: "a control-mode reply to no command this stream sent".to_string(),
             });
         };
+        let (Request::Snapshot(pane) | Request::Resume(pane)) = &request;
+        let pane = pane.clone();
         if is_error {
-            let arguments = match &request {
-                Some(pane) => capture_arguments(pane, self.history_lines),
-                None => vec!["refresh-client".into(), "-A".into()],
-            };
-            return Err(Error::CommandFailed {
-                arguments,
-                status: None,
-                stderr: String::from_utf8_lossy(&lines.join(&b'\n')).into_owned(),
-            });
+            // Usually the pane closed after the request; the other panes stream on.
+            self.needs_another_snapshot.remove(&pane);
+            return Ok(Some(CaptureFrame::PaneUnavailable {
+                pane,
+                message: String::from_utf8_lossy(&lines.join(&b'\n')).into_owned(),
+            }));
         }
-        Ok(request.map(|pane| {
-            let mut screen = lines.join(&b'\n');
-            screen.push(b'\n');
-            CaptureFrame::Snapshot { pane, screen }
-        }))
+        let Request::Snapshot(_) = request else {
+            return Ok(None);
+        };
+        if self.needs_another_snapshot.remove(&pane) {
+            self.request_snapshot(pane.clone())?;
+        }
+        let mut screen = lines.join(&b'\n');
+        screen.push(b'\n');
+        Ok(Some(CaptureFrame::Snapshot { pane, screen }))
     }
 }

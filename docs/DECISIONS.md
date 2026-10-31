@@ -9,8 +9,10 @@ Issue #30. Report 05 names control mode with flow control (`pause-after`) for ob
 Measured on tmux 3.8: a control client that stops reading makes tmux stop reading the pane,
 so the agent's own output stalls, and `%pause` then often never comes because the stalled
 pane produces nothing more to age (6 of 12 runs, in a flood fixture). So the reader thread
-always drains tmux; when the consumer's bounded channel is full it drops that pane's output
-and reports `OutputLost`, and the capture stream answers with a fresh snapshot.
+always drains tmux and never waits on the consumer: past `capacity` waiting outputs it drops
+that pane's output and reports `OutputLost`, and the capture stream answers with a fresh
+snapshot (at most two outstanding per pane). Replies and the exit are always queued, in
+order with the output; they answer the consumer's own commands, so they stay bounded.
 `pause-after` stays set as tmux's own backstop and is handled the same way.
 
 - **`-C`, not `-CC`.** The daemon reads control mode through pipes; `-CC` needs a terminal.
