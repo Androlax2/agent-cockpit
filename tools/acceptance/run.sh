@@ -6,7 +6,8 @@
 #   run.sh start              start the daemon, register the scratch project `demo`
 #   run.sh tui                attach this terminal to the TUI
 #   run.sh cockpit ARGS...    run this clone's `cockpit`, from the scratch projects directory
-#   run.sh session VERB       sleep|wake|resume|end the newest such session of `demo` in place
+#   run.sh session new ARGS   start a session in `demo` (`cockpit session new` options), remember it
+#   run.sh session VERB       sleep|wake|resume|end the session `session new` remembered
 #   run.sh kill-daemon        kill -9 the daemon, leaving its sessions running
 #   run.sh stop               stop the daemon and the scratch tmux server
 #   run.sh clean              stop, then delete the scratch directory
@@ -16,7 +17,7 @@
 # uses the owner's Claude Code login.
 set -euo pipefail
 
-usage="usage: run.sh start|tui|kill-daemon|stop|clean | cockpit ARGS... | session sleep|wake|resume|end"
+usage="usage: run.sh start|tui|kill-daemon|stop|clean | cockpit ARGS... | session new [OPTIONS] | session sleep|wake|resume|end"
 
 clone=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 bin="$clone/target/release"
@@ -97,21 +98,18 @@ make_scratch() {
 }
 
 start_daemon() {
-    local waited
-    if daemon_pid >/dev/null; then
-        echo "daemon already running (pid $(daemon_pid))"
+    local pid waited
+    if pid=$(daemon_pid); then
+        echo "daemon already running (pid $pid)"
         return
     fi
     # `setsid` in a non-interactive shell's background job execs in place, so $! is the daemon.
     setsid "$bin/cockpit-daemon" </dev/null >"$daemon_output" 2>&1 &
-    local pid=$!
+    pid=$!
     echo "$pid" >"$pid_file"
     disown
     for ((waited = 0; waited < 100; waited++)); do
-        if grep -q '^ready ' "$daemon_output"; then
-            grep '^ready ' "$daemon_output"
-            return
-        fi
+        grep '^ready ' "$daemon_output" && return
         if ! kill -0 "$pid" 2>/dev/null; then
             echo "the daemon exited before it was ready:" >&2
             cat "$daemon_output" >&2
@@ -135,23 +133,6 @@ start() {
     echo "claude:   $(command -v claude || echo 'none on PATH: sessions cannot start')"
     echo "commit:   $(git -C "$clone" rev-parse HEAD)"
     echo "TUI:      bash $clone/tools/acceptance/run.sh tui"
-}
-
-# The newest session started in `demo` itself (not in a clone), when it is in `state`. Never
-# an older one: the guide's steps act on the session it just started.
-newest_demo_session() {
-    local wanted=$1 sessions id state
-    sessions=$("$bin/cockpit" session list --ended) || exit 1
-    read -r id state < <(awk -F '\t' -v dir="$demo" '$6 == dir { id = $1; state = $2 } END { print id, state }' <<<"$sessions")
-    [[ -n $id ]] || {
-        echo "no session in $demo" >&2
-        exit 1
-    }
-    [[ $state == "$wanted" ]] || {
-        echo "the newest session in $demo, $id, is $state, not $wanted; retry once it is" >&2
-        exit 1
-    }
-    echo "$id"
 }
 
 stop() {
@@ -185,19 +166,28 @@ cockpit)
     exec "$bin/cockpit" "$@"
     ;;
 session)
-    [[ ${2:-} =~ ^(sleep|wake|resume|end)$ ]] || {
+    case ${2:-} in
+    new)
+        require_binaries
+        enter_projects
+        line=$("$bin/cockpit" session new demo "${@:3}")
+        echo "$line"
+        echo "${line%%$'\t'*}" >"$scratch/session"
+        ;;
+    sleep | wake | resume | end)
+        require_binaries
+        enter_projects
+        [[ -s $scratch/session ]] || {
+            echo "no session started with run.sh session new yet" >&2
+            exit 1
+        }
+        exec "$bin/cockpit" session "$2" "$(<"$scratch/session")"
+        ;;
+    *)
         echo "$usage" >&2
         exit 2
-    }
-    require_binaries
-    enter_projects
-    case $2 in
-    sleep | end) state=running ;;
-    wake) state=asleep ;;
-    resume) state=ended ;;
+        ;;
     esac
-    id=$(newest_demo_session "$state")
-    exec "$bin/cockpit" session "$2" "$id"
     ;;
 kill-daemon)
     pid=$(daemon_pid) || {
