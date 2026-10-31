@@ -21,10 +21,11 @@ pub use routes::{Handler, Job, Peer, Route, Routes, WorkClass, refusal};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 3] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 4] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
+    cockpit_processes::MIGRATIONS,
 ];
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -55,7 +56,16 @@ impl Instance {
             cockpit_turso::Database::open(&options.database_path(), &MIGRATION_SETS).await?,
         );
         tracing::info!(epoch = database.epoch(), "opened the state database");
-        reconcile(&database);
+        let processes = cockpit_processes::Supervisor::detect(
+            options.executions_dir(),
+            cockpit_processes::SystemdTools::from_path(),
+        )
+        .await;
+        tracing::info!(
+            containment = ?processes.launch_containment(),
+            "new executions use this containment"
+        );
+        reconcile(&database, &processes).await?;
         let socket_path = options.socket_path();
         let agent_socket_path = options.agent_socket_path();
         let listener = Arc::new(server::bind(&socket_path)?);
@@ -106,9 +116,33 @@ fn accept(
 
 /// Step 2 and 3 of the restart contract: each capability that holds launch intents,
 /// reservations or execution identities reconciles them against the real processes here,
-/// before the socket exists. No capability holds any yet (M1 adds processes and sessions).
-fn reconcile(_database: &cockpit_turso::Database) {
-    tracing::info!("reconciled durable state; nothing to reattach");
+/// before the socket exists. Processes is the first; sessions follow in M1.
+async fn reconcile(
+    database: &cockpit_turso::Database,
+    processes: &cockpit_processes::Supervisor,
+) -> Result<(), StartError> {
+    let reconciled = processes.reconcile(database).await?;
+    for outcome in &reconciled {
+        match outcome {
+            cockpit_processes::Reconciled::Reattached(id) => {
+                tracing::info!(execution = id.0, "reattached a running execution");
+            }
+            cockpit_processes::Reconciled::Ended(id, reason) => {
+                tracing::info!(execution = id.0, ?reason, "released an ended execution");
+            }
+            cockpit_processes::Reconciled::Uncertain(id) => tracing::warn!(
+                execution = id.0,
+                "kept an unidentified execution charged; it may still be running"
+            ),
+            cockpit_processes::Reconciled::Unchecked(id, reason) => tracing::warn!(
+                execution = id.0,
+                reason,
+                "kept an execution charged that could not be checked"
+            ),
+        }
+    }
+    tracing::info!(executions = reconciled.len(), "reconciled durable state");
+    Ok(())
 }
 
 impl Daemon {
