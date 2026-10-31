@@ -20,17 +20,44 @@ pub(crate) fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// todo.json's mtime, ctime, length and inode: any rewrite changes it.
+type TodoStamp = (i64, i64, i64, i64, u64, u64);
+
 /// The todo list with each item's cwd resolved to its canonical project, reread only when
-/// todo.json changes. Every team request and tick reconciles it: a full reload with its project
-/// lookups cost about 7 ms each, a few hundred times a minute.
+/// todo.json changes: a full reload with its project lookups cost about 7 ms each, a few hundred
+/// times a minute. Live-session passes reconcile the store with it through `reconcile_due`.
 #[derive(Default)]
 pub(crate) struct ResolvedTodos {
-    stamp: Option<(i64, i64, i64, i64, u64, u64)>,
+    stamp: Option<TodoStamp>,
     todos: cockpit::todo::TodoList,
     pub(crate) loads: u64,
+    /// The todo.json stamp the store was last reconciled with, and when.
+    reconciled: Option<(Option<TodoStamp>, Instant)>,
+    pub(crate) reconciles: u64,
 }
 
+/// Reconciling rewrites every todo's reservation rows in one committed transaction: about 6 ms with
+/// 400 todos, far more on disk. Run on every live-session pass (each watched session's Context and
+/// Receive, the tick, Chief snapshots), it kept osd above half a core with a dozen sessions. A
+/// changed todo.json still reconciles at once; the store's own drift waits at most this long.
+const TODO_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+
 impl ResolvedTodos {
+    /// The current list when the store is due a reconcile with it: always once it was just opened.
+    fn reconcile_due(&mut self, is_store_opened: bool) -> Option<&cockpit::todo::TodoList> {
+        self.current();
+        let is_due = is_store_opened
+            || self.reconciled.is_none_or(|(stamp, at)| {
+                stamp != self.stamp || at.elapsed() >= TODO_RECONCILE_INTERVAL
+            });
+        is_due.then_some(&self.todos)
+    }
+
+    fn mark_reconciled(&mut self) {
+        self.reconciled = Some((self.stamp, Instant::now()));
+        self.reconciles += 1;
+    }
+
     pub(crate) fn current(&mut self) -> &cockpit::todo::TodoList {
         let stamp = fs::metadata(cockpit::paths::todo()).ok().map(|file| {
             (
@@ -182,17 +209,19 @@ pub(crate) fn live_sessions(registry: &mut Registry) -> Result<Vec<VerifiedSessi
         start_spawns(registry)?;
     }
     cockpit::chief::store::observe_resumed(registry.teams.as_ref().expect("opened above"), &live)?;
-    let todos = registry.resolved_todos.current();
-    cockpit::chief::store::reconcile_todos(
-        registry.teams.as_mut().expect("opened above"),
-        todos,
-        now_ms(),
-    )?;
-    cockpit::chief::store::record_todo_completions(
-        registry.teams.as_mut().expect("opened above"),
-        todos,
-        now_ms(),
-    )?;
+    if let Some(todos) = registry.resolved_todos.reconcile_due(is_opened) {
+        cockpit::chief::store::reconcile_todos(
+            registry.teams.as_mut().expect("opened above"),
+            todos,
+            now_ms(),
+        )?;
+        cockpit::chief::store::record_todo_completions(
+            registry.teams.as_mut().expect("opened above"),
+            todos,
+            now_ms(),
+        )?;
+        registry.resolved_todos.mark_reconciled();
+    }
     // A session the cockpit started for an approved team takes its role at its first verified request.
     let tokens: Vec<(String, VerifiedSession)> = live
         .iter()

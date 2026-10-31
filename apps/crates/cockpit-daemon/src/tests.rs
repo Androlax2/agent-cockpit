@@ -393,6 +393,40 @@ fn team_requests_reuse_the_todo_list_while_todo_json_is_unchanged() {
     assert_eq!(bench.registry.resolved_todos.loads, loads);
 }
 
+/// Every watched session sends Context then Receive every 3 s, each a full live-session pass: the
+/// todo reconciliation they all ran kept osd above half a core with a dozen sessions.
+#[test]
+fn live_session_passes_reconcile_an_unchanged_todo_list_at_most_once_a_second() {
+    use cockpit::teams::AgentAction;
+    let mut bench = team_bench();
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    let reconciles = bench.registry.resolved_todos.reconciles;
+    let started = std::time::Instant::now();
+    for _ in 0..20 {
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Context).unwrap();
+        crate::teams::request(&mut bench.registry, 10, AgentAction::Receive).unwrap();
+    }
+    // The interval may expire once mid-loop: one reconcile per started second.
+    let budget = started.elapsed().as_secs() + 1;
+    assert!(
+        bench.registry.resolved_todos.reconciles - reconciles <= budget,
+        "40 team requests reconciled the todos {} times; budget {budget}",
+        bench.registry.resolved_todos.reconciles - reconciles
+    );
+}
+
+/// Store drift with todo.json unchanged (a launch past its grace, a released reservation) is still
+/// caught up, one interval later.
+#[test]
+fn an_unchanged_todo_list_is_reconciled_again_after_one_second() {
+    let mut bench = team_bench();
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    let reconciles = bench.registry.resolved_todos.reconciles;
+    std::thread::sleep(std::time::Duration::from_millis(1050));
+    crate::teams::live_sessions(&mut bench.registry).unwrap();
+    assert_eq!(bench.registry.resolved_todos.reconciles - reconciles, 1);
+}
+
 /// Only identity discovery is cached; explicit context requests still force a fresh pass.
 #[test]
 fn only_explicit_team_requests_refresh_a_recent_live_session_pass() {
