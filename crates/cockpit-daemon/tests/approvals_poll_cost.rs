@@ -27,18 +27,11 @@ async fn timed(times: u32, agent: &Connection, command: impl Fn() -> Command) ->
     started.elapsed() / times
 }
 
+/// The newest change-feed id: its growth is the change rows written in between.
 async fn change_rows(home: &TestHome) -> i64 {
     let database = home.open_state().await;
     let read = database.read().await.unwrap();
-    read.query("SELECT count(*) FROM turso_cdc", ())
-        .await
-        .unwrap()
-        .next()
-        .await
-        .unwrap()
-        .unwrap()
-        .get(0)
-        .unwrap()
+    read.revision().await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -398,26 +398,25 @@ pub async fn guide_status(
     if guide.state != GuideState::Asking {
         return Ok(guide);
     }
-    let Some(expires_at) = refreshed_expiry(guide.expires_at, now) else {
-        return Ok(guide);
-    };
-    write
-        .execute(
-            "UPDATE approvals_guides SET expires_at = ?2 WHERE id = ?1",
-            (id.0, expires_at),
-        )
-        .await?;
-    // The agent waits on the guide, not on the requests its `run:` steps filed; they stay
-    // before the owner as long as the guide does.
-    write
-        .execute(
-            "UPDATE approvals_runs SET expires_at = ?2
-             WHERE state = 'asking' AND expires_at > ?3
-               AND id IN (SELECT run_request FROM approvals_guide_steps WHERE guide = ?1)",
-            (id.0, expires_at, now),
-        )
-        .await?;
-    guide.expires_at = expires_at;
+    if let Some(expires_at) = refreshed_expiry(guide.expires_at, now) {
+        write
+            .execute(
+                "UPDATE approvals_guides SET expires_at = ?2 WHERE id = ?1",
+                (id.0, expires_at),
+            )
+            .await?;
+        // The agent waits on the guide, not on the requests its `run:` steps filed; they stay
+        // before the owner as long as the guide does.
+        write
+            .execute(
+                "UPDATE approvals_runs SET expires_at = ?2
+                 WHERE state = 'asking' AND expires_at > ?3
+                   AND id IN (SELECT run_request FROM approvals_guide_steps WHERE guide = ?1)",
+                (id.0, expires_at, now),
+            )
+            .await?;
+        guide.expires_at = expires_at;
+    }
     Ok(guide)
 }
 
