@@ -44,8 +44,8 @@ fn a_single_blank_line_is_left_as_is() {
 
 #[test]
 fn lookalike_letters_are_named_not_escaped() {
-    let shown = show("rm -rf /\u{0430} # caf\u{e9}");
-    assert_eq!(shown.text, "rm -rf /\u{0430} # caf\u{e9}");
+    let shown = show("rm -rf /\u{0430} # café");
+    assert_eq!(shown.text, "rm -rf /\u{0430} # café");
     assert_eq!(shown.non_ascii, ["\u{e9} U+00E9", "\u{0430} U+0430"]);
     assert!(!shown.has_hidden_characters);
 }

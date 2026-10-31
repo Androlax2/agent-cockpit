@@ -192,7 +192,7 @@ async fn an_approved_command_runs_in_a_terminal_and_returns_its_exit_code() {
 #[tokio::test]
 async fn the_owner_sees_the_request_in_the_queue_with_the_display_rules_applied() {
     let asking = started(true).await;
-    let request = asking.asked("printf 'caf\u{e9}\\n' # \u{202e}").await;
+    let request = asking.asked("printf 'café\\n' # \u{202e}").await;
 
     let Ok(Reply::ApprovalQueue { runs, guides }) =
         asking.owner.request(Command::ApprovalQueue, GENEROUS).await
