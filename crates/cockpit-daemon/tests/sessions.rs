@@ -268,12 +268,7 @@ impl Home {
                 reason: "the acceptance walk asks".to_owned(),
                 project: None,
             },
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .try_into()
-                .unwrap(),
+            unix_now(),
         )
         .await
         .unwrap();
@@ -425,6 +420,13 @@ fn is_alive(pid: i32) -> bool {
         && !std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .unwrap_or_default()
             .contains(") Z ")
+}
+
+fn unix_now() -> i64 {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    i64::try_from(elapsed.as_secs()).unwrap()
 }
 
 fn settings() -> cockpit_sessions::Settings {
@@ -1275,12 +1277,7 @@ async fn the_owner_configured_idle_window_decides_when_a_waiting_agent_sleeps() 
 
     // 46 minutes at the prompt: past the configured 45, short of the product's 60. The
     // launch moves back too, so the report still belongs to this agent.
-    let waiting_since = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        - 46 * 60;
-    let waiting_since = i64::try_from(waiting_since).unwrap();
+    let waiting_since = unix_now() - 46 * 60;
     let database = home.database.lock().unwrap().clone().unwrap();
     let write = database.write().await.unwrap();
     for statement in [
