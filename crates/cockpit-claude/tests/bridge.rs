@@ -63,7 +63,7 @@ fn run_hook(cockpit: &Path, payload: &str, token: Option<&str>) -> Output {
 }
 
 #[test]
-fn a_stop_reports_waiting_through_the_cockpit_program() {
+fn a_stop_reports_a_completed_turn_through_the_cockpit_program() {
     let cockpit = FakeCockpit::exiting_with(0);
     let output = run_hook(
         &cockpit.program(),
@@ -74,7 +74,14 @@ fn a_stop_reports_waiting_through_the_cockpit_program() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         cockpit.arguments().unwrap(),
-        ["agent", "report", "--state", "waiting"]
+        [
+            "agent",
+            "report",
+            "--state",
+            "waiting",
+            "--outcome",
+            "completed"
+        ]
     );
     assert_eq!(cockpit.token(), "token-1");
 }

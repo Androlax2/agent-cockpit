@@ -23,12 +23,12 @@ stopped in the middle of one finishes or repairs it at its next start.
 - **Restart, sleep, wake and resume** relaunch the same conversation, so each needs a
   provider with the `resume` capability that named the conversation; otherwise they are
   refused before anything stops.
-- **Agents' reports.** An agent reports its state (working, waiting), label, doing-now and
-  open question through the agent channel, which identifies the sender; this crate checks
-  the fields, asks `cockpit-authorization` whether the session may change its own state, and
-  keeps the latest report per session with the launch it came from (moved from
-  `cockpit-agent-channel` in #146). Restart and sleep trust only a report of the current
-  launch.
+- **Agents' reports.** An agent reports its state (working, waiting), label, doing-now,
+  open question and how its last turn ended (#183) through the agent channel, which
+  identifies the sender; this crate checks the fields, asks `cockpit-authorization` whether
+  the session may change its own state, and keeps the latest report per session with the
+  launch it came from (moved from `cockpit-agent-channel` in #146). Restart and sleep trust
+  only a report of the current launch.
 - **Start files.** Each launch records the state of the start files (`cockpit-config`) its
   provider reads, before the agent runs. A running session whose files changed since shows
   them in `session list`.

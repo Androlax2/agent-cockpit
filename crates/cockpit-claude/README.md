@@ -7,12 +7,12 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 
 ## Rules
 
-- **Capabilities with provenance.** Resume, submit, events, cancel, effort, compact, remote
-  control and screen reading are `tested` only when the running Claude Code is
-  `CONFORMANCE_VERSION`; on any other or unknown version they are `discovered` (unverified).
-  `events` needs the hook bridge: an adapter wired without it subscribes no hooks. Outcome
-  is normalized but not reported until the agent channel carries it (#146); commands,
-  evidence and billing until their contract methods exist.
+- **Capabilities with provenance.** Resume, submit, events, outcome, cancel, effort,
+  compact, remote control and screen reading are `tested` only when the running Claude Code
+  is `CONFORMANCE_VERSION`; on any other or unknown version they are `discovered`
+  (unverified). `events` and `outcome` need the hook bridge: an adapter wired without it
+  subscribes no hooks. Commands, evidence and billing are not reported until their contract
+  methods exist.
 - **Launch.** A new conversation runs under a `--session-id` UUID the adapter mints, so it
   is named from the start; a resumed one runs `--resume <id>`. `--remote-control` comes
   first (its optional name would take the next plain word), the first message last after
@@ -23,7 +23,9 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   normalizes the payload (`hooks::normalize`) and reports through `cockpit agent report`.
   It prints nothing on standard output and never exits 2. A question the agent channel
   would refuse is replaced by a plain one; line breaks become spaces and a long one is cut
-  to 300 characters. A `SessionStart` after a compaction reports nothing: an automatic one
+  to 300 characters. A turn's end reports its outcome (`--outcome completed`, `failed` or
+  `quota-stopped`); a failure's reason the channel would refuse is left out, a long one cut
+  to 80 characters. A `SessionStart` after a compaction reports nothing: an automatic one
   happens in the middle of a turn.
 - **Terminal actions.** A message is typed then entered at the prompt, queued with Ctrl-X
   Enter during a turn, and refused while a dialog is open or the activity is unknown.

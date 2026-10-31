@@ -324,6 +324,7 @@ async fn a_report_recorded_before_the_move_survives_the_migration() {
             label: Some("Reports move".to_owned()),
             doing: Some("writing the tests".to_owned()),
             needs_input: Some("Ship it?".to_owned()),
+            outcome: None,
             reported_at: 42,
             launch: None,
         }]

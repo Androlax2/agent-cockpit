@@ -3,6 +3,7 @@
 
 use cockpit_agent_channel::{PeerAncestry, Refusal};
 use cockpit_authorization::{Actor, Outcome, Permission, Scope, SessionId};
+use cockpit_provider_api::TurnOutcome;
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
@@ -13,10 +14,11 @@ const LABEL_MAX_CHARS: usize = 60;
 const DOING_MAX_CHARS: usize = 80;
 const DOING_WORDS: std::ops::RangeInclusive<usize> = 2..=12;
 const QUESTION_MAX_CHARS: usize = 300;
+const OUTCOME_REASON_MAX_CHARS: usize = 80;
 
 /// The columns `report_from` reads, in its order.
 const SELECT_REPORTS: &str = "SELECT session, state, label, doing, needs_input, reported_at,
-     launch_id FROM session_reports";
+     launch_id, outcome, outcome_reason FROM session_reports";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -50,6 +52,9 @@ pub struct Report {
     /// A question the agent needs answered before it can go on, at most 300 characters.
     /// Reporting `working` clears it: the agent got its answer.
     pub needs_input: Option<String>,
+    /// How the agent's turn ended; it means waiting. Reporting `working` clears it: a new
+    /// turn started. A failure's reason is at most 80 characters.
+    pub outcome: Option<TurnOutcome>,
 }
 
 /// A session's report as the channel last recorded it.
@@ -60,6 +65,8 @@ pub struct SessionReport {
     pub label: Option<String>,
     pub doing: Option<String>,
     pub needs_input: Option<String>,
+    /// How the latest turn ended, until the next turn starts.
+    pub outcome: Option<TurnOutcome>,
     /// Seconds since 1970 of the last report.
     pub reported_at: i64,
     /// The session's latest launch when the agent reported, so a report is never mistaken
@@ -101,8 +108,9 @@ pub async fn report(
     write
         .execute(
             "INSERT INTO session_reports
-                (session, state, label, doing, needs_input, reported_at, launch_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (session, state, label, doing, needs_input, reported_at, launch_id, outcome,
+                 outcome_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             (
                 merged.session.as_str(),
                 merged.state.map(AgentState::as_str),
@@ -111,6 +119,12 @@ pub async fn report(
                 merged.needs_input.clone(),
                 merged.reported_at,
                 merged.launch,
+                merged.outcome.as_ref().map(TurnOutcome::name),
+                merged
+                    .outcome
+                    .as_ref()
+                    .and_then(TurnOutcome::failure_reason)
+                    .map(str::to_owned),
             ),
         )
         .await?;
@@ -172,13 +186,22 @@ fn merge(
         label: None,
         doing: None,
         needs_input: None,
+        outcome: None,
         reported_at: 0,
         launch: None,
     });
-    // A question is only open while the agent waits on it.
-    let state = match &report.needs_input {
-        Some(_) => Some(AgentState::Waiting),
-        None => report.state.or(previous.state),
+    // A question is only open, and a turn only ended, while the agent waits.
+    let state = if report.needs_input.is_some() || report.outcome.is_some() {
+        Some(AgentState::Waiting)
+    } else {
+        report.state.or(previous.state)
+    };
+    let outcome = match (report.outcome, report.state) {
+        (Some(outcome), _) => Some(outcome),
+        (None, Some(AgentState::Working)) => None,
+        // A turn of an earlier launch says nothing about this launch's agent.
+        (None, _) if previous.launch != launch => None,
+        (None, _) => previous.outcome,
     };
     let needs_input = match (report.needs_input, report.state) {
         (Some(question), _) => Some(question),
@@ -191,6 +214,7 @@ fn merge(
         label: report.label.or(previous.label),
         doing: report.doing.or(previous.doing),
         needs_input,
+        outcome,
         reported_at: now(),
         launch,
     }
@@ -209,6 +233,12 @@ fn validate(report: Report) -> Result<Report, Refusal> {
         return Err(invalid(
             "state",
             "is working, but a needs-input question means waiting".to_owned(),
+        ));
+    }
+    if report.state == Some(AgentState::Working) && report.outcome.is_some() {
+        return Err(invalid(
+            "state",
+            "is working, but a turn's outcome means waiting".to_owned(),
         ));
     }
     let label = report
@@ -237,11 +267,24 @@ fn validate(report: Report) -> Result<Report, Refusal> {
         .needs_input
         .map(|question| bounded_text("needs-input", &question, QUESTION_MAX_CHARS))
         .transpose()?;
+    let outcome = match report.outcome {
+        Some(TurnOutcome::Failed {
+            reason: Some(reason),
+        }) => Some(TurnOutcome::Failed {
+            reason: Some(bounded_text(
+                "outcome-reason",
+                &reason,
+                OUTCOME_REASON_MAX_CHARS,
+            )?),
+        }),
+        outcome => outcome,
+    };
     Ok(Report {
         state: report.state,
         label,
         doing,
         needs_input,
+        outcome,
     })
 }
 
@@ -313,12 +356,21 @@ fn report_from(row: &Row) -> Result<SessionReport, Error> {
             AgentState::parse(&state).ok_or_else(|| invalid_row(format!("state {state:?}")))
         })
         .transpose()?;
+    let reason = row.get::<Option<String>>(8)?;
+    let outcome = row
+        .get::<Option<String>>(7)?
+        .map(|name| {
+            TurnOutcome::from_name(&name, reason)
+                .ok_or_else(|| invalid_row(format!("outcome {name:?}")))
+        })
+        .transpose()?;
     Ok(SessionReport {
         session,
         state,
         label: row.get(2)?,
         doing: row.get(3)?,
         needs_input: row.get(4)?,
+        outcome,
         reported_at: row.get(5)?,
         launch: row.get(6)?,
     })
