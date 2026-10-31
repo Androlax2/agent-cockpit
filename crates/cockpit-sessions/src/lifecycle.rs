@@ -392,7 +392,9 @@ impl Sessions {
                 .stop(id, &[session.state], StopTarget::Ended, "end")
                 .await;
         }
-        if session.state == SessionState::Failed {
+        // A session whose first launch failed before its agent was prepared has no launch
+        // and no terminal: nothing to stop, so it ends without tmux.
+        if session.state == SessionState::Failed && session.launch.is_some() {
             self.tmux()?;
             self.stop_previous_agent(&session).await?;
         }

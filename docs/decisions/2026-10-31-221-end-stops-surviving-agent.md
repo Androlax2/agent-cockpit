@@ -12,7 +12,13 @@ Issue #221. Decided by the worker, with the reasons below.
 - **Rejected:** `failed` through `stopping` too. A stop that cannot be confirmed puts the
   session back to `running` (#31); a session that never had a confirmed agent (its launch
   failed before the agent was identified) would then be shown running with nothing behind it.
-- Ending a `failed` session now needs tmux, to close its terminal, as every other stop does;
-  without tmux the end is refused naming tmux, before anything changes.
+- Ending a `failed` session that has a launch now needs tmux, to close its terminal, as
+  every other stop does; without tmux the end is refused naming tmux, before anything
+  changes. One without a launch (its first launch failed before the agent was prepared) has
+  nothing to stop and ends without tmux.
+- **Known limit, left to the leftovers named in the PR:** an execution `cockpit-processes`
+  never identified (no process group recorded) stays unconfirmed, so `end` of such a failed
+  session is refused like `resume` already was, and `end` of such a launching session puts it
+  back to `running` like `restart` from `launching` does (#157).
 
 Evidence: `crates/cockpit-daemon/tests/session_end_failed.rs`.
