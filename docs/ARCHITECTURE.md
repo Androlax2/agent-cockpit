@@ -1,6 +1,8 @@
 # Architecture
 
-This map includes the headless core, daemon and shared protocol boundaries.
+This map includes the headless core, daemon and shared protocol boundaries of the code
+under `apps/` today. The target architecture of the greenfield refactor lives in
+[docs/design/greenfield](design/greenfield/README.md).
 
 ## Source owners
 
