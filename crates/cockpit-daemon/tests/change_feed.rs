@@ -4,6 +4,8 @@
 //!
 //! The daemon runs in this process, as in `sessions.rs`, so the test can publish entities the
 //! way a producer does: in a write transaction on the daemon's own state database.
+//! They publish `attempt` entities: the daemon itself owns the `session` and `checkout`
+//! kinds and retracts any it did not derive (#199).
 
 mod common;
 
@@ -256,12 +258,12 @@ fn error_code(outcome: &Outcome) -> Option<&ErrorCode> {
 async fn a_subscriber_gets_the_snapshot_then_each_commit_as_it_happens() {
     let home = Home::new();
     let _daemon = home.start().await;
-    home.publish("session", "s-1", json!({"state": "working"}))
+    home.publish("attempt", "s-1", json!({"state": "working"}))
         .await;
     let mut subscription = home.subscription(None);
 
     let snapshot = apply_next(&mut subscription).await;
-    home.publish("session", "s-2", json!({"state": "idle"}))
+    home.publish("attempt", "s-2", json!({"state": "idle"}))
         .await;
     home.publish("widget", "w-1", json!({"size": 3})).await;
     let mut streamed = Vec::new();
@@ -273,7 +275,7 @@ async fn a_subscriber_gets_the_snapshot_then_each_commit_as_it_happens() {
     assert_eq!(
         snapshot.changes,
         [upsert(
-            EntityKind::Session,
+            EntityKind::Attempt,
             "s-1",
             1,
             json!({"state": "working"})
@@ -282,7 +284,7 @@ async fn a_subscriber_gets_the_snapshot_then_each_commit_as_it_happens() {
     assert_eq!(
         streamed,
         [
-            upsert(EntityKind::Session, "s-2", 1, json!({"state": "idle"})),
+            upsert(EntityKind::Attempt, "s-2", 1, json!({"state": "idle"})),
             upsert(
                 EntityKind::Unknown("widget".to_owned()),
                 "w-1",
@@ -297,7 +299,7 @@ async fn a_subscriber_gets_the_snapshot_then_each_commit_as_it_happens() {
 async fn a_cursor_resumes_after_a_daemon_restart_with_only_what_changed_since() {
     let home = Home::new();
     let daemon = home.start().await;
-    home.publish("session", "s-1", json!({"state": "working"}))
+    home.publish("attempt", "s-1", json!({"state": "working"}))
         .await;
     let mut subscription = home.subscription(None);
     apply_next(&mut subscription).await;
@@ -306,9 +308,9 @@ async fn a_cursor_resumes_after_a_daemon_restart_with_only_what_changed_since() 
     home.stop(daemon);
 
     let _daemon = home.start().await;
-    home.publish("session", "s-2", json!({"state": "idle"}))
+    home.publish("attempt", "s-2", json!({"state": "idle"}))
         .await;
-    home.retract("session", "s-1").await;
+    home.retract("attempt", "s-1").await;
     let mut resumed = home.subscription(Some(applied.clone()));
     let mut replayed = Vec::new();
     let first = apply_next(&mut resumed).await;
@@ -322,8 +324,8 @@ async fn a_cursor_resumes_after_a_daemon_restart_with_only_what_changed_since() 
     assert_eq!(
         replayed,
         [
-            upsert(EntityKind::Session, "s-2", 1, json!({"state": "idle"})),
-            tombstone(EntityKind::Session, "s-1", 2),
+            upsert(EntityKind::Attempt, "s-2", 1, json!({"state": "idle"})),
+            tombstone(EntityKind::Attempt, "s-1", 2),
         ]
     );
 }
@@ -350,15 +352,15 @@ async fn a_cursor_of_another_epoch_is_answered_resnapshot_required() {
 async fn a_cursor_older_than_the_retained_history_is_answered_resnapshot_required() {
     let home = Home::new();
     let _daemon = home.start().await;
-    home.publish("session", "s-1", json!({"state": "working"}))
+    home.publish("attempt", "s-1", json!({"state": "working"}))
         .await;
     let mut subscription = home.subscription(None);
     apply_next(&mut subscription).await;
     let old = subscription.applied_cursor().unwrap().clone();
     drop(subscription);
-    home.publish("session", "s-1", json!({"state": "idle"}))
+    home.publish("attempt", "s-1", json!({"state": "idle"}))
         .await;
-    home.publish("session", "s-1", json!({"state": "waiting"}))
+    home.publish("attempt", "s-1", json!({"state": "waiting"}))
         .await;
     // What the daemon's retention worker does with its own bound.
     let database = home.database();
@@ -384,7 +386,7 @@ async fn a_cursor_older_than_the_retained_history_is_answered_resnapshot_require
     assert_eq!(
         snapshot.changes,
         [upsert(
-            EntityKind::Session,
+            EntityKind::Attempt,
             "s-1",
             3,
             json!({"state": "waiting"})
@@ -435,12 +437,12 @@ async fn a_connection_with_one_answer_place_still_gets_its_batches() {
             ..Limits::default()
         })
         .await;
-    home.publish("session", "s-1", json!({"state": "working"}))
+    home.publish("attempt", "s-1", json!({"state": "working"}))
         .await;
     let mut subscription = home.subscription(None);
 
     let snapshot = apply_next(&mut subscription).await;
-    home.publish("session", "s-1", json!({"state": "idle"}))
+    home.publish("attempt", "s-1", json!({"state": "idle"}))
         .await;
     let streamed = apply_next(&mut subscription).await;
 
@@ -448,7 +450,7 @@ async fn a_connection_with_one_answer_place_still_gets_its_batches() {
     assert_eq!(
         streamed.changes,
         [upsert(
-            EntityKind::Session,
+            EntityKind::Attempt,
             "s-1",
             2,
             json!({"state": "idle"})
@@ -461,7 +463,7 @@ async fn a_snapshot_too_large_for_one_frame_closes_the_connection_instead_of_ski
     let home = Home::new();
     let _daemon = home.start().await;
     let large = "x".repeat(cockpit_protocol::MAX_FRAME_BYTES);
-    home.publish("session", "s-1", json!({"note": large})).await;
+    home.publish("attempt", "s-1", json!({"note": large})).await;
     let mut peer = RawFeedPeer::connect(&home).await;
 
     let subscribed = peer.subscribe(FeedPosition::Snapshot).await;

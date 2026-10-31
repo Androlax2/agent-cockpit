@@ -7,9 +7,10 @@
 use std::time::Instant;
 
 use cockpit_protocol::{
-    CheckoutKindView, CheckoutView, Command, FoldedView, GuideStateView, GuideStepView, GuideView,
-    HiddenView, ProjectView, Reply, RunRequestView, RunStateView, SessionStateView, SessionView,
-    ShownText, TrustView,
+    Change, ChangeBatch, ChangeEvent, CheckoutKindView, CheckoutView, Command, CommitRevision,
+    Cursor, DatabaseEpoch, EntityKind, EntityRef, EntityRevision, FeedPosition, FoldedView,
+    GuideStateView, GuideStepView, GuideView, HiddenView, ProjectView, Reply, RunRequestView,
+    RunStateView, SessionStateView, SessionView, ShownText, TrustView,
 };
 use cockpit_tui::{App, Key, Step};
 use ratatui::Terminal;
@@ -156,25 +157,68 @@ pub fn app_with(projects: &[&str], sessions: Vec<SessionView>, now: Instant) -> 
         },
         now,
     );
-    answer(
-        &mut app,
-        Command::CheckoutList { project: None },
-        Reply::Checkouts {
-            checkouts: projects
-                .iter()
-                .zip(1..)
-                .map(|(name, id)| checkout(id, name))
-                .collect(),
-        },
-        now,
-    );
-    answer(
-        &mut app,
-        Command::SessionList { ended: false },
-        Reply::Sessions { sessions },
-        now,
-    );
+    let checkouts = projects
+        .iter()
+        .zip(1..)
+        .map(|(name, id)| upsert(EntityKind::Checkout, &id.to_string(), &checkout(id, name)));
+    let sessions = sessions
+        .iter()
+        .map(|session| upsert(EntityKind::Session, &session.id, session));
+    app.apply_changes(&snapshot(checkouts.chain(sessions).collect()))
+        .expect("the snapshot applies");
     app
+}
+
+/// A change carrying `view` as the current state of `kind` `id`.
+pub fn upsert(kind: EntityKind, id: &str, view: &impl serde::Serialize) -> ChangeEvent {
+    let serde_json::Value::Object(state) = serde_json::to_value(view).unwrap() else {
+        panic!("a view is a JSON object");
+    };
+    ChangeEvent {
+        entity: EntityRef {
+            kind,
+            id: id.to_owned(),
+        },
+        entity_revision: EntityRevision(1),
+        change: Change::Upsert { state },
+    }
+}
+
+/// A change taking `kind` `id` off the feed.
+pub fn tombstone(kind: EntityKind, id: &str) -> ChangeEvent {
+    ChangeEvent {
+        entity: EntityRef {
+            kind,
+            id: id.to_owned(),
+        },
+        entity_revision: EntityRevision(2),
+        change: Change::Tombstone,
+    }
+}
+
+fn feed_cursor(revision: u64) -> Cursor {
+    Cursor {
+        epoch: DatabaseEpoch("e1".to_owned()),
+        revision: CommitRevision(revision),
+    }
+}
+
+/// A snapshot batch of `changes`.
+pub fn snapshot(changes: Vec<ChangeEvent>) -> ChangeBatch {
+    ChangeBatch {
+        follows: FeedPosition::Snapshot,
+        cursor: feed_cursor(7),
+        changes,
+    }
+}
+
+/// A batch of `changes` following the snapshot of [`snapshot`].
+pub fn after_snapshot(changes: Vec<ChangeEvent>) -> ChangeBatch {
+    ChangeBatch {
+        follows: FeedPosition::Cursor(feed_cursor(7)),
+        cursor: feed_cursor(8),
+        changes,
+    }
 }
 
 pub fn answer(app: &mut App, command: Command, reply: Reply, now: Instant) {

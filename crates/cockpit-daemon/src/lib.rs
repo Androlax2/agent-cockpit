@@ -11,6 +11,7 @@ mod projects;
 mod resources;
 mod routes;
 mod server;
+mod session_feed;
 mod sessions;
 mod supervisor;
 mod tasks;
@@ -59,6 +60,9 @@ pub struct Wiring {
     pub session_tick: Duration,
     /// How approved commands run ([`run_settings`]).
     pub run_settings: cockpit_approvals::RunSettings,
+    /// The owner's environment, for the configuration the checkouts published on the change
+    /// feed read (trusted projects).
+    pub environment: cockpit_config::Environment,
 }
 
 /// The sessions' settings the owner configured, the idle window and the asleep expiry
@@ -95,6 +99,7 @@ pub struct Daemon {
     accepting: tokio::task::JoinHandle<()>,
     accepting_agents: tokio::task::JoinHandle<()>,
     ticking: tokio::task::JoinHandle<()>,
+    publishing: tokio::task::JoinHandle<()>,
     retaining: tokio::task::JoinHandle<()>,
     sweeping: tokio::task::JoinHandle<()>,
     _database: Arc<cockpit_turso::Database>,
@@ -209,6 +214,16 @@ impl Instance {
                 providers,
             }),
         });
+        let published_database = Arc::clone(&database);
+        let published_sessions = Arc::clone(&sessions);
+        let environment = wiring.environment;
+        let publishing = tokio::spawn(supervisor::supervise("session-feed", move || {
+            session_feed::publish_forever(
+                Arc::clone(&published_database),
+                Arc::clone(&published_sessions),
+                environment.clone(),
+            )
+        }));
         let ticking = tokio::spawn(supervisor::supervise("sessions-tick", move || {
             sessions::tick_forever(Arc::clone(&sessions), wiring.session_tick)
         }));
@@ -237,6 +252,7 @@ impl Instance {
             accepting,
             accepting_agents,
             ticking,
+            publishing,
             retaining,
             sweeping,
             _database: database,
@@ -347,6 +363,7 @@ impl Drop for Daemon {
         self.accepting.abort();
         self.accepting_agents.abort();
         self.ticking.abort();
+        self.publishing.abort();
         self.retaining.abort();
         self.sweeping.abort();
     }

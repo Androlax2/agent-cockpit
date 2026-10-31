@@ -8,7 +8,7 @@ mod receipts;
 
 use cockpit_turso::{Migration, MigrationSet};
 
-pub use entities::{EntityChange, Published, publish, retract};
+pub use entities::{EntityChange, Published, publish, published_ids, retract};
 pub use error::{Error, Refusal, ResnapshotReason};
 pub use feed::{Feed, FeedBatch, FeedCursor, FeedPosition, discard_history};
 pub use outbox::{

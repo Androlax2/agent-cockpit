@@ -2,7 +2,7 @@
 //! reports and the approval queue. It changes only by applying a change-feed batch or a
 //! reply as a whole; nothing here waits on the daemon.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cockpit_protocol::{
@@ -16,6 +16,8 @@ pub struct Board {
     pub(crate) projects: Vec<ProjectView>,
     pub(crate) checkouts: BTreeMap<i64, CheckoutView>,
     pub(crate) sessions: BTreeMap<String, SessionView>,
+    /// Sessions the feed took off: a command's late answer must not bring one back.
+    pub(crate) retracted: BTreeSet<String>,
     pub(crate) reports: BTreeMap<String, SessionReport>,
     pub(crate) runs: Vec<RunRequestView>,
     pub(crate) guides: Vec<GuideView>,
@@ -80,14 +82,20 @@ impl Board {
             });
         }
         if batch.follows == FeedPosition::Snapshot {
-            self.sessions.clear();
+            self.retracted
+                .extend(std::mem::take(&mut self.sessions).into_keys());
             self.checkouts.clear();
         }
+        // The feed is the truth: its states replace whatever a command answered.
         for edit in edits {
             match edit {
-                Edit::PutSession(session) => self.put_session(session),
+                Edit::PutSession(session) => {
+                    self.retracted.remove(&session.id);
+                    self.sessions.insert(session.id.clone(), session);
+                }
                 Edit::RemoveSession(id) => {
                     self.sessions.remove(&id);
+                    self.retracted.insert(id);
                 }
                 Edit::PutCheckout(checkout) => {
                     self.checkouts.insert(checkout.id, checkout);
@@ -104,23 +112,18 @@ impl Board {
         self.projects = projects;
     }
 
-    pub fn set_checkouts(&mut self, checkouts: Vec<CheckoutView>) {
-        self.checkouts = checkouts
-            .into_iter()
-            .map(|checkout| (checkout.id, checkout))
-            .collect();
-    }
-
-    /// The sessions not ended, as `session-list` answers them.
-    pub fn set_sessions(&mut self, sessions: Vec<SessionView>) {
-        self.sessions = sessions
-            .into_iter()
-            .map(|session| (session.id.clone(), session))
-            .collect();
-    }
-
-    /// One session as a command answered it, ahead of the next refresh.
+    /// One session as a command answered it, ahead of the feed. A command's answer may
+    /// arrive after the feed moved on: an older revision than the one shown, or a session
+    /// the feed took off, is ignored; the feed brings any later state.
     pub fn put_session(&mut self, session: SessionView) {
+        let is_stale = self.retracted.contains(&session.id)
+            || self
+                .sessions
+                .get(&session.id)
+                .is_some_and(|shown| shown.revision > session.revision);
+        if is_stale {
+            return;
+        }
         self.sessions.insert(session.id.clone(), session);
     }
 

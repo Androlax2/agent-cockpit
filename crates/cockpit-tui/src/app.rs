@@ -89,6 +89,9 @@ pub struct App {
     /// (or a session, request or guide answer). The same problem again, as every refresh
     /// while the daemon is down, is not logged again.
     pub(crate) failure: Option<Failure>,
+    /// Why the change feed stopped: the sessions and checkouts shown are not current until
+    /// a batch applies again.
+    pub(crate) feed_problem: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,13 +106,11 @@ impl App {
         App::default()
     }
 
-    /// What the runtime asks the daemon on every refresh, until sessions and checkouts are
-    /// published on the change feed (#41 serves it; nothing publishes them yet).
+    /// What the runtime asks the daemon on every refresh. Sessions and checkouts are not
+    /// among them: they come from the change feed (#199).
     pub fn refresh_commands() -> Vec<Command> {
         vec![
             Command::ProjectList,
-            Command::CheckoutList { project: None },
-            Command::SessionList { ended: false },
             Command::AgentReports,
             Command::ApprovalQueue,
         ]
@@ -146,8 +147,24 @@ impl App {
     /// Applies a change-feed batch whole, or refuses it whole.
     pub fn apply_changes(&mut self, batch: &ChangeBatch) -> Result<(), FeedError> {
         self.board.apply(batch)?;
+        self.feed_problem = None;
         self.keep_selection();
         Ok(())
+    }
+
+    /// The change feed stopped: on the status line until a batch applies, logged once per
+    /// problem.
+    pub fn feed_lost(&mut self, problem: String) {
+        // A daemon outage fails the polled commands too: the same problem is logged once.
+        let is_logged = self.feed_problem.as_ref() == Some(&problem)
+            || self
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.problem == problem);
+        if !is_logged {
+            self.note(format!("change feed: {problem}"));
+        }
+        self.feed_problem = Some(problem);
     }
 
     pub fn key(&mut self, key: Key, now: Instant) -> Step {
@@ -347,8 +364,6 @@ impl App {
         }
         match reply {
             Reply::Projects { projects } => self.board.set_projects(projects),
-            Reply::Checkouts { checkouts } => self.board.set_checkouts(checkouts),
-            Reply::Sessions { sessions } => self.board.set_sessions(sessions),
             Reply::AgentReports { reports } => self.board.set_reports(reports),
             Reply::ApprovalQueue { runs, guides } => {
                 self.board.set_queue(runs, guides);
@@ -415,11 +430,12 @@ impl App {
             form.problem = Some(problem.clone());
         }
         let kind = command_label(command);
-        if self
-            .failure
-            .as_ref()
-            .is_none_or(|failure| failure.problem != problem)
-        {
+        let is_logged = self.feed_problem.as_ref() == Some(&problem)
+            || self
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure.problem == problem);
+        if !is_logged {
             self.note(format!("{kind}: {problem}"));
         }
         self.failure = Some(Failure { kind, problem });

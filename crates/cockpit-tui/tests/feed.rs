@@ -5,9 +5,9 @@ mod common;
 
 use std::time::Instant;
 
-use cockpit_protocol::{ChangeBatch, Command, FeedPosition, Reply};
+use cockpit_protocol::{ChangeBatch, Command, EntityKind, FeedPosition, Reply};
 use cockpit_tui::{App, Key};
-use common::{answer, project, queue, run, screen, screen_text, session};
+use common::{answer, project, queue, run, screen, screen_text, session, upsert};
 
 /// The batches of `tests/fixtures/two-projects.feed`, as the daemon sent them.
 fn recorded_feed() -> Vec<ChangeBatch> {
@@ -123,17 +123,17 @@ fn a_session_whose_checkout_is_unknown_is_listed_last_under_no_known_project() {
     let mut app = app_on_projects();
     app.apply_changes(&recorded_feed()[0]).unwrap();
 
-    answer(
-        &mut app,
-        Command::SessionList { ended: false },
-        Reply::Sessions {
-            sessions: vec![
-                session("s00000000000a", 1, 1),
-                session("s0000000000ff", 99, 2),
-            ],
-        },
-        Instant::now(),
-    );
+    let unknown_checkout = session("s0000000000ff", 99, 2);
+    app.apply_changes(&ChangeBatch {
+        follows: FeedPosition::Cursor(recorded_feed()[0].cursor.clone()),
+        cursor: recorded_feed()[1].cursor.clone(),
+        changes: vec![upsert(
+            EntityKind::Session,
+            &unknown_checkout.id,
+            &unknown_checkout,
+        )],
+    })
+    .unwrap();
 
     let rows = list_rows(&app, Instant::now());
     assert_eq!(

@@ -71,14 +71,19 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
 }
 
 fn status_line(app: &App) -> String {
-    match (&app.confirm, &app.failure) {
-        (Some(Confirm::Restart(session)), _) => format!("restart {session}? y to confirm"),
-        (Some(Confirm::Exit(session)), _) => format!("exit {session}? y to confirm"),
-        (Some(Confirm::ExitFinished(sessions)), _) => {
+    match (&app.confirm, &app.failure, &app.feed_problem) {
+        (Some(Confirm::Restart(session)), ..) => format!("restart {session}? y to confirm"),
+        (Some(Confirm::Exit(session)), ..) => format!("exit {session}? y to confirm"),
+        (Some(Confirm::ExitFinished(sessions)), ..) => {
             format!("exit {} finished sessions? y to confirm", sessions.len())
         }
-        (None, Some(failure)) => format!("{}: {}", failure.kind, failure.problem),
-        (None, None) => "? help".to_owned(),
+        (None, Some(failure), Some(problem)) => format!(
+            "{}: {} · change feed: {problem}",
+            failure.kind, failure.problem
+        ),
+        (None, Some(failure), None) => format!("{}: {}", failure.kind, failure.problem),
+        (None, None, Some(problem)) => format!("change feed: {problem}"),
+        (None, None, None) => "? help".to_owned(),
     }
 }
 
