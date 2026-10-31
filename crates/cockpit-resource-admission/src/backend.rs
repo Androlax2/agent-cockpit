@@ -228,15 +228,20 @@ impl Backend {
                 Cgroups::Delegated { freezer: true, .. } => {
                     supported("systemctl --user freeze: the cgroup v2 freezer".to_owned())
                 }
-                Cgroups::Delegated { manager, .. } => {
-                    unsupported(format!("{manager} has no cgroup.freeze (kernel before 5.2)"))
-                }
+                Cgroups::Delegated { manager, .. } => unsupported(format!(
+                    "{manager} has no cgroup.freeze (kernel before 5.2)"
+                )),
                 Cgroups::Unavailable { why } => unsupported(why.clone()),
             },
         }
     }
 
-    fn cgroup_availability(&self, in_scope: bool, controller: &str, property: &str) -> Availability {
+    fn cgroup_availability(
+        &self,
+        in_scope: bool,
+        controller: &str,
+        property: &str,
+    ) -> Availability {
         if !in_scope {
             let why = match &self.cgroups {
                 Cgroups::Unavailable { why } => why.clone(),
@@ -310,6 +315,7 @@ impl Backend {
             arguments,
             working_dir: spec.working_dir,
             environment: spec.environment,
+            terminal: spec.terminal,
         }
     }
 
@@ -326,7 +332,9 @@ impl Backend {
                 Control::CpuWeight,
                 format!(
                     "CPUWeight={}",
-                    limits.cpu_weight.map_or("100".to_owned(), |w| w.to_string())
+                    limits
+                        .cpu_weight
+                        .map_or("100".to_owned(), |w| w.to_string())
                 ),
             ),
             (
@@ -428,12 +436,13 @@ impl Backend {
                 self.systemctl(&["--user", verb, unit]).await.map(drop)
             }
             Containment::ProcessGroup => {
-                let group = execution
-                    .process_group
-                    .and_then(Pid::from_raw)
-                    .ok_or(Error::NotStarted {
-                        execution: execution.id,
-                    })?;
+                let group =
+                    execution
+                        .process_group
+                        .and_then(Pid::from_raw)
+                        .ok_or(Error::NotStarted {
+                            execution: execution.id,
+                        })?;
                 let signal = if frozen { Signal::STOP } else { Signal::CONT };
                 rustix::process::kill_process_group(group, signal).map_err(|errno| {
                     Error::HostCommand {

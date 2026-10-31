@@ -242,8 +242,7 @@ async fn a_malformed_request_is_refused_before_any_decision() {
     build.limits.cpu_weight = Some(0);
 
     let write = database.write().await.unwrap();
-    let refused =
-        cockpit_resource_admission::admit(&write, &build, &policy(), &[], NOW).await;
+    let refused = cockpit_resource_admission::admit(&write, &build, &policy(), &[], NOW).await;
 
     assert!(
         matches!(refused, Err(Error::InvalidRequest { .. })),
@@ -342,7 +341,13 @@ async fn pause_at_checkpoint_is_recorded_on_running_work_and_refused_on_unstarte
     write.commit().await.unwrap();
 
     assert!(
-        matches!(refused, Err(Error::WrongState { needed: "running", .. })),
+        matches!(
+            refused,
+            Err(Error::WrongState {
+                needed: "running",
+                ..
+            })
+        ),
         "{refused:?}"
     );
     assert!(recorded.checkpoint_requested);

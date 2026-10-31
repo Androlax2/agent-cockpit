@@ -6,6 +6,7 @@ use crate::approvals::{GuideView, RunRequestView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
+use crate::resources::{ProfileView, ReservationView, ResourceStatusView, VerdictView};
 use crate::sessions::{SessionFailure, SessionView};
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
@@ -344,6 +345,36 @@ pub enum Command {
     TaskDraftDiscard {
         target: TaskDraftTargetView,
     },
+    /// Owner only: the budget, the profile, what this host enforces, and every reservation
+    /// with its limits requested, supported and effective.
+    ResourceStatus,
+    /// Owner only: switch the profile. Agents cannot award themselves foreground priority.
+    ResourceProfile {
+        profile: ProfileView,
+    },
+    /// Owner only: pause the queue (start nothing new) or resume it.
+    ResourceQueue {
+        paused: bool,
+    },
+    /// Owner only: whether work of `workload` with this demand would be admitted now, and
+    /// why not. Reserves nothing. `required` names controls it must not start without.
+    ResourceCheck {
+        workload: String,
+        cpu_millis: u64,
+        memory_mib: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        required: Vec<String>,
+    },
+    /// Owner only: pause at checkpoint: ask the reservation's running work to stop at its
+    /// next supported boundary.
+    ResourceCheckpoint {
+        reservation: i64,
+    },
+    /// Owner only: stop execution: terminate the reservation's whole execution and confirm
+    /// it was observed ended.
+    ResourceStop {
+        reservation: i64,
+    },
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -465,6 +496,21 @@ pub enum Reply {
         drafts: Vec<TaskDraftView>,
     },
     TaskDraftDiscarded,
+    ResourceStatus {
+        status: Box<ResourceStatusView>,
+    },
+    ResourceVerdict {
+        verdict: VerdictView,
+    },
+    Reservation {
+        reservation: Box<ReservationView>,
+    },
+    /// `observed_ended`: the execution was observed empty and the reservation released;
+    /// otherwise it keeps its reservation and the stop stays requested.
+    ResourceStopped {
+        reservation: i64,
+        observed_ended: bool,
+    },
 }
 
 /// Every frame the daemon sends after the handshake.

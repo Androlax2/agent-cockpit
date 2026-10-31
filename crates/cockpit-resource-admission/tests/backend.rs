@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use cockpit_processes::{Containment, Execution, ExecutionId, LaunchSpec, Phase};
 use cockpit_resource_admission::{
-    Availability, Backend, Control, Effective, Limits, LimitReport, Observed,
+    Availability, Backend, Control, Effective, LimitReport, Limits, Observed,
 };
 use common::*;
 
@@ -149,11 +149,26 @@ async fn the_report_reads_effective_limits_back_from_the_scopes_cgroup_files() {
     let inspected = backend.inspect(&scope_execution(unit), &limits).await;
 
     let effective = |control| report(&inspected.limits, control).effective.clone();
-    assert_eq!(effective(Control::CpuWeight), Effective::Value("1".to_owned()));
-    assert_eq!(effective(Control::CpuQuota), Effective::Value("50%".to_owned()));
-    assert_eq!(effective(Control::MemoryMax), Effective::Value("512M".to_owned()));
-    assert_eq!(effective(Control::TasksMax), Effective::Value("none".to_owned()));
-    assert_eq!(effective(Control::Freeze), Effective::Value("thawed".to_owned()));
+    assert_eq!(
+        effective(Control::CpuWeight),
+        Effective::Value("1".to_owned())
+    );
+    assert_eq!(
+        effective(Control::CpuQuota),
+        Effective::Value("50%".to_owned())
+    );
+    assert_eq!(
+        effective(Control::MemoryMax),
+        Effective::Value("512M".to_owned())
+    );
+    assert_eq!(
+        effective(Control::TasksMax),
+        Effective::Value("none".to_owned())
+    );
+    assert_eq!(
+        effective(Control::Freeze),
+        Effective::Value("thawed".to_owned())
+    );
     assert_eq!(
         report(&inspected.limits, Control::CpuQuota).requested,
         Some("50%".to_owned())
@@ -179,8 +194,7 @@ async fn a_limit_whose_cgroup_file_is_absent_is_reported_unknown_not_enforced() 
         .inspect(&scope_execution(unit), &Limits::default())
         .await;
 
-    let Effective::Unknown { why } = &report(&inspected.limits, Control::CpuQuota).effective
-    else {
+    let Effective::Unknown { why } = &report(&inspected.limits, Control::CpuQuota).effective else {
         panic!("cpu quota has no effective value");
     };
     assert!(why.contains("cpu.max is absent"), "{why}");
@@ -216,6 +230,7 @@ async fn the_shims_wrap_the_program_so_every_child_inherits_nice_and_idle_schedu
         arguments: vec![OsString::from("test")],
         working_dir: PathBuf::from("/"),
         environment: vec![],
+        terminal: None,
     };
     let limits = Limits {
         idle_scheduling: true,
@@ -228,8 +243,16 @@ async fn the_shims_wrap_the_program_so_every_child_inherits_nice_and_idle_schedu
     assert_eq!(wrapped.program, PathBuf::from("/usr/bin/nice"));
     assert_eq!(
         wrapped.arguments,
-        ["-n", "19", "/usr/bin/chrt", "--idle", "0", "/usr/bin/make", "test"]
-            .map(OsString::from)
+        [
+            "-n",
+            "19",
+            "/usr/bin/chrt",
+            "--idle",
+            "0",
+            "/usr/bin/make",
+            "test"
+        ]
+        .map(OsString::from)
     );
 }
 

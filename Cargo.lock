@@ -420,6 +420,7 @@ dependencies = [
  "cockpit-projects",
  "cockpit-protocol",
  "cockpit-provider-api",
+ "cockpit-resource-admission",
  "cockpit-sessions",
  "cockpit-tasks",
  "cockpit-tmux",

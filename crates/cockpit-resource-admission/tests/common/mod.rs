@@ -81,6 +81,7 @@ impl Home {
             arguments: vec![OsString::from("300")],
             working_dir: self.path().to_path_buf(),
             environment: vec![],
+            terminal: None,
         }
     }
 }

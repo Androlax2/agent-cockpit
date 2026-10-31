@@ -7,10 +7,16 @@ use crate::ReservationId;
 #[non_exhaustive]
 pub enum Error {
     /// The request itself is malformed; `reason` says how.
-    InvalidRequest { reason: String },
-    UnknownReservation { reservation: ReservationId },
+    InvalidRequest {
+        reason: String,
+    },
+    UnknownReservation {
+        reservation: ReservationId,
+    },
     /// The execution has no process group yet, so there is nothing to act on.
-    NotStarted { execution: cockpit_processes::ExecutionId },
+    NotStarted {
+        execution: cockpit_processes::ExecutionId,
+    },
     /// The operation needs the reservation in another state.
     WrongState {
         reservation: ReservationId,
@@ -24,7 +30,10 @@ pub enum Error {
     },
     /// A host command this crate depends on (`systemctl`, `ps`, `sysctl`) failed or did not
     /// answer in time.
-    HostCommand { command: String, reason: String },
+    HostCommand {
+        command: String,
+        reason: String,
+    },
     Io {
         action: &'static str,
         path: PathBuf,
@@ -60,7 +69,10 @@ impl fmt::Display for Error {
                 reservation,
                 state,
                 needed,
-            } => write!(formatter, "{reservation} is {state}; this needs it {needed}"),
+            } => write!(
+                formatter,
+                "{reservation} is {state}; this needs it {needed}"
+            ),
             Error::InvalidStoredReservation {
                 reservation,
                 reason,

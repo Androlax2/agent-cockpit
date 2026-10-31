@@ -7,6 +7,7 @@ mod feed;
 mod instance;
 mod lanes;
 mod projects;
+mod resources;
 mod routes;
 mod server;
 mod sessions;
@@ -27,7 +28,7 @@ pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusa
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 8] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 9] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
@@ -36,7 +37,11 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 8] = [
     cockpit_sessions::MIGRATIONS,
     cockpit_messaging::MIGRATIONS,
     cockpit_tasks::MIGRATIONS,
+    cockpit_resource_admission::MIGRATIONS,
 ];
+
+/// How often expired and ended reservations are released.
+const RESOURCE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
 /// What the daemon wires its capabilities with: the host's tools in the binary, fixtures in
 /// tests.
@@ -61,6 +66,10 @@ pub struct Capabilities {
     pub git: cockpit_projects::Git,
     pub sessions: Arc<cockpit_sessions::Sessions>,
     pub runner: cockpit_approvals::Runner,
+    /// What this host enforces, probed at start.
+    pub admission: Arc<cockpit_resource_admission::Backend>,
+    /// Stops the execution of a reservation (stop execution, report 10).
+    pub processes: cockpit_processes::Supervisor,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -71,6 +80,7 @@ pub struct Daemon {
     accepting_agents: tokio::task::JoinHandle<()>,
     ticking: tokio::task::JoinHandle<()>,
     retaining: tokio::task::JoinHandle<()>,
+    sweeping: tokio::task::JoinHandle<()>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
 }
@@ -109,6 +119,21 @@ impl Instance {
         );
         let runner = cockpit_approvals::Runner::new(wiring.run_settings, processes.clone());
         reconcile(&database, &processes, &runner).await?;
+        let admission = Arc::new(
+            cockpit_resource_admission::Backend::detect(
+                cockpit_resource_admission::HostTools::from_host(
+                    &cockpit_processes::SystemdTools::from_path(),
+                ),
+                processes.launch_containment(),
+            )
+            .await
+            .map_err(StartError::Admission)?,
+        );
+        tracing::info!(
+            platform = admission.platform().as_str(),
+            "probed what this host enforces"
+        );
+        let stopper = processes.clone();
         // A missing or too old tmux leaves the daemon up with sessions refused (report 09);
         // any other failure to open the server is the daemon's own and stops the start.
         let tmux = match cockpit_tmux::Server::open(wiring.tmux) {
@@ -148,6 +173,8 @@ impl Instance {
                 git: wiring.git,
                 sessions: Arc::clone(&sessions),
                 runner,
+                admission,
+                processes: stopper,
             }),
         });
         let ticking = tokio::spawn(supervisor::supervise("sessions-tick", move || {
@@ -156,6 +183,10 @@ impl Instance {
         let retained = Arc::clone(&database);
         let retaining = tokio::spawn(supervisor::supervise("feed-retention", move || {
             feed::discard_history_forever(Arc::clone(&retained))
+        }));
+        let swept_database = Arc::clone(&database);
+        let sweeping = tokio::spawn(supervisor::supervise("resources-sweep", move || {
+            resources::sweep_forever(Arc::clone(&swept_database), RESOURCE_SWEEP_INTERVAL)
         }));
         let accepting = accept(&listener, &shared, server::Socket::HostOnly);
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent);
@@ -171,6 +202,7 @@ impl Instance {
             accepting_agents,
             ticking,
             retaining,
+            sweeping,
             _database: database,
             _instance: self,
         })
@@ -226,6 +258,11 @@ async fn reconcile(
         }
     }
     tracing::info!(executions = reconciled.len(), "reconciled durable state");
+    // Reservations follow their executions: one that ended while the daemon was down is
+    // released before anything is admitted.
+    resources::sweep(database)
+        .await
+        .map_err(StartError::Admission)?;
     approvals::reconcile_runs(database, runner)
         .await
         .map_err(StartError::Approvals)?;
@@ -275,5 +312,6 @@ impl Drop for Daemon {
         self.accepting_agents.abort();
         self.ticking.abort();
         self.retaining.abort();
+        self.sweeping.abort();
     }
 }

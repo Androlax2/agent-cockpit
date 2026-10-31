@@ -480,10 +480,16 @@ pub enum Availability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReservationState {
     /// Admitted, not started; released at `expires_at` (seconds since the epoch).
-    Reserved { expires_at: i64 },
+    Reserved {
+        expires_at: i64,
+    },
     /// Its execution started; released only once that execution is observed ended.
-    Running { execution: ExecutionId },
-    Released { reason: ReleaseReason },
+    Running {
+        execution: ExecutionId,
+    },
+    Released {
+        reason: ReleaseReason,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -13,7 +13,12 @@ async fn every_control_is_reported_with_its_mechanism_or_the_missing_piece() {
     let support = backend.support();
 
     for line in &support {
-        println!("{:?} {:?}: {:?}", backend.platform(), line.control, line.availability);
+        println!(
+            "{:?} {:?}: {:?}",
+            backend.platform(),
+            line.control,
+            line.availability
+        );
     }
     assert_eq!(
         support.iter().map(|line| line.control).collect::<Vec<_>>(),

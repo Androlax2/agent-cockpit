@@ -7,6 +7,7 @@ mod error;
 mod handshake;
 mod projects;
 mod request;
+mod resources;
 mod sessions;
 mod tasks;
 
@@ -32,6 +33,10 @@ pub use projects::{
 pub use request::{
     Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,
     decode_request,
+};
+pub use resources::{
+    ControlSupportView, DemandView, EffectiveView, LimitView, ObservedView, ProfileView,
+    ReservationView, ResourceStatusView, VerdictView,
 };
 pub use sessions::{
     LaunchKindView, LaunchView, SessionFailure, SessionStateView, SessionView, StopTargetView,

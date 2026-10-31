@@ -69,9 +69,8 @@ pub async fn admit(
         return Ok(Admission::Held(hold));
     }
     let limits = request.limits;
-    let expires_at = now.saturating_add(
-        i64::try_from(policy.unstarted_expiry.as_secs()).unwrap_or(i64::MAX),
-    );
+    let expires_at =
+        now.saturating_add(i64::try_from(policy.unstarted_expiry.as_secs()).unwrap_or(i64::MAX));
     let next = write
         .prepare("SELECT coalesce(max(id), 0) + 1 FROM resource_reservations")
         .await?
@@ -178,7 +177,11 @@ pub async fn bind_execution(
 }
 
 /// Gives back a reservation whose work never started.
-pub async fn withdraw(write: &WriteTransaction<'_>, id: ReservationId, now: i64) -> Result<(), Error> {
+pub async fn withdraw(
+    write: &WriteTransaction<'_>,
+    id: ReservationId,
+    now: i64,
+) -> Result<(), Error> {
     require_state(write, id, "reserved").await?;
     write
         .execute(
@@ -256,7 +259,9 @@ pub async fn sweep(database: &Database, now: i64) -> Result<Swept, Error> {
     let mut ended = Vec::new();
     for (reservation, execution) in running {
         if matches!(
-            cockpit_processes::execution(database, execution).await?.phase,
+            cockpit_processes::execution(database, execution)
+                .await?
+                .phase,
             Phase::Ended(_)
         ) {
             ended.push(reservation);
@@ -340,7 +345,8 @@ pub async fn set_queue_paused(
     Ok(())
 }
 
-async fn in_use(connection: &Connection) -> Result<InUse, Error> {
+/// Capacity charged now: every reservation not released, and the heavy ones among them.
+pub async fn in_use(connection: &Connection) -> Result<InUse, Error> {
     let mut rows = connection
         .query(
             "SELECT workload, coalesce(sum(cpu_millis), 0), coalesce(sum(memory_mib), 0)
