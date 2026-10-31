@@ -10,13 +10,15 @@ use std::time::Duration;
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, Command, LAUNCH_TOKEN_VARIABLE, Reply,
-    SessionReport, UnblockedBy,
+    SessionReport, TurnOutcome, UnblockedBy,
 };
 
 /// Long enough for a busy daemon, short enough that a hook never hangs its agent.
 const DEADLINE: Duration = Duration::from_secs(10);
 
-/// `--state working|waiting`, `--label`, `--doing`, `--needs-input`, each at most once.
+/// `--state working|waiting`, `--label`, `--doing`, `--needs-input`,
+/// `--outcome completed|failed|quota-stopped` and `--outcome-reason` (with `failed` only),
+/// each at most once.
 pub(crate) fn report(flags: &[OsString]) -> Result<ExitCode, String> {
     let report = parse_report(flags)?;
     let launch_token = launch_token();
@@ -59,6 +61,8 @@ pub(crate) fn reports(flags: &[OsString]) -> Result<ExitCode, String> {
 
 fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
     let mut report = AgentReport::default();
+    let mut outcome = None;
+    let mut outcome_reason = None;
     let mut flags = flags.iter();
     while let Some(flag) = flags.next() {
         let name = flag.to_string_lossy().into_owned();
@@ -84,16 +88,42 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
             "--label" => &mut report.label,
             "--doing" => &mut report.doing,
             "--needs-input" => &mut report.needs_input,
+            "--outcome" => &mut outcome,
+            "--outcome-reason" => &mut outcome_reason,
             _ => return Err(format!("unknown argument {name}")),
         };
         if field.replace(value).is_some() {
             return Err(format!("{name} given twice"));
         }
     }
+    report.outcome = turn_outcome(outcome, outcome_reason)?;
     if report == AgentReport::default() {
-        return Err("name at least one of --state, --label, --doing, --needs-input".to_owned());
+        return Err(
+            "name at least one of --state, --label, --doing, --needs-input, --outcome".to_owned(),
+        );
     }
     Ok(report)
+}
+
+fn turn_outcome(
+    outcome: Option<String>,
+    reason: Option<String>,
+) -> Result<Option<TurnOutcome>, String> {
+    let Some(outcome) = outcome else {
+        return match reason {
+            Some(_) => Err("--outcome-reason needs --outcome failed".to_owned()),
+            None => Ok(None),
+        };
+    };
+    match (outcome.as_str(), reason) {
+        ("failed", reason) => Ok(Some(TurnOutcome::Failed { reason })),
+        (_, Some(_)) => Err("--outcome-reason needs --outcome failed".to_owned()),
+        ("completed", None) => Ok(Some(TurnOutcome::Completed)),
+        ("quota-stopped", None) => Ok(Some(TurnOutcome::QuotaStopped)),
+        (other, None) => Err(format!(
+            "--outcome {other}: use completed, failed or quota-stopped"
+        )),
+    }
 }
 
 /// The agent socket: `COCKPIT_AGENT_SOCKET` when the sandbox mounts it elsewhere, else its
@@ -164,7 +194,8 @@ pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> Exit
     ExitCode::FAILURE
 }
 
-/// `session state label="…" doing="…" needs-input="…"`, leaving out what was never reported.
+/// `session state label="…" doing="…" needs-input="…" outcome=… outcome-reason="…"`, leaving
+/// out what was never reported.
 fn render(report: &SessionReport) -> String {
     let mut line = report.session.clone();
     line.push(' ');
@@ -176,6 +207,17 @@ fn render(report: &SessionReport) -> String {
     ] {
         if let Some(value) = value {
             line.push_str(&format!(" {key}={value:?}"));
+        }
+    }
+    match &report.outcome {
+        None => {}
+        Some(TurnOutcome::Completed) => line.push_str(" outcome=completed"),
+        Some(TurnOutcome::QuotaStopped) => line.push_str(" outcome=quota-stopped"),
+        Some(TurnOutcome::Failed { reason }) => {
+            line.push_str(" outcome=failed");
+            if let Some(reason) = reason {
+                line.push_str(&format!(" outcome-reason={reason:?}"));
+            }
         }
     }
     line

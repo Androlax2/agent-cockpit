@@ -171,10 +171,27 @@ fn each_event_reports_its_state_through_the_agent_channel() {
             "notification-idle-prompt",
             words(&["agent", "report", "--state", "waiting"]),
         ),
-        ("stop", words(&["agent", "report", "--state", "waiting"])),
+        (
+            "stop",
+            words(&[
+                "agent",
+                "report",
+                "--state",
+                "waiting",
+                "--outcome",
+                "completed",
+            ]),
+        ),
         (
             "stop-failure-rate-limit",
-            words(&["agent", "report", "--state", "waiting"]),
+            words(&[
+                "agent",
+                "report",
+                "--state",
+                "waiting",
+                "--outcome",
+                "quota-stopped",
+            ]),
         ),
         ("session-end", None),
     ] {

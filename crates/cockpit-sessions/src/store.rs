@@ -100,6 +100,14 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 requested_at INTEGER NOT NULL
             );",
         },
+        // #183: how the agent's latest turn ended; only a failure carries a reason.
+        Migration {
+            version: 3,
+            sql: "ALTER TABLE session_reports ADD COLUMN outcome TEXT
+                CHECK (outcome IN ('completed', 'failed', 'quota-stopped'));
+            ALTER TABLE session_reports ADD COLUMN outcome_reason TEXT
+                CHECK (outcome_reason IS NULL OR outcome = 'failed');",
+        },
     ],
 };
 

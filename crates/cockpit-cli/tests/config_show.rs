@@ -535,7 +535,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                 "cockpit: {problem}\n\
                  usage: cockpit config show [--project DIR] [--set KEY=VALUE]...\n       \
                  cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] \
-                 [--needs-input QUESTION]\n       \
+                 [--needs-input QUESTION] [--outcome completed|failed|quota-stopped] \
+                 [--outcome-reason TEXT]\n       \
                  cockpit agent reports\n       \
                  cockpit project add DIR [--name NAME]\n       \
                  cockpit project list\n       \

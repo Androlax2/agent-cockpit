@@ -28,6 +28,8 @@ const NEEDS_YOU_NOTIFICATIONS: [&str; 5] = [
 
 /// The agent channel's longest needs-input question, in characters.
 const QUESTION_MAX_CHARS: usize = 300;
+/// The agent channel's longest outcome reason, in characters.
+const OUTCOME_REASON_MAX_CHARS: usize = 80;
 /// Sent instead of a question the channel would refuse, so the state still arrives.
 const PLAIN_QUESTION: &str = "Claude Code is waiting for you in its terminal";
 
@@ -109,7 +111,12 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
         .collect();
     match activity {
         Activity::Working => arguments.push("working".to_owned()),
-        Activity::Waiting => arguments.push("waiting".to_owned()),
+        Activity::Waiting => {
+            arguments.push("waiting".to_owned());
+            if let EventKind::TurnEnded { outcome } = &event.kind {
+                arguments.extend(outcome_arguments(outcome));
+            }
+        }
         Activity::NeedsYou => {
             let question = match &event.kind {
                 EventKind::NeedsYou { question } => question.as_deref(),
@@ -123,30 +130,55 @@ pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     Some(arguments)
 }
 
-/// `question` as the agent channel accepts it: one line, at most 300 characters, without
-/// control, invisible formatting or tmux format sequences; otherwise a plain question.
-/// Mirrors `cockpit-agent-channel`'s report validation, which adapters cannot import
-/// (`provider adapters -> provider-api only`); line breaks and tabs become spaces.
-fn channel_question(question: Option<&str>) -> String {
-    let Some(question) = question else {
-        return PLAIN_QUESTION.to_owned();
+/// `--outcome` and, for a failure with a reason the channel accepts, `--outcome-reason`. A
+/// reason it would refuse is left out, so the outcome still arrives.
+fn outcome_arguments(outcome: &TurnOutcome) -> Vec<String> {
+    let (name, reason) = match outcome {
+        TurnOutcome::Completed => ("completed", None),
+        TurnOutcome::QuotaStopped => ("quota-stopped", None),
+        TurnOutcome::Failed { reason } => (
+            "failed",
+            reason
+                .as_deref()
+                .and_then(|reason| channel_text(reason, OUTCOME_REASON_MAX_CHARS)),
+        ),
     };
-    let is_refused = question.chars().any(|character| {
+    let mut arguments = vec!["--outcome".to_owned(), name.to_owned()];
+    if let Some(reason) = reason {
+        arguments.extend(["--outcome-reason".to_owned(), reason]);
+    }
+    arguments
+}
+
+/// `question` as the agent channel accepts it, otherwise a plain question.
+fn channel_question(question: Option<&str>) -> String {
+    question
+        .and_then(|question| channel_text(question, QUESTION_MAX_CHARS))
+        .unwrap_or_else(|| PLAIN_QUESTION.to_owned())
+}
+
+/// `text` as the agent channel accepts it: one line, at most `max_chars` characters (cut with
+/// an ellipsis), without control, invisible formatting or tmux format sequences; `None` when
+/// it has none of those to keep or is empty. Mirrors the channel's report validation, which
+/// adapters cannot import (`provider adapters -> provider-api only`); line breaks and tabs
+/// become spaces.
+fn channel_text(text: &str, max_chars: usize) -> Option<String> {
+    let is_refused = text.chars().any(|character| {
         (character.is_control() && !character.is_whitespace()) || is_invisible_format(character)
     }) || ["#(", "#{", "#["]
         .iter()
-        .any(|opener| question.contains(opener));
-    let words: Vec<&str> = question.split_whitespace().collect();
+        .any(|opener| text.contains(opener));
+    let words: Vec<&str> = text.split_whitespace().collect();
     if is_refused || words.is_empty() {
-        return PLAIN_QUESTION.to_owned();
+        return None;
     }
     let line = words.join(" ");
-    if line.chars().count() <= QUESTION_MAX_CHARS {
-        return line;
+    if line.chars().count() <= max_chars {
+        return Some(line);
     }
-    let mut cut: String = line.chars().take(QUESTION_MAX_CHARS - 1).collect();
+    let mut cut: String = line.chars().take(max_chars - 1).collect();
     cut.push('…');
-    cut
+    Some(cut)
 }
 
 /// The format characters the agent channel refuses: soft hyphen, zero-width marks,

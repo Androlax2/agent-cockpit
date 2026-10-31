@@ -64,6 +64,7 @@ fn session_report(session: &str) -> SessionReport {
         label: Some("Agent channel issue".to_owned()),
         doing: None,
         needs_input: Some("Start now?".to_owned()),
+        outcome: None,
         reported_at: 1,
     }
 }
@@ -75,7 +76,7 @@ async fn a_report_goes_to_the_agent_socket_with_the_launch_token() {
     let daemon = scripted_daemon(
         &socket,
         Outcome::Ok(Reply::AgentReported {
-            report: session_report("s1"),
+            report: Box::new(session_report("s1")),
         }),
     );
 
@@ -115,7 +116,7 @@ async fn without_a_launch_token_the_report_carries_none() {
     let daemon = scripted_daemon(
         &socket,
         Outcome::Ok(Reply::AgentReported {
-            report: session_report("s1"),
+            report: Box::new(session_report("s1")),
         }),
     );
 

@@ -50,6 +50,7 @@ fn n_opens_the_next_session_that_needs_you_wrapping_around() {
                 label: None,
                 doing: None,
                 needs_input: Some("Which branch?".to_owned()),
+                outcome: None,
                 reported_at: 1,
             }],
         },

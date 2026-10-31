@@ -417,9 +417,10 @@ pub enum Reply {
     Subscribed {
         cursor: Cursor,
     },
-    /// The report as recorded, under the session the daemon identified.
+    /// The report as recorded, under the session the daemon identified; boxed like the
+    /// views below, to keep every `Outcome` small.
     AgentReported {
-        report: SessionReport,
+        report: Box<SessionReport>,
     },
     AgentReports {
         reports: Vec<SessionReport>,

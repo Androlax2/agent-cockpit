@@ -141,8 +141,11 @@ impl Provider for ClaudeCode {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // `outcome` waits until the agent channel carries a turn's outcome (#146).
-        let events = self.bridge.is_some().then_some(Capability::Events);
+        // Events and outcomes both reach Cockpit only through the hook bridge.
+        let bridged = self
+            .bridge
+            .is_some()
+            .then_some([Capability::Events, Capability::Outcome]);
         let provenance = self.provenance();
         [
             Capability::Resume,
@@ -154,7 +157,7 @@ impl Provider for ClaudeCode {
             Capability::ScreenReading,
         ]
         .into_iter()
-        .chain(events)
+        .chain(bridged.into_iter().flatten())
         .fold(Capabilities::none(), |capabilities, capability| {
             capabilities.with(capability, provenance.clone())
         })

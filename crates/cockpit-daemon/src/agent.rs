@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity, Refusal};
 use cockpit_protocol::{ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy};
+use cockpit_provider_api::TurnOutcome;
 use cockpit_sessions::{AgentState, Error, Report, SessionReport};
 use cockpit_turso::Database;
 
@@ -33,7 +34,7 @@ pub(crate) async fn report(
     match recorded {
         Ok(recorded) => match write.commit().await {
             Ok(()) => Outcome::Ok(Reply::AgentReported {
-                report: to_wire(recorded),
+                report: Box::new(to_wire(recorded)),
             }),
             Err(error) => internal(&error),
         },
@@ -101,6 +102,11 @@ fn from_wire(report: cockpit_protocol::AgentReport) -> Report {
         label: report.label,
         doing: report.doing,
         needs_input: report.needs_input,
+        outcome: report.outcome.map(|outcome| match outcome {
+            cockpit_protocol::TurnOutcome::Completed => TurnOutcome::Completed,
+            cockpit_protocol::TurnOutcome::Failed { reason } => TurnOutcome::Failed { reason },
+            cockpit_protocol::TurnOutcome::QuotaStopped => TurnOutcome::QuotaStopped,
+        }),
     }
 }
 
@@ -114,6 +120,11 @@ fn to_wire(report: SessionReport) -> cockpit_protocol::SessionReport {
         label: report.label,
         doing: report.doing,
         needs_input: report.needs_input,
+        outcome: report.outcome.map(|outcome| match outcome {
+            TurnOutcome::Completed => cockpit_protocol::TurnOutcome::Completed,
+            TurnOutcome::Failed { reason } => cockpit_protocol::TurnOutcome::Failed { reason },
+            TurnOutcome::QuotaStopped => cockpit_protocol::TurnOutcome::QuotaStopped,
+        }),
         reported_at: report.reported_at,
     }
 }
