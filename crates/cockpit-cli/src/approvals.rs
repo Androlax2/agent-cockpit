@@ -38,9 +38,9 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
             revision: id_of(revision)?,
             command: (*command).to_owned(),
         },
-        ("approval", ["input", id, text]) => Command::ApprovalInput {
+        ("approval", ["input", id]) => Command::ApprovalInput {
             request: id_of(id)?,
-            text: (*text).to_owned(),
+            text: input_line()?,
         },
         ("guide", ["show", id]) => Command::GuideShow { guide: id_of(id)? },
         ("guide", ["answer", id, step]) => Command::GuideAnswer {
@@ -62,6 +62,17 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
         _ => return Err(format!("unknown {verb} arguments")),
     };
     Ok(command)
+}
+
+/// The text to type into a running command, one line read from standard input: a password
+/// given as an argument would sit in the shell history and in every process listing.
+fn input_line() -> Result<String, String> {
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|error| format!("cannot read the input from standard input: {error}"))?;
+    let line = line.strip_suffix('\n').unwrap_or(&line);
+    Ok(line.strip_suffix('\r').unwrap_or(line).to_owned())
 }
 
 fn id_of(text: &str) -> Result<i64, String> {
@@ -155,24 +166,18 @@ fn run_detail(run: &RunRequestView) -> String {
     }
     let _ = writeln!(text, "command:\n{}", run.shown_command.text);
     text.push_str(&warnings(&run.shown_command));
-    let _ = writeln!(text, "directory: {}", run.shown_cwd.text);
-    text.push_str(&warnings(&run.shown_cwd));
-    match (&run.project, run.outside_project) {
-        (Some(project), false) => {
-            let _ = writeln!(text, "  inside project {project}");
-        }
-        (Some(project), true) => {
-            let _ = writeln!(text, "  ! OUTSIDE the agent's project {project}");
-        }
-        (None, _) => text.push_str("  ! the agent's project is unknown\n"),
-    }
+    text.push_str(&directory(
+        &run.shown_cwd,
+        run.project.as_deref(),
+        run.outside_project,
+    ));
     let _ = writeln!(text, "reason: {}", run.shown_reason.text);
     text.push_str(&warnings(&run.shown_reason));
     let _ = writeln!(text, "digest: {}", run.digest);
     if run.waiting_for_input {
         let _ = writeln!(
             text,
-            "waiting for input: cockpit approval input {} TEXT",
+            "waiting for input: cockpit approval input {} (reads one line from standard input)",
             run.id
         );
     }
@@ -200,6 +205,23 @@ fn run_detail(run: &RunRequestView) -> String {
     text
 }
 
+/// The directory a request works in, its hidden characters, and where it lies against the
+/// agent's project.
+fn directory(shown_cwd: &ShownText, project: Option<&str>, outside_project: bool) -> String {
+    let mut text = format!("directory: {}\n", shown_cwd.text);
+    text.push_str(&warnings(shown_cwd));
+    match (project, outside_project) {
+        (Some(project), false) => {
+            let _ = writeln!(text, "  inside project {project}");
+        }
+        (Some(project), true) => {
+            let _ = writeln!(text, "  ! OUTSIDE the agent's project {project}");
+        }
+        (None, _) => text.push_str("  ! the agent's project is unknown\n"),
+    }
+    text
+}
+
 fn guide_detail(guide: &GuideView) -> String {
     let state = match guide.state {
         GuideStateView::Asking => "asking",
@@ -213,7 +235,11 @@ fn guide_detail(guide: &GuideView) -> String {
         guide.id, guide.session, guide.title.text
     );
     text.push_str(&warnings(&guide.title));
-    let _ = writeln!(text, "directory: {}", guide.cwd);
+    text.push_str(&directory(
+        &guide.shown_cwd,
+        guide.project.as_deref(),
+        guide.outside_project,
+    ));
     let mut section = None;
     for (index, step) in guide.steps.iter().enumerate() {
         let step_section = step.section.as_ref().map(|shown| shown.text.as_str());

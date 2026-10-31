@@ -91,7 +91,10 @@ pub struct GuideView {
     pub session: String,
     pub title: ShownText,
     pub cwd: String,
+    pub shown_cwd: ShownText,
     pub project: Option<String>,
+    /// The directory is outside the asking agent's project, or the project is unknown.
+    pub outside_project: bool,
     pub state: GuideStateView,
     /// Index of the step shown now; an answer names it.
     pub current_step: usize,

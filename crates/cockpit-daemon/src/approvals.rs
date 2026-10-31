@@ -10,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cockpit_agent_channel::{PeerAncestry, ProcessError, ProcessIdentity};
 use cockpit_approvals::{
-    Approved, GuideId, GuideRequest, GuideState, Project, Refusal, RunAsk, RunId, RunRequest,
-    RunResult, RunSettings, RunState, Runner, Shown,
+    Approved, GuideId, GuideRequest, GuideState, NoResult, Project, Refusal, RunAsk, RunId,
+    RunRequest, RunResult, RunSettings, RunState, Runner, Shown,
 };
 use cockpit_authorization::SessionId;
 use cockpit_protocol::{
@@ -337,10 +337,19 @@ pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: 
             Command::ApprovalQueue => {
                 let read = database.read().await?;
                 let mut runs = cockpit_approvals::open_runs(&read, now()).await?;
-                cockpit_approvals::queue_order(&mut runs, |id| runner.is_waiting_for_input(id));
+                // Read once: whether a run waits for input changes with the clock.
+                let waiting: Vec<RunId> = runs
+                    .iter()
+                    .filter(|run| is_waiting_for_input(run, &runner))
+                    .map(|run| run.id)
+                    .collect();
+                cockpit_approvals::queue_order(&mut runs, &waiting);
                 let guides = cockpit_approvals::open_guides(&read, now()).await?;
                 Ok(Reply::ApprovalQueue {
-                    runs: runs.iter().map(|run| run_view(run, &runner)).collect(),
+                    runs: runs
+                        .iter()
+                        .map(|run| run_view(run, waiting.contains(&run.id)))
+                        .collect(),
                     guides: guides.iter().map(guide_view).collect(),
                 })
             }
@@ -462,14 +471,19 @@ async fn approve(
 async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
     let request = approved.id.0;
     if let Err(Failed(error)) = start(&database, &approved).await {
-        tracing::error!(
-            request,
-            ?error,
-            "an approved run could not start; it stays approved"
-        );
+        tracing::error!(request, ?error, "an approved run could not start");
+        let ended = Err(NoResult::NotStarted(format!(
+            "the run could not be marked running: {}",
+            error.message
+        )));
+        record_end_or_log(&database, &approved, &ended).await;
         return;
     }
-    let ended = match runner.run(&approved).await {
+    let ended = match repository_drivers_off(&approved.cwd).await {
+        Ok(drivers_off) => runner.run(&approved, &drivers_off).await,
+        Err(reason) => Err(NoResult::NotStarted(reason)),
+    };
+    match &ended {
         Ok(ran) => {
             if ran.terminal_held_open {
                 tracing::warn!(
@@ -482,16 +496,21 @@ async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
                 exit_code = ran.exit_code,
                 "an approved run finished"
             );
-            Ok(ran.result())
         }
-        Err(reason) => {
-            tracing::warn!(request, reason, "an approved run did not start");
-            Err(reason)
-        }
-    };
-    if let Err(Failed(error)) = record_end(&database, &approved, &ended).await {
-        tracing::error!(request, ?error, "an approved run's end was not recorded");
+        Err(no_result) => tracing::warn!(request, ?no_result, "an approved run has no result"),
     }
+    let ended = ended.map(|ran| ran.result());
+    record_end_or_log(&database, &approved, &ended).await;
+}
+
+/// The repository's own program-running Git drivers, reset for the run: they are chosen by
+/// whoever writes the checkout's configuration, so `SAFE_CONFIG` cannot name them.
+async fn repository_drivers_off(cwd: &Path) -> Result<Vec<String>, String> {
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || cockpit_projects::Git::from_path().drivers_off(&cwd))
+        .await
+        .map_err(|error| format!("the Git configuration check stopped: {error}"))?
+        .map_err(|error| format!("cannot reset the repository's Git drivers: {error}"))
 }
 
 async fn start(database: &Database, approved: &Approved) -> Result<(), Failed> {
@@ -501,16 +520,49 @@ async fn start(database: &Database, approved: &Approved) -> Result<(), Failed> {
     Ok(())
 }
 
-/// `ended` is the run's result, or why it did not start.
+/// Records the run's end. When that fails after the command started, the run is marked
+/// `outcome-unknown` rather than left running for ever; a daemon restart reconciles what
+/// even that cannot record.
+async fn record_end_or_log(
+    database: &Database,
+    approved: &Approved,
+    ended: &Result<RunResult, NoResult>,
+) {
+    let request = approved.id.0;
+    let Err(Failed(error)) = record_end(database, approved, ended).await else {
+        return;
+    };
+    tracing::error!(request, ?error, "an approved run's end was not recorded");
+    if matches!(ended, Err(NoResult::NotStarted(_))) {
+        return;
+    }
+    let ended = Err(NoResult::Unobserved(format!(
+        "the run's end could not be recorded: {}",
+        error.message
+    )));
+    if let Err(Failed(error)) = record_end(database, approved, &ended).await {
+        tracing::error!(
+            request,
+            ?error,
+            "an approved run is left running until restart"
+        );
+    }
+}
+
 async fn record_end(
     database: &Database,
     approved: &Approved,
-    ended: &Result<RunResult, String>,
+    ended: &Result<RunResult, NoResult>,
 ) -> Result<(), Failed> {
     let write = database.write().await?;
     match ended {
         Ok(result) => cockpit_approvals::finish_run(&write, approved, result, now()).await?,
-        Err(reason) => cockpit_approvals::record_not_run(&write, approved, reason, now()).await?,
+        Err(NoResult::NotStarted(reason)) => {
+            cockpit_approvals::record_not_run(&write, approved, reason, now()).await?;
+        }
+        Err(NoResult::Unobserved(reason)) => {
+            cockpit_approvals::record_outcome_unknown(&write, approved, reason, now()).await?;
+        }
     }
     write.commit().await?;
     Ok(())
@@ -525,7 +577,7 @@ fn now() -> i64 {
 
 fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     Reply::RunRequest {
-        request: Box::new(run_view(run, runner)),
+        request: Box::new(run_view(run, is_waiting_for_input(run, runner))),
     }
 }
 
@@ -553,7 +605,11 @@ fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn run_view(run: &RunRequest, runner: &Runner) -> RunRequestView {
+fn is_waiting_for_input(run: &RunRequest, runner: &Runner) -> bool {
+    run.state == RunState::Running && runner.is_waiting_for_input(run.id)
+}
+
+fn run_view(run: &RunRequest, waiting_for_input: bool) -> RunRequestView {
     let cwd = path_text(&run.cwd);
     RunRequestView {
         id: run.id.0,
@@ -581,7 +637,7 @@ fn run_view(run: &RunRequest, runner: &Runner) -> RunRequestView {
         digest: run.digest(),
         asked_at: run.asked_at,
         expires_at: run.expires_at,
-        waiting_for_input: run.state == RunState::Running && runner.is_waiting_for_input(run.id),
+        waiting_for_input,
         result: run.result.as_ref().map(|result| RunResultView {
             exit_code: result.exit_code,
             output: result.output.clone(),
@@ -594,12 +650,15 @@ fn run_view(run: &RunRequest, runner: &Runner) -> RunRequestView {
 }
 
 fn guide_view(guide: &GuideRequest) -> GuideView {
+    let cwd = path_text(&guide.cwd);
     GuideView {
         id: guide.id.0,
         session: guide.session.as_str().to_owned(),
         title: shown(&guide.title),
-        cwd: path_text(&guide.cwd),
+        shown_cwd: shown(&cwd),
+        cwd,
         project: guide.project.as_ref().map(|project| project.name.clone()),
+        outside_project: guide.is_outside_project(),
         state: match guide.state {
             GuideState::Asking => GuideStateView::Asking,
             GuideState::Expired => GuideStateView::Expired,

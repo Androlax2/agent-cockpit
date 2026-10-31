@@ -6,7 +6,8 @@ mod common;
 use cockpit_approvals::{
     Approved, EXPIRES_AFTER_SECONDS, Error, Refusal, RunResult, RunState, action_digest,
     approve_run, ask_run, decline_run, edit_run, finish_run, open_runs, queue_order,
-    reconcile_runs, record_not_run, resolve_cwd, run_request, run_status, start_run,
+    reconcile_runs, record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
+    start_run,
 };
 use cockpit_authorization::Permission;
 use common::{Fixture, NOW, session};
@@ -228,6 +229,35 @@ async fn a_result_is_recorded_once_for_the_approved_revision() {
 }
 
 #[tokio::test]
+async fn a_started_run_whose_end_was_not_observed_is_outcome_unknown() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "make deploy").await;
+    let approved = approve(&fixture, run.id).await;
+    let write = fixture.database.write().await.unwrap();
+    start_run(&write, &approved).await.unwrap();
+
+    record_outcome_unknown(&write, &approved, "the exit was not observed", NOW)
+        .await
+        .unwrap();
+
+    let stored = run_request(&write, run.id, NOW).await.unwrap().unwrap();
+    assert_eq!(stored.state, RunState::OutcomeUnknown);
+    assert_eq!(stored.note.as_deref(), Some("the exit was not observed"));
+}
+
+#[tokio::test]
+async fn a_run_that_never_started_cannot_be_outcome_unknown() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "make deploy").await;
+    let approved = approve(&fixture, run.id).await;
+    let write = fixture.database.write().await.unwrap();
+
+    let refused = refusal(record_outcome_unknown(&write, &approved, "unobserved", NOW).await);
+
+    assert_eq!(refused, Refusal::AlreadyDecided { state: "approved" });
+}
+
+#[tokio::test]
 async fn a_run_of_another_revision_cannot_start_or_complete_the_request() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "ls").await;
@@ -368,13 +398,13 @@ async fn a_command_waiting_for_input_comes_back_to_the_front_of_the_queue() {
     start_run(&write, &approved).await.unwrap();
     let mut queue = open_runs(&write, NOW).await.unwrap();
 
-    queue_order(&mut queue, |_| false);
+    queue_order(&mut queue, &[]);
     assert_eq!(
         queue.iter().map(|run| run.id).collect::<Vec<_>>(),
         [first.id, prompting.id],
         "a running command stays behind the asking ones"
     );
-    queue_order(&mut queue, |id| id == prompting.id);
+    queue_order(&mut queue, &[prompting.id]);
     assert_eq!(
         queue.iter().map(|run| run.id).collect::<Vec<_>>(),
         [prompting.id, first.id]

@@ -172,6 +172,16 @@ fn finished(exit_code: i32, output: &str) -> Outcome {
 }
 
 fn guide(state: GuideStateView) -> Outcome {
+    guide_reply(guide_view(state))
+}
+
+fn guide_reply(guide: GuideView) -> Outcome {
+    Outcome::Ok(Reply::Guide {
+        guide: Box::new(guide),
+    })
+}
+
+fn guide_view(state: GuideStateView) -> GuideView {
     let step = |text: &str| GuideStepView {
         section: None,
         text: shown(text),
@@ -182,21 +192,21 @@ fn guide(state: GuideStateView) -> Outcome {
         answer: None,
         run_request: None,
     };
-    Outcome::Ok(Reply::Guide {
-        guide: Box::new(GuideView {
-            id: 3,
-            session: "s1".to_owned(),
-            title: shown("Connect the app"),
-            cwd: "/p".to_owned(),
-            project: None,
-            state,
-            current_step: 1,
-            steps: vec![step("Open the settings"), step("Copy the id")],
-            stuck_note: (state == GuideStateView::Stuck).then(|| "no id shown".to_owned()),
-            asked_at: 1,
-            expires_at: 901,
-        }),
-    })
+    GuideView {
+        id: 3,
+        session: "s1".to_owned(),
+        title: shown("Connect the app"),
+        cwd: "/p".to_owned(),
+        shown_cwd: shown("/p"),
+        project: None,
+        outside_project: true,
+        state,
+        current_step: 1,
+        steps: vec![step("Open the settings"), step("Copy the id")],
+        stuck_note: (state == GuideStateView::Stuck).then(|| "no id shown".to_owned()),
+        asked_at: 1,
+        expires_at: 901,
+    }
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -432,6 +442,57 @@ async fn the_owner_reads_a_request_with_its_warnings() {
         "approve: cockpit approval approve 7 --revision 1 --digest {}",
         "d".repeat(64)
     )));
+}
+
+#[tokio::test]
+async fn the_owner_reads_a_guides_directory_escaped_and_placed_against_the_project() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.owner_socket(),
+        vec![guide_reply(GuideView {
+            shown_cwd: ShownText {
+                text: "/tmp/x\\u{202e}".to_owned(),
+                has_hidden_characters: true,
+                non_ascii: Vec::new(),
+            },
+            project: Some("app".to_owned()),
+            outside_project: true,
+            ..guide_view(GuideStateView::Asking)
+        })],
+    );
+
+    let output = home.cockpit(&["guide", "show", "3"], "").await;
+
+    let shown = text(&output.stdout);
+    assert!(shown.contains("directory: /tmp/x\\u{202e}\n"), "{shown}");
+    assert!(
+        shown.contains("! hidden characters shown escaped"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("! OUTSIDE the agent's project app"),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn the_owner_types_input_from_standard_input_not_the_command_line() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.owner_socket(),
+        vec![run_reply(request(RunStateView::Running))],
+    );
+
+    let output = home.cockpit(&["approval", "input", "7"], "hunter2\n").await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::ApprovalInput {
+            request: 7,
+            text: "hunter2".to_owned(),
+        }]
+    );
 }
 
 #[tokio::test]

@@ -8,11 +8,20 @@ use regex::{Captures, Regex};
 
 const REDACTED: &str = "[redacted]";
 
-/// Escape sequences (CSI, OSC, keypad modes) and carriage returns: a terminal interprets
-/// them, an agent reading the text would only be misled by them.
+/// Escape sequences (CSI, OSC, DCS, SOS, PM, APC, charset and single-character ones), C1
+/// controls and every C0 control but newline and tab: a terminal interprets them, an agent
+/// reading the text would only be misled by them (a backspace or a reset can hide what came
+/// before).
 static TERMINAL_CONTROLS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[=>]|\r")
-        .expect("the pattern compiles")
+    Regex::new(concat!(
+        r"\x1b\[[0-?]*[ -/]*[@-~]",
+        r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?",
+        r"|\x1b[PX^_][\s\S]*?(?:\x1b\\|\z)",
+        r"|\x1b[ -/]+[0-~]",
+        r"|\x1b[0-~]",
+        r"|[\x00-\x08\x0b-\x1f\x7f\x{80}-\x{9f}]",
+    ))
+    .expect("the pattern compiles")
 });
 
 /// Tokens and keys recognisable by their shape, and private key blocks: replaced whole.
@@ -40,6 +49,11 @@ static SECRET_SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+/// The end line of a private key block.
+static KEY_BLOCK_END: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----").expect("the pattern compiles")
+});
+
 /// The value after a name that says it is secret, after an Authorization scheme, or the
 /// password in `scheme://user:password@host`. Group 1 is kept, group 2 (when present) too;
 /// what lies between becomes `[redacted]`, so the agent still sees what was there.
@@ -65,6 +79,19 @@ pub fn strip_terminal_controls(text: &str) -> String {
     TERMINAL_CONTROLS.replace_all(text, "").into_owned()
 }
 
+/// [`redact_secrets`] for the end of a longer output: a private key block whose BEGIN line
+/// was cut off is redacted from the start of `text` to its END line.
+pub fn redact_secrets_after_cut(text: &str) -> (String, usize) {
+    let Some(end) = KEY_BLOCK_END.find(text) else {
+        return redact_secrets(text);
+    };
+    if text[..end.start()].contains("-----BEGIN ") {
+        return redact_secrets(text);
+    }
+    let (rest, count) = redact_secrets(&text[end.end()..]);
+    (format!("{REDACTED}{rest}"), count + 1)
+}
+
 /// `text` with every secret-looking value replaced by `[redacted]`, and how many were.
 pub fn redact_secrets(text: &str) -> (String, usize) {
     let mut count = 0;
@@ -77,7 +104,10 @@ pub fn redact_secrets(text: &str) -> (String, usize) {
         redacted = value
             .replace_all(&redacted, |captures: &Captures| {
                 // A value a shape above already replaced is not counted twice.
-                if captures[0].ends_with(REDACTED) {
+                let value_end = captures.get(2).map_or(captures[0].len(), |end| {
+                    end.start() - captures.get(0).expect("the whole match").start()
+                });
+                if captures[0][captures[1].len()..value_end] == *REDACTED {
                     return captures[0].to_owned();
                 }
                 count += 1;

@@ -509,7 +509,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit checkout push CHECKOUT\n       \
                  cockpit ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check\n       \
                  cockpit ask guide [--cwd DIR] < GUIDE | --wait ID\n       \
-                 cockpit approval list | show ID | decline ID | input ID TEXT\n       \
+                 cockpit approval list | show ID | decline ID | input ID < LINE\n       \
                  cockpit approval approve ID --revision REVISION --digest DIGEST\n       \
                  cockpit approval edit ID --revision REVISION COMMAND\n       \
                  cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID\n"

@@ -25,7 +25,7 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit checkout push CHECKOUT
        cockpit ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
        cockpit ask guide [--cwd DIR] < GUIDE | --wait ID
-       cockpit approval list | show ID | decline ID | input ID TEXT
+       cockpit approval list | show ID | decline ID | input ID < LINE
        cockpit approval approve ID --revision REVISION --digest DIGEST
        cockpit approval edit ID --revision REVISION COMMAND
        cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID";

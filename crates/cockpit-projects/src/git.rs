@@ -92,9 +92,10 @@ impl Git {
     }
 
     /// An empty value for every program-running driver the configuration seen from `dir`
-    /// names. Driver names are chosen by whoever writes the configuration, so they cannot be
-    /// listed in [`SAFE_CONFIG`]; reading the configuration runs nothing.
-    fn drivers_off(&self, dir: &Path) -> Result<Vec<String>, Error> {
+    /// names, as `key=` settings. Driver names are chosen by whoever writes the
+    /// configuration, so they cannot be listed in [`SAFE_CONFIG`]; reading the configuration
+    /// runs nothing. Approved runs (#34) apply them next to [`SAFE_CONFIG`].
+    pub fn drivers_off(&self, dir: &Path) -> Result<Vec<String>, Error> {
         let arguments = [
             arg("config"),
             arg("--includes"),

@@ -15,9 +15,16 @@ Issue #34. Implementation choices within report 17's settled design; none change
   checked the same way.
 - **Safe Git settings are `cockpit-projects`' whole `SAFE_CONFIG`**, passed as
   `GIT_CONFIG_COUNT/KEY/VALUE` with every inherited `GIT_*` variable and the launch token
-  removed. Limits: content filters and diff or merge drivers chosen by name in a repository's
-  configuration cannot be reset from the environment without reading it first; and
+  removed. Content filters and diff or merge drivers chosen by name are read from the
+  configuration seen from the run's directory just before it starts (`Git::drivers_off`, the
+  rule every daemon Git call follows) and reset too, user-wide ones such as Git LFS included.
+  Limits: a command that `cd`s into another repository meets that repository's drivers; and
   `credential.helper` is reset, so an approved HTTPS push gets no stored credential.
+- **A run that started is never reported as not run.** An exit that could not be observed,
+  or an end that could not be recorded, marks the run `outcome-unknown`; a run that could not
+  be marked running is recorded `not-run`, never left approved.
+- **The owner's input to a prompt comes from standard input** (`cockpit approval input ID`),
+  never from an argument, which shell history and process listings keep.
 - **The asking agent's project is the registered checkout holding its working directory**
   (`/proc/<pid>/cwd`, read after the process tree was verified), deepest checkout first,
   until sessions record their checkout (#31). It only sets the "outside the project" flag.

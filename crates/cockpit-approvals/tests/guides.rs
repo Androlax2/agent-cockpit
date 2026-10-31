@@ -271,6 +271,29 @@ async fn a_guide_nobody_waits_for_expires_unless_its_session_asks_about_it() {
 }
 
 #[tokio::test]
+async fn a_run_step_request_stays_before_the_owner_while_the_agent_waits_on_the_guide() {
+    let fixture = Fixture::new().await;
+    let guide = asked(
+        &fixture,
+        "# Build\nBuild it\n  run: make build\nCheck the result\n",
+    )
+    .await;
+    let expiry = NOW + cockpit_approvals::EXPIRES_AFTER_SECONDS;
+    let write = fixture.database.write().await.unwrap();
+    let answered = answer_step(&write, guide.id, 0, None, NOW).await.unwrap();
+    let filed = answered.steps[0]
+        .run_request
+        .expect("the run step filed a request");
+
+    guide_status(&write, &session("s1"), guide.id, expiry - 1)
+        .await
+        .unwrap();
+
+    let run = run_request(&write, filed, expiry).await.unwrap().unwrap();
+    assert_eq!(run.state, RunState::Asking);
+}
+
+#[tokio::test]
 async fn another_sessions_guide_is_not_found_for_the_asker() {
     let fixture = Fixture::new().await;
     let guide = asked(&fixture, GUIDE).await;

@@ -26,7 +26,7 @@ use tokio::sync::oneshot;
 
 use crate::Refusal;
 use crate::error::invalid;
-use crate::redact::{redact_secrets, strip_terminal_controls};
+use crate::redact::{redact_secrets, redact_secrets_after_cut, strip_terminal_controls};
 use crate::runs::{Approved, RunId, RunResult};
 
 /// After the command exits, how long output still in the terminal may take to arrive. A
@@ -76,7 +76,8 @@ impl RunSettings {
         }
     }
 
-    fn run_environment(&self) -> Vec<(OsString, OsString)> {
+    fn run_environment(&self, extra_git_config: &[String]) -> Vec<(OsString, OsString)> {
+        let git_config: Vec<&String> = self.git_config.iter().chain(extra_git_config).collect();
         let mut environment: Vec<(OsString, OsString)> = self
             .environment
             .iter()
@@ -85,9 +86,9 @@ impl RunSettings {
             .collect();
         environment.push((
             "GIT_CONFIG_COUNT".into(),
-            self.git_config.len().to_string().into(),
+            git_config.len().to_string().into(),
         ));
-        for (index, setting) in self.git_config.iter().enumerate() {
+        for (index, setting) in git_config.into_iter().enumerate() {
             let (key, value) = setting.split_once('=').unwrap_or((setting, ""));
             environment.push((format!("GIT_CONFIG_KEY_{index}").into(), key.into()));
             environment.push((format!("GIT_CONFIG_VALUE_{index}").into(), value.into()));
@@ -128,6 +129,15 @@ impl Ran {
     }
 }
 
+/// Why a run has no result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoResult {
+    /// Nothing ran.
+    NotStarted(String),
+    /// The command started, but its end was not observed: it may have done anything.
+    Unobserved(String),
+}
+
 /// Starts approved runs and keeps the ones in progress, for input and for the queue.
 #[derive(Debug, Clone)]
 pub struct Runner {
@@ -166,7 +176,7 @@ impl Runner {
             .arg("-c")
             .arg(command)
             .env_clear()
-            .envs(self.settings.run_environment())
+            .envs(self.settings.run_environment(&[]))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -189,27 +199,40 @@ impl Runner {
         )))
     }
 
-    /// Runs `run` to its end. `Err` says why it did not start; then nothing ran.
-    pub async fn run(&self, run: &Approved) -> Result<Ran, String> {
+    /// Runs `run` to its end, `extra_git_config` (the repository's own drivers reset) applied
+    /// after the settings' Git configuration.
+    pub async fn run(&self, run: &Approved, extra_git_config: &[String]) -> Result<Ran, NoResult> {
         match std::fs::canonicalize(&run.cwd) {
             Ok(resolved) if resolved == run.cwd => {}
             Ok(resolved) => {
-                return Err(format!(
+                return Err(NoResult::NotStarted(format!(
                     "{} now resolves to {}, not the approved directory",
                     run.cwd.display(),
                     resolved.display()
-                ));
+                )));
             }
-            Err(error) => return Err(format!("{}: {error}", run.cwd.display())),
+            Err(error) => {
+                return Err(NoResult::NotStarted(format!(
+                    "{}: {error}",
+                    run.cwd.display()
+                )));
+            }
         }
+        let not_started =
+            |what: &str, error: std::io::Error| NoResult::NotStarted(format!("{what}: {error}"));
         let (master, terminal) = open_terminal(self.settings.rows, self.settings.columns)
-            .map_err(|error| format!("cannot open a terminal for the command: {error}"))?;
-        let mut child = self
-            .spawn(run, terminal)
-            .map_err(|error| format!("cannot start {}: {error}", self.settings.leader.display()))?;
+            .map_err(|error| not_started("cannot open a terminal for the command", error))?;
         let reader = master
             .try_clone()
-            .map_err(|error| format!("cannot read the terminal: {error}"))?;
+            .map_err(|error| not_started("cannot read the terminal", error))?;
+        let mut child = self
+            .spawn(run, terminal, extra_git_config)
+            .map_err(|error| {
+                not_started(
+                    &format!("cannot start {}", self.settings.leader.display()),
+                    error,
+                )
+            })?;
         let live = Arc::new(LiveRun {
             input: Mutex::new(master),
             output: Mutex::new(Kept {
@@ -235,7 +258,11 @@ impl Runner {
             Ok(status) => status
                 .code()
                 .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
-            Err(error) => return Err(format!("the command's exit was not observed: {error}")),
+            Err(error) => {
+                return Err(NoResult::Unobserved(format!(
+                    "the command's exit was not observed: {error}"
+                )));
+            }
         };
         let kept = live
             .output
@@ -252,6 +279,7 @@ impl Runner {
         &self,
         run: &Approved,
         terminal: rustix::fd::OwnedFd,
+        extra_git_config: &[String],
     ) -> std::io::Result<tokio::process::Child> {
         let mut command = tokio::process::Command::new(&self.settings.leader);
         command
@@ -260,7 +288,7 @@ impl Runner {
             .arg("-c")
             .arg(&run.command)
             .env_clear()
-            .envs(self.settings.run_environment())
+            .envs(self.settings.run_environment(extra_git_config))
             .current_dir(&run.cwd)
             .stdin(Stdio::from(terminal.try_clone()?))
             .stdout(Stdio::from(terminal.try_clone()?))
@@ -376,7 +404,11 @@ pub fn present(kept: &[u8], total: u64, answer_lines: usize) -> Output {
         kept = &kept[newline + 1..];
     }
     let text = strip_terminal_controls(&String::from_utf8_lossy(kept));
-    let (whole, redacted) = redact_secrets(&text);
+    let (whole, redacted) = if truncated_bytes > 0 {
+        redact_secrets_after_cut(&text)
+    } else {
+        redact_secrets(&text)
+    };
     let lines: Vec<&str> = whole.lines().collect();
     let first_shown = lines.len().saturating_sub(answer_lines);
     Output {

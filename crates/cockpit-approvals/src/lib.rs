@@ -15,12 +15,13 @@ pub use guides::{
     Guide, GuideId, GuideRequest, GuideState, GuideStep, Step, answer_step, ask_guide, close_guide,
     guide_request, guide_status, open_guides, parse_guide, report_stuck,
 };
-pub use pty::{Output, Ran, RunSettings, Runner, present, run_leader};
+pub use pty::{NoResult, Output, Ran, RunSettings, Runner, present, run_leader};
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use runs::{
     Approved, EXPIRES_AFTER_SECONDS, Project, RunAsk, RunId, RunRequest, RunResult, RunState,
     action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, may_ask, open_runs,
-    queue_order, reconcile_runs, record_not_run, resolve_cwd, run_request, run_status, start_run,
+    queue_order, reconcile_runs, record_not_run, record_outcome_unknown, resolve_cwd, run_request,
+    run_status, start_run,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an

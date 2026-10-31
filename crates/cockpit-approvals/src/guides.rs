@@ -13,6 +13,7 @@ use cockpit_authorization::SessionId;
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
+use crate::display::is_outside_project;
 use crate::error::invalid;
 use crate::runs::{
     EXPIRES_AFTER_SECONDS, Project, REASON_MAX_CHARS, RunAsk, RunId, insert_run, may_ask,
@@ -112,6 +113,13 @@ pub struct GuideRequest {
 }
 
 impl GuideRequest {
+    pub fn is_outside_project(&self) -> bool {
+        is_outside_project(
+            &self.cwd,
+            self.project.as_ref().map(|project| project.root.as_path()),
+        )
+    }
+
     /// The step the owner is shown now, while the guide still asks.
     pub fn current(&self) -> Option<&GuideStep> {
         match self.state {
@@ -346,6 +354,16 @@ pub async fn guide_status(
         .execute(
             "UPDATE approvals_guides SET expires_at = ?2 WHERE id = ?1",
             (id.0, now + EXPIRES_AFTER_SECONDS),
+        )
+        .await?;
+    // The agent waits on the guide, not on the requests its `run:` steps filed; they stay
+    // before the owner as long as the guide does.
+    write
+        .execute(
+            "UPDATE approvals_runs SET expires_at = ?2
+             WHERE state = 'asking' AND expires_at > ?3
+               AND id IN (SELECT run_request FROM approvals_guide_steps WHERE guide = ?1)",
+            (id.0, now + EXPIRES_AFTER_SECONDS, now),
         )
         .await?;
     required(write, id, now).await

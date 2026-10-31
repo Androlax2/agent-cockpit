@@ -238,6 +238,28 @@ async fn git_in_an_approved_run_has_hooks_off() {
     assert_eq!((result.exit_code, result.output.as_str()), (0, "/dev/null"));
 }
 
+#[tokio::test]
+async fn git_in_an_approved_run_has_the_repository_drivers_reset() {
+    let asking = started(true).await;
+    let git = |arguments: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(asking.cwd.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?}");
+    };
+    git(&["init", "--quiet"]);
+    git(&["config", "diff.planted.textconv", "touch planted"]);
+
+    let ended = asking
+        .ran("test -z \"$(git config --get diff.planted.textconv)\" && echo reset")
+        .await;
+
+    let result = ended.result.unwrap();
+    assert_eq!((result.exit_code, result.output.as_str()), (0, "reset"));
+}
+
 /// Report 04, walkthrough 3, across the sockets: the owner approves what it read before the
 /// edit; the daemon refuses the stale revision, and the approval of what it reads again runs
 /// the edited command, once.
@@ -450,4 +472,29 @@ async fn a_guide_is_walked_one_step_at_a_time_and_the_agent_reads_the_answers() 
     );
     assert_eq!(seen.state, GuideStateView::Done);
     assert_eq!(seen.steps[1].answer.as_deref(), Some("42"));
+}
+
+#[tokio::test]
+async fn the_owner_sees_a_guides_directory_with_the_display_rules_applied() {
+    let asking = started(true).await;
+
+    let asked = guide(
+        asking
+            .agent
+            .request(
+                Command::AskGuide {
+                    launch_token: Some(asking.token.as_str().to_owned()),
+                    guide: "# Connect the app\nOpen the settings\n".to_owned(),
+                    cwd: asking.cwd_text(),
+                },
+                GENEROUS,
+            )
+            .await,
+    );
+
+    assert_eq!(asked.shown_cwd.text, asking.cwd_text());
+    assert!(
+        asked.outside_project,
+        "no registered checkout holds the agent, so every directory is outside"
+    );
 }

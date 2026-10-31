@@ -285,11 +285,12 @@ pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunReque
 
 /// Report 17's queue: one approval asks at a time per owner. A running command that waits
 /// for input comes to the front, then asking requests oldest first; approved commands keep
-/// running behind them.
-pub fn queue_order(runs: &mut [RunRequest], is_waiting_for_input: impl Fn(RunId) -> bool) {
+/// running behind them. `waiting_for_input` is read once, before sorting: it changes with the
+/// clock.
+pub fn queue_order(runs: &mut [RunRequest], waiting_for_input: &[RunId]) {
     runs.sort_by_key(|run| {
         let place = match run.state {
-            RunState::Running if is_waiting_for_input(run.id) => 0,
+            RunState::Running if waiting_for_input.contains(&run.id) => 0,
             RunState::Asking => 1,
             _ => 2,
         };
@@ -467,6 +468,24 @@ pub async fn record_not_run(
         run,
         "UPDATE approvals_runs SET state = 'not-run', note = ?3, ended_at = ?4
          WHERE id = ?1 AND revision = ?2 AND state IN ('approved', 'running')",
+        (run.id.0, run.revision, note, now),
+    )
+    .await
+}
+
+/// Records that the run started but its end could not be observed or recorded: it may have
+/// done anything. `note` says why.
+pub async fn record_outcome_unknown(
+    write: &WriteTransaction<'_>,
+    run: &Approved,
+    note: &str,
+    now: i64,
+) -> Result<(), Error> {
+    fenced_update(
+        write,
+        run,
+        "UPDATE approvals_runs SET state = 'outcome-unknown', note = ?3, ended_at = ?4
+         WHERE id = ?1 AND revision = ?2 AND state = 'running'",
         (run.id.0, run.revision, note, now),
     )
     .await
