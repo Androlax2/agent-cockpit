@@ -19,7 +19,7 @@ means a transient 429, the outcome is `failed` with reason `rate_limit`").
   failed or quota-stopped" line of `2026-10-31-33-provider-contract.md` for Claude Code.
 - **Rejected:** matching `last_assistant_message` against "You've hit your" because it is
   display text that changes between releases and with the account type. A quota stop is to be
-  told apart from the plan windows `cockpit-usage` reads (#58), not from the hook.
+  told apart from the plan windows `cockpit-usage` reads (#58), not from the hook (#249).
 - **Fixtures** `stop-failure-rate-limit-plan-window.json` and
   `stop-failure-rate-limit-transient.json` are written from 2.1.316's code, not captured: a
-  rate limit cannot be provoked on demand (`crates/cockpit-claude/tests/rate_limit.rs`).
+  rate limit cannot be provoked on demand (`crates/cockpit-claude/tests/hooks.rs`).

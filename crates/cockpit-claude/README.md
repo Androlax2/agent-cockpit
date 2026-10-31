@@ -47,7 +47,6 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - `tests/launch.rs`, `tests/capabilities.rs`, `tests/input.rs`: the contract's words.
 - `tests/hooks.rs`: conformance with the hook payloads pinned in
   `tests/fixtures/claude-code-2.1.316/`, and the reports they become.
-- `tests/rate_limit.rs`: both kinds of `rate_limit` stop report a failed turn.
 - `tests/screen.rs`: the screen-reading fallback.
 - `tests/bridge.rs`: the hook bridge as a process against a fake `cockpit`.
 - `tests/live_hooks.rs` (live test ignored without an installed Claude Code): a real launch's

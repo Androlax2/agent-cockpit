@@ -62,6 +62,14 @@ fn each_pinned_payload_normalizes_to_its_event() {
             },
         ),
         (
+            "stop-failure-rate-limit-transient",
+            EventKind::TurnEnded {
+                outcome: TurnOutcome::Failed {
+                    reason: Some("rate_limit".to_owned()),
+                },
+            },
+        ),
+        (
             "session-start-resume",
             EventKind::Started {
                 conversation: Some(
@@ -192,6 +200,19 @@ fn each_event_reports_its_state_through_the_agent_channel() {
         ),
         (
             "stop-failure-rate-limit-plan-window",
+            words(&[
+                "agent",
+                "report",
+                "--state",
+                "waiting",
+                "--outcome",
+                "failed",
+                "--outcome-reason",
+                "rate_limit",
+            ]),
+        ),
+        (
+            "stop-failure-rate-limit-transient",
             words(&[
                 "agent",
                 "report",
