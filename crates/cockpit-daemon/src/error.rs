@@ -36,6 +36,8 @@ pub enum StartError {
     Tmux(cockpit_tmux::Error),
     /// Restoring the sessions that were active failed before any was reopened.
     Restore(cockpit_sessions::Error),
+    /// Probing what this host enforces, or releasing ended reservations, failed.
+    Admission(cockpit_resource_admission::Error),
 }
 
 impl StartError {
@@ -78,6 +80,7 @@ impl fmt::Display for StartError {
             Self::Messaging(error) => write!(formatter, "reconciling deliveries: {error}"),
             Self::Tmux(error) => write!(formatter, "tmux: {error}"),
             Self::Restore(error) => write!(formatter, "restoring sessions: {error}"),
+            Self::Admission(error) => write!(formatter, "resource admission: {error}"),
         }
     }
 }

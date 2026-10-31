@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
-use crate::{Capabilities, agent, approvals, feed, projects, sessions, tasks};
+use crate::{Capabilities, agent, approvals, feed, projects, resources, sessions, tasks};
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
 /// so bulk work can fill its lane without taking capacity from control (report 03).
@@ -79,11 +79,18 @@ pub struct Routes {
     environment: cockpit_config::Environment,
     /// Runs what the owner approved, and holds the runs in progress.
     runner: cockpit_approvals::Runner,
+    resources: resources::Resources,
 }
 
 impl Routes {
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         Routes {
+            resources: resources::Resources {
+                database: Arc::clone(&capabilities.database),
+                backend: capabilities.admission,
+                supervisor: capabilities.processes,
+                profile_change: Arc::default(),
+            },
             database: capabilities.database,
             git: capabilities.git,
             sessions: capabilities.sessions,
@@ -273,6 +280,20 @@ impl Handler for Routes {
                     Arc::clone(&self.database),
                     self.environment.clone(),
                 ),
+            },
+            (
+                command @ (Command::ResourceStatus
+                | Command::ResourceProfile { .. }
+                | Command::ResourceQueue { .. }
+                | Command::ResourceCheck { .. }
+                | Command::ResourceCheckpoint { .. }
+                | Command::ResourceStop { .. }),
+                peer,
+            ) => match peer {
+                // Agents cannot award themselves foreground priority, pause the queue or
+                // stop work (report 10).
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => resources::route(command, self.resources.clone()),
             },
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(

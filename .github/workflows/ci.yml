@@ -100,6 +100,10 @@ jobs:
       # process-group containment.
       - name: Supervise processes
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-processes
+      # The resource backend's macOS subset (#42): nice and SIGSTOP/SIGCONT on process
+      # groups, every cgroup control reported unsupported with its reason.
+      - name: Admit resources
+        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-resource-admission
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
@@ -155,6 +159,12 @@ jobs:
           . "$HOME/.cargo/env"
           cd "$HOME/agent-cockpit"
           cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-daemon --test startup
+      # The resource backend inside WSL 2 (#42): probed like Linux, reporting what it finds.
+      - name: Admit resources
+        run: |
+          . "$HOME/.cargo/env"
+          cd "$HOME/agent-cockpit"
+          cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-resource-admission
 
   # Markdown and spelling, for docs/ and any Markdown file.
   docs:

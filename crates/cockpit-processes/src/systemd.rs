@@ -125,12 +125,16 @@ impl SystemdTools {
 }
 
 fn resolve_in_path(program: &str) -> PathBuf {
+    find_in_path(program).unwrap_or_else(|| PathBuf::from(program))
+}
+
+/// The first file named `program` in the daemon's `PATH`.
+pub fn find_in_path(program: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
         .iter()
         .flat_map(std::env::split_paths)
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| PathBuf::from(program))
 }
 
 /// The scope of one execution. It embeds the database epoch and the row id, so a restart

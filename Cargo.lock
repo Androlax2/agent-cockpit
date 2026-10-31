@@ -420,6 +420,7 @@ dependencies = [
  "cockpit-projects",
  "cockpit-protocol",
  "cockpit-provider-api",
+ "cockpit-resource-admission",
  "cockpit-sessions",
  "cockpit-tasks",
  "cockpit-tmux",
@@ -484,6 +485,17 @@ version = "0.1.0"
 dependencies = [
  "cockpit-provider-api",
  "tempfile",
+]
+
+[[package]]
+name = "cockpit-resource-admission"
+version = "0.1.0"
+dependencies = [
+ "cockpit-processes",
+ "cockpit-turso",
+ "rustix 1.1.6",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
