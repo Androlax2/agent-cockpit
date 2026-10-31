@@ -1022,7 +1022,10 @@ async fn an_interrupted_restart_whose_relaunch_fails_on_start_is_left_failed() {
     let client = connect(&daemon).await;
     let failed = sessions(&client, false).await;
     assert_eq!(failed[0].state, SessionStateView::Failed, "{failed:?}");
-    assert!(!is_alive(home.launches()[0].pid), "the old agent was stopped");
+    assert!(
+        !is_alive(home.launches()[0].pid),
+        "the old agent was stopped"
+    );
     drop(client);
     home.stop(daemon);
 
