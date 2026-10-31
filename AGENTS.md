@@ -20,6 +20,14 @@ Read the [architecture map](docs/ARCHITECTURE.md) and the relevant scoped rule:
 This index is explicit: clients need not interpret another client's path-scoped rule
 metadata. Project guidance supplements the user's global instructions.
 
+## Greenfield refactor
+
+Issues labelled `greenfield` (milestones M0–M7) build the target architecture under
+`crates/` following the [design reports](docs/design/greenfield/README.md) and the working
+agreement in [issue #17](https://github.com/Androlax2/agent-cockpit/issues/17). Load the
+reports' README plus the reports named in your issue, nothing more. The architecture map
+describes the code that exists today under `apps/`, which keeps running until the cutover.
+
 ## Working loop
 
 1. Identify the owning module, its callers and the real entry-point test that proves
