@@ -3,7 +3,8 @@
 //! owner's `[[start_files]]`), and change detection compares a snapshot taken at launch.
 
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Provider names a start file may list. The adapter crates (report 02) become the source of
@@ -43,11 +44,16 @@ pub(crate) const DEFAULT_START_FILES: [(&str, &str, &[&str]); 5] = [
     ("codex hooks", ".codex/hooks.json", &["codex"]),
 ];
 
+/// A file's identity and content markers. `changed_at` (ctime) moves on every write, rename
+/// or copy over the file even when the tool restores the modification time (`cp -p`,
+/// `rsync -a`); `inode` catches a replacement by rename.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileState {
     Missing,
     Present {
         modified: SystemTime,
+        changed_at: (i64, i64),
+        inode: u64,
         len: u64,
     },
     /// Metadata could not be read for a reason other than absence (permissions, I/O).
@@ -57,11 +63,13 @@ pub enum FileState {
 }
 
 impl FileState {
-    pub fn read(path: &std::path::Path) -> Self {
+    pub fn read(path: &Path) -> Self {
         match std::fs::metadata(path) {
             Ok(metadata) => match metadata.modified() {
                 Ok(modified) => Self::Present {
                     modified,
+                    changed_at: (metadata.ctime(), metadata.ctime_nsec()),
+                    inode: metadata.ino(),
                     len: metadata.len(),
                 },
                 Err(error) => Self::Unreadable {
@@ -76,39 +84,55 @@ impl FileState {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedFile {
+    pub label: String,
+    pub path: PathBuf,
+    pub state: FileState,
+}
+
 /// The state of each start file a session's provider reads, taken when the session launches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartFileSnapshot {
     pub provider: String,
-    pub states: Vec<(String, FileState)>,
+    pub files: Vec<RecordedFile>,
 }
 
 impl StartFileSnapshot {
     pub fn capture(start_files: &[StartFile], provider: &str) -> Self {
         Self {
             provider: provider.to_string(),
-            states: start_files
+            files: start_files
                 .iter()
                 .filter(|start_file| start_file.is_read_by(provider))
-                .map(|start_file| (start_file.label.clone(), FileState::read(&start_file.path)))
+                .map(|start_file| RecordedFile {
+                    label: start_file.label.clone(),
+                    path: start_file.path.clone(),
+                    state: FileState::read(&start_file.path),
+                })
                 .collect(),
         }
     }
 
     /// Labels of the files this session's provider reads whose state differs from the
     /// snapshot. Any difference counts, so a file replaced by an older copy is reported too.
-    /// A file declared after the snapshot was taken is reported: the session cannot have it.
+    /// A file declared, or pointed at another path, after the snapshot was taken is
+    /// reported: the session cannot have it.
     pub fn changed<'files>(&self, start_files: &'files [StartFile]) -> Vec<&'files str> {
         start_files
             .iter()
             .filter(|start_file| start_file.is_read_by(&self.provider))
             .filter(|start_file| {
                 let recorded = self
-                    .states
+                    .files
                     .iter()
-                    .find(|(label, _)| *label == start_file.label)
-                    .map(|(_, state)| state);
-                recorded != Some(&FileState::read(&start_file.path))
+                    .find(|recorded| recorded.label == start_file.label);
+                match recorded {
+                    Some(recorded) if recorded.path == start_file.path => {
+                        recorded.state != FileState::read(&start_file.path)
+                    }
+                    _ => true,
+                }
             })
             .map(|start_file| start_file.label.as_str())
             .collect()

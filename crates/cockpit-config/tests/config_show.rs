@@ -171,6 +171,26 @@ fn an_unset_runtime_dir_is_shown_as_unset_not_invented() {
 }
 
 #[test]
+fn a_relative_runtime_dir_is_ignored_without_claiming_a_default() {
+    let home = Home::clean();
+    let shown = stdout(&home.show_with_env(&[], &[("XDG_RUNTIME_DIR", "relative/run")]));
+    assert_eq!(
+        line_for(&shown, "paths.runtime_dir"),
+        "paths.runtime_dir = <unset>  # $XDG_RUNTIME_DIR ignored: not an absolute path"
+    );
+}
+
+#[test]
+fn trusted_paths_are_normalized_so_they_compare_by_equality() {
+    let home = Home::clean();
+    let shown = stdout(&home.show(&["--set", "projects.trusted=[\"/srv/./work/\"]"]));
+    assert_eq!(
+        line_for(&shown, "projects.trusted"),
+        "projects.trusted = [\"/srv/work\"]  # command line --set"
+    );
+}
+
+#[test]
 fn a_relative_xdg_variable_is_ignored_and_the_reason_shown() {
     let home = Home::clean();
     let shown = stdout(&home.show_with_env(&[], &[("XDG_STATE_HOME", "relative/state")]));
@@ -360,8 +380,16 @@ fn invalid_configuration_fails_loud_with_its_location() {
             "config.toml:2: `projects.trusted` entry \"relative/path\" is not an absolute path",
         ),
         (
+            "[projects]\ntrusted = [\"~/a/../b\"]\n",
+            "config.toml:2: `projects.trusted` entry \"~/a/../b\" contains `..`",
+        ),
+        (
             "workflow.preset = \"  \"\n",
             "config.toml:1: `workflow.preset` is empty",
+        ),
+        (
+            &start_file("label = \"CLAUDE.md \"\npath = \"/x\"\nproviders = [\"claude\"]"),
+            "config.toml:2: `start_files` entry label \"CLAUDE.md \" has surrounding whitespace",
         ),
         (
             &start_file("label = \"x\"\npath = \"/x\"\nproviders = [\"claud\"]"),
@@ -403,7 +431,10 @@ fn an_override_must_name_an_overridable_key_with_a_one_line_value() {
             "workflow.preset=\"a\"\n[projects]",
             "the value must be on one line",
         ),
-        ("workflow.preset=solo", "--set workflow.preset = solo"),
+        (
+            "workflow.preset=solo",
+            "--set workflow.preset=solo: TOML parse error",
+        ),
     ] {
         let home = Home::clean();
         let stderr = stderr_of_failure(&home.show(&["--set", argument]));

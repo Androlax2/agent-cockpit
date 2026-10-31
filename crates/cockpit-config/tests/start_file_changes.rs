@@ -62,6 +62,30 @@ fn every_kind_of_change_to_a_read_file_is_reported() {
 }
 
 #[test]
+fn a_same_size_copy_that_keeps_the_old_modification_time_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let files = [start_file(dir.path(), "settings", &["claude"])];
+    write_at(&files[0].path, "{\"a\":1}", at(5));
+    let snapshot = StartFileSnapshot::capture(&files, "claude");
+    // What `cp -p` or a backup restore does: new content, same length, same mtime.
+    std::thread::sleep(Duration::from_millis(20));
+    write_at(&files[0].path, "{\"b\":2}", at(5));
+    assert_eq!(snapshot.changed(&files), ["settings"]);
+}
+
+#[test]
+fn a_label_pointed_at_another_path_after_launch_is_reported() {
+    let dir = TempDir::new().unwrap();
+    let at_launch = [start_file(dir.path(), "launcher", &["claude"])];
+    let snapshot = StartFileSnapshot::capture(&at_launch, "claude");
+    let repointed = [StartFile {
+        path: dir.path().join("other-launcher"),
+        ..at_launch[0].clone()
+    }];
+    assert_eq!(snapshot.changed(&repointed), ["launcher"]);
+}
+
+#[test]
 fn a_file_created_after_launch_is_reported() {
     let dir = TempDir::new().unwrap();
     let files = [start_file(dir.path(), "CLAUDE.md", &["claude"])];
@@ -119,7 +143,7 @@ fn the_declared_list_from_configuration_drives_detection() {
     };
     let start_files = cockpit_config::load(&environment, None, &[])
         .unwrap()
-        .start_files();
+        .declared_start_files();
 
     let snapshot = StartFileSnapshot::capture(&start_files, "claude");
     write_at(&home.path().join("launcher"), "#!/bin/sh", at(0));

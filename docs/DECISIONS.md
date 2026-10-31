@@ -94,10 +94,13 @@ product declares only the five a provider itself owns (`CLAUDE.md`, Claude `sett
 `plugins`, `opencode config`, `codex hooks`). Sandbox launchers, learned profiles, the session
 hook and the ADHD flag are installation paths, so the owner declares them in
 `config.toml` under `[[start_files]]`; report 01 forbids shipping one machine's paths.
-Change detection compares a launch-time snapshot (modification time and size) for
-inequality instead of today's "newer than the session start": a file restored from an older
-copy, deleted or created now counts, and a file declared after launch is reported because
-the session cannot have it.
+Two of today's pairings are installation wiring too: codex reading `CLAUDE.md`, and
+opencode's `cockpit.ts` plugin, whose install path the opencode adapter will own; Theo's
+config re-declares `CLAUDE.md` with `codex` added and lists the plugin.
+Change detection compares a launch-time snapshot (path, modification time, ctime, inode,
+size) for inequality instead of today's "newer than the session start": a file restored from
+an older copy (even `cp -p`), deleted, created or repointed now counts, and a file declared
+after launch is reported because the session cannot have it.
 
 The project file is `<project>/.cockpit/config.toml`, parsed with the owner file's schema;
 setting an owner key there fails instead of being ignored. `XDG_RUNTIME_DIR` unset leaves

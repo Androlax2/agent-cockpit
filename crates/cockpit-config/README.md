@@ -43,6 +43,7 @@ path = "~/.local/bin/greywall-agents/claude"
 providers = ["claude"]
 ```
 
-`StartFileSnapshot::capture(files, provider)` records each file's modification time and size
-when a session launches; `snapshot.changed(files)` names those that differ now, including a
-file replaced by an older copy, deleted, created, or declared after launch.
+`StartFileSnapshot::capture(files, provider)` records each file's path, modification time,
+ctime, inode and size when a session launches; `snapshot.changed(files)` names those that
+differ now, including a file replaced by an older copy, deleted, created, repointed, or
+declared after launch.

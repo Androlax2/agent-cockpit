@@ -12,7 +12,7 @@ mod start_files;
 
 use std::fmt;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 use toml::Spanned;
@@ -31,8 +31,11 @@ pub const OVERRIDABLE_KEYS: [&str; 2] = ["projects.trusted", "workflow.preset"];
 pub enum Source {
     ProductDefault,
     Environment(&'static str),
-    /// The variable is set to a relative path, which the XDG spec says to ignore.
+    /// The variable is set to a relative path, which the XDG spec says to ignore; the
+    /// product default applies.
     IgnoredEnvironment(&'static str),
+    /// The variable is set to a relative path and nothing replaces it.
+    InvalidEnvironment(&'static str),
     EnvironmentUnset(&'static str),
     UserFile {
         path: PathBuf,
@@ -54,6 +57,9 @@ impl fmt::Display for Source {
                 formatter,
                 "product default; ${variable} ignored: not an absolute path"
             ),
+            Self::InvalidEnvironment(variable) => {
+                write!(formatter, "${variable} ignored: not an absolute path")
+            }
             Self::EnvironmentUnset(variable) => write!(formatter, "${variable} is not set"),
             Self::UserFile { path, line } => {
                 write!(formatter, "user config {}:{line}", path.display())
@@ -97,7 +103,7 @@ pub struct EffectiveConfig {
 }
 
 impl EffectiveConfig {
-    pub fn start_files(&self) -> Vec<StartFile> {
+    pub fn declared_start_files(&self) -> Vec<StartFile> {
         self.start_files
             .iter()
             .map(|start_file| start_file.value.clone())
@@ -248,7 +254,7 @@ pub fn load(
     overrides: &[String],
 ) -> Result<EffectiveConfig, ConfigError> {
     let home = environment.home_dir()?;
-    let layout = Layout::resolve(environment)?;
+    let layout = Layout::resolve(environment, &home);
 
     let user_path = layout.user_config_file();
     let user_text = read_optional(&user_path)?;
@@ -347,16 +353,31 @@ fn override_layer(argument: &str) -> Result<Layer, ConfigError> {
         PathBuf::new(),
         format!("{key} = {value}"),
     )
+    .map_err(|error| match error {
+        ConfigError::Parse { message, .. } => fail(&message),
+        other => other,
+    })
 }
 
-/// `~` and `~/…` expand to `$HOME`; the result must be absolute.
-fn expand_path(raw: &str, home: &Path) -> Option<PathBuf> {
+/// `~` and `~/…` expand to `$HOME`. The result must be absolute without `..`, so a path
+/// reads as the directory it names, and is normalized (`.` and trailing `/` dropped) so
+/// callers can compare paths by equality.
+fn expand_path(raw: &str, home: &Path) -> Result<PathBuf, String> {
     let path = match raw.strip_prefix('~') {
         Some("") => home.to_path_buf(),
-        Some(rest) => home.join(rest.strip_prefix('/')?),
+        Some(rest) => match rest.strip_prefix('/') {
+            Some(relative) => home.join(relative),
+            None => PathBuf::from(raw),
+        },
         None => PathBuf::from(raw),
     };
-    path.is_absolute().then_some(path)
+    if !path.is_absolute() {
+        return Err(format!("{raw:?} is not an absolute path"));
+    }
+    if path.components().any(|part| part == Component::ParentDir) {
+        return Err(format!("{raw:?} contains `..`"));
+    }
+    Ok(path.components().collect())
 }
 
 fn trusted_projects(layers: &[Layer], home: &Path) -> Result<Sourced<Vec<PathBuf>>, ConfigError> {
@@ -375,10 +396,10 @@ fn trusted_projects(layers: &[Layer], home: &Path) -> Result<Sourced<Vec<PathBuf
             .get_ref()
             .iter()
             .map(|raw| {
-                expand_path(raw, home).ok_or_else(|| ConfigError::Invalid {
+                expand_path(raw, home).map_err(|reason| ConfigError::Invalid {
                     key: "projects.trusted".to_string(),
                     source: source.clone(),
-                    reason: format!("entry {raw:?} is not an absolute path"),
+                    reason: format!("entry {reason}"),
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -468,12 +489,15 @@ fn validate_start_file(
     if entry.label.trim().is_empty() {
         return Err(invalid_start_file(source, "has an empty label"));
     }
-    let path = expand_path(&entry.path, home).ok_or_else(|| {
-        invalid_start_file(
+    // Labels match defaults by equality: "CLAUDE.md " would silently add a second file.
+    if entry.label.trim() != entry.label {
+        return Err(invalid_start_file(
             source,
-            &format!("path {:?} is not an absolute path", entry.path),
-        )
-    })?;
+            &format!("label {:?} has surrounding whitespace", entry.label),
+        ));
+    }
+    let path = expand_path(&entry.path, home)
+        .map_err(|reason| invalid_start_file(source, &format!("path {reason}")))?;
     if entry.providers.is_empty() {
         return Err(invalid_start_file(source, "names no providers"));
     }

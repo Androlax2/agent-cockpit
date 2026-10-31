@@ -52,9 +52,9 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn resolve(environment: &Environment) -> Result<Self, ConfigError> {
-        let home = environment.home_dir()?;
-        Ok(Self {
+    /// `home` is the validated `$HOME` ([`Environment::home_dir`]).
+    pub fn resolve(environment: &Environment, home: &Path) -> Self {
+        Self {
             config_dir: base_dir(
                 "XDG_CONFIG_HOME",
                 &environment.xdg_config_home,
@@ -77,10 +77,10 @@ impl Layout {
                 ),
                 XdgValue::Unset => Sourced::new(None, Source::EnvironmentUnset("XDG_RUNTIME_DIR")),
                 XdgValue::Ignored(variable) => {
-                    Sourced::new(None, Source::IgnoredEnvironment(variable))
+                    Sourced::new(None, Source::InvalidEnvironment(variable))
                 }
             },
-        })
+        }
     }
 
     pub fn user_config_file(&self) -> PathBuf {
