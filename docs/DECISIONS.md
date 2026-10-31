@@ -22,7 +22,7 @@ command should replace it there.
 - **One instance.** `daemon.lock` in the socket directory is taken before logging or the
   database, so a second daemon reports the running one instead of a log or database lock.
   The lock, not the socket file, tells a stale socket apart, so a socket left by `kill -9`
-  is replaced. The daemon reads its own user id from the 0700 directory it could write in,
+  is replaced. The daemon reads its own user id from the owner of a probe file it creates,
   since `geteuid` would need `unsafe` or a new dependency; peers with another id are closed.
 - **macOS layout.** Without `XDG_RUNTIME_DIR` the socket directory is
   `$XDG_STATE_HOME/cockpit/run`: the XDG spec leaves the fallback to the program, and the
