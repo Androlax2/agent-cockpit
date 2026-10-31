@@ -4,13 +4,23 @@
 
 mod common;
 
-use cockpit_agent_channel::identity_of;
+use cockpit_agent_channel::{LaunchToken, identity_of};
 use cockpit_authorization::Permission;
+use cockpit_client::Connection;
 use cockpit_protocol::{Command, ErrorCode, Reply, RunStateView};
-use common::{GENEROUS, TestHome, refused};
+use common::{GENEROUS, RunningDaemon, TestHome, refused};
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_relaunched_agents_first_status_poll_binds_its_new_token() {
+/// An agent asked to run, then was relaunched while the daemon was down: its new token is
+/// pending and its request still waits for the owner.
+struct Relaunched {
+    _home: TestHome,
+    _daemon: RunningDaemon,
+    agent: Connection,
+    token: LaunchToken,
+    request: i64,
+}
+
+async fn relaunched() -> Relaunched {
     let home = TestHome::new();
     let this_process = identity_of(std::process::id()).unwrap();
     let first = home
@@ -35,25 +45,61 @@ async fn a_relaunched_agents_first_status_poll_binds_its_new_token() {
         panic!("expected a run request");
     };
     daemon.kill();
-    let second = home.launch("s1", &this_process, None).await;
-    let _daemon = home.start();
+    let token = home.launch("s1", &this_process, None).await;
+    let daemon = home.start();
     let agent = home.connect_agent().await;
-    let status = |launch_token: Option<String>| Command::AskRunStatus {
-        launch_token,
+    Relaunched {
+        _home: home,
+        _daemon: daemon,
+        agent,
+        token,
         request: request.id,
-    };
+    }
+}
 
-    let before_binding = refused(agent.request(status(None), GENEROUS).await);
-    let polled = agent
-        .request(status(Some(second.as_str().to_owned())), GENEROUS)
-        .await
-        .unwrap();
-    let after_binding = agent.request(status(None), GENEROUS).await.unwrap();
+impl Relaunched {
+    async fn poll(
+        &self,
+        launch_token: Option<&LaunchToken>,
+    ) -> Result<Reply, cockpit_client::ClientError> {
+        let command = Command::AskRunStatus {
+            launch_token: launch_token.map(|token| token.as_str().to_owned()),
+            request: self.request,
+        };
+        self.agent.request(command, GENEROUS).await
+    }
+}
 
-    assert_eq!(before_binding.code, ErrorCode::UnidentifiedPeer);
-    let Reply::RunRequest { request: seen } = polled else {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relaunched_agent_is_unidentified_until_its_new_token_binds() {
+    let relaunched = relaunched().await;
+
+    let polled = refused(relaunched.poll(None).await);
+
+    assert_eq!(polled.code, ErrorCode::UnidentifiedPeer);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relaunched_agents_first_status_poll_binds_its_new_token() {
+    let relaunched = relaunched().await;
+
+    let polled = relaunched.poll(Some(&relaunched.token)).await.unwrap();
+
+    let Reply::RunRequest { request } = polled else {
         panic!("expected the run request, got {polled:?}");
     };
-    assert_eq!((seen.id, seen.state), (request.id, RunStateView::Asking));
-    assert!(matches!(after_binding, Reply::RunRequest { .. }));
+    assert_eq!(
+        (request.id, request.state),
+        (relaunched.request, RunStateView::Asking)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_the_binding_poll_the_tree_alone_identifies_the_agent() {
+    let relaunched = relaunched().await;
+    relaunched.poll(Some(&relaunched.token)).await.unwrap();
+
+    let polled = relaunched.poll(None).await.unwrap();
+
+    assert!(matches!(polled, Reply::RunRequest { .. }), "got {polled:?}");
 }

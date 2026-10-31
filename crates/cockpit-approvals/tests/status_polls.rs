@@ -4,13 +4,10 @@
 mod common;
 
 use cockpit_approvals::{
-    EXPIRES_AFTER_SECONDS, Error, GuideRequest, Refusal, RunState, ask_guide,
-    guide_status_if_fresh, parse_guide, run_status_if_fresh,
+    EXPIRES_AFTER_SECONDS, Error, GuideRequest, REFRESH_AFTER_SECONDS, Refusal, RunState,
+    ask_guide, guide_status_if_fresh, parse_guide, run_status_if_fresh,
 };
 use common::{Fixture, NOW, session};
-
-/// The poll interval after which a waiting request's expiry is moved.
-const REFRESH_AFTER: i64 = 60;
 
 async fn asked_guide(fixture: &Fixture) -> GuideRequest {
     let owner = session("s1");
@@ -31,7 +28,13 @@ async fn a_fresh_run_poll_reads_while_another_writer_holds_the_lock() {
     let _writer = fixture.database.write().await.unwrap();
 
     let read = fixture.database.read().await.unwrap();
-    let seen = run_status_if_fresh(&read, &session("s1"), run.id, NOW + REFRESH_AFTER - 1).await;
+    let seen = run_status_if_fresh(
+        &read,
+        &session("s1"),
+        run.id,
+        NOW + REFRESH_AFTER_SECONDS - 1,
+    )
+    .await;
 
     assert_eq!(seen.unwrap(), Some(run));
 }
@@ -42,7 +45,8 @@ async fn a_run_poll_that_must_move_the_expiry_is_left_to_run_status() {
     let run = fixture.asked(&session("s1"), "ls").await;
 
     let read = fixture.database.read().await.unwrap();
-    let seen = run_status_if_fresh(&read, &session("s1"), run.id, NOW + REFRESH_AFTER).await;
+    let seen =
+        run_status_if_fresh(&read, &session("s1"), run.id, NOW + REFRESH_AFTER_SECONDS).await;
 
     assert_eq!(seen.unwrap(), None);
 }
@@ -82,8 +86,13 @@ async fn a_fresh_guide_poll_reads_while_another_writer_holds_the_lock() {
     let _writer = fixture.database.write().await.unwrap();
 
     let read = fixture.database.read().await.unwrap();
-    let seen =
-        guide_status_if_fresh(&read, &session("s1"), guide.id, NOW + REFRESH_AFTER - 1).await;
+    let seen = guide_status_if_fresh(
+        &read,
+        &session("s1"),
+        guide.id,
+        NOW + REFRESH_AFTER_SECONDS - 1,
+    )
+    .await;
 
     assert_eq!(seen.unwrap(), Some(guide));
 }
@@ -94,7 +103,8 @@ async fn a_guide_poll_that_must_move_the_expiry_is_left_to_guide_status() {
     let guide = asked_guide(&fixture).await;
 
     let read = fixture.database.read().await.unwrap();
-    let seen = guide_status_if_fresh(&read, &session("s1"), guide.id, NOW + REFRESH_AFTER).await;
+    let seen =
+        guide_status_if_fresh(&read, &session("s1"), guide.id, NOW + REFRESH_AFTER_SECONDS).await;
 
     assert_eq!(seen.unwrap(), None);
 }

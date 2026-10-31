@@ -4,7 +4,9 @@
 
 mod common;
 
-use cockpit_agent_channel::{Error, PeerAncestry, ProcessError, Refusal, identify, identify_bound};
+use cockpit_agent_channel::{
+    Error, PeerAncestry, ProcessError, Refusal, identify, identify_bound, mint,
+};
 use cockpit_authorization::SessionId;
 use cockpit_turso::Database;
 use common::{Process, launch, open, session, this_process, this_process_identity};
@@ -64,7 +66,8 @@ async fn a_relaunch_pending_its_new_token_is_left_to_identify() {
     assert_eq!(read_only.unwrap(), None);
 }
 
-/// Each case refuses the same way read-only as through [`identify`].
+/// Each case refuses the same way read-only as through [`identify`], so a leaked or early
+/// token never sends a poll to the writer.
 #[tokio::test]
 async fn it_refuses_as_identify_does() {
     let dir = tempfile::tempdir().unwrap();
@@ -72,8 +75,16 @@ async fn it_refuses_as_identify_does() {
     let agent = Process::sleeper();
     let spent = launch(&database, &session("s1"), &agent.identity()).await;
     bind(&database, &agent.ancestry(), spent.as_str()).await;
+    let other_agent = Process::sleeper();
+    let leaked = launch(&database, &session("s2"), &other_agent.identity()).await;
+    let unstarted = {
+        let write = database.write().await.unwrap();
+        let token = mint(&write, &session("s3")).await.unwrap();
+        write.commit().await.unwrap();
+        token
+    };
     let unverifiable: PeerAncestry = Err(ProcessError::Gone { pid: 1 });
-    let cases: [(&str, PeerAncestry, Option<&str>, Refusal); 4] = [
+    let cases: [(&str, PeerAncestry, Option<&str>, Refusal); 6] = [
         (
             "no token outside every tree",
             this_process(),
@@ -91,6 +102,20 @@ async fn it_refuses_as_identify_does() {
             this_process(),
             Some("not-a-token"),
             Refusal::UnknownLaunchToken,
+        ),
+        (
+            "a pending token outside its tree",
+            this_process(),
+            Some(leaked.as_str()),
+            Refusal::OutsideLaunchTree,
+        ),
+        (
+            "a pending token before its root is recorded",
+            this_process(),
+            Some(unstarted.as_str()),
+            Refusal::LaunchNotStarted {
+                session: session("s3"),
+            },
         ),
         (
             "an unverifiable peer",

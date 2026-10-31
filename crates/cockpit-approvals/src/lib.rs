@@ -22,7 +22,7 @@ pub use hints::{build_files_run, timeout_without_foreground};
 pub use pty::{NoResult, Output, Ran, RunSettings, Runner, present};
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
-pub use rows::{EXPIRES_AFTER_SECONDS, Project};
+pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
 pub use runs::{
     APPROVAL_GRACE_SECONDS, Approved, Interrupted, RunAsk, RunId, RunRequest, RunResult, RunState,
     action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, interrupted_runs,

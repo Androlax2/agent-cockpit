@@ -169,7 +169,8 @@ pub(crate) fn route_ask(
                 launch_token,
                 request,
             } => {
-                let run = run_status(&database, connector, launch_token, RunId(request)).await?;
+                let run =
+                    poll_run_status(&database, connector, launch_token, RunId(request)).await?;
                 Ok(run_reply(&run, &runner))
             }
             Command::AskGuideStatus {
@@ -177,7 +178,7 @@ pub(crate) fn route_ask(
                 guide,
             } => {
                 let guide =
-                    guide_status(&database, connector, launch_token, GuideId(guide)).await?;
+                    poll_guide_status(&database, connector, launch_token, GuideId(guide)).await?;
                 Ok(guide_reply(&guide))
             }
             Command::AskCheck { launch_token } => {
@@ -201,7 +202,7 @@ pub(crate) fn route_ask(
 
 /// Polled every half second by each waiting agent (#174): it reads, and takes the writer only
 /// when the sender's launch must bind or the request's expiry must move.
-async fn run_status(
+async fn poll_run_status(
     database: &Database,
     connector: Result<ProcessIdentity, ProcessError>,
     launch_token: Option<String>,
@@ -225,8 +226,8 @@ async fn run_status(
     Ok(run)
 }
 
-/// [`run_status`] for a guide.
-async fn guide_status(
+/// [`poll_run_status`] for a guide.
+async fn poll_guide_status(
     database: &Database,
     connector: Result<ProcessIdentity, ProcessError>,
     launch_token: Option<String>,
