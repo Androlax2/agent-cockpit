@@ -165,12 +165,27 @@ fn is_alive(pid: i32) -> bool {
             .contains(") Z ")
 }
 
-/// A running session of the fake provider, with its stored state then rewritten to
-/// `assignment` while its agent keeps running.
-async fn session_left_in(home: &Home, client: &Connection, assignment: &str) -> SessionView {
-    let root = home.project(client).await;
+/// A session of the fake provider whose stored state was rewritten while its agent runs.
+/// Fields drop in order: the client, then the daemon, then the home and its tmux server.
+struct LeftBehind {
+    client: Connection,
+    _daemon: Daemon,
+    id: String,
+    agent: i32,
+    _home: Home,
+}
+
+/// Starts a session, then rewrites its stored state to `assignment`; its agent keeps
+/// running.
+async fn session_left_in(assignment: &str) -> LeftBehind {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
     let started = session_reply(
-        client,
+        &client,
         Command::SessionNew {
             dir: root.display().to_string(),
             agent: Some("fake".to_owned()),
@@ -180,75 +195,61 @@ async fn session_left_in(home: &Home, client: &Connection, assignment: &str) -> 
     )
     .await;
     home.store_state(assignment, &started.id).await;
-    started
-}
-
-/// Ends a session left in `assignment` while its agent runs, and answers whether that
-/// agent is still alive afterwards.
-async fn end_while_its_agent_runs(assignment: &str) -> (SessionView, bool) {
-    let home = Home::new();
-    let daemon = home.start().await;
-    let client = Connection::open(daemon.socket_path(), GENEROUS)
-        .await
-        .unwrap();
-    let session = session_left_in(&home, &client, assignment).await;
     let agent = home.launches()[0].pid;
     assert!(is_alive(agent));
+    LeftBehind {
+        client,
+        _daemon: daemon,
+        id: started.id,
+        agent,
+        _home: home,
+    }
+}
 
-    let ended = session_reply(
-        &client,
+async fn end(left: &LeftBehind) -> SessionView {
+    session_reply(
+        &left.client,
         Command::SessionEnd {
-            session: session.id.clone(),
+            session: left.id.clone(),
         },
     )
-    .await;
-    (ended, is_alive(agent))
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ending_a_failed_session_whose_agent_survived_stops_that_agent_first() {
-    let (ended, agent_alive) =
-        end_while_its_agent_runs("state = 'failed', reason = 'its restart failed'").await;
+    let left = session_left_in("state = 'failed', reason = 'its restart failed'").await;
+
+    let ended = end(&left).await;
 
     assert_eq!(ended.state, SessionStateView::Ended);
-    assert!(!agent_alive);
+    assert!(!is_alive(left.agent));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ending_a_session_left_launching_stops_its_agent_first() {
-    let (ended, agent_alive) = end_while_its_agent_runs("state = 'launching'").await;
+    let left = session_left_in("state = 'launching'").await;
+
+    let ended = end(&left).await;
 
     assert_eq!(ended.state, SessionStateView::Ended);
-    assert!(!agent_alive);
+    assert!(!is_alive(left.agent));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ending_a_failed_session_whose_agent_is_already_gone_ends_it() {
-    let home = Home::new();
-    let daemon = home.start().await;
-    let client = Connection::open(daemon.socket_path(), GENEROUS)
-        .await
-        .unwrap();
-    let session = session_left_in(&home, &client, "state = 'failed'").await;
-    let agent = home.launches()[0].pid;
+    let left = session_left_in("state = 'failed'").await;
     Process::new("kill")
-        .arg(agent.to_string())
+        .arg(left.agent.to_string())
         .status()
         .unwrap();
     let deadline = Instant::now() + GENEROUS;
-    while is_alive(agent) {
+    while is_alive(left.agent) {
         assert!(Instant::now() < deadline, "the agent did not exit");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    let ended = session_reply(
-        &client,
-        Command::SessionEnd {
-            session: session.id.clone(),
-        },
-    )
-    .await;
+    let ended = end(&left).await;
 
     assert_eq!(ended.state, SessionStateView::Ended);
-    assert!(!is_alive(agent));
 }
