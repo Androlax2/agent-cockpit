@@ -2,9 +2,15 @@
 
 ## Workspace and prerequisites
 
-The Rust workspace is [apps/Cargo.toml](../apps/Cargo.toml), with `cockpit`, `osd`,
+The current programs' Rust workspace is [apps/Cargo.toml](../apps/Cargo.toml), with `cockpit`, `osd`,
 `crates/cockpit-core`, `crates/cockpit-daemon` and `crates/cockpit-protocol` members. This project targets Linux and integrates with GTK,
 terminals and host tools.
+
+The greenfield workspace is the root [Cargo.toml](../Cargo.toml), with members under
+[crates/](../crates/) and its own `target/`. It grows beside `apps/` until the M5 cutover
+([refactoring plan](design/greenfield/20-refactoring-plan.md)); `apps/` is excluded from it.
+Members inherit the root's edition, `rust-version` and lint policy;
+`cockpit-workspace-rules` fails the tests when one does not.
 
 The Rust toolchain is pinned in [rust-toolchain.toml](../rust-toolchain.toml). Distro
 Rust installations do not read that file; use the same version when running checks.
@@ -31,6 +37,8 @@ make lint-js
 make lint-markdown
 make lint-lua
 make deny
+make crates-build crates-test
+make crates-fmt-check crates-clippy crates-doc crates-deny
 make check-links
 make typos
 make ci
@@ -40,6 +48,9 @@ make ci
 `make test` takes the shared full-suite lock, runs the Python suite, builds the OSD
 classifier, then runs release Rust tests with nextest. Use that entry point for a full
 run; do not bypass the lock to compete with another clone's suite.
+
+The `crates-*` targets run the same checks on the greenfield workspace, in the debug
+profile. `make test` ends with `crates-test`, and `make ci` runs every `crates-*` check.
 
 Rust checks cover every workspace member and target, with warnings treated as errors.
 The language targets use [tools/quality.py](../tools/quality.py) to select tracked files,

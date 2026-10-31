@@ -34,6 +34,7 @@ test-serialized:
 	python3 -m unittest discover -s tools/tests -p 'test_*.py'
 	$(build_runner) cargo build --release --locked --quiet --manifest-path apps/Cargo.toml -p osd --bin osd
 	$(build_runner) cargo nextest run --release --locked --cargo-quiet --status-level fail --manifest-path apps/Cargo.toml
+	$(MAKE) --no-print-directory crates-test
 
 .PHONY: fmt-check clippy doc
 
@@ -50,6 +51,28 @@ doc: ## Check private and public Rust documentation
 
 deny: ## Check dependency advisories, licenses and sources with the reviewed policy
 	$(build_runner) cargo deny --manifest-path apps/Cargo.toml --locked --config .cargo/deny.toml check
+
+# The greenfield workspace (root Cargo.toml and crates/) grows beside apps/ until the M5 cutover
+# (docs/design/greenfield/20-refactoring-plan.md); each check above has its counterpart here.
+.PHONY: crates-build crates-test crates-fmt-check crates-clippy crates-doc crates-deny
+
+crates-build: ## Build the greenfield workspace in crates/ (debug profile, into target/)
+	$(build_runner) cargo build --locked --manifest-path Cargo.toml --workspace --all-targets
+
+crates-test: ## Run the greenfield workspace's tests; make test runs them too
+	$(build_runner) cargo nextest run --locked --cargo-quiet --status-level fail --manifest-path Cargo.toml --workspace
+
+crates-fmt-check: ## Check the greenfield workspace's formatting without changing source
+	$(build_runner) cargo fmt --manifest-path Cargo.toml --all -- --check
+
+crates-clippy: ## Lint every greenfield target with warnings treated as errors
+	$(build_runner) cargo clippy --manifest-path Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+crates-doc: ## Check the greenfield workspace's private and public documentation
+	RUSTDOCFLAGS="-D warnings" $(build_runner) cargo doc --manifest-path Cargo.toml --workspace --no-deps --document-private-items --locked
+
+crates-deny: ## Check the greenfield workspace's dependencies with the same reviewed policy
+	$(build_runner) cargo deny --manifest-path Cargo.toml --locked --config .cargo/deny.toml check
 
 .PHONY: lint-python lint-shell lint-js lint-markdown lint-lua
 
@@ -79,7 +102,7 @@ typos: ## Check spelling in tracked files
 .PHONY: ci
 .NOTPARALLEL: ci
 
-ci: fmt-check clippy doc lint-python lint-shell lint-js lint-markdown lint-lua check-links typos deny test ## Run the shared quality and regression gate
+ci: fmt-check crates-fmt-check clippy crates-clippy doc crates-doc lint-python lint-shell lint-js lint-markdown lint-lua check-links typos deny crates-deny test ## Run the shared quality and regression gate
 
 lint-lua: ## Check Lua syntax without executing desktop configuration
 	python3 tools/quality.py lua

@@ -9,3 +9,6 @@ apps/target/
 
 # Python bytecode caches
 __pycache__/
+
+# Built by cargo from the greenfield workspace (Cargo.toml)
+/target/

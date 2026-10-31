@@ -1,5 +1,17 @@
 # Engineering decisions
 
+## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
+
+Issue #18 asks for `cargo build` and `cargo test` to succeed from the root with no
+capability crate. Cargo refuses a virtual workspace without members, so the root
+workspace starts with `cockpit-workspace-rules`: a dev-only member whose tests fail when
+a member does not inherit the root's edition, `rust-version` or lints. It is not a
+capability and nothing depends on it; issue #19's crate-graph test can live there too.
+MSRV is the pinned toolchain, 1.99.1, the only version CI builds with. `unsafe_code` is denied workspace-wide; an exception
+is an `#[allow(unsafe_code, reason = "…")]` on the smallest item. `apps/` keeps its own
+workspace and target until the M5 cutover; report 02 supersedes the 2026-10-28 entry
+that kept `crates/` under `apps/`.
+
 ## 2026-10-29 — Keep database error conversion at the store boundary
 
 Team and Chief wire contracts share `cockpit-protocol`, which has no SQLite or UI
@@ -17,6 +29,9 @@ Local checks and future CI will share those recipes rather than introducing an `
 crate solely to wrap commands. OpenKeychron demonstrates the smaller Make-based approach.
 
 ## 2026-10-28 — Extract responsibilities without relocating the workspace
+
+Superseded for new code on 2026-10-31: greenfield crates go in the root `crates/`
+(report 02); this entry still describes the code under `apps/`.
 
 Keep `apps/Cargo.toml` and `apps/target/release`. Installed wrappers and integration
 tests depend on that layout. New libraries may live under `apps/crates/`; binary owners
