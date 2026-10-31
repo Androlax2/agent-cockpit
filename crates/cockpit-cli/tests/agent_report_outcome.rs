@@ -130,6 +130,30 @@ async fn malformed_outcome_arguments_exit_2_before_any_connection() {
 }
 
 #[tokio::test]
+async fn a_misspelled_outcome_is_named_even_with_a_reason() {
+    let home = tempfile::tempdir().unwrap();
+
+    let output = cockpit(
+        home.path(),
+        &[
+            "agent",
+            "report",
+            "--outcome",
+            "falied",
+            "--outcome-reason",
+            "x",
+        ],
+    )
+    .await;
+
+    assert!(
+        text(&output.stderr).starts_with("cockpit: --outcome falied: use completed"),
+        "{}",
+        text(&output.stderr)
+    );
+}
+
+#[tokio::test]
 async fn the_owner_sees_a_failed_turn_and_its_reason() {
     let home = tempfile::tempdir().unwrap();
     let _daemon = scripted_daemon(

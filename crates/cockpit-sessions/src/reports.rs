@@ -198,6 +198,8 @@ fn merge(
     let outcome = match (report.outcome, report.state) {
         (Some(outcome), _) => Some(outcome),
         (None, Some(AgentState::Working)) => None,
+        // A turn of an earlier launch says nothing about this launch's agent.
+        (None, _) if previous.launch != launch => None,
         (None, _) => previous.outcome,
     };
     let needs_input = match (report.needs_input, report.state) {

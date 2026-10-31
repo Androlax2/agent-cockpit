@@ -117,10 +117,12 @@ fn turn_outcome(
     };
     match (outcome.as_str(), reason) {
         ("failed", reason) => Ok(Some(TurnOutcome::Failed { reason })),
-        (_, Some(_)) => Err("--outcome-reason needs --outcome failed".to_owned()),
+        ("completed" | "quota-stopped", Some(_)) => {
+            Err("--outcome-reason needs --outcome failed".to_owned())
+        }
         ("completed", None) => Ok(Some(TurnOutcome::Completed)),
         ("quota-stopped", None) => Ok(Some(TurnOutcome::QuotaStopped)),
-        (other, None) => Err(format!(
+        (other, _) => Err(format!(
             "--outcome {other}: use completed, failed or quota-stopped"
         )),
     }

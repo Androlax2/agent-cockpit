@@ -111,6 +111,35 @@ async fn waiting_without_an_outcome_keeps_the_last_one() {
     assert_eq!(recorded.outcome, Some(TurnOutcome::Completed));
 }
 
+/// Records launch `id` of session `s1`, as a restart, wake or resume does.
+async fn relaunch(database: &Database, id: i64) {
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO session_launches (id, session_id, kind, execution_id, launched_at)
+             VALUES (?1, 's1', 'restart', ?1, 0)",
+            [id],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_new_launch_does_not_inherit_the_last_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = reporting_session(dir.path()).await;
+    relaunch(&database, 1).await;
+    send(&database, ended(TurnOutcome::Failed { reason: None }))
+        .await
+        .unwrap();
+    relaunch(&database, 2).await;
+
+    let recorded = send(&database, state(AgentState::Waiting)).await.unwrap();
+
+    assert_eq!(recorded.outcome, None);
+}
+
 #[tokio::test]
 async fn an_invalid_outcome_is_refused_naming_its_field() {
     let failed = |reason: &str| {
