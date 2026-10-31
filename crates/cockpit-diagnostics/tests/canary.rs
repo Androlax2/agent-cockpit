@@ -109,7 +109,9 @@ fn assert_tree_has_no_canary(directory: &Path) {
         }
         let contents = fs::read(&path).unwrap();
         assert!(
-            !contents.is_empty() || path.ends_with("cockpit.log"),
+            !contents.is_empty()
+                || path.ends_with("cockpit.log")
+                || path.ends_with("cockpit.log.lock"),
             "{} is empty",
             path.display()
         );

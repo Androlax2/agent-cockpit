@@ -8,6 +8,9 @@ use crate::Error;
 use crate::error::io_error;
 
 pub(crate) const LOG_FILE: &str = "cockpit.log";
+/// Held locked while a process logs to the directory. A file opened for writing, not the
+/// directory itself: NFS emulates `flock` with byte-range locks that need a writable handle.
+const LOCK_FILE: &str = "cockpit.log.lock";
 
 /// Size rotation with a total cap: at most `max_files` files of `max_file_bytes` each, and
 /// rotated files older than `max_age` are removed. The defaults are the 2026-10-29 budgets.
@@ -51,8 +54,7 @@ pub(crate) struct RotatingFile {
     /// Rotate before `size` passes this: `max_file_bytes`, or one file further after a
     /// failed rotation, because retrying per record would shift older files until lost.
     rotate_at: u64,
-    /// The log directory, locked so a second process fails to start. Released when the
-    /// writer thread ends.
+    /// Locked so a second process fails to start; released when the writer thread ends.
     _lock: File,
 }
 
@@ -84,7 +86,14 @@ impl RotatingFile {
             .map_err(io_error("create the log directory", log_dir))?;
         fs::set_permissions(log_dir, fs::Permissions::from_mode(0o700))
             .map_err(io_error("make the log directory private", log_dir))?;
-        let lock = File::open(log_dir).map_err(io_error("open the log directory", log_dir))?;
+        let lock_path = log_dir.join(LOCK_FILE);
+        let lock = File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(io_error("open the log lock", &lock_path))?;
         match lock.try_lock() {
             Ok(()) => {}
             Err(fs::TryLockError::WouldBlock) => {
@@ -93,7 +102,7 @@ impl RotatingFile {
                 });
             }
             Err(fs::TryLockError::Error(source)) => {
-                return Err(io_error("lock the log directory", log_dir)(source));
+                return Err(io_error("lock", lock_path)(source));
             }
         }
         let (file, size) =
@@ -144,7 +153,10 @@ impl RotatingFile {
         };
         let oldest = self.limits.max_files - 1;
         if oldest == 0 {
-            fs::remove_file(path(0))?;
+            // Emptying in place keeps a working handle; unlinking could leave none.
+            self.file.set_len(0)?;
+            self.size = 0;
+            return Ok(());
         }
         for number in (0..oldest).rev() {
             match fs::rename(path(number), path(number + 1)) {
@@ -152,7 +164,15 @@ impl RotatingFile {
                 result => result?,
             }
         }
-        let (file, size) = open_current(&self.log_dir)?;
+        let (file, size) = match open_current(&self.log_dir) {
+            Ok(opened) => opened,
+            Err(error) => {
+                // The handle now names cockpit.log.1: move it back so `size` stays true and
+                // the next retry does not rotate the file being written.
+                let _ = fs::rename(path(1), path(0));
+                return Err(error);
+            }
+        };
         self.file = file;
         self.size = size;
         self.rotate_at = self.limits.max_file_bytes;

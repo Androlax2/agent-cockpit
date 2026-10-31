@@ -83,7 +83,7 @@ are refused at the callsite and counted. The check reads names, not values: cont
 formatted into a message string still depends on review.
 
 Each process logs to `logs/<process>/cockpit.log`, keeping report 12's file name per
-process; a lock on the log directory makes a second process with the same name fail at start instead of
+process; a locked `cockpit.log.lock` (a writable file, so it also works on NFS) makes a second process with the same name fail at start instead of
 breaking the other's rotation. The crate is a library only: the `cockpit logs level` and `cockpit support-bundle`
 verbs need the daemon's host-only channel (#26) and the CLI.
 

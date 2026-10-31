@@ -139,21 +139,25 @@ fn component_directives_keep_info_for_everything_else() {
     assert_eq!(messages(log_dir.path()), ["daemon started"]);
 }
 
-#[test]
-fn every_level_change_is_logged_even_one_that_lowers_the_level() {
-    for level in ["debug", "error"] {
-        let log_dir = tempfile::tempdir().unwrap();
-        record(log_dir.path(), "info", |diagnostics| {
-            let level_override = LevelOverride::parse(level, Some("2m")).unwrap();
-            diagnostics.level().set_override(level_override).unwrap();
-            diagnostics.level().revert().unwrap();
-        });
-        let messages = messages(log_dir.path());
-        for expected in ["log level override set", "log level reverted"] {
-            assert!(
-                messages.contains(&expected.to_owned()),
-                "{level}: {messages:?}"
-            );
-        }
+fn assert_override_change_is_logged(level: &str, duration: Option<&str>) {
+    let log_dir = tempfile::tempdir().unwrap();
+    record(log_dir.path(), "info", |diagnostics| {
+        let level_override = LevelOverride::parse(level, duration).unwrap();
+        diagnostics.level().set_override(level_override).unwrap();
+        diagnostics.level().revert().unwrap();
+    });
+    let messages = messages(log_dir.path());
+    for expected in ["log level override set", "log level reverted"] {
+        assert!(messages.contains(&expected.to_owned()), "{messages:?}");
     }
+}
+
+#[test]
+fn level_changes_are_logged() {
+    assert_override_change_is_logged("debug", Some("2m"));
+}
+
+#[test]
+fn a_lowering_override_still_records_its_own_change() {
+    assert_override_change_is_logged("error", None);
 }

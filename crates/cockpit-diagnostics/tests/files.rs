@@ -18,6 +18,7 @@ fn log_files(log_dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(log_dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "cockpit.log.lock")
         .collect();
     names.sort();
     names
@@ -192,4 +193,26 @@ fn a_failed_rotation_keeps_writing_and_keeps_older_files() {
     );
     assert!(log.contains("log rotation failed"), "{log}");
     assert_eq!(diagnostics.dropped_records(), 0);
+}
+
+#[test]
+fn a_single_file_limit_empties_the_log_in_place() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let limits = FileLimits {
+        max_file_bytes: 1024,
+        max_files: 1,
+        ..FileLimits::default()
+    };
+    let diagnostics = start_with_limits(log_dir.path(), limits);
+    tracing::dispatcher::with_default(diagnostics.dispatch(), || {
+        for index in 0..50 {
+            tracing::info!(index, "filling the log");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    assert!(diagnostics.shutdown(SHUTDOWN_TIMEOUT));
+    assert_eq!(log_files(log_dir.path()), ["cockpit.log"]);
+    let log = support::current_log(log_dir.path());
+    assert!(log.contains("\"index\":49"), "{log}");
+    assert!(log.len() <= 1024);
 }
