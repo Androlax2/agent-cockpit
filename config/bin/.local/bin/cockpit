@@ -994,6 +994,7 @@ LAUNCH_SETTINGS=(default-agent opencode-model opencode-effort idle-sleep-after c
 launch_setting_value() { # name
     local fallback=""
     [[ $1 == default-agent ]] && fallback=claude
+    [[ $1 == chief-turns-while-gaming ]] && fallback=on
     if [[ ! -e $SETTINGS_FILE ]]; then
         printf '%s\n' "$fallback"
         return
@@ -1015,7 +1016,7 @@ validate_launch_setting() { # name value
     idle-sleep-after) [[ $2 =~ ^[1-9][0-9]{1,5}$ ]] && (($2 >= 30)) ;;
     chief-starts-per-hour) [[ -z $2 || ($2 =~ ^[1-9][0-9]?$ && $2 -le 60) ]] ;;
     chief-dispatches-own-todos) [[ -z $2 || $2 == on || $2 == off ]] ;;
-    chief-turns-while-gaming) [[ -z $2 || $2 == on || $2 == off ]] ;;
+    chief-turns-while-gaming) [[ $2 == on || $2 == off ]] ;;
     esac || {
         echo "cockpit: invalid $1: $2" >&2
         return 1

@@ -3196,6 +3196,10 @@ type ChiefLaunchResult = std::sync::mpsc::Receiver<Result<(i32, String), String>
 pub struct RealSystem {
     chief_launches: HashMap<String, ChiefLaunchResult>,
     gaming_cache: (Option<Instant>, bool),
+    /// The gamemode submap as gaming() last read it; an unreadable submap counts as game mode.
+    game_mode_cache: bool,
+    /// Where the guard's admission status lives; the account's home does not change while we run.
+    game_guard_gate: Result<std::path::PathBuf, String>,
     /// Why the game guard last did not hold heavy jobs (None: it did), so the log shows each change once.
     game_guard_refusal: Option<String>,
     /// When khal was last asked, and its answer so far: khal runs on a thread of its own, never on
@@ -3251,6 +3255,8 @@ impl RealSystem {
         RealSystem {
             chief_launches: HashMap::new(),
             gaming_cache: (None, false),
+            game_mode_cache: true,
+            game_guard_gate: cockpit_core::game_guard::gate_path(),
             game_guard_refusal: None,
             meeting_cache: (None, Default::default()),
             process_scan: None,
@@ -3840,8 +3846,9 @@ impl System for RealSystem {
             return self.gaming_cache.1;
         }
         let submap = output_within(&["hyprctl", "submap"], COMMAND_TIMEOUT)
-            .map(|(_, out, _)| out.trim().to_string())
-            .unwrap_or_default();
+            .map(|(_, out, _)| out.trim().to_string());
+        self.game_mode_cache = submap.as_deref().is_none_or(|submap| submap == "gamemode");
+        let submap = submap.unwrap_or_default();
         let class = output_within(&["hyprctl", "-j", "activewindow"], COMMAND_TIMEOUT)
             .and_then(|(_, out, _)| serde_json::from_str::<Value>(&out).ok())
             .and_then(|window| {
@@ -3864,22 +3871,20 @@ impl System for RealSystem {
     }
 
     fn game_mode(&mut self) -> bool {
-        output_within(&["hyprctl", "submap"], COMMAND_TIMEOUT)
-            .is_some_and(|(_, out, _)| out.trim() == "gamemode")
+        self.gaming();
+        self.game_mode_cache
     }
 
     fn game_guard_holds_heavy_jobs(&mut self) -> bool {
-        let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok();
+        let boot = Proc.boot_id();
         let now_s = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |elapsed| elapsed.as_secs_f64());
-        let refusal = cockpit_core::game_guard::gate_path()
+        let refusal = self
+            .game_guard_gate
+            .clone()
             .and_then(|path| {
-                cockpit_core::game_guard::holds_heavy_jobs_for_game(
-                    &path,
-                    now_s,
-                    boot.as_deref().map(str::trim),
-                )
+                cockpit_core::game_guard::holds_heavy_jobs_for_game(&path, now_s, boot.as_deref())
             })
             .err();
         if refusal != self.game_guard_refusal {

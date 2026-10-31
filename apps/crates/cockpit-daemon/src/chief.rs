@@ -192,14 +192,24 @@ fn workers_at(
     workers_among(registry, live, now, observe)
 }
 
+/// An invalid chief-turns-while-gaming is logged once until it is valid again, not on every observation.
+static INVALID_TURNS_SETTING_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Whether a game lets agent turns continue: Theo's setting allows it, the gamemode submap is off
 /// and the host's game guard holds new heavy jobs, so what a turn starts waits or is pinned.
 fn turns_continue_while_gaming(registry: &mut Registry) -> bool {
-    match cockpit_core::settings::chief_turns_while_gaming() {
+    let setting = cockpit_core::settings::chief_turns_while_gaming();
+    if setting.is_ok() {
+        INVALID_TURNS_SETTING_LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    match setting {
         Ok(true) => {}
         Ok(false) => return false,
         Err(error) => {
-            crate::registry::log(&format!("{error}; agent turns wait during games"));
+            if !INVALID_TURNS_SETTING_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::registry::log(&format!("{error}; agent turns wait during games"));
+            }
             return false;
         }
     }
@@ -214,10 +224,12 @@ pub(crate) fn workers_among(
     now: i64,
     observe: bool,
 ) -> Result<Vec<WorkerState>, TeamError> {
-    let focus_gaming = matches!(&registry.chief_focus,
-        Some((_, _, true, observed)) if *observed <= now && now - observed <= 30_000);
-    let gaming = registry.system.gaming();
-    let gaming_reason = if (gaming || focus_gaming) && turns_continue_while_gaming(registry) {
+    let focus = registry
+        .chief_focus
+        .clone()
+        .filter(|(_, _, _, observed)| *observed <= now && now - observed <= 30_000);
+    let is_gaming = registry.system.gaming() || focus.as_ref().is_some_and(|focus| focus.2);
+    let gaming_reason = if is_gaming && turns_continue_while_gaming(registry) {
         store::GAMING_GUARDED
     } else {
         "gaming"
@@ -307,23 +319,18 @@ pub(crate) fn workers_among(
                     .into(),
                 );
             }
-            match &registry.chief_focus {
-                Some((viewed, active, host_gaming, observed))
-                    if *observed <= now && now - observed <= 30_000 =>
-                {
+            match &focus {
+                Some((viewed, active, _, _)) => {
                     if *active && viewed.is_empty() {
                         blocked_by.push("viewed_session_unknown".into());
                     }
                     if *active && *viewed == session.session_id {
                         blocked_by.push("viewed_session".into());
                     }
-                    if *host_gaming {
-                        blocked_by.push(gaming_reason.into());
-                    }
                 }
-                _ => blocked_by.push("fresh_host_focus_required".into()),
+                None => blocked_by.push("fresh_host_focus_required".into()),
             }
-            if gaming {
+            if is_gaming {
                 blocked_by.push(gaming_reason.into());
             }
             if cockpit_core::prompts::count(&session.session_id) > 0 {

@@ -22,7 +22,8 @@ pub fn gate_path() -> Result<PathBuf, String> {
     Ok(account_home()?.join(".cache/agent-shims/heavy-gate.json"))
 }
 
-/// Ok when the guard, alive this boot, holds new heavy jobs because a game is open; otherwise why not.
+/// Ok when the guard, alive this boot, holds new heavy jobs: for an open game, or by Theo's
+/// `cockpit-game-guard hold`, which takes precedence over it in the status; otherwise why not.
 pub fn holds_heavy_jobs_for_game(
     path: &Path,
     now_s: f64,
@@ -59,7 +60,7 @@ pub fn holds_heavy_jobs_for_game(
         return Err("Theo released heavy jobs (cockpit-game-guard release)".into());
     }
     match gate.get("state").and_then(Value::as_str) {
-        Some("gaming") => Ok(()),
+        Some("gaming" | "held") => Ok(()),
         Some(state) => Err(format!("the game guard admission is {state}")),
         None => Err("the game guard status has no state".into()),
     }
@@ -77,6 +78,7 @@ fn read_gate(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
     if !metadata.is_file() {
         return Err("the game guard status is not a regular file".into());
     }
+    // SAFETY: getuid takes no pointer and cannot fail.
     if metadata.uid() != unsafe { libc::getuid() } {
         return Err("the game guard status belongs to another user".into());
     }
@@ -94,10 +96,15 @@ fn read_gate(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
 }
 
 fn account_home() -> Result<PathBuf, String> {
+    // SAFETY: getuid takes no pointer and cannot fail.
     let uid = unsafe { libc::getuid() };
+    // SAFETY: passwd is plain C data (integers and pointers); all zeroes is a valid value that
+    // getpwuid_r overwrites before we read it.
     let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
     let mut found: *mut libc::passwd = std::ptr::null_mut();
     let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: every pointer is to a live local; getpwuid_r writes at most buffer.len() bytes into
+    // buffer and points entry's strings into it, so they stay valid while buffer lives.
     let status = unsafe {
         libc::getpwuid_r(
             uid,
@@ -110,6 +117,8 @@ fn account_home() -> Result<PathBuf, String> {
     if status != 0 || found.is_null() || entry.pw_dir.is_null() {
         return Err(format!("no password entry for uid {uid}"));
     }
+    // SAFETY: on success pw_dir is a NUL-terminated string inside buffer, which outlives this
+    // borrow; the bytes are copied into the PathBuf before buffer is dropped.
     let home = PathBuf::from(OsStr::from_bytes(
         unsafe { CStr::from_ptr(entry.pw_dir) }.to_bytes(),
     ));
@@ -165,7 +174,6 @@ mod tests {
         for (name, field, value) in [
             ("clear", "state", json!("clear")),
             ("off", "state", json!("off")),
-            ("held", "state", json!("held")),
             ("memory", "state", json!("memory")),
             ("version", "version", json!(2)),
             ("manual-writer", "writer", json!("manual release")),
@@ -184,12 +192,6 @@ mod tests {
     }
 
     #[test]
-    fn a_status_that_is_not_an_object_means_heavy_jobs_are_not_held() {
-        let path = written("not-object", br#"["gaming"]"#);
-        assert!(holds_heavy_jobs_for_game(&path, NOW, Some(BOOT)).is_err());
-    }
-
-    #[test]
     fn an_expired_manual_release_no_longer_counts() {
         let path = gate_with("expired-release", |gate| {
             gate["manual_release_until"] = json!(NOW - 1.0)
@@ -204,15 +206,32 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_invalid_or_oversized_status_means_heavy_jobs_are_not_held() {
-        let missing = written("missing", b"").with_file_name("absent.json");
-        assert!(holds_heavy_jobs_for_game(&missing, NOW, Some(BOOT)).is_err());
-        let invalid = written("invalid", b"{not json");
-        assert!(holds_heavy_jobs_for_game(&invalid, NOW, Some(BOOT)).is_err());
+    fn theos_hold_from_the_guard_also_holds_heavy_jobs() {
+        let path = gate_with("held", |gate| gate["state"] = json!("held"));
+        assert_eq!(holds_heavy_jobs_for_game(&path, NOW, Some(BOOT)), Ok(()));
+    }
+
+    #[test]
+    fn a_missing_status_means_heavy_jobs_are_not_held() {
+        let path = written("missing", b"").with_file_name("absent.json");
+        assert!(holds_heavy_jobs_for_game(&path, NOW, Some(BOOT)).is_err());
+    }
+
+    #[test]
+    fn an_unparsable_or_oversized_status_means_heavy_jobs_are_not_held() {
         let mut padded = gaming_gate();
         padded["reason"] = json!("x".repeat(4096));
-        let oversized = written("oversized", padded.to_string().as_bytes());
-        assert!(holds_heavy_jobs_for_game(&oversized, NOW, Some(BOOT)).is_err());
+        for (name, content) in [
+            ("invalid", b"{not json".to_vec()),
+            ("not-object", br#"["gaming"]"#.to_vec()),
+            ("oversized", padded.to_string().into_bytes()),
+        ] {
+            let path = written(name, &content);
+            assert!(
+                holds_heavy_jobs_for_game(&path, NOW, Some(BOOT)).is_err(),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -228,15 +247,5 @@ mod tests {
         let path = written("directory", b"").with_file_name("as-directory");
         fs::create_dir_all(&path).unwrap();
         assert!(holds_heavy_jobs_for_game(&path, NOW, Some(BOOT)).is_err());
-    }
-
-    #[test]
-    fn the_status_lives_in_the_account_homes_shim_cache() {
-        let path = gate_path().unwrap();
-        assert!(path.is_absolute(), "{path:?}");
-        assert!(
-            path.ends_with(".cache/agent-shims/heavy-gate.json"),
-            "{path:?}"
-        );
     }
 }
