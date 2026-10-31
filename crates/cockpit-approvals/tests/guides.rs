@@ -55,6 +55,24 @@ fn a_guide_reads_its_title_sections_steps_and_their_lines() {
 }
 
 #[test]
+fn a_steps_list_marker_is_dropped_so_the_pane_numbers_it_once() {
+    let cases = [
+        ("1. Look at the sky", "Look at the sky"),
+        ("12) Count the stars", "Count the stars"),
+        ("- Open the door", "Open the door"),
+        ("* Close the window", "Close the window"),
+        ("-flag stays", "-flag stays"),
+        ("3.5 GB free is enough", "3.5 GB free is enough"),
+        ("**Bold** stays", "**Bold** stays"),
+        ("2026 was a year", "2026 was a year"),
+    ];
+    for (line, expected) in cases {
+        let guide = parse_guide(&format!("# Title\n{line}\n")).unwrap();
+        assert_eq!(guide.steps[0].text, expected, "{line:?}");
+    }
+}
+
+#[test]
 fn a_guide_the_owner_could_not_follow_is_refused_with_its_line() {
     let cases = [
         ("", "is empty"),
@@ -77,6 +95,7 @@ fn a_guide_the_owner_could_not_follow_is_refused_with_its_line() {
             "line 4: a step has one `ask:` at most",
         ),
         ("# Title\nStep\n  run:   \n", "line 3: is empty"),
+        ("# Title\n1. \n", "line 2: is empty"),
         (
             "# Title\n# Another title\nStep\n",
             "line 2: only one `# Title` line",

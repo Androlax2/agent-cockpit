@@ -59,7 +59,7 @@ fn a_fresh_install_starts_a_session_from_the_form_and_its_card_appears_under_the
     let shown = screen_text(&app, now);
     assert!(app.form().is_none());
     assert!(
-        shown.contains("│app") && shown.contains("│> s00000000000a  fake  running"),
+        shown.contains("│app") && shown.contains("│>  s00000000000a  fake  running"),
         "{shown}"
     );
 }

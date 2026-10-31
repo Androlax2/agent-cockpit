@@ -49,7 +49,9 @@ detaching the terminal leaves everything running.
 - Warnings (each escaped kind, non-ASCII characters, the timeout hint, changed build files,
   a directory outside the project) and the folded command with an explicit "more" come from
   the wire fields.
-- A session with something waiting shows "waiting on you" on its card.
+- A session with something waiting shows `!` right after the selection marker; "waiting on
+  you", the agent's label and its doing share an indented line under the id, wrapped at the
+  list's width rather than cut.
 
 ## Tests
 

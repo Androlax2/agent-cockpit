@@ -5,9 +5,12 @@ mod common;
 
 use std::time::Instant;
 
-use cockpit_protocol::{ChangeBatch, Command, EntityKind, FeedPosition, Reply};
+use cockpit_protocol::{
+    AgentState, ChangeBatch, Command, EntityKind, FeedPosition, QuestionSource, Reply,
+    SessionReport,
+};
 use cockpit_tui::{App, Key};
-use common::{answer, project, queue, run, screen, screen_text, session, upsert};
+use common::{answer, project, queue, run, screen, session, upsert};
 
 /// The batches of `tests/fixtures/two-projects.feed`, as the daemon sent them.
 fn recorded_feed() -> Vec<ChangeBatch> {
@@ -31,8 +34,8 @@ fn app_on_projects() -> App {
 }
 
 /// The rows from the first project heading to the last card.
-fn list_rows(app: &App, now: Instant) -> Vec<String> {
-    screen(app, now)
+fn list_rows(app: &App, now: Instant, width: u16) -> Vec<String> {
+    screen(app, now, width)
         .into_iter()
         .skip(1)
         .take_while(|row| !row.starts_with('└'))
@@ -57,13 +60,13 @@ fn the_list_renders_the_recorded_feed_grouped_by_project() {
     }
 
     assert_eq!(
-        list_rows(&app, now),
+        list_rows(&app, now, 100),
         [
             "api",
-            "> s00000000000b  fake  running",
-            "  s00000000000d  other  running",
+            ">  s00000000000b  fake  running",
+            "   s00000000000d  other  running",
             "web",
-            "  s00000000000a  fake  asleep",
+            "   s00000000000a  fake  asleep",
         ]
     );
 }
@@ -135,10 +138,10 @@ fn a_session_whose_checkout_is_unknown_is_listed_last_under_no_known_project() {
     })
     .unwrap();
 
-    let rows = list_rows(&app, Instant::now());
+    let rows = list_rows(&app, Instant::now(), 100);
     assert_eq!(
         rows[rows.len() - 2..],
-        ["(no known project)", "  s0000000000ff  fake  running"]
+        ["(no known project)", "   s0000000000ff  fake  running"]
     );
 }
 
@@ -164,9 +167,49 @@ fn a_session_waiting_on_an_approval_shows_waiting_on_you_and_the_list_still_answ
 
     assert_eq!(moved.used, Some("move"));
     assert_eq!(app.selected(), Some("s00000000000d"));
+    let rows = list_rows(&app, now, 100);
     assert!(
-        screen_text(&app, now).contains("> s00000000000d  other  running  waiting on you"),
-        "{}",
-        screen_text(&app, now)
+        rows.windows(2)
+            .any(|card| card == [">! s00000000000d  other  running", "   waiting on you"]),
+        "{rows:#?}"
+    );
+}
+
+/// The list column of a 160-column manager is 39 columns wide (#289).
+#[test]
+fn a_card_in_a_39_column_list_shows_that_it_needs_you_its_label_and_its_doing() {
+    let mut app = app_on_projects();
+    let now = Instant::now();
+    for batch in recorded_feed() {
+        app.apply_changes(&batch).unwrap();
+    }
+    answer(
+        &mut app,
+        Command::AgentReports,
+        Reply::AgentReports {
+            reports: vec![SessionReport {
+                session: "s00000000000d".to_owned(),
+                state: Some(AgentState::Waiting),
+                label: Some("acceptance label".to_owned()),
+                doing: Some("dry-run doing".to_owned()),
+                needs_input: Some("Pick A or B?".to_owned()),
+                outcome: None,
+                question_source: Some(QuestionSource::Agent),
+                reported_at: 1,
+            }],
+        },
+        now,
+    );
+
+    let rows = list_rows(&app, now, 39);
+
+    assert_eq!(
+        rows[1..5],
+        [
+            ">  s00000000000b  fake  running",
+            " ! s00000000000d  other  running",
+            "   waiting on you · acceptance label",
+            "· dry-run doing",
+        ],
     );
 }

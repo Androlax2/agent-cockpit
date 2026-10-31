@@ -21,7 +21,7 @@ pub const HELP: &str = "\
 Sessions
   j / k, Down / Up   select a session
   Enter              open it in the viewer (wakes it when asleep)
-  n                  open the next session that needs you
+  n                  open the next session that needs you (marked ! in the list)
   N                  new session (project, agent, first message, in place or new clone)
   r                  restart the selected session (confirm with y)
   x                  exit the selected session (confirm with y)
@@ -100,12 +100,16 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         }
         for session in group.sessions {
             let is_selected = app.selected() == Some(session.id.as_str());
-            let line = Line::from(card(board, session, is_selected));
-            lines.push(if is_selected {
-                line.style(Style::default().add_modifier(Modifier::REVERSED))
+            let style = if is_selected {
+                Style::default().add_modifier(Modifier::REVERSED)
             } else {
-                line
-            });
+                Style::default()
+            };
+            lines.extend(
+                card(board, session, is_selected)
+                    .into_iter()
+                    .map(|text| Line::from(text).style(style)),
+            );
         }
     }
     let finished = board.finished_sessions().len();
@@ -124,27 +128,39 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         "Sessions"
     };
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
 
-/// One session's line: id, agent, state, what it reports, and whether it waits on you.
-fn card(board: &Board, session: &SessionView, is_selected: bool) -> String {
+/// One session's card: the id line, then whether it waits on you and what the agent reports
+/// on an indented line of their own. The `!` after the selection marker lets the eye find the
+/// sessions that need you down the list's left edge.
+fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
-    let mut card = format!(
-        "{marker} {}  {}  {}",
-        session.id, session.agent, session.state
-    );
-    if let Some(label) = board
-        .report(&session.id)
-        .and_then(|report| report.label.as_deref().or(report.doing.as_deref()))
-    {
-        card.push_str("  ");
-        card.push_str(label);
-    }
-    if board.needs_you(&session.id) {
-        card.push_str("  waiting on you");
+    let needs_you = board.needs_you(&session.id);
+    let mut card = vec![format!(
+        "{marker}{} {}  {}  {}",
+        if needs_you { "!" } else { " " },
+        session.id,
+        session.agent,
+        session.state,
+    )];
+    let details: Vec<&str> = needs_you
+        .then_some("waiting on you")
+        .into_iter()
+        .chain(
+            board
+                .report(&session.id)
+                .into_iter()
+                .flat_map(|report| [report.label.as_deref(), report.doing.as_deref()])
+                .flatten(),
+        )
+        .collect();
+    if !details.is_empty() {
+        card.push(format!("   {}", details.join(" · ")));
     }
     card
 }
