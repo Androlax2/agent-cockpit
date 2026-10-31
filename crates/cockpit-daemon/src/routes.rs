@@ -139,8 +139,8 @@ impl Handler for Routes {
                 Peer::Owner => projects::route(
                     command,
                     Arc::clone(&self.database),
-                    &self.git,
-                    &self.environment,
+                    self.git.clone(),
+                    self.environment.clone(),
                 ),
             },
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.

@@ -19,11 +19,9 @@ use crate::routes::{Route, WorkClass, refusal};
 pub(crate) fn route(
     command: Command,
     database: Arc<Database>,
-    git: &Git,
-    environment: &cockpit_config::Environment,
+    git: Git,
+    environment: cockpit_config::Environment,
 ) -> Route {
-    let git = git.clone();
-    let environment = environment.clone();
     let (class, job): (WorkClass, crate::Job) = match command {
         Command::ProjectList => (
             WorkClass::Control,
@@ -41,7 +39,7 @@ pub(crate) fn route(
                 let project = project
                     .map(cockpit_projects::ProjectName::new)
                     .transpose()?;
-                let trusted = trusted_roots(&environment).await?;
+                let trusted = trusted_roots(environment).await?;
                 let read = database.read().await.map_err(Error::from)?;
                 let checkouts = cockpit_projects::checkouts(&read, project.as_ref()).await?;
                 Ok(Reply::Checkouts {
@@ -56,7 +54,7 @@ pub(crate) fn route(
             WorkClass::Control,
             job(async move {
                 let holder = Holder::new(holder)?;
-                let trusted = trusted_roots(&environment).await?;
+                let trusted = trusted_roots(environment).await?;
                 let write = database.write().await.map_err(Error::from)?;
                 let claimed =
                     cockpit_projects::claim(&write, CheckoutId(checkout), &holder).await?;
@@ -77,7 +75,7 @@ pub(crate) fn route(
         Command::ProjectAdd { path, name } => (
             WorkClass::Bulk,
             job(async move {
-                let trusted = trusted_roots(&environment).await?;
+                let trusted = trusted_roots(environment).await?;
                 let (project, main) = cockpit_projects::register_project(
                     &database,
                     &git,
@@ -94,7 +92,7 @@ pub(crate) fn route(
         Command::CheckoutClone { project, branch } => (
             WorkClass::Bulk,
             job(async move {
-                let trusted = trusted_roots(&environment).await?;
+                let trusted = trusted_roots(environment).await?;
                 let clone =
                     cockpit_projects::create_parallel_clone(&database, &git, &project, &branch)
                         .await?;
@@ -107,7 +105,7 @@ pub(crate) fn route(
         } => (
             WorkClass::Bulk,
             job(async move {
-                let trusted = trusted_roots(&environment).await?;
+                let trusted = trusted_roots(environment).await?;
                 let clone =
                     cockpit_projects::create_review_clone(&database, &git, &project, pull_request)
                         .await?;
@@ -117,7 +115,7 @@ pub(crate) fn route(
         Command::CheckoutSweep { dry_run } => (
             WorkClass::Bulk,
             job(async move {
-                let trusted = trusted_roots(&environment).await?;
+                let trusted = trusted_roots(environment).await?;
                 let report = cockpit_projects::sweep(&database, &git, dry_run).await?;
                 Ok(Reply::Swept {
                     dry_run,
@@ -201,8 +199,7 @@ fn error_code(error: &Error) -> ErrorCode {
 /// The owner's trusted project paths, read before the command acts: a broken owner config
 /// refuses the command instead of answering it with every checkout untrusted, or after it
 /// already took effect. Read off the async workers, since it reads files.
-async fn trusted_roots(environment: &cockpit_config::Environment) -> Result<Vec<PathBuf>, Error> {
-    let environment = environment.clone();
+async fn trusted_roots(environment: cockpit_config::Environment) -> Result<Vec<PathBuf>, Error> {
     let configured = tokio::task::spawn_blocking(move || {
         cockpit_config::load(&environment, None, &[])
             .map(|config| cockpit_projects::resolve_trusted_roots(config.trusted_projects.value))

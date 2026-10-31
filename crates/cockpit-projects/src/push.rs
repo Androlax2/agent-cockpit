@@ -34,9 +34,12 @@ pub async fn push(database: &Database, git: &Git, id: CheckoutId) -> Result<Push
     if stored.checkout.state != CheckoutState::Live {
         return Err(Error::BeingRemoved { checkout: id });
     }
-    stored.verify_on_disk().await?;
     let git = git.clone();
-    blocking(move || push_branch(&git, &stored.checkout.path)).await
+    blocking(move || {
+        stored.verify_on_disk_now()?;
+        push_branch(&git, &stored.checkout.path)
+    })
+    .await
 }
 
 fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {

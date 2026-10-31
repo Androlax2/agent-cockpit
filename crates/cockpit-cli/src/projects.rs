@@ -1,7 +1,6 @@
 //! `cockpit project` and `cockpit checkout`: verbs served by the daemon over the socket.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -81,9 +80,9 @@ fn checkout_id(text: &str) -> Result<i64, String> {
 /// Sends `command` to the daemon and prints its answer; exit 1 when the daemon refuses or
 /// cannot be reached.
 pub fn run(command: Command, deadline: Duration) -> ExitCode {
-    let socket = match socket_path() {
-        Ok(socket) => socket,
-        Err(problem) => return fail(&problem),
+    let socket = match crate::agent::socket_dir() {
+        Ok(dir) => dir.join(cockpit_config::DAEMON_SOCKET),
+        Err(code) => return code,
     };
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -114,17 +113,6 @@ pub fn run(command: Command, deadline: Duration) -> ExitCode {
 fn fail(problem: &str) -> ExitCode {
     eprintln!("cockpit: {problem}");
     ExitCode::FAILURE
-}
-
-/// The daemon's socket, laid out as `cockpit-daemon` lays it out (its `Options`): in the
-/// runtime directory, or `<state dir>/run` when `XDG_RUNTIME_DIR` is unset.
-fn socket_path() -> Result<PathBuf, String> {
-    let environment = cockpit_config::Environment::from_process();
-    environment
-        .home_dir()
-        .and_then(|home| cockpit_config::Layout::resolve(&environment, &home).socket_dir())
-        .map(|dir| dir.join(cockpit_config::DAEMON_SOCKET))
-        .map_err(|error| error.to_string())
 }
 
 /// The reply as printed, or `None` when it is not one a project verb gets.

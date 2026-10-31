@@ -129,12 +129,13 @@ impl StoredCheckout {
 
     /// [`Self::verify_on_disk`] for code already off the async workers.
     pub(crate) fn verify_on_disk_now(&self) -> Result<(), Error> {
-        let replaced = |reason: String| Error::Replaced {
-            checkout: self.checkout.id,
-            path: self.checkout.path.clone(),
-            reason,
-        };
-        self.identity.verify(&self.checkout.path).map_err(replaced)
+        self.identity
+            .verify(&self.checkout.path)
+            .map_err(|reason| Error::Replaced {
+                checkout: self.checkout.id,
+                path: self.checkout.path.clone(),
+                reason,
+            })
     }
 }
 

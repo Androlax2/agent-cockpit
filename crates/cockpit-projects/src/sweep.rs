@@ -100,12 +100,17 @@ fn precheck_now(stored: &StoredCheckout) -> Precheck {
 
 /// Why a dry run keeps the clone, or `None` when the sweep would delete it.
 async fn inspect(git: &Git, stored: &StoredCheckout) -> Result<Option<Kept>, Error> {
-    match precheck(stored).await? {
-        Precheck::Keep(kept) => Ok(Some(kept)),
-        Precheck::Gone => Ok(None),
-        Precheck::Present if stored.checkout.state == CheckoutState::Deleting => Ok(None),
-        Precheck::Present => leftovers(git, &stored.checkout.path).await,
-    }
+    let git = git.clone();
+    let stored = stored.clone();
+    blocking(move || {
+        Ok(match precheck_now(&stored) {
+            Precheck::Keep(kept) => Some(kept),
+            Precheck::Gone => None,
+            Precheck::Present if stored.checkout.state == CheckoutState::Deleting => None,
+            Precheck::Present => leftovers_now(&git, &stored.checkout.path),
+        })
+    })
+    .await
 }
 
 /// Deletes the clone unless it must be kept; `Some` says why it was.
@@ -138,9 +143,7 @@ async fn sweep_one(
         let is_marked = store::mark_deleting(&write, checkout.id).await?;
         write.commit().await?;
         if !is_marked {
-            return Ok(Some(Kept::Unreadable {
-                reason: "its state changed during the sweep".to_owned(),
-            }));
+            return Ok(Some(state_changed()));
         }
     }
     let expected_parent = clones_dir(&checkout.project_root, &checkout.project)?;
@@ -174,10 +177,15 @@ async fn mark_removing(database: &Database, id: CheckoutId) -> Result<Option<Kep
         .map(|occupancy| occupancy.holder);
     Ok(Some(match holder {
         Some(holder) => Kept::Occupied { holder },
-        None => Kept::Unreadable {
-            reason: "its state changed during the sweep".to_owned(),
-        },
+        None => state_changed(),
     }))
+}
+
+/// A row whose state another sweep or a claim changed since this sweep read it.
+fn state_changed() -> Kept {
+    Kept::Unreadable {
+        reason: "its state changed during the sweep".to_owned(),
+    }
 }
 
 /// Work the clone holds that exists nowhere else, or why Git could not tell.
