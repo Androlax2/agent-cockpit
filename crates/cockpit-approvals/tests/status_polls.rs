@@ -4,22 +4,10 @@
 mod common;
 
 use cockpit_approvals::{
-    EXPIRES_AFTER_SECONDS, Error, GuideRequest, REFRESH_AFTER_SECONDS, Refusal, RunState,
-    ask_guide, guide_status_if_fresh, parse_guide, run_status_if_fresh,
+    EXPIRES_AFTER_SECONDS, Error, REFRESH_AFTER_SECONDS, Refusal, RunState, guide_status_if_fresh,
+    run_status_if_fresh,
 };
 use common::{Fixture, NOW, session};
-
-async fn asked_guide(fixture: &Fixture) -> GuideRequest {
-    let owner = session("s1");
-    fixture.grant(&owner).await;
-    let guide = parse_guide("# Connect the app\nOne\nTwo\n").unwrap();
-    let write = fixture.database.write().await.unwrap();
-    let asked = ask_guide(&write, &owner, &guide, fixture.cwd(), None, NOW)
-        .await
-        .unwrap();
-    write.commit().await.unwrap();
-    asked
-}
 
 #[tokio::test]
 async fn a_fresh_run_poll_reads_while_another_writer_holds_the_lock() {
@@ -82,7 +70,7 @@ async fn another_sessions_run_is_not_found_read_only_too() {
 #[tokio::test]
 async fn a_fresh_guide_poll_reads_while_another_writer_holds_the_lock() {
     let fixture = Fixture::new().await;
-    let guide = asked_guide(&fixture).await;
+    let guide = fixture.asked_guide("# Connect the app\nOne\nTwo\n").await;
     let _writer = fixture.database.write().await.unwrap();
 
     let read = fixture.database.read().await.unwrap();
@@ -100,7 +88,7 @@ async fn a_fresh_guide_poll_reads_while_another_writer_holds_the_lock() {
 #[tokio::test]
 async fn a_guide_poll_that_must_move_the_expiry_is_left_to_guide_status() {
     let fixture = Fixture::new().await;
-    let guide = asked_guide(&fixture).await;
+    let guide = fixture.asked_guide("# Connect the app\nOne\nTwo\n").await;
 
     let read = fixture.database.read().await.unwrap();
     let seen =

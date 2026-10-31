@@ -31,18 +31,6 @@ fn refusal<T: std::fmt::Debug>(result: Result<T, Error>) -> Refusal {
     }
 }
 
-async fn asked(fixture: &Fixture, text: &str) -> GuideRequest {
-    let owner = session("s1");
-    fixture.grant(&owner).await;
-    let guide = parse_guide(text).unwrap();
-    let write = fixture.database.write().await.unwrap();
-    let asked = ask_guide(&write, &owner, &guide, fixture.cwd(), None, NOW)
-        .await
-        .unwrap();
-    write.commit().await.unwrap();
-    asked
-}
-
 #[test]
 fn a_guide_reads_its_title_sections_steps_and_their_lines() {
     let guide = parse_guide(GUIDE).unwrap();
@@ -138,7 +126,7 @@ async fn a_session_without_the_run_commands_grant_cannot_ask_a_guide() {
 #[tokio::test]
 async fn an_asked_guide_starts_at_its_first_step_with_every_line_kept() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     assert_eq!(guide.state, GuideState::Asking);
     assert_eq!(guide.current_step, 0);
     assert_eq!(
@@ -156,7 +144,7 @@ async fn an_asked_guide_starts_at_its_first_step_with_every_line_kept() {
 #[tokio::test]
 async fn only_the_step_shown_now_can_be_answered() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     assert_eq!(
         refusal(answer_step(&write, guide.id, 1, Some("42".to_owned()), NOW).await),
@@ -174,7 +162,7 @@ async fn only_the_step_shown_now_can_be_answered() {
 #[tokio::test]
 async fn a_step_that_asks_a_question_needs_an_answer() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     answer_step(&write, guide.id, 0, None, NOW).await.unwrap();
     assert!(matches!(
@@ -193,7 +181,7 @@ async fn a_step_that_asks_a_question_needs_an_answer() {
 #[tokio::test]
 async fn a_run_step_files_its_command_as_a_run_request_of_the_guides_session() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     answer_step(&write, guide.id, 0, None, NOW).await.unwrap();
     answer_step(&write, guide.id, 1, Some("1234".to_owned()), NOW)
@@ -221,7 +209,7 @@ async fn a_run_step_files_its_command_as_a_run_request_of_the_guides_session() {
 #[tokio::test]
 async fn being_stuck_ends_the_guide_with_the_step_and_the_note() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     answer_step(&write, guide.id, 0, None, NOW).await.unwrap();
     let stuck = report_stuck(&write, guide.id, 1, "GitHub shows no app id", NOW)
@@ -239,7 +227,7 @@ async fn being_stuck_ends_the_guide_with_the_step_and_the_note() {
 #[tokio::test]
 async fn a_closed_guide_takes_no_more_answers() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     assert_eq!(
         close_guide(&write, guide.id, NOW).await.unwrap().state,
@@ -255,7 +243,7 @@ async fn a_closed_guide_takes_no_more_answers() {
 #[tokio::test]
 async fn a_guide_nobody_waits_for_expires_unless_its_session_asks_about_it() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let expiry = NOW + cockpit_approvals::EXPIRES_AFTER_SECONDS;
     let write = fixture.database.write().await.unwrap();
     assert_eq!(
@@ -273,11 +261,9 @@ async fn a_guide_nobody_waits_for_expires_unless_its_session_asks_about_it() {
 #[tokio::test]
 async fn a_run_step_request_stays_before_the_owner_while_the_agent_waits_on_the_guide() {
     let fixture = Fixture::new().await;
-    let guide = asked(
-        &fixture,
-        "# Build\nBuild it\n  run: make build\nCheck the result\n",
-    )
-    .await;
+    let guide = fixture
+        .asked_guide("# Build\nBuild it\n  run: make build\nCheck the result\n")
+        .await;
     let expiry = NOW + cockpit_approvals::EXPIRES_AFTER_SECONDS;
     let write = fixture.database.write().await.unwrap();
     let answered = answer_step(&write, guide.id, 0, None, NOW).await.unwrap();
@@ -296,7 +282,7 @@ async fn a_run_step_request_stays_before_the_owner_while_the_agent_waits_on_the_
 #[tokio::test]
 async fn a_guide_poll_while_the_expiry_is_fresh_writes_nothing() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let before = fixture.revision().await;
 
     let write = fixture.database.write().await.unwrap();
@@ -312,9 +298,9 @@ async fn a_guide_poll_while_the_expiry_is_fresh_writes_nothing() {
 #[tokio::test]
 async fn the_owner_sees_each_open_guide_with_its_own_steps() {
     let fixture = Fixture::new().await;
-    let first = asked(&fixture, "# First\nOne\nTwo\n").await;
-    let closed = asked(&fixture, "# Closed\nThree\n").await;
-    let last = asked(&fixture, GUIDE).await;
+    let first = fixture.asked_guide("# First\nOne\nTwo\n").await;
+    let closed = fixture.asked_guide("# Closed\nThree\n").await;
+    let last = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     close_guide(&write, closed.id, NOW).await.unwrap();
     write.commit().await.unwrap();
@@ -330,7 +316,7 @@ async fn stored(write: &cockpit_turso::WriteTransaction<'_>, id: GuideId) -> Gui
 
 /// `GUIDE`'s steps in order: an `open:` step, an `ask:` step, then a `run:` step.
 async fn answered_up_to(fixture: &Fixture, last_step: usize) -> (GuideRequest, GuideRequest) {
-    let guide = asked(fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     let mut answered = None;
     for step in 0..=last_step {
@@ -371,7 +357,7 @@ async fn answering_the_last_run_step_returns_the_done_guide_as_it_now_reads() {
 #[tokio::test]
 async fn being_stuck_returns_the_guide_as_it_now_reads() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     let reported = report_stuck(&write, guide.id, 0, "no such menu", NOW)
         .await
@@ -382,7 +368,7 @@ async fn being_stuck_returns_the_guide_as_it_now_reads() {
 #[tokio::test]
 async fn closing_returns_the_guide_as_it_now_reads() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     let closed = close_guide(&write, guide.id, NOW).await.unwrap();
     assert_eq!(closed, stored(&write, guide.id).await);
@@ -391,7 +377,7 @@ async fn closing_returns_the_guide_as_it_now_reads() {
 #[tokio::test]
 async fn another_sessions_guide_is_not_found_for_the_asker() {
     let fixture = Fixture::new().await;
-    let guide = asked(&fixture, GUIDE).await;
+    let guide = fixture.asked_guide(GUIDE).await;
     let write = fixture.database.write().await.unwrap();
     assert_eq!(
         refusal(guide_status(&write, &session("s2"), guide.id, NOW).await),

@@ -9,13 +9,10 @@ use cockpit_agent_channel::{
 };
 use cockpit_authorization::SessionId;
 use cockpit_turso::Database;
-use common::{Process, launch, open, session, this_process, this_process_identity};
-
-async fn bind(database: &Database, peer: &PeerAncestry, token: &str) {
-    let write = database.write().await.unwrap();
-    identify(&write, peer, Some(token)).await.unwrap();
-    write.commit().await.unwrap();
-}
+use common::{
+    Process, identify_committed, launch, open, refusal, session, this_process,
+    this_process_identity,
+};
 
 async fn identify_read_only(
     database: &Database,
@@ -31,7 +28,9 @@ async fn a_bound_launch_identifies_while_another_writer_holds_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let database = open(dir.path()).await;
     let token = launch(&database, &session("s1"), &this_process_identity()).await;
-    bind(&database, &this_process(), token.as_str()).await;
+    identify_committed(&database, &this_process(), Some(token.as_str()))
+        .await
+        .unwrap();
     let _writer = database.write().await.unwrap();
 
     let identified = identify_read_only(&database, &this_process(), None).await;
@@ -58,7 +57,9 @@ async fn a_relaunch_pending_its_new_token_is_left_to_identify() {
     let dir = tempfile::tempdir().unwrap();
     let database = open(dir.path()).await;
     let first = launch(&database, &session("s1"), &this_process_identity()).await;
-    bind(&database, &this_process(), first.as_str()).await;
+    identify_committed(&database, &this_process(), Some(first.as_str()))
+        .await
+        .unwrap();
     let second = launch(&database, &session("s1"), &this_process_identity()).await;
 
     let read_only = identify_read_only(&database, &this_process(), Some(second.as_str())).await;
@@ -74,7 +75,9 @@ async fn it_refuses_as_identify_does() {
     let database = open(dir.path()).await;
     let agent = Process::sleeper();
     let spent = launch(&database, &session("s1"), &agent.identity()).await;
-    bind(&database, &agent.ancestry(), spent.as_str()).await;
+    identify_committed(&database, &agent.ancestry(), Some(spent.as_str()))
+        .await
+        .unwrap();
     let other_agent = Process::sleeper();
     let leaked = launch(&database, &session("s2"), &other_agent.identity()).await;
     let unstarted = {
@@ -83,8 +86,7 @@ async fn it_refuses_as_identify_does() {
         write.commit().await.unwrap();
         token
     };
-    let unverifiable: PeerAncestry = Err(ProcessError::Gone { pid: 1 });
-    let cases: [(&str, PeerAncestry, Option<&str>, Refusal); 6] = [
+    let cases: Vec<(&str, PeerAncestry, Option<&str>, Refusal)> = vec![
         (
             "no token outside every tree",
             this_process(),
@@ -119,7 +121,7 @@ async fn it_refuses_as_identify_does() {
         ),
         (
             "an unverifiable peer",
-            unverifiable.clone(),
+            Err(ProcessError::Gone { pid: 1 }),
             Some(spent.as_str()),
             Refusal::PeerUnverifiable(ProcessError::Gone { pid: 1 }),
         ),
@@ -131,13 +133,7 @@ async fn it_refuses_as_identify_does() {
         let written = identify(&write, &peer, token).await;
         write.rollback().await.unwrap();
 
-        assert!(
-            matches!(read_only, Err(Error::Refused(ref refusal)) if *refusal == expected),
-            "{case}: read-only gave {read_only:?}"
-        );
-        assert!(
-            matches!(written, Err(Error::Refused(ref refusal)) if *refusal == expected),
-            "{case}: identify gave {written:?}"
-        );
+        assert_eq!(refusal(read_only), expected, "{case}: read-only");
+        assert_eq!(refusal(written), expected, "{case}: identify");
     }
 }

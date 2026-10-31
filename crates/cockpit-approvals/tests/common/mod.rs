@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cockpit_approvals::{RunAsk, RunRequest};
+use cockpit_approvals::{GuideRequest, RunAsk, RunRequest};
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_turso::Database;
 
@@ -57,6 +57,19 @@ impl Fixture {
             .unwrap();
         write.commit().await.unwrap();
         run
+    }
+
+    /// Session `s1`, granted `run-commands`, asks guide `text` here.
+    pub async fn asked_guide(&self, text: &str) -> GuideRequest {
+        let owner = session("s1");
+        self.grant(&owner).await;
+        let guide = cockpit_approvals::parse_guide(text).unwrap();
+        let write = self.database.write().await.unwrap();
+        let asked = cockpit_approvals::ask_guide(&write, &owner, &guide, self.cwd(), None, NOW)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+        asked
     }
 
     /// The revision of the last commit: unchanged when nothing was written.
