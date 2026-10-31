@@ -1708,6 +1708,8 @@ pub struct Registry {
     /// Linked-session state, opened on first use (teams.rs).
     pub(crate) teams: Option<cockpit_core::teams::store::Connection>,
     pub(crate) chief_focus: Option<(String, bool, bool, i64)>,
+    /// The invalid chief-turns-while-gaming last logged, so the log shows it once, not every observation.
+    pub(crate) turns_setting_error: Option<String>,
     pub(crate) chief_fault: Option<String>,
     pub(crate) chief_attention_presentations: HashMap<String, bool>,
     chief_question_deadlines: HashMap<String, i64>,
@@ -1772,6 +1774,7 @@ impl Registry {
             project_cache: HashMap::new(),
             teams: None,
             chief_focus: None,
+            turns_setting_error: None,
             chief_fault: None,
             chief_attention_presentations: HashMap::new(),
             chief_question_deadlines: HashMap::new(),
@@ -3195,11 +3198,12 @@ type ChiefLaunchResult = std::sync::mpsc::Receiver<Result<(i32, String), String>
 
 pub struct RealSystem {
     chief_launches: HashMap<String, ChiefLaunchResult>,
-    gaming_cache: (Option<Instant>, bool),
-    /// The gamemode submap as gaming() last read it; an unreadable submap counts as game mode.
-    game_mode_cache: bool,
-    /// Where the guard's admission status lives; the account's home does not change while we run.
+    /// When gaming() last asked hyprctl, whether a game was on, and whether the gamemode submap was
+    /// (an unreadable submap counts as game mode).
+    gaming_cache: (Option<Instant>, bool, bool),
+    /// Where the guard's admission status lives, and this boot's id: neither changes while we run.
     game_guard_gate: Result<std::path::PathBuf, String>,
+    boot_id: Option<String>,
     /// Why the game guard last did not hold heavy jobs (None: it did), so the log shows each change once.
     game_guard_refusal: Option<String>,
     /// When khal was last asked, and its answer so far: khal runs on a thread of its own, never on
@@ -3254,9 +3258,9 @@ impl RealSystem {
     pub fn new() -> Self {
         RealSystem {
             chief_launches: HashMap::new(),
-            gaming_cache: (None, false),
-            game_mode_cache: true,
+            gaming_cache: (None, false, true),
             game_guard_gate: cockpit_core::game_guard::gate_path(),
+            boot_id: Proc.boot_id(),
             game_guard_refusal: None,
             meeting_cache: (None, Default::default()),
             process_scan: None,
@@ -3847,7 +3851,7 @@ impl System for RealSystem {
         }
         let submap = output_within(&["hyprctl", "submap"], COMMAND_TIMEOUT)
             .map(|(_, out, _)| out.trim().to_string());
-        self.game_mode_cache = submap.as_deref().is_none_or(|submap| submap == "gamemode");
+        let game_mode = submap.as_deref().is_none_or(|submap| submap == "gamemode");
         let submap = submap.unwrap_or_default();
         let class = output_within(&["hyprctl", "-j", "activewindow"], COMMAND_TIMEOUT)
             .and_then(|(_, out, _)| serde_json::from_str::<Value>(&out).ok())
@@ -3866,27 +3870,25 @@ impl System for RealSystem {
                 "no game: banners and approval windows shown again"
             });
         }
-        self.gaming_cache = (Some(Instant::now()), now);
+        self.gaming_cache = (Some(Instant::now()), now, game_mode);
         now
     }
 
     fn game_mode(&mut self) -> bool {
         self.gaming();
-        self.game_mode_cache
+        self.gaming_cache.2
     }
 
     fn game_guard_holds_heavy_jobs(&mut self) -> bool {
-        let boot = Proc.boot_id();
-        let now_s = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0.0, |elapsed| elapsed.as_secs_f64());
-        let refusal = self
-            .game_guard_gate
-            .clone()
-            .and_then(|path| {
-                cockpit_core::game_guard::holds_heavy_jobs_for_game(&path, now_s, boot.as_deref())
-            })
-            .err();
+        let refusal = match &self.game_guard_gate {
+            Ok(path) => cockpit_core::game_guard::holds_heavy_jobs_for_game(
+                path,
+                now(),
+                self.boot_id.as_deref(),
+            ),
+            Err(why) => Err(why.clone()),
+        }
+        .err();
         if refusal != self.game_guard_refusal {
             log(&match &refusal {
                 None => {
@@ -3896,9 +3898,10 @@ impl System for RealSystem {
                     "game guard not holding heavy jobs: agent turns wait during games ({why})"
                 ),
             });
-            self.game_guard_refusal = refusal.clone();
         }
-        refusal.is_none()
+        let holds = refusal.is_none();
+        self.game_guard_refusal = refusal;
+        holds
     }
 
     /// Whether the calendar shows a meeting, as khal last said: asked at most once a minute, on a

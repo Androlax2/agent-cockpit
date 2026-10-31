@@ -6333,16 +6333,28 @@ fn receive_as_message_worker(bench: &mut Bench) -> serde_json::Value {
         .unwrap()
 }
 
+/// An idle worker with a Chief message waiting for it, and a host game guard that holds heavy jobs.
+fn guarded_message_bench() -> Bench {
+    let mut bench = admitted_chief_bench();
+    idle_message_worker(&mut bench);
+    chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
+    bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
+    bench
+}
+
 #[test]
 fn a_chief_message_reaches_an_idle_session_during_a_game_while_the_guard_holds_heavy_jobs() {
-    for signal in ["focus", "daemon"] {
-        let mut bench = admitted_chief_bench();
-        idle_message_worker(&mut bench);
-        chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
-        bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
+    for (signal, setting) in [("focus", None), ("daemon", None), ("focus", Some("on"))] {
+        let mut bench = guarded_message_bench();
+        if let Some(setting) = setting {
+            set_chief_turns_while_gaming(setting);
+        }
         start_game(&mut bench, signal);
         let delivery = receive_as_message_worker(&mut bench);
-        assert_eq!(delivery["envelope"]["kind"], "chief_message", "{signal}");
+        assert_eq!(
+            delivery["envelope"]["kind"], "chief_message",
+            "{signal} {setting:?}"
+        );
     }
 }
 
@@ -6354,15 +6366,13 @@ fn a_chief_message_still_waits_during_a_game_without_the_guard_the_setting_or_in
         "setting-typo",
         "game-mode",
     ] {
-        let mut bench = admitted_chief_bench();
-        idle_message_worker(&mut bench);
-        chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
-        bench.world.borrow_mut().game_guard_holds_heavy_jobs = case != "guard-not-holding";
+        let mut bench = guarded_message_bench();
         match case {
+            "guard-not-holding" => bench.world.borrow_mut().game_guard_holds_heavy_jobs = false,
             "setting-off" => set_chief_turns_while_gaming("off"),
             "setting-typo" => set_chief_turns_while_gaming("yes"),
             "game-mode" => bench.world.borrow_mut().game_mode = true,
-            _ => {}
+            _ => unreachable!(),
         }
         start_game(&mut bench, "focus");
         assert!(receive_as_message_worker(&mut bench).is_null(), "{case}");
@@ -6370,30 +6380,8 @@ fn a_chief_message_still_waits_during_a_game_without_the_guard_the_setting_or_in
 }
 
 #[test]
-fn chief_turns_while_gaming_is_on_unless_set_off() {
-    for (value, is_delivered) in [(None, true), (Some("on"), true), (Some("off"), false)] {
-        let mut bench = admitted_chief_bench();
-        idle_message_worker(&mut bench);
-        chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
-        if let Some(value) = value {
-            set_chief_turns_while_gaming(value);
-        }
-        bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
-        start_game(&mut bench, "focus");
-        assert_eq!(
-            !receive_as_message_worker(&mut bench).is_null(),
-            is_delivered,
-            "{value:?}"
-        );
-    }
-}
-
-#[test]
 fn a_guarded_game_still_holds_every_other_chief_message_blocker() {
-    let mut bench = admitted_chief_bench();
-    idle_message_worker(&mut bench);
-    chief_messages(&mut bench, MESSAGE_WORKER).unwrap();
-    bench.world.borrow_mut().game_guard_holds_heavy_jobs = true;
+    let mut bench = guarded_message_bench();
     bench.registry.chief_focus = Some((MESSAGE_WORKER.into(), true, true, crate::teams::now_ms()));
     assert!(receive_as_message_worker(&mut bench).is_null());
 }

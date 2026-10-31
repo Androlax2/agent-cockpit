@@ -192,28 +192,19 @@ fn workers_at(
     workers_among(registry, live, now, observe)
 }
 
-/// An invalid chief-turns-while-gaming is logged once until it is valid again, not on every observation.
-static INVALID_TURNS_SETTING_LOGGED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 /// Whether a game lets agent turns continue: Theo's setting allows it, the gamemode submap is off
 /// and the host's game guard holds new heavy jobs, so what a turn starts waits or is pinned.
 fn turns_continue_while_gaming(registry: &mut Registry) -> bool {
     let setting = cockpit_core::settings::chief_turns_while_gaming();
-    if setting.is_ok() {
-        INVALID_TURNS_SETTING_LOGGED.store(false, std::sync::atomic::Ordering::Relaxed);
+    let error = setting.as_ref().err();
+    if let Some(error) = error.filter(|error| registry.turns_setting_error.as_ref() != Some(error))
+    {
+        crate::registry::log(&format!("{error}; agent turns wait during games"));
     }
-    match setting {
-        Ok(true) => {}
-        Ok(false) => return false,
-        Err(error) => {
-            if !INVALID_TURNS_SETTING_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                crate::registry::log(&format!("{error}; agent turns wait during games"));
-            }
-            return false;
-        }
-    }
-    !registry.system.game_mode() && registry.system.game_guard_holds_heavy_jobs()
+    registry.turns_setting_error = error.cloned();
+    setting == Ok(true)
+        && !registry.system.game_mode()
+        && registry.system.game_guard_holds_heavy_jobs()
 }
 
 /// The workers among sessions the caller's own live_sessions() already verified: a team request
@@ -228,7 +219,10 @@ pub(crate) fn workers_among(
         .chief_focus
         .clone()
         .filter(|(_, _, _, observed)| *observed <= now && now - observed <= 30_000);
-    let is_gaming = registry.system.gaming() || focus.as_ref().is_some_and(|focus| focus.2);
+    let is_gaming = registry.system.gaming()
+        || focus
+            .as_ref()
+            .is_some_and(|(_, _, host_gaming, _)| *host_gaming);
     let gaming_reason = if is_gaming && turns_continue_while_gaming(registry) {
         store::GAMING_GUARDED
     } else {

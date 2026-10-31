@@ -8081,8 +8081,12 @@ fn a_correction_reaches_an_idle_session_during_a_guarded_game() {
 }
 
 #[test]
-fn the_chief_wakes_during_a_guarded_game_but_not_during_an_unguarded_one() {
-    for (blocker, is_woken) in [("gaming_guarded", true), ("gaming", false)] {
+fn the_chief_wakes_during_a_guarded_game_but_not_for_any_other_blocker() {
+    for (blockers, is_woken) in [
+        (&["gaming_guarded"][..], true),
+        (&["gaming"], false),
+        (&["gaming_guarded", "viewed_session"], false),
+    ] {
         let (mut connection, mut live) = setup();
         enable_events(&mut connection, &live);
         store::verify_admission(
@@ -8093,36 +8097,14 @@ fn the_chief_wakes_during_a_guarded_game_but_not_during_an_unguarded_one() {
             100,
         )
         .unwrap();
-        live[0].blocked_by = vec![blocker.into()];
+        live[0].blocked_by = blockers.iter().map(|reason| reason.to_string()).collect();
         live[0].ready = false;
         store::observe(&mut connection, &live, 100).unwrap();
         let wake = store::claim(&mut connection, &live[0].session, "bootstrap", 100).unwrap();
         assert_eq!(
             wake.is_some_and(|wake| wake.envelope["kind"] == "chief_wake"),
             is_woken,
-            "{blocker}"
+            "{blockers:?}"
         );
     }
-}
-
-#[test]
-fn a_chief_wake_still_waits_for_any_other_blocker_beside_a_guarded_game() {
-    let (mut connection, mut live) = setup();
-    enable_events(&mut connection, &live);
-    store::verify_admission(
-        &mut connection,
-        &live[0].session,
-        "opencode-queued-v1",
-        "Controlled fixture, not live proof",
-        100,
-    )
-    .unwrap();
-    live[0].blocked_by = vec!["gaming_guarded".into(), "viewed_session".into()];
-    live[0].ready = false;
-    store::observe(&mut connection, &live, 100).unwrap();
-    assert!(
-        store::claim(&mut connection, &live[0].session, "bootstrap", 100)
-            .unwrap()
-            .is_none()
-    );
 }

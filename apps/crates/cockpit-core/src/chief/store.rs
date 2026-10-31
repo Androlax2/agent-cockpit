@@ -3197,14 +3197,10 @@ pub fn claim(
                     worker.session == identity
                         && worker.observed_at_ms <= now_ms
                         && now_ms - worker.observed_at_ms <= 30_000
-                        && worker.blocked_by.iter().all(|reason| {
-                            matches!(
-                                reason.as_str(),
-                                "live_queued_admission_verification_required"
-                                    | "legacy_work_in_progress"
-                                    | GAMING_GUARDED
-                            )
-                        })
+                        && worker
+                            .blocked_by
+                            .iter()
+                            .all(|reason| CHIEF_MESSAGE_IGNORES.contains(&reason.as_str()))
                 });
                 if active && ready && !launching {
                     InboxValidation::Ready
@@ -3379,6 +3375,14 @@ pub fn claim_check(
 /// messages, answers, corrections, form replies and the Chief's wake tolerate it: todo gifts,
 /// queue starts and fresh sessions still wait for the game to end.
 pub const GAMING_GUARDED: &str = "gaming_guarded";
+
+/// Readiness reasons a Chief message may ignore: it can resume the current task, but cannot overtake
+/// a launch or another native turn.
+const CHIEF_MESSAGE_IGNORES: [&str; 3] = [
+    "live_queued_admission_verification_required",
+    "legacy_work_in_progress",
+    GAMING_GUARDED,
+];
 
 /// Readiness reasons a Chief answer may ignore: the answer is meant for a session that just stopped
 /// (the idle guard), sits at its own question (`human_input`) and works on a todo (its observed

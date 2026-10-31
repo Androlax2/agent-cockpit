@@ -5,10 +5,9 @@
 
 use serde_json::Value;
 use std::ffi::{CStr, OsStr};
-use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 const GATE_VERSION: i64 = 1;
@@ -67,17 +66,10 @@ pub fn holds_heavy_jobs_for_game(
 }
 
 fn read_gate(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|error| format!("the game guard status is unreadable: {error}"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("the game guard status is unreadable: {error}"))?;
-    if !metadata.is_file() {
-        return Err("the game guard status is not a regular file".into());
-    }
+    let unreadable =
+        |error: std::io::Error| format!("the game guard status is unreadable: {error}");
+    let file = crate::util::open_untrusted(path).map_err(unreadable)?;
+    let metadata = file.metadata().map_err(unreadable)?;
     // SAFETY: getuid takes no pointer and cannot fail.
     if metadata.uid() != unsafe { libc::getuid() } {
         return Err("the game guard status belongs to another user".into());
@@ -85,7 +77,7 @@ fn read_gate(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
     let mut content = Vec::new();
     file.take(GATE_MAX_BYTES + 1)
         .read_to_end(&mut content)
-        .map_err(|error| format!("the game guard status is unreadable: {error}"))?;
+        .map_err(unreadable)?;
     if content.len() as u64 > GATE_MAX_BYTES {
         return Err("the game guard status is too large".into());
     }
