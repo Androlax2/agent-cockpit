@@ -8,10 +8,12 @@ keep that rule, and B is the one an M1 fix can carry.
   `Sessions::lock_to_stop` (`crates/cockpit-sessions/src/lifecycle.rs`). While a launch holds
   that lock (start, wake, resume, restart, a start-file restart, the periodic pass's pending
   restart) they answer `Error::LaunchInProgress`, `conflict` on the wire, at once. The stop
-  lane's two workers are freed immediately, whatever a provider's startup takes. The marker
-  is set once the operation passed its refusals, so a wake or resume about to be refused
-  refuses no stop. A restart is marked through its stop phase too: it relaunches right
-  after, so the message names a launch or a restart.
+  lane's two workers are freed immediately, whatever a provider's startup takes.
+- **The launch mechanism sets the marker.** `Sessions::launch` and a restart's `stop` take
+  the held lock (`Operation`) and mark it themselves, so no launch path can run unlocked or
+  unmarked. An operation refused before it reaches them (a wake of a running session, a
+  resume that cannot resume) refuses no stop. A restart is marked through its stop phase
+  too: it relaunches right after, so the message names a launch or a restart.
 - **A launch that starts while a stop waits refuses that stop too.** A stop queued behind a
   short holder (the periodic pass, a link, an `ensure_awake` on a running session) is woken
   when that holder turns into a launch, and refused, so it never ends up behind the launch.

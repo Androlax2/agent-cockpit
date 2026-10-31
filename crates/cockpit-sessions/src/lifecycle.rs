@@ -72,25 +72,26 @@ struct SessionLock {
     launch_started: tokio::sync::Notify,
 }
 
-/// A held session lock. An operation that goes on to launch the agent marks it with
-/// [`Operation::launching`] for the launch's whole duration.
+/// A held session lock. [`Sessions::launch`] and a restart's stop take it, and mark it
+/// with [`Operation::launching`] for their whole duration: no launch runs unlocked or
+/// unmarked.
 struct Operation {
     _guard: tokio::sync::OwnedMutexGuard<()>,
     session: Arc<SessionLock>,
 }
 
 impl Operation {
-    fn launching(&self) -> Launching {
+    fn launching(&self) -> Launching<'_> {
         self.session.is_launching.store(true, Ordering::SeqCst);
         self.session.launch_started.notify_waiters();
-        Launching(Arc::clone(&self.session))
+        Launching(&self.session)
     }
 }
 
 /// A launch in progress on a session; dropped when the launch returns.
-struct Launching(Arc<SessionLock>);
+struct Launching<'lock>(&'lock SessionLock);
 
-impl Drop for Launching {
+impl Drop for Launching<'_> {
     fn drop(&mut self) {
         self.0.is_launching.store(false, Ordering::SeqCst);
     }
@@ -210,7 +211,6 @@ impl Sessions {
         // Held through the first launch: a restart may take a `launching` session over, so
         // it must not find this one mid-launch.
         let operation = self.lock(&id).await;
-        let _launching = operation.launching();
         let write = self.database.write().await?;
         store::insert_session(
             &write,
@@ -229,6 +229,7 @@ impl Sessions {
         write.commit().await?;
         tracing::info!(session = %id, provider = %provider.name(), "starting a session");
         self.launch(
+            &operation,
             &id,
             LaunchKind::Start,
             Conversation::New,
@@ -246,15 +247,20 @@ impl Sessions {
         let operation = self.lock(id).await;
         let session = self.get(id).await?;
         self.resumable(&session)?;
-        let _launching = operation.launching();
-        self.stop(id, &RESTARTABLE, StopTarget::Restart, "restart")
+        self.stop(&operation, id, &RESTARTABLE, StopTarget::Restart, "restart")
             .await
     }
 
     /// Restarts a running session's agent; the caller holds its lock.
-    async fn restart_locked(&self, id: &SessionId) -> Result<Session, Error> {
-        self.stop(id, &[SessionState::Running], StopTarget::Restart, "restart")
-            .await
+    async fn restart_locked(&self, lock: &Operation, id: &SessionId) -> Result<Session, Error> {
+        self.stop(
+            lock,
+            id,
+            &[SessionState::Running],
+            StopTarget::Restart,
+            "restart",
+        )
+        .await
     }
 
     /// Restarts the running sessions whose start files changed since their launch, so
@@ -294,8 +300,9 @@ impl Sessions {
         }
         self.resumable(&session)?;
         if turn_refusal(&session, agent_report.as_ref()).is_none() {
-            let _launching = operation.launching();
-            return Ok(RestartStep::Restarted(self.restart_locked(id).await?));
+            return Ok(RestartStep::Restarted(
+                self.restart_locked(&operation, id).await?,
+            ));
         }
         let write = self.database.write().await?;
         store::request_restart(&write, id).await?;
@@ -336,7 +343,7 @@ impl Sessions {
     /// working agent to sleep; only losing the conversation is refused.
     pub async fn sleep(&self, id: &SessionId) -> Result<Session, Error> {
         self.tmux()?;
-        let _operation = self.lock_to_stop(id, "sleep").await?;
+        let operation = self.lock_to_stop(id, "sleep").await?;
         let session = self.get(id).await?;
         if let Some(refusal) = self.sleep_refusal(&session) {
             return Err(Error::SleepRefused {
@@ -344,8 +351,14 @@ impl Sessions {
                 refusal,
             });
         }
-        self.stop(id, &[SessionState::Running], StopTarget::Asleep, "sleep")
-            .await
+        self.stop(
+            &operation,
+            id,
+            &[SessionState::Running],
+            StopTarget::Asleep,
+            "sleep",
+        )
+        .await
     }
 
     /// Launches an asleep session's conversation again: the one path every wake (owner,
@@ -395,8 +408,8 @@ impl Sessions {
         )
         .await?;
         write.commit().await?;
-        let _launching = operation.launching();
-        self.launch(id, LaunchKind::Wake, conversation, None).await
+        self.launch(operation, id, LaunchKind::Wake, conversation, None)
+            .await
     }
 
     /// Reopens an ended or failed session's conversation. A failed launch may have left its
@@ -426,8 +439,7 @@ impl Sessions {
             cockpit_projects::claim(&write, session.checkout, &holder(id)).await?;
         }
         write.commit().await?;
-        let _launching = operation.launching();
-        self.launch(id, LaunchKind::Resume, conversation, None)
+        self.launch(&operation, id, LaunchKind::Resume, conversation, None)
             .await
     }
 
@@ -469,7 +481,7 @@ impl Sessions {
     /// its agent running (#221), so a failed session's latest agent is stopped first, as
     /// resume does; one not observed gone refuses the end and the session stays failed.
     pub async fn end(&self, id: &SessionId) -> Result<Session, Error> {
-        let _operation = self.lock_to_stop(id, "end").await?;
+        let operation = self.lock_to_stop(id, "end").await?;
         let session = self.get(id).await?;
         if matches!(
             session.state,
@@ -477,7 +489,7 @@ impl Sessions {
         ) {
             self.tmux()?;
             return self
-                .stop(id, &[session.state], StopTarget::Ended, "end")
+                .stop(&operation, id, &[session.state], StopTarget::Ended, "end")
                 .await;
         }
         // A session whose first launch failed before its agent was prepared has no launch
@@ -529,10 +541,12 @@ impl Sessions {
         let mut restored = Vec::new();
         for session in active {
             let id = session.id.clone();
+            // Uncontended: restore runs before the daemon accepts requests. A relaunch needs it.
+            let operation = self.lock(&id).await;
             let outcome = match session.state {
                 SessionState::Stopping { to } => match self.finish_stop(&id, to).await {
                     Ok(stopped) if to == StopTarget::Restart => {
-                        match self.relaunch(&stopped).await {
+                        match self.relaunch(&operation, &stopped).await {
                             Ok(relaunched) => Restored::StopFinished(id, relaunched.state),
                             Err(error) => Restored::Failed(id, format!("restore failed: {error}")),
                         }
@@ -540,7 +554,7 @@ impl Sessions {
                     Ok(stopped) => Restored::StopFinished(id, stopped.state),
                     Err(error) => Restored::StopNotFinished(id, error.to_string()),
                 },
-                _ => match self.restore_one(&session).await {
+                _ => match self.restore_one(&operation, &session).await {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         self.fail_restore(&session, format!("restore failed: {error}"))
@@ -553,7 +567,7 @@ impl Sessions {
         Ok(restored)
     }
 
-    async fn restore_one(&self, session: &Session) -> Result<Restored, Error> {
+    async fn restore_one(&self, lock: &Operation, session: &Session) -> Result<Restored, Error> {
         let id = &session.id;
         if self.agent_is_running(session).await? {
             if session.state != SessionState::Running {
@@ -587,7 +601,7 @@ impl Sessions {
         };
         Ok(
             match self
-                .launch(id, LaunchKind::Restore, conversation, None)
+                .launch(lock, id, LaunchKind::Restore, conversation, None)
                 .await
             {
                 Ok(_) => Restored::Reopened(id.clone()),
@@ -642,8 +656,7 @@ impl Sessions {
                 Ok(false) => {
                     let agent_report = agent_report.as_ref();
                     if session.restart_pending && turn_refusal(&session, agent_report).is_none() {
-                        let _launching = operation.launching();
-                        match self.restart_locked(&id).await {
+                        match self.restart_locked(&operation, &id).await {
                             Ok(_) => report.restarted.push(id),
                             Err(error) => report.errors.push((id, error.to_string())),
                         }
@@ -653,7 +666,13 @@ impl Sessions {
                         continue;
                     }
                     match self
-                        .stop(&id, &[SessionState::Running], StopTarget::Asleep, "sleep")
+                        .stop(
+                            &operation,
+                            &id,
+                            &[SessionState::Running],
+                            StopTarget::Asleep,
+                            "sleep",
+                        )
                         .await
                     {
                         Ok(_) => report.slept.push(id),
@@ -854,8 +873,10 @@ impl Sessions {
     }
 
     /// Moves the session from one of `from` to stopping, then stops its agent.
+    /// A restart is marked as a launch from here, its stop phase included.
     async fn stop(
         &self,
+        lock: &Operation,
         id: &SessionId,
         from: &[SessionState],
         to: StopTarget,
@@ -863,11 +884,14 @@ impl Sessions {
     ) -> Result<Session, Error> {
         self.transition(id, from, SessionState::Stopping { to }, None, operation)
             .await?;
-        let stopped = self.finish_stop(id, to).await?;
         if to != StopTarget::Restart {
-            return Ok(stopped);
+            return self.finish_stop(id, to).await;
         }
-        self.relaunch(&stopped).await
+        let stopped = {
+            let _launching = lock.launching();
+            self.finish_stop(id, to).await?
+        };
+        self.relaunch(lock, &stopped).await
     }
 
     /// Stops a stopping session's agent and moves it on: asleep, ended, or `launching` for
@@ -910,7 +934,7 @@ impl Sessions {
 
     /// Launches a restart's conversation again once its stop finished. A failure leaves the
     /// session `failed` with the reason, and is returned.
-    async fn relaunch(&self, stopped: &Session) -> Result<Session, Error> {
+    async fn relaunch(&self, lock: &Operation, stopped: &Session) -> Result<Session, Error> {
         let conversation = match self.resumable(stopped) {
             Ok(conversation) => conversation,
             Err(error) => {
@@ -918,7 +942,7 @@ impl Sessions {
                 return Err(error);
             }
         };
-        self.launch(&stopped.id, LaunchKind::Restart, conversation, None)
+        self.launch(lock, &stopped.id, LaunchKind::Restart, conversation, None)
             .await
     }
 
@@ -944,11 +968,13 @@ impl Sessions {
     /// session `failed` with the reason, and is returned.
     async fn launch(
         &self,
+        lock: &Operation,
         id: &SessionId,
         kind: LaunchKind,
         conversation: Conversation,
         first_message: Option<&str>,
     ) -> Result<Session, Error> {
+        let _launching = lock.launching();
         match self
             .try_launch(id, kind, &conversation, first_message)
             .await

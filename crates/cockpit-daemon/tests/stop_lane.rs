@@ -22,8 +22,7 @@ use cockpit_daemon::{
     Daemon, Handler, Instance, LaneLimits, Limits, Options, Peer, Route, Routes, WorkClass,
 };
 use cockpit_protocol::{
-    Command, ErrorCode, FeedPosition, Outcome, ProtocolError, Reply, SessionStateView, SessionView,
-    Welcome,
+    Command, ErrorCode, FeedPosition, Outcome, Reply, SessionStateView, SessionView, Welcome,
 };
 use cockpit_provider_api::fake::FakeProvider;
 use cockpit_provider_api::{
@@ -76,13 +75,13 @@ impl Held {
 #[derive(Default)]
 struct LaunchGate {
     is_closed: AtomicBool,
-    held: AtomicUsize,
+    is_holding: AtomicBool,
 }
 
 impl LaunchGate {
     async fn wait_until_held(&self) {
         let deadline = Instant::now() + GENEROUS;
-        while self.held.load(Ordering::SeqCst) == 0 {
+        while !self.is_holding.load(Ordering::SeqCst) {
             assert!(Instant::now() < deadline, "no launch reached the gate");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -107,11 +106,11 @@ impl Provider for GatedProvider {
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
-        self.gate.held.fetch_add(1, Ordering::SeqCst);
+        self.gate.is_holding.store(true, Ordering::SeqCst);
         while self.gate.is_closed.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        self.gate.held.fetch_sub(1, Ordering::SeqCst);
+        self.gate.is_holding.store(false, Ordering::SeqCst);
         self.inner.launch(request)
     }
 }
@@ -275,6 +274,15 @@ async fn request(client: &Connection, command: Command) -> Result<Reply, ClientE
     client.request(command, Duration::from_secs(60)).await
 }
 
+fn session_new(root: &Path) -> Command {
+    Command::SessionNew {
+        dir: root.display().to_string(),
+        agent: Some("fake".to_owned()),
+        prompt: None,
+        clone: None,
+    }
+}
+
 fn subscribe() -> Command {
     Command::Subscribe {
         from: FeedPosition::Snapshot,
@@ -301,17 +309,7 @@ async fn stop_a_session_while_full(stop_of: fn(String) -> Command) -> SessionVie
     let daemon = home.start(one_place_in_bulk_and_control()).await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = match request(
-        &client,
-        Command::SessionNew {
-            dir: root.display().to_string(),
-            agent: Some("fake".to_owned()),
-            prompt: None,
-            clone: None,
-        },
-    )
-    .await
-    {
+    let started = match request(&client, session_new(&root)).await {
         Ok(Reply::Session { session }) => session,
         other => panic!("session-new: {other:?}"),
     };
@@ -396,18 +394,7 @@ async fn a_held_launch(
     home.launches.is_closed.store(true, Ordering::SeqCst);
     let starting = {
         let client = Arc::clone(&client);
-        tokio::spawn(async move {
-            request(
-                &client,
-                Command::SessionNew {
-                    dir: root.display().to_string(),
-                    agent: Some("fake".to_owned()),
-                    prompt: None,
-                    clone: None,
-                },
-            )
-            .await
-        })
+        tokio::spawn(async move { request(&client, session_new(&root)).await })
     };
     home.launches.wait_until_held().await;
     let id = match request(&client, Command::SessionList { ended: false }).await {
@@ -421,52 +408,45 @@ async fn a_held_launch(
 /// holds: a stop that waits behind the launch runs out of it.
 const AT_ONCE: Duration = Duration::from_secs(5);
 
-/// Sends the stop `stop_of` makes for a session whose launch is held, through the stop
-/// lane's only worker; returns its refusal, which must come before the launch finishes.
-async fn stop_a_launching_session(stop_of: fn(String) -> Command) -> ProtocolError {
-    let home = Home::new();
-    let (_daemon, client, id, _starting) = a_held_launch(&home).await;
+/// Sends `stop` through the stop lane's only worker and asserts the daemon refuses it as a
+/// launch in progress, before the held launch finishes.
+async fn assert_refused_mid_launch(client: &Connection, stop: Command) {
+    let error = common::refused(client.request(stop, AT_ONCE).await);
 
-    common::refused(client.request(stop_of(id), AT_ONCE).await)
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert!(
+        error.message.contains("is launching or restarting"),
+        "{error:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ending_a_launching_session_answers_conflict_without_waiting_for_the_launch() {
-    let error = stop_a_launching_session(|session| Command::SessionEnd { session }).await;
+    let home = Home::new();
+    let (_daemon, client, id, _starting) = a_held_launch(&home).await;
 
-    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
-    assert!(
-        error.message.contains("is launching or restarting"),
-        "{error:?}"
-    );
+    assert_refused_mid_launch(&client, Command::SessionEnd { session: id }).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn putting_a_launching_session_to_sleep_answers_conflict_without_waiting_for_the_launch() {
-    let error = stop_a_launching_session(|session| Command::SessionSleep { session }).await;
+    let home = Home::new();
+    let (_daemon, client, id, _starting) = a_held_launch(&home).await;
 
-    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
-    assert!(
-        error.message.contains("is launching or restarting"),
-        "{error:?}"
-    );
+    assert_refused_mid_launch(&client, Command::SessionSleep { session: id }).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_session_refused_an_end_mid_launch_ends_once_its_launch_finishes() {
     let home = Home::new();
     let (_daemon, client, id, starting) = a_held_launch(&home).await;
-    let refused = common::refused(
-        client
-            .request(
-                Command::SessionEnd {
-                    session: id.clone(),
-                },
-                AT_ONCE,
-            )
-            .await,
-    );
-    assert_eq!(refused.code, ErrorCode::Conflict, "{refused:?}");
+    assert_refused_mid_launch(
+        &client,
+        Command::SessionEnd {
+            session: id.clone(),
+        },
+    )
+    .await;
 
     home.launches.is_closed.store(false, Ordering::SeqCst);
     match starting.await.unwrap() {
@@ -479,4 +459,30 @@ async fn a_session_refused_an_end_mid_launch_ends_once_its_launch_finishes() {
         Ok(Reply::Session { session }) => assert_eq!(session.state, SessionStateView::Ended),
         other => panic!("session-end: {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ending_a_restarting_session_answers_conflict_without_waiting_for_the_relaunch() {
+    let home = Home::new();
+    let daemon = home
+        .start(Limits {
+            stop: ONE_PLACE,
+            ..Limits::default()
+        })
+        .await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let id = match request(&client, session_new(&root)).await {
+        Ok(Reply::Session { session }) => session.id,
+        other => panic!("session-new: {other:?}"),
+    };
+    home.launches.is_closed.store(true, Ordering::SeqCst);
+    let _restarting = {
+        let client = Arc::clone(&client);
+        let session = id.clone();
+        tokio::spawn(async move { request(&client, Command::SessionRestart { session }).await })
+    };
+    home.launches.wait_until_held().await;
+
+    assert_refused_mid_launch(&client, Command::SessionEnd { session: id }).await;
 }
