@@ -2,9 +2,9 @@
 //! answers each step (with text when it asks a question), or says where they are stuck; the
 //! agent gets the answers, or the stuck step and its note, back.
 //!
-//! The format is the current `ask-to-guide`'s: `# Title`, `## Section`, one step per line,
-//! and under a step indented `open: <url>`, `copy: <value>`, `ask: <question>` or
-//! `run: <command>`. A `run:` step is not run by answering it: answering files the command
+//! The format is the current `ask-to-guide`'s: `# Title`, `## Section`, one step per line
+//! (a leading list marker dropped), and under a step indented `open: <url>`,
+//! `copy: <value>`, `ask: <question>` or `run: <command>`. A `run:` step is not run by answering it: answering files the command
 //! as an `ask run` request of the guide's session, which the owner approves like any other.
 
 use std::collections::HashMap;
@@ -174,7 +174,7 @@ pub fn parse_guide(text: &str) -> Result<Guide, Refusal> {
         if !line.starts_with(char::is_whitespace) {
             steps.push(Step {
                 section: section.clone(),
-                text: checked_line(number, line)?,
+                text: checked_line(number, without_list_marker(line))?,
                 ..Step::default()
             });
             continue;
@@ -219,6 +219,21 @@ pub fn parse_guide(text: &str) -> Result<Guide, Refusal> {
         ));
     }
     Ok(Guide { title, steps })
+}
+
+/// A step's text without the `- `, `* `, `1. ` or `1) ` it may start with: the pane numbers
+/// the steps itself, and guides written for `ask-to-guide` number or bullet them.
+fn without_list_marker(line: &str) -> &str {
+    let digits_left = line.trim_start_matches(|character: char| character.is_ascii_digit());
+    let after_marker = match line.strip_prefix(['-', '*']) {
+        Some(rest) => Some(rest),
+        None if digits_left.len() < line.len() => digits_left.strip_prefix(['.', ')']),
+        None => None,
+    };
+    match after_marker {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest,
+        _ => line,
+    }
 }
 
 fn checked_line(number: usize, text: &str) -> Result<String, Refusal> {

@@ -487,6 +487,43 @@ async fn a_guide_is_walked_one_step_at_a_time_and_the_agent_reads_the_answers() 
 }
 
 #[tokio::test]
+async fn the_owner_reads_numbered_and_bulleted_steps_without_their_marker() {
+    let asking = started(true).await;
+    let asked = guide(
+        asking
+            .agent
+            .request(
+                Command::AskGuide {
+                    launch_token: Some(asking.token.as_str().to_owned()),
+                    guide:
+                        "# Look up\n1. Look at the sky\n2) Count the stars\n- Name one\n* Go in\n"
+                            .to_owned(),
+                    cwd: asking.cwd_text(),
+                },
+                GENEROUS,
+            )
+            .await,
+    );
+
+    let shown = guide(
+        asking
+            .owner
+            .request(Command::GuideShow { guide: asked.id }, GENEROUS)
+            .await,
+    );
+
+    let texts: Vec<&str> = shown
+        .steps
+        .iter()
+        .map(|step| step.text.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        ["Look at the sky", "Count the stars", "Name one", "Go in"]
+    );
+}
+
+#[tokio::test]
 async fn the_owner_sees_a_guides_directory_with_the_display_rules_applied() {
     let asking = started(true).await;
 

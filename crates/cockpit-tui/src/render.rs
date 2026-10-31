@@ -21,7 +21,7 @@ pub const HELP: &str = "\
 Sessions
   j / k, Down / Up   select a session
   Enter              open it in the viewer (wakes it when asleep)
-  n                  open the next session that needs you
+  n                  open the next session that needs you (marked ! in the list)
   N                  new session (project, agent, first message, in place or new clone)
   r                  restart the selected session (confirm with y)
   x                  exit the selected session (confirm with y)
@@ -100,12 +100,14 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         }
         for session in group.sessions {
             let is_selected = app.selected() == Some(session.id.as_str());
-            let line = Line::from(card(board, session, is_selected));
-            lines.push(if is_selected {
-                line.style(Style::default().add_modifier(Modifier::REVERSED))
-            } else {
-                line
-            });
+            for text in card(board, session, is_selected) {
+                let line = Line::from(text);
+                lines.push(if is_selected {
+                    line.style(Style::default().add_modifier(Modifier::REVERSED))
+                } else {
+                    line
+                });
+            }
         }
     }
     let finished = board.finished_sessions().len();
@@ -124,27 +126,35 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         "Sessions"
     };
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
 
-/// One session's line: id, agent, state, what it reports, and whether it waits on you.
-fn card(board: &Board, session: &SessionView, is_selected: bool) -> String {
+/// One session's card: the id line, then what the agent reports on a line of its own. The
+/// needs-you mark comes right after the selection marker, before anything a narrow list cuts.
+fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
-    let mut card = format!(
-        "{marker} {}  {}  {}",
+    let needs_you = if board.needs_you(&session.id) {
+        "!"
+    } else {
+        " "
+    };
+    let mut card = vec![format!(
+        "{marker}{needs_you} {}  {}  {}",
         session.id, session.agent, session.state
-    );
-    if let Some(label) = board
+    )];
+    let reported: Vec<&str> = board
         .report(&session.id)
-        .and_then(|report| report.label.as_deref().or(report.doing.as_deref()))
-    {
-        card.push_str("  ");
-        card.push_str(label);
-    }
-    if board.needs_you(&session.id) {
-        card.push_str("  waiting on you");
+        .map(|report| [&report.label, &report.doing])
+        .into_iter()
+        .flatten()
+        .filter_map(|text| text.as_deref())
+        .collect();
+    if !reported.is_empty() {
+        card.push(format!("   {}", reported.join(" · ")));
     }
     card
 }
