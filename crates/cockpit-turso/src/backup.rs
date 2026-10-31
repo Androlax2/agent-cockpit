@@ -6,22 +6,35 @@ use crate::{Database, Error};
 
 impl Database {
     /// Writes a consistent, self-contained copy of the database to `destination` while it
-    /// stays open for writes (`VACUUM INTO`, SQLite's online-backup statement). Refuses an
-    /// existing destination.
+    /// stays open for writes (`VACUUM INTO`, SQLite's online-backup statement). Never
+    /// overwrites: an existing destination fails with [`Error::DestinationExists`].
     pub async fn backup_to(&self, destination: &Path) -> Result<(), Error> {
         refuse_existing(destination)?;
-        let destination_text = destination.to_str().ok_or_else(|| Error::Io {
+        // The copy is written under a private name and linked into place, so a half-written
+        // backup never appears at `destination` and the link, not a check, refuses a file
+        // created there meanwhile.
+        let partial = sibling_path(destination, &format!(".partial-{}", new_epoch()));
+        let partial_text = partial.to_str().ok_or_else(|| Error::Io {
             path: destination.to_path_buf(),
             source: std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "the backup path is not valid UTF-8",
             ),
         })?;
-        let quoted_destination = destination_text.replace('\'', "''");
-        self.connect()?
-            .execute(format!("VACUUM INTO '{quoted_destination}'"), ())
-            .await?;
-        Ok(())
+        let quoted_partial = partial_text.replace('\'', "''");
+        let written = self
+            .connect()?
+            .execute(format!("VACUUM INTO '{quoted_partial}'"), ())
+            .await;
+        let linked = written.map_err(Error::from).and_then(|_| {
+            refuse_unfolded_wal(&partial)?;
+            sync_file(&partial)?;
+            link_new(&partial, destination)
+        });
+        remove_if_present(&partial)?;
+        remove_if_present(&sibling_path(&partial, "-wal"))?;
+        linked?;
+        sync_file(&parent_directory(destination))
     }
 }
 
@@ -40,17 +53,20 @@ pub async fn restore(backup: &Path, target: &Path) -> Result<(), Error> {
         source,
     })?;
     prepare_staged_copy(&staging).await?;
-    sync_file(&staging)?;
+    refuse_unfolded_wal(&staging)?;
     remove_if_present(&sibling_path(&staging, "-wal"))?;
-    remove_if_present(&sibling_path(target, "-wal"))?;
+    sync_file(&staging)?;
+    // The old WAL must not meet the new file, but a crash before the rename must not lose
+    // it either: it moves aside first and is deleted only once the new file is in place.
+    let target_wal = sibling_path(target, "-wal");
+    let replaced_wal = sibling_path(target, "-wal.replaced");
+    rename_if_present(&target_wal, &replaced_wal)?;
     std::fs::rename(&staging, target).map_err(|source| Error::Io {
         path: target.to_path_buf(),
         source,
     })?;
-    if let Some(directory) = target.parent() {
-        sync_file(directory)?;
-    }
-    Ok(())
+    sync_file(&parent_directory(target))?;
+    remove_if_present(&replaced_wal)
 }
 
 /// Checks the copy's integrity, gives it a new epoch and folds its WAL into the main file.
@@ -89,6 +105,16 @@ async fn prepare_staged_copy(staging: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// Fails when `database`'s WAL still holds frames: the file alone would miss them, and the
+/// caller deletes the WAL next.
+fn refuse_unfolded_wal(database: &Path) -> Result<(), Error> {
+    let wal = sibling_path(database, "-wal");
+    if std::fs::metadata(&wal).is_ok_and(|metadata| metadata.len() > 0) {
+        return Err(Error::CheckpointIncomplete { path: wal });
+    }
+    Ok(())
+}
+
 fn refuse_existing(path: &Path) -> Result<(), Error> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => Err(Error::DestinationExists {
@@ -97,6 +123,41 @@ fn refuse_existing(path: &Path) -> Result<(), Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(Error::Io {
             path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+/// Links `from` at `to`, which must not exist: the link is the atomic no-overwrite step.
+fn link_new(from: &Path, to: &Path) -> Result<(), Error> {
+    match std::fs::hard_link(from, to) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(Error::DestinationExists {
+                path: to.to_path_buf(),
+            })
+        }
+        Err(source) => Err(Error::Io {
+            path: to.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+/// The directory holding `path`; `.` for a bare file name, whose parent is the empty path.
+fn parent_directory(path: &Path) -> std::path::PathBuf {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    }
+}
+
+fn rename_if_present(from: &Path, to: &Path) -> Result<(), Error> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            path: from.to_path_buf(),
             source,
         }),
     }

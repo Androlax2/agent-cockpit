@@ -3,7 +3,7 @@
 mod common;
 
 use cockpit_turso::{Database, Error, Migration, MigrationSet};
-use common::{TASK_MIGRATIONS, insert_task, scratch_dir, task_titles};
+use common::{NOTE_MIGRATIONS, TASK_MIGRATIONS, insert_task, scratch_dir, task_titles};
 
 const TASK_MIGRATIONS_V2: MigrationSet = MigrationSet {
     owner: "tasks",
@@ -98,6 +98,32 @@ async fn an_applied_migration_whose_sql_changed_is_refused() {
         matches!(&reopened, Err(Error::MigrationEdited { owner, version: 1 }) if owner == "tasks"),
         "{reopened:?}"
     );
+}
+
+#[tokio::test]
+async fn an_edited_migration_in_a_later_set_stops_earlier_sets_from_upgrading() {
+    let path = scratch_dir("migration-edited-later").join("state.db");
+    drop(
+        Database::open(&path, &[TASK_MIGRATIONS, NOTE_MIGRATIONS])
+            .await
+            .unwrap(),
+    );
+    let edited_notes = MigrationSet {
+        owner: "notes",
+        migrations: &[Migration {
+            version: 1,
+            sql: "CREATE TABLE notes (id INTEGER PRIMARY KEY)",
+        }],
+    };
+    assert!(
+        Database::open(&path, &[TASK_MIGRATIONS_V2, edited_notes])
+            .await
+            .is_err()
+    );
+
+    let previous_binary = Database::open(&path, &[TASK_MIGRATIONS, NOTE_MIGRATIONS]).await;
+
+    assert!(previous_binary.is_ok(), "{previous_binary:?}");
 }
 
 #[tokio::test]

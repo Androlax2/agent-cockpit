@@ -22,11 +22,14 @@ recovery and single opener pass, and the closed file passes plain `sqlite3`'s in
   an unknown owner, a version newer than the binary knows, or an applied migration whose SQL
   changed, before applying anything. Each migration commits with its ledger row.
 - **Backup and restore.** Backup is `VACUUM INTO`, which Turso does not gate behind an
-  experimental flag. Restore is offline: it takes the single-opener lock, checks the copy's
-  integrity, gives it a new database epoch so earlier change-feed cursors are recognisably
-  stale (report 04), folds its WAL and renames it over the target.
+  experimental flag, into a private file then hard-linked into place: a partial backup never
+  appears and an existing destination is never overwritten. Restore is offline: it takes the
+  single-opener lock, checks the copy's integrity, gives it a new database epoch so earlier
+  change-feed cursors are recognisably stale (report 04), and folds its WAL. The target's old
+  WAL moves aside before the rename and is deleted after it, so a crash in between loses nothing.
 - **Edges.** `cockpit-turso` depends on no `cockpit-*` crate, and no other member depends on
-  `turso`: capabilities run SQL through the re-exported `cockpit_turso::turso`. Both rules are
+  `turso`: capabilities run SQL through `cockpit_turso::sql`, which leaves out `turso::Builder`
+  and `turso::Database` so only this crate opens the file. Both rules are
   tests in `crates/cockpit-turso/tests/crate_graph.rs`, beside the crate they protect.
 
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate

@@ -34,6 +34,11 @@ pub enum Error {
         path: PathBuf,
         report: String,
     },
+    /// A backup or a restore's staged copy kept WAL frames that its main file lacks; the
+    /// operation stopped instead of deleting them.
+    CheckpointIncomplete {
+        path: PathBuf,
+    },
     /// Change capture returned a row this crate cannot interpret.
     UnexpectedChange {
         change_id: i64,
@@ -81,6 +86,12 @@ impl fmt::Display for Error {
             Error::IntegrityCheckFailed { path, report } => write!(
                 formatter,
                 "{} failed the integrity check: {report}",
+                path.display()
+            ),
+            Error::CheckpointIncomplete { path } => write!(
+                formatter,
+                "{} still holds frames its database file lacks; stopped before replacing \
+                 anything",
                 path.display()
             ),
             Error::UnexpectedChange { change_id, reason } => {

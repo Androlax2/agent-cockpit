@@ -34,20 +34,28 @@ pub enum ChangeKind {
     Delete,
 }
 
-impl ReadTransaction {
+impl ReadTransaction<'_> {
     /// The revision of the last commit this transaction's snapshot sees; 0 before any commit.
     pub async fn revision(&self) -> Result<i64, Error> {
+        // Every visible transaction ends with its COMMIT row, so the newest row is one; reading
+        // it by rowid avoids scanning the whole history for the newest COMMIT.
         let mut rows = self
             .query(
-                "SELECT coalesce(max(change_id), 0) FROM turso_cdc WHERE change_type = ?1",
-                [CHANGE_TYPE_COMMIT],
+                "SELECT change_id, change_type FROM turso_cdc ORDER BY change_id DESC LIMIT 1",
+                (),
             )
             .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or(turso::Error::QueryReturnedNoRows)?;
-        Ok(row.get(0)?)
+        let Some(row) = rows.next().await? else {
+            return Ok(0);
+        };
+        let change_id: i64 = row.get(0)?;
+        if row.get::<i64>(1)? != CHANGE_TYPE_COMMIT {
+            return Err(Error::UnexpectedChange {
+                change_id,
+                reason: "the newest change is not a COMMIT record".to_string(),
+            });
+        }
+        Ok(change_id)
     }
 
     /// Up to `max_commits` whole commits with a revision after `revision`, oldest first.
@@ -66,6 +74,7 @@ impl ReadTransaction {
             .await?;
         let mut commits = Vec::new();
         let mut pending_changes = Vec::new();
+        let mut first_pending_change_id = None;
         while commits.len() < max_commits
             && let Some(row) = rows.next().await?
         {
@@ -76,6 +85,7 @@ impl ReadTransaction {
                         revision: change_id,
                         changes: std::mem::take(&mut pending_changes),
                     });
+                    first_pending_change_id = None;
                     continue;
                 }
                 CHANGE_TYPE_INSERT => ChangeKind::Insert,
@@ -88,15 +98,18 @@ impl ReadTransaction {
                     });
                 }
             };
+            first_pending_change_id.get_or_insert(change_id);
             pending_changes.push(Change {
                 kind,
                 table: row.get(2)?,
                 row_id: row.get(3)?,
             });
         }
-        if commits.len() < max_commits && !pending_changes.is_empty() {
+        if commits.len() < max_commits
+            && let Some(change_id) = first_pending_change_id
+        {
             return Err(Error::UnexpectedChange {
-                change_id: revision,
+                change_id,
                 reason: "changes after the last COMMIT record".to_string(),
             });
         }

@@ -61,17 +61,29 @@ pub(crate) async fn apply(
 ) -> Result<(), Error> {
     let applied = applied_migrations(connection).await?;
     refuse_unknown_schema(&applied, sets)?;
+    refuse_edited_migrations(&applied, sets)?;
     for set in sets {
         for migration in set.migrations {
-            match applied.get(&(set.owner.to_string(), migration.version)) {
-                Some(applied_sql) if applied_sql == migration.sql => {}
-                Some(_) => {
-                    return Err(Error::MigrationEdited {
-                        owner: set.owner.to_string(),
-                        version: migration.version,
-                    });
-                }
-                None => apply_one(connection, set.owner, migration).await?,
+            if !applied.contains_key(&(set.owner.to_string(), migration.version)) {
+                apply_one(connection, set.owner, migration).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn refuse_edited_migrations(
+    applied: &BTreeMap<(String, u32), String>,
+    sets: &[MigrationSet],
+) -> Result<(), Error> {
+    for set in sets {
+        for migration in set.migrations {
+            let applied_sql = applied.get(&(set.owner.to_string(), migration.version));
+            if applied_sql.is_some_and(|applied_sql| applied_sql != migration.sql) {
+                return Err(Error::MigrationEdited {
+                    owner: set.owner.to_string(),
+                    version: migration.version,
+                });
             }
         }
     }
@@ -137,8 +149,10 @@ async fn apply_one(
     }
     .await;
     if let Err(error) = applied {
-        if !connection.is_autocommit()? {
-            connection.execute("ROLLBACK", ()).await?;
+        // The migration's error is the one to report. A failed ROLLBACK changes nothing: the
+        // failing open drops this connection, which discards the open transaction.
+        if matches!(connection.is_autocommit(), Ok(false)) {
+            let _ = connection.execute("ROLLBACK", ()).await;
         }
         return Err(error.into());
     }

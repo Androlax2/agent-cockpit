@@ -2,8 +2,9 @@
 
 Owns the state database's infrastructure: opening the one Turso file (single opener, change
 capture on), write and read transactions, the ordered migration runner, online backup and
-offline restore. It owns no feature queries: each capability owns its own SQL and migrations
-and receives a transaction from its caller (report 02, report 04).
+offline restore. It owns no feature queries: each capability owns its own SQL and migrations,
+receives a transaction from its caller and runs SQL through `cockpit_turso::sql` (report 02,
+report 04).
 
 ## Dependency edges
 

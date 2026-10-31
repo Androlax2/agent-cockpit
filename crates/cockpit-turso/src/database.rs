@@ -1,4 +1,5 @@
 use std::fs::{File, OpenOptions, TryLockError};
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -70,7 +71,7 @@ impl Database {
 
     /// Starts a read-only transaction on its own connection. Its snapshot is taken here, so
     /// every query and [`ReadTransaction::revision`] in it see the same commit.
-    pub async fn read(&self) -> Result<ReadTransaction, Error> {
+    pub async fn read(&self) -> Result<ReadTransaction<'_>, Error> {
         let connection = self.turso.connect()?;
         connection.execute("PRAGMA query_only = 1", ()).await?;
         connection.execute("BEGIN", ()).await?;
@@ -79,7 +80,10 @@ impl Database {
             .await?
             .next()
             .await?;
-        Ok(ReadTransaction { connection })
+        Ok(ReadTransaction {
+            connection,
+            database: PhantomData,
+        })
     }
 
     /// A connection for engine-level statements (backup) that need neither the writer nor a
@@ -122,11 +126,13 @@ impl Deref for WriteTransaction<'_> {
     }
 }
 
-pub struct ReadTransaction {
+pub struct ReadTransaction<'database> {
     connection: turso::Connection,
+    /// Borrows the `Database` so no reader outlives the single-opener lock.
+    database: PhantomData<&'database Database>,
 }
 
-impl Deref for ReadTransaction {
+impl Deref for ReadTransaction<'_> {
     type Target = turso::Connection;
 
     fn deref(&self) -> &turso::Connection {

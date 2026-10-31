@@ -32,12 +32,15 @@ fn member_manifests() -> Vec<(String, String)> {
     members
 }
 
-/// Names of every dependency a manifest declares, normal, dev, build or target-specific.
+/// Package names of every dependency a manifest declares, normal, dev, build or
+/// target-specific, under the `package = "..."` name when the dependency is renamed.
 ///
-/// Not a TOML parser: it reads the `name = ...` keys of `*dependencies` tables and the
-/// `[*dependencies.name]` headers, which is how this workspace spells dependencies.
+/// Not a TOML parser: it reads the `name = ...` keys of `*dependencies` tables, the
+/// `[*dependencies.name]` headers and their `package` keys, which is how this workspace spells
+/// dependencies.
 fn dependency_names(manifest: &str) -> Vec<String> {
     let mut is_dependency_table = false;
+    let mut is_single_dependency_table = false;
     let mut names = Vec::new();
     for line in manifest.lines() {
         let line = line.split('#').next().unwrap().trim();
@@ -47,18 +50,33 @@ fn dependency_names(manifest: &str) -> Vec<String> {
         {
             let header = header.trim();
             is_dependency_table = header.ends_with("dependencies");
+            is_single_dependency_table = false;
             if let Some((table, name)) = header.rsplit_once('.')
                 && table.ends_with("dependencies")
             {
                 names.push(name.trim().to_string());
+                is_single_dependency_table = true;
             }
             continue;
         }
-        if is_dependency_table && let Some((name, _)) = line.split_once('=') {
-            names.push(name.trim().to_string());
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if is_dependency_table {
+            names.push(package_name(value).unwrap_or_else(|| key.trim().to_string()));
+        } else if is_single_dependency_table && key.trim() == "package" {
+            *names.last_mut().unwrap() = value.trim().trim_matches('"').to_string();
         }
     }
     names
+}
+
+/// The `package = "..."` name inside an inline dependency table, if it renames the dependency.
+fn package_name(inline_value: &str) -> Option<String> {
+    let (_, after_key) = inline_value.split_once("package")?;
+    let quoted = after_key.trim_start().strip_prefix('=')?.trim_start();
+    let name = quoted.strip_prefix('"')?.split('"').next()?;
+    Some(name.to_string())
 }
 
 #[test]
@@ -89,6 +107,13 @@ fn only_cockpit_turso_depends_on_turso() {
         .map(|(name, _)| name)
         .collect();
     assert_eq!(members_using_turso, Vec::<String>::new());
+}
+
+#[test]
+fn a_renamed_dependency_is_found_by_its_package_name() {
+    let manifest = "[dependencies]\ndb = { version = \"1\", package = \"turso\" }\n\n\
+                    [dev-dependencies.store]\npackage = \"turso\"\nversion = \"1\"\n";
+    assert_eq!(dependency_names(manifest), ["turso", "turso"]);
 }
 
 #[test]
