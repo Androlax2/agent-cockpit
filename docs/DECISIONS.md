@@ -1,5 +1,21 @@
 # Engineering decisions
 
+## 2026-10-31 — Greenfield protocol: version lists, open enums, closed change kinds
+
+`cockpit-protocol` (issue #20) negotiates with a list, not a single number: the client's
+`Hello` names every version it speaks and the daemon picks the highest shared one, or
+refuses with `version-mismatch` and its own list. A client can then span an upgrade without
+a second round trip. Additive features are capabilities, granted only when both sides offer
+them; a version bump is reserved for changes an older peer would misread.
+
+Enums that grow (capabilities, refusal reasons, error codes, entity kinds) keep unknown
+values through a `#[serde(untagged)] Unknown(String)` variant. Commands do not: serde's
+untagged fallback would also swallow a malformed known command as "unknown", so
+`decode_request` checks the kind against `Command::KINDS` first and answers
+`unknown-command` or `invalid-request` with the precise serde message. The change kind
+(`upsert`, `tombstone`) is closed: a client that skipped a change it could not apply would
+advance its cursor over data it never applied, so a new kind needs a new version.
+
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
 
 Issue #18 asks for `cargo build` and `cargo test` to succeed from the root with no
