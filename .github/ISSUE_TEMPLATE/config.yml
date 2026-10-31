@@ -3,6 +3,6 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/Androlax2/agent-cockpit/security/advisories/new
     about: Report vulnerabilities privately, never in a public issue. See SECURITY.md.
-  - name: Working agreement (issue #17)
-    url: https://github.com/Androlax2/agent-cockpit/issues/17
+  - name: Contributing guide
+    url: https://github.com/Androlax2/agent-cockpit/blob/main/CONTRIBUTING.md
     about: Read the greenfield workflow and rules before filing work.

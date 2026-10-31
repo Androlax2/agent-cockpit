@@ -22,24 +22,20 @@ exists today under `apps/`. Everyone follows the
 3. Read the reports named on the issue's **Read** line, and nothing more.
 4. Read [Development](docs/DEVELOPMENT.md) for prerequisites and the check commands.
 
-`decided` reports are settled. `proposed` reports are implemented unless a later decision
-overrides them. When a
-change needs a decision the reports do not make, open an issue labelled
-`decision-needed` and stop on that point instead of guessing.
+Follow the reports according to that status legend. When a change needs a decision the
+reports do not make, open an issue labelled `decision-needed` and stop on that point
+instead of guessing.
 
 ## One issue, one pull request
 
 - Branch `greenfield/<issue-number>-<slug>` from `main`, one branch per issue.
   Dependent issues may stack on the previous issue's branch.
-- Never touch `apps/` except for a stabilization fix in its own pull request. Such a fix
-  preserves command paths, request validation, persistent state and host approval
-  boundaries, since `apps/` keeps running until the cutover.
+- Never touch `apps/` except for a stabilization fix in its own pull request, which keeps
+  the [compatibility boundaries](AGENTS.md#compatibility-boundaries).
 - Keep mechanical formatting, lint fixes and structural moves in separate commits from
   behavior changes, so each diff can be reviewed on its own.
-- Work in this order: the crate's one-sentence ownership and dependency edges, the
-  crate-graph rule, types, state machine and SQL with real-database tests, daemon wiring,
-  CLI verbs, TUI views.
-- Tests drive the CLI and the protocol, not internals. Add restart, stale-result and
+- Build in the [order the refactoring plan sets](docs/design/greenfield/20-refactoring-plan.md#order-inside-a-milestone);
+  tests drive the CLI and the protocol, not internals. Add restart, stale-result and
   duplicate-delivery fixtures where the issue lists them. Use isolated fixtures and fake
   host commands; never run tests against live user state.
 - When the pull request proves a row of the
@@ -53,17 +49,10 @@ change needs a decision the reports do not make, open an issue labelled
 
 ## Checks
 
-| Change | Run before pushing |
-| --- | --- |
-| `crates/`, root `Cargo.toml` or `Cargo.lock` | The crate's focused tests (`cargo nextest run --manifest-path Cargo.toml --test <name>`) and `make greenfield-ci` |
-| `apps/`, `config/`, `tools/` or `packaging/` | `make ci` |
-| `Makefile` or `.github/` | `make greenfield-ci` and `make ci` |
-| Any Markdown file | `make docs-ci` |
-
-`tools/ci-jobs.py` maps changed paths to these CI jobs.
-
-The pull request's CI is the full gate. A pull request is merged only when every check is
-green.
+Run focused tests while you work, then the gate for the paths you changed:
+[Development](docs/DEVELOPMENT.md#verification-policy) lists which `make` target covers
+which paths. The pull request's CI is the full gate; a pull request is merged only when
+every check is green.
 
 ## Labels
 
@@ -80,19 +69,10 @@ green.
 
 ## Milestones
 
-| Milestone | Proves |
-| --- | --- |
-| M0 Foundation | Daemon starts on a clean home on Linux, macOS and WSL2; versioned protocol handshake; diagnostics |
-| M1 Single-session parity | One session's lifecycle, approvals end to end, executions survive a daemon restart |
-| M2 Tasks and scheduling | Todo parity, evidence-bound completion, durability walkthroughs |
-| M3 Providers and onboarding | Provider conformance, clean-home onboarding, measured context budget |
-| M4 Teams and Chief | Team parity and Chief behavior |
-| M5 Full parity and cutover | Coverage map parity, release bundle on three platforms, cutover from `apps/` |
-| M6 Designed UI | The designed TUI and polish rows |
-| M7 Plugins | WASM plugin runtime behind declared grants |
-
-Each milestone's full description and gate live on GitHub and in the
-[refactoring plan](docs/design/greenfield/20-refactoring-plan.md).
+M0 Foundation, M1 Single-session parity, M2 Tasks and scheduling, M3 Providers and
+onboarding, M4 Teams and Chief, M5 Full parity and cutover, M6 Designed UI, M7 Plugins.
+What each one proves, and its gate, live on GitHub and in the
+[refactoring plan](docs/design/greenfield/20-refactoring-plan.md#milestones-and-gates).
 
 ## Stale branches
 

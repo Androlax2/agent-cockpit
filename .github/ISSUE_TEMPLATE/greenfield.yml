@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Workflow and rules: #17. One issue, one pull request, branch `greenfield/<issue>-<slug>`.
+        Workflow and rules: [CONTRIBUTING.md](https://github.com/Androlax2/agent-cockpit/blob/main/CONTRIBUTING.md), which summarizes #17.
   - type: input
     id: owns
     attributes:
