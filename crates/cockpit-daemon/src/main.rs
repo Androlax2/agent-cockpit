@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
-use cockpit_daemon::{Instance, Options, RUN_LEADER_FLAG, Routes, StartError, Wiring};
+use cockpit_daemon::{
+    Instance, Options, RUN_LEADER_FLAG, Routes, StartError, Wiring, session_settings,
+};
 use cockpit_provider_api::{Provenance, Provider};
 
 const USAGE: &str = "usage: cockpit-daemon [--foreground]";
@@ -68,10 +70,13 @@ fn run(foreground: bool) -> Result<(), StartError> {
                 source,
             }
         })?;
-    // Read once: a start file declared later counts from the next daemon start.
-    let start_files = cockpit_config::load(&environment, None, &[])
-        .map_err(StartError::Config)?
-        .declared_start_files();
+    // Read once: a start file declared or a session setting changed later counts from the
+    // next daemon start. The log runs already, so a detached daemon records the refusal.
+    let config = cockpit_config::load(&environment, None, &[]).map_err(|error| {
+        tracing::error!(%error, "the owner configuration is invalid");
+        StartError::Config(error)
+    })?;
+    let start_files = config.declared_start_files();
     // Discovery runs programs and may block for seconds, so it comes before the runtime.
     let daemon_program = std::env::current_exe().map_err(|source| StartError::Io {
         action: "find the daemon's own program",
@@ -98,7 +103,7 @@ fn run(foreground: bool) -> Result<(), StartError> {
                     .filter_map(|name| Some(((*name).into(), std::env::var_os(name)?)))
                     .collect(),
                 start_files,
-                ..cockpit_sessions::Settings::default()
+                ..session_settings(&config)
             },
             session_tick: Duration::from_secs(30),
             run_settings,

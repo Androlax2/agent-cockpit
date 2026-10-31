@@ -56,6 +56,14 @@ impl Home {
         self.dir.path().canonicalize().unwrap()
     }
 
+    /// The owner's environment the daemon reads its configuration from.
+    fn environment(&self) -> cockpit_config::Environment {
+        cockpit_config::Environment {
+            home: Some(self.path().join("home").into()),
+            ..cockpit_config::Environment::default()
+        }
+    }
+
     fn agent_log(&self) -> PathBuf {
         self.path().join("agent.log")
     }
@@ -109,13 +117,7 @@ impl Home {
                     instance
                         .start(wiring(), |capabilities| {
                             self.keep_database(&capabilities);
-                            Arc::new(Routes::new(
-                                capabilities,
-                                cockpit_config::Environment {
-                                    home: Some(self.path().join("home").into()),
-                                    ..cockpit_config::Environment::default()
-                                },
-                            ))
+                            Arc::new(Routes::new(capabilities, self.environment()))
                         })
                         .await
                 }
@@ -1069,4 +1071,59 @@ async fn the_agent_socket_refuses_every_session_command() {
             ErrorCode::NotAuthorized
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owner_configured_idle_window_decides_when_a_waiting_agent_sleeps() {
+    let home = Home::new();
+    let config_dir = home.path().join("home/.config/cockpit");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[sessions]\nidle_sleep_after_minutes = 45\n",
+    )
+    .unwrap();
+    let config = cockpit_config::load(&home.environment(), None, &[]).unwrap();
+    let configured = cockpit_sessions::Settings {
+        stop: settings().stop,
+        ..cockpit_daemon::session_settings(&config)
+    };
+    let daemon = home.start(BASELINE, configured).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    home.report_as_agent(&home.launches()[0], cockpit_sessions::AgentState::Waiting)
+        .await;
+
+    // 46 minutes at the prompt: past the configured 45, short of the product's 60. The
+    // launch moves back too, so the report still belongs to this agent.
+    let waiting_since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 46 * 60;
+    let waiting_since = i64::try_from(waiting_since).unwrap();
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let write = database.write().await.unwrap();
+    for statement in [
+        "UPDATE session_launches SET launched_at = ?1",
+        "UPDATE session_reports SET reported_at = ?1",
+    ] {
+        write.execute(statement, [waiting_since]).await.unwrap();
+    }
+    write.commit().await.unwrap();
+
+    wait_for_state(&client, &started.id, SessionStateView::Asleep).await;
+}
+
+#[test]
+fn a_clean_owner_configuration_keeps_the_sessions_product_defaults() {
+    let home = Home::new();
+    let config = cockpit_config::load(&home.environment(), None, &[]).unwrap();
+
+    let configured = cockpit_daemon::session_settings(&config);
+    let product = cockpit_sessions::Settings::default();
+
+    assert_eq!(configured.idle_sleep_after, product.idle_sleep_after);
+    assert_eq!(configured.asleep_expiry, product.asleep_expiry);
 }

@@ -61,6 +61,16 @@ pub struct Wiring {
     pub run_settings: cockpit_approvals::RunSettings,
 }
 
+/// The sessions' settings the owner configured, the idle window and the asleep expiry
+/// (report 09); everything else keeps the product's values.
+pub fn session_settings(config: &cockpit_config::EffectiveConfig) -> cockpit_sessions::Settings {
+    cockpit_sessions::Settings {
+        idle_sleep_after: config.idle_sleep_after.value,
+        asleep_expiry: config.asleep_expiry.value,
+        ..cockpit_sessions::Settings::default()
+    }
+}
+
 /// The capabilities a started daemon serves, for the [`Handler`] its caller builds.
 #[derive(Clone)]
 pub struct Capabilities {

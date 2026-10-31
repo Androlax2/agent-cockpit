@@ -4,7 +4,7 @@ use std::path::Path;
 
 use toml::{Table, Value};
 
-use crate::{ConfigFile, EffectiveConfig, Source};
+use crate::{ASLEEP_EXPIRY_DAYS, ConfigFile, EffectiveConfig, IDLE_SLEEP_AFTER_MINUTES, Source};
 
 const UNSET: &str = "<unset>";
 
@@ -71,6 +71,16 @@ pub fn render(config: &EffectiveConfig) -> String {
         &config.tasks_cross_project_open_max.value.to_string(),
         &config.tasks_cross_project_open_max.source,
     ));
+    for (bound, setting) in [
+        (&IDLE_SLEEP_AFTER_MINUTES, &config.idle_sleep_after),
+        (&ASLEEP_EXPIRY_DAYS, &config.asleep_expiry),
+    ] {
+        lines.push(line(
+            bound.key,
+            &bound.count(setting.value).to_string(),
+            &setting.source,
+        ));
+    }
     for start_file in &config.start_files {
         let mut fields = Table::new();
         fields.insert("path".to_string(), path_toml(&start_file.value.path));

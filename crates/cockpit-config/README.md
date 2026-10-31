@@ -18,7 +18,7 @@ grants: owner settings are inputs to `cockpit-authorization`, which decides.
 | Project config | `<project>/.cockpit/config.toml` | describing settings only (`workflow.preset`) |
 | Overrides | `--set key=value` (TOML value) | `projects.trusted`, `workflow.preset` |
 
-A project file that sets an owner setting (`projects`, `start_files`, `tasks`) fails with its file and
+A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`) fails with its file and
 line: repository configuration describes requirements, owner settings grant. Unknown keys,
 relative paths and unknown providers fail the same way. State and cache go under
 `$XDG_STATE_HOME/cockpit` and `$XDG_CACHE_HOME/cockpit`; the runtime directory is
@@ -39,6 +39,17 @@ Owner settings for what sessions file (`cockpit-tasks`, #38):
 [tasks]
 blocker_project = "dotfiles"   # where blocker reports go; unset refuses them
 cross_project_open_max = 3     # open items one project may file in another's list
+```
+
+## Sessions
+
+How long an agent may wait at its prompt before its session sleeps, and how long a session may
+sleep before it ends. The daemon reads both at start; a value below the minimum stops it.
+
+```toml
+[sessions]
+idle_sleep_after_minutes = 60  # at least 30
+asleep_expiry_days = 7         # at least 1
 ```
 
 ## Start files
