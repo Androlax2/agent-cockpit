@@ -39,6 +39,8 @@ make lint-lua
 make deny
 make crates-build crates-test
 make crates-fmt-check crates-clippy crates-doc crates-deny
+make greenfield-ci
+make docs-ci
 make check-links
 make typos
 make ci
@@ -50,7 +52,8 @@ classifier, then runs release Rust tests with nextest. Use that entry point for 
 run; do not bypass the lock to compete with another clone's suite.
 
 The `crates-*` targets run the same checks on the greenfield workspace, in the debug
-profile. `make test` ends with `crates-test`, and `make ci` runs every `crates-*` check.
+profile. `make greenfield-ci` runs them all; `make test` and `make ci` cover `apps/`, `config/`
+and `tools/` only. `make docs-ci` runs the Markdown style, local link and spelling checks.
 
 Rust checks cover every workspace member and target, with warnings treated as errors.
 The language targets use [tools/quality.py](../tools/quality.py) to select tracked files,
@@ -116,7 +119,11 @@ the policy assigns no license to Cockpit itself. Duplicate dependency versions r
 visible warnings, matching the reference policy.
 
 `make ci` runs all checks and the shared full regression suite serially. JavaScript's
-default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml) calls this same target on an
+default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml) splits by changed path
+([tools/ci-jobs.py](../tools/ci-jobs.py)): `legacy` runs `make ci` for `apps/`, `config/`, `tools/` and
+`packaging/`; `greenfield` runs `make greenfield-ci` for `crates/` and the root manifests; `docs`
+runs `make docs-ci` for `docs/` and any Markdown file. The Makefile and `.github/` run both code
+jobs; a path no job claims, and a push to `main`, run every job. Each job runs on an
 Ubuntu 26.04 runner with pinned Rust, Node and checker versions, read-only repository
 permissions and immutable action revisions. Linux runtime libraries, fish and Lua come
 from that Ubuntu release. This workflow has not yet been run on GitHub; activation

@@ -12,6 +12,13 @@ is an `#[allow(unsafe_code, reason = "…")]` on the smallest item. `apps/` keep
 workspace and target until the M5 cutover; report 02 supersedes the 2026-10-28 entry
 that kept `crates/` under `apps/`.
 
+CI picks its jobs with `tools/ci-jobs.py` in a `changes` job instead of a third-party
+paths-filter action or per-workflow `paths:` filters. A workflow skipped by `paths:` leaves
+a required check pending forever, while a job skipped by `if:` reports as skipped. Plain
+`git diff` plus a tested script needs no new pinned action. A path no job claims, and an
+empty diff, run every job: a gap in the path lists shows up as extra work, not as a skipped
+gate.
+
 ## 2026-10-29 — Keep database error conversion at the store boundary
 
 Team and Chief wire contracts share `cockpit-protocol`, which has no SQLite or UI

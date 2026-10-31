@@ -21,8 +21,8 @@ apply runs `make after-apply` (relink, rebuild, `cockpit reload`); then run
 ## Tests
 
 `make test` from the repository root: the scripts, hooks and programs through fake commands on
-PATH (apps/cockpit/tests), the daemon's registry (apps/crates/cockpit-daemon), the Python tools (tools/tests),
-then the greenfield workspace in crates/ (`make crates-test`).
+PATH (apps/cockpit/tests), the daemon's registry (apps/crates/cockpit-daemon), and the Python tools (tools/tests).
+The greenfield workspace in crates/ has its own gate, `make greenfield-ci` (tests: `make crates-test`).
 The Rust tests run under `cargo nextest` (Arch package `cargo-nextest`), one process per test, all
 in parallel; a single file still runs with `cargo nextest run --release --manifest-path apps/Cargo.toml --test <name>`,
 or `cargo nextest run --manifest-path Cargo.toml --test <name>` for a greenfield crate.
