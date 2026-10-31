@@ -20,6 +20,8 @@ pub enum StartError {
         path: PathBuf,
         source: io::Error,
     },
+    /// The configured [`crate::Limits`] would let the daemon serve nothing.
+    InvalidLimits(&'static str),
     /// The Tokio runtime could not start.
     Runtime(io::Error),
     Diagnostics(cockpit_diagnostics::Error),
@@ -57,6 +59,7 @@ impl fmt::Display for StartError {
                 path,
                 source,
             } => write!(formatter, "cannot {action} {}: {source}", path.display()),
+            Self::InvalidLimits(reason) => write!(formatter, "invalid limits: {reason}"),
             Self::Runtime(error) => write!(formatter, "cannot start the async runtime: {error}"),
             Self::Diagnostics(error) => write!(formatter, "{error}"),
             Self::Database(error) => write!(formatter, "state database: {error}"),

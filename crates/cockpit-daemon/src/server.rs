@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Response, SUPPORTED_VERSIONS,
-    ServerFrame, Welcome, decode_hello, decode_request, negotiate,
+    ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal, RefusalReason, Response,
+    SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello, decode_request, negotiate,
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -17,10 +17,13 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::StartError;
 use crate::lanes::{LaneLimits, Lanes};
-use crate::routes::{Handler, Route};
+use crate::routes::{Handler, Route, refusal};
 
 /// Only the owner may connect; the 0700 directory already says so, this is the second lock.
 const SOCKET_MODE: u32 = 0o600;
+/// Capacity a connection keeps between frames; a larger buffer, left by a big frame, is
+/// released instead of being held for the connection's lifetime.
+const RETAINED_FRAME_CAPACITY: usize = 64 * 1024;
 /// A failed `accept` (out of descriptors) is retried after this pause instead of spinning.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
@@ -52,6 +55,29 @@ impl Default for Limits {
                 waiting: 32,
             },
             handshake_timeout: Duration::from_secs(5),
+        }
+    }
+}
+
+impl Limits {
+    /// Refuses limits under which the daemon could not serve anything.
+    pub(crate) fn validate(&self) -> Result<(), StartError> {
+        let invalid = [
+            (self.connections == 0, "connections must be at least 1"),
+            (
+                self.requests_per_connection == 0,
+                "requests_per_connection must be at least 1",
+            ),
+            (self.control.workers == 0, "the control lane needs a worker"),
+            (self.bulk.workers == 0, "the bulk lane needs a worker"),
+            (
+                self.handshake_timeout.is_zero(),
+                "handshake_timeout must not be zero",
+            ),
+        ];
+        match invalid.into_iter().find(|(is_invalid, _)| *is_invalid) {
+            Some((_, reason)) => Err(StartError::InvalidLimits(reason)),
+            None => Ok(()),
         }
     }
 }
@@ -151,6 +177,8 @@ async fn serve_connection(stream: UnixStream, shared: &Shared) {
         let Ok(answer) = outgoing.clone().reserve_owned().await else {
             break;
         };
+        frame.clear();
+        frame.shrink_to(RETAINED_FRAME_CAPACITY);
         match next_frame(&mut reader, &mut frame).await {
             Ok(()) => {}
             Err(FrameError::TooLarge) => {
@@ -204,16 +232,23 @@ async fn handshake(
     writer: &mut OwnedWriteHalf,
     frame: &mut Vec<u8>,
 ) -> Option<Welcome> {
-    if next_frame(reader, frame).await.is_err() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(frame);
-    let reply = match decode_hello(&text, &SUPPORTED_VERSIONS) {
-        // The daemon offers no capability yet: the change feed arrives with messaging (#41).
-        Ok(hello) => negotiate(&hello, &SUPPORTED_VERSIONS, &[]),
-        Err(refusal) => HandshakeReply::Refused(refusal),
+    let read = next_frame(reader, frame).await;
+    let reply = match read {
+        Err(FrameError::Closed) => return None,
+        Err(FrameError::TooLarge) => malformed_hello(format!(
+            "the first frame is larger than {MAX_FRAME_BYTES} bytes"
+        )),
+        Ok(()) => match std::str::from_utf8(frame) {
+            Err(_) => malformed_hello("the first frame is not UTF-8".to_owned()),
+            Ok(text) => match decode_hello(text, &SUPPORTED_VERSIONS) {
+                // The daemon offers no capability yet: the change feed arrives with
+                // messaging (#41).
+                Ok(hello) => negotiate(&hello, &SUPPORTED_VERSIONS, &[]),
+                Err(refusal) => HandshakeReply::Refused(refusal),
+            },
+        },
     };
-    let line = encode(&reply)?;
+    let line = encode(&reply).expect("a handshake reply is far below the frame limit");
     writer.write_all(&line).await.ok()?;
     match reply {
         HandshakeReply::Accepted(welcome) => Some(welcome),
@@ -226,8 +261,20 @@ async fn handshake(
 
 async fn write_frames(mut writer: OwnedWriteHalf, mut frames: mpsc::Receiver<ServerFrame>) {
     while let Some(frame) = frames.recv().await {
-        let Some(line) = encode(&frame) else {
-            continue;
+        let line = match (encode(&frame), frame) {
+            (Some(line), _) => line,
+            (None, ServerFrame::Response(Response { id, .. })) => {
+                let too_large = ServerFrame::Response(Response {
+                    id,
+                    outcome: refusal(
+                        ErrorCode::Internal,
+                        "the answer is larger than the frame limit; the request may have \
+                         taken effect",
+                    ),
+                });
+                encode(&too_large).expect("a refusal is far below the frame limit")
+            }
+            (None, _) => continue,
         };
         if writer.write_all(&line).await.is_err() {
             return;
@@ -236,7 +283,7 @@ async fn write_frames(mut writer: OwnedWriteHalf, mut frames: mpsc::Receiver<Ser
 }
 
 /// `frame` as one line of JSON. The daemon's own frames always serialize; one larger than
-/// the limit is a daemon bug, logged and not sent.
+/// the limit is a daemon bug, logged; the caller answers its request with a refusal.
 fn encode(frame: &impl serde::Serialize) -> Option<Vec<u8>> {
     let mut line = serde_json::to_vec(frame).expect("protocol frames serialize");
     line.push(b'\n');
@@ -248,6 +295,14 @@ fn encode(frame: &impl serde::Serialize) -> Option<Vec<u8>> {
         return None;
     }
     Some(line)
+}
+
+fn malformed_hello(message: String) -> HandshakeReply {
+    HandshakeReply::Refused(Refusal {
+        reason: RefusalReason::MalformedHello,
+        message,
+        supported_versions: SUPPORTED_VERSIONS.to_vec(),
+    })
 }
 
 fn malformed(message: String) -> ServerFrame {

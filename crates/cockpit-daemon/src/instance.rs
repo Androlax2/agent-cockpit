@@ -74,8 +74,10 @@ impl Instance {
     /// same user fails here with [`StartError::AlreadyRunning`], before it touches the
     /// socket, the logs or the database.
     pub fn acquire(options: Options) -> Result<Instance, StartError> {
-        create_private_dir(&options.state_dir)?;
-        create_private_dir(&options.runtime_dir)?;
+        options.limits.validate()?;
+        let owner_uid = effective_uid(&options.state_dir)?;
+        create_private_dir(&options.state_dir, owner_uid)?;
+        create_private_dir(&options.runtime_dir, owner_uid)?;
         let lock_path = options.runtime_dir.join(LOCK_FILE);
         let lock = OpenOptions::new()
             .create(true)
@@ -90,11 +92,6 @@ impl Instance {
                 return Err(StartError::io("lock", &lock_path)(source));
             }
         }
-        // The directory is 0700 and this process could create a file in it, so it is this
-        // user's: its owner is the daemon's user id, read without unsafe `geteuid`.
-        let owner_uid = fs::metadata(&options.runtime_dir)
-            .map_err(StartError::io("inspect", &options.runtime_dir))?
-            .uid();
         Ok(Instance {
             options,
             owner_uid,
@@ -107,10 +104,25 @@ impl Instance {
     }
 }
 
+/// The user id this process creates files as, read from a file it creates next to
+/// `near` (its parent, created if missing), since `geteuid` would need `unsafe`.
+fn effective_uid(near: &Path) -> Result<u32, StartError> {
+    let parent = near.parent().unwrap_or(near);
+    fs::create_dir_all(parent).map_err(StartError::io("create", parent))?;
+    let probe = parent.join(format!(".cockpit-daemon-uid-{}", std::process::id()));
+    let created = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|file| file.metadata());
+    let _ = fs::remove_file(&probe);
+    Ok(created.map_err(StartError::io("create", &probe))?.uid())
+}
+
 /// Creates `path` (and missing parents) 0700, or checks that the existing directory is a
-/// real directory nobody else may open. A wider mode is refused, never tightened: someone
-/// else may already have reached it.
-fn create_private_dir(path: &Path) -> Result<(), StartError> {
+/// real directory of `owner_uid` nobody else may open. A wider mode is refused, never
+/// tightened: someone else may already have reached it.
+fn create_private_dir(path: &Path, owner_uid: u32) -> Result<(), StartError> {
     match DirBuilder::new()
         .recursive(true)
         .mode(PRIVATE_DIR_MODE)
@@ -129,6 +141,12 @@ fn create_private_dir(path: &Path) -> Result<(), StartError> {
     };
     if !metadata.file_type().is_dir() {
         return refuse("is not a directory (a symbolic link is refused)".to_owned());
+    }
+    if metadata.uid() != owner_uid {
+        return refuse(format!(
+            "belongs to user id {}, not to this daemon's user id {owner_uid}",
+            metadata.uid()
+        ));
     }
     let mode = metadata.permissions().mode() & 0o777;
     if mode != PRIVATE_DIR_MODE {

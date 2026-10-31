@@ -158,3 +158,35 @@ async fn an_oversized_frame_is_answered_and_closes_the_connection() {
     assert_eq!(answer["type"], "malformed-frame", "{answer}");
     assert_eq!(peer.read_frame().await, None);
 }
+
+#[tokio::test]
+async fn an_oversized_hello_is_refused_as_malformed() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let mut peer = RawPeer::connect(&home).await;
+
+    let _ = peer
+        .writer
+        .write_all(&vec![b' '; MAX_FRAME_BYTES + 1])
+        .await;
+
+    let refusal = peer.read_frame().await.unwrap();
+    assert_eq!(refusal["reason"], "malformed-hello", "{refusal}");
+    assert_eq!(peer.read_frame().await, None);
+}
+
+#[tokio::test]
+async fn a_hello_that_is_not_utf8_is_refused_instead_of_repaired() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let mut peer = RawPeer::connect(&home).await;
+
+    peer.send_line(b"{\"protocol_versions\":[1],\"note\":\"\xff\"}")
+        .await;
+
+    let refusal = peer.read_frame().await.unwrap();
+    assert_eq!(
+        (&refusal["outcome"], &refusal["reason"]),
+        (&json!("refused"), &json!("malformed-hello"))
+    );
+}

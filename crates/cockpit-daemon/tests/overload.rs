@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{
-    Daemon, Handler, Instance, LaneLimits, Limits, Options, Route, Routes, WorkClass,
+    Daemon, Handler, Instance, LaneLimits, Limits, Options, Route, Routes, StartError, WorkClass,
 };
 use cockpit_protocol::{
-    Command, CommitRevision, Cursor, DatabaseEpoch, ErrorCode, FeedPosition, Outcome,
-    ProtocolError, Reply, Welcome,
+    Command, CommitRevision, Cursor, DatabaseEpoch, ErrorCode, FeedPosition, MAX_FRAME_BYTES,
+    Outcome, ProtocolError, Reply, Welcome,
 };
 
 const GENEROUS: Duration = Duration::from_secs(10);
@@ -28,6 +28,8 @@ enum BulkBehavior {
     PanicInJob,
     /// Panics while routing, on the connection's own task.
     PanicWhileRouting,
+    /// Answers with a reply larger than the frame limit.
+    OversizedAnswer,
 }
 
 struct Fixture {
@@ -74,8 +76,17 @@ impl Handler for FixtureHandler {
         Route::Run {
             class: WorkClass::Bulk,
             job: Box::pin(async move {
-                if let BulkBehavior::PanicInJob = fixture.behavior {
-                    panic!("fixture: the job failed");
+                match fixture.behavior {
+                    BulkBehavior::PanicInJob => panic!("fixture: the job failed"),
+                    BulkBehavior::OversizedAnswer => {
+                        return Outcome::Ok(Reply::Subscribed {
+                            cursor: Cursor {
+                                epoch: DatabaseEpoch("x".repeat(MAX_FRAME_BYTES)),
+                                revision: CommitRevision(0),
+                            },
+                        });
+                    }
+                    _ => {}
                 }
                 tokio::task::spawn_blocking(move || {
                     fixture.started.fetch_add(1, Ordering::SeqCst);
@@ -103,17 +114,20 @@ struct Running {
     _home: tempfile::TempDir,
 }
 
-async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
-    let home = tempfile::tempdir().unwrap();
-    let options = Options {
+fn options_in(home: &tempfile::TempDir, bulk: LaneLimits) -> Options {
+    Options {
         runtime_dir: home.path().join("run/cockpit"),
         state_dir: home.path().join("state/cockpit"),
         limits: Limits {
             bulk,
             ..Limits::default()
         },
-    };
-    let daemon = Instance::acquire(options)
+    }
+}
+
+async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
+    let home = tempfile::tempdir().unwrap();
+    let daemon = Instance::acquire(options_in(&home, bulk))
         .unwrap()
         .start(Arc::new(FixtureHandler(Arc::clone(fixture))))
         .await
@@ -260,5 +274,55 @@ async fn a_panic_while_routing_ends_only_that_connection() {
     assert_eq!(
         reconnected.request(Command::Ping, GENEROUS).await.unwrap(),
         Reply::Pong
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_over_the_frame_limit_is_replaced_by_an_internal_refusal() {
+    let fixture = Fixture::new(BulkBehavior::OversizedAnswer);
+    let running = start(&fixture, Limits::default().bulk).await;
+    let client = connect(&running).await;
+
+    let answer = client.request(subscribe(), GENEROUS).await;
+
+    assert_eq!(error_code(&answer), Some(ErrorCode::Internal), "{answer:?}");
+    assert_eq!(
+        client.request(Command::Ping, GENEROUS).await.unwrap(),
+        Reply::Pong
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_daemon_stops_accepting_connections() {
+    let fixture = Fixture::new(BulkBehavior::BlockUntilReleased);
+    let running = start(&fixture, Limits::default().bulk).await;
+    let socket_path = running.daemon.socket_path().to_path_buf();
+
+    drop(running.daemon);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let refused = Connection::open(&socket_path, Duration::from_secs(1)).await;
+    assert!(
+        matches!(refused, Err(ClientError::Connect { .. })),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn limits_that_would_serve_nothing_stop_startup() {
+    let home = tempfile::tempdir().unwrap();
+    let mut options = options_in(&home, Limits::default().bulk);
+    options.limits.requests_per_connection = 0;
+
+    let refused = Instance::acquire(options);
+
+    assert!(
+        matches!(
+            refused,
+            Err(StartError::InvalidLimits(
+                "requests_per_connection must be at least 1"
+            ))
+        ),
+        "{refused:?}"
     );
 }
