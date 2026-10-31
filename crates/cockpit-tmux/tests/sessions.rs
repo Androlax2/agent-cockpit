@@ -242,7 +242,7 @@ fn the_server_starts_with_cockpits_own_config() {
 fn a_session_cockpit_did_not_name_is_left_out_of_the_list() {
     let fixture = TestServer::new();
     fixture.start_shell("agent-1", "sleep 30");
-    fixture.tmux(&["new-session", "-d", "-s", "my.project", "sleep 30"]);
+    fixture.tmux(&["new-session", "-d", "-s", "my project", "sleep 30"]);
 
     let names = fixture.server.sessions().expect("lists");
 
