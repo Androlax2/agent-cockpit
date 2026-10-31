@@ -31,9 +31,16 @@ async fn a_leader_that_fails_leaves_the_run_not_run_with_what_it_printed() {
     };
     let asked = fixture.asked(&session("s1"), "true").await;
     let write = fixture.database.write().await.unwrap();
-    let approved = approve_run(&write, asked.id, asked.revision, &asked.digest(), NOW)
-        .await
-        .unwrap();
+    let after_grace = NOW + cockpit_approvals::APPROVAL_GRACE_SECONDS;
+    let (approved, _) = approve_run(
+        &write,
+        asked.id,
+        asked.revision,
+        &asked.digest(),
+        after_grace,
+    )
+    .await
+    .unwrap();
     write.commit().await.unwrap();
     // A leader that prints why it failed and exits before the program could start.
     let settings = RunSettings::new(
