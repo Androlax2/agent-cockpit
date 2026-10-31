@@ -15,9 +15,8 @@ contract.
 
 The release workflow runs on release tags. Its nightly schedule and a manual dispatch, the
 build before a tag, run it as a dry run: built and installed, never attested or released. A
-pull request starts it only when it changes the release machinery itself (the two
-workflows, `tools/release.py`, its tests and `cliff.toml`); `ci.yml` builds and tests crate
-changes.
+pull request starts it only when it changes the release machinery itself (the workflow's
+`pull_request` paths); `ci.yml` builds and tests crate changes.
 
 ## Versions
 
