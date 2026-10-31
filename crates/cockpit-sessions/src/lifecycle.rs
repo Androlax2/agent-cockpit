@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cockpit_authorization::{Permission, Scope};
@@ -59,13 +59,14 @@ pub struct Sessions {
     operations: Mutex<HashMap<SessionId, Arc<SessionLock>>>,
 }
 
-/// A session's operation lock, and the launches that hold or wait for it. A stop never
+/// A session's operation lock, and whether a launch holds it. A stop never
 /// waits behind a launch (#230, report 03): it holds a stop-lane worker while it waits, and
 /// a launch may wait minutes on its provider, so a stop is refused while a launch runs.
 #[derive(Default)]
 struct SessionLock {
     operation: Arc<tokio::sync::Mutex<()>>,
-    launches: AtomicUsize,
+    /// Set only under `operation`, so at most one launch at a time.
+    is_launching: AtomicBool,
     /// Wakes the stops waiting for the lock when a launch starts, so they refuse at once
     /// instead of waiting behind it.
     launch_started: tokio::sync::Notify,
@@ -80,7 +81,7 @@ struct Operation {
 
 impl Operation {
     fn launching(&self) -> Launching {
-        self.session.launches.fetch_add(1, Ordering::SeqCst);
+        self.session.is_launching.store(true, Ordering::SeqCst);
         self.session.launch_started.notify_waiters();
         Launching(Arc::clone(&self.session))
     }
@@ -91,7 +92,7 @@ struct Launching(Arc<SessionLock>);
 
 impl Drop for Launching {
     fn drop(&mut self) {
-        self.0.launches.fetch_sub(1, Ordering::SeqCst);
+        self.0.is_launching.store(false, Ordering::SeqCst);
     }
 }
 
@@ -145,12 +146,16 @@ impl Sessions {
         operation: &'static str,
     ) -> Result<Operation, Error> {
         let session = self.session_lock(id);
+        // One wait for the whole loop, so the stop keeps its place in the lock's queue when
+        // a launch started and finished while it waited.
+        let lock = Arc::clone(&session.operation).lock_owned();
+        tokio::pin!(lock);
         let guard = loop {
-            // Registered before the count is read, so a launch starting in between wakes it.
+            // Registered before the flag is read, so a launch starting in between wakes it.
             let launch_started = session.launch_started.notified();
             tokio::pin!(launch_started);
             launch_started.as_mut().enable();
-            if session.launches.load(Ordering::SeqCst) > 0 {
+            if session.is_launching.load(Ordering::SeqCst) {
                 return Err(Error::LaunchInProgress {
                     session: id.clone(),
                     operation,
@@ -158,7 +163,7 @@ impl Sessions {
             }
             tokio::select! {
                 biased;
-                guard = Arc::clone(&session.operation).lock_owned() => break guard,
+                guard = &mut lock => break guard,
                 () = &mut launch_started => {}
             }
         };
@@ -239,9 +244,9 @@ impl Sessions {
     pub async fn restart(&self, id: &SessionId) -> Result<Session, Error> {
         self.tmux()?;
         let operation = self.lock(id).await;
-        let _launching = operation.launching();
         let session = self.get(id).await?;
         self.resumable(&session)?;
+        let _launching = operation.launching();
         self.stop(id, &RESTARTABLE, StopTarget::Restart, "restart")
             .await
     }
@@ -349,8 +354,7 @@ impl Sessions {
     pub async fn wake(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
         self.tmux()?;
         let operation = self.lock(id).await;
-        let _launching = operation.launching();
-        self.wake_locked(id, cause).await
+        self.wake_locked(&operation, id, cause).await
     }
 
     /// For callers that need the agent running, whatever its state now (opening its
@@ -366,11 +370,15 @@ impl Sessions {
             return Ok(session);
         }
         self.tmux()?;
-        let _launching = operation.launching();
-        self.wake_locked(id, cause).await
+        self.wake_locked(&operation, id, cause).await
     }
 
-    async fn wake_locked(&self, id: &SessionId, cause: WakeCause) -> Result<Session, Error> {
+    async fn wake_locked(
+        &self,
+        operation: &Operation,
+        id: &SessionId,
+        cause: WakeCause,
+    ) -> Result<Session, Error> {
         let session = self.get(id).await?;
         let conversation = self.resumable(&session)?;
         // Waking reopens the conversation as resume does, so it is refused the same way.
@@ -387,6 +395,7 @@ impl Sessions {
         )
         .await?;
         write.commit().await?;
+        let _launching = operation.launching();
         self.launch(id, LaunchKind::Wake, conversation, None).await
     }
 
@@ -396,7 +405,6 @@ impl Sessions {
     pub async fn resume(&self, id: &SessionId) -> Result<Session, Error> {
         self.tmux()?;
         let operation = self.lock(id).await;
-        let _launching = operation.launching();
         let session = self.get(id).await?;
         let conversation = self.resumable(&session)?;
         self.refuse_if_agent_alive_elsewhere(&session).await?;
@@ -418,6 +426,7 @@ impl Sessions {
             cockpit_projects::claim(&write, session.checkout, &holder(id)).await?;
         }
         write.commit().await?;
+        let _launching = operation.launching();
         self.launch(id, LaunchKind::Resume, conversation, None)
             .await
     }

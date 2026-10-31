@@ -417,36 +417,37 @@ async fn a_held_launch(
     (daemon, client, id, starting)
 }
 
-/// Sends the stop `stop_of` makes for a session whose launch is held, twice: with one stop
-/// worker, the second is answered `busy` if the first still holds it. Returns the second
-/// answer's refusal.
-async fn stop_a_launching_session_twice(stop_of: fn(String) -> Command) -> ProtocolError {
+/// Long enough for a stop the daemon answers at once, far shorter than any launch the gate
+/// holds: a stop that waits behind the launch runs out of it.
+const AT_ONCE: Duration = Duration::from_secs(5);
+
+/// Sends the stop `stop_of` makes for a session whose launch is held, through the stop
+/// lane's only worker; returns its refusal, which must come before the launch finishes.
+async fn stop_a_launching_session(stop_of: fn(String) -> Command) -> ProtocolError {
     let home = Home::new();
     let (_daemon, client, id, _starting) = a_held_launch(&home).await;
 
-    let first = common::refused(request(&client, stop_of(id.clone())).await);
-    assert_eq!(first.code, ErrorCode::Conflict, "{first:?}");
-    common::refused(request(&client, stop_of(id)).await)
+    common::refused(client.request(stop_of(id), AT_ONCE).await)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ending_a_launching_session_answers_conflict_without_holding_a_stop_worker() {
-    let error = stop_a_launching_session_twice(|session| Command::SessionEnd { session }).await;
+async fn ending_a_launching_session_answers_conflict_without_waiting_for_the_launch() {
+    let error = stop_a_launching_session(|session| Command::SessionEnd { session }).await;
 
     assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
     assert!(
-        error.message.contains("is launching its agent"),
+        error.message.contains("is launching or restarting"),
         "{error:?}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn putting_a_launching_session_to_sleep_answers_conflict_without_holding_a_stop_worker() {
-    let error = stop_a_launching_session_twice(|session| Command::SessionSleep { session }).await;
+async fn putting_a_launching_session_to_sleep_answers_conflict_without_waiting_for_the_launch() {
+    let error = stop_a_launching_session(|session| Command::SessionSleep { session }).await;
 
     assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
     assert!(
-        error.message.contains("is launching its agent"),
+        error.message.contains("is launching or restarting"),
         "{error:?}"
     );
 }
@@ -456,13 +457,14 @@ async fn a_session_refused_an_end_mid_launch_ends_once_its_launch_finishes() {
     let home = Home::new();
     let (_daemon, client, id, starting) = a_held_launch(&home).await;
     let refused = common::refused(
-        request(
-            &client,
-            Command::SessionEnd {
-                session: id.clone(),
-            },
-        )
-        .await,
+        client
+            .request(
+                Command::SessionEnd {
+                    session: id.clone(),
+                },
+                AT_ONCE,
+            )
+            .await,
     );
     assert_eq!(refused.code, ErrorCode::Conflict, "{refused:?}");
 

@@ -125,8 +125,8 @@ impl fmt::Display for Error {
             }
             Error::LaunchInProgress { session, operation } => write!(
                 formatter,
-                "session {session} is launching its agent; cannot {operation} until the launch \
-                 finishes, retry then"
+                "session {session} is launching or restarting its agent; cannot {operation} \
+                 until that finishes, retry then"
             ),
             Error::StopUnconfirmed { session, execution } => write!(
                 formatter,
