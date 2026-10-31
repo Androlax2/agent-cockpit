@@ -179,11 +179,17 @@ fn remote_control_is_turned_on_at_launch() {
     assert!(words[index + 1].starts_with("--"), "{words:?}");
 }
 
+/// See `LAUNCH_ENVIRONMENT` (#184).
 #[test]
-fn the_launch_adds_no_environment() {
-    let command = common::claude()
-        .launch(&request(&Conversation::New))
-        .unwrap();
+fn every_launch_turns_off_claude_codes_background_daemon() {
+    let resumed = ConversationId::new("0b7f3c1e-1f6a-4c55-a2a1-9e3c7c0d1a2b").unwrap();
+    for conversation in [Conversation::New, Conversation::Resume(resumed)] {
+        let command = common::claude().launch(&request(&conversation)).unwrap();
 
-    assert!(command.environment.is_empty());
+        assert_eq!(
+            command.environment,
+            [("CLAUDE_CODE_DISABLE_AGENT_VIEW".into(), "1".into())],
+            "{conversation:?}"
+        );
+    }
 }
