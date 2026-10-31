@@ -142,7 +142,11 @@ async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
         .start(|database| {
             Arc::new(FixtureHandler {
                 fixture: Arc::clone(fixture),
-                routes: Routes::new(database),
+                routes: Routes::new(
+                    database,
+                    cockpit_projects::Git::from_path(),
+                    cockpit_config::Environment::default(),
+                ),
             })
         })
         .await

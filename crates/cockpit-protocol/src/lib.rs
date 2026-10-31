@@ -4,6 +4,7 @@ mod agent;
 mod change_feed;
 mod error;
 mod handshake;
+mod projects;
 mod request;
 
 pub use agent::{
@@ -17,6 +18,9 @@ pub use error::{ErrorCode, ProtocolError, Unblock, UnblockedBy};
 pub use handshake::{
     Capability, HandshakeReply, Hello, ProtocolVersion, Refusal, RefusalReason, SUPPORTED_VERSIONS,
     Welcome, decode_hello, negotiate,
+};
+pub use projects::{
+    CheckoutKindView, CheckoutView, KeptCheckout, KeptReason, ProjectView, TrustView,
 };
 pub use request::{
     Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,

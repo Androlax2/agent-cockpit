@@ -1,5 +1,61 @@
 # Engineering decisions
 
+## 2026-10-31 — cockpit-projects: checkouts, occupancy and host Git
+
+Issue #28. Projects, their checkouts and checkout occupancy live in `cockpit-projects`,
+served by the daemon's `Routes` on the host-only socket and the CLI's `project` and
+`checkout` verbs. The agent socket refuses all of them: a sandboxed agent does not register
+projects, take checkouts or push.
+
+- **Clone source.** "Fast local clones" clone the main checkout itself:
+  `git clone --no-local --reference <main> --dissociate -- <main> <clone>`, with
+  `protocol.file.allow=always` for that one call only (`SAFE_CONFIG` sets it to `never`).
+  Origin is then copied from the main checkout, so pushes go to GitHub, not to the source.
+- **Clone location.** `<parent of the project root>/.parallel/<project>/<branch with / as
+  ->`, and `pr-<n>` for review clones: the layout Theo already uses, so no new setting.
+- **Identity.** A checkout's id is never reused. Its incarnation counts rows at the same path,
+  and the row names a random marker file Cockpit writes into `.git` when it records the copy;
+  a copy without it is `Replaced`, answered on the wire as `stale-revision`, never acted on
+  (report 04). Not the device and inode of `.git`: ext4 reuses a deleted directory's inode,
+  so a copy cloned again at the path would pass, and btrfs device numbers change across mounts.
+- **Trust.** `projects.trusted` (owner config) is the source: parallel clones inherit the
+  project's trust, review clones never have any. Writing a provider's trust file stays with
+  that provider's adapter.
+- **Dropped here.** The legacy memory set-aside writes Claude's own files, so it belongs to
+  the Claude adapter, not to projects. The legacy script has no `K` clone check to port. The
+  "reviewed repositories" sweep variant serves Theo's apply flow, dropped from the product
+  (coverage map).
+- **Host Git.** Besides `SAFE_CONFIG` (which also turns signature checks off and pins the
+  signing programs), every program-running driver the configuration names
+  (`filter.*.clean|smudge|process`, `diff.*.textconv|command`, `merge.*.driver`) is reset to
+  empty on each call, since an agent picks the driver's name; every `GIT_*` variable is
+  removed from the child's environment (a stray `GIT_DIR` would redirect every call) and
+  `GIT_TERMINAL_PROMPT=0`. Attributes cannot be switched off instead: `--attr-source` still
+  reads `.git/info/attributes`. Known limit: the names are read by one Git process and the
+  command runs in the next, so a writer changing the configuration in between wins. The sweep
+  only runs drivers in unoccupied clones it has marked `removing`, and push runs none;
+  closing the window for good needs Git run without the repository's configuration, which
+  is left to `cockpit-processes`.
+- **No rewrites.** A push is built only as `refs/heads/B:refs/heads/B`, without `+`,
+  `--force` or deletion, and refused unless origin has exactly one URL and pushes to exactly
+  one, both on GitHub (`git remote get-url --push --all` applies push URLs, `insteadOf` and
+  `pushInsteadOf` from every scope), and no local or worktree configuration sets a push URL,
+  proxy, `vcs`, `insteadOf` or any `http.*` setting; Git's own non-fast-forward refusal then
+  stops rewrites.
+- **Sweep.** Two states before `removed`: `removing` (claims refused while the clone is
+  checked for work) and `deleting` (the checks passed). A `removing` row found by a later or
+  concurrent sweep is checked again; work found puts it back `live`. Work means uncommitted
+  changes, a stash, or commits on a branch or HEAD that no remote-tracking ref has; review
+  clones fetch the pull request into `refs/remotes/origin/pull/<n>` so its own commits do
+  not count. Ignored files do not count (mostly build output). A clone with submodules or a
+  committed nested repository is kept: status does not look inside them, and their Git
+  would run under configuration the driver reset never read. Deletion
+  removes the marker last, so an interrupted deletion is finished by the next sweep and a
+  copy put at the path meanwhile is kept.
+- **Wire.** Three error codes are added: `not-found`, `conflict` and `refused`.
+- **CLI tests.** `nothing -> daemon` forbids a dev-dependency on the daemon, so the CLI's
+  entry-point tests build the daemon binary with `cargo build --locked` and run it.
+
 ## 2026-10-31 — Agent channel: launch tokens bound to the process tree, report only (#32)
 
 Issue #32. Theo chose its scope: the authenticated channel, the answers directory, report

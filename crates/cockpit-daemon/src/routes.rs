@@ -10,7 +10,7 @@ use cockpit_protocol::{
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
-use crate::agent;
+use crate::{agent, projects};
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
 /// so bulk work can fill its lane without taking capacity from control (report 03).
@@ -62,11 +62,23 @@ pub trait Handler: Send + Sync + 'static {
 /// The daemon's commands, over the state database the daemon opened.
 pub struct Routes {
     database: Arc<cockpit_turso::Database>,
+    /// The host Git that project commands run, with the safe settings applied.
+    git: cockpit_projects::Git,
+    /// Read for `projects.trusted` on each answer, so a changed owner config applies at once.
+    environment: cockpit_config::Environment,
 }
 
 impl Routes {
-    pub fn new(database: Arc<cockpit_turso::Database>) -> Routes {
-        Routes { database }
+    pub fn new(
+        database: Arc<cockpit_turso::Database>,
+        git: cockpit_projects::Git,
+        environment: cockpit_config::Environment,
+    ) -> Routes {
+        Routes {
+            database,
+            git,
+            environment,
+        }
     }
 }
 
@@ -109,11 +121,28 @@ impl Handler for Routes {
                 class: WorkClass::Control,
                 job: Box::pin(agent::reports(Arc::clone(&self.database))),
             },
-            (Command::AgentReports, Peer::Agent { .. }) => Route::Answer(wrong_socket(
-                "this command is the owner's alone",
-                "ask the owner to run it on the host",
-                UnblockedBy::Owner,
-            )),
+            (Command::AgentReports, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            (
+                command @ (Command::ProjectAdd { .. }
+                | Command::ProjectList
+                | Command::CheckoutList { .. }
+                | Command::CheckoutClone { .. }
+                | Command::CheckoutReview { .. }
+                | Command::CheckoutClaim { .. }
+                | Command::CheckoutRelease { .. }
+                | Command::CheckoutSweep { .. }
+                | Command::CheckoutPush { .. }),
+                peer,
+            ) => match peer {
+                // A sandboxed agent must not register a project, take a checkout or push.
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => projects::route(
+                    command,
+                    Arc::clone(&self.database),
+                    self.git.clone(),
+                    self.environment.clone(),
+                ),
+            },
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(
                 ErrorCode::UnknownCommand,
@@ -125,6 +154,15 @@ impl Handler for Routes {
 
 pub fn refusal(code: ErrorCode, message: &str) -> Outcome {
     Outcome::Error(ProtocolError::new(code, message))
+}
+
+/// The answer to an owner's command sent on the agent socket.
+fn owner_only() -> Outcome {
+    wrong_socket(
+        "this command is the owner's alone",
+        "ask the owner to run it on the host",
+        UnblockedBy::Owner,
+    )
 }
 
 /// The answer to a command sent on the socket of the party it is not for.

@@ -4,6 +4,7 @@ use serde_json::Value;
 use crate::agent::{AgentReport, SessionReport};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
+use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 
 /// Correlates a [`Response`] with the [`Request`] it answers; chosen by the client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -33,6 +34,42 @@ pub enum Command {
     },
     /// Owner only: every session's latest report.
     AgentReports,
+    /// Register the Git work tree at `path` (absolute) as a project.
+    ProjectAdd {
+        path: String,
+        name: Option<String>,
+    },
+    ProjectList,
+    /// Checkouts not yet removed, of one project or all.
+    CheckoutList {
+        project: Option<String>,
+    },
+    /// A parallel clone of the project working on `branch`.
+    CheckoutClone {
+        project: String,
+        branch: String,
+    },
+    /// A review clone of the project's GitHub pull request.
+    CheckoutReview {
+        project: String,
+        pull_request: u64,
+    },
+    CheckoutClaim {
+        checkout: i64,
+        holder: String,
+    },
+    CheckoutRelease {
+        checkout: i64,
+        holder: String,
+    },
+    /// Delete clones that are unoccupied and hold no work; `dry_run` only reports.
+    CheckoutSweep {
+        dry_run: bool,
+    },
+    /// Push the checkout's branch to its GitHub origin.
+    CheckoutPush {
+        checkout: i64,
+    },
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -67,6 +104,34 @@ pub enum Reply {
     },
     AgentReports {
         reports: Vec<SessionReport>,
+    },
+    // Checkout views are boxed so every `Outcome` stays small enough to move around.
+    ProjectAdded {
+        project: ProjectView,
+        main: Box<CheckoutView>,
+    },
+    Projects {
+        projects: Vec<ProjectView>,
+    },
+    Checkouts {
+        checkouts: Vec<CheckoutView>,
+    },
+    Checkout {
+        checkout: Box<CheckoutView>,
+    },
+    Released {
+        checkout: i64,
+    },
+    Swept {
+        /// Nothing was deleted; `removed` lists what would have been.
+        dry_run: bool,
+        removed: Vec<CheckoutView>,
+        kept: Vec<KeptCheckout>,
+    },
+    Pushed {
+        checkout: i64,
+        branch: String,
+        remote_url: String,
     },
 }
 

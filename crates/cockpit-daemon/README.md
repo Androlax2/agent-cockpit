@@ -12,8 +12,9 @@ not share code.
 
 - Depends on: `cockpit-protocol` (wire types and the frame limit), `cockpit-config` (XDG
   layout), `cockpit-diagnostics` (its own log), `cockpit-turso` (the state database it opens
-  once), `cockpit-authorization` (whose migrations it runs) and `cockpit-agent-channel`
-  (who an agent socket peer is, and its verbs); `tokio`, `serde`,
+  once), `cockpit-authorization` (whose migrations it runs), `cockpit-agent-channel` (who an
+  agent socket peer is, and its verbs) and `cockpit-projects` (whose migrations it runs and
+  whose verbs `Routes` serves to the owner); `tokio`, `serde`,
   `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
   `clients ->` rules of `cockpit-workspace-rules/tests/crate_graph.rs` keep them from

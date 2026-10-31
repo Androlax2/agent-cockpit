@@ -104,7 +104,7 @@ fn parse_report(flags: &[OsString]) -> Result<AgentReport, String> {
 }
 
 /// The daemon's socket directory, or exit 1 when the environment cannot place it.
-fn socket_dir() -> Result<PathBuf, ExitCode> {
+pub(crate) fn socket_dir() -> Result<PathBuf, ExitCode> {
     let environment = cockpit_config::Environment::from_process();
     environment
         .home_dir()
