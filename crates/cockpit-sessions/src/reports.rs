@@ -235,7 +235,8 @@ fn merge(
             .map(|question| (question, QuestionSource::Dialog)));
     // A report after a dialog means the dialog was answered and the agent goes on, so a
     // stateless one leaves it working rather than in the waiting the dialog forced.
-    let is_answering_dialog = previous.question_source == Some(QuestionSource::Dialog);
+    let is_answering_dialog =
+        previous.question_source == Some(QuestionSource::Dialog) && previous.launch == launch;
     // A question is only asked, and a turn only ended, while the agent waits.
     let state = if asked.is_some() || report.outcome.is_some() {
         Some(AgentState::Waiting)
@@ -244,7 +245,7 @@ fn merge(
     } else {
         report.state.or(previous.state)
     };
-    let outcome = match (report.outcome, report.state) {
+    let outcome = match (report.outcome, state) {
         (Some(outcome), _) => Some(outcome),
         (None, Some(AgentState::Working)) => None,
         // A turn of an earlier launch says nothing about this launch's agent.

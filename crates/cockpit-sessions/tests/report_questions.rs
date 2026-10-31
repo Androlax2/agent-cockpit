@@ -251,3 +251,43 @@ async fn a_dialog_cleared_by_a_report_without_a_state_leaves_the_session_working
 
     assert_eq!(recorded.state, Some(AgentState::Working));
 }
+
+#[tokio::test]
+async fn a_dialog_answered_without_a_state_clears_the_ended_turns_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = reporting_session(dir.path()).await;
+    let turn_ended = Report {
+        state: Some(AgentState::Waiting),
+        outcome: Some(TurnOutcome::Completed),
+        ..Report::default()
+    };
+    send(&database, turn_ended).await.unwrap();
+    send(&database, dialog("Allow Bash?")).await.unwrap();
+
+    let recorded = send(&database, label("Agent channel issue")).await.unwrap();
+
+    assert_eq!(recorded.state, Some(AgentState::Working));
+    assert_eq!(recorded.outcome, None);
+}
+
+#[tokio::test]
+async fn a_dialog_of_an_earlier_launch_does_not_make_the_new_agent_working() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = reporting_session(dir.path()).await;
+    send(&database, dialog("Allow Bash?")).await.unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO session_launches (session_id, kind, execution_id, launched_at)
+             VALUES ('s1', 'restart', 1, 0)",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let recorded = send(&database, label("Agent channel issue")).await.unwrap();
+
+    assert_eq!(recorded.state, Some(AgentState::Waiting));
+    assert_eq!(recorded.needs_input, None);
+}
