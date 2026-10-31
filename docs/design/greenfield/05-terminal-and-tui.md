@@ -20,8 +20,12 @@ Status: decided
 
 - A closed pane proves nothing: completion comes from verification, termination from
   `cockpit-processes` observing the process group/container.
-- Terminal bytes are untrusted display data; task state never derives from screen scraping
-  (the current OSD rule stays).
+- Terminal bytes are untrusted display data. Provider adapters detect session state from
+  structured events first (hooks, plugin, Codex bridge); screen classification is allowed only
+  as an adapter-internal fallback that records its confidence (`observed-by: event|screen`),
+  because hooks are known to go missing. Task completion never comes from the screen.
+- One **private tmux server** (`-L cockpit`): the TUI session, one session per agent, approval
+  panes split under the viewer; nested attach from the viewer pane as today.
 - The daemon never depends on a TUI being attached; closing the TUI leaves work running.
 - All view logic stays in `cockpit-tui`; the daemon exposes data contracts the final UI
   needs from day one: "why waiting", "what changed since revision R", revisions and cursors.

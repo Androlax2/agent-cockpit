@@ -22,8 +22,10 @@ requirements. "Merged" is not "installed"; "installed" is not "running".
 
 - Each session records the helper and instruction bundle version it started with; referenced
   bundles are retained until no session needs them.
-- A compatible daemon update reconciles executions (report 03) before dispatching new work;
-  an incompatible change requires a controlled restart with a clear message.
+- A daemon upgrade is **stop, then start**: Turso allows one opener per file, so old and new
+  daemons never overlap. Agent sessions keep running in tmux meanwhile; the new daemon
+  reconciles executions (report 03) before dispatching new work. An incompatible schema or
+  protocol change is refused with a clear message, never auto-migrated downward.
 - Grants are live: preserving an instruction version never preserves a revoked grant.
 
 ## Database

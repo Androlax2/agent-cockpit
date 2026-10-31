@@ -44,10 +44,22 @@ messaging and scheduling, not parallel systems.
 - Measures: tokens per verified result, useful events per wake, stalled-task age, zero wakes
   for identical observation revisions in deterministic replay.
 
+## Interim keep/drop from the feature inventory (report 16)
+
+Keep as features: pick/pause/resume Chief; answering stopped agents' questions and forms
+within policy, with **habits** learned from overrules and corrections; escalation with
+categories (security, scope, not sure); start a session for an urgent todo under a rate
+limit; message or hand a todo to an idle worker; inspect a todo or session; supervised-task
+list; digest section; the masked stop bundle as Chief's context.
+Drop as separate machinery: the chief store's 40 tables, `_v13`/`legacy_launches` history,
+own proposal/gate/attestation model, per-feature inbox and delivery attempts, native telemetry
+polling. Team session links (`link-propose/send/assess`) and their per-TODO budgets become
+plain task messages with scheduling limits.
+
 ## Next step
 
-Read the current `teams`/`chief` stores, delivery and wake code read-only; produce the final
-keep/drop list with file references, then fold it into this report.
+Read the current `teams`/`chief` stores, delivery and wake code read-only; confirm the list
+above with file references, then mark this report `decided`.
 
 ## Sources
 

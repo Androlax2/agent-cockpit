@@ -30,6 +30,11 @@ behavior, SQL queries and tests. No `core`, `domain`, `common`, `host`, `store` 
 | `cockpit-credentials` | Secret references, scoped injection, redaction |
 | `cockpit-agent-context` | Launch brief and instruction discovery assembled from owners' facts |
 | `cockpit-diagnostics` | Logging, levels, support bundle (report 12) |
+| `cockpit-usage` | Plan windows, quota, cost archive, time per project, digest (report 18) |
+| `cockpit-github` | PRs, issues, tokens, review sessions; an evidence source (reports 06, 16) |
+| `cockpit-audit` | Hash-chained security audit log and verification (report 11) |
+| `cockpit-config` | Owner settings, precedence, provenance, start-file change detection (report 09) |
+| `cockpit-notify` | Desktop notifications, status file, hold rules; a client, not daemon code (report 19) |
 
 ### Integration and surfaces
 
@@ -43,6 +48,10 @@ behavior, SQL queries and tests. No `core`, `domain`, `common`, `host`, `store` 
 | `cockpit-client` | Typed client over the protocol, used by every frontend |
 | `cockpit-daemon` | Startup, wiring, request routing, supervised worker lifetimes |
 | `cockpit-cli`, `cockpit-tui`, `cockpit-web` | Frontends; render state, submit commands |
+
+Not crates: desktop window management, bars, calendars and game detection live in
+`cockpit-notify` backends or Theo's dotfiles (report 19). Each provider adapter also ships
+its in-sandbox bridge (hooks, plugin, Codex bridge) as assets, not as separate crates.
 
 ## Rules
 

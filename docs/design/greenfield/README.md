@@ -5,7 +5,7 @@ personal, terminal-first agent orchestrator distributed to other users.
 Written for agents and humans: one topic per file, decisions first, sources last.
 
 Audience rule: read `README.md` plus the file for your topic; do not load all files.
-Each file is under 120 lines.
+Each file is under 120 lines, except the coverage map (16), which is a checklist.
 
 ## Status legend
 
@@ -32,6 +32,11 @@ Each file is under 120 lines.
 | 13 | [release-upgrades](13-release-upgrades.md) | Release bundle, running-session compatibility, migrations | proposed |
 | 14 | [plugins](14-plugins.md) | Plugin-ready now, WASM plugins later | decided |
 | 15 | [validation-open-questions](15-validation-open-questions.md) | What is unproven and the acceptance scenarios | validate |
+| 16 | [feature-coverage-map](16-feature-coverage-map.md) | Every current feature → owner, keep/change/polish/drop/plugin | proposed |
+| 17 | [agent-channel-and-approvals](17-agent-channel-and-approvals.md) | One authenticated agent channel, `ask run`/`ask guide`, host installs | proposed |
+| 18 | [usage-quota-and-accounts](18-usage-quota-and-accounts.md) | Plan windows, cost, time, digest; account routing simplified | proposed |
+| 19 | [desktop-and-remote-clients](19-desktop-and-remote-clients.md) | `cockpit-notify`, desktop extras out of the daemon, phone client | proposed |
+| 20 | [refactoring-plan](20-refactoring-plan.md) | Milestones M0–M7, parity gates, cutover | proposed |
 
 ## Decision register (short form)
 
@@ -45,6 +50,9 @@ Each file is under 120 lines.
 8. Diagnostics log Cockpit's own operation only, never hosted work; `COCKPIT_LOG_LEVEL`.
 9. Plugin-ready boundaries now (versioned protocol, extension traits, grants); WASM plugins later.
 10. Teams and Chief are redesigned as thin behaviors over tasks, workflows, messaging, scheduling.
+11. The daemon has no desktop dependencies; notifications, bars and window tricks are clients.
+12. One authenticated agent channel replaces the report socket, team socket and file queues.
+13. Build the new workspace beside `apps/` and cut over once at milestone M5 (report 20).
 
 ## Relation to earlier documents
 
