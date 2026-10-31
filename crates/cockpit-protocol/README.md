@@ -34,5 +34,6 @@ Forward compatibility: unknown object fields are ignored; capabilities, refusal 
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are
 closed on purpose: a client must not skip a change it cannot apply.
 
-Framing (how frames are delimited on the socket and their size limit) is left to the client
-and daemon issues (#21, #26).
+Framing: one JSON value per line, UTF-8, ended by `\n`, at most [`MAX_FRAME_BYTES`] including
+the newline, in both directions (#21 chose it; #26 moved the limit here so the client and the
+daemon share one constant).

@@ -18,3 +18,8 @@ pub use request::{
     Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,
     decode_request,
 };
+
+/// Longest frame either side may send, newline included. Frames are one JSON value per line,
+/// UTF-8, ended by `\n`. Large enough for a snapshot of a personal installation's state,
+/// small enough that a runaway peer cannot exhaust memory.
+pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;

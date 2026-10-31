@@ -360,6 +360,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-daemon"
+version = "0.1.0"
+dependencies = [
+ "cockpit-authorization",
+ "cockpit-client",
+ "cockpit-config",
+ "cockpit-diagnostics",
+ "cockpit-protocol",
+ "cockpit-turso",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cockpit-diagnostics"
 version = "0.1.0"
 dependencies = [
