@@ -61,8 +61,9 @@ before, 16467 after.
   until that lands, this run measures status and approval requests only.
 - **Keystrokes are not measured.** Terminal input goes from the attached client to tmux and
   never through the daemon (see the decision record).
-- **`session-list` is the slowest request** (p99 105.9 ms, above the 100 ms p95 target on its
-  own). It reads every session and its launch; it grows with the number of sessions.
+- **`session-list` is the slowest request** (p95 71.6 ms, p99 105.9 ms: within both targets,
+  but the only request with a p99 above 100 ms). It reads every session and its launch; it
+  grows with the number of sessions.
 - **Memory was still rising at the end**: 27 MiB at the start, 47 MiB at the peak, which was
   the last sample. Thirty minutes do not show whether it levels off; a longer run would.
 - **A restart interrupted by a crash** is dropped instead of finished (#205); the fixture

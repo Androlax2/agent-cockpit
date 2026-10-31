@@ -173,9 +173,12 @@ async fn run(workload: Workload) {
     );
     assert!(
         restart.launches_after == restart.launches_before,
-        "no launch after the restart: {} launches before, {} after",
+        "no launch after the restart: {} launches before, new ones {:?}",
         restart.launches_before.len(),
-        restart.launches_after.len()
+        restart
+            .launches_after
+            .get(restart.launches_before.len()..)
+            .unwrap_or_default()
     );
 }
 
@@ -186,28 +189,23 @@ struct Sample {
     error: Option<String>,
 }
 
-/// The control requests the probe cycles through, as the report names them: what a client
-/// asks to show status.
-const PROBE_REQUESTS: [&str; 5] = [
-    "ping",
-    "session-list",
-    "agent-reports",
-    "approval-queue",
-    "provider-list",
+/// A control request as the report names it, and how to build it.
+type Probe = (&'static str, fn() -> Command);
+
+/// The control requests the probe cycles through: what a client asks to show status.
+const PROBES: [Probe; 5] = [
+    ("ping", || Command::Ping),
+    ("session-list", || Command::SessionList { ended: false }),
+    ("agent-reports", || Command::AgentReports),
+    ("approval-queue", || Command::ApprovalQueue),
+    ("provider-list", || Command::ProviderList),
 ];
 /// A new connection's handshake and `ping`.
 const FRESH_PING: &str = "connect+ping";
 
 fn probe_command(index: u32) -> (&'static str, Command) {
-    let slot = index as usize % PROBE_REQUESTS.len();
-    let command = match slot {
-        0 => Command::Ping,
-        1 => Command::SessionList { ended: false },
-        2 => Command::AgentReports,
-        3 => Command::ApprovalQueue,
-        _ => Command::ProviderList,
-    };
-    (PROBE_REQUESTS[slot], command)
+    let (name, command) = PROBES[index as usize % PROBES.len()];
+    (name, command())
 }
 
 /// Runs the probe on its own thread and runtime, apart from the loads' tasks.
@@ -426,7 +424,10 @@ async fn exchange_line(
     line.push('\n');
     stream.get_mut().write_all(line.as_bytes()).await.unwrap();
     let mut answer = String::new();
-    stream.read_line(&mut answer).await.unwrap();
+    tokio::time::timeout(GENEROUS, stream.read_line(&mut answer))
+        .await
+        .expect("the daemon answers the stalled viewer's frame")
+        .unwrap();
     answer
 }
 
@@ -539,15 +540,16 @@ async fn restart_with_sessions_running(
     let client = home.connect().await;
     // A relaunch after the daemon is ready would log its launch within this.
     tokio::time::sleep(SETTLE).await;
-    let launches_after = home.launches();
     let mut reattached = true;
     for (id, launch) in sessions.iter().zip(&launches_seen) {
         let session = listed(&client, id).await;
-        let latest_agent = launches_after.iter().rfind(|logged| logged.session == **id);
+        let latest_agent = home.launches_of(id).pop();
         reattached &= session.state == SessionStateView::Running
             && &session.launch == launch
             && latest_agent.is_some_and(|agent| is_alive(agent.pid));
     }
+    // Read last, so a relaunch logged while the sessions were checked still counts.
+    let launches_after = home.launches();
     Restart {
         ready_after,
         reattached,
@@ -604,7 +606,7 @@ impl Report<'_> {
             .filter(|sample| sample.request != FRESH_PING)
             .collect();
         self.row(&mut text, "all control (held connection)", &held);
-        for request in PROBE_REQUESTS.into_iter().chain([FRESH_PING]) {
+        for request in PROBES.map(|(name, _)| name).into_iter().chain([FRESH_PING]) {
             let samples: Vec<_> = self
                 .samples
                 .iter()
