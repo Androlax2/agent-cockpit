@@ -109,6 +109,15 @@ pub(crate) fn group_has_members(process_group: i32) -> bool {
     )
 }
 
+/// Whether a process with this pid exists. `EPERM` counts as existing, as in
+/// [`group_has_members`].
+pub(crate) fn process_exists(pid: i32) -> bool {
+    let Some(pid) = Pid::from_raw(pid) else {
+        return false;
+    };
+    !matches!(rustix::process::test_kill_process(pid), Err(Errno::SRCH))
+}
+
 /// Sends `signal` to every member of `process_group`. An empty group is not an error: it is
 /// what termination waits for.
 pub(crate) fn signal_group(process_group: i32, signal: Signal) -> Result<(), Error> {

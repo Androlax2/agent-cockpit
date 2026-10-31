@@ -142,11 +142,7 @@ async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
         .start(common::wiring_in(home.path(), Vec::new()), |capabilities| {
             Arc::new(FixtureHandler {
                 fixture: Arc::clone(fixture),
-                routes: Routes::new(
-                    capabilities,
-                    cockpit_config::Environment::default(),
-                    cockpit_daemon::runner(Vec::new()).unwrap(),
-                ),
+                routes: Routes::new(capabilities, cockpit_config::Environment::default()),
             })
         })
         .await

@@ -9,11 +9,12 @@ publish.workspace = true
 [dependencies]
 # Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
 cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
+cockpit-processes = { path = "../cockpit-processes", version = "0.1.0" }
 cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
 # Pinned (docs/decisions/2026-10-31-34-approvals-dependencies.md): secret redaction, the
 # action digest and the PTY a run gets. A change must arrive as a reviewed bump.
 regex = "=1.13.1"
-rustix = { version = "=1.1.6", default-features = false, features = ["process", "pty", "std", "termios"] }
+rustix = { version = "=1.1.6", default-features = false, features = ["pty", "std", "termios"] }
 sha2 = "=0.10.9"
 tokio = { version = "1", features = ["macros", "process", "rt", "sync", "time"] }
 

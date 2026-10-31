@@ -15,6 +15,8 @@ rustix = { version = "=1.1.6", default-features = false, features = ["process", 
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]
+# The pseudo-terminal a terminal execution's test runs in; the same pinned version.
+rustix = { version = "=1.1.6", default-features = false, features = ["process", "pty", "std"] }
 tempfile = "3.27.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 

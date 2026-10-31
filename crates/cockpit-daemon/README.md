@@ -38,8 +38,10 @@ not share code.
    positively identifies, releases those observed gone and keeps the rest charged; each
    outcome is logged. New executions use a systemd user scope when this user's manager
    answers, otherwise a process group; the log names which. `cockpit-approvals` then ends
-   the runs a stopped daemon left approved (`not-run`) or running (`outcome-unknown`);
-   neither is repeated.
+   the runs a stopped daemon left approved (`not-run`) or running, from what each one's
+   execution did: never started (`not-run`), ended (`outcome-unknown`), or still running,
+   which stays `running` and is recorded `outcome-unknown` once observed ended (#163).
+   None is repeated.
 5. Open the private tmux server, then restore the sessions (`cockpit-sessions`): each active
    session whose agent is gone is reopened, each failure logged and left `failed`. A tmux
    that cannot be run or is too old is logged instead, and the sessions are left as they
@@ -65,10 +67,16 @@ not share code.
   owner decides on the host-only socket. The shell's syntax check and the working
   directory's resolution happen before the write transaction.
 - An approval commits the run intent, then the run starts outside the lanes: a long command
-  holds no control worker. It runs in a pseudo-terminal under `cockpit-daemon --run-leader`
-  (the session leader that makes the terminal controlling, without `unsafe`), in `$SHELL`
-  when absolute or `/bin/sh`, with the daemon's environment minus `GIT_*` and the launch
-  token, and `cockpit-projects`' `SAFE_CONFIG` as `GIT_CONFIG_*`.
+  holds no control worker. It is a `cockpit-processes` terminal execution (#163) of the
+  daemon's one supervisor: a pseudo-terminal under `cockpit-daemon --run-leader`
+  (`cockpit_processes::run_session_leader`, which makes the terminal controlling without
+  `unsafe`), in `$SHELL` when absolute or `/bin/sh`, with the daemon's environment minus
+  `GIT_*` and the launch token, and `cockpit-projects`' `SAFE_CONFIG` as `GIT_CONFIG_*`.
+  Processes the command leaves running keep its execution charged and are watched until
+  they are observed gone.
+- The run's terminal belongs to the daemon: a daemon that stops hangs the command up. One
+  that ignores the hang-up is reattached at the next start; its exit code and later output
+  are lost with the terminal.
 - The asking agent's project is the registered checkout holding its working directory,
   read from `/proc` after its process tree was verified, until sessions record it (#31).
 
@@ -100,7 +108,8 @@ not share code.
 - `tests/approvals.rs`: issue #34's acceptance on the binary's sockets: a command run in a
   terminal with its exit code, the display rules in the queue, redaction, Git hooks off,
   report 04's walkthrough 3, decline, input to a waiting command, the syntax check, grants,
-  `ask-check`, socket roles and a guide.
+  `ask-check`, socket roles and a guide; #163's restarts: a run a crash hung up is reported
+  ended and never repeated, one that outlives the restart is reattached until it ends.
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket

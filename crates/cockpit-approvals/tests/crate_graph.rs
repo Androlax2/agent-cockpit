@@ -1,17 +1,19 @@
 //! Report 02: approvals is a capability the daemon composes. It builds against the state
-//! database and authorization only: never the wire types, the agent channel (the daemon
-//! identifies the sender) or projects (the daemon finds the asking agent's project).
+//! database, authorization and processes (approved runs are executions, #163) only: never
+//! the wire types, the agent channel (the daemon identifies the sender) or projects (the
+//! daemon finds the asking agent's project).
 use std::path::Path;
 use std::process::Command;
 
 const ALLOWED_COCKPIT_DEPENDENCIES: &[&str] = &[
     "cockpit-approvals",
     "cockpit-authorization",
+    "cockpit-processes",
     "cockpit-turso",
 ];
 
 #[test]
-fn cockpit_approvals_depends_on_authorization_and_the_database_only() {
+fn cockpit_approvals_depends_on_authorization_processes_and_the_database_only() {
     let root_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
     let output = Command::new(env!("CARGO"))
         .arg("tree")

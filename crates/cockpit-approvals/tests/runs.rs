@@ -4,13 +4,17 @@
 mod common;
 
 use cockpit_approvals::{
-    Approved, EXPIRES_AFTER_SECONDS, Error, Output, Refusal, RunId, RunRequest, RunResult,
-    RunState, action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, open_runs,
-    queue_order, reconcile_runs, record_not_run, record_outcome_unknown, resolve_cwd, run_request,
-    run_status, start_run,
+    Approved, EXPIRES_AFTER_SECONDS, Error, Interrupted, Output, Refusal, RunId, RunRequest,
+    RunResult, RunState, action_digest, approve_run, ask_run, decline_run, edit_run, finish_run,
+    interrupted_runs, open_runs, queue_order, reconcile_run, record_not_run,
+    record_outcome_unknown, resolve_cwd, run_request, run_status, start_run,
 };
 use cockpit_authorization::Permission;
+use cockpit_processes::{EndReason, ExecutionId, Phase};
 use common::{Fixture, NOW, session};
+
+/// The execution a started run names; these tests never launch it.
+const EXECUTION: ExecutionId = ExecutionId(7);
 
 fn refusal<T: std::fmt::Debug>(result: Result<T, Error>) -> Refusal {
     match result {
@@ -336,7 +340,7 @@ async fn a_result_is_recorded_once_for_the_approved_revision() {
     let run = fixture.asked(&session("s1"), "ls").await;
     let approved = approve(&fixture, run.id).await;
     let write = fixture.database.write().await.unwrap();
-    start_run(&write, &approved).await.unwrap();
+    start_run(&write, &approved, EXECUTION).await.unwrap();
     finish_run(&write, &approved, &result(0), NOW)
         .await
         .unwrap();
@@ -353,7 +357,7 @@ async fn a_started_run_whose_end_was_not_observed_is_outcome_unknown() {
     let run = fixture.asked(&session("s1"), "make deploy").await;
     let approved = approve(&fixture, run.id).await;
     let write = fixture.database.write().await.unwrap();
-    start_run(&write, &approved).await.unwrap();
+    start_run(&write, &approved, EXECUTION).await.unwrap();
 
     record_outcome_unknown(&write, &approved, "the exit was not observed", NOW)
         .await
@@ -387,40 +391,112 @@ async fn a_run_of_another_revision_cannot_start_or_complete_the_request() {
     };
     let write = fixture.database.write().await.unwrap();
     assert!(matches!(
-        refusal(start_run(&write, &impostor).await),
+        refusal(start_run(&write, &impostor, EXECUTION).await),
         Refusal::AlreadyDecided { .. }
     ));
-    start_run(&write, &approved).await.unwrap();
+    start_run(&write, &approved, EXECUTION).await.unwrap();
     assert!(matches!(
         refusal(finish_run(&write, &impostor, &result(0), NOW).await),
         Refusal::AlreadyDecided { .. }
     ));
 }
 
-#[tokio::test]
-async fn a_restart_never_repeats_an_interrupted_run() {
-    let fixture = Fixture::new().await;
+/// A run the previous daemon left approved, and one it left running with its execution.
+async fn interrupted(fixture: &Fixture) -> Vec<Interrupted> {
     let never_started = fixture.asked(&session("s1"), "make build").await;
-    let interrupted = fixture.asked(&session("s1"), "make deploy").await;
-    approve(&fixture, never_started.id).await;
-    let running = approve(&fixture, interrupted.id).await;
+    let started = fixture.asked(&session("s1"), "make deploy").await;
+    approve(fixture, never_started.id).await;
+    let running = approve(fixture, started.id).await;
     let write = fixture.database.write().await.unwrap();
-    start_run(&write, &running).await.unwrap();
+    start_run(&write, &running, EXECUTION).await.unwrap();
+    write.commit().await.unwrap();
+    let read = fixture.database.read().await.unwrap();
+    interrupted_runs(&read).await.unwrap()
+}
 
-    let reconciled = reconcile_runs(&write, NOW).await.unwrap();
+#[tokio::test]
+async fn a_restart_finds_each_interrupted_run_with_the_execution_it_started() {
+    let fixture = Fixture::new().await;
+
+    let found = interrupted(&fixture).await;
+
+    let found: Vec<(RunState, Option<ExecutionId>)> =
+        found.iter().map(|run| (run.state, run.execution)).collect();
     assert_eq!(
-        reconciled,
+        found,
         [
-            (never_started.id, RunState::NotRun),
-            (interrupted.id, RunState::OutcomeUnknown)
+            (RunState::Approved, None),
+            (RunState::Running, Some(EXECUTION))
         ]
     );
-    assert!(open_runs(&write, NOW).await.unwrap().is_empty());
-    let unknown = run_request(&write, interrupted.id, NOW)
+}
+
+#[tokio::test]
+async fn a_restart_never_starts_an_approved_run() {
+    let fixture = Fixture::new().await;
+    let [approved, _] = &interrupted(&fixture).await[..] else {
+        panic!("expected two interrupted runs");
+    };
+    let write = fixture.database.write().await.unwrap();
+
+    let state = reconcile_run(&write, approved, None, NOW).await.unwrap();
+
+    assert_eq!(state, RunState::NotRun);
+    let stored = run_request(&write, approved.run.id, NOW)
         .await
         .unwrap()
         .unwrap();
-    assert!(unknown.note.unwrap().contains("unknown"));
+    assert_eq!(stored.state, RunState::NotRun);
+}
+
+/// What a restart makes of a running run, from its execution's observed phase (`None`: the
+/// run has no execution, or none with that id exists).
+#[tokio::test]
+async fn a_restart_ends_a_running_run_from_what_its_execution_did() {
+    let cases = [
+        (Some(Phase::Launching), RunState::Running),
+        (Some(Phase::Running), RunState::Running),
+        (
+            Some(Phase::Ended(EndReason::NeverStarted)),
+            RunState::NotRun,
+        ),
+        (
+            Some(Phase::Ended(EndReason::Exited)),
+            RunState::OutcomeUnknown,
+        ),
+        (
+            Some(Phase::Ended(EndReason::Terminated)),
+            RunState::OutcomeUnknown,
+        ),
+        (
+            Some(Phase::Ended(EndReason::HostRestarted)),
+            RunState::OutcomeUnknown,
+        ),
+        (None, RunState::OutcomeUnknown),
+    ];
+    for (phase, expected) in cases {
+        let fixture = Fixture::new().await;
+        let [_, running] = &interrupted(&fixture).await[..] else {
+            panic!("expected two interrupted runs");
+        };
+        let write = fixture.database.write().await.unwrap();
+
+        let state = reconcile_run(&write, running, phase.as_ref(), NOW)
+            .await
+            .unwrap();
+
+        assert_eq!(state, expected, "{phase:?}");
+        let stored = run_request(&write, running.run.id, NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, expected, "{phase:?}");
+        assert_eq!(
+            stored.note.is_some(),
+            expected != RunState::Running,
+            "{phase:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -429,7 +505,7 @@ async fn a_run_that_could_not_start_is_recorded_as_not_run() {
     let run = fixture.asked(&session("s1"), "ls").await;
     let approved = approve(&fixture, run.id).await;
     let write = fixture.database.write().await.unwrap();
-    start_run(&write, &approved).await.unwrap();
+    start_run(&write, &approved, EXECUTION).await.unwrap();
     record_not_run(&write, &approved, "the directory moved", NOW)
         .await
         .unwrap();
@@ -514,7 +590,7 @@ async fn a_command_waiting_for_input_comes_back_to_the_front_of_the_queue() {
     let prompting = fixture.asked(&session("s1"), "sudo make install").await;
     let approved = approve(&fixture, prompting.id).await;
     let write = fixture.database.write().await.unwrap();
-    start_run(&write, &approved).await.unwrap();
+    start_run(&write, &approved, EXECUTION).await.unwrap();
     let mut queue = open_runs(&write, NOW).await.unwrap();
 
     queue_order(&mut queue, &[]);

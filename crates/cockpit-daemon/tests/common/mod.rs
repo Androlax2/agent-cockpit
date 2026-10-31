@@ -251,6 +251,7 @@ pub fn wiring_in(
         providers,
         sessions: cockpit_sessions::Settings::default(),
         session_tick: Duration::from_secs(3600),
+        run_settings: cockpit_daemon::run_settings(Vec::new()).unwrap(),
     }
 }
 

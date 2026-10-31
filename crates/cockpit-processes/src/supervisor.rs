@@ -1,15 +1,16 @@
 //! Launch, observe, terminate and reconcile executions against the real processes.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cockpit_turso::Database;
+use cockpit_turso::{Database, WriteTransaction};
 use tokio::sync::{OnceCell, oneshot};
 
 use crate::output::{OutputKind, OutputLimits, OutputStream};
@@ -30,6 +31,22 @@ const OBSERVE_INTERVAL: Duration = Duration::from_millis(20);
 const PRESENCE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// The launcher's stderr quoted in [`Error::LaunchFailed`].
 const LAUNCHER_OUTPUT_QUOTE_BYTES: usize = 2048;
+/// How often [`Supervisor::watch_until_ended`] looks: first after `WATCH_FIRST`, then twice
+/// as long each time up to `WATCH_LONGEST`. Each look at a scope runs `systemctl`, and a
+/// watched execution may run for days.
+const WATCH_FIRST: Duration = Duration::from_secs(1);
+const WATCH_LONGEST: Duration = Duration::from_secs(30);
+
+type LauncherExit = std::io::Result<std::process::ExitStatus>;
+
+/// A launched execution, and its program's exit status: the launcher execs the program
+/// (`systemd-run --scope` and the session leader too), so the status it reaps is the
+/// program's own. A launcher reaped by init after a daemon restart has none to report.
+#[derive(Debug)]
+pub struct Launched {
+    pub execution: Execution,
+    pub exit: oneshot::Receiver<LauncherExit>,
+}
 
 /// Which containment new launches use. Recorded per execution: a restart reconciles each
 /// execution with the containment it was launched in, whatever new launches use now.
@@ -132,9 +149,39 @@ impl Supervisor {
     /// start confirmation. On [`Error::LaunchTimedOut`] the execution keeps its reservation
     /// and may still start; [`Supervisor::observe`] or [`Supervisor::reconcile`] decides.
     pub async fn launch(&self, database: &Database, spec: &LaunchSpec) -> Result<Execution, Error> {
-        let boot_id = self.boot_id().await?.to_owned();
-        let (id, containment) =
-            store::record_intent(database, self.launch_containment, &boot_id).await?;
+        let write = database.write().await?;
+        let id = self.reserve(&write, database.epoch()).await?;
+        write.commit().await?;
+        Ok(self.launch_reserved(database, id, spec).await?.execution)
+    }
+
+    /// Records a launch intent in the caller's transaction, so a capability can commit it
+    /// with its own record of what the execution is for (report 02, cross-capability
+    /// atomicity). `epoch` is the database's. Once committed, launch it with
+    /// [`Supervisor::launch_reserved`]; until then, or if it never is, a restart's
+    /// reconciliation ends it as never started.
+    pub async fn reserve(
+        &self,
+        write: &WriteTransaction<'_>,
+        epoch: &str,
+    ) -> Result<ExecutionId, Error> {
+        let boot_id = self.boot_id().await?;
+        store::record_intent(write, epoch, self.launch_containment, boot_id).await
+    }
+
+    /// Spawns the program of the committed intent `id` in its containment and waits for its
+    /// start confirmation, as [`Supervisor::launch`] does.
+    pub async fn launch_reserved(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+        spec: &LaunchSpec,
+    ) -> Result<Launched, Error> {
+        let reserved = store::execution(database, id).await?;
+        if reserved.phase != Phase::Launching || reserved.process_group.is_some() {
+            return Err(Error::NotReserved { execution: id });
+        }
+        let containment = reserved.containment;
         let takes_expand_environment = self.scope_takes_expand_environment(&containment).await;
         let mut launcher = match self.spawn(
             self.execution_dir(database, id),
@@ -152,15 +199,21 @@ impl Supervisor {
             .id()
             .and_then(|pid| i32::try_from(pid).ok())
             .expect("a just-spawned child has a pid");
-        store::record_process_group(database, id, process_group).await?;
         // The daemon reaps its own children, so an exited leader never lingers as a zombie
         // that keeps its process group alive. After a restart, init reaps them.
         let (exited_sender, launcher_exited) = oneshot::channel();
         tokio::spawn(async move {
             let _ = exited_sender.send(launcher.wait().await);
         });
-        self.confirm_start(database, id, process_group, launcher_exited)
-            .await
+        store::record_process_group(database, id, process_group).await?;
+        self.confirm_start(
+            database,
+            id,
+            process_group,
+            launcher_exited,
+            spec.terminal.is_some(),
+        )
+        .await
     }
 
     fn spawn(
@@ -183,16 +236,25 @@ impl Supervisor {
                 .open(&path)
                 .map_err(Error::io("create", path))
         };
+        // A terminal execution's session leader comes first, so the launch script and the
+        // program already run in its session and process group.
+        let mut launcher: Vec<&OsStr> = Vec::new();
+        if let Some(terminal) = &spec.terminal {
+            launcher.push(terminal.leader.as_os_str());
+            launcher.extend(terminal.leader_arguments.iter().map(OsString::as_os_str));
+        }
+        launcher.push(OsStr::new("/bin/sh"));
         let (mut command, program) = match containment {
             Containment::SystemdScope { unit } => {
                 let mut command = self.systemd.scope_launcher(unit, takes_expand_environment);
-                command.arg("/bin/sh");
+                command.args(&launcher);
                 (command, self.systemd.systemd_run.clone())
             }
-            Containment::ProcessGroup => (
-                tokio::process::Command::new("/bin/sh"),
-                PathBuf::from("/bin/sh"),
-            ),
+            Containment::ProcessGroup => {
+                let mut command = tokio::process::Command::new(launcher[0]);
+                command.args(&launcher[1..]);
+                (command, PathBuf::from(launcher[0]))
+            }
         };
         command
             .arg("-c")
@@ -203,11 +265,31 @@ impl Supervisor {
             .args(&spec.arguments)
             .current_dir(&spec.working_dir)
             .env_clear()
-            .envs(spec.environment.iter().map(|(name, value)| (name, value)))
-            .stdin(Stdio::null())
-            .stdout(output_file(OutputKind::Stdout)?)
-            .stderr(output_file(OutputKind::Stderr)?)
-            .process_group(0);
+            .envs(spec.environment.iter().map(|(name, value)| (name, value)));
+        // A terminal execution's output, the launcher's errors included, goes to its terminal:
+        // it has no output files.
+        match &spec.terminal {
+            Some(terminal) => {
+                let device = |device: &OwnedFd| {
+                    device
+                        .try_clone()
+                        .map_err(Error::io("duplicate", "the execution's terminal"))
+                };
+                // No process group of its own here: `setsid` refuses a group leader, and
+                // the session leader's new session is the execution's group.
+                command
+                    .stdin(device(&terminal.device)?)
+                    .stdout(device(&terminal.device)?)
+                    .stderr(device(&terminal.device)?);
+            }
+            None => {
+                command
+                    .stdin(Stdio::null())
+                    .stdout(output_file(OutputKind::Stdout)?)
+                    .stderr(output_file(OutputKind::Stderr)?)
+                    .process_group(0);
+            }
+        }
         if let Containment::SystemdScope { .. } = containment {
             command.envs(scope_manager_variables(&spec.environment));
         }
@@ -231,9 +313,10 @@ impl Supervisor {
     ) -> Result<HostedLaunch, Error> {
         let environment = self.launch_environment(spec)?;
         let host_script = host_script(host_variables, &environment)?;
-        let boot_id = self.boot_id().await?.to_owned();
-        let (id, containment) =
-            store::record_intent(database, self.launch_containment, &boot_id).await?;
+        let write = database.write().await?;
+        let id = self.reserve(&write, database.epoch()).await?;
+        write.commit().await?;
+        let containment = store::execution(database, id).await?.containment;
         let dir = self.execution_dir(database, id);
         if let Err(error) = DirBuilder::new().recursive(true).mode(0o700).create(&dir) {
             store::record_ended(database, id, EndReason::NeverStarted).await?;
@@ -330,11 +413,19 @@ impl Supervisor {
         database: &Database,
         id: ExecutionId,
         process_group: i32,
-        mut launcher_exited: oneshot::Receiver<std::io::Result<std::process::ExitStatus>>,
-    ) -> Result<Execution, Error> {
+        mut launcher_exited: oneshot::Receiver<LauncherExit>,
+        has_terminal: bool,
+    ) -> Result<Launched, Error> {
         let leader_path = self.execution_dir(database, id).join(LEADER_FILE);
         let deadline = tokio::time::Instant::now() + self.launch_timeout;
+        // Kept once received: a program that exits at once still has its status reported.
+        let mut exited = None;
         loop {
+            // Looked at before the leader file: an exit seen first and no file after it means
+            // the program never started, since the file is written before the program runs.
+            if exited.is_none() {
+                exited = launcher_exited.try_recv().ok();
+            }
             if let Some((pid, start)) = read_leader_file(&leader_path).await? {
                 if pid != process_group {
                     return Err(Error::InvalidStoredExecution {
@@ -345,14 +436,28 @@ impl Supervisor {
                     });
                 }
                 store::record_running(database, id, pid, &start).await?;
-                return store::execution(database, id).await;
+                let exit = match exited {
+                    Some(status) => {
+                        let (sender, exit) = oneshot::channel();
+                        let _ = sender.send(status);
+                        exit
+                    }
+                    None => launcher_exited,
+                };
+                return Ok(Launched {
+                    execution: store::execution(database, id).await?,
+                    exit,
+                });
             }
-            if launcher_exited.try_recv().is_ok() && read_leader_file(&leader_path).await?.is_none()
-            {
+            if exited.is_some() {
                 store::record_ended(database, id, EndReason::NeverStarted).await?;
                 return Err(Error::LaunchFailed {
                     execution: id,
-                    launcher_output: self.launcher_output(database, id).await,
+                    launcher_output: if has_terminal {
+                        "(written to its terminal)".to_owned()
+                    } else {
+                        self.launcher_output(database, id).await
+                    },
                 });
             }
             if tokio::time::Instant::now() >= deadline {
@@ -378,6 +483,29 @@ impl Supervisor {
         let execution = store::execution(database, id).await?;
         self.record_presence(database, &execution).await?;
         store::execution(database, id).await
+    }
+
+    /// Observes `id` until it ended, however long that takes, and answers why it ended. A
+    /// host query that failed (`systemctl`, `/proc`) is asked again at the next look; only the
+    /// state database or the stored row failing ends the watch.
+    pub async fn watch_until_ended(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+    ) -> Result<EndReason, Error> {
+        let mut interval = WATCH_FIRST;
+        loop {
+            match self.observe(database, id).await {
+                Ok(Execution {
+                    phase: Phase::Ended(reason),
+                    ..
+                }) => return Ok(reason),
+                Ok(_) | Err(Error::HostCommand { .. } | Error::Io { .. }) => {}
+                Err(error) => return Err(error),
+            }
+            tokio::time::sleep(interval).await;
+            interval = (interval * 2).min(WATCH_LONGEST);
+        }
     }
 
     /// Looks at the real processes, records a confirmed start or an end, and answers what
@@ -446,21 +574,14 @@ impl Supervisor {
                 return Ok(ours);
             }
             // Until `systemd-run` registered the scope, the unit reads as unknown, which
-            // `systemctl` answers as `inactive`; the launcher's own group is still alive.
-            let launcher_alive = execution
-                .process_group
-                .is_some_and(platform::group_has_members);
-            return Ok(if leader_start.is_none() && launcher_alive {
-                Presence::Unidentified
-            } else {
-                gone
-            });
+            // `systemctl` answers as `inactive`; the launcher itself is still alive.
+            return Ok(launching_or(gone, &leader_start, execution.process_group));
         }
         let Some(process_group) = process_group else {
             return Ok(Presence::Unidentified);
         };
         if !platform::group_has_members(process_group) {
-            return Ok(gone);
+            return Ok(launching_or(gone, &leader_start, Some(process_group)));
         }
         let current_start = platform::leader_start(process_group).await?;
         Ok(match (leader_start.as_deref(), current_start) {
@@ -599,6 +720,20 @@ impl Supervisor {
                 tokio::time::sleep(PRESENCE_POLL_INTERVAL).await;
             }
         }))
+    }
+}
+
+/// `gone`, unless the execution has not confirmed its start and its launcher (whose pid names
+/// the group) still runs. A terminal execution's launcher leads that group only once it is
+/// the session leader: until then its pid is alive in the daemon's group and the group has
+/// no member yet.
+fn launching_or(gone: Presence, leader_start: &Option<String>, launcher: Option<i32>) -> Presence {
+    let is_launcher_alive = launcher
+        .is_some_and(|pid| platform::group_has_members(pid) || platform::process_exists(pid));
+    if leader_start.is_none() && is_launcher_alive {
+        Presence::Unidentified
+    } else {
+        gone
     }
 }
 

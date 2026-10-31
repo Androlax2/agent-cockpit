@@ -53,6 +53,7 @@ async fn launch_sleeper(home: &TestHome) -> Execution {
         arguments: vec![OsString::from("-c"), OsString::from("exec sleep 300")],
         working_dir: home.home().to_path_buf(),
         environment: vec![],
+        terminal: None,
     };
     supervisor(home).launch(&database, &spec).await.unwrap()
 }

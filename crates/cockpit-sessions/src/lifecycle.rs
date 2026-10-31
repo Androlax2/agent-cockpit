@@ -735,6 +735,7 @@ impl Sessions {
             arguments: command.arguments,
             working_dir: session.working_dir.clone(),
             environment,
+            terminal: None,
         };
         let hosted = self
             .processes

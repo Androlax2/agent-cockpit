@@ -13,13 +13,18 @@ pub enum Error {
         execution: ExecutionId,
     },
     /// The launcher exited without starting the program; `launcher_output` is the start of
-    /// what it wrote to the execution's stderr.
+    /// what it wrote to the execution's stderr (a terminal execution's went to its terminal).
     LaunchFailed {
         execution: ExecutionId,
         launcher_output: String,
     },
     /// The execution has not confirmed its start, so it has no identity to follow yet.
     NotIdentified {
+        execution: ExecutionId,
+    },
+    /// The execution is not a launch intent still waiting for its launch: it was launched
+    /// already, or it ended.
+    NotReserved {
         execution: ExecutionId,
     },
     /// No execution has this id.
@@ -82,6 +87,9 @@ impl fmt::Display for Error {
                 write!(formatter, "{name:?} is not an environment variable name")
             }
             Error::UnknownExecution { execution } => write!(formatter, "{execution} is unknown"),
+            Error::NotReserved { execution } => {
+                write!(formatter, "{execution} is not waiting for its launch")
+            }
             Error::NotIdentified { execution } => {
                 write!(formatter, "{execution} has not confirmed its start yet")
             }

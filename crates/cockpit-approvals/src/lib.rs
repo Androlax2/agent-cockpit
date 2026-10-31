@@ -6,6 +6,7 @@ mod guides;
 mod hints;
 mod pty;
 mod redact;
+mod restart;
 mod rows;
 mod runs;
 
@@ -18,14 +19,15 @@ pub use guides::{
     guide_request, guide_status, open_guides, parse_guide, report_stuck,
 };
 pub use hints::{build_files_run, timeout_without_foreground};
-pub use pty::{NoResult, Output, Ran, RunSettings, Runner, present, run_leader};
+pub use pty::{NoResult, Output, Ran, RunSettings, Runner, present};
 pub use redact::{redact_secrets, strip_terminal_controls};
+pub use restart::ended_after_restart;
 pub use rows::{EXPIRES_AFTER_SECONDS, Project};
 pub use runs::{
-    APPROVAL_GRACE_SECONDS, Approved, RunAsk, RunId, RunRequest, RunResult, RunState,
-    action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, may_ask, open_runs,
-    queue_order, reconcile_runs, record_not_run, record_outcome_unknown, resolve_cwd, run_request,
-    run_status, start_run,
+    APPROVAL_GRACE_SECONDS, Approved, Interrupted, RunAsk, RunId, RunRequest, RunResult, RunState,
+    action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, interrupted_runs,
+    may_ask, open_runs, queue_order, reconcile_run, record_not_run, record_outcome_unknown,
+    resolve_cwd, run_request, run_status, start_run,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an
@@ -110,6 +112,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             // #156: the grace after a revision appears needs its time; an edit sets it again.
             sql: "ALTER TABLE approvals_runs ADD COLUMN revised_at INTEGER NOT NULL DEFAULT 0;
             UPDATE approvals_runs SET revised_at = asked_at;",
+        },
+        // #163: a running run names the `cockpit-processes` execution it reserved, so a
+        // restart reports what became of it. Earlier rows keep NULL.
+        Migration {
+            version: 3,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN execution INTEGER
+                CHECK (execution >= 1);",
         },
     ],
 };

@@ -15,6 +15,7 @@ use cockpit_approvals::{
     RunRequest, RunResult, RunSettings, RunState, Runner, Shown,
 };
 use cockpit_authorization::SessionId;
+use cockpit_processes::ExecutionId;
 use cockpit_protocol::{
     Command, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView, Outcome,
     ProtocolError, Reply, RunRequestView, RunResultView, RunStateView, ShownText, Unblock,
@@ -24,15 +25,15 @@ use cockpit_turso::{Database, WriteTransaction};
 
 use crate::routes::{Route, WorkClass};
 
-/// The argument that makes `cockpit-daemon` the run leader of an approved command
-/// (`cockpit_approvals::run_leader`) instead of the daemon.
+/// The argument that makes `cockpit-daemon` the session leader of an approved command
+/// (`cockpit_processes::run_session_leader`) instead of the daemon.
 pub const RUN_LEADER_FLAG: &str = "--run-leader";
 
 const DEFAULT_SHELL: &str = "/bin/sh";
 
-/// The runner approved commands go through: `$SHELL` when it is absolute, else `/bin/sh`,
-/// started under this program's run leader, with `environment` (the daemon's own).
-pub fn runner(environment: Vec<(OsString, OsString)>) -> std::io::Result<Runner> {
+/// How approved commands run: `$SHELL` when it is absolute, else `/bin/sh`, started under
+/// this program's session leader, with `environment` (the daemon's own).
+pub fn run_settings(environment: Vec<(OsString, OsString)>) -> std::io::Result<RunSettings> {
     let shell = environment
         .iter()
         .find(|(name, _)| name == "SHELL")
@@ -45,7 +46,7 @@ pub fn runner(environment: Vec<(OsString, OsString)>) -> std::io::Result<Runner>
         vec![RUN_LEADER_FLAG.into()],
     );
     settings.environment = environment;
-    Ok(Runner::new(settings))
+    Ok(settings)
 }
 
 /// A request that failed, as the wire tells it.
@@ -468,17 +469,8 @@ async fn approve(
 
 async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
     let request = approved.id.0;
-    if let Err(Failed(error)) = start(&database, &approved).await {
-        tracing::error!(request, ?error, "an approved run could not start");
-        let ended = Err(NoResult::NotStarted(format!(
-            "the run could not be marked running: {}",
-            error.message
-        )));
-        record_end_or_log(&database, &approved, &ended).await;
-        return;
-    }
     let ended = match safe_git_config(&approved.cwd).await {
-        Ok(git_config) => runner.run(&approved, &git_config).await,
+        Ok(git_config) => runner.run(&database, &approved, &git_config).await,
         Err(reason) => Err(NoResult::NotStarted(reason)),
     };
     match &ended {
@@ -488,6 +480,14 @@ async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
                     request,
                     "a background process kept the terminal open; its later output is lost"
                 );
+            }
+            if let Some(execution) = ran.leftover {
+                tokio::spawn(watch_leftover(
+                    Arc::clone(&database),
+                    runner.clone(),
+                    request,
+                    execution,
+                ));
             }
             tracing::info!(
                 request,
@@ -501,6 +501,78 @@ async fn execute(database: Arc<Database>, runner: Runner, approved: Approved) {
     record_end_or_log(&database, &approved, &ended).await;
 }
 
+/// Keeps a run's execution charged while processes its command left behind still run, until
+/// they are observed gone.
+async fn watch_leftover(
+    database: Arc<Database>,
+    runner: Runner,
+    request: i64,
+    execution: ExecutionId,
+) {
+    tracing::info!(
+        request,
+        execution = execution.0,
+        "processes an approved command left behind still run"
+    );
+    match runner.wait_until_ended(&database, execution).await {
+        Ok(reason) => tracing::info!(request, ?reason, "an approved run's leftovers ended"),
+        Err(error) => tracing::error!(
+            request,
+            %error,
+            "stopped watching an approved run's leftovers; a restart reconciles them"
+        ),
+    }
+}
+
+/// Startup, after the executions were reconciled: ends the runs the previous daemon left
+/// behind from what their executions did. One whose execution still runs is watched and
+/// recorded once it ended; neither is ever started again (#34, #163).
+pub(crate) async fn reconcile_runs(
+    database: &Arc<Database>,
+    runner: &Runner,
+) -> Result<(), cockpit_approvals::Error> {
+    for (interrupted, state) in runner.reconcile(database, now()).await? {
+        let request = interrupted.run.id.0;
+        let (RunState::Running, Some(execution)) = (state, interrupted.execution) else {
+            tracing::warn!(
+                request,
+                state = state.as_str(),
+                "an approved run did not finish before the restart"
+            );
+            continue;
+        };
+        tracing::info!(
+            request,
+            execution = execution.0,
+            "reattached an approved run that kept running"
+        );
+        tokio::spawn(outlive(
+            Arc::clone(database),
+            runner.clone(),
+            interrupted.run,
+            execution,
+        ));
+    }
+    Ok(())
+}
+
+/// Records a run that outlived a restart once its execution ended. Its terminal went with
+/// the previous daemon, so only that end is known.
+async fn outlive(database: Arc<Database>, runner: Runner, run: Approved, execution: ExecutionId) {
+    match runner.wait_until_ended(&database, execution).await {
+        Ok(reason) => {
+            let ended = Err(cockpit_approvals::ended_after_restart(reason));
+            record_end_or_log(&database, &run, &ended).await;
+        }
+        Err(error) => tracing::error!(
+            request = run.id.0,
+            %error,
+            "stopped watching an approved run that outlived a restart; it stays running \
+             until the next restart"
+        ),
+    }
+}
+
 /// `cockpit-projects`' safe Git settings for a run in `cwd`, read just before it starts: the
 /// repository's own program-running drivers are reset too.
 async fn safe_git_config(cwd: &Path) -> Result<Vec<String>, String> {
@@ -509,13 +581,6 @@ async fn safe_git_config(cwd: &Path) -> Result<Vec<String>, String> {
         .await
         .map_err(|error| format!("the Git configuration check stopped: {error}"))?
         .map_err(|error| format!("cannot reset the repository's Git drivers: {error}"))
-}
-
-async fn start(database: &Database, approved: &Approved) -> Result<(), Failed> {
-    let write = database.write().await?;
-    cockpit_approvals::start_run(&write, approved).await?;
-    write.commit().await?;
-    Ok(())
 }
 
 /// Records the run's end. When that fails after the command started, the run is marked

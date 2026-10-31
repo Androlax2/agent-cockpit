@@ -31,6 +31,8 @@ never a dropped task or a timed-out launcher (report 03).
    by the execution itself, is the start confirmation (`running`). A launcher that does not
    confirm in time answers `LaunchTimedOut` and keeps the reservation.
 2. `observe` checks the real processes and records a confirmed start or an end.
+   `watch_until_ended` keeps observing, backing off from 1 s to 30 s, until the end, for
+   an execution that outlives whoever launched it; a failed host query is asked again.
 3. `terminate` records the cancel request, sends `SIGTERM` to the whole containment, then
    `SIGKILL` after the grace period, and answers `Confirmed` only once the execution was
    observed empty; otherwise `Unconfirmed`, reservation kept.
@@ -50,6 +52,21 @@ where any local process could read them: they are written to a 0600 file in the 
 directory, which the host step reads and deletes before the program starts. Names must be
 plain shell names.
 
+## Terminal executions
+
+A `LaunchSpec` with a `Terminal` runs in a pseudo-terminal instead (#163; approved runs of
+`cockpit-approvals`). The execution is the terminal's session: the spec's session leader
+(`run_session_leader`, which the daemon runs as `cockpit-daemon --run-leader`) calls
+`setsid`, takes the terminal as controlling terminal and execs the launch script, so the
+program keeps its pid, leads the session and its process group, and its exit status is the
+one `Launched::exit` reports. Until the leader's `setsid`, its pid sits in the daemon's group
+and its own group has no member yet; an observation then sees the live launcher and keeps
+the execution `launching`. The terminal's other side belongs to the caller: a daemon that
+stops hangs the session up.
+
+`reserve` records a launch intent in the caller's transaction, so a capability commits it
+with its own record of what the execution is for; `launch_reserved` then launches it once.
+
 Output goes to `stdout` and `stderr` files in `<executions dir>/<database epoch>/<id>/`, not to pipes: a
 pipe whose reader is the daemon would kill the program with `SIGPIPE` after a daemon
 restart. `follow_output` drains a file in bounded chunks into a byte-bounded window; a
@@ -63,7 +80,8 @@ themselves are not size-limited yet.
 - Depends on no product capability; `tests/crate_graph.rs` enforces it, and the workspace
   rule `verification -> processes` keeps verification from launching processes.
 - Used by: the daemon, which reconciles executions before it accepts requests, and
-  `cockpit-sessions`, whose agents run as hosted executions.
+  `cockpit-sessions`, whose agents run as hosted executions, and `cockpit-approvals`, whose
+  approved runs are terminal executions.
 
 ## Tests
 
@@ -74,6 +92,10 @@ themselves are not size-limited yet.
 - `tests/hosted.rs`: an execution a host (playing tmux) starts: confirmed as its own
   process group, exactly its environment, no value in its command, abandoned launches.
 - `tests/output.rs`: bounded draining and gap markers for a slow viewer.
+- `tests/terminal.rs`: terminal executions with util-linux `setsid --ctty` as the leader:
+  the program leads the session and has the terminal, its exit status, whole-session
+  termination, a leader that cannot take the terminal, a reserved intent launched once, and
+  a launcher not yet leading its group.
 - `tests/systemd_scope.rs`: the scope backend through fake `systemd-run` and `systemctl`;
   the real-manager case is `#[ignore]`d (sandboxes and CI have none), run it with
   `cargo nextest run -p cockpit-processes --run-ignored only` on a desktop session.
