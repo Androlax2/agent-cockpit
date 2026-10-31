@@ -473,13 +473,45 @@ fn a_project_that_is_not_a_directory_fails() {
 }
 
 #[test]
-fn unknown_arguments_print_usage_and_exit_2() {
+fn a_rejected_argument_is_named_before_the_usage() {
     let home = Home::clean();
-    for arguments in [&["--frobnicate", "x"][..], &["--set"][..]] {
+    for (arguments, problem) in [
+        (&["--frobnicate", "x"][..], "unknown argument --frobnicate"),
+        (&["--set"][..], "--set needs a value"),
+        (
+            &["--project", "--set", "workflow.preset=\"x\""][..],
+            "--project needs a value",
+        ),
+        (
+            &["--project", "/", "--project", "/"][..],
+            "--project given twice",
+        ),
+    ] {
         let output = home.show(arguments);
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");
-        assert!(String::from_utf8_lossy(&output.stderr).starts_with("usage: cockpit config show"));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!(
+                "cockpit: {problem}\nusage: cockpit config show [--project DIR] [--set KEY=VALUE]...\n"
+            )
+        );
     }
+}
+
+#[test]
+fn a_non_utf8_project_path_is_reported_not_a_crash() {
+    use std::os::unix::ffi::OsStrExt;
+    let home = Home::clean();
+    let project = home.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
+        .args(["config", "show", "--project"])
+        .arg(&project)
+        .env_clear()
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).ends_with(": not a directory\n"));
 }
 
 #[test]

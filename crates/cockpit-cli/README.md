@@ -3,9 +3,9 @@
 Owns the `cockpit` command line: it parses verbs and renders their results.
 
 **Depends on:** `cockpit-client` and `cockpit-protocol` for daemon verbs (once they exist), and
-the capability crates whose verbs must work without the daemon, named in one list in
-[report 02](../../docs/design/greenfield/02-crate-architecture.md) (#77): today `cockpit-config`.
-The `dependency_edges` test fails on any other product dependency.
+the capability crates whose verbs must work without the daemon, listed in
+[report 02](../../docs/design/greenfield/02-crate-architecture.md) (#77). The
+`dependency_edges` test fails when `Cargo.lock` shows the CLI reaching any other product crate.
 **Used by:** nothing; it is a frontend.
 
 ## Verbs
