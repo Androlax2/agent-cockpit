@@ -17,7 +17,8 @@ use cockpit_tui::{App, Key, draw, record_usage};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use tokio::sync::mpsc;
 
-/// How often the TUI asks the daemon for its state, until the change feed serves it (#41).
+/// How often the TUI asks the daemon for its state, until sessions and checkouts are on the
+/// change feed.
 const REFRESH: Duration = Duration::from_secs(1);
 /// Redraws this often regardless, so the pane's grace hint goes away on time.
 const REDRAW: Duration = Duration::from_millis(200);

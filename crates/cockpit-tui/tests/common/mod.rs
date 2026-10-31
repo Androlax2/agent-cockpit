@@ -50,6 +50,8 @@ pub fn session(id: &str, checkout: i64, created_at: i64) -> SessionView {
         created_at,
         changed_at: created_at,
         launch: None,
+        changed_start_files: Vec::new(),
+        restart_pending: false,
     }
 }
 

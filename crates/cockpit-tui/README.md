@@ -28,7 +28,8 @@ detaching the terminal leaves everything running.
 - **Never waits.** Keys are read on their own thread (presses only, report 05); each request
   runs in its own task on one shared connection; answers update the view as they arrive.
 - **State.** [`Board`] applies change-feed batches whole (sessions and checkouts) or refuses
-  them whole. Until the daemon serves the feed (#41) the TUI refreshes every second with
+  them whole. The feed serves `subscribe` (#41), but nothing publishes sessions or
+  checkouts on it yet; until something does, the TUI refreshes every second with
   `project-list`, `checkout-list`, `session-list`, `agent-reports` and `approval-queue`.
 - **Usage.** Every key counts as one named command (`open`, `restart`, `approval-approve`,
   `unbound`…) in `$XDG_STATE_HOME/cockpit/logs/tui/cockpit.log`: the name only, never what

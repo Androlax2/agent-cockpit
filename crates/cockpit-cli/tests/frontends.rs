@@ -126,7 +126,7 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
-        "s0123456789ab\trunning\tclaude\twake\tc-1\t/p/app\t-\n"
+        "s0123456789ab\trunning\tclaude\twake\tc-1\t/p/app\t-\t-\n"
     );
     assert_eq!(
         daemon.await.unwrap(),

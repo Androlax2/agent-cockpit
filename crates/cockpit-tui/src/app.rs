@@ -101,8 +101,8 @@ impl App {
         App::default()
     }
 
-    /// What the runtime asks the daemon on every refresh, until the change feed serves
-    /// sessions and checkouts (#41).
+    /// What the runtime asks the daemon on every refresh, until sessions and checkouts are
+    /// published on the change feed (#41 serves it; nothing publishes them yet).
     pub fn refresh_commands() -> Vec<Command> {
         vec![
             Command::ProjectList,
