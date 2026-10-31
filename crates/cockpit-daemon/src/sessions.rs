@@ -43,6 +43,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             prompt,
             clone,
         } => job(async move {
+            let work = task_work(&sessions).await?;
             let started = sessions
                 .start(StartRequest {
                     dir: dir.into(),
@@ -51,7 +52,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                     clone_branch: clone,
                 })
                 .await?;
-            session_reply(&sessions, &started).await
+            reply(&sessions, &started, &work).await
         }),
         Command::SessionRestartAll => job(async move {
             // Read before restarting: a failed read must not report a restart that ran.
@@ -128,8 +129,10 @@ where
 {
     job(async move {
         let id = SessionId::parse(&session)?;
+        // Read before the operation: a failed read must not report an operation that ran.
+        let work = task_work(&sessions).await?;
         let changed = operation(Arc::clone(&sessions), id).await?;
-        session_reply(&sessions, &changed).await
+        reply(&sessions, &changed, &work).await
     })
 }
 
@@ -163,7 +166,7 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
             continue;
         }
         match sessions.end(&session.id).await {
-            Ok(over) => ended.push(session_view(&over, Vec::new(), &Work::new())),
+            Ok(over) => ended.push(session_view(&over, Vec::new(), &work)),
             Err(error) => failed.push(SessionFailure {
                 session: session.id.to_string(),
                 error: protocol_error(&error),
@@ -177,17 +180,21 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
 type Work = HashMap<TaskSession, SessionWork>;
 
 async fn task_work(sessions: &Sessions) -> Result<Work, Failed> {
-    let read = sessions.database().read().await?;
+    let read = sessions.database().read().await.map_err(Error::from)?;
     Ok(cockpit_tasks::session_work(&read).await?)
 }
 
 /// The finished label (#157, decided in #201): the task list, never the agent's own state,
 /// says the session's work is done. It is doing no item and finished at least one. A session
-/// mid-launch, mid-stop or failed is not labelled: the failed one needs the owner.
+/// mid-launch, mid-stop, failed or ended is not labelled: the failed one needs the owner,
+/// the ended one has nothing left to exit.
 fn is_finished(session: &Session, work: &Work) -> bool {
     if matches!(
         session.state,
-        SessionState::Launching | SessionState::Stopping { .. } | SessionState::Failed
+        SessionState::Launching
+            | SessionState::Stopping { .. }
+            | SessionState::Failed
+            | SessionState::Ended
     ) {
         return false;
     }
@@ -277,8 +284,12 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
 
 pub(crate) async fn session_reply(sessions: &Sessions, session: &Session) -> Answer {
     let work = task_work(sessions).await?;
+    reply(sessions, session, &work).await
+}
+
+async fn reply(sessions: &Sessions, session: &Session, work: &Work) -> Answer {
     Ok(Reply::Session {
-        session: Box::new(current_view(sessions, session, &work).await?),
+        session: Box::new(current_view(sessions, session, work).await?),
     })
 }
 

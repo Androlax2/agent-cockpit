@@ -20,7 +20,7 @@ worker, with the reasons below.
   launch, so a restart can never take over a launch still under way.
 - **Finished is computed by the daemon, never stored on the session.** `cockpit-tasks` keeps
   `finished_by` (the session doing the item when it was finished, cleared by `reopen`); the
-  daemon labels a session finished when it is not launching, stopping or failed, is doing no item and
+  daemon labels a session finished when it is not launching, stopping, failed or ended, is doing no item and
   finished at least one. An agent's own report (waiting, idle) never counts.
 - **`session-end-finished` ends the finished sessions one by one.** One failure does not stop
   the others; the reply lists both. Each is checked again just before it ends. The basic TUI

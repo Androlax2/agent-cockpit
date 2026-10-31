@@ -498,6 +498,21 @@ async fn end_finished_with_only_ends_just_the_named_finished_sessions() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_ended_session_is_never_labelled_finished() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root).await;
+    let item = home.session_takes_an_item(&client, &started.id).await;
+    home.session_finishes(&started.id, item).await;
+
+    end(&client, &started.id).await;
+
+    assert!(!listed(&client, &started.id).await.finished);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_failed_session_is_never_labelled_finished() {
     let home = Home::new();
     let daemon = home.start().await;
