@@ -157,23 +157,22 @@ binary or the protocol, per platform, and lists what did not run as open.
 ## 2026-10-31 — Release policy modelled on OpenLogi (#94)
 
 [Releasing](RELEASING.md) follows the reference Theo posted on #94: one workspace version
-bumped by a release-plz release PR, release-plz tagging only and the release workflow owning
-the GitHub Release, git-cliff changelog from conventional squash subjects, and pre-releases
-cut on `main` by a dispatched workflow without a version bump. Cockpit adds `-alpha.N` from
-the M3 gate to the M5 cutover; stable `v0.x.y` tags exist only from the M5 cutover (#71), as
-promoted betas (Theo, on #94). The tools are the proposal; #96 decides them. Choices the
-reference leaves open:
+bumped by a release-plz release PR; release-plz tags, and the release workflow owns the
+GitHub Release; git-cliff builds the changelog from conventional squash subjects; a
+dispatched workflow cuts pre-releases on `main` without a bump. Cockpit adds `-alpha.N` from
+M3 to M5. Stable `v0.x.y` tags start at the M5 cutover (#71), as promoted betas. #96 picks
+the tools. Choices the reference leaves open:
 
-- **Count base before the first stable.** OpenLogi counts `N` from the previous stable tag;
-  Cockpit has none until M5, so alphas count from the greenfield bootstrap commit `d2d8604`:
-  earlier history is the `apps/` code, which is never tagged.
-- **First cycle without a stable.** OpenLogi refuses a beta on a version with no stable tag
-  and needs a release PR to name the version; before Cockpit's first stable, alphas use the
-  workspace's current `0.1.0` with no release PR, as long as `v0.1.0` does not exist.
-- **Promotion means no drift.** A stable release promotes a beta only if nothing but the
-  release PR landed after that beta, so the stable build is the verified beta's source plus
-  the version bump, rebuilt and gated again; byte-identical promotion would need the build to
-  ignore the version stamp.
+- **A base before the first stable.** OpenLogi counts `N` from the previous stable and names
+  the version through a release PR. Cockpit has no stable until M5, so alphas count from the
+  bootstrap commit (earlier history is the untagged `apps/` code) and use the current
+  `0.1.0` without a release PR.
+- **Promotion means no drift.** Byte-identical promotion would need the build to ignore the
+  version stamp, so a stable release rebuilds the verified beta's unchanged source plus the
+  bump.
+- **The gate runs in the release workflow**, on the tagged commit before the draft is
+  published, so a stable tag (a squash commit that does not exist before the merge) is gated
+  once, not on the PR head and again after.
 - **Issue in the body.** Greenfield titles used to end in their issue number, which doubles
   the `(#N)` git-cliff reads; titles are now conventional subjects and the issue goes in the
   body.
