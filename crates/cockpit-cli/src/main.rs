@@ -1,6 +1,10 @@
 //! `cockpit`: the command-line frontend. Verbs that must work without the daemon (report 09)
 //! call their capability crate directly; that list is fixed in report 02 (#77). Every other
 //! verb goes to the daemon through `cockpit-client`.
+#![deny(
+    clippy::print_stdout,
+    reason = "`print!` panics on a closed stdout (#275): write through `out!`/`outln!`"
+)]
 
 /// `print!` through [`write_stdout`]: exits instead of panicking when stdout is closed.
 macro_rules! out {
@@ -12,7 +16,7 @@ macro_rules! out {
 /// `println!` through [`write_stdout`]: exits instead of panicking when stdout is closed.
 macro_rules! outln {
     ($($argument:tt)*) => {
-        $crate::write_stdout(format_args!("{}\n", format_args!($($argument)*)))
+        out!("{}\n", format_args!($($argument)*))
     };
 }
 
@@ -144,7 +148,11 @@ fn write_stdout(text: std::fmt::Arguments) {
     if error.kind() == std::io::ErrorKind::BrokenPipe {
         std::process::exit(141);
     }
-    eprintln!("cockpit: cannot write to stdout: {error}");
+    // `eprintln!` would panic if stderr is broken too; exit 1 still reports the failure.
+    let _ = writeln!(
+        std::io::stderr(),
+        "cockpit: cannot write to stdout: {error}"
+    );
     std::process::exit(1);
 }
 
