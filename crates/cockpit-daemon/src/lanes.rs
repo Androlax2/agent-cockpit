@@ -20,6 +20,7 @@ pub struct LaneLimits {
 #[derive(Debug)]
 pub(crate) struct Lanes {
     control: Lane,
+    stop: Lane,
     bulk: Lane,
 }
 
@@ -34,9 +35,10 @@ struct Lane {
 }
 
 impl Lanes {
-    pub(crate) fn new(control: LaneLimits, bulk: LaneLimits) -> Lanes {
+    pub(crate) fn new(control: LaneLimits, stop: LaneLimits, bulk: LaneLimits) -> Lanes {
         Lanes {
             control: Lane::new("control", control),
+            stop: Lane::new("stop", stop),
             bulk: Lane::new("bulk", bulk),
         }
     }
@@ -51,6 +53,7 @@ impl Lanes {
     ) -> Result<impl Future<Output = Outcome> + Send + 'static, Outcome> {
         let lane = match class {
             WorkClass::Control => &self.control,
+            WorkClass::Stop => &self.stop,
             WorkClass::Bulk => &self.bulk,
         };
         let admitted = Arc::clone(&lane.admitted)
