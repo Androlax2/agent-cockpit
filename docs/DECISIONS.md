@@ -9,8 +9,7 @@ binary or the protocol, per platform, and lists what did not run as open.
   other variable cleared and an empty home, as on a fresh macOS account; the existing
   clean-home test sets the XDG variables and stays.
 - **macOS runs in CI, narrowly.** The `greenfield-macos` job runs only `cockpit-daemon`'s
-  `startup` tests (clean-home start, socket paths, modes, single instance, log level) on
-  `macos-26`, with plain `cargo nextest`: the Makefile's `agent-build` runner is Linux-only,
+  `startup` test binary on `macos-26`, with plain `cargo nextest`: the Makefile's `agent-build` runner is Linux-only,
   and the full gate stays on Linux. It has no build cache, so each run builds the workspace
   cold; a cache action would be a new pinned dependency.
 - **WSL2 is a checklist.** No agent can run WSL2, so `docs/gates/m0-wsl2-recorded-run.md`

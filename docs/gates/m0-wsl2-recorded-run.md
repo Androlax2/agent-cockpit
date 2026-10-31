@@ -21,15 +21,7 @@ A blank or skipped step is not a pass.
 Run inside the WSL2 distribution, in a clone of the repository on the Linux file system
 (`~/...`, not `/mnt/c/...`), with Rust 1.99.1 and cargo-nextest installed.
 
-1. The daemon's startup tests, clean-home start included, as on Linux and macOS:
-
-   ```sh
-   cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-daemon --test startup
-   ```
-
-   Expected: every test passes, none skipped. Summary line:
-
-2. The rest of the gate's tests:
+1. The gate's tests, the daemon's clean-home start included:
 
    ```sh
    cargo nextest run --locked --cargo-quiet --manifest-path Cargo.toml \
@@ -40,7 +32,7 @@ Run inside the WSL2 distribution, in a clone of the repository on the Linux file
 
    Expected: every test passes. Summary line:
 
-3. The real daemon on an empty home. Every XDG variable is unset, so the lock and socket
+2. The real daemon on an empty home. Every XDG variable is unset, so the lock and socket
    stay inside the temporary home, apart from any other daemon in the WSL2 session. Write
    down the session's own value first (`echo $XDG_RUNTIME_DIR`; WSLg sets
    `/mnt/wslg/runtime-dir` without systemd, `/run/user/<uid>` with it):
@@ -54,7 +46,7 @@ Run inside the WSL2 distribution, in a clone of the repository on the Linux file
    Expected: `ready <clean_home>/.local/state/cockpit/run/daemon.sock` on stdout, then the
    daemon keeps running. Session's `XDG_RUNTIME_DIR`: . Printed line: .
 
-4. In a second WSL2 terminal, a second daemon for the same user refuses to start:
+3. In a second WSL2 terminal, a second daemon for the same user refuses to start:
 
    ```sh
    env -u XDG_RUNTIME_DIR -u XDG_STATE_HOME -u XDG_CONFIG_HOME HOME="<the same clean_home>" target/debug/cockpit-daemon
@@ -63,7 +55,7 @@ Run inside the WSL2 distribution, in a clone of the repository on the Linux file
    Expected: exit status 1 and `another cockpit daemon of this user is already running`.
    Result:
 
-5. Interrupt the first daemon in its terminal and remove the temporary home (`rm -rf "$clean_home"`).
+4. Interrupt the first daemon in its terminal and remove the temporary home (`rm -rf "$clean_home"`).
 
 ## Outcome
 
