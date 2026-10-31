@@ -3,6 +3,8 @@
 //! verb goes to the daemon through `cockpit-client`.
 
 mod agent;
+mod approvals;
+mod ask;
 mod projects;
 
 use std::ffi::OsString;
@@ -20,7 +22,13 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit checkout claim CHECKOUT HOLDER
        cockpit checkout release CHECKOUT HOLDER
        cockpit checkout sweep [--dry-run]
-       cockpit checkout push CHECKOUT";
+       cockpit checkout push CHECKOUT
+       cockpit ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
+       cockpit ask guide [--cwd DIR] < GUIDE | --wait ID
+       cockpit approval list | show ID | decline ID | input ID < LINE
+       cockpit approval approve ID --revision REVISION --digest DIGEST
+       cockpit approval edit ID --revision REVISION COMMAND
+       cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID";
 
 fn main() -> ExitCode {
     // OsString: a project path need not be UTF-8.
@@ -33,6 +41,18 @@ fn main() -> ExitCode {
         }
         [Some("agent"), Some("reports")] => {
             agent::reports(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
+        [Some("ask"), Some("run")] => {
+            ask::run(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
+        [Some("ask"), Some("guide")] => {
+            ask::guide(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
+        [Some(verb @ ("approval" | "guide")), ..] => {
+            match approvals::parse(verb, &arguments[1..]) {
+                Ok(command) => approvals::run(command),
+                Err(problem) => usage_error(Some(problem)),
+            }
         }
         [Some(verb @ ("project" | "checkout")), ..] => {
             match projects::parse(verb, &arguments[1..]) {

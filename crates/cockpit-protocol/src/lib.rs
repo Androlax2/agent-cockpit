@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod agent;
+mod approvals;
 mod change_feed;
 mod error;
 mod handshake;
@@ -9,6 +10,10 @@ mod request;
 
 pub use agent::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, LAUNCH_TOKEN_VARIABLE, SessionReport,
+};
+pub use approvals::{
+    GuideStateView, GuideStepView, GuideView, RunRequestView, RunResultView, RunStateView,
+    ShownText,
 };
 pub use change_feed::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,

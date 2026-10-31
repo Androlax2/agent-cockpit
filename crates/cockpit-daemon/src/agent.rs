@@ -69,7 +69,7 @@ fn internal(error: &dyn std::fmt::Display) -> Outcome {
     )
 }
 
-fn refusal_to_wire(refused: &Refusal) -> ProtocolError {
+pub(crate) fn refusal_to_wire(refused: &Refusal) -> ProtocolError {
     let code = match refused {
         Refusal::UnknownLaunchToken
         | Refusal::LaunchNotStarted { .. }

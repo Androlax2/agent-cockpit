@@ -10,7 +10,7 @@ use cockpit_protocol::{
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
-use crate::{agent, projects};
+use crate::{agent, approvals, projects};
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
 /// so bulk work can fill its lane without taking capacity from control (report 03).
@@ -66,6 +66,8 @@ pub struct Routes {
     git: cockpit_projects::Git,
     /// Read for `projects.trusted` on each answer, so a changed owner config applies at once.
     environment: cockpit_config::Environment,
+    /// Runs what the owner approved, and holds the runs in progress.
+    runner: cockpit_approvals::Runner,
 }
 
 impl Routes {
@@ -73,11 +75,13 @@ impl Routes {
         database: Arc<cockpit_turso::Database>,
         git: cockpit_projects::Git,
         environment: cockpit_config::Environment,
+        runner: cockpit_approvals::Runner,
     ) -> Routes {
         Routes {
             database,
             git,
             environment,
+            runner,
         }
     }
 }
@@ -141,6 +145,47 @@ impl Handler for Routes {
                     Arc::clone(&self.database),
                     self.git.clone(),
                     self.environment.clone(),
+                ),
+            },
+            (
+                command @ (Command::AskRun { .. }
+                | Command::AskGuide { .. }
+                | Command::AskRunStatus { .. }
+                | Command::AskGuideStatus { .. }
+                | Command::AskCheck { .. }),
+                peer,
+            ) => match peer {
+                Peer::Agent { connector } => approvals::route_ask(
+                    command,
+                    connector,
+                    Arc::clone(&self.database),
+                    self.runner.clone(),
+                ),
+                Peer::Owner => Route::Answer(wrong_socket(
+                    "asking the owner is an agent's request; the owner has no session",
+                    "send it on the agent socket from a session Cockpit launched",
+                    UnblockedBy::Agent,
+                )),
+            },
+            (
+                command @ (Command::ApprovalQueue
+                | Command::ApprovalShow { .. }
+                | Command::ApprovalApprove { .. }
+                | Command::ApprovalDecline { .. }
+                | Command::ApprovalEdit { .. }
+                | Command::ApprovalInput { .. }
+                | Command::GuideShow { .. }
+                | Command::GuideAnswer { .. }
+                | Command::GuideStuck { .. }
+                | Command::GuideClose { .. }),
+                peer,
+            ) => match peer {
+                // An agent never decides, edits or answers what agents ask.
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => approvals::route_decision(
+                    command,
+                    Arc::clone(&self.database),
+                    self.runner.clone(),
                 ),
             },
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.

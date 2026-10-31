@@ -14,8 +14,9 @@ not share code.
   layout), `cockpit-diagnostics` (its own log), `cockpit-turso` (the state database it opens
   once), `cockpit-authorization` (whose migrations it runs), `cockpit-agent-channel` (who an
   agent socket peer is, and its verbs), `cockpit-processes` (whose executions it reconciles)
-  and `cockpit-projects` (whose migrations it runs and whose verbs `Routes` serves to the
-  owner); `tokio`, `serde`, `serde_json`, `tracing`.
+  `cockpit-projects` (whose migrations it runs and whose verbs `Routes` serves to the
+  owner) and `cockpit-approvals` (run requests and guides, and the runner of approved
+  commands); `tokio`, `serde`, `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
   `clients ->` rules of `cockpit-workspace-rules/tests/crate_graph.rs` keep them from
   linking it.
@@ -33,7 +34,9 @@ not share code.
    (`MIGRATION_SETS`), then reconcile. `cockpit-processes` reattaches each execution it
    positively identifies, releases those observed gone and keeps the rest charged; each
    outcome is logged. New executions use a systemd user scope when this user's manager
-   answers, otherwise a process group; the log names which.
+   answers, otherwise a process group; the log names which. `cockpit-approvals` then ends
+   the runs a stopped daemon left approved (`not-run`) or running (`outcome-unknown`);
+   neither is repeated.
 5. Only then bind `daemon.sock` and `agent/agent.sock` (0600, stale files replaced) and print
    `ready <socket>`.
 
@@ -48,6 +51,19 @@ not share code.
 - Each socket has its own connection limit. Agent requests run in the bulk lane, so
   sandboxed senders never take the owner's control capacity. They do share the bulk lane
   with the owner's bulk work: a flood of agent reports can make it answer `busy`.
+
+## Approvals (#34)
+
+- Agents ask on the agent socket (`ask-run`, `ask-guide`, their status, `ask-check`); the
+  owner decides on the host-only socket. The shell's syntax check and the working
+  directory's resolution happen before the write transaction.
+- An approval commits the run intent, then the run starts outside the lanes: a long command
+  holds no control worker. It runs in a pseudo-terminal under `cockpit-daemon --run-leader`
+  (the session leader that makes the terminal controlling, without `unsafe`), in `$SHELL`
+  when absolute or `/bin/sh`, with the daemon's environment minus `GIT_*` and the launch
+  token, and `cockpit-projects`' `SAFE_CONFIG` as `GIT_CONFIG_*`.
+- The asking agent's project is the registered checkout holding its working directory,
+  read from `/proc` after its process tree was verified, until sessions record it (#31).
 
 ## Requests
 
@@ -74,6 +90,10 @@ not share code.
 - `tests/agent_channel.rs`: issue #32's acceptance on the binary's sockets: a launched
   agent's report, leaked tokens, payload-claimed sessions, a nested agent with its parent's
   grants, refusals with their unblock, restart.
+- `tests/approvals.rs`: issue #34's acceptance on the binary's sockets: a command run in a
+  terminal with its exit code, the display rules in the queue, redaction, Git hooks off,
+  report 04's walkthrough 3, decline, input to a waiting command, the syntax check, grants,
+  `ask-check`, socket roles and a guide.
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket

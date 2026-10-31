@@ -91,6 +91,18 @@ impl Git {
         command.output().map_err(Error::io("run git in", dir))
     }
 
+    /// Every `key=value` setting a Git started in `dir` must apply over the configuration:
+    /// [`SAFE_CONFIG`], then each program-running driver the configuration names, reset. For
+    /// Git this crate does not start, such as an approved command's (#34).
+    pub fn safe_config(&self, dir: &Path) -> Result<Vec<String>, Error> {
+        let mut settings: Vec<String> = SAFE_CONFIG
+            .iter()
+            .map(|&setting| setting.to_owned())
+            .collect();
+        settings.extend(self.drivers_off(dir)?);
+        Ok(settings)
+    }
+
     /// An empty value for every program-running driver the configuration seen from `dir`
     /// names. Driver names are chosen by whoever writes the configuration, so they cannot be
     /// listed in [`SAFE_CONFIG`]; reading the configuration runs nothing.

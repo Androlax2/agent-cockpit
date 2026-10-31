@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod agent;
+mod approvals;
 mod error;
 mod instance;
 mod lanes;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
+pub use approvals::{RUN_LEADER_FLAG, runner};
 pub use error::StartError;
 pub use instance::{Instance, Options};
 pub use lanes::LaneLimits;
@@ -21,11 +23,12 @@ pub use routes::{Handler, Job, Peer, Route, Routes, WorkClass, refusal};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 4] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 5] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
     cockpit_processes::MIGRATIONS,
+    cockpit_approvals::MIGRATIONS,
 ];
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -116,7 +119,7 @@ fn accept(
 
 /// Step 2 and 3 of the restart contract: each capability that holds launch intents,
 /// reservations or execution identities reconciles them against the real processes here,
-/// before the socket exists. Processes is the first; sessions follow in M1.
+/// before the socket exists. Processes is the first, then approvals; sessions follow in M1.
 async fn reconcile(
     database: &cockpit_turso::Database,
     processes: &cockpit_processes::Supervisor,
@@ -142,6 +145,23 @@ async fn reconcile(
         }
     }
     tracing::info!(executions = reconciled.len(), "reconciled durable state");
+    reconcile_runs(database).await
+}
+
+/// Approved runs the daemon stopped before or during: neither is repeated (#34).
+async fn reconcile_runs(database: &cockpit_turso::Database) -> Result<(), StartError> {
+    let write = database.write().await?;
+    let ended = cockpit_approvals::reconcile_runs(&write, approvals::now())
+        .await
+        .map_err(StartError::Approvals)?;
+    write.commit().await?;
+    for (request, state) in ended {
+        tracing::warn!(
+            request = request.0,
+            state = state.as_str(),
+            "an approved run did not finish before the restart"
+        );
+    }
     Ok(())
 }
 

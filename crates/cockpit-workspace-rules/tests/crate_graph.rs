@@ -118,6 +118,18 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
         from: Sources::Named(&["cockpit-projects"]),
         to: &["cockpit-sessions", "cockpit-tasks"],
     },
+    // Approvals keep the owner's decisions; the daemon identifies the sender, finds the
+    // project and converts to wire types (#34).
+    ForbiddenEdge {
+        rule: "approvals -> wire types/channel/projects",
+        from: Sources::Named(&["cockpit-approvals"]),
+        to: &[
+            "cockpit-protocol",
+            "cockpit-client",
+            "cockpit-agent-channel",
+            "cockpit-projects",
+        ],
+    },
 ];
 
 /// Report 02 states these rules as what a crate may import, not what it may not.
@@ -435,6 +447,21 @@ fn each_rule_catches_its_forbidden_edge() {
             "authorization -> nothing product-level",
             "cockpit-authorization",
             "cockpit-workflows",
+        ),
+        (
+            "approvals -> wire types/channel/projects",
+            "cockpit-approvals",
+            "cockpit-protocol",
+        ),
+        (
+            "approvals -> wire types/channel/projects",
+            "cockpit-approvals",
+            "cockpit-agent-channel",
+        ),
+        (
+            "approvals -> wire types/channel/projects",
+            "cockpit-approvals",
+            "cockpit-projects",
         ),
     ] {
         let manifest_path = fixture_workspace(
