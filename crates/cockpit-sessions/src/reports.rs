@@ -1,14 +1,13 @@
-//! Agents' reports: each session's latest state, label, doing-now and open question.
-//!
-//! The channel keeps them until `cockpit-sessions` (#31) owns session state; it then moves
-//! these rows there and keeps only the identification step.
+//! Agents' reports: each session's latest state, label, doing-now and open question. The
+//! agent channel identifies the sender; this module decides what a report records (#146).
 
+use cockpit_agent_channel::{PeerAncestry, Refusal};
 use cockpit_authorization::{Actor, Outcome, Permission, Scope, SessionId};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
-use crate::launch::{PeerAncestry, identify, unix_seconds};
-use crate::{Error, Refusal};
+use crate::Error;
+use crate::store::now;
 
 const LABEL_MAX_CHARS: usize = 60;
 const DOING_MAX_CHARS: usize = 80;
@@ -16,8 +15,8 @@ const DOING_WORDS: std::ops::RangeInclusive<usize> = 2..=12;
 const QUESTION_MAX_CHARS: usize = 300;
 
 /// The columns `report_from` reads, in its order.
-const SELECT_REPORTS: &str = "SELECT session, state, label, doing, needs_input, reported_at
-     FROM agent_channel_reports";
+const SELECT_REPORTS: &str = "SELECT session, state, label, doing, needs_input, reported_at,
+     launch_id FROM session_reports";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -63,9 +62,13 @@ pub struct SessionReport {
     pub needs_input: Option<String>,
     /// Seconds since 1970 of the last report.
     pub reported_at: i64,
+    /// The session's latest launch when the agent reported, so a report is never mistaken
+    /// for one from a later launch; `None` for a report moved from the agent channel.
+    pub launch: Option<i64>,
 }
 
-/// Records `report` for the session the sender is identified as (see [`identify`]), after
+/// Records `report` for the session the sender is identified as (see
+/// [`cockpit_agent_channel::identify`]), after
 /// `cockpit-authorization` allows that session `change-state` over itself. Nested agents
 /// therefore report with their parent session's identity and grants.
 pub async fn report(
@@ -74,8 +77,8 @@ pub async fn report(
     token: Option<&str>,
     report: Report,
 ) -> Result<SessionReport, Error> {
-    let report = validate(report)?;
-    let session = identify(write, peer, token).await?;
+    let report = validate(report).map_err(refused)?;
+    let session = cockpit_agent_channel::identify(write, peer, token).await?;
     let decision = cockpit_authorization::evaluate(
         write,
         &Actor::Session(session.clone()),
@@ -84,21 +87,22 @@ pub async fn report(
     )
     .await?;
     if let Outcome::Refused(refusal) = decision.outcome {
-        return Err(Refusal::NotAuthorized(refusal).into());
+        return Err(refused(Refusal::NotAuthorized(refusal)));
     }
     let previous = latest_report(write, &session).await?;
-    let merged = merge(&session, previous, report);
+    let launch = latest_launch(write, &session).await?;
+    let merged = merge(&session, previous, report, launch);
     write
         .execute(
-            "DELETE FROM agent_channel_reports WHERE session = ?1",
+            "DELETE FROM session_reports WHERE session = ?1",
             [session.as_str()],
         )
         .await?;
     write
         .execute(
-            "INSERT INTO agent_channel_reports
-                (session, state, label, doing, needs_input, reported_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO session_reports
+                (session, state, label, doing, needs_input, reported_at, launch_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             (
                 merged.session.as_str(),
                 merged.state.map(AgentState::as_str),
@@ -106,6 +110,7 @@ pub async fn report(
                 merged.doing.clone(),
                 merged.needs_input.clone(),
                 merged.reported_at,
+                merged.launch,
             ),
         )
         .await?;
@@ -124,7 +129,7 @@ pub async fn latest_reports(connection: &Connection) -> Result<Vec<SessionReport
     Ok(reports)
 }
 
-async fn latest_report(
+pub(crate) async fn latest_report(
     connection: &Connection,
     session: &SessionId,
 ) -> Result<Option<SessionReport>, Error> {
@@ -140,7 +145,27 @@ async fn latest_report(
     }
 }
 
-fn merge(session: &SessionId, previous: Option<SessionReport>, report: Report) -> SessionReport {
+/// The session's latest launch: the one its reporting agent runs as, since a launch is
+/// recorded before its agent starts and the previous agent is stopped before that.
+async fn latest_launch(connection: &Connection, session: &SessionId) -> Result<Option<i64>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT max(id) FROM session_launches WHERE session_id = ?1",
+            [session.as_str()],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => Ok(row.get(0)?),
+        None => Ok(None),
+    }
+}
+
+fn merge(
+    session: &SessionId,
+    previous: Option<SessionReport>,
+    report: Report,
+    launch: Option<i64>,
+) -> SessionReport {
     let previous = previous.unwrap_or(SessionReport {
         session: session.clone(),
         state: None,
@@ -148,6 +173,7 @@ fn merge(session: &SessionId, previous: Option<SessionReport>, report: Report) -
         doing: None,
         needs_input: None,
         reported_at: 0,
+        launch: None,
     });
     // A question is only open while the agent waits on it.
     let state = match &report.needs_input {
@@ -165,7 +191,8 @@ fn merge(session: &SessionId, previous: Option<SessionReport>, report: Report) -
         label: report.label.or(previous.label),
         doing: report.doing.or(previous.doing),
         needs_input,
-        reported_at: unix_seconds(),
+        reported_at: now(),
+        launch,
     }
 }
 
@@ -265,14 +292,18 @@ fn is_invisible_format(character: char) -> bool {
     )
 }
 
+/// A refusal keeps the agent channel's shape, so every agent request is refused alike.
+fn refused(refusal: Refusal) -> Error {
+    Error::AgentChannel(refusal.into())
+}
+
 fn invalid(field: &'static str, reason: String) -> Refusal {
     Refusal::InvalidRequest { field, reason }
 }
 
 fn report_from(row: &Row) -> Result<SessionReport, Error> {
     let invalid_row = |reason: String| Error::InvalidStoredRow {
-        table: "agent_channel_reports",
-        reason,
+        reason: format!("session_reports: {reason}"),
     };
     let session =
         SessionId::new(row.get::<String>(0)?).map_err(|error| invalid_row(error.to_string()))?;
@@ -289,5 +320,6 @@ fn report_from(row: &Row) -> Result<SessionReport, Error> {
         doing: row.get(3)?,
         needs_input: row.get(4)?,
         reported_at: row.get(5)?,
+        launch: row.get(6)?,
     })
 }

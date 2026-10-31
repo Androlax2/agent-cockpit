@@ -317,22 +317,18 @@ impl Home {
 
     /// Reports `report` as the agent `launch` would, through the agent channel's API with
     /// that agent's real process tree and launch token.
-    async fn report_as_agent(
-        &self,
-        launch: &AgentLaunch,
-        state: cockpit_agent_channel::AgentState,
-    ) {
+    async fn report_as_agent(&self, launch: &AgentLaunch, state: cockpit_sessions::AgentState) {
         let database = self.database.lock().unwrap().clone().unwrap();
         let write = database.write().await.unwrap();
         let agent = cockpit_agent_channel::identity_of(u32::try_from(launch.pid).unwrap());
         let peer = cockpit_agent_channel::ancestry_of(&agent.unwrap());
-        cockpit_agent_channel::report(
+        cockpit_sessions::report(
             &write,
             &peer,
             Some(&launch.token),
-            cockpit_agent_channel::Report {
+            cockpit_sessions::Report {
                 state: Some(state),
-                ..cockpit_agent_channel::Report::default()
+                ..cockpit_sessions::Report::default()
             },
         )
         .await
@@ -558,35 +554,6 @@ async fn restart_stops_the_agent_and_resumes_the_same_conversation_in_place() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn restart_all_restarts_every_running_session() {
-    let home = Home::new();
-    let daemon = home.start(BASELINE, settings()).await;
-    let client = connect(&daemon).await;
-    let root = home.project(&client).await;
-    let first = new_session(&client, &root, None).await;
-    let second = new_session(&client, &root, None).await;
-
-    let (restarted, failed) = match request(&client, Command::SessionRestartAll).await {
-        Ok(Reply::RestartedAll { restarted, failed }) => (restarted, failed),
-        other => panic!("{other:?}"),
-    };
-
-    assert!(failed.is_empty(), "{failed:?}");
-    let mut ids: Vec<String> = restarted.into_iter().map(|session| session.id).collect();
-    ids.sort();
-    let mut expected = vec![first.id, second.id];
-    expected.sort();
-    assert_eq!(ids, expected);
-    assert_eq!(
-        home.launches()
-            .iter()
-            .filter(|launch| launch.mode == "resume")
-            .count(),
-        2
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn sleep_stops_the_agent_and_wake_resumes_its_conversation() {
     let home = Home::new();
     let daemon = home.start(BASELINE, settings()).await;
@@ -683,11 +650,8 @@ async fn an_agent_that_waits_at_its_prompt_past_the_idle_window_is_put_to_sleep(
         sessions(&client, false).await[0].state,
         SessionStateView::Running
     );
-    home.report_as_agent(
-        &home.launches()[0],
-        cockpit_agent_channel::AgentState::Waiting,
-    )
-    .await;
+    home.report_as_agent(&home.launches()[0], cockpit_sessions::AgentState::Waiting)
+        .await;
 
     wait_for_state(&client, &started.id, SessionStateView::Asleep).await;
     assert!(!is_alive(home.launches()[0].pid));
@@ -705,11 +669,8 @@ async fn a_working_agent_is_not_put_to_sleep_however_long_it_works() {
     let root = home.project(&client).await;
     new_session(&client, &root, None).await;
 
-    home.report_as_agent(
-        &home.launches()[0],
-        cockpit_agent_channel::AgentState::Working,
-    )
-    .await;
+    home.report_as_agent(&home.launches()[0], cockpit_sessions::AgentState::Working)
+        .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     assert_eq!(
@@ -729,11 +690,8 @@ async fn a_report_from_the_previous_launch_does_not_put_the_restarted_agent_to_s
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
-    home.report_as_agent(
-        &home.launches()[0],
-        cockpit_agent_channel::AgentState::Working,
-    )
-    .await;
+    home.report_as_agent(&home.launches()[0], cockpit_sessions::AgentState::Working)
+        .await;
     session_reply(
         &client,
         Command::SessionRestart {
@@ -746,7 +704,7 @@ async fn a_report_from_the_previous_launch_does_not_put_the_restarted_agent_to_s
     let write = database.write().await.unwrap();
     write
         .execute(
-            "UPDATE agent_channel_reports SET state = 'waiting', reported_at = 0",
+            "UPDATE session_reports SET state = 'waiting', reported_at = 0",
             (),
         )
         .await

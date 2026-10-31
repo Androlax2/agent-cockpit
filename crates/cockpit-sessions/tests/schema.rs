@@ -10,9 +10,13 @@ const INSERT: &str = "INSERT INTO sessions (id, provider, checkout_id, holds_che
     VALUES (?1, 'fake', 1, 0, '/p/app', ?2, ?3, 1, 0, 0)";
 
 async fn database(dir: &tempfile::TempDir) -> Database {
-    Database::open(&dir.path().join("state.db"), &[MIGRATIONS])
-        .await
-        .unwrap()
+    // Version 2 moves the agent channel's reports, so the channel's tables come first.
+    Database::open(
+        &dir.path().join("state.db"),
+        &[cockpit_agent_channel::MIGRATIONS, MIGRATIONS],
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]

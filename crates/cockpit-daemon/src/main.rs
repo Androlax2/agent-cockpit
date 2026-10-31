@@ -66,6 +66,10 @@ fn run(foreground: bool) -> Result<(), StartError> {
                 source,
             }
         })?;
+    // Read once: a start file declared later counts from the next daemon start.
+    let start_files = cockpit_config::load(&environment, None, &[])
+        .map_err(StartError::Config)?
+        .declared_start_files();
     let runtime = tokio::runtime::Runtime::new().map_err(StartError::Runtime)?;
     runtime.block_on(async {
         let wiring = Wiring {
@@ -82,6 +86,7 @@ fn run(foreground: bool) -> Result<(), StartError> {
                     .iter()
                     .filter_map(|name| Some(((*name).into(), std::env::var_os(name)?)))
                     .collect(),
+                start_files,
                 ..cockpit_sessions::Settings::default()
             },
             session_tick: Duration::from_secs(30),

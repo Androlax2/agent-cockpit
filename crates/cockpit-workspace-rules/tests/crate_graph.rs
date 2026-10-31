@@ -159,6 +159,13 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: &["cockpit-authorization"],
         allowed: &["cockpit-turso"],
     },
+    // Report 09: configuration reads files and depends on no product crate; sessions read
+    // its start files at launch (#146), so the edge only ever points into it.
+    AllowList {
+        rule: "config -> nothing product-level",
+        from: &["cockpit-config"],
+        allowed: &[],
+    },
 ];
 
 /// Package names of the first column of `cargo tree --prefix none -f {p}` output.
@@ -456,6 +463,11 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-workflows",
         ),
         (
+            "config -> nothing product-level",
+            "cockpit-config",
+            "cockpit-sessions",
+        ),
+        (
             "approvals -> wire types/channel/projects",
             "cockpit-approvals",
             "cockpit-protocol",
@@ -531,7 +543,10 @@ fn a_crate_reached_through_an_allowed_one_is_caught() {
             ("cockpit-sessions", ""),
         ],
     );
-    let violations = forbidden_edges_in(&manifest_path);
+    let violations: Vec<String> = forbidden_edges_in(&manifest_path)
+        .into_iter()
+        .filter(|line| line.contains("cockpit-cli"))
+        .collect();
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(
         violations[0].starts_with(

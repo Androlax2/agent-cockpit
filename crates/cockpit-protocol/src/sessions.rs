@@ -25,6 +25,13 @@ pub struct SessionView {
     pub created_at: i64,
     pub changed_at: i64,
     pub launch: Option<LaunchView>,
+    /// Start files its agent read at launch that changed since: `restart --all` restarts
+    /// it (#146).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_start_files: Vec<String>,
+    /// `restart --all` deferred its restart until its agent waits at its prompt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restart_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +109,7 @@ impl LaunchKindView {
     }
 }
 
-/// A session `session-restart-all` could not restart, and why.
+/// A session `session-restart-all` could neither restart nor defer, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionFailure {
     pub session: String,

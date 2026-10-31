@@ -5,8 +5,8 @@ precedence, provenance and start-file change detection. Design:
 [report 09](../../docs/design/greenfield/09-project-setup-readiness.md).
 
 **Depends on:** no product crate (only `serde` and `toml`).
-**Used by (planned):** `cockpit-daemon` for paths and settings, `cockpit-sessions` for
-start-file snapshots, and `cockpit-cli` for `cockpit config show`. It reads files; it never
+**Used by:** `cockpit-daemon` for paths and settings, `cockpit-sessions` for start-file
+snapshots (one per launch, #146), and `cockpit-cli` for `cockpit config show`. It reads files; it never
 grants: owner settings are inputs to `cockpit-authorization`, which decides.
 
 ## Files and precedence

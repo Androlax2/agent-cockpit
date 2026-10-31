@@ -1,14 +1,13 @@
 //! The `report` verb's rules on a real state database: validation, merging, and
-//! `cockpit-authorization` deciding for the identified session.
+//! `cockpit-authorization` deciding for the session the agent channel identified. Moved with
+//! the reports from `cockpit-agent-channel` (#146).
 #![cfg(target_os = "linux")]
 
 mod common;
 
-use cockpit_agent_channel::{
-    AgentState, Error, PeerAncestry, Refusal, Report, SessionReport, UnblockedBy, latest_reports,
-    report,
-};
+use cockpit_agent_channel::{PeerAncestry, Refusal, UnblockedBy};
 use cockpit_authorization::{Permission, Scope};
+use cockpit_sessions::{AgentState, Error, Report, SessionReport, latest_reports, report};
 use cockpit_turso::Database;
 use common::{Process, grant, launch, open, session, this_process, this_process_identity};
 
@@ -49,7 +48,7 @@ async fn a_session_without_a_grant_is_refused_with_the_grant_that_unblocks_it() 
 
     let refused = send(&database, &this_process(), doing("writing the tests")).await;
 
-    let Err(Error::Refused(refusal)) = refused else {
+    let Err(Error::AgentChannel(cockpit_agent_channel::Error::Refused(refusal))) = refused else {
         panic!("expected a refusal, got {refused:?}");
     };
     assert_eq!(
@@ -119,7 +118,12 @@ async fn revoking_the_grant_refuses_the_nested_process_too() {
     let refused = send(&database, &subagent.ancestry(), doing("reviewing the diff")).await;
 
     assert!(
-        matches!(refused, Err(Error::Refused(Refusal::NotAuthorized(_)))),
+        matches!(
+            refused,
+            Err(Error::AgentChannel(cockpit_agent_channel::Error::Refused(
+                Refusal::NotAuthorized(_)
+            )))
+        ),
         "{refused:?}"
     );
 }
@@ -249,7 +253,9 @@ async fn an_invalid_report_is_refused_naming_its_field() {
         let refused = send(&database, &this_process(), sent.clone()).await;
 
         match refused {
-            Err(Error::Refused(Refusal::InvalidRequest { field, .. })) => {
+            Err(Error::AgentChannel(cockpit_agent_channel::Error::Refused(
+                Refusal::InvalidRequest { field, .. },
+            ))) => {
                 assert_eq!(field, expected_field, "{sent:?}");
             }
             other => panic!("{sent:?}: expected an invalid request, got {other:?}"),
@@ -265,11 +271,75 @@ async fn an_unidentified_sender_records_nothing() {
     let refused = send(&database, &this_process(), doing("writing the tests")).await;
 
     assert!(
-        matches!(refused, Err(Error::Refused(Refusal::Unidentified))),
+        matches!(
+            refused,
+            Err(Error::AgentChannel(cockpit_agent_channel::Error::Refused(
+                Refusal::Unidentified
+            )))
+        ),
         "{refused:?}"
     );
     let reports = latest_reports(&database.read().await.unwrap())
         .await
         .unwrap();
     assert_eq!(reports, Vec::new());
+}
+
+#[tokio::test]
+async fn a_report_recorded_before_the_move_survives_the_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let before_the_move = [
+        cockpit_authorization::MIGRATIONS,
+        cockpit_agent_channel::MIGRATIONS,
+        cockpit_turso::MigrationSet {
+            owner: cockpit_sessions::MIGRATIONS.owner,
+            migrations: &cockpit_sessions::MIGRATIONS.migrations[..1],
+        },
+    ];
+    let database = Database::open(&path, &before_the_move).await.unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO agent_channel_reports
+                 (session, state, label, doing, needs_input, reported_at)
+             VALUES ('s1', 'waiting', 'Reports move', 'writing the tests', 'Ship it?', 42)",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(database);
+
+    let database = open(dir.path()).await;
+
+    let reports = latest_reports(&database.read().await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        reports,
+        vec![SessionReport {
+            session: session("s1"),
+            state: Some(AgentState::Waiting),
+            label: Some("Reports move".to_owned()),
+            doing: Some("writing the tests".to_owned()),
+            needs_input: Some("Ship it?".to_owned()),
+            reported_at: 42,
+            launch: None,
+        }]
+    );
+    let channel_table = database
+        .read()
+        .await
+        .unwrap()
+        .query(
+            "SELECT name FROM sqlite_master WHERE name = 'agent_channel_reports'",
+            (),
+        )
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap();
+    assert!(channel_table.is_none(), "the channel's table is dropped");
 }

@@ -69,7 +69,8 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
 }
 
 /// Sends `command` and prints the sessions it answers, one line each. Exit 1 when the
-/// daemon refuses, or when `restart --all` could not restart every session.
+/// daemon refuses, or when `restart --all` could neither restart nor defer every session;
+/// a deferred session prints with its pending restart.
 pub fn run(command: Command) -> ExitCode {
     let deadline = match command {
         Command::SessionList { .. } => CONTROL_DEADLINE,
@@ -84,8 +85,12 @@ pub fn run(command: Command) -> ExitCode {
         Reply::Sessions { sessions } => sessions.iter().for_each(|session| {
             print!("{}", session_line(session));
         }),
-        Reply::RestartedAll { restarted, failed } => {
-            restarted.iter().for_each(|session| {
+        Reply::RestartedAll {
+            restarted,
+            deferred,
+            failed,
+        } => {
+            restarted.iter().chain(deferred).for_each(|session| {
                 print!("{}", session_line(session));
             });
             failed.iter().for_each(|failure| {
@@ -100,14 +105,22 @@ pub fn run(command: Command) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `id  state  agent  launch  conversation  working-dir  reason`, tab-separated.
+/// `id  state  agent  launch  conversation  working-dir  reason  restart`, tab-separated.
+/// `restart` is `-`, `changed:<start files>` when the session runs on old start files, or
+/// `pending:<start files>` once `restart --all` deferred its restart.
 fn session_line(session: &SessionView) -> String {
     let launch = session
         .launch
         .as_ref()
         .map_or("-", |launch| launch.kind.as_str());
+    let changed = session.changed_start_files.join(",");
+    let restart = match (session.restart_pending, changed.is_empty()) {
+        (true, _) => format!("pending:{changed}"),
+        (false, false) => format!("changed:{changed}"),
+        (false, true) => "-".to_owned(),
+    };
     format!(
-        "{}\t{}\t{}\t{launch}\t{}\t{}\t{}\n",
+        "{}\t{}\t{}\t{launch}\t{}\t{}\t{}\t{restart}\n",
         session.id,
         state_word(&session.state),
         session.agent,

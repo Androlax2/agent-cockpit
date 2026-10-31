@@ -1,8 +1,7 @@
 # cockpit-agent-channel
 
 Owns the one authenticated channel between sandboxed agents and the daemon: launch tokens,
-the verified process tree behind each sender, agents' reports and the per-project answers
-directories.
+the verified process tree behind each sender and the per-project answers directories.
 
 Report 17: an agent's request names no identity. The daemon reads the sender's process from
 the kernel (the agent socket's peer credentials) and this crate decides which session that
@@ -23,11 +22,11 @@ for Linux (`/proc`); elsewhere every sender is refused as unverifiable (report 1
 macOS `validate`).
 
 Every refusal carries an `Unblock`: what would lift it and who can (the owner, the agent,
-or Cockpit itself). Only the `report` verb is served here (#32, decided by Theo): it
-records state, label, doing-now and open question after `cockpit-authorization` allows the
-session `change-state` over itself. The reports live here until `cockpit-sessions` (#31)
-owns session state. `todo`, `task`, `ask run`, `ask guide`, `evidence` and `message` are
-added by the issues that own those capabilities, with this refusal shape.
+or Cockpit itself). The capability that serves a verb identifies its sender here, then
+decides with `cockpit-authorization`: agents' reports (state, label, doing-now, open
+question) belong to `cockpit-sessions` since #146, approvals to `cockpit-approvals`. `todo`,
+`task`, `evidence` and `message` are added by the issues that own those capabilities, with
+this refusal shape.
 
 `AnswersDirectory` creates `<runtime dir>/answers/<project>` private to the owner and writes
 each answer once, atomically, read-only. The sandbox launcher mounts a project's directory
@@ -45,5 +44,4 @@ read-only into that project's sandboxes only.
 
 - `tests/identity.rs`: binding, spent and leaked tokens, pid reuse and nested sessions on a
   real state database with real processes.
-- `tests/reports.rs`: report validation, merging and authorization.
 - `tests/answers.rs`: directory modes, refused names and write-once answers.
