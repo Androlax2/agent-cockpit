@@ -167,9 +167,13 @@ reference leaves open:
 - **Count base before the first stable.** OpenLogi counts `N` from the previous stable tag;
   Cockpit has none until M5, so alphas count from the greenfield bootstrap commit `d2d8604`:
   earlier history is the `apps/` code, which is never tagged.
+- **First cycle without a stable.** OpenLogi refuses a beta on a version with no stable tag
+  and needs a release PR to name the version; before Cockpit's first stable, alphas use the
+  workspace's current `0.1.0` with no release PR, as long as `v0.1.0` does not exist.
 - **Promotion means no drift.** A stable release promotes a beta only if nothing but the
-  release PR landed after that beta, so the stable build is the one whose upgrade was
-  verified on the three platforms.
+  release PR landed after that beta, so the stable build is the verified beta's source plus
+  the version bump, rebuilt and gated again; byte-identical promotion would need the build to
+  ignore the version stamp.
 - **Issue in the body.** Greenfield titles used to end in their issue number, which doubles
   the `(#N)` git-cliff reads; titles are now conventional subjects and the issue goes in the
   body.
