@@ -1,0 +1,19 @@
+[package]
+name = "cockpit-tasks"
+description = "Owns the requested outcome of work: items with their kind, priority and status, the owner's decisions on proposals and what was declined, waits on other items and the summaries they pass on, filings across projects under a cap, blocker reports, note images, drafts, and the split between intent and state revisions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
+cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
+cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

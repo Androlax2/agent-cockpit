@@ -146,6 +146,19 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
         from: Sources::MembersExcept(&[&[DAEMON, "cockpit-sessions"], PROVIDER_ADAPTERS]),
         to: PROVIDER_ADAPTERS,
     },
+    // Tasks own the outcome, never the steps (workflows) or the sessions doing them; the
+    // daemon identifies the sender, finds its project and converts to wire types (#38).
+    ForbiddenEdge {
+        rule: "tasks -> workflows/sessions/wire types",
+        from: Sources::Named(&["cockpit-tasks"]),
+        to: &[
+            "cockpit-workflows",
+            "cockpit-sessions",
+            "cockpit-protocol",
+            "cockpit-client",
+            "cockpit-agent-channel",
+        ],
+    },
 ];
 
 /// Report 02 states these rules as what a crate may import, not what it may not.
@@ -544,6 +557,26 @@ fn each_rule_catches_its_forbidden_edge() {
             "messaging -> the database only",
             "cockpit-messaging",
             "cockpit-teams",
+        ),
+        (
+            "tasks -> workflows/sessions/wire types",
+            "cockpit-tasks",
+            "cockpit-workflows",
+        ),
+        (
+            "tasks -> workflows/sessions/wire types",
+            "cockpit-tasks",
+            "cockpit-sessions",
+        ),
+        (
+            "tasks -> workflows/sessions/wire types",
+            "cockpit-tasks",
+            "cockpit-protocol",
+        ),
+        (
+            "tasks -> workflows/sessions/wire types",
+            "cockpit-tasks",
+            "cockpit-agent-channel",
         ),
     ] {
         let manifest_path = fixture_workspace(

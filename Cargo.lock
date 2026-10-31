@@ -503,6 +503,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-tasks"
+version = "0.1.0"
+dependencies = [
+ "cockpit-authorization",
+ "cockpit-turso",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cockpit-tmux"
 version = "0.1.0"
 dependencies = [
