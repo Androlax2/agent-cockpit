@@ -2,11 +2,11 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cockpit_turso::sql::{Connection, Row};
+use cockpit_turso::sql::Row;
 use cockpit_turso::{Database, Migration, MigrationSet};
 
 use crate::model::{PROCESS_GROUP, SYSTEMD_SCOPE};
-use crate::{Containment, EndReason, Error, Execution, ExecutionId, Phase};
+use crate::{Containment, EndReason, Error, Execution, ExecutionId, LaunchContainment, Phase};
 
 /// One row per execution. A row is never deleted: an ended execution keeps its identity and
 /// reason, so a late report can be traced to the execution it came from.
@@ -42,8 +42,7 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
 /// Commits the launch intent: the reservation exists before any process does.
 pub(crate) async fn record_intent(
     database: &Database,
-    containment_kind: &str,
-    unit_prefix: &str,
+    launch_containment: LaunchContainment,
     boot_id: &str,
 ) -> Result<(ExecutionId, Containment), Error> {
     let write = database.write().await?;
@@ -55,16 +54,13 @@ pub(crate) async fn record_intent(
         .query_row(())
         .await?;
     let id = ExecutionId(next.get(0)?);
-    let containment = if containment_kind == SYSTEMD_SCOPE {
-        Containment::SystemdScope {
-            unit: format!("{unit_prefix}-{}.scope", id.0),
+    let (containment, containment_kind, unit) = match launch_containment {
+        LaunchContainment::SystemdScope => {
+            let unit = format!("cockpit-{}-{}.scope", database.epoch(), id.0);
+            let containment = Containment::SystemdScope { unit: unit.clone() };
+            (containment, SYSTEMD_SCOPE, Some(unit))
         }
-    } else {
-        Containment::ProcessGroup
-    };
-    let unit = match &containment {
-        Containment::SystemdScope { unit } => Some(unit.clone()),
-        Containment::ProcessGroup => None,
+        LaunchContainment::ProcessGroup => (Containment::ProcessGroup, PROCESS_GROUP, None),
     };
     write
         .execute(
@@ -164,11 +160,7 @@ pub async fn execution(database: &Database, id: ExecutionId) -> Result<Execution
 /// Every execution that still holds its reservation, oldest first.
 pub async fn occupying_executions(database: &Database) -> Result<Vec<Execution>, Error> {
     let read = database.read().await?;
-    occupying_in(&read).await
-}
-
-async fn occupying_in(connection: &Connection) -> Result<Vec<Execution>, Error> {
-    let mut rows = connection
+    let mut rows = read
         .query(
             &format!("SELECT {COLUMNS} FROM process_executions WHERE phase <> 'ended' ORDER BY id"),
             (),

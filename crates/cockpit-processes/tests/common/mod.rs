@@ -158,6 +158,16 @@ pub async fn set_column(database: &Database, id: ExecutionId, assignment: &str) 
     write.commit().await.unwrap();
 }
 
+/// Leaves the row as a daemon that crashed between the spawn and the identity commit would.
+pub async fn forget_identity(database: &Database, id: ExecutionId) {
+    set_column(
+        database,
+        id,
+        "phase = 'launching', process_group = NULL, leader_start = NULL",
+    )
+    .await;
+}
+
 pub fn assert_running(execution: &Execution) {
     assert_eq!(execution.phase, Phase::Running, "{execution:?}");
 }
