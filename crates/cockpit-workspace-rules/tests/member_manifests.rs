@@ -131,3 +131,116 @@ fn every_valid_spelling_of_lint_inheritance_counts() {
         assert!(inherits_from_workspace(manifest, "lints"), "{manifest:?}");
     }
 }
+
+/// The `description` of a manifest's `[package]` table, when it is a single-line basic string.
+fn package_description(manifest: &str) -> Option<String> {
+    let mut table = "";
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            table = line;
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if table != "[package]" || key.trim() != "description" {
+            continue;
+        }
+        let quoted = value.trim().strip_prefix('"')?;
+        let (description, after) = quoted.split_once('"')?;
+        let after = after.trim();
+        return (after.is_empty() || after.starts_with('#')).then(|| description.to_string());
+    }
+    None
+}
+
+/// One sentence: ends with a period and has no sentence break inside.
+fn is_one_sentence(text: &str) -> bool {
+    let Some(body) = text.strip_suffix('.') else {
+        return false;
+    };
+    !body.trim().is_empty() && !body.contains(". ") && !body.ends_with('.')
+}
+
+/// `name: problem` for each member whose ownership sentence is missing or does not match.
+fn members_without_an_ownership_sentence() -> Vec<String> {
+    member_dirs()
+        .into_iter()
+        .filter_map(|member_dir| {
+            let name = member_dir
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let manifest_path = member_dir.join("Cargo.toml");
+            let manifest = fs::read_to_string(&manifest_path)
+                .unwrap_or_else(|error| panic!("{}: {error}", manifest_path.display()));
+            let Some(description) = package_description(&manifest) else {
+                return Some(format!("{name}: no single-line `description` in [package]"));
+            };
+            if !is_one_sentence(&description) {
+                return Some(format!(
+                    "{name}: description is not one sentence: {description:?}"
+                ));
+            }
+            let Ok(readme) = fs::read_to_string(member_dir.join("README.md")) else {
+                return Some(format!("{name}: no readable README.md"));
+            };
+            if !readme.contains(&description) {
+                return Some(format!("{name}: README.md does not state the description"));
+            }
+            None
+        })
+        .collect()
+}
+
+/// Report 02: every crate owns one named capability, stated the same way in both places.
+#[test]
+fn every_member_states_its_ownership_in_one_sentence_in_its_manifest_and_readme() {
+    assert_eq!(
+        members_without_an_ownership_sentence(),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_description_is_read_from_the_package_table_only() {
+    for (manifest, expected) in [
+        (
+            "[package]\ndescription = \"Owns tasks.\"\n",
+            Some("Owns tasks."),
+        ),
+        (
+            "[package]\ndescription=\"Owns tasks.\" # why\r\n",
+            Some("Owns tasks."),
+        ),
+        (
+            "[package]\nname = \"x\"\n[features]\ndescription = \"No.\"\n",
+            None,
+        ),
+        ("[package]\ndescription.workspace = true\n", None),
+        (
+            "[package]\ndescription = \"\"\"\nOwns tasks.\n\"\"\"\n",
+            None,
+        ),
+    ] {
+        assert_eq!(
+            package_description(manifest).as_deref(),
+            expected,
+            "{manifest:?}"
+        );
+    }
+}
+
+#[test]
+fn only_a_single_sentence_counts_as_ownership() {
+    for (text, expected) in [
+        ("Owns tasks, their scope and attempts.", true),
+        ("Owns tasks", false),
+        ("Owns tasks. Also runs them.", false),
+        (".", false),
+        ("Owns tasks..", false),
+    ] {
+        assert_eq!(is_one_sentence(text), expected, "{text:?}");
+    }
+}

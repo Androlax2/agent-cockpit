@@ -1,5 +1,17 @@
 # Engineering decisions
 
+## 2026-10-31 — Check forbidden crate edges with `cargo tree`, transitively
+
+Issue #19's rule test reads the graph from `cargo tree --target all --edges
+normal,build,dev` instead of parsing manifests: renamed, workspace-inherited and
+target-specific dependencies resolve exactly as Cargo builds them, with no new dependency.
+An edge counts when it is direct or goes through other crates, since a client that reaches
+`cockpit-turso` through an intermediate still links it. Dev-dependencies count only for the
+crate that declares them, matching what Cargo builds. The rules name crates from report 02's
+current table; a crate that does not exist yet is skipped, so a rename must update the
+table. Issue #19's acceptance says `make ci`; since #18 split the gates, the rule runs in
+`make greenfield-ci` (`crates-test`), which CI's `greenfield` job runs.
+
 ## 2026-10-31 — Bootstrap the greenfield workspace with one rules crate
 
 Issue #18 asks for `cargo build` and `cargo test` to succeed from the root with no
