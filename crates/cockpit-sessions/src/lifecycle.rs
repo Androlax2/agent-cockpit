@@ -376,19 +376,25 @@ impl Sessions {
         Ok(())
     }
 
-    /// Ends the session: stops a running agent, releases the clone it occupies. A stop
-    /// left unfinished by an error is finished as an end.
+    /// Ends the session: stops its agent, releases the clone it occupies. A launch or a
+    /// stop left unfinished by an error is stopped as an end. A failed launch may have left
+    /// its agent running (#221), so a failed session's latest agent is stopped first, as
+    /// resume does; one not observed gone refuses the end and the session stays failed.
     pub async fn end(&self, id: &SessionId) -> Result<Session, Error> {
         let _operation = self.lock(id).await;
         let session = self.get(id).await?;
         if matches!(
             session.state,
-            SessionState::Running | SessionState::Stopping { .. }
+            SessionState::Running | SessionState::Launching | SessionState::Stopping { .. }
         ) {
             self.tmux()?;
             return self
                 .stop(id, &[session.state], StopTarget::Ended, "end")
                 .await;
+        }
+        if session.state == SessionState::Failed {
+            self.tmux()?;
+            self.stop_previous_agent(&session).await?;
         }
         let write = self.database.write().await?;
         let ended = store::transition(

@@ -60,7 +60,8 @@ stopped in the middle of one finishes or repairs it at its next start.
   the session back to `running` with the reason and answers an error; it is never recorded
   as stopped. A stop an error left unfinished stays `stopping`, and `end` finishes it.
 - **Failed launches clean up.** A launch that fails after its terminal opened closes it and
-  stops its agent; `resume` stops the previous agent before it launches.
+  stops its agent; `resume` and `end` stop the previous agent first (#221). A failed
+  session whose agent is not observed gone is not ended; it stays `failed`.
 - **One operation per session at a time.** Owner operations and the periodic pass take the
   session's lock, and the pass re-reads the session under it.
 - **Reboot restore** runs at daemon start, before requests are accepted. A session whose
