@@ -42,7 +42,7 @@ defaults:
     shell: bash
 
 jobs:
-  # The tag's version and channel, checked against the tagged commit, and the release notes.
+  # The tag's version and channel, checked against every rule on the tagged commit.
   plan:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -52,6 +52,9 @@ jobs:
       channel: ${{ steps.version.outputs.channel }}
       prerelease: ${{ steps.version.outputs.prerelease }}
       revision: ${{ steps.version.outputs.revision }}
+      notes_range: ${{ steps.version.outputs.notes_range }}
+      notes_tag: ${{ steps.version.outputs.notes_tag }}
+      notes_tag_pattern: ${{ steps.version.outputs.notes_tag_pattern }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -75,27 +78,32 @@ jobs:
           else
             python3 tools/release.py dry-run-version | tee -a "$GITHUB_OUTPUT"
           fi
+  # git-cliff's notes over the range release.py chose; only the draft waits for them.
+  notes:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
           fallback: none
           tool: git-cliff@2.14.2
       - name: Write the release notes
         env:
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
-          CHANNEL: ${{ steps.version.outputs.channel }}
-          NOTES_START: ${{ steps.version.outputs.notes_start }}
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          NOTES_RANGE: ${{ needs.plan.outputs.notes_range }}
+          NOTES_TAG: ${{ needs.plan.outputs.notes_tag }}
+          NOTES_TAG_PATTERN: ${{ needs.plan.outputs.notes_tag_pattern }}
         run: |
-          if [ "$CHANNEL" = stable ]; then
-            # One section since the previous stable: its pre-releases are not boundaries.
-            git cliff --config cliff.toml --strip all --tag-pattern '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-              "$NOTES_START..$TAG" > notes.md
-          elif [ -n "$TAG" ]; then
-            git cliff --config cliff.toml --strip all "$NOTES_START..$TAG" > notes.md
-          else
-            git cliff --config cliff.toml --strip all --tag "v$VERSION" "$NOTES_START..HEAD" > notes.md
-          fi
-          # Alpha notes carry the known gaps; prerelease.yml refuses an alpha without them.
+          flags=()
+          if [ -n "$NOTES_TAG" ]; then flags+=(--tag "$NOTES_TAG"); fi
+          if [ -n "$NOTES_TAG_PATTERN" ]; then flags+=(--tag-pattern "$NOTES_TAG_PATTERN"); fi
+          git cliff --config cliff.toml --strip all "${flags[@]}" "$NOTES_RANGE" > notes.md
+          # Alpha notes carry the known gaps; check-tag refuses an alpha without them.
           if [ "$CHANNEL" = alpha ]; then
             { echo; cat docs/KNOWN-GAPS.md; } >> notes.md
           fi
@@ -145,9 +153,9 @@ jobs:
           COCKPIT_SOURCE_REVISION: ${{ needs.plan.outputs.revision }}
           TARGETS: ${{ matrix.targets }}
         run: |
-          for target in ${TARGETS//,/ }; do
-            cargo build --release --locked --target "$target" -p cockpit-cli -p cockpit-daemon
-          done
+          target_flags=()
+          for target in ${TARGETS//,/ }; do target_flags+=(--target "$target"); done
+          cargo build --release --locked "${target_flags[@]}" -p cockpit-cli -p cockpit-daemon
       - name: Gather the binaries
         env:
           TARGETS: ${{ matrix.targets }}
@@ -247,7 +255,7 @@ jobs:
           tar -xzf dist/*.tar.gz -C "$prefix"
           python3 tools/release.py verify-install "$prefix"/cockpit-v* --revision "$revision"
 
-  # Checksums over every archive, kept as workflow artifacts (the nightly's download).
+  # Checksums over every archive; with the archive-* artifacts, the nightly's download.
   assemble:
     needs: [plan, build]
     runs-on: ubuntu-24.04
@@ -265,8 +273,8 @@ jobs:
           cat SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-assets
-          path: dist/
+          name: checksums
+          path: dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -274,7 +282,7 @@ jobs:
   # asset. Dry runs never attest, so no unreleased build verifies as this repository's.
   draft:
     if: github.ref_type == 'tag'
-    needs: [plan, assemble]
+    needs: [plan, notes, assemble]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -284,7 +292,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-assets
+          pattern: archive-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: checksums
           path: dist
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -33,10 +34,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 # Before the first stable tag, pre-releases count from the greenfield bootstrap (#18, #94).
 BOOTSTRAP_COMMIT = "d2d860474e55d0e6f815ee33e50162351bbb1495"
+CORE_PATTERN = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 TAG_PATTERN = re.compile(
-    r"v(?P<core>(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))"
-    r"(?:-(?P<channel>alpha|beta)\.(?P<number>[1-9][0-9]*))?"
+    rf"v(?P<core>{CORE_PATTERN})(?:-(?P<channel>alpha|beta)\.(?P<number>[1-9][0-9]*))?"
 )
+# git-cliff's --tag-pattern for a stable release's notes.
+STABLE_TAG_REGEX = rf"^v{CORE_PATTERN}$"
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-universal")
 BINARIES = ("cockpit", "cockpit-daemon")
 DOCUMENTS = ("LICENSE", "README.md", "CHANGELOG.md")
@@ -45,24 +48,20 @@ MANIFEST_SCHEMA = 1
 # Alpha notes carry the known gaps (RELEASING.md, Changelog); #97 writes the file.
 KNOWN_GAPS = "docs/KNOWN-GAPS.md"
 
-# Report 13's release gate: each check and the release.yml job that proves it, or None while
-# nothing does. A check without a job is a named gap that blocks publishing (RELEASING.md).
+# Report 13's release gate: each check, the release.yml job that proves it (None while
+# nothing does) and the channels it does not bind. A check without a job is a named gap that
+# blocks publishing (RELEASING.md). An alpha may reset data, so it skips the upgrade check.
 GATE_CHECKS = {
-    "rust checks, clippy, dependency and license checks, crate-graph rules": "gate",
-    "real CLI, terminal and provider-contract tests": "gate",
-    "clean install on Linux x86_64, Linux aarch64 and macOS arm64": "install",
-    "clean install of the Linux x86_64 archive inside WSL2": "install-wsl2",
-    "clean install runs the macOS universal archive's x86_64 slice": None,
-    "version-skew and interrupted-action fixtures": None,
-    "sustained responsiveness run (report 03) against the candidate": None,
-    "upgrade from the previous release of the channel": None,
+    "rust checks, clippy, dependency and license checks, crate-graph rules": ("gate", ()),
+    "real CLI, terminal and provider-contract tests": ("gate", ()),
+    "clean install on Linux x86_64, Linux aarch64 and macOS arm64": ("install", ()),
+    "clean install of the Linux x86_64 archive inside WSL2": ("install-wsl2", ()),
+    "clean install runs the macOS universal archive's x86_64 slice": (None, ()),
+    "version-skew and interrupted-action fixtures": (None, ()),
+    "sustained responsiveness run (report 03) against the candidate": (None, ()),
+    "upgrade from the previous release of the channel": (None, ("alpha",)),
 }
-# An alpha may reset data, so only clean installs block it (RELEASING.md, Channels).
-NOT_REQUIRED_BY_CHANNEL = {
-    "alpha": {"upgrade from the previous release of the channel"},
-    "beta": set(),
-    "stable": set(),
-}
+CHANNELS = ("alpha", "beta", "stable")
 
 
 class Refusal(Exception):
@@ -144,18 +143,16 @@ def refuse_shallow(cwd):
         raise Refusal("shallow clone: N and the base need the full history (fetch-depth: 0)")
 
 
-def notes_start(parsed, tags, commit, cwd):
+def notes_start(parsed, tags, base, commit, cwd):
     """Where the release notes start (RELEASING.md, Changelog)."""
     if parsed["channel"] == "stable":
-        return base_of(tags, cwd)["ref"]
-    lower = [
-        tag
-        for tag in tags
-        if version_order(tag) < version_order(parsed) and is_ancestor(tag["tag"], commit, cwd)
-    ]
-    if lower:
-        return max(lower, key=version_order)["tag"]
-    return base_of(tags, cwd)["ref"]
+        return base["ref"]
+    lower = sorted(
+        (tag for tag in tags if version_order(tag) < version_order(parsed)),
+        key=version_order,
+        reverse=True,
+    )
+    return next((tag["tag"] for tag in lower if is_ancestor(tag["tag"], commit, cwd)), base["ref"])
 
 
 def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
@@ -166,61 +163,82 @@ def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
     if not is_ancestor(commit, main_ref, cwd):
         raise Refusal(f"{tag}: {commit[:12]} is not on {main_ref}")
     tags = [other for other in release_tags(cwd) if other["tag"] != tag]
+    base = base_of(tags, cwd)
     version_at_tag = workspace_version(cwd, commit)
+    outputs = {
+        "tag": tag,
+        "channel": parsed["channel"],
+        "version": tag.removeprefix("v"),
+        "prerelease": "false" if parsed["channel"] == "stable" else "true",
+        "revision": commit,
+        "notes_range": f"{notes_start(parsed, tags, base, commit, cwd)}..{tag}",
+    }
     if parsed["channel"] == "stable":
-        if m5_gate == "open":
-            raise Refusal(f"{tag}: no stable release while the M5 gate issue (#66) is open")
-        if version_at_tag != parsed["core"]:
-            raise Refusal(
-                f"{tag}: the workspace version at {commit[:12]} is {version_at_tag}; "
-                "a stable tag must equal it"
-            )
-        previous = base_of(tags, cwd)
-        if previous["is_stable_tag"] and parse_core(parsed["core"]) <= parse_core(
-            previous["version"]
-        ):
-            raise Refusal(f"{tag}: not above the previous stable {previous['ref']}")
-        version = parsed["core"]
+        refuse_stable(parsed, version_at_tag, base, m5_gate, commit)
+        # One section since the previous stable: its pre-releases are not boundaries.
+        outputs["notes_tag_pattern"] = STABLE_TAG_REGEX
     else:
         expected_channel = prerelease_channel(m3_gate, m5_gate)
         if parsed["channel"] != expected_channel:
             raise Refusal(
                 f"{tag}: the gates make this an {expected_channel}, not a {parsed['channel']}"
             )
-        refuse_out_of_order(parsed, tags, commit, cwd)
-        base = base_of(tags, cwd)
-        if version_at_tag != base["version"]:
-            raise Refusal(
-                f"{tag}: the workspace version at {commit[:12]} is {version_at_tag}; "
-                f"a pre-release must still carry the base's {base['version']}"
-            )
-        refuse_core_against_base(parsed["core"], base)
-        count = commits_since(base["ref"], commit, cwd)
-        if parsed["number"] != count:
-            raise Refusal(
-                f"{tag}: N must be the commit count since {base['ref']}, which is {count}"
-            )
-        version = f"{parsed['core']}-{parsed['channel']}.{parsed['number']}"
-    return {
-        "tag": tag,
-        "channel": parsed["channel"],
-        "version": version,
-        "prerelease": "false" if parsed["channel"] == "stable" else "true",
-        "revision": commit,
-        "notes_start": notes_start(parsed, tags, commit, cwd),
-    }
+        refuse_prerelease(parsed, commit, version_at_tag, tags, base, cwd)
+    return outputs
 
 
-def refuse_out_of_order(candidate, tags, commit, cwd):
-    """A pre-release rises above the newest one and descends from it (RELEASING.md, Tags)."""
-    prereleases = [tag for tag in tags if tag["channel"] != "stable"]
+def refuse_stable(parsed, version_at_tag, base, m5_gate, commit):
+    tag = parsed["tag"]
+    if m5_gate == "open":
+        raise Refusal(f"{tag}: no stable release while the M5 gate issue (#66) is open")
+    if version_at_tag != parsed["core"]:
+        raise Refusal(
+            f"{tag}: the workspace version at {commit[:12]} is {version_at_tag}; "
+            "a stable tag must equal it"
+        )
+    if base["is_stable_tag"] and parse_core(parsed["core"]) <= parse_core(base["version"]):
+        raise Refusal(f"{tag}: not above the previous stable {base['ref']}")
+
+
+def refuse_prerelease(candidate, commit, version_at_commit, tags, base, cwd):
+    """Every pre-release rule of RELEASING.md, Tags, for a tag made or about to be made."""
+    tag = candidate["tag"]
+    # `tags` leaves out the tag being checked, so a tag never counts against itself.
+    known_tags = {other["tag"] for other in tags}
+    other_tags_on_commit = [
+        other
+        for other in git("tag", "--points-at", commit, cwd=cwd).splitlines()
+        if other in known_tags
+    ]
+    if other_tags_on_commit:
+        raise Refusal(f"{commit[:12]} is already released as {other_tags_on_commit[0]}")
+    if candidate["channel"] == "alpha" and not has_file(commit, KNOWN_GAPS, cwd):
+        # release.yml needs it for the notes, and a tag is never moved or reused.
+        raise Refusal(f"{tag}: an alpha needs {KNOWN_GAPS} for its notes (#97)")
+    if version_at_commit != base["version"]:
+        raise Refusal(
+            f"{tag}: the workspace version at {commit[:12]} is {version_at_commit}; "
+            f"a pre-release must still carry the base's {base['version']}"
+        )
+    refuse_core_against_base(candidate["core"], base)
+    count = commits_since(base["ref"], commit, cwd)
+    if candidate["number"] != count:
+        raise Refusal(f"{tag}: N must be the commit count since {base['ref']}, which is {count}")
+    prereleases = [other for other in tags if other["channel"] != "stable"]
     if not prereleases:
         return
     newest = max(prereleases, key=version_order)
     if version_order(candidate) <= version_order(newest):
-        raise Refusal(f"{candidate['tag']} is not above the newest pre-release {newest['tag']}")
+        raise Refusal(f"{tag} is not above the newest pre-release {newest['tag']}")
     if not is_ancestor(newest["tag"], commit, cwd):
         raise Refusal(f"{commit[:12]} does not descend from {newest['tag']}")
+
+
+def has_file(commit, path, cwd):
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}:{path}"], cwd=cwd, capture_output=True, check=False
+    )
+    return result.returncode == 0
 
 
 def refuse_core_against_base(core, base):
@@ -248,37 +266,30 @@ def next_prerelease(m3_gate, m5_gate, cwd):
     refuse_shallow(cwd)
     commit = git("rev-parse", "HEAD", cwd=cwd)
     tags = release_tags(cwd)
-    tags_on_commit = git("tag", "--points-at", commit, cwd=cwd).splitlines()
-    release_tags_on_commit = [tag for tag in tags_on_commit if TAG_PATTERN.fullmatch(tag)]
-    if release_tags_on_commit:
-        raise Refusal(f"{commit[:12]} is already released as {release_tags_on_commit[0]}")
     base = base_of(tags, cwd)
     if base["is_stable_tag"]:
         # The version comes from the open release PR, which nothing reads yet (#101).
         raise Refusal("a pre-release after a stable tag needs the release PR's version (#101)")
-    if channel == "alpha" and not (Path(cwd) / KNOWN_GAPS).is_file():
-        # release.yml would refuse the alpha's notes, and a tag is never moved or reused.
-        raise Refusal(f"an alpha needs {KNOWN_GAPS} for its notes (#97)")
-    core = workspace_version(cwd)
-    refuse_core_against_base(core, base)
+    version = workspace_version(cwd, commit)
     number = commits_since(base["ref"], commit, cwd)
-    candidate = parse_tag(f"v{core}-{channel}.{number}")
-    refuse_out_of_order(candidate, tags, commit, cwd)
+    candidate = parse_tag(f"v{version}-{channel}.{number}")
+    refuse_prerelease(candidate, commit, version, tags, base, cwd)
     return {"tag": candidate["tag"], "channel": channel, "revision": commit}
 
 
 def dry_run_version(cwd):
     """A version no release tag can have, for builds that are never published."""
     refuse_shallow(cwd)
-    tags = release_tags(cwd)
-    base = base_of(tags, cwd)
+    base = base_of(release_tags(cwd), cwd)
     count = commits_since(base["ref"], "HEAD", cwd)
+    version = f"{workspace_version(cwd)}-dev.{count}"
     return {
-        "version": f"{workspace_version(cwd)}-dev.{count}",
+        "version": version,
         "channel": "dev",
         "prerelease": "true",
         "revision": git("rev-parse", "HEAD", cwd=cwd),
-        "notes_start": base["ref"],
+        "notes_range": f"{base['ref']}..HEAD",
+        "notes_tag": f"v{version}",
     }
 
 
@@ -316,20 +327,23 @@ def stamp(version, cwd):
 
 
 def sha256_of(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    with open(path, "rb") as contents:
+        return hashlib.file_digest(contents, "sha256").hexdigest()
 
 
 def archive_name(version, platform):
     return f"cockpit-v{version}-{platform}"
 
 
+def bundle_files(root):
+    """Every file of an unpacked bundle but its manifest, relative and sorted."""
+    relative_paths = (str(path.relative_to(root)) for path in root.rglob("*") if path.is_file())
+    return sorted(path for path in relative_paths if path != MANIFEST_PATH)
+
+
 def write_manifest(staging, version, channel, platform, revision):
     """Report 13's bundle manifest: contents, source revision and component versions."""
-    contents = sorted(
-        str(path.relative_to(staging))
-        for path in staging.rglob("*")
-        if path.is_file() and str(path.relative_to(staging)) != MANIFEST_PATH
-    )
+    contents = bundle_files(staging)
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "name": "cockpit",
@@ -372,10 +386,10 @@ def package(version, channel, platform, revision, binaries, out, cwd):
         if not source.is_file():
             raise Refusal(f"{source}: built binary missing")
         target = staging / "bin" / binary
-        target.write_bytes(source.read_bytes())
+        shutil.copyfile(source, target)
         target.chmod(0o755)
     for document in DOCUMENTS:
-        (staging / document).write_bytes((Path(cwd) / document).read_bytes())
+        shutil.copyfile(Path(cwd) / document, staging / document)
     write_manifest(staging, version, channel, platform, revision)
     archive = Path(out) / f"{name}.tar.gz"
     # The gzip header's own timestamp is zeroed too, so a rebuild gives the same bytes.
@@ -418,14 +432,11 @@ def refuse_changed_contents(root, manifest):
             problems.append(f"{relative}: missing")
         elif sha256_of(path) != expected:
             problems.append(f"{relative}: checksum differs from the manifest")
-    unlisted = sorted(
-        str(path.relative_to(root))
-        for path in root.rglob("*")
-        if path.is_file()
-        and str(path.relative_to(root)) not in manifest["contents"]
-        and str(path.relative_to(root)) != MANIFEST_PATH
+    problems.extend(
+        f"{relative}: not listed in the manifest"
+        for relative in bundle_files(root)
+        if relative not in manifest["contents"]
     )
-    problems.extend(f"{relative}: not listed in the manifest" for relative in unlisted)
     for binary in BINARIES:
         if f"bin/{binary}" not in manifest["contents"]:
             problems.append(f"bin/{binary}: not listed in the manifest")
@@ -482,12 +493,12 @@ def refuse_daemon_not_ready(root, environment, timeout_seconds=60):
 
 
 def gate_gaps(channel):
-    if channel not in NOT_REQUIRED_BY_CHANNEL:
+    if channel not in CHANNELS:
         raise Refusal(f"{channel}: not a release channel")
     return [
         check
-        for check, job in GATE_CHECKS.items()
-        if job is None and check not in NOT_REQUIRED_BY_CHANNEL[channel]
+        for check, (job, exempt_channels) in GATE_CHECKS.items()
+        if job is None and channel not in exempt_channels
     ]
 
 
@@ -502,11 +513,10 @@ def parse_arguments(arguments):
     check_command = commands.add_parser("check-tag")
     check_command.add_argument("tag")
     check_command.add_argument("--main", required=True)
-    for gate in ("--m3-gate", "--m5-gate"):
-        check_command.add_argument(gate, choices=("open", "closed"), required=True)
     next_command = commands.add_parser("next-prerelease")
-    next_command.add_argument("--m3-gate", choices=("open", "closed"), required=True)
-    next_command.add_argument("--m5-gate", choices=("open", "closed"), required=True)
+    for gated_command in (check_command, next_command):
+        for gate in ("--m3-gate", "--m5-gate"):
+            gated_command.add_argument(gate, choices=("open", "closed"), required=True)
     commands.add_parser("dry-run-version")
     commands.add_parser("stamp").add_argument("version")
     package_command = commands.add_parser("package")

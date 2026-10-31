@@ -54,6 +54,8 @@ class Repository:
         self.git("config", "tag.gpgSign", "false")
         self.git("config", "commit.gpgSign", "false")
         self.write_version(version)
+        (self.path / "docs").mkdir()
+        (self.path / release.KNOWN_GAPS).write_text("## Known gaps\n")
         self.commit_count = 0
         self.bootstrap = self.commit("build: bootstrap")
 
@@ -133,7 +135,7 @@ class CheckTagTests(ReleaseTestCase):
                 "version": "0.1.0-alpha.3",
                 "prerelease": "true",
                 "revision": revision,
-                "notes_start": self.repository.bootstrap,
+                "notes_range": f"{self.repository.bootstrap}..v0.1.0-alpha.3",
             },
         )
 
@@ -171,7 +173,8 @@ class CheckTagTests(ReleaseTestCase):
         self.assertEqual(outputs["channel"], "stable")
         self.assertEqual(outputs["prerelease"], "false")
         self.assertEqual(outputs["revision"], revision)
-        self.assertEqual(outputs["notes_start"], "v0.1.0")
+        self.assertEqual(outputs["notes_range"], "v0.1.0..v0.2.0")
+        self.assertEqual(outputs["notes_tag_pattern"], release.STABLE_TAG_REGEX)
 
     def test_pre_release_notes_start_at_the_highest_lower_release_it_descends_from(self):
         self.repository.commits(2)
@@ -180,7 +183,7 @@ class CheckTagTests(ReleaseTestCase):
         self.repository.tag("v0.1.0-alpha.5")
         code, outputs, error = self.check_tag("v0.1.0-alpha.5")
         self.assertEqual(code, 0, error)
-        self.assertEqual(outputs["notes_start"], "v0.1.0-alpha.2")
+        self.assertEqual(outputs["notes_range"], "v0.1.0-alpha.2..v0.1.0-alpha.5")
 
     def test_a_beta_after_a_stable_counts_from_that_stable(self):
         self.repository.tag("v0.1.0")
@@ -189,7 +192,7 @@ class CheckTagTests(ReleaseTestCase):
         code, outputs, error = self.check_tag("v0.2.0-beta.4", m5_gate="closed")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["version"], "0.2.0-beta.4")
-        self.assertEqual(outputs["notes_start"], "v0.1.0")
+        self.assertEqual(outputs["notes_range"], "v0.1.0..v0.2.0-beta.4")
 
     def test_a_pre_release_not_above_the_previous_stable_is_refused(self):
         self.repository.tag("v0.1.0")
@@ -235,6 +238,22 @@ class CheckTagTests(ReleaseTestCase):
             )
         self.assertEqual(code, 1)
         self.assertIn("shallow clone", error)
+
+    def test_a_hand_made_alpha_without_its_known_gaps_is_refused(self):
+        (self.repository.path / release.KNOWN_GAPS).unlink()
+        self.repository.commit("docs: drop the known gaps")
+        self.repository.tag("v0.1.0-alpha.1")
+        code, _outputs, error = self.check_tag("v0.1.0-alpha.1")
+        self.assertEqual(code, 1)
+        self.assertIn("an alpha needs docs/KNOWN-GAPS.md", error)
+
+    def test_a_second_release_tag_on_one_commit_is_refused(self):
+        self.repository.commits(1)
+        self.repository.tag("v0.1.0-alpha.1")
+        self.repository.tag("v0.1.0-beta.1")
+        code, _outputs, error = self.check_tag("v0.1.0-beta.1", m5_gate="closed")
+        self.assertEqual(code, 1)
+        self.assertIn("already released as v0.1.0-alpha.1", error)
 
     def test_a_tag_on_a_commit_outside_main_is_refused(self):
         self.repository.git("checkout", "--quiet", "-b", "feature")
@@ -283,21 +302,12 @@ class CheckTagTests(ReleaseTestCase):
 
 
 class NextPrereleaseTests(ReleaseTestCase):
-    def setUp(self):
-        super().setUp()
-        known_gaps = self.repository.path / release.KNOWN_GAPS
-        known_gaps.parent.mkdir()
-        known_gaps.write_text("## Known gaps\n")
-        self.repository.commit("docs: known gaps")
-        self.repository.commit_count = 0
-
     def test_after_the_m3_gate_the_next_alpha_numbers_the_commits_since_the_bootstrap(self):
-        revision = self.repository.commits(6)
+        revision = self.repository.commits(7)
         code, outputs, error = self.run_release(
             "next-prerelease", "--m3-gate", "closed", "--m5-gate", "open"
         )
         self.assertEqual(code, 0, error)
-        # Six commits after the one that added the known gaps.
         self.assertEqual(
             outputs, {"tag": "v0.1.0-alpha.7", "channel": "alpha", "revision": revision}
         )
@@ -325,7 +335,7 @@ class NextPrereleaseTests(ReleaseTestCase):
             "next-prerelease", "--m3-gate", "closed", "--m5-gate", "closed"
         )
         self.assertEqual(code, 0, error)
-        self.assertEqual(outputs["tag"], "v0.1.0-beta.3")
+        self.assertEqual(outputs["tag"], "v0.1.0-beta.2")
 
     def test_a_commit_that_already_has_a_pre_release_is_refused(self):
         self.repository.commits(2)
@@ -355,7 +365,7 @@ class NextPrereleaseTests(ReleaseTestCase):
             "next-prerelease", "--m3-gate", "closed", "--m5-gate", "open"
         )
         self.assertEqual(code, 1)
-        self.assertIn("v0.1.0-alpha.3 is not above the newest pre-release v0.1.0-beta.1", error)
+        self.assertIn("v0.1.0-alpha.2 is not above the newest pre-release v0.1.0-beta.1", error)
 
     def test_after_a_stable_tag_the_release_pr_version_is_required(self):
         self.repository.tag("v0.1.0")
@@ -373,6 +383,8 @@ class DryRunVersionTests(ReleaseTestCase):
         code, outputs, error = self.run_release("dry-run-version")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["version"], "0.1.0-dev.5")
+        self.assertEqual(outputs["notes_range"], f"{self.repository.bootstrap}..HEAD")
+        self.assertEqual(outputs["notes_tag"], "v0.1.0-dev.5")
         self.assertIsNone(release.TAG_PATTERN.fullmatch(f"v{outputs['version']}"))
 
 
@@ -423,7 +435,7 @@ exec sleep 60
 """
 
 
-class PackageTests(unittest.TestCase):
+class PackagingTestCase(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -458,6 +470,8 @@ class PackageTests(unittest.TestCase):
             cwd=ROOT,
         )
 
+
+class PackageTests(PackagingTestCase):
     def test_the_archive_follows_the_naming_contract_and_holds_the_bundle(self):
         code, outputs, error = self.package()
         self.assertEqual(code, 0, error)
@@ -525,7 +539,7 @@ class PackageTests(unittest.TestCase):
         self.assertIn("built binary missing", error)
 
 
-class VerifyInstallTests(PackageTests):
+class VerifyInstallTests(PackagingTestCase):
     def verify(self, root, revision="0123abcd"):
         return run("verify-install", str(root), "--revision", revision, cwd=ROOT)
 
@@ -596,7 +610,7 @@ class GateGapTests(unittest.TestCase):
         )
         self.assertIsNotNone(publish_needs, "expected the publish job's needs list")
         needed = {job.strip() for job in publish_needs[1].split(",")}
-        for job in {job for job in release.GATE_CHECKS.values() if job is not None}:
+        for job in {job for job, _exempt in release.GATE_CHECKS.values() if job is not None}:
             with self.subTest(job=job):
                 self.assertRegex(workflow, rf"\n  {job}:\n")
                 self.assertIn(job, needed)
@@ -622,6 +636,14 @@ class ChangelogConfigTests(unittest.TestCase):
                     tag_pattern.search(tag) is not None,
                     release.TAG_PATTERN.fullmatch(tag) is not None,
                 )
+
+    def test_stable_notes_take_only_stable_tags_as_boundaries(self):
+        stable_pattern = re.compile(release.STABLE_TAG_REGEX)
+        for tag in ["v0.1.0", "v1.20.3", "v0.1.0-alpha.3", "v0.1.0-beta.1", "v01.0.0", "nightly"]:
+            with self.subTest(tag=tag):
+                parsed = release.TAG_PATTERN.fullmatch(tag)
+                is_stable = parsed is not None and parsed["channel"] is None
+                self.assertEqual(stable_pattern.search(tag) is not None, is_stable)
 
 
 class RepositoryBaseTests(unittest.TestCase):

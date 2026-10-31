@@ -48,11 +48,12 @@ jobs:
         id: gates
         env:
           GH_TOKEN: ${{ github.token }}
+        # The same two lines as release.yml's plan job reads.
         run: |
-          for gate in m3:52 m5:66; do
-            state=$(gh issue view "${gate#*:}" --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
-            echo "${gate%%:*}=$state" | tee -a "$GITHUB_OUTPUT"
-          done
+          m3=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          m5=$(gh issue view 66 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          echo "m3=$m3" | tee -a "$GITHUB_OUTPUT"
+          echo "m5=$m5" | tee -a "$GITHUB_OUTPUT"
       - name: Compute the next pre-release tag
         id: next
         env:
