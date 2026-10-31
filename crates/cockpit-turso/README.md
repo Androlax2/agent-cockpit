@@ -8,6 +8,10 @@ offline restore. It owns no feature queries: each capability owns its own SQL an
 receives a transaction from its caller and runs SQL through `cockpit_turso::sql` (report 02,
 report 04).
 
+Change capture also gives the feed what it needs and nothing more: `watch_commits` wakes
+watchers after each commit (never a rollback), and `discard_changes` drops whole old commits
+while keeping the newest, so commit revisions never repeat (#41).
+
 ## Dependency edges
 
 - Depends on: `turso` (SQLite-compatible mode, no MVCC or experimental flags) and `tokio`

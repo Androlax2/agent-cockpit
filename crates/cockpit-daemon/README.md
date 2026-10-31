@@ -15,7 +15,8 @@ not share code.
   once), `cockpit-authorization` (whose migrations it runs), `cockpit-agent-channel` (who an
   agent socket peer is, and its verbs), `cockpit-processes` (whose executions it reconciles),
   `cockpit-projects` (whose migrations it runs and whose verbs `Routes` serves to the
-  owner), `cockpit-approvals` (run requests and guides, and the runner of approved
+  owner), `cockpit-messaging` (whose migrations it runs, whose deliveries it reconciles and
+  whose change feed `Routes` streams to the owner), `cockpit-approvals` (run requests and guides, and the runner of approved
   commands), `cockpit-sessions` (whose verbs `Routes` serves to the owner, and whose restore
   and periodic pass it runs), `cockpit-tmux` (the private server sessions run in) and
   `cockpit-provider-api` (the providers it is wired with; the adapters arrive with #33);
@@ -41,7 +42,9 @@ not share code.
    the runs a stopped daemon left approved (`not-run`) or running, from what each one's
    execution did: never started (`not-run`), ended (`outcome-unknown`), or still running,
    which stays `running` and is recorded `outcome-unknown` once observed ended (#163).
-   None is repeated.
+   None is repeated. `cockpit-messaging` then turns every delivery a stopped daemon left in
+   flight into a retry under the same key, when its receiver deduplicates, or into
+   `uncertain`; each is logged.
 5. Open the private tmux server, then restore the sessions (`cockpit-sessions`): each active
    session whose agent is gone is reopened, each failure logged and left `failed`. A tmux
    that cannot be run or is too old is logged instead, and the sessions are left as they
@@ -80,6 +83,18 @@ not share code.
 - The asking agent's project is the registered checkout holding its working directory,
   read from `/proc` after its process tree was verified, until sessions record it (#31).
 
+## Change feed (#41)
+
+- `subscribe` is granted only on `daemon.sock`, to a peer that negotiated `change-feed`; the
+  agent socket offers no capability. Its start (snapshot or replay) runs in the bulk lane;
+  the answer is queued before the first batch, and forwarding the stream holds no lane place.
+- One feed per connection: a second `subscribe` is refused `invalid-request`. Batches reach
+  the writer on their own channel, so busy answer places never hold them back. A feed that
+  stops (its history discarded, an error) or a batch larger than `MAX_FRAME_BYTES` closes
+  the connection, so the client subscribes again from its cursor and gets
+  `resnapshot-required` when that cursor cannot resume; nothing is skipped.
+- A supervised worker keeps the newest 100,000 change rows, hourly.
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -110,6 +125,10 @@ not share code.
   report 04's walkthrough 3, decline, input to a waiting command, the syntax check, grants,
   `ask-check`, socket roles and a guide; #163's restarts: a run a crash hung up is reported
   ended and never repeated, one that outlives the restart is reattached until it ends.
+- `tests/change_feed.rs`: issue #41's feed through the socket: snapshot then each commit,
+  resume after a restart with tombstones, `resnapshot-required` for another epoch and for
+  discarded history, one feed per connection, none on the agent socket, batches with one
+  answer place, an oversized snapshot closing the connection.
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket

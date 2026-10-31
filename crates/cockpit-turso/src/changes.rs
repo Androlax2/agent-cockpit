@@ -4,7 +4,9 @@
 //! row (`change_type = 2`) whose `change_id` is the transaction's revision. A rolled-back
 //! transaction leaves no rows, so every row a reader sees belongs to a committed transaction.
 
-use crate::{Error, ReadTransaction};
+use std::num::NonZeroU64;
+
+use crate::{Error, ReadTransaction, WriteTransaction};
 
 const CHANGE_TYPE_DELETE: i64 = -1;
 const CHANGE_TYPE_UPDATE: i64 = 0;
@@ -114,5 +116,52 @@ impl ReadTransaction<'_> {
             });
         }
         Ok(commits)
+    }
+}
+
+impl WriteTransaction<'_> {
+    /// Discards the captured changes of whole commits older than the newest `keep_changes`
+    /// change rows, and returns the revision of the newest commit discarded, or `None` when no
+    /// commit is that old. A reader that resumes after an older revision would miss changes,
+    /// so the change feed must refuse it from then on.
+    ///
+    /// The newest commit is always kept: Turso numbers the next change after the newest row,
+    /// so discarding it would let revisions repeat.
+    pub async fn discard_changes(&self, keep_changes: NonZeroU64) -> Result<Option<i64>, Error> {
+        let Some(newest) = self
+            .optional_integer("SELECT max(change_id) FROM turso_cdc", ())
+            .await?
+        else {
+            return Ok(None);
+        };
+        let keep = i64::try_from(keep_changes.get()).unwrap_or(i64::MAX);
+        let Some(discarded_through) = self
+            .optional_integer(
+                "SELECT max(change_id) FROM turso_cdc WHERE change_type = ?1 AND change_id <= ?2",
+                (CHANGE_TYPE_COMMIT, newest.saturating_sub(keep)),
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.execute(
+            "DELETE FROM turso_cdc WHERE change_id <= ?1",
+            [discarded_through],
+        )
+        .await?;
+        Ok(Some(discarded_through))
+    }
+
+    /// The first column of the first row, which an aggregate makes `NULL` over no rows.
+    async fn optional_integer(
+        &self,
+        sql: &str,
+        params: impl turso::IntoParams,
+    ) -> Result<Option<i64>, Error> {
+        let mut rows = self.query(sql, params).await?;
+        match rows.next().await? {
+            Some(row) => Ok(row.get::<Option<i64>>(0)?),
+            None => Ok(None),
+        }
     }
 }

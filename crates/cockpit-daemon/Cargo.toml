@@ -18,6 +18,7 @@ cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
 cockpit-claude = { path = "../cockpit-claude", version = "0.1.0" }
 cockpit-config = { path = "../cockpit-config", version = "0.1.0" }
 cockpit-diagnostics = { path = "../cockpit-diagnostics", version = "0.1.0" }
+cockpit-messaging = { path = "../cockpit-messaging", version = "0.1.0" }
 cockpit-processes = { path = "../cockpit-processes", version = "0.1.0" }
 cockpit-projects = { path = "../cockpit-projects", version = "0.1.0" }
 cockpit-protocol = { path = "../cockpit-protocol", version = "0.1.0" }

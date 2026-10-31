@@ -5,12 +5,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use cockpit_protocol::{
-    Command, ErrorCode, Outcome, ProtocolError, Reply, Unblock, UnblockedBy, Welcome,
+    Capability, ChangeBatch, Command, ErrorCode, Outcome, ProtocolError, Reply, Unblock,
+    UnblockedBy, Welcome,
 };
+use tokio::sync::mpsc;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
-use crate::{Capabilities, agent, approvals, projects, sessions};
+use crate::{Capabilities, agent, approvals, feed, projects, sessions};
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
 /// so bulk work can fill its lane without taking capacity from control (report 03).
@@ -27,12 +29,20 @@ pub enum WorkClass {
 /// goes through [`tokio::task::spawn_blocking`] inside it and is awaited.
 pub type Job = Pin<Box<dyn Future<Output = Outcome> + Send + 'static>>;
 
+/// A `subscribe`'s work: its answer and, when it is `Ok`, the feed's batches. It runs in the
+/// bulk lane like any [`Job`]; the stream that follows holds no lane capacity.
+pub type StreamJob =
+    Pin<Box<dyn Future<Output = (Outcome, Option<mpsc::Receiver<ChangeBatch>>)> + Send + 'static>>;
+
 /// What the daemon does with one decoded request.
 pub enum Route {
     /// Answer at once, without taking lane capacity: refusals that need no work.
     Answer(Outcome),
     /// Wait for a worker of `class`, or answer `busy` when its queue is full.
     Run { class: WorkClass, job: Job },
+    /// Start the connection's change feed: the answer, then each batch on the same
+    /// connection until either side stops. A connection follows one feed at a time.
+    Stream { job: StreamJob },
 }
 
 /// Who is at the other end of a connection, as the socket it came through and the kernel
@@ -84,14 +94,19 @@ impl Routes {
 }
 
 impl Handler for Routes {
-    fn route(&self, command: Command, _welcome: &Welcome, peer: Peer) -> Route {
+    fn route(&self, command: Command, welcome: &Welcome, peer: Peer) -> Route {
         match (command, peer) {
             (Command::Ping, _) => Route::Run {
                 class: WorkClass::Control,
                 job: Box::pin(async { Outcome::Ok(Reply::Pong) }),
             },
-            // The daemon offers no change feed until messaging serves it (#41), so no
-            // connection has negotiated it.
+            // Only the host-only socket offers the change feed: agents never see the whole
+            // state (report 11).
+            (Command::Subscribe { from }, Peer::Owner)
+                if welcome.capabilities.contains(&Capability::ChangeFeed) =>
+            {
+                feed::route(from, Arc::clone(&self.database))
+            }
             (Command::Subscribe { .. }, _) => Route::Answer(refusal(
                 ErrorCode::NotNegotiated,
                 "this connection did not negotiate the change-feed capability",

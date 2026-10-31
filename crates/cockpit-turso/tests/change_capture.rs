@@ -1,6 +1,8 @@
 //! Change capture: committed changes grouped by transaction, ordered by commit revision.
 mod common;
 
+use std::num::NonZeroU64;
+
 use cockpit_turso::{Change, ChangeKind, Database};
 use common::{NOTE_MIGRATIONS, TASK_MIGRATIONS, insert_task, scratch_dir};
 
@@ -147,4 +149,71 @@ async fn reading_after_a_revision_stops_at_the_commit_limit() {
     assert_eq!(first_two.len(), 2);
     assert_eq!(rest.len(), 1);
     assert_eq!(rest[0].changes, [change(ChangeKind::Insert, "tasks", 3)]);
+}
+
+#[tokio::test]
+async fn discarding_changes_drops_whole_old_commits_and_keeps_the_revision() {
+    let database = open("cdc-discard").await;
+    for title in ["a", "b", "c"] {
+        insert_task(&database, title).await;
+    }
+    let before = database.read().await.unwrap();
+    let revision = before.revision().await.unwrap();
+    let commits = before.commits_after(0, 100).await.unwrap();
+    drop(before);
+    // Each insert is one change row and one COMMIT row: keeping two rows keeps the newest
+    // commit whole and discards every commit before it.
+    let write = database.write().await.unwrap();
+    let discarded = write
+        .discard_changes(NonZeroU64::new(2).unwrap())
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let read = database.read().await.unwrap();
+    assert_eq!(discarded, Some(commits[commits.len() - 2].revision));
+    assert_eq!(read.revision().await.unwrap(), revision);
+    assert_eq!(
+        read.commits_after(discarded.unwrap(), 100).await.unwrap(),
+        commits[commits.len() - 1..]
+    );
+}
+
+#[tokio::test]
+async fn discarding_never_drops_the_newest_commit_so_revisions_keep_increasing() {
+    let database = open("cdc-discard-newest").await;
+    insert_task(&database, "only").await;
+    let revision = database.read().await.unwrap().revision().await.unwrap();
+
+    let write = database.write().await.unwrap();
+    let discarded = write
+        .discard_changes(NonZeroU64::new(1).unwrap())
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    insert_task(&database, "next").await;
+
+    let read = database.read().await.unwrap();
+    assert!(
+        discarded.is_none_or(|through| through < revision),
+        "{discarded:?}"
+    );
+    assert!(read.revision().await.unwrap() > revision);
+}
+
+#[tokio::test]
+async fn a_commit_wakes_its_watchers_and_a_rollback_does_not() {
+    let database = open("cdc-watch").await;
+    let commits = database.watch_commits();
+
+    let write = database.write().await.unwrap();
+    write
+        .execute("INSERT INTO tasks (title) VALUES ('dropped')", ())
+        .await
+        .unwrap();
+    write.rollback().await.unwrap();
+    assert!(!commits.has_changed().unwrap(), "a rollback wakes nobody");
+
+    insert_task(&database, "kept").await;
+    assert!(commits.has_changed().unwrap(), "a commit wakes the watcher");
 }
