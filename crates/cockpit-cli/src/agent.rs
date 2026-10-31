@@ -33,7 +33,7 @@ pub(crate) fn report(flags: &[OsString]) -> Result<ExitCode, String> {
     };
     Ok(match exchange(&socket, command) {
         Ok(Reply::AgentReported { report }) => {
-            println!("reported for session {}", report.session);
+            outln!("reported for session {}", report.session);
             ExitCode::SUCCESS
         }
         other => failed(&socket, other),
@@ -52,7 +52,7 @@ pub(crate) fn reports(flags: &[OsString]) -> Result<ExitCode, String> {
     Ok(match exchange(&socket, Command::AgentReports) {
         Ok(Reply::AgentReports { reports }) => {
             for report in &reports {
-                println!("{}", render(report));
+                outln!("{}", render(report));
             }
             ExitCode::SUCCESS
         }

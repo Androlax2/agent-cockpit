@@ -39,19 +39,29 @@ impl Home {
         path
     }
 
-    /// Runs `cockpit` with `arguments` from `cwd`, off the test's runtime threads.
-    async fn cockpit(&self, cwd: &Path, arguments: &[&str]) -> Output {
+    /// `cockpit` with `arguments`, in this home only.
+    fn command(&self, arguments: &[&str]) -> std::process::Command {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
         command
-            .current_dir(cwd)
             .args(arguments)
             .env_clear()
             .env("HOME", self.dir.path())
             .env("XDG_RUNTIME_DIR", self.runtime_dir());
-        tokio::task::spawn_blocking(move || command.output().unwrap())
-            .await
-            .unwrap()
+        command
     }
+
+    /// Runs `cockpit` with `arguments` from `cwd`, off the test's runtime threads.
+    async fn cockpit(&self, cwd: &Path, arguments: &[&str]) -> Output {
+        let mut command = self.command(arguments);
+        command.current_dir(cwd);
+        output_off_runtime(command).await
+    }
+}
+
+async fn output_off_runtime(mut command: std::process::Command) -> Output {
+    tokio::task::spawn_blocking(move || command.output().unwrap())
+        .await
+        .unwrap()
 }
 
 fn view(id: &str, state: SessionStateView) -> SessionView {
@@ -372,4 +382,25 @@ async fn end_finished_exits_1_naming_each_session_it_could_not_end() {
         text(&output.stderr),
         "cockpit: s000000000002 not ended: conflict: its agent did not stop\n"
     );
+}
+
+// #275: `cockpit session list | head -1` must not panic once `head` has exited.
+#[tokio::test]
+async fn session_list_exits_141_without_a_panic_when_its_stdout_is_closed() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Sessions {
+            sessions: vec![view("s000000000001", SessionStateView::Running)],
+        }),
+    );
+    let (closed_reader, writer) = std::io::pipe().unwrap();
+    drop(closed_reader);
+    let mut command = home.command(&["session", "list"]);
+    command.stdout(writer);
+
+    let output = output_off_runtime(command).await;
+
+    assert_eq!(text(&output.stderr), "");
+    assert_eq!(output.status.code(), Some(141));
 }

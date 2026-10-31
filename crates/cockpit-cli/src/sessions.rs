@@ -94,9 +94,9 @@ pub fn run(command: Command) -> ExitCode {
         Err(code) => return code,
     };
     match &reply {
-        Reply::Session { session } => print!("{}", session_line(session)),
+        Reply::Session { session } => out!("{}", session_line(session)),
         Reply::Sessions { sessions } => sessions.iter().for_each(|session| {
-            print!("{}", session_line(session));
+            out!("{}", session_line(session));
         }),
         Reply::Providers { providers } => providers.iter().for_each(|provider| {
             let resume = if provider.resume {
@@ -104,7 +104,7 @@ pub fn run(command: Command) -> ExitCode {
             } else {
                 "no-resume"
             };
-            println!("{}\t{resume}", provider.name);
+            outln!("{}\t{resume}", provider.name);
         }),
         Reply::RestartedAll {
             restarted,
@@ -112,7 +112,7 @@ pub fn run(command: Command) -> ExitCode {
             failed,
         } => {
             restarted.iter().chain(deferred).for_each(|session| {
-                print!("{}", session_line(session));
+                out!("{}", session_line(session));
             });
             failed.iter().for_each(|failure| {
                 eprint!("{}", failure_line(failure, "restarted"));
@@ -123,7 +123,7 @@ pub fn run(command: Command) -> ExitCode {
         }
         Reply::EndedFinished { ended, failed } => {
             ended.iter().for_each(|session| {
-                print!("{}", session_line(session));
+                out!("{}", session_line(session));
             });
             failed.iter().for_each(|failure| {
                 eprint!("{}", failure_line(failure, "ended"));
