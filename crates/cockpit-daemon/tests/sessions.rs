@@ -554,6 +554,7 @@ async fn a_session_whose_provider_cannot_resume_is_refused_sleep_and_keeps_runni
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
+    let first = home.launches(1).await;
 
     let refused = request(
         &client,
@@ -564,7 +565,7 @@ async fn a_session_whose_provider_cannot_resume_is_refused_sleep_and_keeps_runni
     .await;
 
     assert_eq!(refusal_code(refused), ErrorCode::Conflict);
-    assert!(is_alive(home.launches(1).await[0].pid));
+    assert!(is_alive(first[0].pid));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -823,6 +824,7 @@ async fn without_tmux_a_running_session_is_left_unrestored_until_tmux_is_back() 
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
+    let first = home.launches(1).await;
     drop(client);
     home.stop(daemon);
 
@@ -833,7 +835,8 @@ async fn without_tmux_a_running_session_is_left_unrestored_until_tmux_is_back() 
     let left = sessions(&client, false).await;
     assert_eq!(left[0].launch, started.launch);
     assert_eq!(left[0].state, SessionStateView::Running);
-    assert!(is_alive(home.launches(1).await[0].pid));
+    assert_eq!(home.logged_launches().len(), 1);
+    assert!(is_alive(first[0].pid));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -972,6 +975,7 @@ async fn on_daemon_start_a_session_whose_agent_still_runs_keeps_it() {
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
+    let first = home.launches(1).await;
     drop(client);
     home.stop(daemon);
 
@@ -981,7 +985,8 @@ async fn on_daemon_start_a_session_whose_agent_still_runs_keeps_it() {
     let kept = sessions(&client, false).await;
     assert_eq!(kept[0].launch, started.launch);
     assert_eq!(kept[0].state, SessionStateView::Running);
-    assert!(is_alive(home.launches(1).await[0].pid));
+    assert_eq!(home.logged_launches().len(), 1);
+    assert!(is_alive(first[0].pid));
 }
 
 #[tokio::test(flavor = "multi_thread")]

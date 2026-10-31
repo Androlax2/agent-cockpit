@@ -27,8 +27,12 @@ fn first_frame_after_output(stream: &mut CaptureStream) -> CaptureFrame {
     let deadline = Instant::now() + GENEROUS;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !left.is_zero(),
+            "only output within {GENEROUS:?}, no other frame"
+        );
         match stream.next_frame(left) {
-            Ok(Some(CaptureFrame::Output { .. })) if !left.is_zero() => {}
+            Ok(Some(CaptureFrame::Output { .. })) => {}
             Ok(Some(frame)) => return frame,
             other => panic!("expected a frame within {GENEROUS:?}, got {other:?}"),
         }
