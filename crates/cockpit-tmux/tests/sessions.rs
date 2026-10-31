@@ -8,9 +8,13 @@ use std::os::unix::fs::PermissionsExt;
 use cockpit_tmux::{Error, PaneId, PaneState, SessionLaunch, SessionName};
 use common::{TestServer, eventually, shell};
 
-fn screen_contains(fixture: &TestServer, pane: &PaneId, text: &str) -> bool {
+fn screen(fixture: &TestServer, pane: &PaneId) -> String {
     let screen = fixture.server.capture(pane, 0).expect("the pane exists");
-    String::from_utf8_lossy(&screen).contains(text)
+    String::from_utf8_lossy(&screen).into_owned()
+}
+
+fn screen_contains(fixture: &TestServer, pane: &PaneId, text: &str) -> bool {
+    screen(fixture, pane).contains(text)
 }
 
 #[test]
@@ -36,7 +40,7 @@ fn a_session_runs_its_command_in_its_directory_with_its_environment() {
 }
 
 #[test]
-fn a_one_word_command_runs_directly_even_with_shell_characters_in_its_path() {
+fn a_command_path_with_shell_characters_or_equals_signs_runs_unparsed() {
     let fixture = TestServer::new();
     let directory = fixture.home.path().join("dir with 'quote' $HOME a=b");
     fs::create_dir(&directory).expect("creatable");
@@ -263,11 +267,12 @@ fn tmux_probe(fixture: &TestServer) -> String {
 }
 
 fn assert_pane_cannot_reach_the_server(fixture: &TestServer, pane: &PaneId) {
+    let mut screen = String::new();
     eventually("the probe finished", || {
-        screen_contains(fixture, pane, "listed=1") || screen_contains(fixture, pane, "listed=0")
+        screen = self::screen(fixture, pane);
+        // Not "listed=": a hand-opened pane also shows the typed `listed=$?`.
+        screen.contains("listed=0") || screen.contains("listed=1")
     });
-    let screen =
-        String::from_utf8_lossy(&fixture.server.capture(pane, 0).expect("captures")).into_owned();
     assert!(screen.contains("TMUX=unset TMUX_PANE=unset"), "{screen}");
     assert!(screen.contains("listed=1"), "{screen}");
     assert!(

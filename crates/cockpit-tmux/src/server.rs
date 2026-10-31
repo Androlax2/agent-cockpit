@@ -298,21 +298,14 @@ impl Server {
     }
 
     /// Nested attach: replaces whatever runs in the `viewer` pane with a tmux client of
-    /// this server attached to `session`. `TMUX` is emptied for that client only, which is
-    /// how tmux allows the nesting (`respawn-pane`, unlike `new-session`, applies `-e TMUX=`).
+    /// this server attached to `session`. The client names the socket itself; like every
+    /// pane command it runs without `TMUX`, which is how tmux allows the nesting.
     pub fn show_in_viewer(&self, viewer: &PaneId, session: &SessionName) -> Result<(), Error> {
-        let mut arguments = words(&[
-            "respawn-pane",
-            "-k",
-            "-t",
-            viewer.as_str(),
-            "-e",
-            "TMUX=",
-            "--",
-        ]);
-        arguments.push(self.spec.tmux.clone().into());
-        arguments.extend(self.spec.socket.arguments().map(OsString::from));
-        arguments.extend(words(&["attach-session", "-t", &session.target()]));
+        let mut client = vec![self.spec.tmux.clone().into_os_string()];
+        client.extend(self.spec.socket.arguments().map(OsString::from));
+        client.extend(words(&["attach-session", "-t", &session.target()]));
+        let mut arguments = words(&["respawn-pane", "-k", "-t", viewer.as_str(), "--"]);
+        arguments.extend(pane_command(&client)?);
         self.run(&arguments).map(drop)
     }
 
@@ -374,10 +367,8 @@ pub(crate) fn words(list: &[&str]) -> Vec<OsString> {
     list.iter().map(OsString::from).collect()
 }
 
-/// tmux sets `TMUX` and `TMUX_PANE` in every pane, and `new-session` ignores `-e TMUX=`,
-/// so a plain `tmux` an agent runs would reach this server. The command runs as the
-/// arguments of a fixed `sh` script that unsets both: nothing is quoted or parsed, and with
-/// several words tmux never uses its own shell.
+/// `command` as the arguments of a fixed `sh` script that unsets `TMUX` and `TMUX_PANE`, so
+/// a plain `tmux` in the pane never reaches this server (docs/DECISIONS.md, #30).
 fn pane_command(command: &[OsString]) -> Result<Vec<OsString>, Error> {
     if command.is_empty() {
         return Err(Error::InvalidArgument {
