@@ -1,7 +1,7 @@
 # cockpit-diagnostics
 
-Owns logging of Cockpit's own operation (levels, time-boxed runtime overrides, bounded log
-files, the support bundle); never hosted work: prompts, agent output, commands the agent
+Owns logging of Cockpit's own operation: levels, time-boxed runtime overrides, bounded log
+files and the support bundle. Never hosted work: prompts, agent output, commands the agent
 runs, credentials and environment values are not Cockpit's to log
 ([report 12](../../docs/design/greenfield/12-diagnostics-logging.md)).
 

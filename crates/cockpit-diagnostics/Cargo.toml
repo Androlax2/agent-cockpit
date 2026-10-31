@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-diagnostics"
-description = "Logging of Cockpit's own operation: levels, runtime overrides, bounded log files, support bundle."
+description = "Owns logging of Cockpit's own operation: levels, time-boxed runtime overrides, bounded log files and the support bundle."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
