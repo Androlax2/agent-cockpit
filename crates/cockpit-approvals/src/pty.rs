@@ -3,31 +3,33 @@
 //! with hooks off and its program-running settings reset. What comes back to the agent is
 //! the end of the output, without terminal controls, secrets redacted.
 //!
-//! A terminal becomes a process's controlling terminal only when a session leader takes it.
-//! Making the child one between `fork` and `exec` would need `unsafe`, so a leader program
-//! does it in its own process: [`run_leader`] calls `setsid`, takes its standard input (the
-//! terminal) as controlling terminal, then execs the shell.
+//! Each run is a `cockpit-processes` terminal execution (#163): its own session in a
+//! systemd scope or process group, led by `cockpit_processes::run_session_leader`, so it can
+//! be terminated whole and a restart can tell what became of it.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::{Path, PathBuf};
-use std::process::{ExitCode, Stdio};
+use std::os::fd::OwnedFd;
+use std::os::unix::process::ExitStatusExt;
+use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use cockpit_processes::{EndReason, ExecutionId, LaunchSpec, Phase, Supervisor, Terminal};
+use cockpit_turso::Database;
 use rustix::fs::{Mode, OFlags};
 use rustix::io::FdFlags;
 use rustix::pty::OpenptFlags;
 use rustix::termios::Winsize;
 use tokio::sync::oneshot;
 
-use crate::Refusal;
 use crate::error::invalid;
 use crate::redact::{redact_secrets, redact_secrets_after_cut, strip_terminal_controls};
-use crate::runs::{Approved, RunId, RunResult};
+use crate::runs::{Approved, RunId, RunResult, start_run};
+use crate::{Error, Refusal};
 
 /// After the command exits, how long output still in the terminal may take to arrive. A
 /// background process that keeps the terminal open is not waited for.
@@ -43,7 +45,7 @@ pub struct RunSettings {
     /// The shell that runs each command as `<shell> -c <command>` and checks it first with
     /// `<shell> -n -c <command>`.
     pub shell: PathBuf,
-    /// The program [`run_leader`] runs in: `<leader> <leader_arguments…> <shell> -c <command>`.
+    /// The session leader each run starts under (`cockpit_processes::Terminal`).
     pub leader: PathBuf,
     pub leader_arguments: Vec<OsString>,
     /// The run's whole environment, besides Git's: nothing else is inherited. Variables whose
@@ -101,6 +103,10 @@ pub struct Ran {
     /// A process the command left in the background still held the terminal when the
     /// command exited; what it printed afterwards is not in the result.
     pub terminal_held_open: bool,
+    /// The run's execution, and whether a process the command left behind still ran in it
+    /// once the command exited (see [`Runner::wait_until_ended`]).
+    pub execution: ExecutionId,
+    pub left_running: bool,
 }
 
 /// A run's output as it may reach the agent.
@@ -129,6 +135,7 @@ pub enum NoResult {
 #[derive(Debug, Clone)]
 pub struct Runner {
     settings: Arc<RunSettings>,
+    pub(crate) supervisor: Supervisor,
     live: Arc<Mutex<HashMap<RunId, Arc<LiveRun>>>>,
 }
 
@@ -146,9 +153,11 @@ struct Kept {
 }
 
 impl Runner {
-    pub fn new(settings: RunSettings) -> Runner {
+    /// Runs launch through `supervisor`, the daemon's one owner of executions.
+    pub fn new(settings: RunSettings, supervisor: Supervisor) -> Runner {
         Runner {
             settings: Arc::new(settings),
+            supervisor,
             live: Arc::default(),
         }
     }
@@ -186,9 +195,15 @@ impl Runner {
         )))
     }
 
-    /// Runs `run` to its end, every Git in it applying `git_config` (`key=value` settings) over
-    /// the repository's own configuration.
-    pub async fn run(&self, run: &Approved, git_config: &[String]) -> Result<Ran, NoResult> {
+    /// Marks `run` running with a newly reserved execution and runs it to its end, every Git
+    /// in it applying `git_config` (`key=value` settings) over the repository's own
+    /// configuration.
+    pub async fn run(
+        &self,
+        database: &Database,
+        run: &Approved,
+        git_config: &[String],
+    ) -> Result<Ran, NoResult> {
         match std::fs::canonicalize(&run.cwd) {
             Ok(resolved) if resolved == run.cwd => {}
             Ok(resolved) => {
@@ -212,11 +227,8 @@ impl Runner {
         let reader = master
             .try_clone()
             .map_err(|error| not_started("cannot read the terminal", error))?;
-        let mut child = self.spawn(run, terminal, git_config).map_err(|error| {
-            not_started(
-                &format!("cannot start {}", self.settings.leader.display()),
-                error,
-            )
+        let execution = self.mark_running(database, run).await.map_err(|error| {
+            NoResult::NotStarted(format!("the run could not be marked running: {error}"))
         })?;
         let live = Arc::new(LiveRun {
             input: Mutex::new(master),
@@ -231,23 +243,22 @@ impl Runner {
             .expect("the live runs lock is never poisoned")
             .insert(run.id, Arc::clone(&live));
         let drained = drain(reader, Arc::clone(&live), self.settings.kept_bytes);
-        let status = child.wait().await;
-        let terminal_held_open = tokio::time::timeout(DRAIN_AFTER_EXIT, drained)
-            .await
-            .is_err();
+        let exited = self
+            .launch(database, run, execution, terminal, git_config)
+            .await;
+        let terminal_held_open = exited.is_ok()
+            && tokio::time::timeout(DRAIN_AFTER_EXIT, drained)
+                .await
+                .is_err();
         self.live
             .lock()
             .expect("the live runs lock is never poisoned")
             .remove(&run.id);
-        let exit_code = match status {
-            Ok(status) => status
-                .code()
-                .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
-            Err(error) => {
-                return Err(NoResult::Unobserved(format!(
-                    "the command's exit was not observed: {error}"
-                )));
-            }
+        let exit_code = exited?;
+        let left_running = match self.supervisor.observe(database, execution).await {
+            Ok(observed) => observed.phase.is_occupying(),
+            // Not observed ended, so it stays charged and is watched.
+            Err(_) => true,
         };
         let kept = live
             .output
@@ -260,30 +271,85 @@ impl Runner {
                 output: present(tail, kept.total, self.settings.answer_lines),
             },
             terminal_held_open,
+            execution,
+            left_running,
         })
     }
 
-    fn spawn(
+    /// Reserves the run's execution and marks the run running with it, in one transaction.
+    async fn mark_running(
         &self,
+        database: &Database,
         run: &Approved,
-        terminal: rustix::fd::OwnedFd,
+    ) -> Result<ExecutionId, Error> {
+        let write = database.write().await?;
+        let execution = self.supervisor.reserve(&write, database.epoch()).await?;
+        start_run(&write, run, execution).await?;
+        write.commit().await?;
+        Ok(execution)
+    }
+
+    /// Launches the reserved execution in `terminal` and answers the command's exit code.
+    async fn launch(
+        &self,
+        database: &Database,
+        run: &Approved,
+        execution: ExecutionId,
+        terminal: OwnedFd,
         git_config: &[String],
-    ) -> std::io::Result<tokio::process::Child> {
-        let mut command = tokio::process::Command::new(&self.settings.leader);
-        command
-            .args(&self.settings.leader_arguments)
-            .arg(&self.settings.shell)
-            .arg("-c")
-            .arg(&run.command)
-            .env_clear()
-            .envs(self.settings.run_environment(git_config))
-            .current_dir(&run.cwd)
-            .stdin(Stdio::from(terminal.try_clone()?))
-            .stdout(Stdio::from(terminal.try_clone()?))
-            .stderr(Stdio::from(terminal));
-        // `command` drops its copies of the terminal when it goes out of scope: the terminal
-        // must end with the run's processes for the reader to see the end of the output.
-        command.spawn()
+    ) -> Result<i32, NoResult> {
+        let spec = LaunchSpec {
+            program: self.settings.shell.clone(),
+            arguments: vec!["-c".into(), run.command.clone().into()],
+            working_dir: run.cwd.clone(),
+            environment: self.settings.run_environment(git_config),
+            terminal: Some(Terminal {
+                device: terminal,
+                leader: self.settings.leader.clone(),
+                leader_arguments: self.settings.leader_arguments.clone(),
+            }),
+        };
+        let launched = self
+            .supervisor
+            .launch_reserved(database, execution, &spec)
+            .await;
+        // The terminal must end with the run's processes for the reader to see the end of
+        // the output: this copy goes as soon as the run has its own.
+        drop(spec);
+        let launched = match launched {
+            Ok(launched) => launched,
+            Err(error) => return Err(self.launch_failed(database, execution, &error).await),
+        };
+        match launched.exit.await {
+            Ok(Ok(status)) => Ok(status
+                .code()
+                .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))),
+            Ok(Err(error)) => Err(NoResult::Unobserved(format!(
+                "the command's exit was not observed: {error}"
+            ))),
+            Err(_) => Err(NoResult::Unobserved(
+                "the command's exit was not observed: its launcher was not reaped".to_owned(),
+            )),
+        }
+    }
+
+    /// A failed launch is `not-run` only when its execution is recorded never started;
+    /// otherwise the program may have run.
+    async fn launch_failed(
+        &self,
+        database: &Database,
+        execution: ExecutionId,
+        error: &cockpit_processes::Error,
+    ) -> NoResult {
+        match cockpit_processes::execution(database, execution).await {
+            Ok(observed) if observed.phase == Phase::Ended(EndReason::NeverStarted) => {
+                NoResult::NotStarted(format!(
+                    "cannot start {}: {error}",
+                    self.settings.leader.display()
+                ))
+            }
+            _ => NoResult::Unobserved(format!("the command may have started: {error}")),
+        }
     }
 
     /// Types `text` and Enter into the running command.
@@ -325,7 +391,7 @@ impl Runner {
 }
 
 /// A new pseudo-terminal: the master side for the daemon, the terminal side for the run.
-fn open_terminal(rows: u16, columns: u16) -> std::io::Result<(File, rustix::fd::OwnedFd)> {
+fn open_terminal(rows: u16, columns: u16) -> std::io::Result<(File, OwnedFd)> {
     let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
     // `openpt` cannot set close-on-exec everywhere; the run must not inherit the master.
     rustix::io::fcntl_setfd(&master, FdFlags::CLOEXEC)?;
@@ -407,32 +473,6 @@ pub fn present(kept: &[u8], total: u64, answer_lines: usize) -> Output {
         truncated_bytes,
         redacted: redacted as u64,
     }
-}
-
-/// The leader program's work: `arguments` is `<program> <arguments…>`. It becomes a session
-/// leader, takes its standard input (the run's terminal) as controlling terminal and execs
-/// the program, which keeps its pid, session and terminal. Returns only on failure.
-pub fn run_leader(arguments: &[OsString]) -> ExitCode {
-    let Some((program, program_arguments)) = arguments.split_first() else {
-        eprintln!("cockpit: the run leader needs a program to run");
-        return ExitCode::from(2);
-    };
-    if let Err(error) = rustix::process::setsid() {
-        eprintln!("cockpit: cannot start a session for the command: {error}");
-        return ExitCode::from(127);
-    }
-    if let Err(error) = rustix::process::ioctl_tiocsctty(std::io::stdin()) {
-        eprintln!("cockpit: cannot take the terminal for the command: {error}");
-        return ExitCode::from(127);
-    }
-    let error = std::process::Command::new(program)
-        .args(program_arguments)
-        .exec();
-    eprintln!(
-        "cockpit: cannot run {}: {error}",
-        Path::new(program).display()
-    );
-    ExitCode::from(127)
 }
 
 /// Whether `name` is one of the variables a run never inherits from the daemon.

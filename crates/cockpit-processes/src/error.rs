@@ -22,6 +22,11 @@ pub enum Error {
     NotIdentified {
         execution: ExecutionId,
     },
+    /// The execution is not a launch intent still waiting for its launch: it was launched
+    /// already, or it ended.
+    NotReserved {
+        execution: ExecutionId,
+    },
     /// No execution has this id.
     UnknownExecution {
         execution: ExecutionId,
@@ -82,6 +87,9 @@ impl fmt::Display for Error {
                 write!(formatter, "{name:?} is not an environment variable name")
             }
             Error::UnknownExecution { execution } => write!(formatter, "{execution} is unknown"),
+            Error::NotReserved { execution } => {
+                write!(formatter, "{execution} is not waiting for its launch")
+            }
             Error::NotIdentified { execution } => {
                 write!(formatter, "{execution} has not confirmed its start yet")
             }

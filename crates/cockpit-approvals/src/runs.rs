@@ -2,15 +2,18 @@
 //! revision, and the run that decision authorizes.
 //!
 //! States: `asking` until the owner declines (`declined`) or approves (`approved`, the
-//! effect intent, committed with the decision). The runner moves it to `running` before it
-//! spawns anything, then to `finished` with the exit code, or to `not-run` when nothing ran.
-//! A restart finds `approved` (never spawned: `not-run`) and `running` (`outcome-unknown`:
-//! the command is never repeated blindly, report 04). An asking request nobody polls for
-//! [`EXPIRES_AFTER_SECONDS`] reads as expired and can no longer be decided.
+//! effect intent, committed with the decision). The runner moves it to `running` with the
+//! execution it reserves in `cockpit-processes` before it spawns anything, then to
+//! `finished` with the exit code, or to `not-run` when nothing ran. A restart finds
+//! `approved` (never spawned: `not-run`) and `running`, which its execution decides
+//! ([`reconcile_run`]); the command is never repeated blindly (report 04). An asking
+//! request nobody polls for [`EXPIRES_AFTER_SECONDS`] reads as expired and can no longer be
+//! decided.
 
 use std::path::{Path, PathBuf};
 
 use cockpit_authorization::{Actor, Outcome, Permission, Scope, SessionId};
+use cockpit_processes::{EndReason, ExecutionId, Phase};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 use sha2::{Digest, Sha256};
@@ -437,15 +440,20 @@ pub async fn approve_run(
     Ok((approved, run))
 }
 
-/// Marks the approved run started, before anything is spawned: a restart then knows it may
-/// have run.
-pub async fn start_run(write: &WriteTransaction<'_>, run: &Approved) -> Result<(), Error> {
+/// Marks the approved run started with the execution reserved for it, in the transaction
+/// that reserves it and before anything is spawned: a restart then knows it may have run,
+/// and finds out from the execution what became of it.
+pub async fn start_run(
+    write: &WriteTransaction<'_>,
+    run: &Approved,
+    execution: ExecutionId,
+) -> Result<(), Error> {
     fenced_update(
         write,
         run,
-        "UPDATE approvals_runs SET state = 'running'
+        "UPDATE approvals_runs SET state = 'running', execution = ?3
          WHERE id = ?1 AND revision = ?2 AND state = 'approved'",
-        (run.id.0, run.revision),
+        (run.id.0, run.revision, execution.0),
     )
     .await
 }
@@ -515,46 +523,92 @@ pub async fn record_outcome_unknown(
     .await
 }
 
-/// Startup: runs a previous daemon left approved never started; runs it left running may
-/// have done anything. Neither is started again.
-pub async fn reconcile_runs(
-    write: &WriteTransaction<'_>,
-    now: i64,
-) -> Result<Vec<(RunId, RunState)>, Error> {
-    let mut rows = write
+/// A run a previous daemon left approved or running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interrupted {
+    pub run: Approved,
+    /// [`RunState::Approved`] or [`RunState::Running`].
+    pub state: RunState,
+    /// The execution the run reserved when it was marked running; `None` for an approved
+    /// run, and for a running one recorded before runs had executions.
+    pub execution: Option<ExecutionId>,
+}
+
+/// The runs a previous daemon left approved or running, oldest first.
+pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted>, Error> {
+    let mut rows = connection
         .query(
-            "SELECT id, state FROM approvals_runs WHERE state IN ('approved', 'running')
-             ORDER BY id",
+            "SELECT id, revision, command, cwd, state, execution FROM approvals_runs
+             WHERE state IN ('approved', 'running') ORDER BY id",
             (),
         )
         .await?;
     let mut interrupted = Vec::new();
     while let Some(row) = rows.next().await? {
-        let state = row.get::<String>(1)?;
-        interrupted.push((RunId(row.get(0)?), state == "running"));
+        let state: String = row.get(4)?;
+        interrupted.push(Interrupted {
+            run: Approved {
+                id: RunId(row.get(0)?),
+                revision: row.get(1)?,
+                command: row.get(2)?,
+                cwd: PathBuf::from(row.get::<String>(3)?),
+            },
+            state: if state == "running" {
+                RunState::Running
+            } else {
+                RunState::Approved
+            },
+            execution: row.get::<Option<i64>>(5)?.map(ExecutionId),
+        });
     }
-    let mut reconciled = Vec::new();
-    for (id, was_running) in interrupted {
-        let (state, note) = if was_running {
-            (
-                RunState::OutcomeUnknown,
-                "the daemon stopped while the command ran; what it did is unknown",
-            )
-        } else {
-            (
-                RunState::NotRun,
-                "the daemon stopped before the approved command started",
-            )
-        };
-        write
-            .execute(
-                "UPDATE approvals_runs SET state = ?2, note = ?3, ended_at = ?4 WHERE id = ?1",
-                (id.0, state.as_str(), note, now),
+    Ok(interrupted)
+}
+
+/// Startup, once `cockpit-processes` reconciled the executions: ends an interrupted run
+/// from what its execution was observed to do, `phase` (`None`: it has none, or it is
+/// unknown). A run is never started again: an execution that never started is `not-run`,
+/// one that ended unobserved is `outcome-unknown`, and one still running keeps the run
+/// `running` (the answer) until its end is observed.
+pub async fn reconcile_run(
+    write: &WriteTransaction<'_>,
+    interrupted: &Interrupted,
+    phase: Option<&Phase>,
+    now: i64,
+) -> Result<RunState, Error> {
+    let run = &interrupted.run;
+    if interrupted.state == RunState::Approved {
+        record_not_run(
+            write,
+            run,
+            "the daemon stopped before the approved command started",
+            now,
+        )
+        .await?;
+        return Ok(RunState::NotRun);
+    }
+    let note = match phase {
+        Some(Phase::Launching | Phase::Running) => return Ok(RunState::Running),
+        Some(Phase::Ended(EndReason::NeverStarted)) => {
+            record_not_run(
+                write,
+                run,
+                "the daemon stopped before the command started",
+                now,
             )
             .await?;
-        reconciled.push((id, state));
-    }
-    Ok(reconciled)
+            return Ok(RunState::NotRun);
+        }
+        Some(Phase::Ended(EndReason::HostRestarted)) => {
+            "the host restarted while the command ran; what it did is unknown"
+        }
+        Some(Phase::Ended(EndReason::Exited | EndReason::Terminated)) => {
+            "the command ended while the daemon was down; its exit code and output were not \
+             observed"
+        }
+        None => "the daemon stopped while the command ran; what it did is unknown",
+    };
+    record_outcome_unknown(write, run, note, now).await?;
+    Ok(RunState::OutcomeUnknown)
 }
 
 async fn fenced_update(

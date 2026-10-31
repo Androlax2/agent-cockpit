@@ -77,6 +77,7 @@ pub fn shell(home: &Home, script: &str) -> LaunchSpec {
             OsString::from("PATH"),
             OsString::from("/usr/local/bin:/usr/bin:/bin"),
         )],
+        terminal: None,
     }
 }
 

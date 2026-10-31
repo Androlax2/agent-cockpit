@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
-pub use approvals::{RUN_LEADER_FLAG, runner};
+pub use approvals::{RUN_LEADER_FLAG, run_settings};
 pub use error::StartError;
 pub use instance::{Instance, Options};
 pub use lanes::LaneLimits;
@@ -46,6 +46,8 @@ pub struct Wiring {
     pub sessions: cockpit_sessions::Settings,
     /// How often the sessions' periodic pass (exits, idle sleep, expiry) runs.
     pub session_tick: Duration,
+    /// How approved commands run ([`run_settings`]).
+    pub run_settings: cockpit_approvals::RunSettings,
 }
 
 /// The capabilities a started daemon serves, for the [`Handler`] its caller builds.
@@ -54,6 +56,7 @@ pub struct Capabilities {
     pub database: Arc<cockpit_turso::Database>,
     pub git: cockpit_projects::Git,
     pub sessions: Arc<cockpit_sessions::Sessions>,
+    pub runner: cockpit_approvals::Runner,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -77,6 +80,9 @@ impl Instance {
     /// the owner, and the agent socket the sandboxes reach, whose peers are only ever agents
     /// (report 17). Each has its own connection limit, so agents cannot take the owner's
     /// connections; agent requests share the bulk lane with the owner's bulk work.
+    ///
+    /// Approved commands run with `wiring.run_settings` through the runner `routes`
+    /// receives, over the daemon's one supervisor of executions.
     pub async fn start(
         self,
         wiring: Wiring,
@@ -96,7 +102,8 @@ impl Instance {
             containment = ?processes.launch_containment(),
             "new executions use this containment"
         );
-        reconcile(&database, &processes).await?;
+        let runner = cockpit_approvals::Runner::new(wiring.run_settings, processes.clone());
+        reconcile(&database, &processes, &runner).await?;
         // A missing or too old tmux leaves the daemon up with sessions refused (report 09);
         // any other failure to open the server is the daemon's own and stops the start.
         let tmux = match cockpit_tmux::Server::open(wiring.tmux) {
@@ -135,6 +142,7 @@ impl Instance {
                 database: Arc::clone(&database),
                 git: wiring.git,
                 sessions: Arc::clone(&sessions),
+                runner,
             }),
         });
         let ticking = tokio::spawn(supervisor::supervise("sessions-tick", move || {
@@ -182,8 +190,9 @@ fn accept(
 /// reservations or execution identities reconciles them against the real processes here,
 /// before the socket exists. Processes is the first, then approvals; sessions restore after.
 async fn reconcile(
-    database: &cockpit_turso::Database,
+    database: &Arc<cockpit_turso::Database>,
     processes: &cockpit_processes::Supervisor,
+    runner: &cockpit_approvals::Runner,
 ) -> Result<(), StartError> {
     let reconciled = processes.reconcile(database).await?;
     for outcome in &reconciled {
@@ -206,24 +215,9 @@ async fn reconcile(
         }
     }
     tracing::info!(executions = reconciled.len(), "reconciled durable state");
-    reconcile_runs(database).await
-}
-
-/// Approved runs the daemon stopped before or during: neither is repeated (#34).
-async fn reconcile_runs(database: &cockpit_turso::Database) -> Result<(), StartError> {
-    let write = database.write().await?;
-    let ended = cockpit_approvals::reconcile_runs(&write, approvals::now())
+    approvals::reconcile_runs(database, runner)
         .await
-        .map_err(StartError::Approvals)?;
-    write.commit().await?;
-    for (request, state) in ended {
-        tracing::warn!(
-            request = request.0,
-            state = state.as_str(),
-            "an approved run did not finish before the restart"
-        );
-    }
-    Ok(())
+        .map_err(StartError::Approvals)
 }
 
 impl Daemon {

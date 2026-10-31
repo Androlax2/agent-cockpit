@@ -27,12 +27,16 @@ request here, so nothing is re-read from the sandbox.
    the revision appearing (ask or edit) is refused `TooSoon` (#156, #166). Asking requests expire
    `EXPIRES_AFTER_SECONDS` after the agent last asked about them (`run_status`); a poll
    moves the expiry at most once a minute, so the others write nothing.
-4. `Runner::run` runs the approved revision in a pseudo-terminal through `run_leader`
-   (a session leader, so prompts and `sudo` work), Git hooks off and program-running Git
-   settings reset, and returns the end of the output without terminal controls and with
-   secrets redacted (`present`). `start_run` and `finish_run` are fenced on the revision.
-5. `reconcile_runs` at startup: an approved run never started is `not-run`, a running one
-   `outcome-unknown`. Neither is repeated.
+4. `Runner::run` reserves a `cockpit-processes` execution and marks the run running with it
+   (`start_run`) in one transaction, then launches the approved revision as a terminal
+   execution (#163): its own session, so prompts and `sudo` work, in a systemd scope or
+   process group that terminates whole. Git hooks are off and program-running Git settings
+   reset; it returns the end of the output without terminal controls and with secrets
+   redacted (`present`). `start_run` and `finish_run` are fenced on the revision.
+5. `Runner::reconcile` at startup, after the executions were reconciled: an approved run
+   never started is `not-run`; a running one follows its execution (`reconcile_run`): never
+   started is `not-run`, ended is `outcome-unknown`, still running stays `running` until
+   `Runner::wait_until_ended` sees its end (`ended_after_restart`). None is repeated.
 
 `queue_order` puts what the owner is asked in order: a running command waiting for input
 first, then asking requests oldest first.
@@ -46,8 +50,9 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 
 ## Dependency edges
 
-- Depends on: `cockpit-turso` (transactions, migrations) and `cockpit-authorization`
-  (every ask is evaluated before it is filed).
+- Depends on: `cockpit-turso` (transactions, migrations), `cockpit-authorization` (every
+  ask is evaluated before it is filed) and `cockpit-processes` (each approved run is one of
+  its executions, #163).
 - Never on `cockpit-protocol`, a client, `cockpit-agent-channel` or `cockpit-projects`:
   the daemon identifies the sender, finds the project and converts to wire types
   (`cockpit-workspace-rules/tests/crate_graph.rs`).
@@ -58,7 +63,7 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 - `tests/display.rs`, `tests/redaction.rs`: the display and redaction rules.
 - `tests/hints.rs`: the `timeout` hint and the changed build files a command runs.
 - `tests/runs.rs`: the run state machine on a real state database, report 04's
-  stale-approval walkthrough included.
+  stale-approval walkthrough and the restart decisions from each execution phase included.
 - `tests/guides.rs`: the guide format and step answers.
 - Mutations return the request as it reads after them, without reading it again; the tests
   compare the returned value with a fresh read.

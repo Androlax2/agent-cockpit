@@ -72,17 +72,13 @@ pub struct Routes {
 }
 
 impl Routes {
-    pub fn new(
-        capabilities: Capabilities,
-        environment: cockpit_config::Environment,
-        runner: cockpit_approvals::Runner,
-    ) -> Routes {
+    pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         Routes {
             database: capabilities.database,
             git: capabilities.git,
             sessions: capabilities.sessions,
             environment,
-            runner,
+            runner: capabilities.runner,
         }
     }
 }

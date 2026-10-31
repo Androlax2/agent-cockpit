@@ -3,7 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cockpit_turso::sql::Row;
-use cockpit_turso::{Database, Migration, MigrationSet};
+use cockpit_turso::{Database, Migration, MigrationSet, WriteTransaction};
 
 use crate::model::{PROCESS_GROUP, SYSTEMD_SCOPE};
 use crate::{Containment, EndReason, Error, Execution, ExecutionId, LaunchContainment, Phase};
@@ -39,13 +39,14 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
     }],
 };
 
-/// Commits the launch intent: the reservation exists before any process does.
+/// Records the launch intent in the caller's transaction: once committed, the reservation
+/// exists before any process does. `epoch` is the database's.
 pub(crate) async fn record_intent(
-    database: &Database,
+    write: &WriteTransaction<'_>,
+    epoch: &str,
     launch_containment: LaunchContainment,
     boot_id: &str,
-) -> Result<(ExecutionId, Containment), Error> {
-    let write = database.write().await?;
+) -> Result<ExecutionId, Error> {
     // The unit name embeds the row id, so a restart finds the unit from the row alone; ids
     // are never reused because rows are never deleted.
     let next = write
@@ -54,13 +55,11 @@ pub(crate) async fn record_intent(
         .query_row(())
         .await?;
     let id = ExecutionId(next.get(0)?);
-    let (containment, containment_kind, unit) = match launch_containment {
+    let (containment_kind, unit) = match launch_containment {
         LaunchContainment::SystemdScope => {
-            let unit = crate::systemd::scope_unit(database.epoch(), id);
-            let containment = Containment::SystemdScope { unit: unit.clone() };
-            (containment, SYSTEMD_SCOPE, Some(unit))
+            (SYSTEMD_SCOPE, Some(crate::systemd::scope_unit(epoch, id)))
         }
-        LaunchContainment::ProcessGroup => (Containment::ProcessGroup, PROCESS_GROUP, None),
+        LaunchContainment::ProcessGroup => (PROCESS_GROUP, None),
     };
     write
         .execute(
@@ -69,8 +68,7 @@ pub(crate) async fn record_intent(
             (id.0, containment_kind, unit, boot_id, now_ms()),
         )
         .await?;
-    write.commit().await?;
-    Ok((id, containment))
+    Ok(id)
 }
 
 pub(crate) async fn record_process_group(

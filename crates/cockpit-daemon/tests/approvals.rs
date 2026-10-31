@@ -18,8 +18,8 @@ use common::{GENEROUS, TestHome, refused};
 
 /// Fields drop in order: the daemon stops before its home is deleted.
 struct Asking {
-    _daemon: common::RunningDaemon,
-    _home: TestHome,
+    daemon: Option<common::RunningDaemon>,
+    home: TestHome,
     token: LaunchToken,
     agent: Connection,
     owner: Connection,
@@ -40,8 +40,8 @@ async fn started(granted: bool) -> Asking {
     let agent = home.connect_agent().await;
     let owner = home.connect().await;
     Asking {
-        _daemon: daemon,
-        _home: home,
+        daemon: Some(daemon),
+        home,
         token,
         agent,
         owner,
@@ -50,6 +50,26 @@ async fn started(granted: bool) -> Asking {
 }
 
 impl Asking {
+    /// Kills the daemon as a crash would, starts another on the same home and reconnects.
+    async fn restart(&mut self) {
+        self.daemon.take().expect("a daemon runs").kill();
+        self.daemon = Some(self.home.start());
+        self.agent = self.home.connect_agent().await;
+        self.owner = self.home.connect().await;
+    }
+
+    /// Asks `command`, approves it as asked and waits until it created `marker`.
+    async fn running(&self, command: &str, marker: &std::path::Path) -> RunRequestView {
+        let request = self.asked(command).await;
+        run(self.approve(&request).await);
+        let deadline = Instant::now() + GENEROUS;
+        while !marker.exists() {
+            assert!(Instant::now() < deadline, "{command:?} never started");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        request
+    }
+
     fn cwd_text(&self) -> String {
         std::fs::canonicalize(self.cwd.path())
             .unwrap()
@@ -691,8 +711,8 @@ async fn an_agent_waiting_on_an_approval_keeps_working_on_the_channel() {
     let asking = Asking {
         agent: home.connect_agent().await,
         owner: home.connect().await,
-        _daemon: daemon,
-        _home: home,
+        daemon: Some(daemon),
+        home,
         token,
         cwd: tempfile::tempdir().unwrap(),
     };
@@ -738,4 +758,59 @@ async fn an_approval_at_once_after_the_ask_is_refused_with_when_to_approve() {
     assert_eq!(asking.status(request.id).await.state, RunStateView::Asking);
     run(asking.approve(&request).await);
     assert_eq!(asking.ended(request.id).await.state, RunStateView::Finished);
+}
+
+/// #163: the run is an execution, so a restart reports what became of it. Killing the daemon
+/// closes the run's terminal, which hangs the command up.
+#[tokio::test]
+async fn a_run_a_daemon_crash_hung_up_is_reported_ended_and_never_repeated() {
+    let mut asking = started(true).await;
+    let marker = asking.cwd.path().join("started");
+    let request = asking
+        .running(
+            &format!("echo once >> {}; exec sleep 300", marker.display()),
+            &marker,
+        )
+        .await;
+
+    asking.restart().await;
+
+    let ended = asking.ended(request.id).await;
+    assert_eq!(ended.state, RunStateView::OutcomeUnknown, "{ended:?}");
+    assert!(
+        ended
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not observed"),
+        "{ended:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "once\n");
+}
+
+#[tokio::test]
+async fn a_run_that_outlives_a_daemon_restart_is_reattached_until_it_ends() {
+    let mut asking = started(true).await;
+    let marker = asking.cwd.path().join("started");
+    let request = asking
+        .running(
+            &format!("trap '' HUP; touch {}; sleep 5", marker.display()),
+            &marker,
+        )
+        .await;
+
+    asking.restart().await;
+
+    let reattached = asking.status(request.id).await;
+    assert_eq!(reattached.state, RunStateView::Running, "{reattached:?}");
+    let ended = asking.ended(request.id).await;
+    assert_eq!(ended.state, RunStateView::OutcomeUnknown, "{ended:?}");
+    assert!(
+        ended
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("restarted while the command ran; it ended later (exited)"),
+        "{ended:?}"
+    );
 }

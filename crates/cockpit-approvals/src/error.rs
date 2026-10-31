@@ -152,6 +152,10 @@ pub enum Error {
     },
     Authorization(cockpit_authorization::Error),
     Database(cockpit_turso::sql::Error),
+    /// A transaction could not start or commit.
+    Transaction(cockpit_turso::Error),
+    /// `cockpit-processes` could not read or observe a run's execution.
+    Processes(cockpit_processes::Error),
 }
 
 impl fmt::Display for Error {
@@ -161,6 +165,8 @@ impl fmt::Display for Error {
             Error::InvalidStoredRow { table, reason } => write!(formatter, "{table}: {reason}"),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::Database(error) => write!(formatter, "database: {error}"),
+            Error::Transaction(error) => write!(formatter, "database: {error}"),
+            Error::Processes(error) => write!(formatter, "processes: {error}"),
         }
     }
 }
@@ -170,7 +176,9 @@ impl std::error::Error for Error {
         match self {
             Error::Authorization(source) => Some(source),
             Error::Database(source) => Some(source),
-            _ => None,
+            Error::Transaction(source) => Some(source),
+            Error::Processes(source) => Some(source),
+            Error::Refused(_) | Error::InvalidStoredRow { .. } => None,
         }
     }
 }
@@ -190,6 +198,18 @@ impl From<cockpit_authorization::Error> for Error {
 impl From<cockpit_turso::sql::Error> for Error {
     fn from(source: cockpit_turso::sql::Error) -> Self {
         Error::Database(source)
+    }
+}
+
+impl From<cockpit_turso::Error> for Error {
+    fn from(source: cockpit_turso::Error) -> Self {
+        Error::Transaction(source)
+    }
+}
+
+impl From<cockpit_processes::Error> for Error {
+    fn from(source: cockpit_processes::Error) -> Self {
+        Error::Processes(source)
     }
 }
 

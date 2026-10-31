@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::fmt;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -124,12 +125,30 @@ impl Execution {
 
 /// What to run. The environment is exactly `environment`: nothing of the daemon's own
 /// environment leaks into an execution unless a caller passes it on purpose.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LaunchSpec {
     pub program: PathBuf,
     pub arguments: Vec<OsString>,
     pub working_dir: PathBuf,
     pub environment: Vec<(OsString, OsString)>,
+    /// Runs the program in this terminal instead of with its output in files.
+    pub terminal: Option<Terminal>,
+}
+
+/// A terminal an execution runs in, as its controlling terminal, so prompts such as `sudo`'s
+/// work. The execution is the terminal's session: `leader` makes itself the session leader,
+/// which also leads the execution's process group, and takes the terminal before anything
+/// else of the execution runs.
+#[derive(Debug)]
+pub struct Terminal {
+    /// The terminal side of a pseudo-terminal: the execution's standard input, output and
+    /// error. Its other side stays with the caller, which reads the output from it.
+    pub device: OwnedFd,
+    /// `<leader> <leader_arguments…> <program> <arguments…>` must make itself a session
+    /// leader, take its standard input as controlling terminal and exec the rest of its
+    /// command line in place, as [`crate::run_session_leader`] does.
+    pub leader: PathBuf,
+    pub leader_arguments: Vec<OsString>,
 }
 
 /// A launch a host runs itself (see `Supervisor::prepare_hosted`): its reservation is
