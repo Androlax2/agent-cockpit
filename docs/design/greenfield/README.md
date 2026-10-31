@@ -34,7 +34,7 @@ Each file is under 120 lines, except the coverage map (16), which is a checklist
 | 15 | [validation-open-questions](15-validation-open-questions.md) | What is unproven and the acceptance scenarios | validate |
 | 16 | [feature-coverage-map](16-feature-coverage-map.md) | Every current feature → owner, keep/change/polish/drop/plugin | proposed |
 | 17 | [agent-channel-and-approvals](17-agent-channel-and-approvals.md) | One authenticated agent channel, `ask run`/`ask guide`, host installs | proposed |
-| 18 | [usage-quota-and-accounts](18-usage-quota-and-accounts.md) | Plan windows, cost, time, digest; account routing simplified | proposed |
+| 18 | [usage-quota-and-accounts](18-usage-quota-and-accounts.md) | Plan windows, cost, time, digest; account routing simplified | decided |
 | 19 | [desktop-and-remote-clients](19-desktop-and-remote-clients.md) | `cockpit-notify`, desktop extras out of the daemon, phone client | proposed |
 | 20 | [refactoring-plan](20-refactoring-plan.md) | Milestones M0–M7, parity gates, cutover | proposed |
 
@@ -53,6 +53,7 @@ Each file is under 120 lines, except the coverage map (16), which is a checklist
 11. The daemon has no desktop dependencies; notifications, bars and window tricks are clients.
 12. One authenticated agent channel replaces the report socket, team socket and file queues.
 13. Build the new workspace beside `apps/` and cut over once at milestone M5 (report 20).
+14. Accounts switch only at launch and at a quota-stop restart; no mid-turn routing gates.
 
 ## Relation to earlier documents
 

@@ -1,6 +1,6 @@
 # 18. Usage, quota and accounts
 
-Status: proposed; account routing simplification is a Theo decision (report 15)
+Status: decided (account routing, 2026-10-31); the rest proposed
 
 ## Decision
 
@@ -21,7 +21,7 @@ facts; `cockpit-usage` stores and aggregates; clients render.
 - Daily digest: yesterday/today, usage, waiting sessions, PRs, Chief section; first open of the
   day in the TUI, also on the phone.
 
-## Accounts and routing (change)
+## Accounts and routing (decided)
 
 Today's subscription fallback routes sessions between accounts with gates inside hooks,
 generation tokens and native evidence collection. Target:
