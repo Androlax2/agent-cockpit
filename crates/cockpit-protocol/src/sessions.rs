@@ -1,5 +1,7 @@
 //! Wire views of agent sessions (#31). Paths travel as UTF-8 text.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::ProtocolError;
@@ -48,6 +50,24 @@ pub enum SessionStateView {
     /// A state this version does not know.
     #[serde(other)]
     Unknown,
+}
+
+/// The wire name, `stopping:<target>` while stopping; what the frontends print.
+impl fmt::Display for SessionStateView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let word = match self {
+            SessionStateView::Launching => "launching",
+            SessionStateView::Running => "running",
+            SessionStateView::Stopping { to } => {
+                return write!(formatter, "stopping:{}", to.as_str());
+            }
+            SessionStateView::Asleep => "asleep",
+            SessionStateView::Ended => "ended",
+            SessionStateView::Failed => "failed",
+            SessionStateView::Unknown => "unknown",
+        };
+        formatter.write_str(word)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,4 +134,13 @@ impl LaunchKindView {
 pub struct SessionFailure {
     pub session: String,
     pub error: ProtocolError,
+}
+
+/// A provider a session may be started with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderView {
+    /// As `session-new` takes it in `agent`.
+    pub name: String,
+    /// It can reopen a conversation it started: restart, sleep and resume work.
+    pub resume: bool,
 }

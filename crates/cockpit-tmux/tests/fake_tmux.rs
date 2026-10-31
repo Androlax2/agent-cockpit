@@ -282,3 +282,25 @@ fn an_exited_pane_has_no_pid_even_where_tmux_still_prints_the_old_one() {
     assert_eq!(panes[0].pid, None);
     assert_eq!(panes[0].state, PaneState::Exited { status: Some(7) });
 }
+
+#[test]
+fn the_attach_command_names_the_private_server_and_the_exact_session() {
+    let fake = FakeTmux::printing_version("tmux 3.4");
+    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+
+    let attach = server.attach_command(&SessionName::new("cockpit").unwrap());
+
+    let tmux = fake.directory.path().join("tmux");
+    assert_eq!(
+        attach,
+        [
+            tmux.as_os_str(),
+            "-L".as_ref(),
+            "cockpit".as_ref(),
+            "attach-session".as_ref(),
+            "-t".as_ref(),
+            "=cockpit:".as_ref(),
+        ]
+    );
+    assert!(fake.calls().is_empty(), "it runs nothing");
+}

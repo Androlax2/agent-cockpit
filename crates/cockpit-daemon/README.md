@@ -152,3 +152,6 @@ not share code.
 - `tests/sessions.rs`: issue #31's lifecycle through the socket with a fake provider: start
   in place and in a clone, restart and restart-all, sleep and wake, idle sleep, expiry, an
   exited agent and resume, end, reboot restore and its failure, design links.
+- `tests/manager.rs`: issue #35's frontends verbs: `provider-list`, `manager-open` (the
+  manager tmux session with its column and viewer, opened once), `session-show` (waking an
+  asleep session into the viewer, refused before the manager is open), owner only.

@@ -12,7 +12,9 @@ use tokio::sync::mpsc;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
-use crate::{Capabilities, agent, approvals, feed, projects, resources, sessions, tasks};
+use crate::{
+    Capabilities, Manager, agent, approvals, feed, manager, projects, resources, sessions, tasks,
+};
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
 /// so bulk work can fill its lane without taking capacity from control (report 03).
@@ -75,6 +77,8 @@ pub struct Routes {
     /// The host Git that project commands run, with the safe settings applied.
     git: cockpit_projects::Git,
     sessions: Arc<cockpit_sessions::Sessions>,
+    manager: Arc<Manager>,
+    providers: Vec<cockpit_protocol::ProviderView>,
     /// Read for `projects.trusted` on each answer, so a changed owner config applies at once.
     environment: cockpit_config::Environment,
     /// Runs what the owner approved, and holds the runs in progress.
@@ -94,6 +98,8 @@ impl Routes {
             database: capabilities.database,
             git: capabilities.git,
             sessions: capabilities.sessions,
+            manager: capabilities.manager,
+            providers: capabilities.providers,
             environment,
             runner: capabilities.runner,
         }
@@ -295,6 +301,25 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => resources::route(command, self.resources.clone()),
             },
+            (command @ (Command::ManagerOpen { .. } | Command::SessionShow { .. }), peer) => {
+                match peer {
+                    // The manager and its viewer are the owner's screen.
+                    Peer::Agent { .. } => Route::Answer(owner_only()),
+                    Peer::Owner => manager::route(
+                        command,
+                        Arc::clone(&self.sessions),
+                        Arc::clone(&self.manager),
+                    ),
+                }
+            }
+            (Command::ProviderList, Peer::Owner) => {
+                let providers = self.providers.clone();
+                Route::Run {
+                    class: WorkClass::Control,
+                    job: Box::pin(async move { Outcome::Ok(Reply::Providers { providers }) }),
+                }
+            }
+            (Command::ProviderList, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(
                 ErrorCode::UnknownCommand,

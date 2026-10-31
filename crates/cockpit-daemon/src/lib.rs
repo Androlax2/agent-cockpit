@@ -6,6 +6,7 @@ mod error;
 mod feed;
 mod instance;
 mod lanes;
+mod manager;
 mod projects;
 mod resources;
 mod routes;
@@ -24,6 +25,7 @@ pub use approvals::{RUN_LEADER_FLAG, run_settings};
 pub use error::StartError;
 pub use instance::{Instance, Options};
 pub use lanes::LaneLimits;
+pub use manager::Manager;
 pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusal};
 pub use server::Limits;
 
@@ -70,6 +72,10 @@ pub struct Capabilities {
     pub admission: Arc<cockpit_resource_admission::Backend>,
     /// Stops the execution of a reservation (stop execution, report 10).
     pub processes: cockpit_processes::Supervisor,
+    /// The manager tmux session's handle on the same private server.
+    pub manager: Arc<Manager>,
+    /// The providers sessions may launch, as `provider-list` answers them.
+    pub providers: Vec<cockpit_protocol::ProviderView>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -135,6 +141,17 @@ impl Instance {
         );
         let stopper = processes.clone();
         let sweeper = processes.clone();
+        let manager = Arc::new(Manager::open(wiring.tmux.clone()));
+        let providers = wiring
+            .providers
+            .iter()
+            .map(|provider| cockpit_protocol::ProviderView {
+                name: provider.name().as_str().to_owned(),
+                resume: provider
+                    .capabilities()
+                    .supports(cockpit_provider_api::Capability::Resume),
+            })
+            .collect();
         // A missing or too old tmux leaves the daemon up with sessions refused (report 09);
         // any other failure to open the server is the daemon's own and stops the start.
         let tmux = match cockpit_tmux::Server::open(wiring.tmux) {
@@ -176,6 +193,8 @@ impl Instance {
                 runner,
                 admission,
                 processes: stopper,
+                manager,
+                providers,
             }),
         });
         let ticking = tokio::spawn(supervisor::supervise("sessions-tick", move || {

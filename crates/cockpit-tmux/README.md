@@ -33,7 +33,8 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   screen in its history, until its owner closes it (`remain-on-exit`); this observation
   proves nothing about the work.
 - **Viewer and approvals.** [`Server::show_in_viewer`] respawns the viewer pane as a nested
-  client attached to an agent session.
+  client attached to an agent session; [`Server::attach_command`] is the same command, for
+  a frontend that attaches a terminal to the manager session.
   [`Server::split_approval_pane`] splits a focused pane under the viewer.
 - **Observation.** [`Server::observe`] attaches a `read-only,ignore-size` control-mode client
   (`-C`; `-CC` needs a terminal) and returns once tmux has attached it. Its reader thread

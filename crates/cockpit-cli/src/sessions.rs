@@ -1,14 +1,22 @@
-//! `cockpit session`: start, list and change agent sessions, served by the daemon.
+//! `cockpit session` and `cockpit provider`: start, list, show and change agent sessions, and
+//! the providers they start with, served by the daemon.
 
-use std::borrow::Cow;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cockpit_protocol::{Command, Reply, SessionFailure, SessionStateView, SessionView};
+use cockpit_protocol::{Command, Reply, SessionFailure, SessionView};
 
 use crate::daemon::{
     BULK_DEADLINE, CONTROL_DEADLINE, absolute_dir, request, unexpected, utf8_words,
 };
+
+/// `provider list`: the providers `session new --agent` takes.
+pub fn parse_provider(arguments: &[OsString]) -> Result<Command, String> {
+    match utf8_words(arguments)?.as_slice() {
+        ["list"] => Ok(Command::ProviderList),
+        _ => Err("unknown provider arguments".to_owned()),
+    }
+}
 
 /// A `session` verb's command, or the usage problem that stops it.
 pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
@@ -32,6 +40,9 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
             session: session(id),
         },
         ["end", id] => Command::SessionEnd {
+            session: session(id),
+        },
+        ["show", id] => Command::SessionShow {
             session: session(id),
         },
         ["link", id, url] => Command::SessionLink {
@@ -73,7 +84,7 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
 /// a deferred session prints with its pending restart.
 pub fn run(command: Command) -> ExitCode {
     let deadline = match command {
-        Command::SessionList { .. } => CONTROL_DEADLINE,
+        Command::SessionList { .. } | Command::ProviderList => CONTROL_DEADLINE,
         _ => BULK_DEADLINE,
     };
     let reply = match request(command, deadline) {
@@ -84,6 +95,14 @@ pub fn run(command: Command) -> ExitCode {
         Reply::Session { session } => print!("{}", session_line(session)),
         Reply::Sessions { sessions } => sessions.iter().for_each(|session| {
             print!("{}", session_line(session));
+        }),
+        Reply::Providers { providers } => providers.iter().for_each(|provider| {
+            let resume = if provider.resume {
+                "resume"
+            } else {
+                "no-resume"
+            };
+            println!("{}\t{resume}", provider.name);
         }),
         Reply::RestartedAll {
             restarted,
@@ -122,26 +141,12 @@ fn session_line(session: &SessionView) -> String {
     format!(
         "{}\t{}\t{}\t{launch}\t{}\t{}\t{}\t{restart}\n",
         session.id,
-        state_word(&session.state),
+        session.state,
         session.agent,
         session.conversation.as_deref().unwrap_or("-"),
         session.working_dir,
         session.reason.as_deref().unwrap_or("-"),
     )
-}
-
-fn state_word(state: &SessionStateView) -> Cow<'static, str> {
-    Cow::Borrowed(match state {
-        SessionStateView::Launching => "launching",
-        SessionStateView::Running => "running",
-        SessionStateView::Stopping { to } => {
-            return Cow::Owned(format!("stopping:{}", to.as_str()));
-        }
-        SessionStateView::Asleep => "asleep",
-        SessionStateView::Ended => "ended",
-        SessionStateView::Failed => "failed",
-        SessionStateView::Unknown => "unknown",
-    })
 }
 
 fn failure_line(failure: &SessionFailure) -> String {

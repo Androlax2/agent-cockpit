@@ -301,12 +301,18 @@ impl Server {
     /// this server attached to `session`. The client names the socket itself; like every
     /// pane command it runs without `TMUX`, which is how tmux allows the nesting.
     pub fn show_in_viewer(&self, viewer: &PaneId, session: &SessionName) -> Result<(), Error> {
+        let mut arguments = words(&["respawn-pane", "-k", "-t", viewer.as_str(), "--"]);
+        arguments.extend(pane_command(&self.attach_command(session))?);
+        self.run(&arguments).map(drop)
+    }
+
+    /// The words of a tmux client of this server attached to `session`, for a terminal to
+    /// run: clients attach without linking this crate (report 05).
+    pub fn attach_command(&self, session: &SessionName) -> Vec<OsString> {
         let mut client = vec![self.spec.tmux.clone().into_os_string()];
         client.extend(self.spec.socket.arguments().map(OsString::from));
         client.extend(words(&["attach-session", "-t", &session.target()]));
-        let mut arguments = words(&["respawn-pane", "-k", "-t", viewer.as_str(), "--"]);
-        arguments.extend(pane_command(&client)?);
-        self.run(&arguments).map(drop)
+        client
     }
 
     /// A pane's visible screen plus up to `history_lines` lines above it, with its colors
