@@ -18,7 +18,7 @@ grants: owner settings are inputs to `cockpit-authorization`, which decides.
 | Project config | `<project>/.cockpit/config.toml` | describing settings only (`workflow.preset`) |
 | Overrides | `--set key=value` (TOML value) | `projects.trusted`, `workflow.preset` |
 
-A project file that sets an owner setting (`projects`, `start_files`) fails with its file and
+A project file that sets an owner setting (`projects`, `start_files`, `tasks`) fails with its file and
 line: repository configuration describes requirements, owner settings grant. Unknown keys,
 relative paths and unknown providers fail the same way. State and cache go under
 `$XDG_STATE_HOME/cockpit` and `$XDG_CACHE_HOME/cockpit`; the runtime directory is
@@ -30,6 +30,16 @@ cockpit config show [--project DIR] [--set KEY=VALUE]...
 
 prints every value as `key = value  # source`. It reads files only, so it works without the
 daemon, tmux or a provider.
+
+## Tasks
+
+Owner settings for what sessions file (`cockpit-tasks`, #38):
+
+```toml
+[tasks]
+blocker_project = "dotfiles"   # where blocker reports go; unset refuses them
+cross_project_open_max = 3     # open items one project may file in another's list
+```
 
 ## Start files
 

@@ -8,6 +8,7 @@ mod ask;
 mod daemon;
 mod projects;
 mod sessions;
+mod todo;
 mod version;
 
 use std::ffi::OsString;
@@ -37,7 +38,18 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit session restart SESSION|--all
        cockpit session sleep|wake|resume|end SESSION
        cockpit session link SESSION URL
-       cockpit version [--all]";
+       cockpit version [--all]
+       cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...
+       cockpit todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]
+       cockpit todo blocked TITLE --why TEXT [--notes TEXT]
+       cockpit todo list [--project P] [--all] | show ID | delete ID
+       cockpit todo start ID | done ID [--summary TEXT] | reopen ID
+       cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]
+       cockpit todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID
+       cockpit todo after ID ON... | unwait ID ON...
+       cockpit todo image add ID FILE | image get ID NUMBER FILE
+       cockpit todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]
+       cockpit todo drafts | draft discard (ID | --new PROJECT)";
 
 fn main() -> ExitCode {
     // OsString: a project path need not be UTF-8.
@@ -76,6 +88,10 @@ fn main() -> ExitCode {
         [Some("version"), ..] => {
             version::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }
+        [Some("todo"), ..] => match todo::parse(&arguments[1..]) {
+            Ok(request) => todo::run(request),
+            Err(problem) => usage_error(Some(problem)),
+        },
         _ => usage_error(None),
     }
 }

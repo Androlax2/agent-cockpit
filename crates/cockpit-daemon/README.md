@@ -18,7 +18,8 @@ not share code.
   owner), `cockpit-messaging` (whose migrations it runs, whose deliveries it reconciles and
   whose change feed `Routes` streams to the owner), `cockpit-approvals` (run requests and guides, and the runner of approved
   commands), `cockpit-sessions` (whose verbs `Routes` serves to the owner, and whose restore
-  and periodic pass it runs), `cockpit-tmux` (the private server sessions run in) and
+  and periodic pass it runs), `cockpit-tasks` (whose verbs `Routes` serves to the owner and
+  to agents), `cockpit-tmux` (the private server sessions run in) and
   `cockpit-provider-api` (the providers it is wired with; the adapters arrive with #33);
   `tokio`, `serde`, `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
@@ -95,6 +96,18 @@ not share code.
   `resnapshot-required` when that cursor cannot resume; nothing is skipped.
 - A supervised worker keeps the newest 100,000 change rows, hourly.
 
+## Tasks (#38)
+
+- `cockpit todo` reaches `cockpit-tasks` on both sockets. An agent may file (`task-add`,
+  `task-propose`, `task-report-blocker`), read and work items (`task-list`, `task-show`,
+  `task-start`, `task-done`, `task-delete`); the rest is the owner's and refused on the agent
+  socket. Proposals and blocker reports are refused on the owner's socket: the owner adds.
+- The agent is identified as for its reports; its project is the registered checkout
+  holding its working directory, as for approvals. Every project a request names (the
+  target, the blocker project, a new item's draft) must be registered.
+- Filings read the owner's `[tasks]` settings from the owner config at request time; a
+  config that does not load refuses the filing instead of applying defaults.
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -129,6 +142,9 @@ not share code.
   resume after a restart with tombstones, `resnapshot-required` for another epoch and for
   discarded history, one feed per connection, none on the agent socket, batches with one
   answer place, an oversized snapshot closing the connection.
+- `tests/tasks.rs`: issue #38's agent side on the binary's sockets: a proposal approved,
+  the cross-project cap, blocker reports and their configuration, a summary read by the item
+  waiting on it, and socket roles.
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket

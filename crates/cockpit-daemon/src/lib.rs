@@ -11,6 +11,7 @@ mod routes;
 mod server;
 mod sessions;
 mod supervisor;
+mod tasks;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,7 +27,7 @@ pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusa
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 7] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 8] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
@@ -34,6 +35,7 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 7] = [
     cockpit_approvals::MIGRATIONS,
     cockpit_sessions::MIGRATIONS,
     cockpit_messaging::MIGRATIONS,
+    cockpit_tasks::MIGRATIONS,
 ];
 
 /// What the daemon wires its capabilities with: the host's tools in the binary, fixtures in

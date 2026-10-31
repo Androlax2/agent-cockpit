@@ -171,7 +171,8 @@ pub async fn projects(connection: &Connection) -> Result<Vec<Project>, Error> {
     Ok(projects)
 }
 
-pub(crate) async fn project_named(connection: &Connection, name: &str) -> Result<Project, Error> {
+/// The registered project named `name`; [`Error::UnknownProject`] when there is none.
+pub async fn project_named(connection: &Connection, name: &str) -> Result<Project, Error> {
     let mut rows = connection
         .query(
             "SELECT id, name, root FROM projects WHERE name = ?1",

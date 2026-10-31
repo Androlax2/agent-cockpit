@@ -8,6 +8,7 @@ mod handshake;
 mod projects;
 mod request;
 mod sessions;
+mod tasks;
 
 pub use agent::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, LAUNCH_TOKEN_VARIABLE, SessionReport,
@@ -34,6 +35,10 @@ pub use request::{
 };
 pub use sessions::{
     LaunchKindView, LaunchView, SessionFailure, SessionStateView, SessionView, StopTargetView,
+};
+pub use tasks::{
+    HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,
+    TaskStatusView, TaskView, TaskWaitView,
 };
 
 /// Longest frame either side may send, newline included. Frames are one JSON value per line,
