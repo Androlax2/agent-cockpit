@@ -1,11 +1,10 @@
 //! `cockpit session` and `cockpit provider`: start, list, show and change agent sessions, and
 //! the providers they start with, served by the daemon.
 
-use std::borrow::Cow;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cockpit_protocol::{Command, Reply, SessionFailure, SessionStateView, SessionView};
+use cockpit_protocol::{Command, Reply, SessionFailure, SessionView};
 
 use crate::daemon::{
     BULK_DEADLINE, CONTROL_DEADLINE, absolute_dir, request, unexpected, utf8_words,
@@ -142,26 +141,12 @@ fn session_line(session: &SessionView) -> String {
     format!(
         "{}\t{}\t{}\t{launch}\t{}\t{}\t{}\t{restart}\n",
         session.id,
-        state_word(&session.state),
+        session.state,
         session.agent,
         session.conversation.as_deref().unwrap_or("-"),
         session.working_dir,
         session.reason.as_deref().unwrap_or("-"),
     )
-}
-
-fn state_word(state: &SessionStateView) -> Cow<'static, str> {
-    Cow::Borrowed(match state {
-        SessionStateView::Launching => "launching",
-        SessionStateView::Running => "running",
-        SessionStateView::Stopping { to } => {
-            return Cow::Owned(format!("stopping:{}", to.as_str()));
-        }
-        SessionStateView::Asleep => "asleep",
-        SessionStateView::Ended => "ended",
-        SessionStateView::Failed => "failed",
-        SessionStateView::Unknown => "unknown",
-    })
 }
 
 fn failure_line(failure: &SessionFailure) -> String {

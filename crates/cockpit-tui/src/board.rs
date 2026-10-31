@@ -52,37 +52,51 @@ impl Board {
     /// Applies `batch` whole: sessions and checkouts change, other entity kinds are not
     /// shown by the basic TUI. A snapshot replaces what the feed carries.
     pub fn apply(&mut self, batch: &ChangeBatch) -> Result<(), FeedError> {
-        let mut sessions = self.sessions.clone();
-        let mut checkouts = self.checkouts.clone();
-        if batch.follows == FeedPosition::Snapshot {
-            sessions.clear();
-            checkouts.clear();
-        }
+        // Every change is decoded before any is applied: only decoding can fail.
+        let mut edits = Vec::with_capacity(batch.changes.len());
         for event in &batch.changes {
-            let entity = format!("{:?} {}", event.entity.kind, event.entity.id);
-            match (&event.entity.kind, &event.change) {
+            let refused = |reason: String| FeedError {
+                entity: format!("{:?} {}", event.entity.kind, event.entity.id),
+                reason,
+            };
+            edits.push(match (&event.entity.kind, &event.change) {
                 (EntityKind::Session, Change::Upsert { state }) => {
-                    sessions.insert(event.entity.id.clone(), decode(state, &entity)?);
+                    Edit::PutSession(decode(state).map_err(refused)?)
                 }
                 (EntityKind::Session, Change::Tombstone) => {
-                    sessions.remove(&event.entity.id);
+                    Edit::RemoveSession(event.entity.id.clone())
                 }
                 (EntityKind::Checkout, Change::Upsert { state }) => {
-                    let checkout: CheckoutView = decode(state, &entity)?;
-                    checkouts.insert(checkout.id, checkout);
+                    Edit::PutCheckout(decode(state).map_err(refused)?)
                 }
-                (EntityKind::Checkout, Change::Tombstone) => {
-                    let id = event.entity.id.parse().map_err(|_| FeedError {
-                        entity: entity.clone(),
-                        reason: "a checkout id is a number".to_owned(),
-                    })?;
-                    checkouts.remove(&id);
+                (EntityKind::Checkout, Change::Tombstone) => Edit::RemoveCheckout(
+                    event
+                        .entity
+                        .id
+                        .parse()
+                        .map_err(|_| refused("a checkout id is a number".to_owned()))?,
+                ),
+                _ => continue,
+            });
+        }
+        if batch.follows == FeedPosition::Snapshot {
+            self.sessions.clear();
+            self.checkouts.clear();
+        }
+        for edit in edits {
+            match edit {
+                Edit::PutSession(session) => self.put_session(session),
+                Edit::RemoveSession(id) => {
+                    self.sessions.remove(&id);
                 }
-                _ => {}
+                Edit::PutCheckout(checkout) => {
+                    self.checkouts.insert(checkout.id, checkout);
+                }
+                Edit::RemoveCheckout(id) => {
+                    self.checkouts.remove(&id);
+                }
             }
         }
-        self.sessions = sessions;
-        self.checkouts = checkouts;
         Ok(())
     }
 
@@ -137,11 +151,10 @@ impl Board {
             if session.state == SessionStateView::Ended {
                 continue;
             }
-            let project = self
-                .checkouts
-                .get(&session.checkout)
-                .map(|checkout| checkout.project.as_str());
-            groups.entry(project).or_default().push(session);
+            groups
+                .entry(self.project_of(session))
+                .or_default()
+                .push(session);
         }
         let mut ordered: Vec<ProjectGroup<'_>> = groups
             .into_iter()
@@ -193,12 +206,16 @@ impl Board {
     }
 }
 
+/// One decoded change of a batch.
+enum Edit {
+    PutSession(SessionView),
+    RemoveSession(String),
+    PutCheckout(CheckoutView),
+    RemoveCheckout(i64),
+}
+
 fn decode<View: serde::de::DeserializeOwned>(
     state: &serde_json::Map<String, serde_json::Value>,
-    entity: &str,
-) -> Result<View, FeedError> {
-    serde_json::from_value(serde_json::Value::Object(state.clone())).map_err(|error| FeedError {
-        entity: entity.to_owned(),
-        reason: error.to_string(),
-    })
+) -> Result<View, String> {
+    View::deserialize(state).map_err(|error| error.to_string())
 }

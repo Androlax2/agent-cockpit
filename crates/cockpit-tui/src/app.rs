@@ -83,13 +83,17 @@ pub struct App {
     pub(crate) overlay: Option<Overlay>,
     pub(crate) confirm: Option<Confirm>,
     pub(crate) log: VecDeque<String>,
-    /// The last failure, shown on the status line until the next one or a success.
-    pub(crate) status: Option<String>,
-    /// The kind of the command whose failure `status` shows: its next success clears it.
-    pub(crate) status_kind: Option<String>,
-    /// The last failure's problem: the same one again (every refresh while the daemon is
-    /// down) is not logged again.
-    pub(crate) last_problem: Option<String>,
+    /// The last failure, on the status line until a success of the same kind of command
+    /// (or a session, request or guide answer). The same problem again, as every refresh
+    /// while the daemon is down, is not logged again.
+    pub(crate) failure: Option<Failure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Failure {
+    /// The failed command's wire kind.
+    pub(crate) kind: String,
+    pub(crate) problem: String,
 }
 
 impl App {
@@ -265,12 +269,7 @@ impl App {
     }
 
     fn move_selection(&mut self, step: isize) {
-        let listed: Vec<String> = self
-            .board
-            .listed_sessions()
-            .iter()
-            .map(|session| session.id.clone())
-            .collect();
+        let listed = self.board.listed_sessions();
         if listed.is_empty() {
             self.selected = None;
             return;
@@ -278,12 +277,12 @@ impl App {
         let at = self
             .selected
             .as_ref()
-            .and_then(|selected| listed.iter().position(|id| id == selected));
+            .and_then(|selected| listed.iter().position(|session| session.id == *selected));
         let next = match at {
             None => 0,
             Some(at) => at.saturating_add_signed(step).min(listed.len() - 1),
         };
-        self.selected = Some(listed[next].clone());
+        self.selected = Some(listed[next].id.clone());
     }
 
     /// The first session after the selected one, in list order and wrapping around, that
@@ -319,9 +318,12 @@ impl App {
             Ok(reply) => reply,
             Err(problem) => return self.failed(command, problem),
         };
-        self.last_problem = None;
-        if self.status_kind.as_deref() == Some(command_label(command).as_str()) {
-            self.status = None;
+        if self
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.kind == command_label(command))
+        {
+            self.failure = None;
         }
         match reply {
             Reply::Projects { projects } => self.board.set_projects(projects),
@@ -341,7 +343,11 @@ impl App {
                 let what = match command {
                     Command::SessionNew { .. } => {
                         // Only the form that sent it closes: one opened since stays.
-                        if self.form.as_ref().is_some_and(|form| form.starting) {
+                        if self
+                            .form
+                            .as_ref()
+                            .is_some_and(|form| form.submitted.as_ref() == Some(command))
+                        {
                             self.form = None;
                         }
                         self.selected = Some(session.id.clone());
@@ -354,15 +360,15 @@ impl App {
                 };
                 self.note(format!("{what} {} in {}", session.id, session.working_dir));
                 self.board.put_session(*session);
-                self.status = None;
+                self.failure = None;
             }
             Reply::RunRequest { request } => {
                 self.note(format!("request {} is {:?}", request.id, request.state));
-                self.status = None;
+                self.failure = None;
             }
             Reply::Guide { guide } => {
                 self.note(format!("guide {} is {:?}", guide.id, guide.state));
-                self.status = None;
+                self.failure = None;
             }
             other => self.note(format!("unexpected answer {other:?}")),
         }
@@ -370,20 +376,21 @@ impl App {
     }
 
     fn failed(&mut self, command: &Command, problem: String) {
-        let kind = command_label(command);
-        let text = format!("{kind}: {problem}");
-        if let (Command::SessionNew { .. }, Some(form)) = (command, &mut self.form)
-            && form.starting
+        if let Some(form) = &mut self.form
+            && form.submitted.as_ref() == Some(command)
         {
-            form.starting = false;
+            form.submitted = None;
             form.problem = Some(problem.clone());
         }
-        if self.last_problem.as_deref() != Some(problem.as_str()) {
-            self.note(text.clone());
+        let kind = command_label(command);
+        if self
+            .failure
+            .as_ref()
+            .is_none_or(|failure| failure.problem != problem)
+        {
+            self.note(format!("{kind}: {problem}"));
         }
-        self.last_problem = Some(problem);
-        self.status = Some(text);
-        self.status_kind = Some(kind);
+        self.failure = Some(Failure { kind, problem });
     }
 
     /// The pane follows the queue; it takes focus when it shows a request and gives it back

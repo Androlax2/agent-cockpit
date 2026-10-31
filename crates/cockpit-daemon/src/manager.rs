@@ -44,18 +44,15 @@ impl Manager {
 /// `manager-open` and `session-show`; `routes.rs` sends only those here. Both run tmux, so
 /// they take the bulk lane.
 pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Manager>) -> Route {
-    let job: crate::Job = match command {
+    let job = match command {
         Command::ManagerOpen {
             dir,
             column,
             viewer,
-        } => blocking(move || open(&manager, dir, &column, &viewer)),
-        Command::SessionShow { session } => Box::pin(async move {
-            match show(&sessions, manager, &session).await {
-                Ok(reply) => Outcome::Ok(reply),
-                Err(error) => Outcome::Error(error),
-            }
-        }),
+        } => job(tmux_blocking(move || open(&manager, dir, &column, &viewer))),
+        Command::SessionShow { session } => {
+            job(async move { show(&sessions, manager, &session).await })
+        }
         other => {
             tracing::error!(
                 ?other,
@@ -73,17 +70,22 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Mana
     }
 }
 
-fn blocking(work: impl FnOnce() -> Result<Reply, ProtocolError> + Send + 'static) -> crate::Job {
+fn job(work: impl Future<Output = Result<Reply, ProtocolError>> + Send + 'static) -> crate::Job {
     Box::pin(async move {
-        match tokio::task::spawn_blocking(work).await {
-            Ok(Ok(reply)) => Outcome::Ok(reply),
-            Ok(Err(error)) => Outcome::Error(error),
-            Err(panic) => {
-                tracing::error!(%panic, "a manager command panicked");
-                refusal(ErrorCode::Internal, "the manager command failed")
-            }
+        match work.await {
+            Ok(reply) => Outcome::Ok(reply),
+            Err(error) => Outcome::Error(error),
         }
     })
+}
+
+async fn tmux_blocking<Value: Send + 'static>(
+    work: impl FnOnce() -> Result<Value, ProtocolError> + Send + 'static,
+) -> Result<Value, ProtocolError> {
+    tokio::task::spawn_blocking(work).await.map_err(|panic| {
+        tracing::error!(%panic, "a manager command panicked");
+        ProtocolError::new(ErrorCode::Internal, "the manager command failed")
+    })?
 }
 
 /// Opens the manager session unless a whole one is open already; either way answers how to
@@ -114,7 +116,7 @@ fn open(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let created = match manager_state(tmux, &name)? {
-        ManagerState::Whole => false,
+        ManagerState::Whole { .. } => false,
         ManagerState::Absent => true,
         ManagerState::Broken => {
             tracing::warn!("the manager session lost its column or viewer: building it again");
@@ -133,20 +135,15 @@ fn open(
                 rows: 50,
             })
             .map_err(tmux_error)?;
-        let split = tmux.split_pane(
+        // Should this fail, the manager lacks its viewer: the next open rebuilds it.
+        tmux.split_pane(
             &column_pane,
             Split::SideBySide {
                 percent: VIEWER_PERCENT,
             },
             &words(viewer),
-        );
-        if let Err(error) = split {
-            // A manager without its viewer would be taken as whole by nobody; leave none.
-            if let Err(close) = tmux.close_session(&name) {
-                tracing::error!(%close, "cannot close the half-built manager session");
-            }
-            return Err(tmux_error(error));
-        }
+        )
+        .map_err(tmux_error)?;
         tracing::info!("opened the manager session");
     }
     Ok(Reply::Manager {
@@ -162,7 +159,9 @@ fn open(
 enum ManagerState {
     Absent,
     /// Its column runs and its viewer pane is there.
-    Whole,
+    Whole {
+        viewer: PaneId,
+    },
     Broken,
 }
 
@@ -174,13 +173,11 @@ fn manager_state(
         return Ok(ManagerState::Absent);
     }
     let panes = tmux.panes(name).map_err(tmux_error)?;
-    let column_runs = panes
-        .first()
-        .is_some_and(|column| column.state == PaneState::Running);
-    Ok(if column_runs && panes.len() >= 2 {
-        ManagerState::Whole
-    } else {
-        ManagerState::Broken
+    Ok(match panes.as_slice() {
+        [column, viewer, ..] if column.state == PaneState::Running => ManagerState::Whole {
+            viewer: viewer.id.clone(),
+        },
+        _ => ManagerState::Broken,
     })
 }
 
@@ -219,31 +216,18 @@ async fn show(
         .map_err(|error| crate::sessions::protocol_error(&error))
 }
 
-async fn tmux_blocking<Value: Send + 'static>(
-    work: impl FnOnce() -> Result<Value, ProtocolError> + Send + 'static,
-) -> Result<Value, ProtocolError> {
-    tokio::task::spawn_blocking(work).await.map_err(|panic| {
-        tracing::error!(%panic, "showing a session panicked");
-        ProtocolError::new(ErrorCode::Internal, "showing the session failed")
-    })?
-}
-
-/// The manager's second pane. The column is the first; a manager with fewer panes lost its
-/// viewer, which only reopening the manager mends.
+/// The manager's viewer pane, or why it cannot show a session: only reopening the manager
+/// mends a broken one.
 fn viewer_pane(tmux: &cockpit_tmux::Server) -> Result<PaneId, ProtocolError> {
-    let name = manager_name();
-    if !tmux.sessions().map_err(tmux_error)?.contains(&name) {
-        return Err(ProtocolError::new(
+    match manager_state(tmux, &manager_name())? {
+        ManagerState::Whole { viewer } => Ok(viewer),
+        ManagerState::Absent => Err(ProtocolError::new(
             ErrorCode::NotFound,
             "no manager session is open: run `cockpit tui`",
-        ));
-    }
-    let panes = tmux.panes(&name).map_err(tmux_error)?;
-    match panes.get(1) {
-        Some(viewer) => Ok(viewer.id.clone()),
-        None => Err(ProtocolError::new(
+        )),
+        ManagerState::Broken => Err(ProtocolError::new(
             ErrorCode::Conflict,
-            "the manager session has lost its viewer pane: run `cockpit tui` again to rebuild it",
+            "the manager session lost its column or its viewer: run `cockpit tui` again to rebuild it",
         )),
     }
 }

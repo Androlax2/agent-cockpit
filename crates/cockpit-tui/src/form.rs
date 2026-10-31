@@ -42,8 +42,9 @@ pub struct Form {
     pub(crate) field: Field,
     /// Why the last submit was refused, for the owner.
     pub(crate) problem: Option<String>,
-    /// A submitted `session-new` is unanswered: Enter sends no second one.
-    pub(crate) starting: bool,
+    /// The `session-new` this form sent and the daemon has not answered: Enter sends no
+    /// second one, and only its answer closes or annotates the form.
+    pub(crate) submitted: Option<Command>,
 }
 
 impl Form {
@@ -59,7 +60,7 @@ impl Form {
             branch: String::new(),
             field: Field::Project,
             problem: None,
-            starting: false,
+            submitted: None,
         }
     }
 
@@ -76,8 +77,8 @@ impl Form {
         match key {
             Key::Esc => return FormOutcome::Cancelled,
             Key::Enter => return self.submit(),
-            Key::Tab | Key::Down => self.field = self.next_field(),
-            Key::BackTab | Key::Up => self.field = self.previous_field(),
+            Key::Tab | Key::Down => self.field = self.step_field(1),
+            Key::BackTab | Key::Up => self.field = self.step_field(-1),
             Key::Left => self.cycle(-1),
             Key::Right => self.cycle(1),
             Key::Backspace => {
@@ -103,22 +104,13 @@ impl Form {
         fields
     }
 
-    fn next_field(&self) -> Field {
+    fn step_field(&self, step: isize) -> Field {
         let fields = self.fields();
         let at = fields
             .iter()
             .position(|field| *field == self.field)
             .unwrap_or(0);
-        fields[(at + 1) % fields.len()]
-    }
-
-    fn previous_field(&self) -> Field {
-        let fields = self.fields();
-        let at = fields
-            .iter()
-            .position(|field| *field == self.field)
-            .unwrap_or(0);
-        fields[(at + fields.len() - 1) % fields.len()]
+        fields[step_index(at, step, fields.len())]
     }
 
     fn text_field(&mut self) -> Option<&mut String> {
@@ -161,12 +153,12 @@ impl Form {
 
     /// The `session-new` command, or why the form cannot send one yet.
     fn submit(&mut self) -> FormOutcome {
-        if self.starting {
+        if self.submitted.is_some() {
             return FormOutcome::Editing;
         }
         match self.command() {
             Ok(command) => {
-                self.starting = true;
+                self.submitted = Some(command.clone());
                 self.problem = None;
                 FormOutcome::Submit(command)
             }

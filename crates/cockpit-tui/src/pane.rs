@@ -208,23 +208,30 @@ impl Pane {
             Key::Enter => {
                 let text = std::mem::take(&mut self.typed);
                 self.typing = None;
-                let send = match (shown, typing) {
-                    (Shown::Run { id, .. }, Typing::Input) => {
-                        Command::ApprovalInput { request: *id, text }
-                    }
-                    (Shown::Guide { id, step, .. }, Typing::Answer) => Command::GuideAnswer {
-                        guide: *id,
-                        step: *step,
-                        answer: Some(text),
-                    },
-                    (Shown::Guide { id, step, .. }, Typing::StuckNote) => Command::GuideStuck {
-                        guide: *id,
-                        step: *step,
-                        note: text,
-                    },
+                let (used, send) = match (shown, typing) {
+                    (Shown::Run { id, .. }, Typing::Input) => (
+                        "approval-input",
+                        Command::ApprovalInput { request: *id, text },
+                    ),
+                    (Shown::Guide { id, step, .. }, Typing::Answer) => (
+                        "guide-answer",
+                        Command::GuideAnswer {
+                            guide: *id,
+                            step: *step,
+                            answer: Some(text),
+                        },
+                    ),
+                    (Shown::Guide { id, step, .. }, Typing::StuckNote) => (
+                        "guide-stuck",
+                        Command::GuideStuck {
+                            guide: *id,
+                            step: *step,
+                            note: text,
+                        },
+                    ),
                     _ => return handled("approval-typing", None),
                 };
-                handled(command_name(&send), Some(send))
+                handled(used, Some(send))
             }
             _ => PaneOutcome::NotMine,
         }
@@ -235,47 +242,34 @@ fn handled(used: &'static str, send: Option<Command>) -> PaneOutcome {
     PaneOutcome::Handled { used, send }
 }
 
-fn command_name(command: &Command) -> &'static str {
-    match command {
-        Command::ApprovalInput { .. } => "approval-input",
-        Command::GuideAnswer { .. } => "guide-answer",
-        Command::GuideStuck { .. } => "guide-stuck",
-        _ => "approval-typing",
-    }
-}
-
-/// What waits on the owner first: the daemon's queue order (a command waiting for input,
-/// then asking requests oldest first), then guides.
-fn head_of(board: &Board) -> Option<Shown> {
+/// What waits on the owner, in the daemon's queue order (a command waiting for input, then
+/// asking requests oldest first), then guides.
+fn waiting(board: &Board) -> impl Iterator<Item = Shown> + '_ {
     board
         .runs
         .iter()
-        .find(|run| run_waits(run))
+        .filter(|run| run.state == RunStateView::Asking || waits_for_input(run))
         .map(shown_run)
-        .or_else(|| {
+        .chain(
             board
                 .guides
                 .iter()
-                .find(|guide| guide.state == GuideStateView::Asking)
-                .map(shown_guide)
-        })
+                .filter(|guide| guide.state == GuideStateView::Asking)
+                .map(shown_guide),
+        )
+}
+
+fn head_of(board: &Board) -> Option<Shown> {
+    waiting(board).next()
 }
 
 fn still_waits(shown: &Shown, board: &Board) -> bool {
-    match shown {
-        Shown::Run { id, .. } => board
-            .runs
-            .iter()
-            .any(|run| run.id == *id && run_waits(run) && shown_run(run) == *shown),
-        Shown::Guide { id, .. } => board.guides.iter().any(|guide| {
-            guide.id == *id && guide.state == GuideStateView::Asking && shown_guide(guide) == *shown
-        }),
-    }
+    waiting(board).any(|waiting| waiting == *shown)
 }
 
-fn run_waits(run: &RunRequestView) -> bool {
-    run.state == RunStateView::Asking
-        || (run.state == RunStateView::Running && run.waiting_for_input)
+/// A running command that waits for a line from the owner.
+pub(crate) fn waits_for_input(run: &RunRequestView) -> bool {
+    run.state == RunStateView::Running && run.waiting_for_input
 }
 
 fn shown_run(run: &RunRequestView) -> Shown {
@@ -283,7 +277,7 @@ fn shown_run(run: &RunRequestView) -> Shown {
         id: run.id,
         revision: run.revision,
         digest: run.digest.clone(),
-        waiting_for_input: run.state == RunStateView::Running && run.waiting_for_input,
+        waiting_for_input: waits_for_input(run),
     }
 }
 

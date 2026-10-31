@@ -4,9 +4,7 @@
 
 use std::time::Instant;
 
-use cockpit_protocol::{
-    GuideView, HiddenView, RunRequestView, RunStateView, SessionStateView, SessionView, ShownText,
-};
+use cockpit_protocol::{GuideView, HiddenView, RunRequestView, SessionView, ShownText};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -72,10 +70,10 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
 }
 
 fn status_line(app: &App) -> String {
-    match (&app.confirm, &app.status) {
+    match (&app.confirm, &app.failure) {
         (Some(Confirm::Restart(session)), _) => format!("restart {session}? y to confirm"),
         (Some(Confirm::Exit(session)), _) => format!("exit {session}? y to confirm"),
-        (None, Some(status)) => status.clone(),
+        (None, Some(failure)) => format!("{}: {}", failure.kind, failure.problem),
         (None, None) => "? help".to_owned(),
     }
 }
@@ -120,9 +118,7 @@ fn card(board: &Board, session: &SessionView, is_selected: bool) -> String {
     let marker = if is_selected { ">" } else { " " };
     let mut card = format!(
         "{marker} {}  {}  {}",
-        session.id,
-        session.agent,
-        state_word(&session.state)
+        session.id, session.agent, session.state
     );
     if let Some(label) = board
         .report(&session.id)
@@ -135,18 +131,6 @@ fn card(board: &Board, session: &SessionView, is_selected: bool) -> String {
         card.push_str("  waiting on you");
     }
     card
-}
-
-fn state_word(state: &SessionStateView) -> String {
-    match state {
-        SessionStateView::Launching => "launching".to_owned(),
-        SessionStateView::Running => "running".to_owned(),
-        SessionStateView::Stopping { to } => format!("stopping:{}", to.as_str()),
-        SessionStateView::Asleep => "asleep".to_owned(),
-        SessionStateView::Ended => "ended".to_owned(),
-        SessionStateView::Failed => "failed".to_owned(),
-        SessionStateView::Unknown => "unknown".to_owned(),
-    }
 }
 
 fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {
@@ -242,7 +226,7 @@ fn pane_keys(shown: Option<&Shown>) -> &'static str {
 }
 
 fn run_lines(run: &RunRequestView, pane: &Pane) -> Vec<String> {
-    let waiting = run.state == RunStateView::Running && run.waiting_for_input;
+    let waiting = crate::pane::waits_for_input(run);
     let mut lines = vec![format!(
         "{} {} from {}{}",
         if waiting {

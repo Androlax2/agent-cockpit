@@ -56,7 +56,13 @@ fn viewer() -> ExitCode {
 enum Input {
     Key(Key),
     Redraw,
-    Answer(Box<(Command, Result<Reply, String>)>),
+    Answer(Box<(Sent, Result<Reply, String>)>),
+}
+
+/// A command on its way to the daemon, and whether it is part of a refresh.
+struct Sent {
+    command: Command,
+    is_refresh: bool,
 }
 
 fn column(socket: PathBuf) -> Result<(), String> {
@@ -86,10 +92,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
     let (inputs, mut received) = mpsc::channel::<Input>(256);
     let reader = inputs.clone();
     std::thread::spawn(move || read_keys(&reader));
-    let (requests, pending) = mpsc::unbounded_channel::<Command>();
+    let (requests, pending) = mpsc::unbounded_channel::<Sent>();
     tokio::spawn(serve(socket, pending, inputs));
     let mut app = App::new();
-    let refresh_commands = App::refresh_commands();
     // A refresh is sent only once the last one is answered, so a slow daemon gets no pile.
     let mut unanswered_refreshes = 0_usize;
     let mut refresh = tokio::time::interval(REFRESH);
@@ -100,9 +105,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
             .map_err(|error| format!("cannot draw: {error}"))?;
         tokio::select! {
             _ = refresh.tick(), if unanswered_refreshes == 0 => {
-                unanswered_refreshes = refresh_commands.len();
-                for command in refresh_commands.iter().cloned() {
-                    send(&requests, command)?;
+                for command in App::refresh_commands() {
+                    unanswered_refreshes += 1;
+                    send(&requests, command, true)?;
                 }
             }
             _ = redraw.tick() => {}
@@ -113,24 +118,31 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
                     let step = app.key(key, Instant::now());
                     record_usage(&step);
                     for command in step.send {
-                        send(&requests, command)?;
+                        send(&requests, command, false)?;
                     }
                 }
                 Some(Input::Answer(answered)) => {
-                    let (command, answer) = *answered;
-                    if refresh_commands.contains(&command) {
-                        unanswered_refreshes = unanswered_refreshes.saturating_sub(1);
+                    let (sent, answer) = *answered;
+                    if sent.is_refresh {
+                        unanswered_refreshes -= 1;
                     }
-                    app.answer(&command, answer, Instant::now());
+                    app.answer(&sent.command, answer, Instant::now());
                 }
             },
         }
     }
 }
 
-fn send(requests: &mpsc::UnboundedSender<Command>, command: Command) -> Result<(), String> {
+fn send(
+    requests: &mpsc::UnboundedSender<Sent>,
+    command: Command,
+    is_refresh: bool,
+) -> Result<(), String> {
     requests
-        .send(command)
+        .send(Sent {
+            command,
+            is_refresh,
+        })
         .map_err(|_| "the request task stopped".to_owned())
 }
 
@@ -177,11 +189,11 @@ fn key_of(code: KeyCode) -> Option<Key> {
 /// request runs in its own task so a slow one holds up nothing.
 async fn serve(
     socket: PathBuf,
-    mut pending: mpsc::UnboundedReceiver<Command>,
+    mut pending: mpsc::UnboundedReceiver<Sent>,
     answers: mpsc::Sender<Input>,
 ) {
     let connection: Arc<Mutex<Option<Arc<Connection>>>> = Arc::default();
-    while let Some(command) = pending.recv().await {
+    while let Some(sent) = pending.recv().await {
         let open = connection.lock().expect("never poisoned").clone();
         let open = match open {
             Some(open) => open,
@@ -195,12 +207,12 @@ async fn serve(
                     // Everything already waiting fails with it, rather than each waiting
                     // out its own connect deadline in turn.
                     let problem = describe(&error);
-                    let mut failed = vec![command];
+                    let mut failed = vec![sent];
                     while let Ok(waiting) = pending.try_recv() {
                         failed.push(waiting);
                     }
-                    for command in failed {
-                        let answer = Input::Answer(Box::new((command, Err(problem.clone()))));
+                    for sent in failed {
+                        let answer = Input::Answer(Box::new((sent, Err(problem.clone()))));
                         let _ = answers.send(answer).await;
                     }
                     continue;
@@ -210,7 +222,7 @@ async fn serve(
         let answers = answers.clone();
         let connection = Arc::clone(&connection);
         tokio::spawn(async move {
-            let answer = open.request(command.clone(), REQUEST_DEADLINE).await;
+            let answer = open.request(sent.command.clone(), REQUEST_DEADLINE).await;
             if let Err(ClientError::Closed(reason)) = &answer {
                 tracing::warn!(?reason, "lost the daemon connection");
                 let mut current = connection.lock().expect("never poisoned");
@@ -224,7 +236,7 @@ async fn serve(
             }
             let _ = answers
                 .send(Input::Answer(Box::new((
-                    command,
+                    sent,
                     answer.map_err(|error| describe(&error)),
                 ))))
                 .await;
