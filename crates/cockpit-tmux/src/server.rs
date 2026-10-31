@@ -264,12 +264,13 @@ impl Server {
         let arguments = words(&["list-sessions", "-F", "#{session_id}"]);
         let deadline = Instant::now() + SERVER_EXIT_WAIT;
         loop {
-            // An exiting server can answer with an error; that is still exiting.
+            // An exiting server can answer with a failed command; that is still exiting.
             let answer = match self.run_if_server(&arguments) {
                 Ok(None) => return Ok(()),
                 Ok(Some(printed)) if !printed.is_empty() => return Ok(()),
                 Ok(Some(_)) => "no sessions".to_string(),
-                Err(error) => error.to_string(),
+                Err(error @ Error::CommandFailed { .. }) => error.to_string(),
+                Err(error) => return Err(error),
             };
             if Instant::now() >= deadline {
                 return Err(Error::EmptiedServerKeptRunning {
