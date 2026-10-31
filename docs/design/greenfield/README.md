@@ -56,6 +56,7 @@ Each file is under 120 lines, except the coverage map (16), which is a checklist
 14. Accounts switch only at launch and at a quota-stop restart; no mid-turn routing gates.
 15. Greywall and greyproxy are Cockpit's own patched forks, pinned and built by the release.
 16. The protected-checkout apply flow is Theo-only tooling outside the product.
+17. The TUI before M6 is deliberately basic; unused keys (`e $ C m g U o w l t u v k c d i B`) and the Pull requests tab are dropped; every command is counted so M6 prunes on data.
 
 ## Relation to earlier documents
 

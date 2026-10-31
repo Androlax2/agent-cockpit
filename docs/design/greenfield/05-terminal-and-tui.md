@@ -11,7 +11,7 @@ Status: decided
   version checks at install/readiness time.
 - The TUI is **Ratatui + Crossterm**; it renders local view state and talks to the daemon
   through `cockpit-client`. Input handling never waits on provider, Git, database or tmux calls.
-- **Plain reference TUI first**: lists, details, one form, approval prompt, log view. It proves
+- **Plain reference TUI first** (keys decided 2026-10-31): session list, open, next needing you, new session, restart, exit, approval pane, log view, help; basic todo list and form; basic team requests and Chief needs-you lists. Nothing else until M6, where usage data from diagnostics decides what returns. It proves
   every capability is reachable and exposes responsiveness problems. Designed UI/UX is the
   **last milestone**, done in FigCraft with the `design-first` workflow.
 - Approvals and guided steps are **terminal-native**; desktop notifications are optional.
