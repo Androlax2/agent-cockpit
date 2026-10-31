@@ -151,8 +151,11 @@ impl Home {
         task.id
     }
 
-    /// `session` finishes the item it is doing, as its agent would.
-    async fn session_finishes(&self, session: &str, item: i64) {
+    /// `session` finishes the item it is doing, as its agent would, a second after its latest
+    /// launch, so the finish counts for that launch's finished label (#226) whatever second
+    /// the test runs in.
+    async fn session_finishes(&self, client: &Connection, session: &str, item: i64) {
+        let launched_at = listed(client, session).await.launch.unwrap().launched_at;
         let database = self.database();
         let write = database.write().await.unwrap();
         cockpit_tasks::finish(
@@ -160,11 +163,24 @@ impl Home {
             &agent(session),
             cockpit_tasks::ItemId(item),
             Some("done"),
-            1,
+            launched_at + 1,
         )
         .await
         .unwrap();
         write.commit().await.unwrap();
+    }
+
+    /// A finished session whose launch and finish lie a minute in the past, so a relaunch now
+    /// is strictly after its finish.
+    async fn finished_a_minute_ago(&self, client: &Connection, session: &str) {
+        self.store(
+            "UPDATE session_launches SET launched_at = launched_at - 60 WHERE session_id = ?1",
+            session,
+        )
+        .await;
+        let item = self.session_takes_an_item(client, session).await;
+        self.session_finishes(client, session, item).await;
+        assert!(listed(client, session).await.finished);
     }
 
     fn kill_every_agent(&self) {
@@ -414,7 +430,7 @@ async fn a_session_is_finished_only_once_the_item_it_was_doing_is_done() {
     let item = home.session_takes_an_item(&client, &started.id).await;
     assert!(!listed(&client, &started.id).await.finished);
 
-    home.session_finishes(&started.id, item).await;
+    home.session_finishes(&client, &started.id, item).await;
 
     assert!(listed(&client, &started.id).await.finished);
 }
@@ -427,11 +443,71 @@ async fn a_session_doing_another_item_after_finishing_one_is_not_finished() {
     let root = home.project(&client).await;
     let started = new_session(&client, &root).await;
     let first = home.session_takes_an_item(&client, &started.id).await;
-    home.session_finishes(&started.id, first).await;
+    home.session_finishes(&client, &started.id, first).await;
 
     home.session_takes_an_item(&client, &started.id).await;
 
     assert!(!listed(&client, &started.id).await.finished);
+}
+
+/// #226: a session the owner restarts to keep working is not finished by the work it did
+/// before, until it finishes new work.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_session_is_finished_again_only_once_it_finishes_new_work() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root).await;
+    home.finished_a_minute_ago(&client, &started.id).await;
+
+    let restarted = session_reply(
+        &client,
+        Command::SessionRestart {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert!(!restarted.finished, "{restarted:?}");
+    let running = listed(&client, &started.id).await;
+    assert_eq!(running.state, SessionStateView::Running);
+    assert!(!running.finished);
+    let item = home.session_takes_an_item(&client, &started.id).await;
+    home.session_finishes(&client, &started.id, item).await;
+    assert!(listed(&client, &started.id).await.finished);
+}
+
+/// #226: `X` (`session-end-finished`) never ends the conversation the owner just resumed.
+#[tokio::test(flavor = "multi_thread")]
+async fn end_finished_keeps_a_session_resumed_after_its_work_was_finished() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root).await;
+    home.finished_a_minute_ago(&client, &started.id).await;
+    end(&client, &started.id).await;
+    session_reply(
+        &client,
+        Command::SessionResume {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    let reply = request(&client, Command::SessionEndFinished { only: None }).await;
+
+    let Ok(Reply::EndedFinished { ended, failed }) = reply else {
+        panic!("session-end-finished: {reply:?}");
+    };
+    assert!(
+        ended.is_empty() && failed.is_empty(),
+        "{ended:?} {failed:?}"
+    );
+    let resumed = listed(&client, &started.id).await;
+    assert_eq!(resumed.state, SessionStateView::Running);
+    assert!(!resumed.finished);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -443,7 +519,7 @@ async fn end_finished_ends_the_finished_sessions_and_keeps_the_others() {
     let finished = new_session(&client, &root).await;
     let working = new_session(&client, &root).await;
     let done = home.session_takes_an_item(&client, &finished.id).await;
-    home.session_finishes(&finished.id, done).await;
+    home.session_finishes(&client, &finished.id, done).await;
     home.session_takes_an_item(&client, &working.id).await;
 
     let reply = request(&client, Command::SessionEndFinished { only: None }).await;
@@ -475,7 +551,7 @@ async fn end_finished_with_only_ends_just_the_named_finished_sessions() {
     let unseen = new_session(&client, &root).await;
     for session in [&seen, &unseen] {
         let item = home.session_takes_an_item(&client, &session.id).await;
-        home.session_finishes(&session.id, item).await;
+        home.session_finishes(&client, &session.id, item).await;
     }
 
     let reply = request(
@@ -505,7 +581,7 @@ async fn an_ended_session_is_never_labelled_finished() {
     let root = home.project(&client).await;
     let started = new_session(&client, &root).await;
     let item = home.session_takes_an_item(&client, &started.id).await;
-    home.session_finishes(&started.id, item).await;
+    home.session_finishes(&client, &started.id, item).await;
 
     end(&client, &started.id).await;
 
@@ -520,7 +596,7 @@ async fn a_failed_session_is_never_labelled_finished() {
     let root = home.project(&client).await;
     let started = new_session(&client, &root).await;
     let item = home.session_takes_an_item(&client, &started.id).await;
-    home.session_finishes(&started.id, item).await;
+    home.session_finishes(&client, &started.id, item).await;
 
     home.store(
         "UPDATE sessions SET state = 'failed', reason = 'its relaunch failed' WHERE id = ?1",

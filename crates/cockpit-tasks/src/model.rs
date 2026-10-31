@@ -174,11 +174,13 @@ pub struct Item {
     pub changed_at: i64,
 }
 
-/// One session's items: those it is doing, and those finished while it was doing them.
+/// One session's items: how many it is doing, and when it last finished one it was doing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionWork {
     pub doing: u32,
-    pub finished: u32,
+    /// Seconds since the Unix epoch; `None` when it finished none since finish times were
+    /// kept (#226).
+    pub last_finished_at: Option<i64>,
 }
 
 impl Item {
