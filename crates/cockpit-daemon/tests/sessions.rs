@@ -236,6 +236,30 @@ impl Home {
         matches!(decision.outcome, cockpit_authorization::Outcome::Allowed(_))
     }
 
+    /// Revokes `session`'s grant of `permission` over itself, as a daemon that never
+    /// granted it would have left the session.
+    async fn revoke_over_itself(
+        &self,
+        session: &str,
+        permission: cockpit_authorization::Permission,
+    ) {
+        let database = self.database.lock().unwrap().clone().unwrap();
+        let write = database.write().await.unwrap();
+        let session = cockpit_authorization::SessionId::new(session).unwrap();
+        let itself = cockpit_authorization::Scope::Session(session.clone());
+        let grant = cockpit_authorization::active_grants(&write, &session)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|grant| grant.permission == permission && grant.scope == itself)
+            .unwrap();
+        cockpit_authorization::revoke(&write, grant.id)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+        assert!(!self.may(session.as_str(), permission).await);
+    }
+
     /// Asks the owner to run `command` as the agent `launch` would with `cockpit ask run`:
     /// identified by that agent's real process tree and launch token, then filed through
     /// `cockpit-approvals`, as the daemon's agent route does. The agent itself cannot dial
@@ -1082,6 +1106,35 @@ async fn on_daemon_start_a_session_whose_agent_still_runs_keeps_it() {
     assert_eq!(kept[0].state, SessionStateView::Running);
     home.still_logged(1).await;
     assert!(is_alive(first[0].pid));
+}
+
+/// Issue #284: a session launched by a daemon older than #270 holds `change-state` over
+/// itself but not `run-commands`; the daemon that restores it still running grants it.
+#[tokio::test(flavor = "multi_thread")]
+async fn on_daemon_start_a_session_still_running_without_run_commands_is_granted_it() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    home.launches(1).await;
+    home.revoke_over_itself(&started.id, cockpit_authorization::Permission::RunCommands)
+        .await;
+    drop(client);
+    home.stop(daemon);
+
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+
+    assert_eq!(
+        sessions(&client, false).await[0].launch,
+        started.launch,
+        "the agent was kept, not relaunched"
+    );
+    assert!(
+        home.may(&started.id, cockpit_authorization::Permission::RunCommands)
+            .await
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
