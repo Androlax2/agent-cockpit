@@ -3326,9 +3326,13 @@ fn wait_for_output(
         .stderr(Stdio::piped())
         .spawn()
         .ok()?;
-    loop {
+    // Drained while the child runs: output past the pipe buffer (a 2000-line capture-pane) would
+    // otherwise block the child until the timeout killed it, on every prune.
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() > timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -3337,13 +3341,22 @@ fn wait_for_output(
             Ok(None) => std::thread::sleep(Duration::from_millis(5)),
             Err(_) => return None,
         }
-    }
-    let output = child.wait_with_output().ok()?;
+    };
     Some((
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
+        status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&stdout.join().ok()?).into_owned(),
+        String::from_utf8_lossy(&stderr.join().ok()?).into_owned(),
     ))
+}
+
+fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
 }
 
 /// The process table: /proc for real, a made-up tree in tests.

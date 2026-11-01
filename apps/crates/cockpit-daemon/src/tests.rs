@@ -8746,3 +8746,25 @@ fn a_session_cannot_send_an_unwait_through_the_report_socket() {
     assert!(error.contains("unwait is host only"), "{error}");
     assert!(!cockpit::paths::todo_updates().exists());
 }
+
+#[test]
+fn output_within_returns_output_larger_than_a_pipe_buffer() {
+    // A 2000-line pane capture exceeds the 64 KiB pipe buffer; tmux must not block on it.
+    let started = std::time::Instant::now();
+    let output = output_within(
+        &["sh", "-c", "head -c 300000 /dev/zero | tr '\\000' x"],
+        std::time::Duration::from_secs(3),
+    );
+    let (code, stdout, _) = output.expect("the command finishes within the timeout");
+    assert_eq!(code, 0);
+    assert_eq!(stdout.len(), 300_000);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[test]
+fn output_within_gives_up_on_a_command_that_outlives_the_timeout() {
+    let started = std::time::Instant::now();
+    let output = output_within(&["sleep", "5"], std::time::Duration::from_millis(200));
+    assert!(output.is_none());
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
