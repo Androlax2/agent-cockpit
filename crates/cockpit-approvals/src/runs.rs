@@ -10,7 +10,6 @@
 //! request nobody polls for [`EXPIRES_AFTER_SECONDS`] reads as expired and can no longer be
 //! decided.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cockpit_authorization::{Actor, Basis, Outcome, Permission, Scope, SessionId};
@@ -24,7 +23,7 @@ use crate::error::invalid;
 use crate::pty::Output;
 use crate::rows::{
     AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
-    refreshed_expiry, session_from, state_at, still_asking,
+    refreshed_expiry, session_from, state_at, still_asking, stored_row,
 };
 use crate::{Error, Refusal};
 
@@ -230,51 +229,44 @@ pub(crate) async fn asking_grant(
     write: &WriteTransaction<'_>,
     session: &SessionId,
 ) -> Result<Option<i64>, Error> {
-    current_asking_grant(write, session)
-        .await?
-        .map_err(|refusal| Refusal::NotAuthorized(refusal).into())
+    match run_commands_over_itself(write, session).await? {
+        Outcome::Allowed(basis) => Ok(grant_of(&basis)),
+        Outcome::Refused(refusal) => Err(Refusal::NotAuthorized(refusal).into()),
+    }
 }
 
-/// Refuses the owner's decision on a request whose session no longer holds the grant it
-/// asked under: once a session ends or fails it loses `run-commands`, and nobody waits for
-/// its requests, even if a restart grants it again (#285).
+/// Refuses the owner's decision on a request the owner may no longer decide
+/// ([`may_still_ask`]).
 pub(crate) async fn asker_may_still_ask(
     write: &WriteTransaction<'_>,
     session: &SessionId,
     asked_under: Option<i64>,
 ) -> Result<(), Error> {
-    if current_asking_grant(write, session).await?.ok() == Some(asked_under) {
+    if may_still_ask(write, session, asked_under).await? {
         Ok(())
     } else {
         Err(Refusal::AskerMayNotAsk.into())
     }
 }
 
-/// [`asker_may_still_ask`] as a yes or no, evaluating each session once in `verdicts`: the
-/// queue leaves out what the owner may no longer decide (#285).
+/// Whether the grant a request was asked under, `asked_under`, still lets `session` ask:
+/// once a session ends or fails it loses `run-commands`, and nobody waits for its requests,
+/// even if a restart grants it again (#285).
 pub(crate) async fn may_still_ask(
     connection: &Connection,
-    verdicts: &mut HashMap<SessionId, Option<Option<i64>>>,
     session: &SessionId,
     asked_under: Option<i64>,
 ) -> Result<bool, Error> {
-    let current = match verdicts.get(session) {
-        Some(current) => *current,
-        None => {
-            let current = current_asking_grant(connection, session).await?.ok();
-            verdicts.insert(session.clone(), current);
-            current
-        }
-    };
-    Ok(current == Some(asked_under))
+    Ok(match run_commands_over_itself(connection, session).await? {
+        Outcome::Allowed(basis) => grant_of(&basis) == asked_under,
+        Outcome::Refused(_) => false,
+    })
 }
 
-/// The grant `cockpit-authorization` lets `session` use `run-commands` over itself under now
-/// (`None` on the owner's own basis), or its refusal.
-async fn current_asking_grant(
+async fn run_commands_over_itself(
     connection: &Connection,
     session: &SessionId,
-) -> Result<Result<Option<i64>, cockpit_authorization::Refusal>, Error> {
+) -> Result<Outcome, Error> {
     let decision = cockpit_authorization::evaluate(
         connection,
         &Actor::Session(session.clone()),
@@ -282,11 +274,16 @@ async fn current_asking_grant(
         &Scope::Session(session.clone()),
     )
     .await?;
-    Ok(match decision.outcome {
-        Outcome::Allowed(Basis::Grant(grant)) => Ok(Some(grant.value())),
-        Outcome::Allowed(Basis::Owner) => Ok(None),
-        Outcome::Refused(refusal) => Err(refusal),
-    })
+    Ok(decision.outcome)
+}
+
+/// The grant an allowed session asks under; a session is never allowed on the owner's own
+/// basis.
+fn grant_of(basis: &Basis) -> Option<i64> {
+    match basis {
+        Basis::Grant(grant) => Some(grant.value()),
+        Basis::Owner => None,
+    }
 }
 
 /// Inserts an asking request; the caller validated and authorized it.
@@ -306,13 +303,10 @@ pub(crate) async fn insert_run(
         .transpose()?;
     stored_run(
         write,
-        &format!(
-            "INSERT INTO approvals_runs (id, session, revision, command, asked_command, cwd,
+        "INSERT INTO approvals_runs (id, session, revision, command, asked_command, cwd,
                 project, project_root, reason, state, asked_at, revised_at, expires_at,
                 asking_grant)
-             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9, ?10)
-             RETURNING {RUN_COLUMNS}"
-        ),
+             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9, ?10)",
         (
             id,
             session.as_str(),
@@ -348,11 +342,10 @@ pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunReque
     while let Some(row) = rows.next().await? {
         runs.push(run_from(&row, now)?);
     }
-    let mut verdicts = HashMap::new();
     let mut open = Vec::with_capacity(runs.len());
     for run in runs {
         if run.state != RunState::Asking
-            || may_still_ask(connection, &mut verdicts, &run.session, run.asking_grant).await?
+            || may_still_ask(connection, &run.session, run.asking_grant).await?
         {
             open.push(run);
         }
@@ -402,21 +395,16 @@ pub async fn run_status(
     now: i64,
 ) -> Result<RunRequest, Error> {
     let run = run_of(write, session, id, now).await?;
-    match moved_expiry(&run, now) {
-        Some(expires_at) => {
-            stored_run(
-                write,
-                &format!(
-                    "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1
-                     RETURNING {RUN_COLUMNS}"
-                ),
-                (id.0, expires_at),
-                now,
-            )
-            .await
-        }
-        None => Ok(run),
-    }
+    let Some(expires_at) = moved_expiry(&run, now) else {
+        return Ok(run);
+    };
+    stored_run(
+        write,
+        "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1",
+        (id.0, expires_at),
+        now,
+    )
+    .await
 }
 
 /// [`run_status`] when the poll writes nothing, read in any transaction; `None` when the
@@ -464,11 +452,8 @@ pub async fn edit_run(
     validate_command("command", command)?;
     stored_run(
         write,
-        &format!(
-            "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3
-             WHERE id = ?1
-             RETURNING {RUN_COLUMNS}"
-        ),
+        "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3
+             WHERE id = ?1",
         (id.0, command, now),
         now,
     )
@@ -483,10 +468,7 @@ pub async fn decline_run(
     undecided(write, id, now).await?;
     stored_run(
         write,
-        &format!(
-            "UPDATE approvals_runs SET state = 'declined', decided_at = ?2 WHERE id = ?1
-             RETURNING {RUN_COLUMNS}"
-        ),
+        "UPDATE approvals_runs SET state = 'declined', decided_at = ?2 WHERE id = ?1",
         (id.0, now),
         now,
     )
@@ -519,11 +501,8 @@ pub async fn approve_run(
     }
     let run = stored_run(
         write,
-        &format!(
-            "UPDATE approvals_runs SET state = 'approved', decided_at = ?2, approved_digest = ?3
-             WHERE id = ?1
-             RETURNING {RUN_COLUMNS}"
-        ),
+        "UPDATE approvals_runs SET state = 'approved', decided_at = ?2, approved_digest = ?3
+             WHERE id = ?1",
         (id.0, now, current_digest),
         now,
     )
@@ -708,16 +687,20 @@ pub async fn reconcile_run(
     Ok(RunState::OutcomeUnknown)
 }
 
-/// Runs `sql`, an `INSERT` or `UPDATE` of one row `RETURNING` [`RUN_COLUMNS`], and returns
-/// that row as it was stored.
+/// Runs `sql`, an `INSERT` or `UPDATE` of one request, and returns it as stored.
 async fn stored_run(
     write: &WriteTransaction<'_>,
     sql: &str,
     params: impl cockpit_turso::sql::IntoParams,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let row = write.prepare(sql).await?.query_row(params).await?;
-    run_from(&row, now)
+    stored_row(
+        write,
+        &format!("{sql} RETURNING {RUN_COLUMNS}"),
+        params,
+        |row| run_from(row, now),
+    )
+    .await
 }
 
 async fn fenced_update(

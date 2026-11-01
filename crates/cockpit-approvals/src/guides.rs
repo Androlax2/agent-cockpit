@@ -19,7 +19,7 @@ use crate::display::is_outside_project;
 use crate::error::invalid;
 use crate::rows::{
     AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
-    refreshed_expiry, session_from, state_at, still_asking,
+    refreshed_expiry, session_from, state_at, still_asking, stored_row,
 };
 use crate::runs::{
     REASON_MAX_CHARS, RunAsk, RunId, asker_may_still_ask, asking_grant, insert_run, may_still_ask,
@@ -285,12 +285,9 @@ pub async fn ask_guide(
         .transpose()?;
     let mut asked = stored_guide(
         write,
-        &format!(
-            "INSERT INTO approvals_guides (id, session, title, cwd, project, project_root,
+        "INSERT INTO approvals_guides (id, session, title, cwd, project, project_root,
                 state, current_step, step_count, asked_at, expires_at, asking_grant)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'asking', 0, ?7, ?8, ?9, ?10)
-             RETURNING {GUIDE_COLUMNS}"
-        ),
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'asking', 0, ?7, ?8, ?9, ?10)",
         (
             id,
             session.as_str(),
@@ -309,12 +306,9 @@ pub async fn ask_guide(
     for (position, step) in guide.steps.iter().enumerate() {
         let stored = stored_step(
             write,
-            &format!(
-                "INSERT INTO approvals_guide_steps
+            "INSERT INTO approvals_guide_steps
                     (guide, position, section, text, open, copy, ask, run)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 RETURNING {STEP_COLUMNS}"
-            ),
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             (
                 id,
                 i64::try_from(position).expect("at most GUIDE_MAX_STEPS"),
@@ -361,21 +355,13 @@ pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideR
     while let Some(row) = rows.next().await? {
         steps.entry(row.get(0)?).or_default().push(step_from(&row)?);
     }
-    let mut verdicts = HashMap::new();
     let mut open = Vec::with_capacity(guides.len());
     for mut guide in guides {
         // Both queries read one snapshot and every guide has a step: a miss is a broken row.
         guide.steps = steps
             .remove(&guide.id.0)
             .ok_or_else(|| invalid_row(TABLE, format!("guide {} has no steps", guide.id.0)))?;
-        if may_still_ask(
-            connection,
-            &mut verdicts,
-            &guide.session,
-            guide.asking_grant,
-        )
-        .await?
-        {
+        if may_still_ask(connection, &guide.session, guide.asking_grant).await? {
             open.push(guide);
         }
     }
@@ -436,7 +422,7 @@ pub async fn guide_status(
         .await?;
     updated_guide(
         write,
-        guide,
+        guide.steps,
         "UPDATE approvals_guides SET expires_at = ?2 WHERE id = ?1",
         (id.0, expires_at),
         now,
@@ -513,18 +499,15 @@ pub async fn answer_step(
     let position = i64::try_from(step).expect("at most GUIDE_MAX_STEPS");
     guide.steps[step] = stored_step(
         write,
-        &format!(
-            "UPDATE approvals_guide_steps SET answer = ?3, run_request = ?4, answered_at = ?5
-             WHERE guide = ?1 AND position = ?2
-             RETURNING {STEP_COLUMNS}"
-        ),
+        "UPDATE approvals_guide_steps SET answer = ?3, run_request = ?4, answered_at = ?5
+             WHERE guide = ?1 AND position = ?2",
         (id.0, position, answer, run_request.map(|run| run.0), now),
     )
     .await?;
     let is_last = step + 1 == guide.steps.len();
     updated_guide(
         write,
-        guide,
+        guide.steps,
         "UPDATE approvals_guides SET current_step = ?2,
             state = CASE WHEN ?3 THEN 'done' ELSE state END,
             ended_at = CASE WHEN ?3 THEN ?4 ELSE ended_at END
@@ -552,7 +535,7 @@ pub async fn report_stuck(
     })?;
     updated_guide(
         write,
-        guide,
+        guide.steps,
         "UPDATE approvals_guides SET state = 'stuck', stuck_note = ?2, ended_at = ?3
          WHERE id = ?1",
         (id.0, note.as_str(), now),
@@ -569,7 +552,7 @@ pub async fn close_guide(
     let guide = asking(write, id, now).await?;
     updated_guide(
         write,
-        guide,
+        guide.steps,
         "UPDATE approvals_guides SET state = 'closed', ended_at = ?2 WHERE id = ?1",
         (id.0, now),
         now,
@@ -577,47 +560,50 @@ pub async fn close_guide(
     .await
 }
 
-/// Runs `update`, an `UPDATE` of `guide`'s row, and returns the row as stored with `guide`'s
-/// steps, which `update` leaves alone.
+/// Runs `update`, an `UPDATE` of one guide's row, and returns the guide as stored with
+/// `steps`, which `update` leaves alone.
 async fn updated_guide(
     write: &WriteTransaction<'_>,
-    guide: GuideRequest,
+    steps: Vec<GuideStep>,
     update: &str,
     params: impl cockpit_turso::sql::IntoParams,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut updated = stored_guide(
-        write,
-        &format!("{update} RETURNING {GUIDE_COLUMNS}"),
-        params,
-        now,
-    )
-    .await?;
-    updated.steps = guide.steps;
+    let mut updated = stored_guide(write, update, params, now).await?;
+    updated.steps = steps;
     Ok(updated)
 }
 
-/// Runs `sql`, an `INSERT` or `UPDATE` of one guide `RETURNING` [`GUIDE_COLUMNS`], and returns
-/// that row as it was stored, without its steps.
+/// Runs `sql`, an `INSERT` or `UPDATE` of one guide, and returns it as stored, without its
+/// steps.
 async fn stored_guide(
     write: &WriteTransaction<'_>,
     sql: &str,
     params: impl cockpit_turso::sql::IntoParams,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let row = write.prepare(sql).await?.query_row(params).await?;
-    guide_from(&row, now)
+    stored_row(
+        write,
+        &format!("{sql} RETURNING {GUIDE_COLUMNS}"),
+        params,
+        |row| guide_from(row, now),
+    )
+    .await
 }
 
-/// Runs `sql`, an `INSERT` or `UPDATE` of one step `RETURNING` [`STEP_COLUMNS`], and returns
-/// that step as it was stored.
+/// Runs `sql`, an `INSERT` or `UPDATE` of one step, and returns it as stored.
 async fn stored_step(
     write: &WriteTransaction<'_>,
     sql: &str,
     params: impl cockpit_turso::sql::IntoParams,
 ) -> Result<GuideStep, Error> {
-    let row = write.prepare(sql).await?.query_row(params).await?;
-    step_from(&row)
+    stored_row(
+        write,
+        &format!("{sql} RETURNING {STEP_COLUMNS}"),
+        params,
+        step_from,
+    )
+    .await
 }
 
 /// The reason an `ask run` request filed by a `run:` step shows the owner.
