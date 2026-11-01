@@ -37,8 +37,8 @@ pub const STALL_PROJECT: &str = "stall";
 pub const REPORT_PROJECT: &str = "report";
 /// The label the [`REPORT_PROJECT`] agent reports.
 pub const REPORTED_LABEL: &str = "reported from the agent";
-/// A project of this name runs an agent that writes `DISPLAY`, `WAYLAND_DISPLAY` and
-/// `DBUS_SESSION_BUS_ADDRESS` as it was started with to [`Home::environment_log`],
+/// A project of this name runs an agent that writes `DISPLAY`, `XAUTHORITY`,
+/// `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` as it was started with to [`Home::environment_log`],
 /// `<name>=unset` for each one it lacks.
 pub const ENVIRONMENT_PROJECT: &str = "environment";
 /// A project of this name runs an agent that, as soon as it starts, asks the owner to run
@@ -73,8 +73,9 @@ case "${PWD##*/}" in
   @ASK_GUIDE@) printf '@ASKED_GUIDE@' | '@COCKPIT@' ask guide 2>> '@ASK_LOG@'
     printf 'guide=%s\n' "$?" >> '@ASK_LOG@'
     exec sleep 3600 ;;
-  @ENVIRONMENT@) printf 'DISPLAY=%s\nWAYLAND_DISPLAY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' \
-      "${DISPLAY-unset}" "${WAYLAND_DISPLAY-unset}" "${DBUS_SESSION_BUS_ADDRESS-unset}" \
+  @ENVIRONMENT@) printf 'DISPLAY=%s\nXAUTHORITY=%s\nWAYLAND_DISPLAY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' \
+      "${DISPLAY-unset}" "${XAUTHORITY-unset}" "${WAYLAND_DISPLAY-unset}" \
+      "${DBUS_SESSION_BUS_ADDRESS-unset}" \
       > '@ENVIRONMENT_LOG@.partial' && mv '@ENVIRONMENT_LOG@.partial' '@ENVIRONMENT_LOG@'
     exec sleep 3600 ;;
   *) exec sleep 3600 ;;
@@ -160,6 +161,39 @@ impl Home {
         self.path()
             .join("run/cockpit")
             .join(cockpit_config::DAEMON_SOCKET)
+    }
+
+    pub fn agent_socket_path(&self) -> PathBuf {
+        self.path()
+            .join("run/cockpit")
+            .join(cockpit_config::AGENT_SOCKET_DIR)
+            .join(cockpit_config::AGENT_SOCKET)
+    }
+
+    /// Writes the owner's `config.toml`, which the next daemon start reads.
+    pub fn write_owner_config(&self, contents: &str) {
+        let dir = self.path().join("config/cockpit");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), contents).unwrap();
+    }
+
+    /// Runs the real [`cockpit_program`] as the owner in this home, with `extra` as its only
+    /// other environment, off the test's runtime threads.
+    pub async fn cockpit(
+        &self,
+        arguments: &[&str],
+        extra: &[(&str, &str)],
+    ) -> std::process::Output {
+        let mut command = Process::new(cockpit_program());
+        command
+            .args(arguments)
+            .env_clear()
+            .env("HOME", self.path())
+            .env("XDG_RUNTIME_DIR", self.path().join("run"))
+            .envs(extra.iter().copied());
+        tokio::task::spawn_blocking(move || command.output().expect("cockpit runs"))
+            .await
+            .unwrap()
     }
 
     /// Every launch the fake agent logged, oldest first.

@@ -470,6 +470,12 @@ pub enum Command {
     },
     /// The providers `session-new` may name in `agent`: those the daemon was started with.
     ProviderList,
+    /// Owner only: the [`crate::DESKTOP_SESSION_VARIABLES`] later launches get, replacing
+    /// the ones the daemon had (#307). Only the set ones travel; a name missing here is
+    /// unset in later agents. Running agents keep theirs.
+    DesktopSessionImport {
+        variables: std::collections::BTreeMap<String, String>,
+    },
     /// Open the manager tmux session, or find the one already open. `column` (the TUI) runs
     /// in its left pane and `viewer` in the pane beside it until a session is shown there,
     /// both from `dir` (absolute). Words are never parsed by a shell.
@@ -638,6 +644,11 @@ pub enum Reply {
     },
     Providers {
         providers: Vec<ProviderView>,
+    },
+    /// The import is recorded. `withheld`: the owner's `agents.desktop_session` keeps
+    /// agents off the desktop session, so none of them gets it (#305).
+    DesktopSessionImported {
+        withheld: bool,
     },
     /// The manager session: `attach` are the words that attach a terminal to it; `created`
     /// says whether this request opened it.

@@ -3,6 +3,7 @@
 //! end-to-end tests' daemon (`examples/cockpit-e2e-daemon.rs`, #300) runs the same with
 //! shorter clocks, so the product's configuration floors never move for a test.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,20 +16,10 @@ use crate::{Instance, Options, Routes, StartError, Wiring, session_settings};
 pub const SESSION_TICK: Duration = Duration::from_secs(30);
 
 /// Variables of the daemon's own environment every agent starts with, where set, beside its
-/// XDG layout; the provider adds its own after them. The display ones let the agent's tools
-/// reach the owner's desktop session, notifications first (#303).
+/// XDG layout; the provider adds its own after them. The desktop session's
+/// ([`cockpit_protocol::DESKTOP_SESSION_VARIABLES`]) follow while the owner shares them.
 const AGENT_BASE_VARIABLES: &[&str] = &[
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "PATH",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "DISPLAY",
-    "WAYLAND_DISPLAY",
-    "DBUS_SESSION_BUS_ADDRESS",
+    "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
 ];
 
 /// How [`serve`] runs.
@@ -92,9 +83,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         .map(|claude| Arc::new(claude) as Arc<dyn Provider>)
         .collect();
     let mut sessions = cockpit_sessions::Settings {
-        base_environment: AGENT_BASE_VARIABLES
-            .iter()
-            .filter_map(|name| Some(((*name).into(), std::env::var_os(name)?)))
+        base_environment: own_variables(AGENT_BASE_VARIABLES)
             .chain(
                 environment
                     .layout_variables()
@@ -119,6 +108,9 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             git: cockpit_projects::Git::from_path(),
             providers,
             sessions,
+            // The start's values until the owner imports fresher ones (#307).
+            desktop_environment: own_variables(&cockpit_protocol::DESKTOP_SESSION_VARIABLES)
+                .collect(),
             session_tick: serve.session_tick,
             run_settings,
             environment: environment.clone(),
@@ -132,6 +124,13 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         daemon.wait().await;
         Ok(())
     })
+}
+
+/// Those of `names` the daemon's own environment sets, never invented (#303).
+fn own_variables(names: &[&str]) -> impl Iterator<Item = (OsString, OsString)> {
+    names
+        .iter()
+        .filter_map(|name| Some(((*name).into(), std::env::var_os(name)?)))
 }
 
 /// The Claude Code adapter for the `claude` on the daemon's `PATH`, with the hook bridge and

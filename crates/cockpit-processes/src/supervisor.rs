@@ -240,9 +240,15 @@ impl Supervisor {
             launcher.extend(terminal.leader_arguments.iter().map(OsString::as_os_str));
         }
         launcher.push(OsStr::new("/bin/sh"));
+        let scope_only = match containment {
+            Containment::SystemdScope { .. } => scope_manager_variables(&spec.environment),
+            Containment::ProcessGroup => Vec::new(),
+        };
         let (mut command, program) = match containment {
             Containment::SystemdScope { unit } => {
-                let mut command = self.systemd.scope_launcher(unit, takes_expand_environment);
+                let mut command =
+                    self.systemd
+                        .scope_launcher(unit, takes_expand_environment, &scope_only);
                 command.args(&launcher);
                 (command, self.systemd.systemd_run.clone())
             }
@@ -286,9 +292,7 @@ impl Supervisor {
                     .process_group(0);
             }
         }
-        if let Containment::SystemdScope { .. } = containment {
-            command.envs(scope_manager_variables(&spec.environment));
-        }
+        command.envs(scope_only);
         command.spawn().map_err(Error::io("spawn", program))
     }
 
@@ -373,10 +377,13 @@ impl Supervisor {
         command.push(environment_file.into_os_string());
         if let Containment::SystemdScope { unit } = containment {
             let takes_expand_environment = self.scope_takes_expand_environment(containment).await;
-            command.extend(
-                self.systemd
-                    .scope_launcher_words(unit, takes_expand_environment),
-            );
+            // `launch_environment` appended the scope's manager variables after the spec's.
+            let scope_only = &environment[spec.environment.len()..];
+            command.extend(self.systemd.scope_launcher_words(
+                unit,
+                takes_expand_environment,
+                scope_only,
+            ));
         }
         command.extend(["/bin/sh", "-c", LAUNCH_SCRIPT, "cockpit-launch"].map(OsString::from));
         command.push(dir.join(LEADER_FILE).into_os_string());
@@ -794,8 +801,8 @@ async fn identity_present(systemd: &SystemdTools, identity: &Identity) -> bool {
 }
 
 /// The daemon's variables `systemd-run --user` finds this user's manager through, for those
-/// `environment` does not set: with `--scope` it execs the program, which inherits them, and
-/// a spec's own value wins.
+/// `environment` does not set; a spec's own value wins. Only `systemd-run` keeps them: the
+/// scope launcher unsets them before the program.
 fn scope_manager_variables(environment: &[(OsString, OsString)]) -> Vec<(OsString, OsString)> {
     ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]
         .into_iter()

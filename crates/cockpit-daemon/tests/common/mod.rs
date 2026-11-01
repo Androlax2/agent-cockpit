@@ -309,6 +309,7 @@ pub fn wiring_in(
         git: cockpit_projects::Git::from_path(),
         providers,
         sessions: cockpit_sessions::Settings::default(),
+        desktop_environment: Vec::new(),
         session_tick: Duration::from_secs(3600),
         run_settings: cockpit_daemon::run_settings(Vec::new()).unwrap(),
         environment: cockpit_config::Environment {

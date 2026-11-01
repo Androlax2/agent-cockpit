@@ -12,10 +12,14 @@ through, for every agent.
   not guess `:0`, `wayland-0` or `$XDG_RUNTIME_DIR/bus`. A daemon started as a user unit
   without the graphical session's environment gives its agents no display, and the fix is
   the unit's environment (`systemctl --user import-environment`) and a daemon restart, not a
-  default here. Values are read once at daemon start; a fresher source is #307.
-- **Every agent, no opt-out yet.** The desktop session is the owner's own; a sandbox profile
-  that must keep an agent off it (the session bus can start units outside containment) needs
-  a named opt-out first: #305 (report 11).
+  default here. Values are read at daemon start until the owner imports fresher ones (#307,
+  `2026-11-01-307-desktop-session-import.md`).
+- **`XAUTHORITY` joins them (#306).** Under GDM or SDDM on X11 the cookie is not
+  `~/.Xauthority`, so `DISPLAY` alone gives an agent's X11 client "Authorization required".
+  Same rule: passed when the daemon has it, never invented.
+- **Every agent, unless the owner withholds them.** The desktop session is the owner's own;
+  `agents.desktop_session = "withheld"` keeps every agent off it, a sandbox profile later
+  (#305, `2026-11-01-305-desktop-session-opt-out.md`).
 - **Rejected: sending notifications through the daemon instead.** The daemon has no desktop
   dependencies (decision register 11), and the failing calls are the agent's own tools,
   which read these variables directly.

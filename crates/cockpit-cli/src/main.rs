@@ -24,6 +24,7 @@ mod agent;
 mod approvals;
 mod ask;
 mod daemon;
+mod desktop_session;
 mod projects;
 mod resources;
 mod sessions;
@@ -62,6 +63,7 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit session end --finished
        cockpit session link SESSION URL
        cockpit provider list
+       cockpit desktop-session import
        cockpit tui
        cockpit version [--all]
        cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...
@@ -136,6 +138,10 @@ fn main() -> ExitCode {
         },
         [Some("provider"), ..] => match sessions::parse_provider(&arguments[1..]) {
             Ok(command) => sessions::run(command),
+            Err(problem) => usage_error(Some(problem)),
+        },
+        [Some("desktop-session"), ..] => match desktop_session::parse(&arguments[1..]) {
+            Ok(()) => desktop_session::import(),
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("tui"), ..] => {

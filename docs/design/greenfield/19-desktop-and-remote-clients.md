@@ -43,6 +43,7 @@ surface only. Every row names what the product ships and what stays in the dotfi
 | waybar `osd-show focus-next` | `cockpit session next` prints the session needing you | focusing its window |
 | `osd-show volume\|brightness\|mute` | none: not a Cockpit feature; the GTK OSD leaves with `apps/` | a desktop OSD of their choice |
 | `autostart.lua` → `systemctl --user start cockpit.service` | `cockpit daemon install` writes the user unit (launchd agent on macOS) | enabling it at login |
+| `systemctl --user import-environment` before the daemon starts | `cockpit desktop-session import` hands a running daemon this shell's `DISPLAY`, `XAUTHORITY`, `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` for later launches (#307); `agents.desktop_session = "withheld"` keeps agents off them (#305) | running it at each login and compositor start |
 | `tmux.conf`: `cockpit-left`, `Alt+Q` queue-prompt popup, focus hooks | `cockpit-tmux` configures its own server: queue-prompt key, Left-key and focus fade as M6 polish rows | nothing: the user's `tmux.conf` is never read |
 | `CLAUDE.md` rules for `ask-to-run`, `cockpit-todo`, session label/doing | the agent instruction bundle (report 08) installed per provider | personal rules on top of the bundle |
 | `config/hyprland`, `config/kitty`, `config/waybar`, `config/fish` in this repository | removed at the M5 cutover (#71) | moved into the dotfiles |

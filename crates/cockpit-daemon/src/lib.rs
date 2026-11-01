@@ -60,6 +60,9 @@ pub struct Wiring {
     /// The agent providers sessions may launch.
     pub providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
     pub sessions: cockpit_sessions::Settings,
+    /// The owner's desktop session variables agents get until the owner imports others
+    /// (#307): the daemon start's.
+    pub desktop_environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     /// How often the sessions' periodic pass (exits, idle sleep, expiry) runs.
     pub session_tick: Duration,
     /// How approved commands run ([`run_settings`]).
@@ -75,6 +78,7 @@ pub fn session_settings(config: &cockpit_config::EffectiveConfig) -> cockpit_ses
     cockpit_sessions::Settings {
         idle_sleep_after: config.idle_sleep_after.value,
         asleep_expiry: config.asleep_expiry.value,
+        desktop_session: config.agents_desktop_session.value,
         ..cockpit_sessions::Settings::default()
     }
 }
@@ -204,6 +208,7 @@ impl Instance {
             wiring.providers,
             wiring.sessions,
         ));
+        sessions.import_desktop_environment(wiring.desktop_environment);
         sessions::restore(&sessions)
             .await
             .map_err(StartError::Restore)?;

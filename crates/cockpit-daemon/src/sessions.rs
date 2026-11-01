@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    Command, ErrorCode, LaunchKindView, LaunchView, ProtocolError, Reply, SessionFailure,
-    SessionStateView, SessionView, StopTargetView,
+    Command, DESKTOP_SESSION_VARIABLES, ErrorCode, LaunchKindView, LaunchView, Outcome,
+    ProtocolError, Reply, SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 use cockpit_sessions::{
-    Error, LaunchKind, Restored, Session, SessionId, SessionState, Sessions, StartRequest,
-    StopTarget, WakeCause,
+    DesktopSession, Error, LaunchKind, Restored, Session, SessionId, SessionState, Sessions,
+    StartRequest, StopTarget, WakeCause,
 };
 
 use cockpit_authorization::SessionId as TaskSession;
@@ -117,6 +117,50 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
         }
     };
     Route::Run { class, job }
+}
+
+/// Records the owner's desktop session variables for later launches (#307). A name outside
+/// [`DESKTOP_SESSION_VARIABLES`] is refused, so the import cannot add other variables to
+/// every agent, and so is a value with a NUL byte, which no launch could pass on.
+pub(crate) fn import_desktop_session(
+    variables: std::collections::BTreeMap<String, String>,
+    sessions: Arc<Sessions>,
+) -> Route {
+    if let Some(unknown) = variables
+        .keys()
+        .find(|name| !DESKTOP_SESSION_VARIABLES.contains(&name.as_str()))
+    {
+        return Route::Answer(refusal(
+            ErrorCode::InvalidArgument,
+            &format!(
+                "{unknown} is not a desktop session variable; the import takes {}",
+                DESKTOP_SESSION_VARIABLES.join(", ")
+            ),
+        ));
+    }
+    if let Some(name) = variables
+        .iter()
+        .find_map(|(name, value)| value.contains('\0').then_some(name))
+    {
+        return Route::Answer(refusal(
+            ErrorCode::InvalidArgument,
+            &format!("{name} holds a NUL byte"),
+        ));
+    }
+    Route::Run {
+        class: WorkClass::Control,
+        job: Box::pin(async move {
+            sessions.import_desktop_environment(
+                variables
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), value.into()))
+                    .collect(),
+            );
+            Outcome::Ok(Reply::DesktopSessionImported {
+                withheld: sessions.desktop_session() == DesktopSession::Withheld,
+            })
+        }),
+    }
 }
 
 /// The job for an operation on the one session `session` names.

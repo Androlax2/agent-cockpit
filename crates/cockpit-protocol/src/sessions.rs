@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ProtocolError;
 
+/// The owner's desktop session variables, as `desktop-session-import` carries them and the
+/// daemon passes them to agents while `agents.desktop_session` shares them (#303, #306, #307).
+pub const DESKTOP_SESSION_VARIABLES: [&str; 4] = [
+    "DISPLAY",
+    "XAUTHORITY",
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionView {
     pub id: String,
