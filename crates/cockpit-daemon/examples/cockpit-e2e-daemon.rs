@@ -2,7 +2,7 @@
 //! sees a session fall asleep in seconds without lowering the configuration's floor.
 //! Never installed: Cargo builds examples only on request.
 //!
-//!     cockpit-e2e-daemon --idle-sleep-after-ms N --session-tick-ms N
+//!     cockpit-e2e-daemon --idle-sleep-after-s N --session-tick-ms N
 //!
 //! It runs from `<profile>/examples/`; the installation it serves (`cockpit`,
 //! `cockpit-claude-hook`) is the profile directory above it.
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use cockpit_daemon::{RUN_LEADER_FLAG, Serve, StartError, serve};
 
-const USAGE: &str = "usage: cockpit-e2e-daemon --idle-sleep-after-ms N --session-tick-ms N";
+const USAGE: &str = "usage: cockpit-e2e-daemon --idle-sleep-after-s N --session-tick-ms N";
 
 fn main() -> ExitCode {
     let mut raw_arguments = std::env::args_os().skip(1);
@@ -24,8 +24,11 @@ fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let (idle_sleep_after, session_tick) = match words.as_slice() {
-        ["--idle-sleep-after-ms", idle, "--session-tick-ms", tick] => {
-            match (milliseconds(idle), milliseconds(tick)) {
+        ["--idle-sleep-after-s", idle, "--session-tick-ms", tick] => {
+            match (
+                positive(idle).map(Duration::from_secs),
+                positive(tick).map(Duration::from_millis),
+            ) {
                 (Some(idle), Some(tick)) => (idle, tick),
                 _ => return usage(),
             }
@@ -46,11 +49,10 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-fn milliseconds(word: &str) -> Option<Duration> {
-    word.parse()
-        .ok()
-        .filter(|count| *count > 0)
-        .map(Duration::from_millis)
+/// The idle window is whole seconds: the session pass compares it with report times kept in
+/// seconds, so a millisecond flag would promise a precision it does not have.
+fn positive(word: &str) -> Option<u64> {
+    word.parse().ok().filter(|count| *count > 0)
 }
 
 fn run(idle_sleep_after: Duration, session_tick: Duration) -> Result<(), StartError> {

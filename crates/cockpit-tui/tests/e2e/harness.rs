@@ -148,8 +148,9 @@ fn programs() -> &'static Programs {
 pub enum DaemonKind {
     /// The product's `cockpit-daemon`.
     Product,
-    /// The tests' daemon: an idle session sleeps after `idle_ms`, checked every `tick_ms`.
-    ShortIdle { idle_ms: u64, tick_ms: u64 },
+    /// The tests' daemon: an idle session sleeps after `idle_seconds`, checked every
+    /// `tick_ms`.
+    ShortIdle { idle_seconds: u64, tick_ms: u64 },
 }
 
 /// A scratch home with a daemon, the TUI attached in the test's terminal, and the fake agent.
@@ -247,11 +248,14 @@ impl Cockpit {
         assert!(self.daemon.is_none(), "the daemon already runs");
         let mut command = match self.kind {
             DaemonKind::Product => self.command(&programs().daemon),
-            DaemonKind::ShortIdle { idle_ms, tick_ms } => {
+            DaemonKind::ShortIdle {
+                idle_seconds,
+                tick_ms,
+            } => {
                 let mut command = self.command(&programs().e2e_daemon);
                 command.args([
-                    "--idle-sleep-after-ms",
-                    &idle_ms.to_string(),
+                    "--idle-sleep-after-s",
+                    &idle_seconds.to_string(),
                     "--session-tick-ms",
                     &tick_ms.to_string(),
                 ]);
@@ -541,15 +545,10 @@ impl Cockpit {
 
     /// Which manager pane has the keys.
     pub fn focused(&self) -> ManagerPane {
-        let panes = self.private_tmux(&[
-            "list-panes",
-            "-t",
-            "=cockpit:",
-            "-F",
-            "#{pane_index} #{pane_active}",
-        ]);
-        match panes.lines().find(|line| line.ends_with(" 1")) {
-            Some(line) if line.starts_with("0 ") => ManagerPane::List,
+        // By position in tmux's order, as `click` selects them.
+        let panes = self.private_tmux(&["list-panes", "-t", "=cockpit:", "-F", "#{pane_active}"]);
+        match panes.lines().position(|active| active == "1") {
+            Some(0) => ManagerPane::List,
             Some(_) => ManagerPane::Viewer,
             None => panic!("no manager pane is active: {panes:?}"),
         }
@@ -737,15 +736,19 @@ pub fn session_ids(text: &str) -> Vec<String> {
 pub fn redacted(screen: &str, home: &Path) -> String {
     let mut text = screen.replace(home.to_str().unwrap(), "<home>");
     for (index, id) in session_ids(screen).iter().enumerate() {
-        text = text.replace(id, &format!("s<{}>{}", index + 1, " ".repeat(9)));
+        let placeholder = format!("s<{}>", index + 1);
+        text = text.replace(id, &format!("{placeholder:<width$}", width = id.len()));
     }
     text
 }
 
-/// The machine's Git with a fixed identity, failing the test when it fails.
+/// The machine's Git with a fixed identity and none of the developer's configuration
+/// (signing, hooks, templates), failing the test when it fails.
 fn git(dir: &Path, arguments: &[&str]) {
     let output = Command::new("git")
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(["-c", "user.name=e2e", "-c", "user.email=e2e@localhost"])
         .args(arguments)
         .output()

@@ -110,6 +110,8 @@ fn sessions_keep_their_agent_across_a_daemon_killed_with_kill_9() {
         view.state == SessionStateView::Running
     });
     assert_eq!(after.launch, before.launch, "the agent was not relaunched");
-    assert_eq!(cockpit.launches(&session).len(), 1);
+    // A round trip through the agent after the restart, then the launch log: still one.
     assert_same_conversation(&cockpit);
+    assert_eq!(cockpit.launches(&session).len(), 1);
+    assert!(!cockpit.screen().contains("resumed conversation"));
 }

@@ -29,10 +29,11 @@ fn asked(cockpit: &Cockpit, command: &str) {
 #[test]
 fn a_key_pressed_while_the_pane_asks_to_read_first_does_nothing() {
     let cockpit = Cockpit::start();
-    shown_session(&cockpit);
-    cockpit.tell_agent(HOST_COMMAND);
-    cockpit.wait_for(GRACE_HINT);
+    let session = shown_session(&cockpit);
+    // The keys go to the list before the request, so `y` follows the hint at once.
     cockpit.click(ManagerPane::List);
+    cockpit.agent_does(&session, HOST_COMMAND);
+    cockpit.wait_for(GRACE_HINT);
     cockpit.press(&["y"]);
     let screen = cockpit.wait_for(RUN_KEYS);
     assert!(screen.contains("Run request 1"), "{screen}");
