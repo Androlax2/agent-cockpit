@@ -67,9 +67,28 @@ fn with_the_bridge_a_launch_subscribes_the_hook_bridge() {
         .launch(&request(&Conversation::New))
         .unwrap();
 
+    let configs = values_of(&common::words(&command.arguments), "--config");
+    let subscription = cockpit_codex::hooks::subscription(&common::bridge().hook_command());
+    assert_eq!(configs[..subscription.len()], subscription);
+}
+
+/// #419: the agent reaches Cockpit's MCP server without configuring anything.
+#[test]
+fn with_the_bridge_a_launch_registers_cockpits_mcp_server() {
+    let command = common::codex()
+        .launch(&request(&Conversation::New))
+        .unwrap();
+    let configs = values_of(&common::words(&command.arguments), "--config");
+
     assert_eq!(
-        values_of(&common::words(&command.arguments), "--config"),
-        cockpit_codex::hooks::subscription(&common::bridge().hook_command())
+        configs[configs.len() - 2..],
+        [
+            format!(
+                "mcp_servers.cockpit.command=\"{}\"",
+                common::bridge().cockpit_program.display()
+            ),
+            "mcp_servers.cockpit.args=[\"mcp\"]".to_owned(),
+        ]
     );
 }
 

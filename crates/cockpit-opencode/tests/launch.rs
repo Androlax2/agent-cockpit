@@ -144,8 +144,8 @@ fn a_launch_with_the_bridge_loads_the_plugin_into_its_own_server() {
     let bridge = common::bridge();
 
     assert_eq!(
-        config,
-        serde_json::json!({ "plugin": [bridge.plugin.to_str().unwrap()] })
+        config["plugin"],
+        serde_json::json!([bridge.plugin.to_str().unwrap()])
     );
     let [bridge_variable, cockpit_variable, port_variable] = PLUGIN_VARIABLES;
     assert_eq!(
@@ -175,6 +175,26 @@ fn the_owners_inline_config_is_kept_and_the_plugin_joins_its_plugins() {
         serde_json::json!({
             "model": "anthropic/claude-sonnet-5-5",
             "plugin": ["their-plugin", bridge.plugin.to_str().unwrap()],
+            "mcp": { "cockpit": { "type": "local", "command": ["/opt/cockpit/bin/cockpit", "mcp"] } },
+        })
+    );
+}
+
+/// #419: the agent reaches Cockpit's MCP server without configuring anything; the owner's
+/// own servers stay.
+#[test]
+fn a_launch_with_the_bridge_registers_cockpits_mcp_server_beside_the_owners() {
+    let bridge = common::bridge();
+    let owner = r#"{"mcp":{"theirs":{"type":"remote","url":"https://example.invalid/mcp"}}}"#;
+
+    let config: serde_json::Value =
+        serde_json::from_str(&bridge.inline_config(Some(OsStr::new(owner))).unwrap()).unwrap();
+
+    assert_eq!(
+        config["mcp"],
+        serde_json::json!({
+            "theirs": { "type": "remote", "url": "https://example.invalid/mcp" },
+            "cockpit": { "type": "local", "command": ["/opt/cockpit/bin/cockpit", "mcp"] },
         })
     );
 }
@@ -183,7 +203,7 @@ fn the_owners_inline_config_is_kept_and_the_plugin_joins_its_plugins() {
 fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
     let bridge = common::bridge();
 
-    for owner in ["not json", "[]", r#"{"plugin":"one"}"#] {
+    for owner in ["not json", "[]", r#"{"plugin":"one"}"#, r#"{"mcp":[]}"#] {
         let refusal = bridge.inline_config(Some(OsStr::new(owner))).unwrap_err();
 
         assert!(

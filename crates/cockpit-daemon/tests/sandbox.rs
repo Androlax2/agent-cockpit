@@ -67,6 +67,34 @@ async fn a_launch_runs_the_agent_inside_greywall_as_its_own_proxy_client() {
     );
 }
 
+/// Greywall denies every read it was not told to allow: the instruction bundle the launch
+/// brief points at (#419) and the OpenCode plugin (#415) must be readable in every launch.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_may_read_the_instruction_bundle_and_the_opencode_plugin() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+
+    let session = new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+
+    let launches = sandbox_launches(&home);
+    let words: Vec<&str> = launches[0].split(' ').collect();
+    let readable: Vec<&str> = words
+        .windows(2)
+        .filter(|pair| pair[0] == "--allow-read-path")
+        .map(|pair| pair[1])
+        .collect();
+    let state = home.path().join("state/cockpit");
+    for folder in ["agent-context", "opencode-plugin"] {
+        assert!(
+            readable.contains(&state.join(folder).to_str().unwrap()),
+            "{folder} is not readable: {readable:?}"
+        );
+    }
+}
+
 /// Git and the project's own files live at the checkout's root: a session started in a
 /// subfolder still gets the whole checkout.
 #[tokio::test(flavor = "multi_thread")]

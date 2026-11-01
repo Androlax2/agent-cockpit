@@ -51,6 +51,10 @@ pub const PLUGIN_VARIABLES: [&str; 3] = [
     "COCKPIT_OPENCODE_PORT",
 ];
 
+/// The name Cockpit's MCP server (`cockpit mcp`) has in every harness a launch registers it
+/// with (#419).
+pub const MCP_SERVER_NAME: &str = "cockpit";
+
 /// The plugin OpenCode loads in every launch with a bridge. The daemon writes it to the
 /// file [`Bridge::plugin`] names; [`Bridge::check`] refuses a file with other content.
 pub const PLUGIN_SOURCE: &str = include_str!("../plugin/cockpit-opencode-plugin.js");
@@ -131,9 +135,11 @@ impl Bridge {
     }
 
     /// `OPENCODE_CONFIG_CONTENT`: OpenCode merges it over the owner's configuration files
-    /// and appends its plugin to theirs. `owner` is the value the owner already set, which
-    /// this one replaces: its settings are kept and the plugin appended to its own. Refused
-    /// when it is not a JSON object, rather than dropping the owner's settings unseen.
+    /// and appends its plugin to theirs; it also registers `cockpit mcp` as the
+    /// [`MCP_SERVER_NAME`] MCP server (#419). `owner` is the value the owner already set,
+    /// which this one replaces: its settings are kept, the plugin appended to its own and the
+    /// server added to its own. Refused when it is not a JSON object, rather than dropping the
+    /// owner's settings unseen.
     pub fn inline_config(&self, owner: Option<&OsStr>) -> Result<String, ProviderError> {
         let refused = |why: &str| ProviderError {
             reason: format!("OPENCODE_CONFIG_CONTENT {why}, so the plugin cannot join it"),
@@ -154,6 +160,18 @@ impl Bridge {
             .as_array_mut()
             .ok_or_else(|| refused("has a `plugin` that is not a list"))?;
         plugins.push(self.plugin.to_string_lossy().into());
+        let servers = config_object
+            .entry("mcp")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| refused("has an `mcp` that is not an object"))?;
+        servers.insert(
+            MCP_SERVER_NAME.to_owned(),
+            serde_json::json!({
+                "type": "local",
+                "command": [self.cockpit_program.to_string_lossy(), "mcp"],
+            }),
+        );
         Ok(config.to_string())
     }
 }

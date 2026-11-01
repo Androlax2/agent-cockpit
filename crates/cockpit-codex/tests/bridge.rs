@@ -7,19 +7,32 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+/// What the fake `cockpit brief` prints.
+const BRIEF: &str = "# Cockpit launch brief";
+
 struct FakeCockpit {
     dir: tempfile::TempDir,
 }
 
 impl FakeCockpit {
-    /// A `cockpit` that records its arguments and launch token, then exits with `status`.
+    /// A `cockpit` that records its arguments and launch token, then exits with `status`;
+    /// `cockpit brief` prints [`BRIEF`] and exits 0.
     fn exiting_with(status: i32) -> FakeCockpit {
+        FakeCockpit::answering_brief_with(status, 0)
+    }
+
+    /// A `cockpit` whose reports exit with `status` and whose `brief` exits with
+    /// `brief_status`.
+    fn answering_brief_with(status: i32, brief_status: i32) -> FakeCockpit {
         let dir = tempfile::tempdir().unwrap();
         common::script(
             dir.path(),
             "cockpit",
             &format!(
-                "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/arguments\"\n\
+                "if [ \"$1\" = brief ]; then printf '%s' \"$COCKPIT_LAUNCH_TOKEN\" \
+                   > \"$(dirname \"$0\")/brief-token\"\n\
+                   printf '{BRIEF}\\n'; exit {brief_status}; fi\n\
+                 printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/arguments\"\n\
                  printf '%s' \"$COCKPIT_LAUNCH_TOKEN\" > \"$(dirname \"$0\")/token\"\n\
                  echo 'reported for session s000000000001'\nexit {status}"
             ),
@@ -104,6 +117,55 @@ fn the_bridge_never_answers_codex() {
         "{:?}",
         String::from_utf8_lossy(&output.stdout)
     );
+}
+
+/// #419: every context Codex starts gets the launch brief without the agent asking for it.
+#[test]
+fn each_session_start_adds_the_launch_brief_to_codexs_context() {
+    for fixture in [
+        "session-start",
+        "session-start-clear",
+        "session-start-resume",
+    ] {
+        let cockpit = FakeCockpit::exiting_with(0);
+        let output = run_hook(
+            &cockpit.program(),
+            &common::fixture(fixture),
+            Some("token-1"),
+        );
+
+        assert!(output.status.success(), "{fixture}: {output:?}");
+        let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            answer,
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": format!("{BRIEF}\n"),
+                }
+            }),
+            "{fixture}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cockpit.dir.path().join("brief-token")).unwrap(),
+            "token-1",
+            "{fixture}"
+        );
+    }
+}
+
+#[test]
+fn a_brief_that_cannot_be_read_still_lets_the_start_report_and_exits_1() {
+    let cockpit = FakeCockpit::answering_brief_with(0, 3);
+    let output = run_hook(&cockpit.program(), &common::fixture("session-start"), None);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("`cockpit brief` failed"),
+        "{output:?}"
+    );
+    assert_eq!(cockpit.arguments().unwrap()[..2], ["agent", "report"]);
 }
 
 #[test]

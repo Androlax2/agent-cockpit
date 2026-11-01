@@ -5,6 +5,9 @@
 // bridge normalizes and reports them; this file only filters, so the per-event rules live in
 // Rust (events.rs) beside their tests.
 //
+// It also adds the session's launch brief (`cockpit brief`, #419) to every system prompt, so
+// the agent sees it without asking and a compaction never drops it.
+//
 // It stays silent unless it runs in the server its launch started: an `opencode` a tool
 // starts inherits the environment, but not the port (COCKPIT_OPENCODE_PORT).
 import { spawn } from "node:child_process"
@@ -18,6 +21,9 @@ const FORWARDED = [
   "message.part.updated",
   "message.updated",
 ]
+
+// How long `cockpit brief` may take before the prompt goes without it.
+const BRIEF_DEADLINE_MS = 10000
 
 // OpenCode's loop goes on after an assistant message that finished for these reasons.
 const UNFINISHED = ["tool-calls", "unknown"]
@@ -83,7 +89,39 @@ export const CockpitBridge = async ({ serverUrl }) => {
       }
     })
 
+  // What `cockpit brief` printed, asked once; a failed read is asked again on the next
+  // prompt, and the prompt meanwhile goes without it rather than wait.
+  let brief
+  const readBrief = () =>
+    new Promise((resolve) => {
+      try {
+        const child = spawn(cockpit, ["brief"], { stdio: ["ignore", "pipe", "ignore"] })
+        const timer = setTimeout(() => child.kill("SIGKILL"), BRIEF_DEADLINE_MS)
+        let text = ""
+        child.stdout.setEncoding("utf8")
+        child.stdout.on("data", (chunk) => {
+          text += chunk
+        })
+        child.on("error", () => resolve(""))
+        child.on("close", (code) => {
+          clearTimeout(timer)
+          resolve(code === 0 ? text.trim() : "")
+        })
+      } catch {
+        resolve("")
+      }
+    })
+
   return {
+    "experimental.chat.system.transform": async (_input, output) => {
+      brief ??= readBrief()
+      const text = await brief
+      if (!text) {
+        brief = undefined
+        return
+      }
+      output.system.push(text)
+    },
     event: async ({ event }) => {
       if (!isForwarded(event)) return
       const sessionID = event.properties?.sessionID

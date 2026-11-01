@@ -120,7 +120,15 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     let sandbox = sandbox(
         instance.options(),
         &environment,
-        &[serve.programs_dir.clone(), plugin_dir],
+        &[
+            serve.programs_dir.clone(),
+            plugin_dir,
+            // `$COCKPIT_INSTRUCTIONS`, which the launch brief points agents at (#419).
+            instance
+                .options()
+                .state_dir
+                .join(crate::agent_context::BUNDLE_DIR),
+        ],
         &config,
     );
     let mut sessions = cockpit_sessions::Settings {
@@ -176,7 +184,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
 /// The sandbox every launch goes through (#61): Greywall and greyproxy as found on the
 /// daemon's `PATH` and checked against the pinned builds, with the paths the daemon's layout
 /// gives every agent and keeps from it; `bridge_dirs` hold what the adapters' bridges run
-/// and load inside it. An engine that is missing or of another build is
+/// and load inside it, and the instruction bundle. An engine that is missing or of another build is
 /// logged; launches are then refused while the owner requires the sandbox.
 fn sandbox(
     options: &Options,

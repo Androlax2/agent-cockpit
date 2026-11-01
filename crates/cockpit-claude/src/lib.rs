@@ -25,13 +25,18 @@ pub const CONFORMANCE_VERSION: &str = "2.1.316";
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 /// Every flag a launch may pass; the conformance test finds each in `claude --help`.
-pub const LAUNCH_FLAGS: [&str; 5] = [
+pub const LAUNCH_FLAGS: [&str; 6] = [
     "--remote-control",
     "--session-id",
     "--resume",
     "--settings",
+    "--mcp-config",
     "--effort",
 ];
+
+/// The name Cockpit's MCP server (`cockpit mcp`) has in every harness a launch registers it
+/// with (#419).
+pub const MCP_SERVER_NAME: &str = "cockpit";
 
 /// The environment every launch sets; the conformance test finds each name in the binary.
 /// `CLAUDE_CODE_DISABLE_AGENT_VIEW` turns off Claude Code's background daemon:
@@ -203,6 +208,20 @@ impl ClaudeCode {
             .collect();
         serde_json::json!({ "hooks": events }).to_string()
     }
+
+    /// `--mcp-config` JSON that registers `cockpit mcp` (#419).
+    fn mcp_config(bridge: &Bridge) -> String {
+        serde_json::json!({
+            "mcpServers": {
+                MCP_SERVER_NAME: {
+                    "type": "stdio",
+                    "command": bridge.cockpit_program.to_string_lossy(),
+                    "args": ["mcp"],
+                }
+            }
+        })
+        .to_string()
+    }
 }
 
 impl Provider for ClaudeCode {
@@ -270,6 +289,9 @@ impl Provider for ClaudeCode {
             arguments.extend([
                 "--settings".into(),
                 ClaudeCode::hook_settings(bridge).into(),
+                // Variadic, so a flag or the `--` before the first message must follow it.
+                "--mcp-config".into(),
+                ClaudeCode::mcp_config(bridge).into(),
             ]);
         }
         if let Some(message) = request.first_message {
