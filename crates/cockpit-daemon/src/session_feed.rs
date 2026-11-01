@@ -24,7 +24,7 @@ const RETRY: Duration = Duration::from_secs(1);
 const PERIOD: Duration = Duration::from_secs(5);
 
 /// Published states by entity id.
-type States = BTreeMap<String, Map<String, Value>>;
+pub(crate) type States = BTreeMap<String, Map<String, Value>>;
 
 /// What one pass derived. Equal to the last pass's, there is nothing to write.
 #[derive(PartialEq)]

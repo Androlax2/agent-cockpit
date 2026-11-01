@@ -113,11 +113,12 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line<'_>> = Vec::new();
     let mut selected_rows = None;
-    let drafts = board.bug_report_drafts().len();
+    let drafts = board.bug_reports.len();
     if drafts > 0 {
         let text = format!("! Bug report drafts ({drafts}): B lists them");
         push_wrapped(&mut lines, &text, width, CARD_INDENT, bold);
     }
+    let drafts_rows = lines.len();
     for group in board.groups() {
         let project = group.project.unwrap_or("(no known project)");
         push_wrapped(&mut lines, project, width, "", bold);
@@ -145,7 +146,7 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         let text = format!("Finished ({finished}), folded: X exits them");
         push_wrapped(&mut lines, &text, width, "", bold);
     }
-    if lines.is_empty() {
+    if lines.len() == drafts_rows {
         let text = "No project yet: cockpit project add DIR";
         push_wrapped(&mut lines, text, width, "", Style::default());
     }
@@ -331,7 +332,8 @@ fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {
 fn bug_reports_text(board: &Board) -> String {
     let drafts = board.bug_report_drafts();
     if drafts.is_empty() {
-        return "No bug report draft waits for you.\n\nb reports a Cockpit bug.".to_owned();
+        return "No bug report draft waits for you.\n\nEsc, then b reports a Cockpit bug."
+            .to_owned();
     }
     let mut lines: Vec<String> = drafts
         .iter()
@@ -367,6 +369,9 @@ fn draw_bug_form(form: &BugForm, frame: &mut Frame<'_>, area: Rect) {
         Line::from("Tab next field  Enter draft it  Esc cancel"),
         Line::from("It is a draft: nothing is sent until you run cockpit bug-report send."),
     ];
+    if form.submitted.is_some() {
+        lines.push(Line::from("Drafting…"));
+    }
     if let Some(problem) = &form.problem {
         lines.push(Line::from(format!("Cannot draft: {problem}")));
     }

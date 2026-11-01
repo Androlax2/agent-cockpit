@@ -184,3 +184,32 @@ fn a_refused_draft_keeps_the_form_open_with_why() {
         screen_text(&app, now)
     );
 }
+
+#[test]
+fn the_no_project_hint_stays_beside_the_drafts_card() {
+    let now = Instant::now();
+    let mut app = app_with(&[], Vec::new(), now);
+    let only = draft(1, BugOriginView::Daemon, "the daemon crashed", 1);
+    app.apply_changes(&after_snapshot(vec![published(&only)]))
+        .unwrap();
+
+    let screen = screen_text(&app, now);
+
+    assert!(screen.contains("Bug report drafts (1)"), "{screen}");
+    assert!(screen.contains("No project yet"), "{screen}");
+}
+
+#[test]
+fn a_draft_on_its_way_takes_no_edit() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], Vec::new(), now);
+    press(&mut app, &[Key::Char('b')], now);
+    typing(&mut app, "the list froze", now);
+    press(&mut app, &[Key::Enter], now);
+
+    typing(&mut app, " again", now);
+
+    let screen = screen_text(&app, now);
+    assert!(!screen.contains("froze again"), "{screen}");
+    assert!(screen.contains("Drafting…"), "{screen}");
+}

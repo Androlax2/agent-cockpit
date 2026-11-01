@@ -47,7 +47,12 @@ impl BugForm {
         }
     }
 
+    /// While its draft is on its way only Esc acts: an edit made then would be lost when the
+    /// answer closes the form, and the draft would not have it.
     pub fn key(&mut self, key: Key) -> FormOutcome {
+        if self.submitted.is_some() && key != Key::Esc {
+            return FormOutcome::Editing;
+        }
         match key {
             Key::Esc => return FormOutcome::Cancelled,
             Key::Enter => return self.submit(),
@@ -79,9 +84,6 @@ impl BugForm {
     }
 
     fn submit(&mut self) -> FormOutcome {
-        if self.submitted.is_some() {
-            return FormOutcome::Editing;
-        }
         if self.description.trim().is_empty() {
             self.problem = Some("describe what went wrong".to_owned());
             return FormOutcome::Editing;

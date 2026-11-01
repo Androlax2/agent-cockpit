@@ -13,14 +13,11 @@ use std::time::Duration;
 
 use cockpit_turso::Database;
 
-use crate::session_feed::{replace, state_of};
+use crate::session_feed::{States, replace, state_of};
 
 const BUG_REPORT: &str = "bug-report";
 /// How long a pass that failed waits before it runs again, commit or not.
 const RETRY: Duration = Duration::from_secs(1);
-
-/// Published states by draft id.
-type States = std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>;
 
 /// Publishes at start and after every commit. Runs until aborted.
 pub(crate) async fn publish_forever(database: Arc<Database>) {
