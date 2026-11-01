@@ -327,6 +327,23 @@ impl Server {
             .map(drop)
     }
 
+    /// The pane of `session` that has the keys: its current window's active pane.
+    pub fn active_pane(&self, session: &SessionName) -> Result<PaneId, Error> {
+        let arguments = words(&[
+            "display-message",
+            "-p",
+            "-t",
+            &session.target(),
+            "#{pane_id}",
+        ]);
+        let printed = self.run(&arguments)?;
+        let printed = String::from_utf8_lossy(&printed);
+        PaneId::parse(printed.trim_end()).map_err(|_| Error::UnexpectedOutput {
+            arguments,
+            output: printed.into_owned(),
+        })
+    }
+
     /// Splits a pane off `parent`, to its right (`side_by_side`) or below it, holding
     /// `percent` of its size, and returns the new pane's id. Focus stays where it was, so
     /// keys keep going to the pane the human typed in.

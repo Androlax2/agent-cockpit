@@ -6,8 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cockpit_protocol::{
-    Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition, GuideStateView, GuideView,
-    ProjectView, RunRequestView, RunStateView, SessionReport, SessionStateView, SessionView,
+    AgentState, Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition, GuideStateView,
+    GuideView, ProjectView, QuestionSource, RunRequestView, RunStateView, SessionReport,
+    SessionStateView, SessionView,
 };
 
 /// The daemon's state as last applied.
@@ -202,16 +203,34 @@ impl Board {
     /// Whether the session waits on the owner: an approval or guide it asked for, a command
     /// of its waiting for input, or a question it reported.
     pub fn needs_you(&self, session: &str) -> bool {
+        self.has_open_request(session)
+            || self
+                .reports
+                .get(session)
+                .is_some_and(|report| report.needs_input.is_some())
+    }
+
+    /// An approval or guide the session asked for, or a command of its waiting for input.
+    fn has_open_request(&self, session: &str) -> bool {
         self.runs.iter().any(|run| {
             run.session == session && (run.state == RunStateView::Asking || run.waiting_for_input)
         }) || self
             .guides
             .iter()
             .any(|guide| guide.session == session && guide.state == GuideStateView::Asking)
-            || self
-                .reports
-                .get(session)
-                .is_some_and(|report| report.needs_input.is_some())
+    }
+
+    /// Whether all that waits on the owner is the agent's own question, asked while it still
+    /// works (#182): it goes on with its turn instead of being blocked on a dialog, a request
+    /// or a guide (#215). A report without a question source, from a daemon before #182,
+    /// counts as blocked.
+    pub fn asked_while_working(&self, session: &str) -> bool {
+        !self.has_open_request(session)
+            && self.reports.get(session).is_some_and(|report| {
+                report.needs_input.is_some()
+                    && report.question_source == Some(QuestionSource::Agent)
+                    && report.state == Some(AgentState::Working)
+            })
     }
 
     pub fn report(&self, session: &str) -> Option<&SessionReport> {

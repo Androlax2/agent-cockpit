@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, Routes};
 use cockpit_protocol::{
-    Command, ErrorCode, LaunchKindView, ProviderView, Reply, SessionStateView, SessionView,
+    Command, ErrorCode, LaunchKindView, ManagerPaneView, ProviderView, Reply, SessionStateView,
+    SessionView,
 };
 use cockpit_provider_api::fake::FakeProvider;
 use cockpit_provider_api::{Provider, ProviderName};
@@ -322,6 +323,10 @@ async fn the_manager_opens_a_column_and_a_viewer_once_and_answers_how_to_attach(
 
 /// The index of the pane an attached client's keys go to: the window's active pane. The
 /// column is pane 0, the viewer pane 1.
+fn focus(pane: ManagerPaneView) -> Command {
+    Command::ManagerFocus { pane }
+}
+
 fn focused_pane(home: &Home) -> String {
     home.tmux(&["display-message", "-p", "-t", "=cockpit:", "#{pane_index}"])
         .trim()
@@ -357,7 +362,7 @@ async fn reopening_the_manager_keeps_the_pane_its_owner_focused() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn manager_focus_gives_the_keys_back_to_the_column() {
+async fn manager_focus_gives_the_column_the_keys_the_viewer_had() {
     let home = Home::new();
     let daemon = home.start().await;
     let client = Connection::open(daemon.socket_path(), GENEROUS)
@@ -366,12 +371,56 @@ async fn manager_focus_gives_the_keys_back_to_the_column() {
     home.open_manager(&client).await.unwrap();
     home.tmux(&["select-pane", "-t", "=cockpit:.1"]);
 
-    let reply = request(&client, Command::ManagerFocus).await.unwrap();
+    let reply = request(&client, focus(ManagerPaneView::Column))
+        .await
+        .unwrap();
 
     assert_eq!(
         (reply, focused_pane(&home)),
-        (Reply::ManagerFocused, "0".to_owned())
+        (
+            Reply::ManagerFocused {
+                took_from_viewer: true
+            },
+            "0".to_owned()
+        )
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manager_focus_on_the_column_that_has_the_keys_says_the_viewer_had_none() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+
+    let reply = request(&client, focus(ManagerPaneView::Column))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        reply,
+        Reply::ManagerFocused {
+            took_from_viewer: false
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manager_focus_gives_the_viewer_its_keys_back() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+
+    request(&client, focus(ManagerPaneView::Viewer))
+        .await
+        .unwrap();
+
+    assert_eq!(focused_pane(&home), "1");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -382,7 +431,7 @@ async fn manager_focus_before_the_manager_is_open_is_refused_naming_the_fix() {
         .await
         .unwrap();
 
-    let error = refusal(request(&client, Command::ManagerFocus).await);
+    let error = refusal(request(&client, focus(ManagerPaneView::Column)).await);
 
     assert_eq!(error.code, ErrorCode::NotFound);
     assert!(
@@ -483,7 +532,7 @@ async fn an_agent_may_neither_open_nor_focus_the_manager_nor_list_providers() {
 
     let codes = [
         refusal(home.open_manager(&agent).await).code,
-        refusal(request(&agent, Command::ManagerFocus).await).code,
+        refusal(request(&agent, focus(ManagerPaneView::Column)).await).code,
         refusal(request(&agent, Command::ProviderList).await).code,
     ];
 

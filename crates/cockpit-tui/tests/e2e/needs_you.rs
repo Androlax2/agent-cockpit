@@ -56,3 +56,29 @@ fn answering_the_agent_clears_the_mark() {
     let screen = cockpit.wait_for_gone("waiting on you");
     assert!(!screen.contains(&format!("! {session}")), "{screen}");
 }
+
+#[test]
+fn an_agent_that_asked_and_still_works_shows_apart_from_one_waiting_on_you() {
+    let cockpit = Cockpit::start();
+    let session = cockpit.session_from_cli();
+    cockpit.wait_for(&session);
+    let go_on = cockpit.project_root().join("go-on");
+    // The agent asks, then runs its next tool (the hook reports it working) until the test
+    // lets its turn end.
+    cockpit.agent_does(
+        &session,
+        &format!(
+            r#"!cockpit agent report --needs-input "Pick A or B?" && cockpit agent report --state working && until [ -e '{}' ]; do sleep 0.1; done"#,
+            go_on.display()
+        ),
+    );
+    cockpit.wait_until("the card's asked mark", |screen| {
+        screen.contains(&format!("? {session}")) && screen.contains("asked you, still working")
+    });
+
+    std::fs::write(&go_on, "").unwrap();
+
+    cockpit.wait_until("the card's needs-you mark", |screen| {
+        card_shows_needs_you(screen, &session)
+    });
+}

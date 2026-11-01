@@ -1,7 +1,9 @@
 //! The wire form of the commands the TUI and the CLI add for #35: the provider list for the
 //! new-session form, the manager session and showing a session in its viewer; and the owner's
 //! desktop-session import (#307) and config reload (#354).
-use cockpit_protocol::{AppliedSettingView, Command, ProviderView, Reply, decode_request};
+use cockpit_protocol::{
+    AppliedSettingView, Command, ManagerPaneView, ProviderView, Reply, decode_request,
+};
 use serde_json::json;
 
 #[test]
@@ -76,16 +78,42 @@ fn the_providers_and_manager_replies_name_their_fields_on_the_wire() {
 }
 
 #[test]
-fn a_manager_focus_and_its_reply_carry_only_their_kind() {
+fn a_manager_focus_names_the_pane_that_takes_the_keys() {
+    let wire = json!({"id": 3, "command": {"kind": "manager-focus", "pane": "viewer"}});
+
+    let request = decode_request(&wire.to_string()).unwrap();
+
+    assert_eq!(
+        request.command,
+        Command::ManagerFocus {
+            pane: ManagerPaneView::Viewer
+        }
+    );
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+}
+
+#[test]
+fn a_manager_focus_without_its_pane_gives_the_column_the_keys_as_before_345() {
     let wire = json!({"id": 3, "command": {"kind": "manager-focus"}});
 
     let request = decode_request(&wire.to_string()).unwrap();
 
-    assert_eq!(request.command, Command::ManagerFocus);
-    assert_eq!(serde_json::to_value(request).unwrap(), wire);
     assert_eq!(
-        serde_json::to_value(Reply::ManagerFocused).unwrap(),
-        json!({"kind": "manager-focused"})
+        request.command,
+        Command::ManagerFocus {
+            pane: ManagerPaneView::Column
+        }
+    );
+}
+
+#[test]
+fn manager_focused_says_whether_the_viewer_had_the_keys() {
+    assert_eq!(
+        serde_json::to_value(Reply::ManagerFocused {
+            took_from_viewer: true
+        })
+        .unwrap(),
+        json!({"kind": "manager-focused", "took_from_viewer": true})
     );
 }
 

@@ -210,7 +210,7 @@ fn a_card_in_a_39_column_list_shows_that_it_needs_you_its_label_and_its_doing() 
             ">  s00000000000b  fake  running",
             " ! s00000000000d  other  running",
             "   waiting on you · acceptance label",
-            "· dry-run doing",
+            "   · dry-run doing",
         ],
     );
 }

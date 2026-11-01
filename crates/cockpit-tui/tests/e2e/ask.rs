@@ -80,6 +80,35 @@ fn the_pane_takes_the_keys_from_the_viewer_the_owner_typed_in() {
 }
 
 #[test]
+fn the_keys_return_to_the_viewer_once_the_pane_empties() {
+    let cockpit = Cockpit::start();
+    cockpit.shown_session();
+    asked(&cockpit, HOST_COMMAND);
+
+    cockpit.press(&["y"]);
+
+    cockpit.wait_for_gone("Waiting on you");
+    cockpit.wait_for_focus(ManagerPane::Viewer);
+}
+
+#[test]
+fn the_keys_stay_in_the_list_the_owner_had_them_in_once_the_pane_empties() {
+    let cockpit = Cockpit::start();
+    let session = cockpit.shown_session();
+    cockpit.click(ManagerPane::List);
+    cockpit.agent_does(&session, HOST_COMMAND);
+    cockpit.wait_for(RUN_KEYS);
+    cockpit.press(&["y"]);
+    cockpit.wait_for_gone("Waiting on you");
+
+    // The owner keeps typing to the list: `N` opens the form rather than reaching the agent.
+    cockpit.press(&["N"]);
+
+    cockpit.wait_for("New session");
+    assert_eq!(cockpit.focused(), ManagerPane::List);
+}
+
+#[test]
 fn a_guide_shows_one_step_at_a_time_and_the_agent_gets_the_answer() {
     let cockpit = Cockpit::start();
     cockpit.shown_session();

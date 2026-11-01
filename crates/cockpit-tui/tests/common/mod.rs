@@ -251,7 +251,12 @@ pub fn typing(app: &mut App, text: &str, now: Instant) -> Vec<Step> {
 
 /// The screen `app` draws on a `width`×40 terminal, one string per row, right-trimmed.
 pub fn screen(app: &App, now: Instant, width: u16) -> Vec<String> {
-    let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+    sized_screen(app, now, width, 40)
+}
+
+/// The screen `app` draws on a `width`×`height` terminal, one string per row, right-trimmed.
+pub fn sized_screen(app: &App, now: Instant, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
         .draw(|frame| cockpit_tui::draw(app, frame, now))
         .unwrap();

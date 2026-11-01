@@ -21,7 +21,8 @@ pub const HELP: &str = "\
 Sessions
   j / k, Down / Up   select a session
   Enter              open it in the viewer (wakes it when asleep)
-  n                  open the next session that needs you (marked ! in the list)
+  n                  open the next session that needs you: marked ! when it is
+                     blocked on you, ? when it asked you and still works
   N                  new session (project, agent, first message, in place or new clone)
   r                  restart the selected session (confirm with y)
   x                  exit the selected session (confirm with y)
@@ -94,16 +95,22 @@ fn status_line(app: &App) -> String {
     }
 }
 
+/// The indent of a card's details line, and of every row a card's line wraps onto.
+const CARD_INDENT: &str = "   ";
+
+/// The list, wrapped here rather than by the paragraph so the rows the selected card takes
+/// are known: the list scrolls to keep that card whole on screen (#291).
 fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let board = app.board();
-    let mut lines = Vec::new();
+    let width = usize::from(area.width.saturating_sub(2));
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    let mut selected_rows = None;
     for group in board.groups() {
-        lines.push(
-            Line::from(group.project.unwrap_or("(no known project)").to_owned())
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-        );
+        let project = group.project.unwrap_or("(no known project)");
+        push_wrapped(&mut lines, project, width, "", bold);
         if group.sessions.is_empty() {
-            lines.push(Line::from("    no sessions"));
+            push_wrapped(&mut lines, "    no sessions", width, "", Style::default());
         }
         for session in group.sessions {
             let is_selected = app.selected() == Some(session.id.as_str());
@@ -112,51 +119,123 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
             } else {
                 Style::default()
             };
-            lines.extend(
-                card(board, session, is_selected)
-                    .into_iter()
-                    .map(|text| Line::from(text).style(style)),
-            );
+            let first_row = lines.len();
+            for text in card(board, session, is_selected) {
+                push_wrapped(&mut lines, &text, width, CARD_INDENT, style);
+            }
+            if is_selected {
+                selected_rows = Some(first_row..lines.len());
+            }
         }
     }
     let finished = board.finished_sessions().len();
     if finished > 0 {
-        lines.push(
-            Line::from(format!("Finished ({finished}), folded: X exits them"))
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-        );
+        let text = format!("Finished ({finished}), folded: X exits them");
+        push_wrapped(&mut lines, &text, width, "", bold);
     }
     if lines.is_empty() {
-        lines.push(Line::from("No project yet: cockpit project add DIR"));
+        let text = "No project yet: cockpit project add DIR";
+        push_wrapped(&mut lines, text, width, "", Style::default());
     }
     let title = if app.focus() == Focus::List {
         "Sessions *"
     } else {
         "Sessions"
     };
+    let height = usize::from(area.height.saturating_sub(2));
+    let offset = selected_rows.map_or(0, |rows| scroll_to_show(&rows, height));
     frame.render_widget(
         Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
+            .scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0))
             .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
 
+/// The fewest rows to scroll so `rows` end on screen; a card taller than the list shows its
+/// first rows.
+fn scroll_to_show(rows: &std::ops::Range<usize>, height: usize) -> usize {
+    rows.end.saturating_sub(height).min(rows.start)
+}
+
+fn push_wrapped(lines: &mut Vec<Line<'_>>, text: &str, width: usize, indent: &str, style: Style) {
+    lines.extend(
+        wrapped(text, width, indent)
+            .into_iter()
+            .map(|row| Line::from(row).style(style)),
+    );
+}
+
+/// `text` in rows of at most `width` columns, broken at spaces (inside a word only when the
+/// word alone is wider). Rows after the first start with `indent`, so a wrapped line stays
+/// under its card's indent instead of returning to column 0 (#291). Runs of spaces inside a
+/// row are kept; those a break falls on are dropped.
+fn wrapped(text: &str, width: usize, indent: &str) -> Vec<String> {
+    let width = width.max(columns(indent) + 1);
+    let body = text.trim_start_matches(' ');
+    let mut rows = Vec::new();
+    let mut row = text[..text.len() - body.len()].to_owned();
+    let mut row_has_word = false;
+    let mut gap = String::new();
+    for (at, word) in body.split(' ').enumerate() {
+        if at > 0 {
+            gap.push(' ');
+        }
+        if word.is_empty() {
+            continue;
+        }
+        if row_has_word {
+            if columns(&row) + columns(&gap) + columns(word) <= width {
+                row.push_str(&gap);
+                row.push_str(word);
+                gap.clear();
+                continue;
+            }
+            rows.push(std::mem::replace(&mut row, indent.to_owned()));
+        }
+        gap.clear();
+        // The word starts this row; one wider than a row is cut where the row ends.
+        let mut row_columns = columns(&row);
+        let mut row_has_char = false;
+        for character in word.chars() {
+            let character = character.to_string();
+            let character_columns = columns(&character);
+            if row_has_char && row_columns + character_columns > width {
+                rows.push(std::mem::replace(&mut row, indent.to_owned()));
+                row_columns = columns(indent);
+            }
+            row.push_str(&character);
+            row_columns += character_columns;
+            row_has_char = true;
+        }
+        row_has_word = true;
+    }
+    rows.push(row);
+    rows
+}
+
+fn columns(text: &str) -> usize {
+    ratatui::text::Span::raw(text).width()
+}
+
 /// One session's card: the id line, then whether it waits on you and what the agent reports
-/// on an indented line of their own. The `!` after the selection marker lets the eye find the
-/// sessions that need you down the list's left edge.
+/// on an indented line of their own. The mark after the selection marker lets the eye find the
+/// sessions that need you down the list's left edge: `!` blocked on you, `?` asked you and
+/// still works (#215).
 fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
-    let needs_you = board.needs_you(&session.id);
+    let (mark, waiting) = if !board.needs_you(&session.id) {
+        (" ", None)
+    } else if board.asked_while_working(&session.id) {
+        ("?", Some("asked you, still working"))
+    } else {
+        ("!", Some("waiting on you"))
+    };
     let mut card = vec![format!(
-        "{marker}{} {}  {}  {}",
-        if needs_you { "!" } else { " " },
-        session.id,
-        session.agent,
-        session.state,
+        "{marker}{mark} {}  {}  {}",
+        session.id, session.agent, session.state,
     )];
-    let details: Vec<&str> = needs_you
-        .then_some("waiting on you")
+    let details: Vec<&str> = waiting
         .into_iter()
         .chain(
             board
@@ -167,7 +246,7 @@ fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> 
         )
         .collect();
     if !details.is_empty() {
-        card.push(format!("   {}", details.join(" · ")));
+        card.push(format!("{CARD_INDENT}{}", details.join(" · ")));
     }
     card
 }

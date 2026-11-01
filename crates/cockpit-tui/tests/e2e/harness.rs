@@ -543,6 +543,25 @@ impl Cockpit {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// Gives the owner's terminal `rows` rows, its width kept, as the owner's resize does.
+    pub fn resize_rows(&self, rows: u16) {
+        let terminal = self.terminal();
+        let (columns, rows) = (COLUMNS.to_string(), rows.to_string());
+        self.terminal_tmux(
+            terminal,
+            &[
+                "resize-window",
+                "-t",
+                "=owner:",
+                "-x",
+                &columns,
+                "-y",
+                &rows,
+            ],
+        )
+        .unwrap_or_else(|problem| panic!("cannot resize the terminal: {problem}"));
+    }
+
     /// Presses keys in the owner's terminal: tmux key names (`Enter`, `Tab`, `Right`, `y`).
     pub fn press(&self, keys: &[&str]) {
         let terminal = self.terminal();
@@ -571,6 +590,18 @@ impl Cockpit {
         self.wait_until(&format!("the screen no longer shows {text:?}"), |screen| {
             !screen.contains(text)
         })
+    }
+
+    /// Waits until `pane` has the keys. tmux redraws the manager's pane borders when the
+    /// active pane changes, which is a write to the terminal that wakes the wait.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "only the Linux-only ask tests use it (#336)")
+    )]
+    pub fn wait_for_focus(&self, pane: ManagerPane) {
+        self.wait_until(&format!("the {pane:?} has the keys"), |_| {
+            self.focused() == pane
+        });
     }
 
     /// Waits until `condition` holds for the screen, reading it again after each write to

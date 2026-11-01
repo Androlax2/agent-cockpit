@@ -9,6 +9,7 @@ mod harness;
 
 mod attach;
 mod lifecycle;
+mod list;
 mod new_session;
 
 // These need the agent channel, which reads process trees on Linux only (#336).
