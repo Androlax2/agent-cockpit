@@ -47,7 +47,8 @@ pub use resources::{
 };
 pub use sessions::{
     AppliedSettingView, DESKTOP_SESSION_VARIABLES, LaunchKindView, LaunchView, ManagerPaneView,
-    ProviderView, SessionFailure, SessionStateView, SessionView, StopTargetView,
+    ProviderView, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure,
+    SessionStateView, SessionView, StopTargetView,
 };
 pub use tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,

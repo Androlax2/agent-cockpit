@@ -6,8 +6,8 @@ use std::time::Duration;
 use toml::{Table, Value};
 
 use crate::{
-    ASLEEP_EXPIRY_DAYS, ConfigFile, DesktopSession, EffectiveConfig, IDLE_SLEEP_AFTER_MINUTES,
-    Source,
+    ASLEEP_EXPIRY_DAYS, AgentSandbox, ConfigFile, DesktopSession, EffectiveConfig,
+    IDLE_SLEEP_AFTER_MINUTES, Source,
 };
 
 const UNSET: &str = "<unset>";
@@ -79,11 +79,13 @@ pub fn render(config: &EffectiveConfig) -> String {
         idle_sleep_after: config.idle_sleep_after.value,
         asleep_expiry: config.asleep_expiry.value,
         desktop_session: config.agents_desktop_session.value,
+        sandbox: config.agents_sandbox.value,
     };
     let sources = [
         &config.idle_sleep_after.source,
         &config.asleep_expiry.source,
         &config.agents_desktop_session.source,
+        &config.agents_sandbox.source,
     ];
     for ((key, value), source) in session_settings.rendered().into_iter().zip(sources) {
         lines.push(line(key, &value, source));
@@ -138,11 +140,12 @@ pub struct SessionSettings {
     pub idle_sleep_after: Duration,
     pub asleep_expiry: Duration,
     pub desktop_session: DesktopSession,
+    pub sandbox: AgentSandbox,
 }
 
 impl SessionSettings {
     /// Each setting's key and value as the owner's file writes them, in `config show`'s order.
-    pub fn rendered(&self) -> [(&'static str, String); 3] {
+    pub fn rendered(&self) -> [(&'static str, String); 4] {
         [
             (
                 IDLE_SLEEP_AFTER_MINUTES.key,
@@ -157,6 +160,10 @@ impl SessionSettings {
             (
                 "agents.desktop_session",
                 Value::from(self.desktop_session.as_str()).to_string(),
+            ),
+            (
+                "agents.sandbox",
+                Value::from(self.sandbox.as_str()).to_string(),
             ),
         ]
     }

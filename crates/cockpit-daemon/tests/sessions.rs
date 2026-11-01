@@ -433,7 +433,7 @@ fn settings() -> cockpit_sessions::Settings {
             grace: Duration::from_secs(2),
             kill_wait: Duration::from_secs(5),
         },
-        ..cockpit_sessions::Settings::default()
+        ..common::unsandboxed_settings()
     }
 }
 
@@ -1293,7 +1293,7 @@ async fn the_owner_configured_idle_window_decides_when_a_waiting_agent_sleeps() 
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("config.toml"),
-        "[sessions]\nidle_sleep_after_minutes = 45\n",
+        "[sessions]\nidle_sleep_after_minutes = 45\n[agents]\nsandbox = \"off\"\n",
     )
     .unwrap();
     let config = cockpit_config::load(&home.environment(), None, &[]).unwrap();

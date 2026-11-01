@@ -111,6 +111,8 @@ pub struct EffectiveConfig {
     pub asleep_expiry: Sourced<Duration>,
     /// Whether launched agents reach the owner's desktop session (#305).
     pub agents_desktop_session: Sourced<DesktopSession>,
+    /// Whether launched agents run in the sandbox (#61); only the owner turns it off.
+    pub agents_sandbox: Sourced<AgentSandbox>,
     /// The checks the project declares, in its order: what Cockpit runs and a gate requires.
     pub checks: Vec<Sourced<Check>>,
 }
@@ -132,6 +134,26 @@ impl DesktopSession {
         match self {
             Self::Shared => "shared",
             Self::Withheld => "withheld",
+        }
+    }
+}
+
+/// Whether a launched agent runs in the sandbox (#61). The product runs every agent in it;
+/// the owner's `agents.sandbox = "off"` is the one named opt-out, logged at every launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentSandbox {
+    /// Every launch goes through `cockpit-sandbox`; one it cannot enforce is refused.
+    Required,
+    /// Agents run unsandboxed, with the owner's rights.
+    Off,
+}
+
+impl AgentSandbox {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Off => "off",
         }
     }
 }
@@ -237,6 +259,7 @@ struct SettingsFile {
 #[serde(deny_unknown_fields)]
 struct AgentsTable {
     desktop_session: Option<Spanned<DesktopSession>>,
+    sandbox: Option<Spanned<AgentSandbox>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -369,6 +392,7 @@ pub fn load(
         idle_sleep_after: idle_sleep_after(&layers)?,
         asleep_expiry: asleep_expiry(&layers)?,
         agents_desktop_session: agents_desktop_session(&layers),
+        agents_sandbox: agents_sandbox(&layers),
         checks: checks(&layers)?,
     })
 }
@@ -706,6 +730,22 @@ fn agents_desktop_session(layers: &[Layer]) -> Sourced<DesktopSession> {
             .agents
             .as_ref()
             .and_then(|agents| agents.get_ref().desktop_session.as_ref())
+        else {
+            continue;
+        };
+        resolved = Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+    }
+    resolved
+}
+
+fn agents_sandbox(layers: &[Layer]) -> Sourced<AgentSandbox> {
+    let mut resolved = Sourced::new(AgentSandbox::Required, Source::ProductDefault);
+    for layer in layers {
+        let Some(value) = layer
+            .settings
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.get_ref().sandbox.as_ref())
         else {
             continue;
         };

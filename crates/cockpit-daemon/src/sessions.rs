@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     AppliedSettingView, Command, DESKTOP_SESSION_VARIABLES, ErrorCode, LaunchKindView, LaunchView,
-    Outcome, ProtocolError, Reply, SessionFailure, SessionStateView, SessionView, StopTargetView,
+    Outcome, ProtocolError, Reply, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView,
+    SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 use cockpit_sessions::{
     DesktopSession, Error, LaunchKind, Restored, Session, SessionId, SessionState, Sessions,
@@ -25,7 +26,9 @@ use crate::routes::{Route, WorkClass, refusal};
 /// run in the stop lane; every other command may launch an agent, so it runs in the bulk lane.
 pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
     let class = match command {
-        Command::SessionList { .. } => WorkClass::Control,
+        Command::SessionList { .. }
+        | Command::SessionSandbox { .. }
+        | Command::SandboxShow { .. } => WorkClass::Control,
         Command::SessionEnd { .. } | Command::SessionSleep { .. } => WorkClass::Stop,
         _ => WorkClass::Bulk,
     };
@@ -100,6 +103,26 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             sessions.end(&id).await
         }),
         Command::SessionEndFinished { only } => job(end_finished(sessions, only)),
+        Command::SessionSandbox { session } => job(async move {
+            let id = SessionId::parse(&session)?;
+            let evidence = sessions.sandbox_evidence(&id).await?;
+            Ok(Reply::SessionSandbox {
+                evidence: evidence.map(|evidence| Box::new(evidence_view(evidence))),
+            })
+        }),
+        Command::SandboxShow { dir, agent } => job(async move {
+            let prepared = sessions
+                .sandbox_dry_run(dir.into(), agent.as_deref())
+                .await?;
+            let command = std::iter::once(prepared.program.into_os_string())
+                .chain(prepared.arguments)
+                .map(|word| word.to_string_lossy().into_owned())
+                .collect();
+            Ok(Reply::SandboxProfile {
+                evidence: Box::new(evidence_view(prepared.evidence)),
+                command,
+            })
+        }),
         Command::SessionLink { session, url } => {
             one(session, sessions, |sessions, id| async move {
                 sessions.link(&id, &url).await
@@ -333,9 +356,40 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::TerminalBusy { .. }
         | Error::StopUnconfirmed { .. } => ErrorCode::Conflict,
         Error::StepsBusy { .. } => ErrorCode::Busy,
-        Error::Provider(_) | Error::TmuxUnavailable { .. } => ErrorCode::Refused,
+        Error::Provider(_) | Error::TmuxUnavailable { .. } | Error::Sandbox(_) => {
+            ErrorCode::Refused
+        }
         Error::Projects(error) => crate::projects::error_code(error),
         _ => ErrorCode::Internal,
+    }
+}
+
+fn evidence_view(evidence: cockpit_sandbox::Evidence) -> SandboxEvidenceView {
+    SandboxEvidenceView {
+        enforcement: match evidence.enforcement {
+            cockpit_sandbox::Enforcement::Sandboxed {
+                backend,
+                engine,
+                client_identity,
+            } => SandboxEnforcementView::Sandboxed {
+                backend,
+                engine,
+                client_identity,
+            },
+            cockpit_sandbox::Enforcement::Unsandboxed { reason } => {
+                SandboxEnforcementView::Unsandboxed { reason }
+            }
+        },
+        platform: evidence.platform,
+        rules: evidence
+            .rules
+            .into_iter()
+            .map(|rule| SandboxRuleView {
+                rule: rule.rule,
+                enforced_by: rule.enforced_by,
+            })
+            .collect(),
+        observed: evidence.observed,
     }
 }
 

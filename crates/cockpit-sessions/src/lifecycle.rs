@@ -26,6 +26,12 @@ use crate::{
     SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
 
+/// The variable that hands the agent its one-time launch token (report 17).
+const LAUNCH_TOKEN_VARIABLE: &str = "COCKPIT_LAUNCH_TOKEN";
+
+/// The session a dry run's proxy client identity names: no session launches under it.
+const DRY_RUN_SESSION: &str = "dry-run";
+
 /// Variables of the terminal tmux emulates, kept from the pane: they describe the host.
 const TERMINAL_VARIABLES: [&str; 2] = ["TERM", "COLORTERM"];
 
@@ -1373,8 +1379,36 @@ impl Sessions {
             })
             .await?
         };
+        let mut environment = self.launch_environment();
+        environment.extend(command.environment);
+        environment.push(("COCKPIT_SESSION".into(), id.as_str().into()));
+        // Every launch goes through the sandbox (#61); a profile this host cannot enforce
+        // fails the launch before anything is reserved.
+        let prepared = self.prepare_sandbox(
+            id.as_str(),
+            session.provider.as_str(),
+            session.working_dir.clone(),
+            environment,
+            command.program,
+            command.arguments,
+        )?;
+        if let cockpit_sandbox::Enforcement::Unsandboxed { reason } = &prepared.evidence.enforcement
+        {
+            tracing::warn!(session = %id, %reason, "an agent launches UNSANDBOXED");
+        }
+        if let Some(plan) = prepared.settings.clone() {
+            self.blocking("write the sandbox settings", move || {
+                plan.write_settings().map_err(|source| Error::Io {
+                    action: "write the sandbox settings",
+                    path: plan.settings_path.clone(),
+                    source,
+                })
+            })
+            .await?;
+        }
         // The execution is reserved in the transaction that records the launch, so a crash
-        // never leaves one the session does not name (#256).
+        // never leaves one the session does not name (#256); the sandbox evidence is recorded
+        // with it, so a launch the database names always says how its agent ran.
         let (token, execution) = {
             let write = self.database.write().await?;
             let token = cockpit_agent_channel::mint(&write, &channel_session).await?;
@@ -1384,25 +1418,15 @@ impl Sessions {
                 .reserve(&write, self.database.epoch())
                 .await?;
             store::insert_launch(&write, id, kind, purpose, execution, &start_files).await?;
+            cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
             write.commit().await?;
             (token, execution)
         };
-        let mut environment = self.settings.base_environment.clone();
-        if self.desktop_session() == crate::DesktopSession::Shared {
-            environment.extend(
-                self.desktop_environment
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .iter()
-                    .cloned(),
-            );
-        }
-        environment.extend(command.environment);
-        environment.push(("COCKPIT_SESSION".into(), id.as_str().into()));
-        environment.push(("COCKPIT_LAUNCH_TOKEN".into(), token.as_str().into()));
+        let mut environment = prepared.environment;
+        environment.push((LAUNCH_TOKEN_VARIABLE.into(), token.as_str().into()));
         let spec = LaunchSpec {
-            program: command.program,
-            arguments: command.arguments,
+            program: prepared.program,
+            arguments: prepared.arguments,
             working_dir: session.working_dir.clone(),
             environment,
             terminal: None,
@@ -1456,6 +1480,89 @@ impl Sessions {
         write.commit().await?;
         tracing::info!(session = %id, ?kind, execution = confirmed.id.0, "a session runs");
         Ok(running)
+    }
+
+    /// The variables every agent starts with before its provider's own: the base ones, then
+    /// the owner's desktop session while the owner shares it.
+    fn launch_environment(&self) -> Vec<(OsString, OsString)> {
+        let mut environment = self.settings.base_environment.clone();
+        if self.desktop_session() == crate::DesktopSession::Shared {
+            environment.extend(
+                self.desktop_environment
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .cloned(),
+            );
+        }
+        environment
+    }
+
+    /// How `program` runs for a launch of `provider` in `working_dir`: through the sandbox,
+    /// or unchanged only by the owner's `agents.sandbox = "off"`.
+    fn prepare_sandbox(
+        &self,
+        session: &str,
+        provider: &str,
+        working_dir: PathBuf,
+        environment: Vec<(OsString, OsString)>,
+        program: PathBuf,
+        arguments: Vec<OsString>,
+    ) -> Result<cockpit_sandbox::Prepared, Error> {
+        self.settings
+            .sandbox
+            .prepare(
+                self.owner_settings().sandbox,
+                &cockpit_sandbox::LaunchRequest {
+                    session: session.to_owned(),
+                    provider: provider.to_owned(),
+                    working_dir,
+                    environment,
+                    secrets: vec![cockpit_sandbox::Secret {
+                        // The agent presents it on the local agent socket, never in an HTTP
+                        // header greyproxy could swap a placeholder in.
+                        variable: LAUNCH_TOKEN_VARIABLE.to_owned(),
+                        handling: cockpit_sandbox::SecretHandling::PassThrough,
+                    }],
+                    desktop: self.desktop_session(),
+                },
+                program,
+                arguments,
+            )
+            .map_err(Error::Sandbox)
+    }
+
+    /// `cockpit sandbox show`: the sandbox a new session of `provider` in `dir` would get,
+    /// without launching anything. The agent's own program and arguments are the provider's
+    /// at launch; the dry run shows `<agent>` in their place.
+    pub async fn sandbox_dry_run(
+        &self,
+        dir: PathBuf,
+        provider: Option<&str>,
+    ) -> Result<cockpit_sandbox::Prepared, Error> {
+        let provider = self.provider(provider)?.name().as_str().to_owned();
+        let dir = self
+            .blocking("resolve the directory", move || canonical_dir(dir))
+            .await?;
+        self.checkout_containing(&dir).await?;
+        self.prepare_sandbox(
+            DRY_RUN_SESSION,
+            &provider,
+            dir,
+            self.launch_environment(),
+            PathBuf::from("<agent>"),
+            Vec::new(),
+        )
+    }
+
+    /// How the session's latest launch ran (#61), or `None` before its first launch.
+    pub async fn sandbox_evidence(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<cockpit_sandbox::Evidence>, Error> {
+        let read = self.database.read().await?;
+        store::session(&read, id).await?;
+        Ok(cockpit_sandbox::latest_for_session(&read, id.as_str()).await?)
     }
 
     async fn confirm_agent(

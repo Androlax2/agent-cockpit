@@ -561,6 +561,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit session sleep|wake|resume|end|show SESSION\n       \
                  cockpit session end --finished\n       \
                  cockpit session link SESSION URL\n       \
+                 cockpit session sandbox SESSION\n       \
+                 cockpit sandbox show DIR [--agent NAME]\n       \
                  cockpit provider list\n       \
                  cockpit desktop-session import\n       \
                  cockpit tui\n       \

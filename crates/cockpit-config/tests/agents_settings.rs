@@ -1,11 +1,14 @@
 //! The owner's `[agents]` settings: `desktop_session`, the one opt-out that keeps launched
-//! agents off the owner's display and session bus (#305), read through `cockpit_config::load`
-//! from an isolated home.
+//! agents off the owner's display and session bus (#305), and `sandbox`, the one setting that
+//! launches agents unsandboxed (#61), read through `cockpit_config::load` from an isolated
+//! home.
 
 use std::fs;
 use std::path::Path;
 
-use cockpit_config::{ConfigError, DesktopSession, EffectiveConfig, Environment, Source};
+use cockpit_config::{
+    AgentSandbox, ConfigError, DesktopSession, EffectiveConfig, Environment, Source,
+};
 use tempfile::TempDir;
 
 fn write_user_config(home: &Path, contents: &str) {
@@ -97,6 +100,79 @@ fn config_show_prints_the_desktop_session_with_its_source() {
             "agents.desktop_session = \"withheld\"  # user config {}:2\n",
             config.user_file.path.display()
         )),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_clean_home_requires_the_sandbox() {
+    let home = TempDir::new().unwrap();
+
+    let config = load(home.path(), None).unwrap();
+
+    assert_eq!(
+        config.agents_sandbox,
+        cockpit_config::Sourced::new(AgentSandbox::Required, Source::ProductDefault)
+    );
+}
+
+#[test]
+fn the_owner_file_turns_the_sandbox_off_with_its_line() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[agents]\nsandbox = \"off\"\n");
+
+    let config = load(home.path(), None).unwrap();
+
+    assert_eq!(config.agents_sandbox.value, AgentSandbox::Off);
+    assert_eq!(
+        config.agents_sandbox.source,
+        Source::UserFile {
+            path: config.user_file.path.clone(),
+            line: 2
+        }
+    );
+}
+
+#[test]
+fn an_unknown_sandbox_value_fails_to_parse() {
+    let home = TempDir::new().unwrap();
+    write_user_config(home.path(), "[agents]\nsandbox = \"optional\"\n");
+
+    assert!(matches!(
+        load(home.path(), None),
+        Err(ConfigError::Parse { .. })
+    ));
+}
+
+/// A project's own file is written by whoever writes the project, agents included: it must
+/// never be able to launch its agents unsandboxed.
+#[test]
+fn a_project_file_cannot_turn_the_sandbox_off() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    fs::create_dir_all(project.path().join(".cockpit")).unwrap();
+    fs::write(
+        project.path().join(".cockpit/config.toml"),
+        "[agents]\nsandbox = \"off\"\n",
+    )
+    .unwrap();
+
+    let error = load(home.path(), Some(project.path())).unwrap_err();
+
+    assert!(
+        matches!(error, ConfigError::OwnerOnly { key: "agents", .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn config_show_prints_the_sandbox_setting_with_its_source() {
+    let home = TempDir::new().unwrap();
+
+    let shown = cockpit_config::render(&load(home.path(), None).unwrap());
+
+    assert!(
+        shown.contains("agents.sandbox = \"required\"  # product default\n"),
         "{shown}"
     );
 }

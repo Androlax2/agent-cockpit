@@ -180,7 +180,7 @@ impl Home {
                     path: self.start_file(),
                     providers: vec!["fake".to_owned()],
                 }],
-                ..cockpit_sessions::Settings::default()
+                ..common::unsandboxed_settings()
             };
             wiring.session_tick = Duration::from_millis(100);
             let started = match Instance::acquire(options) {

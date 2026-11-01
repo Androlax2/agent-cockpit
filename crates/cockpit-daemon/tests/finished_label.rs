@@ -86,7 +86,7 @@ impl Home {
                     path: self.start_file(),
                     providers: vec!["fake".to_owned()],
                 }],
-                ..cockpit_sessions::Settings::default()
+                ..common::unsandboxed_settings()
             };
             let started = match Instance::acquire(options) {
                 Ok(instance) => {

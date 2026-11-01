@@ -9,8 +9,9 @@ use std::process::Output;
 mod scripted;
 
 use cockpit_protocol::{
-    Command, ErrorCode, LaunchKindView, LaunchView, Outcome, ProtocolError, Reply, SessionFailure,
-    SessionStateView, SessionView, StopTargetView,
+    Command, ErrorCode, LaunchKindView, LaunchView, Outcome, ProtocolError, Reply,
+    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
+    SessionView, StopTargetView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -403,4 +404,149 @@ async fn session_list_exits_141_without_a_panic_when_its_stdout_is_closed() {
 
     assert_eq!(text(&output.stderr), "");
     assert_eq!(output.status.code(), Some(141));
+}
+
+// #61: how a session ran and what a new one would get are the daemon's to decide, proven in
+// `cockpit-daemon/tests/sandbox.rs`; these prove the verbs' requests and their lines.
+
+fn evidence() -> SandboxEvidenceView {
+    SandboxEvidenceView {
+        enforcement: SandboxEnforcementView::Sandboxed {
+            backend: "greywall".to_owned(),
+            engine: "greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)".to_owned(),
+            client_identity: "cockpit-s0123456789ab-0a1b2c3d4e5f".to_owned(),
+        },
+        platform: "linux".to_owned(),
+        rules: vec![SandboxRuleView {
+            rule: "read-write /p/app".to_owned(),
+            enforced_by: "greywall bubblewrap+Landlock (--allow-path)".to_owned(),
+        }],
+        observed: vec!["landlock: yes".to_owned()],
+    }
+}
+
+#[tokio::test]
+async fn session_sandbox_prints_the_evidence_of_the_latest_launch() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::SessionSandbox {
+            evidence: Some(Box::new(evidence())),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "sandbox", "s0123456789ab"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "sandbox: enforced by greywall on linux\n\
+         engine: greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)\n\
+         proxy client: cockpit-s0123456789ab-0a1b2c3d4e5f\n\
+         rule: read-write /p/app <- greywall bubblewrap+Landlock (--allow-path)\n\
+         observed: landlock: yes\n"
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionSandbox {
+            session: "s0123456789ab".to_owned()
+        }
+    );
+}
+
+#[tokio::test]
+async fn session_sandbox_says_when_no_launch_is_recorded() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::SessionSandbox { evidence: None }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "sandbox", "s0123456789ab"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "sandbox: no launch recorded yet\n");
+}
+
+#[tokio::test]
+async fn sandbox_show_sends_an_absolute_dir_and_prints_the_profile_and_command() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::SandboxProfile {
+            evidence: Box::new(evidence()),
+            command: vec![
+                "/usr/bin/greywall".to_owned(),
+                "--".to_owned(),
+                "<agent>".to_owned(),
+            ],
+        }),
+    );
+    let cwd = home.dir.path().canonicalize().unwrap();
+
+    let output = home
+        .cockpit(&cwd, &["sandbox", "show", "app", "--agent", "codex"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stdout)
+            .ends_with("observed: landlock: yes\ncommand: /usr/bin/greywall -- <agent>\n"),
+        "{}",
+        text(&output.stdout)
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SandboxShow {
+            dir: cwd.join("app").display().to_string(),
+            agent: Some("codex".to_owned()),
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_refused_sandbox_show_exits_1_with_the_rule_and_reason() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Error(ProtocolError::new(
+            ErrorCode::Refused,
+            "the sandbox refuses `sandbox`: no sandbox engine: no `greywall` on PATH",
+        )),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["sandbox", "show", "/p/app"])
+        .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        text(&output.stderr),
+        "cockpit: refused: the sandbox refuses `sandbox`: no sandbox engine: no `greywall` on PATH\n"
+    );
+}
+
+#[tokio::test]
+async fn malformed_sandbox_arguments_exit_2_before_any_connection() {
+    let home = Home::new();
+    let cases: [&[&str]; 4] = [
+        &["sandbox"],
+        &["sandbox", "show"],
+        &["sandbox", "show", "/p/app", "--agent"],
+        &["session", "sandbox"],
+    ];
+    for arguments in cases {
+        let output = home.cockpit(home.dir.path(), arguments).await;
+
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        assert!(
+            text(&output.stderr).contains("usage:"),
+            "{arguments:?}: {}",
+            text(&output.stderr)
+        );
+    }
 }
