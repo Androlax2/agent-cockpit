@@ -281,7 +281,11 @@ fn a_delivered_message_starts_a_turn_whose_prompt_reports_through_the_bridge() {
     let codex = Codex::new(installed(), None, Some(recorder.bridge()));
 
     let delivered = codex
-        .deliver(&Action::Submit("hello"), server.session_dir.path(), &thread)
+        .deliver(
+            &Action::Submit("hello"),
+            &common::target(server.session_dir.path()),
+            &thread,
+        )
         .unwrap();
 
     assert_eq!(delivered, Delivered::StartedTurn);
@@ -309,17 +313,25 @@ fn a_message_during_a_turn_joins_it_and_a_cancel_interrupts_it() {
     let codex = Codex::new(installed(), None, Some(recorder.bridge()));
     let session_dir = server.session_dir.path().to_path_buf();
     codex
-        .deliver(&Action::Submit("hello"), &session_dir, &thread)
+        .deliver(
+            &Action::Submit("hello"),
+            &common::target(&session_dir),
+            &thread,
+        )
         .unwrap();
     wait_until("the turn under way", || {
         (server.last_turn_status(&thread).as_deref() == Some("inProgress")).then_some(())
     });
 
     let joined = codex
-        .deliver(&Action::Submit("and then"), &session_dir, &thread)
+        .deliver(
+            &Action::Submit("and then"),
+            &common::target(&session_dir),
+            &thread,
+        )
         .unwrap();
     let cancelled = codex
-        .deliver(&Action::Cancel, &session_dir, &thread)
+        .deliver(&Action::Cancel, &common::target(&session_dir), &thread)
         .unwrap();
 
     assert_eq!(

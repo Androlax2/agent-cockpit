@@ -54,12 +54,16 @@ provider and nothing above the contract sees a Codex type (#48).
   refused when none is. The conversation is named by its thread id: the TUI also loads helper
   threads. Codex refuses to list a thread's turns for a moment after its first message, so a
   refused listing is retried for 2 seconds.
+  The socket is opened only through the caller's `SessionSockets`, never by its path: the
+  agent writes the session's directory, so `codex.sock` names whatever the agent linked there
+  (#442). The daemon's check is `cockpit-daemon`'s `SessionTreeSockets`.
 - **Known gaps.** After `/clear`, Codex starts a new thread and sends no `SessionEnd` for the
   old one (measured), so the bridge cannot announce `--conversation-ends`, and the daemon
   refuses the new thread's reports (#408). The socket's real file is Codex's, under
-  `/tmp/codex-daemon-<uid>/`, which the session's sandbox and the daemon must share; the
-  sandbox grants neither yet (#437). Where the approval requests of a delivered turn go is
-  unmeasured (#436).
+  `/tmp/codex-daemon-<uid>/` whatever `TMPDIR` says, beside the owner's own Codex's: the
+  sandbox shows a folder of the session's own there, through a greywall fork feature, and
+  without it the daemon refuses delivery naming that feature (#446). Where the approval
+  requests of a delivered turn go is unmeasured (#436).
 
 ## Dependency edges
 

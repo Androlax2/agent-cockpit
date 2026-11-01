@@ -44,6 +44,8 @@ pub struct Notification {
 impl AppServer {
     /// Connects to the server listening on `socket` and initializes the connection as
     /// `client`. Every read and write gives up after `timeout`.
+    /// Inside the sandbox only: the daemon opens the socket through its checked
+    /// [`cockpit_provider_api::SessionSockets`] and calls [`AppServer::over`].
     pub fn connect(socket: &Path, client: &str, timeout: Duration) -> Result<AppServer, RpcError> {
         let stream = UnixStream::connect(socket).map_err(|error| {
             RpcError::new(format!(
@@ -51,6 +53,16 @@ impl AppServer {
                 socket.display()
             ))
         })?;
+        AppServer::over(stream, client, timeout)
+    }
+
+    /// Initializes the connection `stream` as `client`. Every read and write gives up after
+    /// `timeout`.
+    pub fn over(
+        stream: UnixStream,
+        client: &str,
+        timeout: Duration,
+    ) -> Result<AppServer, RpcError> {
         let mut server = AppServer {
             stream,
             unread: Vec::new(),

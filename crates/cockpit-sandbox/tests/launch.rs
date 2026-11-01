@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use cockpit_sandbox::{AgentSandbox, Enforcement, HostPaths, MIGRATIONS, Platform, Sandbox};
-use common::{launch_request, linux_engine};
+use common::{MOUNT_SOURCES, OWNER_UID, launch_request, linux_engine, no_host_paths};
 
 fn agent_words() -> (PathBuf, Vec<OsString>) {
     (PathBuf::from("/usr/bin/claude"), vec!["--resume".into()])
@@ -19,7 +19,7 @@ fn a_required_sandbox_wraps_the_agent_in_greywall() {
     let sandbox = Sandbox::new(
         Platform::Linux,
         Ok(linux_engine(settings.path())),
-        HostPaths::default(),
+        no_host_paths(),
     );
     let (program, arguments) = agent_words();
 
@@ -109,6 +109,8 @@ fn a_hosts_denied_path_reaches_the_profile() {
         HostPaths {
             read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
             denied: vec![PathBuf::from("/run/user/1000/cockpit/daemon.sock")],
+            owner_uid: OWNER_UID,
+            mount_sources: PathBuf::from(MOUNT_SOURCES),
         },
     );
 
@@ -133,7 +135,7 @@ async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() 
     let sandbox = Sandbox::new(
         Platform::Linux,
         Ok(linux_engine(settings.path())),
-        HostPaths::default(),
+        no_host_paths(),
     );
     let unsandboxed = sandbox
         .prepare(

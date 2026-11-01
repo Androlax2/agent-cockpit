@@ -3,6 +3,8 @@
 //! greyproxy under a client identity of its own, a host without Greywall refuses launches
 //! naming why, only the owner's `agents.sandbox = "off"` launches unsandboxed, and
 //! `cockpit session sandbox` and `cockpit sandbox show` print the evidence and the profile.
+//! An agent writes its session's directory (#437), and a shared desktop session mounts the
+//! display endpoints its variables name (#435).
 
 mod real_daemon;
 
@@ -11,7 +13,7 @@ use std::time::Duration;
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, ErrorCode, Reply};
-use real_daemon::{GENEROUS, Home, new_session, session_new_command};
+use real_daemon::{GENEROUS, Home, SESSION_DIR_PROJECT, new_session, session_new_command};
 
 fn sandbox_launches(home: &Home) -> Vec<String> {
     std::fs::read_to_string(home.sandbox_log())
@@ -368,6 +370,95 @@ async fn an_agent_may_not_read_a_sessions_sandbox_or_the_profile() {
         assert!(
             matches!(&refused, Err(ClientError::Daemon(error)) if error.code == ErrorCode::NotAuthorized),
             "{refused:?}"
+        );
+    }
+}
+
+/// A provider keeps what reaches the running agent in the session's directory (Codex's
+/// app-server socket): the agent, inside the sandbox, writes there (#437).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_agent_writes_its_sessions_directory() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, SESSION_DIR_PROJECT).await;
+
+    let session = new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+
+    let probe = home.session_dir(&session.id).join("probe");
+    let deadline = std::time::Instant::now() + GENEROUS;
+    while !probe.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent wrote no {}; greywall ran with {:?}",
+            probe.display(),
+            sandbox_launches(&home)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let shown = home
+        .cockpit(&["session", "sandbox", &session.id], &[])
+        .await;
+    assert!(
+        text(&shown.stdout).contains(&format!(
+            "rule: read-write {} (the session's directory) <- greywall ",
+            home.session_dir(&session.id).display()
+        )),
+        "{}",
+        text(&shown.stdout)
+    );
+}
+
+/// The desktop variables alone reach nothing under `defaultDenyRead`: the launch mounts each
+/// socket and file they name, and the evidence says so (#435).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_desktop_launch_mounts_the_display_endpoints_its_variables_name() {
+    let home = Home::new();
+    let bus = home.owner_bus();
+    let _daemon = home.start_with(&[
+        ("DISPLAY", ":7"),
+        ("WAYLAND_DISPLAY", "wayland-7"),
+        ("XAUTHORITY", "/run/user/7/gdm/Xauthority"),
+        ("DBUS_SESSION_BUS_ADDRESS", &bus),
+    ]);
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+
+    let session = new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+
+    let launch = &sandbox_launches(&home)[0];
+    let wayland = home.path().join("run/wayland-7");
+    for mounted in [
+        "--allow-path /tmp/.X11-unix/X7 ".to_owned(),
+        format!("--allow-path {} ", wayland.display()),
+        "--allow-read-path /run/user/7/gdm/Xauthority ".to_owned(),
+    ] {
+        assert!(
+            launch.contains(&mounted),
+            "{mounted:?} missing from {launch}"
+        );
+    }
+    let shown = home
+        .cockpit(&["session", "sandbox", &session.id], &[])
+        .await;
+    let printed = text(&shown.stdout);
+    let bus_path = bus.trim_start_matches("unix:path=");
+    for expected in [
+        "rule: desktop socket /tmp/.X11-unix/X7 for DISPLAY <- greywall ".to_owned(),
+        format!(
+            "rule: desktop socket {} for WAYLAND_DISPLAY <- greywall ",
+            wayland.display()
+        ),
+        "rule: desktop file /run/user/7/gdm/Xauthority for XAUTHORITY <- greywall ".to_owned(),
+        format!(
+            "rule: desktop bus {bus_path} for DBUS_SESSION_BUS_ADDRESS <- greywall's xdg-dbus-proxy"
+        ),
+    ] {
+        assert!(
+            printed.contains(&expected),
+            "{expected:?} missing from:\n{printed}"
         );
     }
 }

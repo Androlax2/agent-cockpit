@@ -8,9 +8,9 @@
 use std::path::{Path, PathBuf};
 
 use cockpit_sandbox::{
-    DesktopSession, EngineBuild, Greywall, GreywallPrograms, HostCapability, LaunchRequest,
-    PINNED_GREYPROXY_COMMIT, PINNED_GREYWALL_COMMIT, Platform, ProfileRequest, Secret,
-    SecretHandling,
+    DesktopSession, EngineBuild, Greywall, GreywallPrograms, HostCapability, HostPaths,
+    LaunchRequest, PINNED_GREYPROXY_COMMIT, PINNED_GREYWALL_COMMIT, Platform, ProfileRequest,
+    Secret, SecretHandling,
 };
 
 pub const LINUX_CAPABILITIES: [&str; 5] = [
@@ -20,6 +20,25 @@ pub const LINUX_CAPABILITIES: [&str; 5] = [
     "network isolation",
     "D-Bus isolated",
 ];
+
+/// The user the fixtures' daemon runs as.
+pub const OWNER_UID: u32 = 1000;
+
+/// The fixtures' session directory for session `s1`.
+pub const SESSION_DIR: &str = "/run/user/1000/cockpit/sessions/s1";
+
+/// The daemon's folder for what sandboxes mount at another path.
+pub const MOUNT_SOURCES: &str = "/run/user/1000/cockpit/mounts";
+
+/// No host paths beyond the owner's user id.
+pub fn no_host_paths() -> HostPaths {
+    HostPaths {
+        read_only: Vec::new(),
+        denied: Vec::new(),
+        owner_uid: OWNER_UID,
+        mount_sources: PathBuf::from(MOUNT_SOURCES),
+    }
+}
 
 pub fn capabilities(available: &[&str], missing: &[&str]) -> Vec<HostCapability> {
     let capability = |name: &&str, available: bool| HostCapability {
@@ -98,6 +117,9 @@ pub fn profile_request(working_dir: &str) -> ProfileRequest {
     ProfileRequest {
         provider: "claude".to_owned(),
         working_dir: PathBuf::from(working_dir),
+        session_dir: PathBuf::from(SESSION_DIR),
+        mount_dir: Path::new(MOUNT_SOURCES).join("s1"),
+        owner_uid: OWNER_UID,
         read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
         denied: vec![PathBuf::from("/home/owner/.local/state/cockpit/cockpit.db")],
         allow_hosts: Vec::new(),
@@ -112,6 +134,7 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         session: session.to_owned(),
         provider: "claude".to_owned(),
         working_dir: PathBuf::from(working_dir),
+        session_dir: PathBuf::from(format!("/run/user/1000/cockpit/sessions/{session}")),
         environment: vec![
             ("PATH".into(), "/usr/bin".into()),
             ("COCKPIT_LAUNCH_TOKEN".into(), "token-1".into()),

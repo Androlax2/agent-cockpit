@@ -15,8 +15,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{
-    Action, Capabilities, Capability, Conversation, ConversationId, Delivered, LaunchCommand,
-    LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
+    Action, Capabilities, Capability, Conversation, ConversationId, Delivered, DeliveryTarget,
+    LaunchCommand, LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
 };
 
 /// The Codex version this adapter's conformance tests pin; capabilities are `tested` only on
@@ -275,11 +275,16 @@ impl Provider for Codex {
     fn deliver(
         &self,
         action: &Action<'_>,
-        session_dir: &Path,
+        target: &DeliveryTarget<'_>,
         conversation: &ConversationId,
     ) -> Result<Delivered, ProviderError> {
         self.capabilities().require(action.capability())?;
-        delivery::deliver(&delivery::socket_path(session_dir), action, conversation)
+        delivery::deliver(
+            &delivery::socket_path(target.session_dir),
+            target.sockets,
+            action,
+            conversation,
+        )
     }
 }
 

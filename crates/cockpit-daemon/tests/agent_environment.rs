@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, ErrorCode, Reply};
-use real_daemon::{GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_program, new_session};
+use real_daemon::{
+    Daemon, GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_program, new_session,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launched_agent_reports_to_a_daemon_on_a_scratch_layout() {
@@ -50,14 +52,17 @@ async fn a_launched_agent_reports_to_a_daemon_on_a_scratch_layout() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launched_agent_sees_the_daemons_display_variables() {
     let home = Home::new();
-    let _daemon = home.start_with(&DESKTOP_AT_START);
+    let _daemon = start_in_a_desktop_session(&home);
 
     let seen = home.environment_of_a_launched_agent().await;
 
     assert_eq!(
         seen,
-        "DISPLAY=:7\nXAUTHORITY=/run/user/7/gdm/Xauthority\nWAYLAND_DISPLAY=wayland-7\n\
-         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/7/bus\n"
+        format!(
+            "DISPLAY=:7\nXAUTHORITY=/run/user/7/gdm/Xauthority\nWAYLAND_DISPLAY=wayland-7\n\
+             DBUS_SESSION_BUS_ADDRESS={}\n",
+            home.owner_bus()
+        )
     );
 }
 
@@ -74,19 +79,24 @@ async fn a_launched_agent_gets_no_display_variable_the_daemon_lacks() {
     );
 }
 
-/// All four desktop variables, as a daemon started inside a graphical session has them.
-const DESKTOP_AT_START: [(&str, &str); 4] = [
-    ("DISPLAY", ":7"),
-    ("XAUTHORITY", "/run/user/7/gdm/Xauthority"),
-    ("WAYLAND_DISPLAY", "wayland-7"),
-    ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/7/bus"),
-];
+/// Starts the daemon with all four desktop variables, as one started inside a graphical
+/// session has them; the bus is the test user's, the only one the sandbox lets through its
+/// proxy (#435).
+fn start_in_a_desktop_session(home: &Home) -> Daemon {
+    let bus = home.owner_bus();
+    home.start_with(&[
+        ("DISPLAY", ":7"),
+        ("XAUTHORITY", "/run/user/7/gdm/Xauthority"),
+        ("WAYLAND_DISPLAY", "wayland-7"),
+        ("DBUS_SESSION_BUS_ADDRESS", &bus),
+    ])
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_owner_who_withholds_the_desktop_session_launches_agents_without_any_of_it() {
     let home = Home::new();
     home.write_owner_config("[agents]\ndesktop_session = \"withheld\"\n");
-    let _daemon = home.start_with(&DESKTOP_AT_START);
+    let _daemon = start_in_a_desktop_session(&home);
 
     let seen = home.environment_of_a_launched_agent().await;
 
@@ -99,7 +109,7 @@ async fn an_owner_who_withholds_the_desktop_session_launches_agents_without_any_
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_launched_after_an_import_sees_the_imported_desktop_session() {
     let home = Home::new();
-    let _daemon = home.start_with(&DESKTOP_AT_START);
+    let _daemon = start_in_a_desktop_session(&home);
 
     let imported = home
         .cockpit(

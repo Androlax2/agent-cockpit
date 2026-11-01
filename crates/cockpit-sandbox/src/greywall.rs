@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::{Platform, Profile, Refusal, SecretHandling};
+use crate::{EndpointKind, FolderMount, Platform, Profile, Refusal, SecretHandling};
 
 /// The greywall fork build the release pins (`packages/greywall/build.sh` builds the same
 /// commit until the release bundle takes over, #61): an installed binary of another commit
@@ -24,6 +24,14 @@ pub const GREYPROXY_PROGRAM: &str = "greyproxy";
 /// The engine's reviewed profiles for the providers' own folders and hosts. A provider
 /// without one is refused rather than run under a profile written for another agent.
 const ENGINE_PROFILES: &[&str] = &["claude", "codex", "opencode"];
+
+/// The capability `greywall --version` reports when its filtered session-bus proxy can run.
+const BUS_PROXY_CAPABILITY: &str = "D-Bus isolated";
+
+/// The flag that shows a host folder at another path inside the sandbox,
+/// `--mount <host-dir>:<sandbox-path>` (Theo's fork, Linux only; #446). A build has it when
+/// `greywall --help` lists it.
+pub const MOUNT_FLAG: &str = "--mount";
 
 /// How long `greywall --version` and `greyproxy --version` may take.
 const VERSION_DEADLINE: Duration = Duration::from_secs(10);
@@ -142,34 +150,41 @@ pub struct Greywall {
     pub greyproxy: EngineBuild,
     pub platform: Platform,
     pub capabilities: Vec<HostCapability>,
+    /// Whether `greywall --help` lists [`MOUNT_FLAG`].
+    pub can_mount_folders: bool,
     /// Where each launch's settings file goes: owner-only, never inside a sandbox.
     pub settings_dir: PathBuf,
 }
 
 impl Greywall {
-    /// Runs both programs' `--version` (up to 10 s each) and checks they are the pinned
-    /// builds. The reason when the engine cannot be used.
+    /// Runs both programs' `--version` and `greywall --help` (up to 10 s each) and checks
+    /// they are the pinned builds. The reason when the engine cannot be used.
     pub fn detect(
         programs: GreywallPrograms,
         platform: Platform,
         settings_dir: PathBuf,
     ) -> Result<Greywall, String> {
-        let greywall_output = version_output(&programs.greywall)?;
+        let greywall_output = program_output(&programs.greywall, "--version")?;
+        let can_mount_folders =
+            lists_flag(&program_output(&programs.greywall, "--help")?, MOUNT_FLAG);
         let (greywall, capabilities) = parse_greywall_version(&greywall_output)
             .map_err(|reason| format!("{} --version: {reason}", programs.greywall.display()))?;
-        let greyproxy = parse_greyproxy_version(&version_output(&programs.greyproxy)?)
+        let greyproxy = parse_greyproxy_version(&program_output(&programs.greyproxy, "--version")?)
             .map_err(|reason| format!("{} --version: {reason}", programs.greyproxy.display()))?;
-        Greywall::from_builds(
+        let mut engine = Greywall::from_builds(
             programs,
             greywall,
             greyproxy,
             capabilities,
             platform,
             settings_dir,
-        )
+        )?;
+        engine.can_mount_folders = can_mount_folders;
+        Ok(engine)
     }
 
-    /// [`Greywall::detect`] once the versions are read.
+    /// [`Greywall::detect`] once the versions are read, for a build whose `--help` lists no
+    /// [`MOUNT_FLAG`].
     pub fn from_builds(
         programs: GreywallPrograms,
         greywall: EngineBuild,
@@ -201,6 +216,7 @@ impl Greywall {
             greyproxy,
             platform,
             capabilities,
+            can_mount_folders: false,
             settings_dir,
         })
     }
@@ -284,6 +300,8 @@ impl Greywall {
                 }
             }
         }
+        self.check_bus(profile)?;
+        let reach = self.provider_reach(profile);
         let settings_path = self.settings_dir.join(format!("{}.json", client.as_str()));
         let mut arguments: Vec<OsString> = vec![
             "--settings".into(),
@@ -303,8 +321,23 @@ impl Greywall {
                 format!("checked: {}", self.engine())
             } else if rule.starts_with("provider ") {
                 format!("greywall --profile {}", profile.provider)
-            } else if rule.starts_with("read-write ") {
+            } else if rule.starts_with("folder ") {
+                match &reach {
+                    ProviderReach::Mounted(_) => format!("greywall {MOUNT_FLAG}"),
+                    ProviderReach::Unreachable { reason, .. } => {
+                        format!("not mounted: {reason}; the daemon refuses delivery to the agent")
+                    }
+                    ProviderReach::Direct => {
+                        "not mounted: the provider has no folder to mount".to_owned()
+                    }
+                }
+            } else if rule.starts_with("read-write ") || rule.starts_with("desktop socket ") {
                 format!("{filesystem} (--allow-path)")
+            } else if rule.starts_with("desktop file ") {
+                format!("{filesystem} (--allow-read-path)")
+            } else if rule.starts_with("desktop bus ") {
+                "greywall's xdg-dbus-proxy in its place, org.freedesktop.Notifications only"
+                    .to_owned()
             } else if rule.starts_with("read-only ") {
                 format!("{filesystem} (--allow-read-path)")
             } else if rule == "read everything else: denied" {
@@ -327,23 +360,45 @@ impl Greywall {
                         "the environment holds none of the desktop variables".to_owned()
                     }
                     cockpit_config::DesktopSession::Shared => {
-                        match self.capability("D-Bus isolated") {
-                            Some(found) if found.available => {
-                                "display variables passed; session bus proxied by greywall"
-                                    .to_owned()
-                            }
-                            _ => "display and session bus variables passed".to_owned(),
-                        }
+                        "the desktop variables passed; each endpoint they name is its own rule"
+                            .to_owned()
                     }
                 }
             };
             enforced_by.push((rule, by));
         }
-        arguments.push("--allow-path".into());
-        arguments.push(profile.working_dir.clone().into());
-        for path in &profile.read_only {
+        let read_write = [&profile.working_dir, &profile.session_dir]
+            .into_iter()
+            .chain(
+                profile
+                    .desktop_endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.kind == EndpointKind::Socket)
+                    .map(|endpoint| &endpoint.path),
+            );
+        for path in read_write {
+            arguments.push("--allow-path".into());
+            arguments.push(path.clone().into());
+        }
+        let read_only = profile.read_only.iter().chain(
+            profile
+                .desktop_endpoints
+                .iter()
+                .filter(|endpoint| endpoint.kind == EndpointKind::File)
+                .map(|endpoint| &endpoint.path),
+        );
+        for path in read_only {
             arguments.push("--allow-read-path".into());
             arguments.push(path.clone().into());
+        }
+        if let ProviderReach::Mounted(mounts) = &reach {
+            for mount in mounts {
+                let mut value = OsString::from(&mount.host);
+                value.push(":");
+                value.push(&mount.sandbox);
+                arguments.push(MOUNT_FLAG.into());
+                arguments.push(value);
+            }
         }
         for host in &profile.allow_hosts {
             arguments.push("--allow".into());
@@ -380,7 +435,81 @@ impl Greywall {
             settings_path,
             settings: format!("{settings:#}\n"),
             enforced_by,
+            reach,
         })
+    }
+
+    /// Whether the daemon can reach what the provider publishes in its folders: Codex's
+    /// sockets, through the session's own folder mounted at Codex's path, only when this
+    /// greywall can mount one (#446). Never by sharing the host's folder at that path.
+    fn provider_reach(&self, profile: &Profile) -> ProviderReach {
+        if profile.folder_mounts.is_empty() {
+            return ProviderReach::Direct;
+        }
+        // Greywall mounts on Linux only, and refuses a macOS configuration with mounts.
+        let can_mount = self.can_mount_folders && self.platform != Platform::MacOs;
+        if can_mount {
+            return ProviderReach::Mounted(profile.folder_mounts.clone());
+        }
+        let missing = if self.can_mount_folders {
+            format!(
+                "greywall mounts folders only on Linux, not on {}",
+                self.platform
+            )
+        } else {
+            format!("greywall {}'s --help lists no {MOUNT_FLAG}", self.engine())
+        };
+        ProviderReach::Unreachable {
+            feature: MOUNT_FLAG,
+            reason: format!(
+                "{missing}: {}'s sockets stay in the sandbox's private /tmp, out of the \
+                 daemon's reach",
+                profile.provider
+            ),
+        }
+    }
+
+    /// A shared session bus reaches the agent only through greywall's filtered proxy, which
+    /// it mounts where the owner's bus is under systemd, `/run/user/<uid>/bus`: the owner's
+    /// own bus starts programs outside the sandbox and is never mounted.
+    fn check_bus(&self, profile: &Profile) -> Result<(), Refusal> {
+        let Some(bus) = profile
+            .desktop_endpoints
+            .iter()
+            .find(|endpoint| endpoint.kind == EndpointKind::Bus)
+        else {
+            return Ok(());
+        };
+        let rule = format!("desktop bus {} for {}", bus.path.display(), bus.variable);
+        if self.platform == Platform::MacOs {
+            return Err(Refusal::new(
+                rule,
+                "greywall proxies the session bus only on Linux; withhold the desktop session \
+                 or unset DBUS_SESSION_BUS_ADDRESS",
+            ));
+        }
+        if !self
+            .capability(BUS_PROXY_CAPABILITY)
+            .is_some_and(|found| found.available)
+        {
+            return Err(Refusal::new(
+                rule,
+                "greywall reports no `D-Bus isolated` (xdg-dbus-proxy) on this host, so the \
+                 session bus could only be the owner's own; install xdg-dbus-proxy or withhold \
+                 the desktop session",
+            ));
+        }
+        let proxied = PathBuf::from(format!("/run/user/{}/bus", profile.owner_uid));
+        if bus.path != proxied {
+            return Err(Refusal::new(
+                rule,
+                format!(
+                    "greywall's filtered proxy takes the place of {} only",
+                    proxied.display()
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -396,6 +525,68 @@ pub struct Plan {
     pub settings: String,
     /// Each profile rule with what enforces it.
     pub enforced_by: Vec<(String, String)>,
+    /// How the daemon reaches what the provider publishes in its folders.
+    pub reach: ProviderReach,
+}
+
+/// How the daemon reaches the sockets a sandboxed provider publishes, such as Codex's
+/// app-server (#446).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderReach {
+    /// At the paths the provider names: they are the host's.
+    Direct,
+    /// Through these folders: a link the provider leaves to a path under a mount's
+    /// `sandbox` names the same entry under its `host`.
+    Mounted(Vec<FolderMount>),
+    /// Not at all: the engine lacks `feature`. Delivery to the agent is refused with
+    /// `reason`; the launch itself goes ahead.
+    Unreachable {
+        feature: &'static str,
+        reason: String,
+    },
+}
+
+impl Plan {
+    /// Creates each mounted folder, and the session's folder holding it, owner-only in the
+    /// daemon's mount sources, or checks the ones there are real folders owned like the
+    /// mount sources. Greywall mounts only folders that exist. The folder that is not ready,
+    /// with why.
+    pub fn create_mount_sources(&self) -> Result<(), (PathBuf, std::io::Error)> {
+        let ProviderReach::Mounted(mounts) = &self.reach else {
+            return Ok(());
+        };
+        for mount in mounts {
+            create_owned_folder(&mount.host).map_err(|error| (mount.host.clone(), error))?;
+        }
+        Ok(())
+    }
+}
+
+/// `folder` and the session's folder holding it, real folders owned by whoever owns the
+/// mount sources above them: the daemon.
+fn create_owned_folder(folder: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let session_folder = folder
+        .parent()
+        .ok_or_else(|| std::io::Error::other("it has no session folder"))?;
+    let mount_sources = session_folder
+        .parent()
+        .ok_or_else(|| std::io::Error::other("it is not in the daemon's mount sources"))?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(folder)?;
+    let owner = std::fs::symlink_metadata(mount_sources)?.uid();
+    for created in [session_folder, folder] {
+        let found = std::fs::symlink_metadata(created)?;
+        if !(found.is_dir() && found.uid() == owner) {
+            return Err(std::io::Error::other(format!(
+                "{} is not a folder of user {owner}, so nothing is mounted",
+                created.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl Plan {
@@ -515,9 +706,20 @@ impl ClientIdentity {
 
 /// A program's `--version` output (stdout and stderr), whatever its exit status: greywall
 /// exits non-zero when a host capability is missing and still prints its build.
-fn version_output(program: &Path) -> Result<String, String> {
+/// Whether `help`, a program's `--help`, lists `flag` among its options: on an option line
+/// (`  -s, --settings string  …`), never in an example.
+pub fn lists_flag(help: &str, flag: &str) -> bool {
+    help.lines().any(|line| {
+        line.split_whitespace()
+            .take_while(|word| word.starts_with('-'))
+            .any(|word| word.trim_end_matches(',') == flag)
+    })
+}
+
+/// What `program <flag>` prints, within [`VERSION_DEADLINE`].
+fn program_output(program: &Path, flag: &str) -> Result<String, String> {
     let mut child = Command::new(program)
-        .arg("--version")
+        .arg(flag)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -551,7 +753,7 @@ fn version_output(program: &Path) -> Result<String, String> {
     let deadline = Instant::now() + VERSION_DEADLINE;
     let late = || {
         format!(
-            "{} --version did not answer within {}s",
+            "{} {flag} did not answer within {}s",
             program.display(),
             VERSION_DEADLINE.as_secs()
         )
@@ -567,7 +769,7 @@ fn version_output(program: &Path) -> Result<String, String> {
                 let _ = child.wait();
                 return Err(late());
             }
-            Err(error) => return Err(format!("{} --version: {error}", program.display())),
+            Err(error) => return Err(format!("{} {flag}: {error}", program.display())),
         }
     }
     let mut output = String::new();

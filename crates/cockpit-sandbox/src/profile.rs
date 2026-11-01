@@ -67,6 +67,16 @@ pub const DESKTOP_VARIABLES: [&str; 4] = [
 /// WSL2's variable naming the interop socket that starts Windows programs.
 const WSL_INTEROP_VARIABLE: &str = "WSL_INTEROP";
 
+/// The folder Codex 0.161.0 keeps its app-server sockets in, whatever `TMPDIR` says:
+/// `<this><uid>`. Inside the sandbox it is a folder of the session's own (#446).
+const CODEX_SOCKET_FOLDER_PREFIX: &str = "/tmp/codex-daemon-";
+
+/// The session's folder, under its directory, mounted at Codex's socket folder.
+pub const CODEX_SOCKET_FOLDER_NAME: &str = "codex-daemon";
+
+/// Where X11 clients find display `:N`'s socket.
+const X11_SOCKET_DIR: &str = "/tmp/.X11-unix";
+
 /// How one environment variable that holds a secret crosses into the sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretHandling {
@@ -91,6 +101,17 @@ pub struct ProfileRequest {
     pub provider: String,
     /// The checkout folder the agent works in: read and write.
     pub working_dir: PathBuf,
+    /// The session's private directory (`sessions/<id>` in the daemon's socket folder), where
+    /// its provider keeps what reaches the running agent, such as Codex's app-server socket:
+    /// read and write.
+    pub session_dir: PathBuf,
+    /// The session's folder in the daemon's mount sources: where the folders the sandbox
+    /// shows at another path live. It and its parent must be outside every folder the agent
+    /// writes (#446).
+    pub mount_dir: PathBuf,
+    /// The user the daemon and its agents run as; names the session bus a shared desktop
+    /// session reaches.
+    pub owner_uid: u32,
     /// Folders the agent must reach read-only: the agent socket's folder, the bridge
     /// programs.
     pub read_only: Vec<PathBuf>,
@@ -109,6 +130,8 @@ pub struct Profile {
     pub platform: Platform,
     pub provider: String,
     pub working_dir: PathBuf,
+    pub session_dir: PathBuf,
+    pub owner_uid: u32,
     pub read_only: Vec<PathBuf>,
     pub denied: Vec<PathBuf>,
     pub denied_read_patterns: Vec<String>,
@@ -117,6 +140,55 @@ pub struct Profile {
     pub environment: Vec<(OsString, OsString)>,
     pub secrets: Vec<Secret>,
     pub desktop: DesktopSession,
+    /// What the shared desktop session's variables name, each one reachable on its own;
+    /// empty when the session is withheld.
+    pub desktop_endpoints: Vec<DesktopEndpoint>,
+    /// Folders of the session's own the provider needs at a fixed path inside the sandbox:
+    /// Codex's socket folder. Never the host's folder at that path, which the owner's own
+    /// Codex uses (#446).
+    pub folder_mounts: Vec<FolderMount>,
+}
+
+/// A host folder the sandbox shows at another path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderMount {
+    /// On the host: in the daemon's own folder for the session, outside everything the
+    /// agent writes; created owner-only before the launch.
+    pub host: PathBuf,
+    /// Where the agent finds it.
+    pub sandbox: PathBuf,
+}
+
+impl FolderMount {
+    /// The host's name for `inside`, an entry directly in the mounted folder as the agent
+    /// sees it; None for any other path.
+    pub fn host_path(&self, inside: &Path) -> Option<PathBuf> {
+        let mut rest = inside.strip_prefix(&self.sandbox).ok()?.components();
+        let (Some(std::path::Component::Normal(name)), None) = (rest.next(), rest.next()) else {
+            return None;
+        };
+        Some(self.host.join(name))
+    }
+}
+
+/// One socket or file a desktop variable names, which a shared desktop session reaches
+/// inside the sandbox (#435). Nothing else of the runtime directory or `/tmp` is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopEndpoint {
+    pub variable: &'static str,
+    pub path: PathBuf,
+    pub kind: EndpointKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointKind {
+    /// A display server's socket (`DISPLAY`, `WAYLAND_DISPLAY`): connecting writes to it.
+    Socket,
+    /// A file read only (`XAUTHORITY`).
+    File,
+    /// The session bus (`DBUS_SESSION_BUS_ADDRESS`): never the owner's own bus, which
+    /// starts programs outside the sandbox, but the engine's filtered proxy at this path.
+    Bus,
 }
 
 /// Why a profile cannot be enforced: the rule, and what the platform or request lacks.
@@ -176,18 +248,41 @@ impl Profile {
             environment.retain(|(name, _)| name != WSL_INTEROP_VARIABLE);
         }
         check_absolute(&request.working_dir, "read-write")?;
+        check_absolute(&request.session_dir, "read-write")?;
         for path in request.read_only.iter() {
             check_absolute(path, "read-only")?;
         }
+        check_absolute(&request.mount_dir, "folder")?;
+        let folder_mounts = folder_mounts(&request.provider, &request.mount_dir, request.owner_uid);
+        let desktop_endpoints = match request.desktop {
+            DesktopSession::Shared => desktop_endpoints(&environment)?,
+            DesktopSession::Withheld => Vec::new(),
+        };
         for path in &denied {
             check_absolute(path, "denied")?;
             refuse_masked(&request.working_dir, path, "read-write")?;
+            refuse_masked(&request.session_dir, path, "read-write")?;
             for allowed in &request.read_only {
                 refuse_masked(allowed, path, "read-only")?;
+            }
+            for endpoint in &desktop_endpoints {
+                refuse_masked(&endpoint.path, path, "desktop")?;
             }
         }
         for host in &request.allow_hosts {
             check_host(host)?;
+        }
+        let writable: Vec<&Path> = [request.working_dir.as_path(), &request.session_dir]
+            .into_iter()
+            .chain(
+                desktop_endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.kind == EndpointKind::Socket)
+                    .map(|endpoint| endpoint.path.as_path()),
+            )
+            .collect();
+        for mount in &folder_mounts {
+            refuse_writable_source(mount, &writable)?;
         }
         for secret in &request.secrets {
             check_variable(&secret.variable)?;
@@ -209,6 +304,8 @@ impl Profile {
             platform: platform.clone(),
             provider: request.provider,
             working_dir: request.working_dir,
+            session_dir: request.session_dir,
+            owner_uid: request.owner_uid,
             read_only: request.read_only,
             denied,
             denied_read_patterns: BASELINE_DENIED_READ
@@ -223,6 +320,8 @@ impl Profile {
             environment,
             secrets: request.secrets,
             desktop: request.desktop,
+            desktop_endpoints,
+            folder_mounts,
         })
     }
 
@@ -233,7 +332,19 @@ impl Profile {
             format!("platform {}", self.platform),
             format!("provider {}", self.provider),
             format!("read-write {}", self.working_dir.display()),
+            format!(
+                "read-write {} (the session's directory)",
+                self.session_dir.display()
+            ),
         ];
+        rules.extend(self.folder_mounts.iter().map(|mount| {
+            format!(
+                "folder {} at {} ({}'s own, not the host's)",
+                mount.host.display(),
+                mount.sandbox.display(),
+                self.provider
+            )
+        }));
         rules.extend(
             self.read_only
                 .iter()
@@ -266,8 +377,179 @@ impl Profile {
             SecretHandling::PassThrough => format!("secret {} passed through", secret.variable),
         }));
         rules.push(format!("desktop session {}", self.desktop.as_str()));
+        rules.extend(self.desktop_endpoints.iter().map(|endpoint| {
+            let kind = match endpoint.kind {
+                EndpointKind::Socket => "socket",
+                EndpointKind::File => "file",
+                EndpointKind::Bus => "bus",
+            };
+            format!(
+                "desktop {kind} {} for {}",
+                endpoint.path.display(),
+                endpoint.variable
+            )
+        }));
         rules
     }
+}
+
+/// What `provider` needs at a fixed path of the sandbox, from the session's mount folder.
+fn folder_mounts(provider: &str, mount_dir: &Path, owner_uid: u32) -> Vec<FolderMount> {
+    match provider {
+        "codex" => vec![FolderMount {
+            host: mount_dir.join(CODEX_SOCKET_FOLDER_NAME),
+            sandbox: PathBuf::from(format!("{CODEX_SOCKET_FOLDER_PREFIX}{owner_uid}")),
+        }],
+        _ => Vec::new(),
+    }
+}
+
+/// Greywall refuses unsafe mount sources but checks before it mounts: a source, or the
+/// folder holding it, that the agent writes could be swapped in between (#446).
+fn refuse_writable_source(mount: &FolderMount, writable: &[&Path]) -> Result<(), Refusal> {
+    let holder = mount.host.parent().unwrap_or(&mount.host);
+    let Some(granted) = writable
+        .iter()
+        .find(|granted| holder.starts_with(granted) || granted.starts_with(holder))
+    else {
+        return Ok(());
+    };
+    Err(Refusal::new(
+        format!(
+            "folder {} at {}",
+            mount.host.display(),
+            mount.sandbox.display()
+        ),
+        format!(
+            "the agent writes {}, so it could swap the mounted folder before the mount",
+            granted.display()
+        ),
+    ))
+}
+
+/// The last value `environment` gives `name`, as a later entry overrides an earlier one.
+fn variable<'environment>(
+    environment: &'environment [(OsString, OsString)],
+    name: &str,
+) -> Option<&'environment OsString> {
+    environment
+        .iter()
+        .rev()
+        .find(|(variable, _)| variable == name)
+        .map(|(_, value)| value)
+}
+
+/// The sockets and files the shared desktop variables in `environment` name, or the first
+/// one the sandbox cannot reach as named.
+fn desktop_endpoints(
+    environment: &[(OsString, OsString)],
+) -> Result<Vec<DesktopEndpoint>, Refusal> {
+    let mut endpoints = Vec::new();
+    let text = |name: &str| {
+        variable(environment, name)
+            .map(|value| {
+                value.to_str().ok_or_else(|| {
+                    Refusal::new(format!("desktop {name}"), "the value is not UTF-8")
+                })
+            })
+            .transpose()
+    };
+    let refused = |name: &str, value: &str, reason: &str| {
+        Refusal::new(format!("desktop {name}={value}"), reason)
+    };
+    if let Some(display) = text("DISPLAY")? {
+        let path = x11_socket(display).map_err(|reason| refused("DISPLAY", display, reason))?;
+        endpoints.push(endpoint("DISPLAY", path, EndpointKind::Socket)?);
+    }
+    if let Some(wayland) = text("WAYLAND_DISPLAY")? {
+        let path = if Path::new(wayland).is_absolute() {
+            PathBuf::from(wayland)
+        } else {
+            let runtime_dir = text("XDG_RUNTIME_DIR")?
+                .filter(|dir| Path::new(dir).is_absolute())
+                .ok_or_else(|| {
+                    refused(
+                        "WAYLAND_DISPLAY",
+                        wayland,
+                        "it names a socket in XDG_RUNTIME_DIR, which the environment does not \
+                         give as an absolute path",
+                    )
+                })?;
+            Path::new(runtime_dir).join(wayland)
+        };
+        endpoints.push(endpoint("WAYLAND_DISPLAY", path, EndpointKind::Socket)?);
+    }
+    if let Some(xauthority) = text("XAUTHORITY")? {
+        endpoints.push(endpoint(
+            "XAUTHORITY",
+            PathBuf::from(xauthority),
+            EndpointKind::File,
+        )?);
+    }
+    if let Some(bus) = text("DBUS_SESSION_BUS_ADDRESS")? {
+        let path =
+            bus_socket(bus).map_err(|reason| refused("DBUS_SESSION_BUS_ADDRESS", bus, reason))?;
+        endpoints.push(endpoint(
+            "DBUS_SESSION_BUS_ADDRESS",
+            path,
+            EndpointKind::Bus,
+        )?);
+    }
+    Ok(endpoints)
+}
+
+/// An endpoint at an absolute path with no `..`, which could leave the folder it names.
+fn endpoint(
+    variable: &'static str,
+    path: PathBuf,
+    kind: EndpointKind,
+) -> Result<DesktopEndpoint, Refusal> {
+    let is_plain = path.is_absolute()
+        && path
+            .components()
+            .all(|component| !matches!(component, std::path::Component::ParentDir));
+    if !is_plain {
+        return Err(Refusal::new(
+            format!("desktop {variable}={}", path.display()),
+            "the sandbox reaches a desktop endpoint only at an absolute path without `..`",
+        ));
+    }
+    Ok(DesktopEndpoint {
+        variable,
+        path,
+        kind,
+    })
+}
+
+/// `DISPLAY`'s socket: `:N`, `:N.S` and `unix:N` are `/tmp/.X11-unix/XN`; an absolute path
+/// (XQuartz's launchd socket) is the socket itself.
+fn x11_socket(display: &str) -> Result<PathBuf, &'static str> {
+    if display.starts_with('/') {
+        return Ok(PathBuf::from(display));
+    }
+    let (host, screen) = display
+        .rsplit_once(':')
+        .ok_or("a display is `[host]:number[.screen]`")?;
+    if !(host.is_empty() || host == "unix") {
+        return Err("a display on another host is reached over the network, not a local socket");
+    }
+    let number = screen.split_once('.').map_or(screen, |(number, _)| number);
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("a display is `[host]:number[.screen]`");
+    }
+    Ok(Path::new(X11_SOCKET_DIR).join(format!("X{number}")))
+}
+
+/// The session bus's socket: `unix:path=<socket>[,<key>=<value>...]`. An abstract socket,
+/// TCP or a launched program are not a path the sandbox can reach.
+fn bus_socket(address: &str) -> Result<PathBuf, &'static str> {
+    let first = address.split(';').next().unwrap_or_default();
+    first
+        .strip_prefix("unix:")
+        .and_then(|keys| keys.split(',').find_map(|pair| pair.strip_prefix("path=")))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .ok_or("only a `unix:path=` bus is reached inside the sandbox")
 }
 
 fn check_provider(provider: &str) -> Result<(), Refusal> {

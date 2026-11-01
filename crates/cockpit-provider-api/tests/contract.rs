@@ -4,8 +4,9 @@
 use std::path::Path;
 
 use cockpit_provider_api::{
-    Action, Activity, Capabilities, Capability, Conversation, ConversationId, LaunchCommand,
-    LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
+    Action, Activity, Capabilities, Capability, Conversation, ConversationId, DeliveryTarget,
+    LaunchCommand, LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
+    SessionSockets,
 };
 
 struct LaunchOnly(ProviderName);
@@ -91,7 +92,10 @@ fn a_provider_without_delivery_refuses_each_action_naming_its_capability() {
         let error = provider
             .deliver(
                 &action,
-                Path::new("/run/cockpit/sessions/s-1"),
+                &DeliveryTarget {
+                    session_dir: Path::new("/run/cockpit/sessions/s-1"),
+                    sockets: &NoSockets,
+                },
                 &conversation,
             )
             .unwrap_err();
@@ -136,4 +140,13 @@ fn a_request_whose_capabilities_are_all_reported_is_accepted() {
     let capabilities = Capabilities::none().with(Capability::Effort, Provenance::Discovered);
 
     assert!(launch.require(&capabilities).is_ok());
+}
+
+/// Opens nothing: a provider without delivery never asks.
+struct NoSockets;
+
+impl SessionSockets for NoSockets {
+    fn connect(&self, socket: &Path) -> Result<std::os::unix::net::UnixStream, ProviderError> {
+        panic!("a provider without delivery opened {}", socket.display())
+    }
 }

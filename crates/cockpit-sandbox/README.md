@@ -6,11 +6,17 @@ enforces it and the evidence of what each launch got.
 
 Decision (#61, option C): Cockpit owns the policy, the engine enforces it.
 
-1. `Profile::build` turns what a launch asks for (working directory, read-only mounts the
-   daemon needs the agent to reach, Cockpit's own state it must never reach, extra hosts,
-   environment, secrets, the owner's desktop session choice) into the effective profile,
-   with Cockpit's baseline rules added. A rule the platform cannot enforce is a `Refusal`
-   naming the rule and the reason; nothing is weakened silently.
+1. `Profile::build` turns what a launch asks for (working directory, the session's own
+   directory, read-only mounts the daemon needs the agent to reach, Cockpit's own state it
+   must never reach, extra hosts, environment, secrets, the owner's desktop session choice)
+   into the effective profile, with Cockpit's baseline rules added. Every agent writes its
+   session's directory (#437); a Codex agent finds a folder of the session's own, kept in
+   the daemon's mount sources outside anything an agent writes, at
+   `/tmp/codex-daemon-<uid>` when `greywall --help` lists `--mount`, and the plan's `reach`
+   says otherwise why its sockets are unreachable, never sharing the host's folder (#446); a shared desktop session
+   reaches exactly the sockets and file its variables name, and the session bus only
+   through greywall's filtered proxy (#435). A rule the platform cannot enforce is a
+   `Refusal` naming the rule and the reason; nothing is weakened silently.
 2. `Greywall::detect` checks the installed engine: the fork commits the release pins
    (`PINNED_GREYWALL_COMMIT`, `PINNED_GREYPROXY_COMMIT`) and the host capabilities Greywall
    reports. A missing or other build leaves the engine unready, with the reason.
