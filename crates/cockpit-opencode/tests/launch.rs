@@ -167,8 +167,12 @@ fn the_owners_inline_config_is_kept_and_the_plugin_joins_its_plugins() {
     let bridge = common::bridge();
     let owner = r#"{"model":"anthropic/claude-sonnet-5-5","plugin":["their-plugin"]}"#;
 
-    let config: serde_json::Value =
-        serde_json::from_str(&bridge.inline_config(Some(OsStr::new(owner))).unwrap()).unwrap();
+    let config: serde_json::Value = serde_json::from_str(
+        &common::opencode()
+            .inline_config(Some(OsStr::new(owner)))
+            .unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(
         config,
@@ -184,11 +188,14 @@ fn the_owners_inline_config_is_kept_and_the_plugin_joins_its_plugins() {
 /// own servers stay.
 #[test]
 fn a_launch_with_the_bridge_registers_cockpits_mcp_server_beside_the_owners() {
-    let bridge = common::bridge();
     let owner = r#"{"mcp":{"theirs":{"type":"remote","url":"https://example.invalid/mcp"}}}"#;
 
-    let config: serde_json::Value =
-        serde_json::from_str(&bridge.inline_config(Some(OsStr::new(owner))).unwrap()).unwrap();
+    let config: serde_json::Value = serde_json::from_str(
+        &common::opencode()
+            .inline_config(Some(OsStr::new(owner)))
+            .unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(
         config["mcp"],
@@ -199,10 +206,66 @@ fn a_launch_with_the_bridge_registers_cockpits_mcp_server_beside_the_owners() {
     );
 }
 
+/// #419: OpenCode 1.19.5 scans each `skills.paths` folder for `**/SKILL.md`
+/// (`packages/opencode/src/skill/index.ts`), so the bundle's `cockpit` skill is listed
+/// without the agent asking; the owner's own paths stay.
+#[test]
+fn a_launch_adds_the_instruction_bundle_to_the_owners_skill_paths() {
+    let opencode = common::opencode().with_instruction_skills("/state/agent-context".into());
+    let owner = r#"{"skills":{"paths":["~/my-skills"],"urls":["https://example.invalid/s/"]}}"#;
+
+    let config: serde_json::Value =
+        serde_json::from_str(&opencode.inline_config(Some(OsStr::new(owner))).unwrap()).unwrap();
+
+    assert_eq!(
+        config["skills"],
+        serde_json::json!({
+            "paths": ["~/my-skills", "/state/agent-context"],
+            "urls": ["https://example.invalid/s/"],
+        })
+    );
+}
+
+#[test]
+fn a_launch_carries_the_instruction_skills_in_its_inline_config() {
+    let launch = common::opencode()
+        .with_instruction_skills("/state/agent-context".into())
+        .launch(&request(&Conversation::New))
+        .unwrap();
+    let config: serde_json::Value =
+        serde_json::from_str(common::variable(&launch, "OPENCODE_CONFIG_CONTENT").unwrap())
+            .unwrap();
+
+    assert_eq!(
+        config["skills"],
+        serde_json::json!({ "paths": ["/state/agent-context"] })
+    );
+}
+
+#[test]
+fn without_instruction_skills_the_inline_config_names_no_skill_path() {
+    let config: serde_json::Value =
+        serde_json::from_str(&common::opencode().inline_config(None).unwrap()).unwrap();
+
+    assert_eq!(config.get("skills"), None);
+}
+
+#[test]
+fn an_owners_skills_the_bundle_cannot_join_are_refused() {
+    let opencode = common::opencode().with_instruction_skills("/state/agent-context".into());
+
+    for owner in [r#"{"skills":[]}"#, r#"{"skills":{"paths":"one"}}"#] {
+        let refusal = opencode.inline_config(Some(OsStr::new(owner))).unwrap_err();
+
+        assert!(
+            refusal.reason.starts_with("OPENCODE_CONFIG_CONTENT "),
+            "{owner}: {refusal:?}"
+        );
+    }
+}
+
 #[test]
 fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
-    let bridge = common::bridge();
-
     for owner in [
         "not json",
         "[]",
@@ -210,7 +273,9 @@ fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
         r#"{"mcp":[]}"#,
         r#"{"mcp":{"cockpit":{"type":"local","command":["theirs"]}}}"#,
     ] {
-        let refusal = bridge.inline_config(Some(OsStr::new(owner))).unwrap_err();
+        let refusal = common::opencode()
+            .inline_config(Some(OsStr::new(owner)))
+            .unwrap_err();
 
         assert!(
             refusal.reason.starts_with("OPENCODE_CONFIG_CONTENT "),
@@ -221,7 +286,9 @@ fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
 
 #[test]
 fn a_launch_without_the_bridge_loads_no_plugin() {
-    let opencode = OpenCode::new("/usr/bin/opencode".into(), None, None);
+    // Instruction skills alone never touch the owner's inline configuration.
+    let opencode = OpenCode::new("/usr/bin/opencode".into(), None, None)
+        .with_instruction_skills("/state/agent-context".into());
 
     let launch = opencode.launch(&request(&Conversation::New)).unwrap();
 

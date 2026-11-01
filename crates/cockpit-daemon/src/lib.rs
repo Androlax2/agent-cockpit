@@ -186,7 +186,7 @@ impl Instance {
     ) -> Result<Daemon, StartError> {
         let options = &self.options;
         // Rewritten at every start, so what agents read on disk matches this release (#49).
-        let bundle_dir = options.state_dir.join(agent_context::BUNDLE_DIR);
+        let bundle_dir = agent_context::bundle_dir(&options.state_dir);
         let bundle = cockpit_agent_context::write_bundle(&bundle_dir)
             .map_err(StartError::InstructionBundle)?;
         tracing::info!(
@@ -195,6 +195,11 @@ impl Instance {
             dir = %bundle_dir.display(),
             "wrote the agent instruction bundle"
         );
+        let claude_skills = cockpit_claude::instruction_skills_dir(
+            &agent_context::claude_skills_root(&options.state_dir),
+        );
+        cockpit_agent_context::write_bundle(&claude_skills)
+            .map_err(StartError::InstructionBundle)?;
         wiring
             .sessions
             .base_environment

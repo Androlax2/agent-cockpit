@@ -107,6 +107,57 @@ async fn a_launch_may_read_the_instruction_bundle_and_the_opencode_plugin() {
     }
 }
 
+/// #419: Claude Code lists the bundle's `cockpit` skill because the launch adds the folder
+/// whose `.claude/skills` holds it, written at the daemon's start and readable in the sandbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_launch_adds_the_instruction_skills_it_may_read() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let skills_root = state_folder(&home, "claude-skills");
+
+    let readable = readable_folders(&home).await;
+
+    assert!(readable.contains(&skills_root), "{readable:?}");
+    assert_eq!(
+        argument_after(&sandbox_launches(&home)[0], "--add-dir"),
+        skills_root
+    );
+    let skill = std::fs::read_to_string(
+        std::path::Path::new(&skills_root).join(".claude/skills/cockpit/SKILL.md"),
+    )
+    .unwrap();
+    assert!(skill.starts_with("---\nname: cockpit\n"), "{skill}");
+}
+
+/// `--add-dir` lets Claude Code's own tools edit the folder, so only the sandbox keeps one
+/// session from rewriting the skill every later session loads: it is never writable.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_launch_may_write_the_instruction_skills() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let session = new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+    let skills_root = state_folder(&home, "claude-skills");
+    let launch = &sandbox_launches(&home)[0];
+
+    let writable: Vec<&str> = launch
+        .split(' ')
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|pair| pair[0] == "--allow-path")
+        .map(|pair| pair[1])
+        .collect();
+
+    assert!(
+        writable
+            .iter()
+            .all(|path| !skills_root.starts_with(path) && !path.starts_with(&skills_root)),
+        "{writable:?}"
+    );
+}
+
 /// Without OpenCode the plugin folder is never written; a path that does not exist handed
 /// to the sandbox would fail every other agent's launch.
 #[tokio::test(flavor = "multi_thread")]

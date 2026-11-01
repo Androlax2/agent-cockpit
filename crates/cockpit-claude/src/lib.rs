@@ -25,13 +25,14 @@ pub const CONFORMANCE_VERSION: &str = "2.1.316";
 pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 /// Every flag a launch may pass; the conformance test finds each in `claude --help`.
-pub const LAUNCH_FLAGS: [&str; 6] = [
+pub const LAUNCH_FLAGS: [&str; 7] = [
     "--remote-control",
     "--session-id",
     "--resume",
     "--settings",
     "--mcp-config",
     "--effort",
+    "--add-dir",
 ];
 
 /// The name Cockpit's MCP server (`cockpit mcp`) has in every harness a launch registers it
@@ -131,6 +132,15 @@ pub struct ClaudeCode {
     version: Option<String>,
     /// Without it, launches subscribe no hooks and `events` is not reported.
     bridge: Option<Bridge>,
+    /// The directory each launch adds with `--add-dir`, whose [`instruction_skills_dir`]
+    /// holds Cockpit's instruction bundle as a skill (#419).
+    instruction_skills: Option<PathBuf>,
+}
+
+/// Where Claude Code looks for skills in a directory added with `--add-dir`: the bundle is
+/// written there so the `cockpit` skill sits at `<root>/.claude/skills/cockpit/SKILL.md`.
+pub fn instruction_skills_dir(root: &Path) -> PathBuf {
+    root.join(".claude").join("skills")
 }
 
 impl ClaudeCode {
@@ -141,7 +151,15 @@ impl ClaudeCode {
             program,
             version,
             bridge,
+            instruction_skills: None,
         }
+    }
+
+    /// Every launch adds `root` with `--add-dir`, so Claude Code lists the skills written
+    /// under [`instruction_skills_dir`]`(root)`. The caller writes them before any launch.
+    pub fn with_instruction_skills(mut self, root: PathBuf) -> ClaudeCode {
+        self.instruction_skills = Some(root);
+        self
     }
 
     /// The adapter for `program`, with the version it prints. Blocks up to 10 seconds.
@@ -284,6 +302,10 @@ impl Provider for ClaudeCode {
                 });
             }
             arguments.extend(["--effort".into(), effort.into()]);
+        }
+        // Variadic too: a flag or the `--` before the first message follows it.
+        if let Some(root) = &self.instruction_skills {
+            arguments.extend(["--add-dir".into(), root.into()]);
         }
         if let Some(bridge) = &self.bridge {
             arguments.extend([
