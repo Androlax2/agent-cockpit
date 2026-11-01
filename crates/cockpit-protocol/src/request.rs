@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use crate::agent::{AgentReport, SessionReport};
 use crate::approvals::{GuideView, RunRequestView};
+use crate::bug_reports::{BugFiledView, BugKindView, BugReportView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::coordination::{CoordinatorAuditView, CoordinatorGrantView, ObservedSessionView};
 use crate::error::{ErrorCode, ProtocolError, bounded};
@@ -101,6 +102,59 @@ pub enum Command {
     /// made or was the target of.
     SessionGrants {
         session: String,
+    },
+    /// Agent socket only: report a Cockpit malfunction the sender saw (#427). It opens a
+    /// draft for the owner to review, never an issue: one per fingerprint per day unless
+    /// `requested_by_owner`, which never lifts the per-session bound.
+    AgentReportBug {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        description: String,
+        bug_kind: BugKindView,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        component: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        steps: String,
+        #[serde(default)]
+        requested_by_owner: bool,
+    },
+    /// Owner only: open a draft with the version facts and a support bundle attached.
+    BugReportNew {
+        description: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        steps: String,
+    },
+    /// Owner only: the drafts waiting; `all` adds the sent and discarded reports.
+    BugReportList {
+        #[serde(default)]
+        all: bool,
+    },
+    /// Owner only: one report with what a send would file.
+    BugReportShow {
+        report: i64,
+    },
+    /// Owner only: replace what is given of a draft.
+    BugReportEdit {
+        report: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        steps: Option<String>,
+    },
+    /// Owner only: the owner sent the draft from their browser or their own `gh`;
+    /// `issue_url` when the send returned the issue.
+    BugReportSent {
+        report: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        issue_url: Option<String>,
+    },
+    /// Owner only: drop the draft and its support bundle.
+    BugReportDiscard {
+        report: i64,
     },
     /// Register the Git work tree at `path` (absolute) as a project.
     ProjectAdd {
@@ -833,6 +887,17 @@ pub enum Reply {
     Readiness {
         requirements: Vec<RequirementView>,
     },
+    /// What `agent-report-bug` did, and the report it filed into.
+    BugReportFiled {
+        report: i64,
+        filed: BugFiledView,
+    },
+    BugReports {
+        reports: Vec<BugReportView>,
+    },
+    BugReport {
+        report: Box<BugReportView>,
+    },
     /// `None`: the session has not launched an agent yet.
     SessionSandbox {
         evidence: Option<Box<SandboxEvidenceView>>,
@@ -913,6 +978,12 @@ impl RequestRejection {
 
 /// Reads one request frame, telling an unknown command apart from a malformed one.
 pub fn decode_request(frame: &str) -> Result<Request, RequestRejection> {
+    decode_request_with_kind(frame).map(|(request, _)| request)
+}
+
+/// [`decode_request`] with the command's `kind` as the frame names it (`todo-add`), read in
+/// the same pass, so the daemon can name a request in its diagnostics without re-reading it.
+pub fn decode_request_with_kind(frame: &str) -> Result<(Request, String), RequestRejection> {
     let value: Value = serde_json::from_str(frame).map_err(|error| {
         rejection(
             None,
@@ -939,7 +1010,13 @@ pub fn decode_request(frame: &str) -> Result<Request, RequestRejection> {
                 "the command kind is not a string".to_owned(),
             )),
         },
-        Ok(request) => Ok(request),
+        Ok(request) => {
+            let kind = value["command"]["kind"]
+                .as_str()
+                .expect("a decoded command has a string kind")
+                .to_owned();
+            Ok((request, kind))
+        }
         Err(error) => Err(rejection(
             id,
             ErrorCode::InvalidRequest,

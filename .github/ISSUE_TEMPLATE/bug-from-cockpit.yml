@@ -1,0 +1,44 @@
+name: Bug from Cockpit
+description: A bug report Cockpit drafted and its owner reviewed (`cockpit bug-report send`).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `cockpit bug-report send` fills this form from a draft you reviewed. Attach the support
+        bundle file it names. Security problems go through SECURITY.md, not here.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What the agent, the daemon or you saw Cockpit do.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Versions and platform
+      description: Cockpit's version, the platform and the agent providers, as the daemon reports them.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: fingerprint
+    attributes:
+      label: Fingerprint
+      description: "`cockpit-<version>/<kind>/<component>`: issues with the same fingerprint are the same bug."
+    validations:
+      required: true
+  - type: textarea
+    id: bundle
+    attributes:
+      label: Support bundle
+      description: The bundle's contents; attach the file itself. It holds Cockpit's own logs and facts, never prompts, agent output, repository contents, commands or secrets.
+    validations:
+      required: false

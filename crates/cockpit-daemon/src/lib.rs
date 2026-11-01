@@ -3,6 +3,7 @@
 mod agent;
 mod agent_context;
 mod approvals;
+mod bug_reports;
 mod coordination;
 mod error;
 mod feed;
@@ -32,14 +33,14 @@ use tokio::sync::Semaphore;
 pub use approvals::{RUN_LEADER_FLAG, run_settings};
 pub use error::StartError;
 pub use instance::{Instance, Options};
-pub use lanes::LaneLimits;
+pub use lanes::{LaneLimits, StallBudgets};
 pub use manager::Manager;
 pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusal};
 pub use serve::{SESSION_TICK, Serve, own_profile, own_program, serve};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 13] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 14] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
@@ -53,6 +54,7 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 13] = [
     cockpit_workflows::MIGRATIONS,
     cockpit_verification::MIGRATIONS,
     cockpit_scheduling::MIGRATIONS,
+    cockpit_bug_reports::MIGRATIONS,
 ];
 
 /// Names the directory holding the instruction bundle in every agent's environment.
@@ -139,6 +141,10 @@ pub struct Capabilities {
     pub provider_facts: Vec<cockpit_readiness::ProviderFacts>,
     /// Notified when a coordinator queues a message, to wake its delivery (#410).
     pub messages_queued: Arc<tokio::sync::Notify>,
+    /// What every bug report draft carries about this daemon (#427).
+    pub bug_report_facts: Arc<cockpit_bug_reports::Facts>,
+    /// `$XDG_STATE_HOME/cockpit`, where bug report bundles are written beside the logs.
+    pub state_dir: PathBuf,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -153,6 +159,7 @@ pub struct Daemon {
     sweeping: tokio::task::JoinHandle<()>,
     dispatching: tokio::task::JoinHandle<()>,
     delivering: tokio::task::JoinHandle<()>,
+    detecting: tokio::task::JoinHandle<()>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
 }
@@ -264,7 +271,7 @@ impl Instance {
             .map(|server| server.version().to_string())
             .map_err(Clone::clone);
         let sandbox = wiring.sessions.sandbox.clone();
-        let provider_facts = wiring
+        let provider_facts: Vec<_> = wiring
             .providers
             .iter()
             .map(|provider| readiness::provider_found(provider.as_ref()))
@@ -289,6 +296,22 @@ impl Instance {
         sessions::restore(&sessions)
             .await
             .map_err(StartError::Restore)?;
+        let bug_report_facts = Arc::new(bug_reports::facts(
+            sandbox.platform().name(),
+            &tmux_readiness,
+            &provider_facts,
+        ));
+        let (faults, fault_receiver) = bug_reports::Faults::channel();
+        // Marked once the start can no longer fail on durable state, so a start refused for
+        // a broken database is not taken for a crash at the next one.
+        let crashed = bug_reports::mark_running(&options.state_dir).map_err(StartError::io(
+            "mark the daemon running in",
+            &options.state_dir,
+        ))?;
+        if crashed {
+            tracing::warn!("the last run did not stop cleanly; opening a bug report draft");
+            faults.report(bug_reports::Fault::Crash);
+        }
         let socket_path = options.socket_path();
         let agent_socket_path = options.agent_socket_path();
         let listener = Arc::new(server::bind(&socket_path)?);
@@ -301,13 +324,21 @@ impl Instance {
             runner: runner.clone(),
             queued: Arc::clone(&messages_queued),
         };
-        let delivering = tokio::spawn(supervisor::supervise("coordinator-messages", move || {
-            coordination::deliver_forever(delivered.clone())
-        }));
+        let delivering = tokio::spawn(supervisor::supervise(
+            "coordinator-messages",
+            faults.clone(),
+            move || coordination::deliver_forever(delivered.clone()),
+        ));
         let shared = Arc::new(server::Shared {
             owner_uid: self.owner_uid,
             limits,
-            lanes: lanes::Lanes::new(limits.control, limits.stop, limits.bulk),
+            lanes: lanes::Lanes::new(
+                limits.control,
+                limits.stop,
+                limits.bulk,
+                limits.stall_budgets,
+                faults.clone(),
+            ),
             handler: routes(Capabilities {
                 database: Arc::clone(&database),
                 git: wiring.git,
@@ -324,8 +355,22 @@ impl Instance {
                 tmux: tmux_readiness,
                 provider_facts,
                 messages_queued,
+                bug_report_facts: Arc::clone(&bug_report_facts),
+                state_dir: options.state_dir.clone(),
             }),
         });
+        let detected = bug_reports::Context {
+            database: Arc::clone(&database),
+            state_dir: options.state_dir.clone(),
+            facts: bug_report_facts,
+        };
+        let fault_receiver = Arc::new(tokio::sync::Mutex::new(fault_receiver));
+        // Its own panics are not faults it files: a fault that makes it panic would loop.
+        let detecting = tokio::spawn(supervisor::supervise(
+            "bug-reports",
+            bug_reports::Faults::none(),
+            move || bug_reports::detect_forever(Arc::clone(&fault_receiver), detected.clone()),
+        ));
         let scheduled = scheduling::Context {
             database: Arc::clone(&database),
             sessions: Arc::clone(&sessions),
@@ -334,36 +379,50 @@ impl Instance {
             provider_capabilities: Arc::new(provider_capabilities),
             settings: wiring.scheduling,
         };
-        let dispatching = tokio::spawn(supervisor::supervise("scheduling", move || {
-            scheduling::dispatch_forever(scheduled.clone())
-        }));
+        let dispatching = tokio::spawn(supervisor::supervise(
+            "scheduling",
+            faults.clone(),
+            move || scheduling::dispatch_forever(scheduled.clone()),
+        ));
         let published_database = Arc::clone(&database);
         let published_sessions = Arc::clone(&sessions);
         let environment = wiring.environment;
-        let publishing = tokio::spawn(supervisor::supervise("session-feed", move || {
-            session_feed::publish_forever(
-                Arc::clone(&published_database),
-                Arc::clone(&published_sessions),
-                environment.clone(),
-            )
-        }));
-        let ticking = tokio::spawn(supervisor::supervise("sessions-tick", move || {
-            sessions::tick_forever(Arc::clone(&sessions), wiring.session_tick)
-        }));
+        let publishing = tokio::spawn(supervisor::supervise(
+            "session-feed",
+            faults.clone(),
+            move || {
+                session_feed::publish_forever(
+                    Arc::clone(&published_database),
+                    Arc::clone(&published_sessions),
+                    environment.clone(),
+                )
+            },
+        ));
+        let ticking = tokio::spawn(supervisor::supervise(
+            "sessions-tick",
+            faults.clone(),
+            move || sessions::tick_forever(Arc::clone(&sessions), wiring.session_tick),
+        ));
         let retained = Arc::clone(&database);
-        let retaining = tokio::spawn(supervisor::supervise("feed-retention", move || {
-            feed::discard_history_forever(Arc::clone(&retained))
-        }));
+        let retaining = tokio::spawn(supervisor::supervise(
+            "feed-retention",
+            faults.clone(),
+            move || feed::discard_history_forever(Arc::clone(&retained)),
+        ));
         let swept_database = Arc::clone(&database);
-        let sweeping = tokio::spawn(supervisor::supervise("resources-sweep", move || {
-            resources::sweep_forever(
-                Arc::clone(&swept_database),
-                sweeper.clone(),
-                RESOURCE_SWEEP_INTERVAL,
-            )
-        }));
-        let accepting = accept(&listener, &shared, server::Socket::HostOnly);
-        let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent);
+        let sweeping = tokio::spawn(supervisor::supervise(
+            "resources-sweep",
+            faults.clone(),
+            move || {
+                resources::sweep_forever(
+                    Arc::clone(&swept_database),
+                    sweeper.clone(),
+                    RESOURCE_SWEEP_INTERVAL,
+                )
+            },
+        ));
+        let accepting = accept(&listener, &shared, server::Socket::HostOnly, &faults);
+        let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent, &faults);
         tracing::info!(
             socket = %socket_path.display(),
             agent_socket = %agent_socket_path.display(),
@@ -380,6 +439,7 @@ impl Instance {
             sweeping,
             dispatching,
             delivering,
+            detecting,
             _database: database,
             _instance: self,
         })
@@ -391,18 +451,23 @@ fn accept(
     listener: &Arc<tokio::net::UnixListener>,
     shared: &Arc<server::Shared>,
     socket: server::Socket,
+    faults: &bug_reports::Faults,
 ) -> tokio::task::JoinHandle<()> {
     let listener = Arc::clone(listener);
     let shared = Arc::clone(shared);
     let connections = Arc::new(Semaphore::new(shared.limits.connections));
-    tokio::spawn(supervisor::supervise(socket.worker_name(), move || {
-        server::accept_connections(
-            Arc::clone(&listener),
-            Arc::clone(&shared),
-            Arc::clone(&connections),
-            socket,
-        )
-    }))
+    tokio::spawn(supervisor::supervise(
+        socket.worker_name(),
+        faults.clone(),
+        move || {
+            server::accept_connections(
+                Arc::clone(&listener),
+                Arc::clone(&shared),
+                Arc::clone(&connections),
+                socket,
+            )
+        },
+    ))
 }
 
 /// Step 2 and 3 of the restart contract: each capability that holds launch intents,
@@ -493,5 +558,7 @@ impl Drop for Daemon {
         self.sweeping.abort();
         self.dispatching.abort();
         self.delivering.abort();
+        self.detecting.abort();
+        bug_reports::mark_stopped(&self._instance.options.state_dir);
     }
 }

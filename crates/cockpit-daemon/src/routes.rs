@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
-    Capabilities, Manager, agent, agent_context, approvals, coordination, feed, manager, projects,
-    readiness, resources, scheduling, sessions, tasks, verification, workflows,
+    Capabilities, Manager, agent, agent_context, approvals, bug_reports, coordination, feed,
+    manager, projects, readiness, resources, scheduling, sessions, tasks, verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -97,6 +97,7 @@ pub struct Routes {
     scheduling: scheduling::Context,
     readiness: readiness::Context,
     coordination: coordination::Context,
+    bug_reports: bug_reports::Context,
 }
 
 impl Routes {
@@ -129,6 +130,11 @@ impl Routes {
                 processes: capabilities.processes.clone(),
                 run_settings: capabilities.run_settings,
                 environment: environment.clone(),
+            },
+            bug_reports: bug_reports::Context {
+                database: Arc::clone(&capabilities.database),
+                state_dir: capabilities.state_dir,
+                facts: capabilities.bug_report_facts,
             },
             readiness: readiness::Context {
                 database: Arc::clone(&capabilities.database),
@@ -202,6 +208,30 @@ impl Handler for Routes {
                 job: Box::pin(agent::reports(Arc::clone(&self.database))),
             },
             (Command::AgentReports, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            // A session reports what it saw; only the owner reads, edits and sends drafts,
+            // which hold the owner's logs (#427).
+            (command @ Command::AgentReportBug { .. }, peer) => match peer {
+                peer @ Peer::Agent { .. } => {
+                    bug_reports::route(command, peer, self.bug_reports.clone())
+                }
+                Peer::Owner => Route::Answer(wrong_socket(
+                    "agent report-bug is a session's report; the owner opens a draft directly",
+                    "use `cockpit bug-report new` on the host",
+                    UnblockedBy::Owner,
+                )),
+            },
+            (
+                command @ (Command::BugReportNew { .. }
+                | Command::BugReportList { .. }
+                | Command::BugReportShow { .. }
+                | Command::BugReportEdit { .. }
+                | Command::BugReportSent { .. }
+                | Command::BugReportDiscard { .. }),
+                peer,
+            ) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => bug_reports::route(command, Peer::Owner, self.bug_reports.clone()),
+            },
             // The bundle is the product's own text: anyone the daemon serves may read it.
             (command @ (Command::InstructionCatalog | Command::InstructionsRead { .. }), _) => {
                 Route::Answer(agent_context::instructions(command))

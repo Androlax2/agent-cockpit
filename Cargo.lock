@@ -405,6 +405,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-bug-reports"
+version = "0.1.0"
+dependencies = [
+ "cockpit-turso",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cockpit-claude"
 version = "0.1.0"
 dependencies = [
@@ -463,6 +472,7 @@ dependencies = [
  "cockpit-agent-context",
  "cockpit-approvals",
  "cockpit-authorization",
+ "cockpit-bug-reports",
  "cockpit-claude",
  "cockpit-client",
  "cockpit-codex",

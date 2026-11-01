@@ -24,6 +24,7 @@ macro_rules! outln {
 mod agent;
 mod approvals;
 mod ask;
+mod bug_report;
 mod check;
 mod coordination;
 mod daemon;
@@ -56,6 +57,11 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit agent sessions [--watch]
        cockpit agent message SESSION TEXT
        cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
+       cockpit agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] [--component NAME] [--steps TEXT] [--requested-by-owner]
+       cockpit bug-report new DESCRIPTION [--title TEXT] [--steps TEXT]
+       cockpit bug-report list [--all] | show ID | discard ID
+       cockpit bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]
+       cockpit bug-report send ID [--gh | --print] [--anyway]
        cockpit project add DIR [--name NAME]
        cockpit project list
        cockpit checkout list [PROJECT]
@@ -162,6 +168,12 @@ fn main() -> ExitCode {
             .unwrap_or_else(|problem| usage_error(Some(problem))),
         [Some("agent"), Some("start")] => coordination::start(&arguments[2..])
             .unwrap_or_else(|problem| usage_error(Some(problem))),
+        [Some("agent"), Some("report-bug")] => bug_report::agent_report(&arguments[2..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
+        [Some("bug-report"), ..] => match bug_report::parse(&arguments[1..]) {
+            Ok(verb) => bug_report::run(verb),
+            Err(problem) => usage_error(Some(problem)),
+        },
         [Some("ask"), Some("run")] => {
             ask::run(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }

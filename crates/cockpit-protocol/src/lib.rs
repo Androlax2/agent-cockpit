@@ -2,6 +2,7 @@
 
 mod agent;
 mod approvals;
+mod bug_reports;
 mod change_feed;
 mod coordination;
 mod error;
@@ -25,6 +26,10 @@ pub use approvals::{
     FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView, RunRequestView,
     RunResultView, RunStateView, ShownText,
 };
+pub use bug_reports::{
+    BugBundleView, BugFiledView, BugIssueView, BugKindView, BugOriginView, BugReportView,
+    BugStatusView,
+};
 pub use change_feed::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
     EntityRevision, FeedPosition,
@@ -45,7 +50,7 @@ pub use queue::{QueueExplanationView, QueuePlacementView, QueueSessionNoteView, 
 pub use readiness::{ReadinessStatusView, RequirementView};
 pub use request::{
     Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,
-    decode_request,
+    decode_request, decode_request_with_kind,
 };
 pub use resources::{
     ControlSupportView, DemandView, EffectiveView, LimitView, ObservedView, ProfileView,

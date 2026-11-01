@@ -1,0 +1,18 @@
+[package]
+name = "cockpit-bug-reports"
+description = "Owns bug reports about Cockpit itself: drafts from agents, the daemon and the owner, their fingerprint, the daily limit that merges repeats, the owner's edits and decisions, and the issue text and new-issue URL a send hands the owner."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
+cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

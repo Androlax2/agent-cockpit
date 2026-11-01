@@ -283,6 +283,14 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: &["cockpit-readiness"],
         allowed: &["cockpit-config"],
     },
+    // #427: a bug report is a draft about Cockpit itself; the daemon gathers the facts it
+    // carries (version, platform, providers) and writes the support bundle through
+    // diagnostics, so the drafts reach no capability and grant nothing.
+    AllowList {
+        rule: "bug-reports -> the database only",
+        from: &["cockpit-bug-reports"],
+        allowed: &["cockpit-turso"],
+    },
     // Producers own what a message or an entity means and depend on messaging, never the
     // reverse; the daemon converts the feed to wire types (#41).
     AllowList {
@@ -682,6 +690,16 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-protocol",
         ),
         (
+            "bug-reports -> the database only",
+            "cockpit-bug-reports",
+            "cockpit-diagnostics",
+        ),
+        (
+            "bug-reports -> the database only",
+            "cockpit-bug-reports",
+            "cockpit-protocol",
+        ),
+        (
             "messaging -> the database only",
             "cockpit-messaging",
             "cockpit-teams",
@@ -790,6 +808,8 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-daemon", "cockpit-opencode"),
         ("cockpit-opencode", "cockpit-provider-api"),
         ("cockpit-messaging", "cockpit-turso"),
+        ("cockpit-bug-reports", "cockpit-turso"),
+        ("cockpit-daemon", "cockpit-bug-reports"),
         ("cockpit-workflows", "cockpit-tasks"),
         ("cockpit-workflows", "cockpit-provider-api"),
         ("cockpit-scheduling", "cockpit-workflows"),

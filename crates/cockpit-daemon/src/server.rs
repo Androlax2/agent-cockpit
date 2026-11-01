@@ -10,7 +10,7 @@ use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_protocol::{
     Capability, ChangeBatch, ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal,
     RefusalReason, Response, SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello,
-    decode_request, negotiate,
+    decode_request_with_kind, negotiate,
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -18,7 +18,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::StartError;
-use crate::lanes::{LaneLimits, Lanes};
+use crate::lanes::{LaneLimits, Lanes, StallBudgets};
 use crate::routes::{Handler, Job, Peer, Route, WorkClass, refusal};
 
 /// Only the owner may connect; the 0700 directory already says so, this is the second lock.
@@ -44,6 +44,8 @@ pub struct Limits {
     pub bulk: LaneLimits,
     /// A connection that has not sent its `hello` by then is closed.
     pub handshake_timeout: Duration,
+    /// A request running longer in its lane opens a bug report draft (#427).
+    pub stall_budgets: StallBudgets,
 }
 
 impl Default for Limits {
@@ -67,6 +69,7 @@ impl Default for Limits {
                 waiting: 32,
             },
             handshake_timeout: Duration::from_secs(5),
+            stall_budgets: StallBudgets::default(),
         }
     }
 }
@@ -86,6 +89,12 @@ impl Limits {
             (
                 self.handshake_timeout.is_zero(),
                 "handshake_timeout must not be zero",
+            ),
+            (
+                self.stall_budgets.control.is_zero()
+                    || self.stall_budgets.stop.is_zero()
+                    || self.stall_budgets.bulk.is_zero(),
+                "a lane's stall budget must not be zero",
             ),
         ];
         match invalid.into_iter().find(|(is_invalid, _)| *is_invalid) {
@@ -259,8 +268,8 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
             answer.send(malformed("the frame is not UTF-8".to_owned()));
             continue;
         };
-        let request = match decode_request(text) {
-            Ok(request) => request,
+        let (request, kind) = match decode_request_with_kind(text) {
+            Ok(decoded) => decoded,
             Err(rejection) => {
                 answer.send(rejection.into_frame());
                 continue;
@@ -299,7 +308,7 @@ async fn serve_connection(stream: UnixStream, shared: &Shared, peer: Peer) {
                 }
             };
         // Refused `busy`, a subscribe's place is released with it.
-        let run = match shared.lanes.admit(class, job) {
+        let run = match shared.lanes.admit(class, kind, job) {
             Ok(run) => run,
             Err(busy) => {
                 answer.send(respond(busy));

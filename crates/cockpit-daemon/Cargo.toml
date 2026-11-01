@@ -15,6 +15,7 @@ path = "src/main.rs"
 cockpit-agent-channel = { path = "../cockpit-agent-channel", version = "0.1.0" }
 cockpit-agent-context = { path = "../cockpit-agent-context", version = "0.1.0" }
 cockpit-approvals = { path = "../cockpit-approvals", version = "0.1.0" }
+cockpit-bug-reports = { path = "../cockpit-bug-reports", version = "0.1.0" }
 cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
 cockpit-claude = { path = "../cockpit-claude", version = "0.1.0" }
 cockpit-codex = { path = "../cockpit-codex", version = "0.1.0" }
@@ -38,7 +39,7 @@ cockpit-verification = { path = "../cockpit-verification", version = "0.1.0" }
 cockpit-workflows = { path = "../cockpit-workflows", version = "0.1.0" }
 serde = "1.0.229"
 serde_json = "1.0.154"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 
 [dev-dependencies]

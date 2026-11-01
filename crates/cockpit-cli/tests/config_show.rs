@@ -545,6 +545,12 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit agent sessions [--watch]\n       \
                  cockpit agent message SESSION TEXT\n       \
                  cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
+                 cockpit agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] \
+                 [--component NAME] [--steps TEXT] [--requested-by-owner]\n       \
+                 cockpit bug-report new DESCRIPTION [--title TEXT] [--steps TEXT]\n       \
+                 cockpit bug-report list [--all] | show ID | discard ID\n       \
+                 cockpit bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]\n       \
+                 cockpit bug-report send ID [--gh | --print] [--anyway]\n       \
                  cockpit project add DIR [--name NAME]\n       \
                  cockpit project list\n       \
                  cockpit checkout list [PROJECT]\n       \
