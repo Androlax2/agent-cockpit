@@ -53,6 +53,7 @@ async fn a_launched_agent_sees_the_daemons_display_variables() {
     let home = Home::new();
     let _daemon = home.start_with(&[
         ("DISPLAY", ":7"),
+        ("XAUTHORITY", "/run/user/7/gdm/Xauthority"),
         ("WAYLAND_DISPLAY", "wayland-7"),
         ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/7/bus"),
     ]);
@@ -61,7 +62,8 @@ async fn a_launched_agent_sees_the_daemons_display_variables() {
 
     assert_eq!(
         seen,
-        "DISPLAY=:7\nWAYLAND_DISPLAY=wayland-7\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/7/bus\n"
+        "DISPLAY=:7\nXAUTHORITY=/run/user/7/gdm/Xauthority\nWAYLAND_DISPLAY=wayland-7\n\
+         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/7/bus\n"
     );
 }
 
@@ -74,7 +76,7 @@ async fn a_launched_agent_gets_no_display_variable_the_daemon_lacks() {
 
     assert_eq!(
         seen,
-        "DISPLAY=unset\nWAYLAND_DISPLAY=wayland-7\nDBUS_SESSION_BUS_ADDRESS=unset\n"
+        "DISPLAY=unset\nXAUTHORITY=unset\nWAYLAND_DISPLAY=wayland-7\nDBUS_SESSION_BUS_ADDRESS=unset\n"
     );
 }
 

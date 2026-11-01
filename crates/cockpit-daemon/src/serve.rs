@@ -16,7 +16,8 @@ pub const SESSION_TICK: Duration = Duration::from_secs(30);
 
 /// Variables of the daemon's own environment every agent starts with, where set, beside its
 /// XDG layout; the provider adds its own after them. The display ones let the agent's tools
-/// reach the owner's desktop session, notifications first (#303).
+/// reach the owner's desktop session, notifications first (#303); `XAUTHORITY` is the X11
+/// cookie a display manager keeps outside `~/.Xauthority` (#306).
 const AGENT_BASE_VARIABLES: &[&str] = &[
     "HOME",
     "USER",
@@ -27,6 +28,7 @@ const AGENT_BASE_VARIABLES: &[&str] = &[
     "LC_ALL",
     "LC_CTYPE",
     "DISPLAY",
+    "XAUTHORITY",
     "WAYLAND_DISPLAY",
     "DBUS_SESSION_BUS_ADDRESS",
 ];

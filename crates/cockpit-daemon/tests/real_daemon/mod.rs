@@ -37,8 +37,8 @@ pub const STALL_PROJECT: &str = "stall";
 pub const REPORT_PROJECT: &str = "report";
 /// The label the [`REPORT_PROJECT`] agent reports.
 pub const REPORTED_LABEL: &str = "reported from the agent";
-/// A project of this name runs an agent that writes `DISPLAY`, `WAYLAND_DISPLAY` and
-/// `DBUS_SESSION_BUS_ADDRESS` as it was started with to [`Home::environment_log`],
+/// A project of this name runs an agent that writes `DISPLAY`, `XAUTHORITY`,
+/// `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` as it was started with to [`Home::environment_log`],
 /// `<name>=unset` for each one it lacks.
 pub const ENVIRONMENT_PROJECT: &str = "environment";
 /// A project of this name runs an agent that, as soon as it starts, asks the owner to run
@@ -73,8 +73,9 @@ case "${PWD##*/}" in
   @ASK_GUIDE@) printf '@ASKED_GUIDE@' | '@COCKPIT@' ask guide 2>> '@ASK_LOG@'
     printf 'guide=%s\n' "$?" >> '@ASK_LOG@'
     exec sleep 3600 ;;
-  @ENVIRONMENT@) printf 'DISPLAY=%s\nWAYLAND_DISPLAY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' \
-      "${DISPLAY-unset}" "${WAYLAND_DISPLAY-unset}" "${DBUS_SESSION_BUS_ADDRESS-unset}" \
+  @ENVIRONMENT@) printf 'DISPLAY=%s\nXAUTHORITY=%s\nWAYLAND_DISPLAY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' \
+      "${DISPLAY-unset}" "${XAUTHORITY-unset}" "${WAYLAND_DISPLAY-unset}" \
+      "${DBUS_SESSION_BUS_ADDRESS-unset}" \
       > '@ENVIRONMENT_LOG@.partial' && mv '@ENVIRONMENT_LOG@.partial' '@ENVIRONMENT_LOG@'
     exec sleep 3600 ;;
   *) exec sleep 3600 ;;
