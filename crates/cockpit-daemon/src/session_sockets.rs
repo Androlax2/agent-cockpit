@@ -32,7 +32,7 @@ pub struct SessionTreeSockets {
 }
 
 impl SessionSockets for SessionTreeSockets {
-    /// Blocking, for [`CONNECT_TIMEOUT`] at most and a read of the kernel's process table.
+    /// Blocking, for 5 s (`CONNECT_TIMEOUT`) at most and a read of the kernel's process table.
     /// Nothing is written to the socket before its listener is verified; the connect itself
     /// reaches whatever the path names.
     fn connect(&self, socket: &Path) -> Result<UnixStream, ProviderError> {
