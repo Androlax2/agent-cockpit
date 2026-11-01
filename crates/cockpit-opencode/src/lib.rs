@@ -133,33 +133,41 @@ impl Bridge {
         }
         Ok(())
     }
+}
 
-    /// `OPENCODE_CONFIG_CONTENT`: OpenCode merges it over the owner's configuration files
-    /// and appends its plugin to theirs; it also registers `cockpit mcp` as the
-    /// [`MCP_SERVER_NAME`] MCP server (#419). `owner` is the value the owner already set,
-    /// which this one replaces: its settings are kept, the plugin appended to its own and the
-    /// server added to its own. Refused when it is not a JSON object or already names a
-    /// [`MCP_SERVER_NAME`] server, rather than dropping the owner's settings unseen.
-    pub fn inline_config(&self, owner: Option<&OsStr>) -> Result<String, ProviderError> {
-        let refused = |why: &str| ProviderError {
-            reason: format!("OPENCODE_CONFIG_CONTENT {why}, so the plugin cannot join it"),
-        };
-        let mut config = match owner {
-            None => serde_json::json!({}),
-            Some(owner) => {
-                let text = owner.to_str().ok_or_else(|| refused("is not UTF-8"))?;
-                serde_json::from_str(text).map_err(|_| refused("is not JSON"))?
-            }
-        };
-        let config_object = config
-            .as_object_mut()
-            .ok_or_else(|| refused("is not a JSON object"))?;
+/// `OPENCODE_CONFIG_CONTENT`: OpenCode merges it over the owner's configuration files. With
+/// the bridge, its plugin joins the owner's and `cockpit mcp` is registered as the
+/// [`MCP_SERVER_NAME`] MCP server (#419); with `instruction_skills`, that folder joins the
+/// owner's `skills.paths`, so OpenCode lists the bundle's `cockpit` skill (#419). `owner` is
+/// the value the owner already set, which this one replaces: its settings are kept. Refused
+/// when it is not a JSON object, a list or table Cockpit joins has another shape, or it
+/// already names a [`MCP_SERVER_NAME`] server, rather than dropping the owner's settings
+/// unseen.
+fn inline_config(
+    owner: Option<&OsStr>,
+    bridge: Option<&Bridge>,
+    instruction_skills: Option<&Path>,
+) -> Result<String, ProviderError> {
+    let refused = |why: &str| ProviderError {
+        reason: format!("OPENCODE_CONFIG_CONTENT {why}, so Cockpit's settings cannot join it"),
+    };
+    let mut config = match owner {
+        None => serde_json::json!({}),
+        Some(owner) => {
+            let text = owner.to_str().ok_or_else(|| refused("is not UTF-8"))?;
+            serde_json::from_str(text).map_err(|_| refused("is not JSON"))?
+        }
+    };
+    let config_object = config
+        .as_object_mut()
+        .ok_or_else(|| refused("is not a JSON object"))?;
+    if let Some(bridge) = bridge {
         let plugins = config_object
             .entry("plugin")
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
             .ok_or_else(|| refused("has a `plugin` that is not a list"))?;
-        plugins.push(self.plugin.to_string_lossy().into());
+        plugins.push(bridge.plugin.to_string_lossy().into());
         let servers = config_object
             .entry("mcp")
             .or_insert_with(|| serde_json::json!({}))
@@ -174,11 +182,23 @@ impl Bridge {
             MCP_SERVER_NAME.to_owned(),
             serde_json::json!({
                 "type": "local",
-                "command": [self.cockpit_program.to_string_lossy(), "mcp"],
+                "command": [bridge.cockpit_program.to_string_lossy(), "mcp"],
             }),
         );
-        Ok(config.to_string())
     }
+    if let Some(folder) = instruction_skills {
+        let paths = config_object
+            .entry("skills")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| refused("has a `skills` that is not an object"))?
+            .entry("paths")
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| refused("has a `skills.paths` that is not a list"))?;
+        paths.push(folder.to_string_lossy().into());
+    }
+    Ok(config.to_string())
 }
 
 fn is_executable(program: &Path) -> bool {
@@ -193,6 +213,8 @@ pub struct OpenCode {
     version: Option<String>,
     /// Without it, launches load no plugin and `events` is not reported.
     bridge: Option<Bridge>,
+    /// The instruction bundle's folder, added to OpenCode's skill paths (#419).
+    instruction_skills: Option<PathBuf>,
 }
 
 impl OpenCode {
@@ -203,7 +225,24 @@ impl OpenCode {
             program,
             version,
             bridge,
+            instruction_skills: None,
         }
+    }
+
+    /// Every launch adds `folder`, the instruction bundle, to OpenCode's `skills.paths`.
+    pub fn with_instruction_skills(mut self, folder: PathBuf) -> OpenCode {
+        self.instruction_skills = Some(folder);
+        self
+    }
+
+    /// The `OPENCODE_CONFIG_CONTENT` a launch sets over `owner`'s: the bridge's plugin and
+    /// MCP server, and the instruction skills, each when this adapter has it.
+    pub fn inline_config(&self, owner: Option<&OsStr>) -> Result<String, ProviderError> {
+        inline_config(
+            owner,
+            self.bridge.as_ref(),
+            self.instruction_skills.as_deref(),
+        )
     }
 
     /// The adapter for `program`, with the version it prints. Blocks up to 10 seconds.
@@ -314,15 +353,16 @@ impl Provider for OpenCode {
             ("OPENCODE_SERVER_PASSWORD".into(), new_password()?.into()),
             ("OPENCODE_SERVER_USERNAME".into(), SERVER_USERNAME.into()),
         ];
+        if self.bridge.is_some() || self.instruction_skills.is_some() {
+            let owner = std::env::var_os("OPENCODE_CONFIG_CONTENT");
+            environment.push((
+                "OPENCODE_CONFIG_CONTENT".into(),
+                self.inline_config(owner.as_deref())?.into(),
+            ));
+        }
         if let Some(bridge) = &self.bridge {
             let [bridge_variable, cockpit_variable, port_variable] = PLUGIN_VARIABLES;
             environment.extend([
-                (
-                    "OPENCODE_CONFIG_CONTENT".into(),
-                    bridge
-                        .inline_config(std::env::var_os("OPENCODE_CONFIG_CONTENT").as_deref())?
-                        .into(),
-                ),
                 (bridge_variable.into(), bridge.bridge_program.clone().into()),
                 (
                     cockpit_variable.into(),

@@ -103,10 +103,23 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     let start_files = config.declared_start_files();
     // Discovery runs programs and may block for seconds, so it comes before the runtime.
     let plugin_dir = instance.options().state_dir.join(OPENCODE_PLUGIN_DIR);
+    // Both written at the daemon's start, before any launch (#419).
+    let bundle_dir = instance
+        .options()
+        .state_dir
+        .join(crate::agent_context::BUNDLE_DIR);
+    let claude_skills_root = instance
+        .options()
+        .state_dir
+        .join(crate::agent_context::CLAUDE_SKILLS_DIR);
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
     let mut unavailable_providers = Vec::new();
     match claude_code(&serve.programs_dir) {
-        Ok(claude) => providers.push(Arc::new(claude)),
+        Ok(claude) => {
+            providers.push(Arc::new(
+                claude.with_instruction_skills(claude_skills_root.clone()),
+            ));
+        }
         Err(reason) => unavailable_providers.push(("claude".to_owned(), reason)),
     }
     match codex(&serve.programs_dir) {
@@ -114,7 +127,11 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         Err(reason) => unavailable_providers.push(("codex".to_owned(), reason)),
     }
     match opencode(&serve.programs_dir, &plugin_dir) {
-        Ok(opencode) => providers.push(Arc::new(opencode)),
+        Ok(opencode) => {
+            providers.push(Arc::new(
+                opencode.with_instruction_skills(bundle_dir.clone()),
+            ));
+        }
         Err(reason) => unavailable_providers.push(("opencode".to_owned(), reason)),
     }
     // The plugin folder exists only once OpenCode was found and its plugin written: a missing
@@ -126,14 +143,10 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         &[
             Some(serve.programs_dir.clone()),
             opencode_plugin_dir,
-            // `$COCKPIT_INSTRUCTIONS`, which the launch brief points agents at (#419); the
-            // daemon writes it at its start, before any launch.
-            Some(
-                instance
-                    .options()
-                    .state_dir
-                    .join(crate::agent_context::BUNDLE_DIR),
-            ),
+            // `$COCKPIT_INSTRUCTIONS`, which the launch brief points agents at and OpenCode
+            // lists as skills, and its copy Claude Code lists as skills (#419).
+            Some(bundle_dir),
+            Some(claude_skills_root),
         ]
         .into_iter()
         .flatten()

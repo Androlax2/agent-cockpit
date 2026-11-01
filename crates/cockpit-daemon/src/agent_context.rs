@@ -21,6 +21,11 @@ use crate::approvals::{Answer, Failed, Sender};
 /// Where the daemon writes the bundle, under its state directory.
 pub(crate) const BUNDLE_DIR: &str = "agent-context";
 
+/// The folder Claude Code launches add with `--add-dir`, under the state directory: the
+/// bundle is written again in its `.claude/skills`, where Claude Code looks for skills (#419).
+/// A copy, not a link: Claude Code's documentation does not say it follows one.
+pub(crate) const CLAUDE_SKILLS_DIR: &str = "claude-skills";
+
 /// `instruction-catalog` and `instructions-read`: answered at once from the binary, needing
 /// neither the database nor the sender's identity.
 pub(crate) fn instructions(command: Command) -> Outcome {

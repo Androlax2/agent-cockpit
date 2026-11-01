@@ -193,6 +193,11 @@ impl Instance {
             dir = %bundle_dir.display(),
             "wrote the agent instruction bundle"
         );
+        let claude_skills = cockpit_claude::instruction_skills_dir(
+            &options.state_dir.join(agent_context::CLAUDE_SKILLS_DIR),
+        );
+        cockpit_agent_context::write_bundle(&claude_skills)
+            .map_err(StartError::InstructionBundle)?;
         wiring
             .sessions
             .base_environment

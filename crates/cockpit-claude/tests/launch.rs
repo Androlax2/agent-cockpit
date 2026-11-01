@@ -149,6 +149,56 @@ fn the_first_message_is_never_read_as_an_mcp_config() {
     assert!(words[config + 2].starts_with("--"), "{words:?}");
 }
 
+/// #419: Claude Code loads the `.claude/skills` of a directory given with `--add-dir`, so the
+/// bundle's `cockpit` skill is listed by name and description without the agent asking.
+#[test]
+fn a_launch_adds_the_instruction_skills_root_so_claude_lists_the_cockpit_skill() {
+    let claude = common::claude().with_instruction_skills("/state/claude-skills".into());
+    let words = words(
+        &claude
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+
+    assert_eq!(
+        value_after(&words, "--add-dir"),
+        Some("/state/claude-skills")
+    );
+    assert_eq!(
+        cockpit_claude::instruction_skills_dir(Path::new("/state/claude-skills")),
+        Path::new("/state/claude-skills/.claude/skills")
+    );
+}
+
+/// `--add-dir` takes every word up to the next flag, like `--mcp-config`.
+#[test]
+fn the_first_message_is_never_read_as_an_added_directory() {
+    let conversation = Conversation::New;
+    let request = LaunchRequest {
+        first_message: Some("hello"),
+        ..request(&conversation)
+    };
+    let claude = cockpit_claude::ClaudeCode::new("/usr/bin/claude".into(), None, None)
+        .with_instruction_skills("/state/claude-skills".into());
+    let words = words(&claude.launch(&request).unwrap().arguments);
+    let added = words.iter().position(|word| word == "--add-dir").unwrap();
+
+    assert_eq!(words[added + 2..], ["--", "hello"], "{words:?}");
+}
+
+#[test]
+fn without_instruction_skills_a_launch_adds_no_directory() {
+    let words = words(
+        &common::claude()
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+
+    assert!(!words.contains(&"--add-dir".to_owned()), "{words:?}");
+}
+
 #[test]
 fn a_bridge_path_with_a_quote_stays_one_shell_word() {
     let mut bridge = common::bridge();

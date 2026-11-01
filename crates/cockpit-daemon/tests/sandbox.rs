@@ -105,6 +105,28 @@ async fn a_launch_may_read_the_instruction_bundle_and_the_opencode_plugin() {
     }
 }
 
+/// #419: Claude Code lists the bundle's `cockpit` skill because the launch adds the folder
+/// whose `.claude/skills` holds it, written at the daemon's start and readable in the sandbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_launch_adds_the_instruction_skills_it_may_read() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let skills_root = state_folder(&home, "claude-skills");
+
+    let readable = readable_folders(&home).await;
+
+    assert!(readable.contains(&skills_root), "{readable:?}");
+    assert_eq!(
+        argument_after(&sandbox_launches(&home)[0], "--add-dir"),
+        skills_root
+    );
+    let skill = std::fs::read_to_string(
+        std::path::Path::new(&skills_root).join(".claude/skills/cockpit/SKILL.md"),
+    )
+    .unwrap();
+    assert!(skill.starts_with("---\nname: cockpit\n"), "{skill}");
+}
+
 /// Without OpenCode the plugin folder is never written; a path that does not exist handed
 /// to the sandbox would fail every other agent's launch.
 #[tokio::test(flavor = "multi_thread")]
