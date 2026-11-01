@@ -27,7 +27,7 @@ impl Home {
     }
 
     fn daemon_socket(&self) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit/daemon.sock");
+        let path = self.dir.path().join("run/cockpit-dev/daemon.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -37,7 +37,7 @@ impl Home {
     }
 
     fn owner_config(&self) -> PathBuf {
-        self.dir.path().join(".config/cockpit/config.toml")
+        self.dir.path().join(".config/cockpit-dev/config.toml")
     }
 
     fn write_owner_config(&self, contents: &str) {
@@ -67,8 +67,9 @@ impl Home {
     async fn against(&self, daemon: &Daemon, arguments: &[&str]) -> Output {
         let conversation = scripted_conversation(&self.daemon_socket(), daemon.outcomes());
         let output = self.cockpit(arguments).await;
+        let conversation = finished(conversation, &output).await;
         assert_eq!(
-            conversation.await.unwrap(),
+            conversation,
             vec![
                 Command::Readiness { project: None },
                 Command::ProjectList,
@@ -77,6 +78,28 @@ impl Home {
         );
         output
     }
+}
+
+/// The scripted daemon's received commands once `cockpit` exited; a panic instead of a hang
+/// when `cockpit` never connected (a socket path the test does not share with it).
+async fn finished<T: Send + 'static>(
+    conversation: tokio::task::JoinHandle<T>,
+    output: &Output,
+) -> T {
+    if !conversation.is_finished() {
+        tokio::task::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(2)))
+            .await
+            .unwrap();
+    }
+    if !conversation.is_finished() {
+        conversation.abort();
+        panic!(
+            "cockpit never reached the scripted daemon: stdout {}, stderr {}",
+            text(&output.stdout),
+            text(&output.stderr)
+        );
+    }
+    conversation.await.unwrap()
 }
 
 /// What the scripted daemon reports.
@@ -184,6 +207,8 @@ fn session() -> SessionView {
         changed_start_files: Vec::new(),
         restart_pending: false,
         finished: true,
+        coordinator_grants: Vec::new(),
+        inbound_message: None,
     }
 }
 
@@ -412,7 +437,7 @@ async fn a_daemon_that_answers_with_an_error_is_a_step_not_a_crash() {
     );
 
     let output = home.cockpit(&[]).await;
-    conversation.await.unwrap();
+    finished(conversation, &output).await;
 
     let checklist = text(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
