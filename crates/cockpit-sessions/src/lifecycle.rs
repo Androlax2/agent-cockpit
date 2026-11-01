@@ -534,8 +534,9 @@ impl Sessions {
     /// requests are accepted. A session that was active and whose agent is gone is reopened
     /// with its conversation, without a key press; a reopen that fails leaves the session
     /// `failed` with the reason and is not retried. Stops under way are finished. Only a
-    /// state-database error stops the start (#251), once every session's restore is over.
-    pub async fn restore(self: &Arc<Self>) -> Result<Vec<Restored>, Error> {
+    /// state-database error stops the start: one finishing a stop (#251), or one that kept
+    /// a failure from being recorded.
+    pub async fn restore(&self) -> Result<Vec<Restored>, Error> {
         if let Err(error) = self.tmux() {
             // Their agents may still run in a server this daemon cannot reach; a daemon
             // started with tmux restores them.
@@ -546,32 +547,57 @@ impl Sessions {
             let read = self.database.read().await?;
             store::sessions_in(&read, &["launching", "running", "stopping"]).await?
         };
-        // Together, not one after another: the stop of an agent that ignores SIGTERM waits
-        // out its grace, and nothing is accepted until every restore is over (#254).
-        let restoring: Vec<_> = active
-            .into_iter()
-            .map(|session| {
-                let sessions = Arc::clone(self);
-                tokio::spawn(async move { sessions.restore_session(&session).await })
-            })
-            .collect();
+        self.terminate_stopping_agents(&active).await;
         let mut restored = Vec::new();
-        let mut first_error = None;
-        for task in restoring {
+        for session in &active {
+            restored.push(self.restore_session(session).await?);
+        }
+        Ok(restored)
+    }
+
+    /// Terminates the running agents of the sessions left `stopping`, all at once: an agent
+    /// that ignores SIGTERM waits out the stop's grace, and nothing is accepted until every
+    /// stop is finished (#254). Only the waits overlap; the sessions are then restored one
+    /// by one, so their terminals never race on the tmux server, and a stop this pass could
+    /// not confirm is retried, and reported, there.
+    async fn terminate_stopping_agents(&self, active: &[Session]) {
+        let mut terminating = Vec::new();
+        for session in active {
+            let (SessionState::Stopping { .. }, Some(launch)) = (session.state, &session.launch)
+            else {
+                continue;
+            };
+            let (database, processes, stop) = (
+                Arc::clone(&self.database),
+                self.processes.clone(),
+                self.settings.stop,
+            );
+            let execution = launch.execution;
+            terminating.push(tokio::spawn(async move {
+                let phase = cockpit_processes::execution(&database, execution)
+                    .await?
+                    .phase;
+                // A start never confirmed is released in order, with its terminal (#256).
+                if phase == Phase::Running {
+                    processes.terminate(&database, execution, stop).await?;
+                }
+                Ok::<(), cockpit_processes::Error>(())
+            }));
+        }
+        let mut panic = None;
+        for task in terminating {
             match task.await {
-                Ok(Ok(outcome)) => restored.push(outcome),
+                Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    first_error.get_or_insert(error);
+                    tracing::warn!(%error, "a stalled stop is retried with its session");
                 }
-                Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-                Err(error) => {
-                    first_error.get_or_insert(Error::Blocking(error.to_string()));
-                }
+                Err(error) if error.is_panic() => panic = Some(error.into_panic()),
+                Err(error) => tracing::warn!(%error, "a stop's termination was cancelled"),
             }
         }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(restored),
+        // Raised once every task is over, so none keeps stopping agents behind it.
+        if let Some(panic) = panic {
+            std::panic::resume_unwind(panic);
         }
     }
 
@@ -581,11 +607,11 @@ impl Sessions {
         let operation = self.lock(&id).await;
         let SessionState::Stopping { to } = session.state else {
             return match self.restore_one(&operation, session).await {
-                Err(error) if !error.is_database() => {
+                Ok(outcome) => Ok(outcome),
+                Err(error) => {
                     self.fail_restore(session, format!("restore failed: {error}"))
                         .await
                 }
-                outcome => outcome,
             };
         };
         // Marked through its stop phase, as `stop` marks a restart.
@@ -600,8 +626,21 @@ impl Sessions {
         }
         match self.relaunch(&operation, &stopped).await {
             Ok(relaunched) => Ok(Restored::StopFinished(id, relaunched.state)),
-            Err(error) => reopen_failed(id, error),
+            Err(error) => self.reopen_failed(&id, error).await,
         }
+    }
+
+    /// A reopen on restore that failed. The launch leaves the session `failed`, which is
+    /// reported and never retried; one still `launching` could not be recorded failed, so
+    /// the error stops the daemon's start, as a failure `fail_restore` cannot record does.
+    async fn reopen_failed(&self, id: &SessionId, error: Error) -> Result<Restored, Error> {
+        if self.get(id).await?.state != SessionState::Failed {
+            return Err(error);
+        }
+        Ok(Restored::Failed(
+            id.clone(),
+            format!("restore failed: {error}"),
+        ))
     }
 
     async fn restore_one(&self, lock: &Operation, session: &Session) -> Result<Restored, Error> {
@@ -613,14 +652,10 @@ impl Sessions {
             }
             return Ok(Restored::StillRunning(id.clone()));
         }
-        match self.stop_previous_agent(session).await {
-            Ok(()) => {}
-            Err(error) if error.is_database() => return Err(error),
-            Err(error) => {
-                return self
-                    .fail_restore(session, format!("restore refused: {error}"))
-                    .await;
-            }
+        if let Err(error) = self.stop_previous_agent(session).await {
+            return self
+                .fail_restore(session, format!("restore refused: {error}"))
+                .await;
         }
         let kind = if self.launching_for_restart(session).await? {
             LaunchKind::Restart
@@ -647,7 +682,7 @@ impl Sessions {
         };
         match self.launch(lock, id, kind, conversation, None).await {
             Ok(_) => Ok(Restored::Reopened(id.clone())),
-            Err(error) => reopen_failed(id.clone(), error),
+            Err(error) => self.reopen_failed(id, error).await,
         }
     }
 
@@ -1328,15 +1363,6 @@ impl Sessions {
                 dir: dir.to_path_buf(),
             })
     }
-}
-
-/// A reopen on restore that failed: the launch left the session `failed`, which is reported
-/// and never retried, unless the state database failed, which stops the daemon's start.
-fn reopen_failed(id: SessionId, error: Error) -> Result<Restored, Error> {
-    if error.is_database() {
-        return Err(error);
-    }
-    Ok(Restored::Failed(id, format!("restore failed: {error}")))
 }
 
 /// What `restart_all` did with one session.

@@ -177,11 +177,7 @@ impl Supervisor {
         id: ExecutionId,
         spec: &LaunchSpec,
     ) -> Result<Launched, Error> {
-        let reserved = store::execution(database, id).await?;
-        if reserved.phase != Phase::Launching || reserved.process_group.is_some() {
-            return Err(Error::NotReserved { execution: id });
-        }
-        let containment = reserved.containment;
+        let containment = reserved_execution(database, id).await?.containment;
         let takes_expand_environment = self.scope_takes_expand_environment(&containment).await;
         let mut launcher = match self.spawn(
             self.execution_dir(database, id),
@@ -316,7 +312,8 @@ impl Supervisor {
         let write = database.write().await?;
         let id = self.reserve(&write, database.epoch()).await?;
         write.commit().await?;
-        self.prepare_host_command(database, id, spec, &environment, &host_script)
+        let containment = store::execution(database, id).await?.containment;
+        self.prepare_host_command(database, id, &containment, spec, &environment, &host_script)
             .await
     }
 
@@ -331,10 +328,7 @@ impl Supervisor {
         spec: &LaunchSpec,
         host_variables: &[&str],
     ) -> Result<HostedLaunch, Error> {
-        let reserved = store::execution(database, id).await?;
-        if reserved.phase != Phase::Launching || reserved.process_group.is_some() {
-            return Err(Error::NotReserved { execution: id });
-        }
+        let containment = reserved_execution(database, id).await?.containment;
         let prepared = self.launch_environment(spec).and_then(|environment| {
             let host_script = host_script(host_variables, &environment)?;
             Ok((environment, host_script))
@@ -346,7 +340,7 @@ impl Supervisor {
                 return Err(error);
             }
         };
-        self.prepare_host_command(database, id, spec, &environment, &host_script)
+        self.prepare_host_command(database, id, &containment, spec, &environment, &host_script)
             .await
     }
 
@@ -356,11 +350,11 @@ impl Supervisor {
         &self,
         database: &Database,
         id: ExecutionId,
+        containment: &Containment,
         spec: &LaunchSpec,
         environment: &[(OsString, OsString)],
         host_script: &str,
     ) -> Result<HostedLaunch, Error> {
-        let containment = store::execution(database, id).await?.containment;
         let dir = self.execution_dir(database, id);
         if let Err(error) = DirBuilder::new().recursive(true).mode(0o700).create(&dir) {
             store::record_ended(database, id, EndReason::NeverStarted).await?;
@@ -377,8 +371,8 @@ impl Supervisor {
             .map(OsString::from)
             .to_vec();
         command.push(environment_file.into_os_string());
-        if let Containment::SystemdScope { unit } = &containment {
-            let takes_expand_environment = self.scope_takes_expand_environment(&containment).await;
+        if let Containment::SystemdScope { unit } = containment {
+            let takes_expand_environment = self.scope_takes_expand_environment(containment).await;
             command.extend(
                 self.systemd
                     .scope_launcher_words(unit, takes_expand_environment),
@@ -771,6 +765,15 @@ impl Supervisor {
 /// the group) still runs. A terminal execution's launcher leads that group only once it is
 /// the session leader: until then its pid is alive in the daemon's group and the group has
 /// no member yet.
+/// The execution `id`, refused unless it is a launch intent still waiting for its launch.
+async fn reserved_execution(database: &Database, id: ExecutionId) -> Result<Execution, Error> {
+    let reserved = store::execution(database, id).await?;
+    if reserved.phase != Phase::Launching || reserved.process_group.is_some() {
+        return Err(Error::NotReserved { execution: id });
+    }
+    Ok(reserved)
+}
+
 fn launching_or(gone: Presence, leader_start: &Option<String>, launcher: Option<i32>) -> Presence {
     let is_launcher_alive = launcher
         .is_some_and(|pid| platform::group_has_members(pid) || platform::process_exists(pid));

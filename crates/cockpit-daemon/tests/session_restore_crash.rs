@@ -273,11 +273,11 @@ async fn a_database_error_finishing_a_stop_on_restore_stops_the_daemon_start() {
     assert!(error.to_string().contains("session_transitions"), "{error}");
 }
 
-/// #251: the relaunch that finishes an interrupted restart fails on a database error from
-/// another capability's table (the agent channel's launch tokens); that error, wrapped by
-/// the capability, stops the start too.
+/// #251: the relaunch that finishes an interrupted restart fails on a database error
+/// (the authorization grants a launch writes), and so does recording the session `failed`;
+/// a failure that cannot be recorded stops the start, as on the reopen path.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_database_error_relaunching_an_interrupted_restart_stops_the_daemon_start() {
+async fn a_relaunch_failure_that_cannot_be_recorded_stops_the_daemon_start() {
     let home = Home::new();
     let (daemon, started) = home.running_session().await;
     home.rewrite(
@@ -285,14 +285,14 @@ async fn a_database_error_relaunching_an_interrupted_restart_stops_the_daemon_st
         &started.id,
     )
     .await;
-    home.drop_table("agent_channel_launches").await;
+    home.drop_table("authorization_grants").await;
     home.stop(daemon);
 
     let error = refused_start(&home).await;
 
     assert!(matches!(error, StartError::Restore(_)), "{error}");
     assert!(
-        error.to_string().contains("agent_channel_launches"),
+        error.to_string().contains("authorization_grants"),
         "{error}"
     );
 }

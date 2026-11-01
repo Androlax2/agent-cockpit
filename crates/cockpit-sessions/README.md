@@ -79,10 +79,11 @@ stopped in the middle of one finishes or repairs it at its next start.
   agent still runs is kept; a stop under way is finished; any other active session is
   reopened on its conversation. A reopen that fails, for any reason, leaves the session
   `failed` with the reason, and it is never retried silently: the owner resumes or ends it.
-  Only a state-database error, reported by this crate or by the capability it called,
-  stops the daemon's start, also while a stop is finished or a restart relaunched (#251).
-  Sessions are restored together, so agents that ignore `SIGTERM` delay the first accepted
-  request by one stop grace, not one per agent (#254). A restart whose stop committed
+  Only a state-database error stops the daemon's start: one finishing a stop, reported by
+  this crate or by the capability it called, or one that keeps a failed reopen from being
+  recorded (#251). The agents of stops under way are terminated all at once, then the
+  sessions are restored one by one, so agents that ignore `SIGTERM` delay the first accepted
+  request by one stop grace, not one per agent, and terminals never race on tmux (#254). A restart whose stop committed
   before the daemon stopped relaunches as a `restart` (#252,
   `docs/decisions/2026-11-01-252-interrupted-restart-kind.md`).
 - **Launch records** (#256). A launch reserves its `cockpit-processes` execution in the
