@@ -460,21 +460,35 @@ echo "cockpit 0.1.0-alpha.7 (revision 0123abcd)"
 echo "bundle manifest $prefix/share/cockpit/manifest.json:"
 cat "$prefix/share/cockpit/manifest.json"
 """
-# As the real daemon: Claude Code reports events when `claude --version` answers and the
-# hook bridge beside it runs.
+# As the real daemon: a provider reports events when its `--version` answers and every
+# bridge program beside the daemon it needs runs.
 FAKE_DAEMON = """#!/bin/sh
-if claude --version > /dev/null 2>&1; then
-  if "$(dirname "$0")/cockpit-claude-hook" --version > /dev/null 2>&1; then
-    printf 'claude\\tresume\\tevents\\n' > "$HOME/providers"
-  else
-    printf 'claude\\tresume\\tno-events\\n' > "$HOME/providers"
-  fi
-else
-  : > "$HOME/providers"
-fi
+programs=$(dirname "$0")
+report() {
+  provider=$1; shift
+  "$provider" --version > /dev/null 2>&1 || return 0
+  for bridge in "$@"; do
+    if ! "$programs/$bridge" --version > /dev/null 2>&1; then
+      printf '%s\\tresume\\tno-events\\n' "$provider" >> "$HOME/providers"
+      return 0
+    fi
+  done
+  printf '%s\\tresume\\tevents\\n' "$provider" >> "$HOME/providers"
+}
+: > "$HOME/providers"
+report claude cockpit-claude-hook
+report codex cockpit-codex-hook cockpit-codex-session
+report opencode cockpit-opencode-bridge
 echo "ready $HOME/.local/state/cockpit/run/daemon.sock"
 exec sleep 60
 """
+# The provider each helper bridges.
+HELPER_PROVIDERS = {
+    "cockpit-claude-hook": "claude",
+    "cockpit-codex-hook": "codex",
+    "cockpit-codex-session": "codex",
+    "cockpit-opencode-bridge": "opencode",
+}
 FAKE_HOOK_BRIDGE = """#!/bin/sh
 exit 0
 """
@@ -551,7 +565,15 @@ class PackageTests(PackagingTestCase):
         self.assertEqual(manifest["version"], "0.1.0-alpha.7")
         self.assertEqual(manifest["channel"], "alpha")
         self.assertEqual(manifest["source_revision"], "0123abcd")
-        self.assertEqual(manifest["helpers"], {"cockpit-claude-hook": "0.1.0-alpha.7"})
+        self.assertEqual(
+            manifest["helpers"],
+            {
+                "cockpit-claude-hook": "0.1.0-alpha.7",
+                "cockpit-codex-hook": "0.1.0-alpha.7",
+                "cockpit-codex-session": "0.1.0-alpha.7",
+                "cockpit-opencode-bridge": "0.1.0-alpha.7",
+            },
+        )
         self.assertIsNone(manifest["instruction_bundle"])
         self.assertEqual(
             manifest["contents"]["bin/cockpit"],
@@ -619,29 +641,37 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertIn("README.md: missing", error)
         self.assertIn("bin/cockpit: checksum differs", error)
 
-    def test_an_install_without_the_hook_bridge_fails_naming_it(self):
-        _code, outputs, _error = self.package()
-        (Path(outputs["root"]) / "bin/cockpit-claude-hook").unlink()
-        code, _verified, error = self.verify(outputs["root"])
-        self.assertEqual(code, 1)
-        self.assertIn("bin/cockpit-claude-hook: missing", error)
+    def test_an_install_without_a_bridge_fails_naming_it(self):
+        for helper in release.HELPERS:
+            with self.subTest(helper=helper):
+                _code, outputs, _error = self.package()
+                (Path(outputs["root"]) / f"bin/{helper}").unlink()
+                code, _verified, error = self.verify(outputs["root"])
+                shutil.rmtree(self.out)
+                self.out.mkdir()
+                self.assertEqual(code, 1)
+                self.assertIn(f"bin/{helper}: missing", error)
 
-    def test_a_manifest_that_does_not_list_the_hook_bridge_fails(self):
-        _code, outputs, _error = self.package()
-        self.edit_manifest(
-            outputs["root"], lambda manifest: manifest["contents"].pop("bin/cockpit-claude-hook")
-        )
-        (Path(outputs["root"]) / "bin/cockpit-claude-hook").unlink()
-        code, _verified, error = self.verify(outputs["root"])
-        self.assertEqual(code, 1)
-        self.assertIn("bin/cockpit-claude-hook: not listed in the manifest", error)
+    def test_a_manifest_that_does_not_list_a_bridge_fails(self):
+        for helper in release.HELPERS:
+            with self.subTest(helper=helper):
+                _code, outputs, _error = self.package()
+                self.edit_manifest(
+                    outputs["root"], lambda manifest: manifest["contents"].pop(f"bin/{helper}")
+                )
+                (Path(outputs["root"]) / f"bin/{helper}").unlink()
+                code, _verified, error = self.verify(outputs["root"])
+                shutil.rmtree(self.out)
+                self.out.mkdir()
+                self.assertEqual(code, 1)
+                self.assertIn(f"bin/{helper}: not listed in the manifest", error)
 
     def test_a_manifest_whose_helpers_record_is_wrong_fails(self):
         _code, outputs, _error = self.package()
         self.edit_manifest(outputs["root"], lambda manifest: manifest.update(helpers={}))
         code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
-        self.assertIn("helpers: {}, expected {'cockpit-claude-hook': '0.1.0-alpha.7'}", error)
+        self.assertIn(f"helpers: {{}}, expected {release.helper_versions('0.1.0-alpha.7')!r}", error)
 
     def test_a_file_the_manifest_does_not_list_fails_naming_it(self):
         _code, outputs, _error = self.package()
@@ -653,7 +683,8 @@ class VerifyInstallTests(PackagingTestCase):
     def test_a_daemon_whose_helper_keeps_its_pipes_open_does_not_hang_the_check(self):
         self.write_fake(
             "cockpit-daemon",
-            "#!/bin/sh\nprintf 'claude\\tresume\\tevents\\n' > \"$HOME/providers\"\n"
+            "#!/bin/sh\nfor provider in claude codex opencode; do\n"
+            "  printf '%s\\tresume\\tevents\\n' \"$provider\" >> \"$HOME/providers\"\ndone\n"
             'sleep 600 &\necho "ready $HOME/daemon.sock"\nexec sleep 600\n',
         )
         _code, outputs, _error = self.package()
@@ -674,13 +705,18 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertEqual(code, 1)
         self.assertIn("expected 'cockpit 0.1.0-alpha.7 (revision fedcba98)'", error)
 
-    def test_an_install_whose_hook_bridge_cannot_run_fails(self):
-        self.write_fake("cockpit-claude-hook", "#!/bin/sh\nexit 126\n")
-        _code, outputs, _error = self.package()
-        code, _verified, error = self.verify(outputs["root"])
-        self.assertEqual(code, 1)
-        self.assertIn("did not find a runnable Claude hook bridge", error)
-        self.assertIn("no-events", error)
+    def test_an_install_whose_bridge_cannot_run_fails_naming_its_provider(self):
+        for helper, provider in HELPER_PROVIDERS.items():
+            with self.subTest(helper=helper):
+                self.write_fake(helper, "#!/bin/sh\nexit 126\n")
+                _code, outputs, _error = self.package()
+                code, _verified, error = self.verify(outputs["root"])
+                self.write_fake(helper, FAKE_HOOK_BRIDGE)
+                shutil.rmtree(self.out)
+                self.out.mkdir()
+                self.assertEqual(code, 1)
+                self.assertIn(f"did not find a runnable bridge for {provider}:", error)
+                self.assertIn(f"{provider}\\tresume\\tno-events", error)
 
     def test_a_provider_list_that_hangs_fails_with_the_daemon_log(self):
         # A FIFO nobody writes keeps the fake `cockpit provider list` reading forever.
@@ -696,12 +732,12 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertIn("provider list did not finish in 1s", error)
         self.assertIn("stuck on the hook bridge", error)
 
-    def test_the_daemon_is_started_with_a_claude_that_answers_its_version(self):
+    def test_the_daemon_is_started_with_providers_that_answer_their_version(self):
         _code, outputs, _error = self.package()
-        with patch.object(release, "STAND_IN_CLAUDE", "#!/bin/sh\nexit 1\n"):
+        with patch.object(release, "STAND_IN_PROVIDER", "#!/bin/sh\nexit 1\n"):
             code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
-        self.assertIn("did not find a runnable Claude hook bridge", error)
+        self.assertIn("did not find a runnable bridge for claude, codex, opencode", error)
 
     def test_a_daemon_that_does_not_become_ready_fails(self):
         self.write_fake("cockpit-daemon", "#!/bin/sh\necho 'no state dir' >&2\nexit 1\n")

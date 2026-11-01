@@ -147,20 +147,20 @@ jobs:
           python3 tools/release.py stamp "$VERSION"
           # Rewrites only the workspace members' entries; --locked below refuses any other.
           cargo update --workspace
-      - name: Build cockpit, cockpit-daemon and cockpit-claude-hook
+      - name: Build cockpit, cockpit-daemon and the provider bridges
         env:
           COCKPIT_SOURCE_REVISION: ${{ needs.plan.outputs.revision }}
           TARGETS: ${{ matrix.targets }}
         run: |
           target_flags=()
           for target in ${TARGETS//,/ }; do target_flags+=(--target "$target"); done
-          cargo build --release --locked "${target_flags[@]}" -p cockpit-cli -p cockpit-daemon -p cockpit-claude
+          cargo build --release --locked "${target_flags[@]}" -p cockpit-cli -p cockpit-daemon -p cockpit-claude -p cockpit-codex -p cockpit-opencode
       - name: Gather the binaries
         env:
           TARGETS: ${{ matrix.targets }}
         run: |
           mkdir binaries
-          for binary in cockpit cockpit-daemon cockpit-claude-hook; do
+          for binary in cockpit cockpit-daemon cockpit-claude-hook cockpit-codex-hook cockpit-codex-session cockpit-opencode-bridge; do
             if [ "$RUNNER_OS" = macOS ]; then
               lipo -create -output "binaries/$binary" \
                 "target/aarch64-apple-darwin/release/$binary" \

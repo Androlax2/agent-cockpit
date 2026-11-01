@@ -23,12 +23,16 @@ from pathlib import Path, PurePosixPath
 CRATES = Path(__file__).resolve().parents[1] / "crates"
 
 # The crates ci.yml's platform jobs test with `-p`, and those whose programs their tests run:
-# the daemon's tests and the TUI's end-to-end harness start `cockpit` and `cockpit-claude-hook`.
+# the daemon's tests and the TUI's end-to-end harness start `cockpit` and the provider bridges
+# (`cockpit-claude-hook`, `cockpit-codex-hook`, `cockpit-codex-session`,
+# `cockpit-opencode-bridge`).
 PLATFORM_ROOTS = [
     "cockpit-agent-channel",
     "cockpit-cli",
     "cockpit-claude",
+    "cockpit-codex",
     "cockpit-daemon",
+    "cockpit-opencode",
     "cockpit-processes",
     "cockpit-resource-admission",
     "cockpit-tui",

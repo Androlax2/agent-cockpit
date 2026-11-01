@@ -48,7 +48,12 @@ TAG_PATTERN = re.compile(
 )
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-universal")
 # Programs the daemon runs from its own directory, so they ship in bin/ beside it (#185).
-HELPERS = ("cockpit-claude-hook",)
+HELPERS = (
+    "cockpit-claude-hook",
+    "cockpit-codex-hook",
+    "cockpit-codex-session",
+    "cockpit-opencode-bridge",
+)
 BINARIES = ("cockpit", "cockpit-daemon", *HELPERS)
 # No CHANGELOG.md: the committed file lags the tag (release-plz regenerates it, #101); the
 # release notes are on the GitHub Release.
@@ -57,10 +62,15 @@ MANIFEST_PATH = "share/cockpit/manifest.json"
 MANIFEST_SCHEMA = 1
 # How long verify-install waits for `cockpit version --all` and for the daemon's ready line.
 COMMAND_TIMEOUT_SECONDS = 60
-# The `claude` verify-install puts first on the daemon's PATH: it answers only `--version`,
-# which is all the daemon runs of it at its start.
-STAND_IN_CLAUDE = """#!/bin/sh
-if [ "$1" = --version ]; then echo '0.0.0 (Claude Code stand-in)'; exit 0; fi
+# The providers verify-install puts first on the daemon's PATH: each answers only
+# `--version`, which is all the daemon runs of it at its start, in the words its adapter reads.
+STAND_IN_VERSIONS = {
+    "claude": "0.0.0 (Claude Code stand-in)",
+    "codex": "codex-cli 0.0.0",
+    "opencode": "0.0.0",
+}
+STAND_IN_PROVIDER = """#!/bin/sh
+if [ "$1" = --version ]; then echo '{version}'; exit 0; fi
 exit 1
 """
 # Alpha notes carry the known gaps (RELEASING.md, Changelog); #97 writes the file.
@@ -430,12 +440,13 @@ def verify_install(root, revision):
     home = tempfile.mkdtemp(prefix="cockpit-home-", dir="/tmp")
     environment = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     refuse_wrong_version_output(root, manifest, manifest_text, revision, environment)
-    # A stand-in Claude Code, so the daemon checks the hook bridge it ships (#203).
+    # Stand-in providers, so the daemon checks each bridge it ships (#203, #411, #415).
     stand_in_dir = Path(home) / "stand-in-bin"
     stand_in_dir.mkdir()
-    stand_in = stand_in_dir / "claude"
-    stand_in.write_text(STAND_IN_CLAUDE)
-    stand_in.chmod(0o755)
+    for provider, version in STAND_IN_VERSIONS.items():
+        stand_in = stand_in_dir / provider
+        stand_in.write_text(STAND_IN_PROVIDER.format(version=version))
+        stand_in.chmod(0o755)
     environment = {**environment, "PATH": f"{stand_in_dir}:{environment['PATH']}"}
     refuse_daemon_not_ready(root, environment)
     return {"version": manifest["version"], "files": str(len(manifest["contents"]))}
@@ -509,8 +520,8 @@ def refuse_wrong_version_output(root, manifest, manifest_text, revision, environ
 
 def refuse_daemon_not_ready(root, environment):
     """cockpit-daemon prints `ready <socket>` once it accepts requests on a clean home, and
-    `cockpit provider list` then shows that Claude Code reports events: the daemon found and
-    ran the hook bridge beside it (#203)."""
+    `cockpit provider list` then shows that every stand-in provider reports events: the
+    daemon found and ran each bridge beside it (#203, #411, #415)."""
     # Its own process group, so a helper it started dies with it; stderr goes to a file, so
     # a chatty daemon never blocks on a full pipe.
     with tempfile.TemporaryFile(mode="w+") as stderr_file:
@@ -545,10 +556,16 @@ def refuse_daemon_not_ready(root, environment):
     if isinstance(listed, Refusal):
         raise Refusal(f"{listed}; daemon log {stderr!r}")
     code, stdout, listed_stderr = listed
-    if code != 0 or "claude\tresume\tevents" not in stdout.splitlines():
+    unbridged = [
+        provider
+        for provider in STAND_IN_VERSIONS
+        if f"{provider}\tresume\tevents" not in stdout.splitlines()
+    ]
+    if code != 0 or unbridged:
         raise Refusal(
-            "the daemon did not find a runnable Claude hook bridge: cockpit provider list "
-            f"exit {code}, printed {stdout!r} {listed_stderr!r}; daemon log {stderr!r}"
+            f"the daemon did not find a runnable bridge for {', '.join(unbridged) or 'any'}: "
+            f"cockpit provider list exit {code}, printed {stdout!r} {listed_stderr!r}; "
+            f"daemon log {stderr!r}"
         )
 
 
