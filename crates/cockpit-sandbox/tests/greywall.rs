@@ -20,9 +20,9 @@ use common::{
 };
 
 const GREYWALL_VERSION_OUTPUT: &str = "greywall - lightweight, container-free sandbox
-  Version: 0.3.7+dotfiles
+  Version: 0.3.7-cockpit.1
   Built:   2026-10-30T09:12:44Z
-  Commit:  7c06d51afd26cbc90a32c82375a393570c22ffc7
+  Commit:  a9ccc58c4e57f7ad7aaf7c2ab3779d71cf485baf
 
 Platform: linux
   \u{2713} bubblewrap (bwrap 0.11.0)
@@ -33,7 +33,7 @@ Platform: linux
 ";
 
 const GREYPROXY_VERSION_OUTPUT: &str = "greyproxy 0.4.5 (linux/amd64)
-commit: cdd5cde76dce1262c0fd8d6b1ab2bd9953df5e71
+commit: 1d1e518c59f130198eb57b3310e2db16f3353901
 ";
 
 #[test]
@@ -108,32 +108,33 @@ fn a_greyproxy_build_other_than_the_pinned_one_is_refused() {
     assert!(reason.contains(PINNED_GREYPROXY_COMMIT), "{reason}");
 }
 
-/// The pins are the commits the release builds (`packages/*/build.sh`), so a bumped package
-/// without a bumped pin (or the reverse) fails here instead of refusing every launch.
+/// The release manifest, rather than Theo's legacy build scripts, owns the pins.
 #[test]
-fn the_pins_are_the_commits_the_packages_build() {
-    let packages = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
-    for (script, variable, pinned) in [
-        (
-            "greywall/build.sh",
-            "greywall_commit=",
-            PINNED_GREYWALL_COMMIT,
-        ),
-        (
-            "greyproxy/build.sh",
-            "greyproxy_commit=",
-            PINNED_GREYPROXY_COMMIT,
-        ),
-    ] {
-        let build = std::fs::read_to_string(packages.join(script)).unwrap();
-        let built = build
-            .lines()
-            .find_map(|line| line.strip_prefix(variable))
-            .and_then(|rest| rest.split_whitespace().next())
-            .unwrap_or_else(|| panic!("{script} sets no {variable}"));
+fn the_pins_are_the_commits_the_release_manifest_names() {
+    let pins: serde_json::Value =
+        serde_json::from_str(include_str!("../engine-pins.json")).unwrap();
+    assert_eq!(pins["greywall"]["commit"], PINNED_GREYWALL_COMMIT);
+    assert_eq!(pins["greyproxy"]["commit"], PINNED_GREYPROXY_COMMIT);
+}
 
-        assert_eq!(built, pinned, "{script}");
-    }
+#[test]
+fn the_previous_greywall_build_is_refused_naming_the_new_pin() {
+    let bin = tempfile::tempdir().unwrap();
+    let previous = GREYWALL_VERSION_OUTPUT.replace(
+        "a9ccc58c4e57f7ad7aaf7c2ab3779d71cf485baf",
+        "7c06d51afd26cbc90a32c82375a393570c22ffc7",
+    );
+    let programs = GreywallPrograms {
+        greywall: write_program(bin.path(), "greywall", &previous),
+        greyproxy: write_program(bin.path(), "greyproxy", GREYPROXY_VERSION_OUTPUT),
+    };
+    let reason =
+        Greywall::detect(programs, Platform::Linux, bin.path().join("settings")).unwrap_err();
+    assert!(
+        reason.contains("7c06d51afd26cbc90a32c82375a393570c22ffc7"),
+        "{reason}"
+    );
+    assert!(reason.contains(PINNED_GREYWALL_COMMIT), "{reason}");
 }
 
 fn write_program(dir: &Path, name: &str, output: &str) -> std::path::PathBuf {
@@ -252,7 +253,7 @@ fn detect_reads_both_programs_versions() {
 
     assert_eq!(
         engine.engine(),
-        "greywall 0.3.7+dotfiles (7c06d51), greyproxy 0.4.5 (cdd5cde)"
+        "greywall 0.3.7-cockpit.1 (a9ccc58), greyproxy 0.4.5 (1d1e518)"
     );
     assert!(
         engine

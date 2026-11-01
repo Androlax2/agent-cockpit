@@ -1,0 +1,38 @@
+{
+  "greywall": {
+    "tag": "v0.3.7-cockpit.1",
+    "commit": "a9ccc58c4e57f7ad7aaf7c2ab3779d71cf485baf",
+    "assets": {
+      "x86_64-unknown-linux-gnu": {
+        "url": "https://github.com/Androlax2/greywall/releases/download/v0.3.7-cockpit.1/greywall_0.3.7-cockpit.1_linux_x86_64.tar.gz",
+        "sha256": "91e3b0bc783e034e6047de915d09ae4ee8b9e05d426caf27ff483fba56473f86"
+      },
+      "aarch64-unknown-linux-gnu": {
+        "url": "https://github.com/Androlax2/greywall/releases/download/v0.3.7-cockpit.1/greywall_0.3.7-cockpit.1_linux_arm64.tar.gz",
+        "sha256": "a27ed90718091291742ba6ea4067c1a785d1220cafe591710fd0ad19bc3ae34d"
+      },
+      "aarch64-apple-darwin": {
+        "url": "https://github.com/Androlax2/greywall/releases/download/v0.3.7-cockpit.1/greywall_0.3.7-cockpit.1_darwin_arm64.tar.gz",
+        "sha256": "464ed04cf2ac50e8bb890c82dae76d4d28baf7787797b43635b600139fc2868d"
+      }
+    }
+  },
+  "greyproxy": {
+    "tag": "v0.4.5-cockpit.1",
+    "commit": "1d1e518c59f130198eb57b3310e2db16f3353901",
+    "assets": {
+      "x86_64-unknown-linux-gnu": {
+        "url": "https://github.com/Androlax2/greyproxy/releases/download/v0.4.5-cockpit.1/greyproxy-v0.4.5-cockpit.1-linux-amd64.tar.gz",
+        "sha256": "88028e88d05d20638d9f80378fc9387f22c5ec07120e91c3fceb6016ecfa7225"
+      },
+      "aarch64-unknown-linux-gnu": {
+        "url": "https://github.com/Androlax2/greyproxy/releases/download/v0.4.5-cockpit.1/greyproxy-v0.4.5-cockpit.1-linux-arm64.tar.gz",
+        "sha256": "7fd0c0a9af61817cb79d4bb506894cb73d3f9333e4ca30f2d4b0bf6ee47fbad4"
+      },
+      "aarch64-apple-darwin": {
+        "url": "https://github.com/Androlax2/greyproxy/releases/download/v0.4.5-cockpit.1/greyproxy-v0.4.5-cockpit.1-darwin-arm64.tar.gz",
+        "sha256": "dcebf05d9ad7b3d688a35653c2f4a63b4c2a6f58c3100ae0322dfa48c855e1d4"
+      }
+    }
+  }
+}
