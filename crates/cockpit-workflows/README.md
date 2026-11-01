@@ -93,3 +93,5 @@ cancelling, completing owner steps and waiving requirements are the owner's.
 - `tests/runs.rs`: the step state machine, handoffs, requirements, blockers and who may act.
 - `tests/restart.rs`: a run reopened from its database resumes at its checkpoint with the
   same packet.
+- Through the sockets: `cockpit-daemon` `tests/workflows.rs` (a daemon killed mid-step
+  answers the same packet after its restart) and `cockpit-cli` `tests/workflow.rs`.

@@ -256,6 +256,13 @@ pub async fn checkpoint(
     note: &str,
     now: i64,
 ) -> Result<Run, Error> {
+    if *actor == Actor::Owner {
+        return Err(invalid(
+            "actor",
+            "the session doing the step records its checkpoints",
+        )
+        .into());
+    }
     let note = text::note("note", note, CHECKPOINT_MAX_CHARS)?;
     let run = open_run(write, actor, id).await?;
     let step = current(&run)?;

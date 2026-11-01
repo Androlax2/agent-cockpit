@@ -14,6 +14,7 @@ use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
     Capabilities, Manager, agent, approvals, feed, manager, projects, resources, sessions, tasks,
+    workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -87,11 +88,18 @@ pub struct Routes {
     /// Runs what the owner approved, and holds the runs in progress.
     runner: cockpit_approvals::Runner,
     resources: resources::Resources,
+    workflows: workflows::Context,
 }
 
 impl Routes {
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         Routes {
+            workflows: workflows::Context {
+                database: Arc::clone(&capabilities.database),
+                environment: environment.clone(),
+                sessions: Arc::clone(&capabilities.sessions),
+                provider_capabilities: Arc::new(capabilities.provider_capabilities),
+            },
             resources: resources::Resources {
                 database: Arc::clone(&capabilities.database),
                 backend: capabilities.admission,
@@ -291,6 +299,40 @@ impl Handler for Routes {
                     self.environment.clone(),
                 ),
             },
+            // What an agent may do to workflows: read its project's, and work the step it does.
+            // Whether it may touch a given run is `cockpit-workflows`' rule, not the socket's.
+            (
+                command @ (Command::WorkflowPresets
+                | Command::WorkflowList { .. }
+                | Command::WorkflowShow { .. }
+                | Command::WorkflowPacket { .. }
+                | Command::WorkflowComplete { .. }
+                | Command::WorkflowRelease { .. }
+                | Command::WorkflowBlock { .. }
+                | Command::WorkflowUnblock { .. }),
+                peer,
+            ) => workflows::route(command, peer, self.workflows.clone()),
+            // Beginning and checkpointing a step are what the session doing it does.
+            (
+                command @ (Command::WorkflowBegin { .. } | Command::WorkflowCheckpoint { .. }),
+                peer,
+            ) => match peer {
+                peer @ Peer::Agent { .. } => {
+                    workflows::route(command, peer, self.workflows.clone())
+                }
+                Peer::Owner => Route::Answer(wrong_socket(
+                    "beginning and checkpointing a step are the session's doing it; the owner completes or releases it",
+                    "use `cockpit workflow complete` or `release` on the host",
+                    UnblockedBy::Owner,
+                )),
+            },
+            // Choosing and stopping the workflow a task follows is the owner's.
+            (command @ (Command::WorkflowStart { .. } | Command::WorkflowCancel { .. }), peer) => {
+                match peer {
+                    Peer::Agent { .. } => Route::Answer(owner_only()),
+                    Peer::Owner => workflows::route(command, Peer::Owner, self.workflows.clone()),
+                }
+            }
             (
                 command @ (Command::ResourceStatus
                 | Command::ResourceProfile { .. }

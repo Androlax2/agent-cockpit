@@ -30,6 +30,7 @@ mod sessions;
 mod todo;
 mod tui;
 mod version;
+mod workflow;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -74,6 +75,12 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit todo image add ID FILE | image get ID NUMBER FILE
        cockpit todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]
        cockpit todo drafts | draft discard (ID | --new PROJECT)
+       cockpit workflow presets | start ITEM [--preset NAME] | cancel ID
+       cockpit workflow list [--project P] [--all] | show ID | packet ID
+       cockpit workflow begin ID | checkpoint ID NOTE | unblock ID
+       cockpit workflow complete ID --changed T --checked T --outcome T [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...
+       cockpit workflow release ID [--changed T --checked T --outcome T [--needs-human T] [--evidence REF]...]
+       cockpit workflow block ID ACTION --detail TEXT
        cockpit resources status | profile normal|foreground | pause-queue | resume-queue
        cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...
        cockpit resources checkpoint RESERVATION | stop RESERVATION";
@@ -117,6 +124,10 @@ fn main() -> ExitCode {
         }
         [Some("todo"), ..] => match todo::parse(&arguments[1..]) {
             Ok(request) => todo::run(request),
+            Err(problem) => usage_error(Some(problem)),
+        },
+        [Some("workflow"), ..] => match workflow::parse(&arguments[1..]) {
+            Ok(request) => workflow::run(request),
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("resources"), ..] => match resources::parse(&arguments[1..]) {

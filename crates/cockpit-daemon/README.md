@@ -19,7 +19,8 @@ not share code.
   whose change feed `Routes` streams to the owner), `cockpit-approvals` (run requests and guides, and the runner of approved
   commands), `cockpit-sessions` (whose verbs `Routes` serves to the owner, and whose restore
   and periodic pass it runs), `cockpit-tasks` (whose verbs `Routes` serves to the owner and
-  to agents), `cockpit-tmux` (the private server sessions run in) and
+  to agents), `cockpit-workflows` (whose verbs `Routes` serves to the owner and to agents,
+  and whose migrations it runs), `cockpit-tmux` (the private server sessions run in) and
   `cockpit-provider-api` (the providers it is wired with; the adapters arrive with #33);
   `tokio`, `serde`, `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
@@ -113,6 +114,20 @@ not share code.
 - Filings read the owner's `[tasks]` settings from the owner config at request time; a
   config that does not load refuses the filing instead of applying defaults.
 
+## Workflows (#39)
+
+- `cockpit workflow` reaches `cockpit-workflows` on both sockets. Starting and cancelling a
+  workflow are the owner's; beginning a step and recording its checkpoint are an agent's.
+  Reading, completing, releasing, blocking and unblocking serve both, and
+  `cockpit-workflows` decides who may act on which step.
+- `workflow-start` without a preset reads the item's project's `workflow.preset` from its
+  config at request time; a config that does not load, or a preset no preset has, refuses
+  the start instead of applying the default.
+- `workflow-begin` checks the step's declared capabilities against what the session's
+  provider reports, from the session record and the providers the daemon is wired with.
+- No request can claim a requirement passed: completions carry the owner's waivers only,
+  until `cockpit-verification` reports what passed (#40).
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -158,6 +173,9 @@ not share code.
 - `tests/tasks.rs`: issue #38's agent side on the binary's sockets: a proposal approved,
   the cross-project cap, blocker reports and their configuration, a summary read by the item
   waiting on it, and socket roles.
+- `tests/workflows.rs`: issue #39 on the binary's sockets: a restart mid-step resuming at
+  the checkpoint, the project's preset and the owner's, socket roles, a sender without a
+  session record refused a step, and requirements met only by the owner's waiver.
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket

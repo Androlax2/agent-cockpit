@@ -575,6 +575,14 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit todo image add ID FILE | image get ID NUMBER FILE\n       \
                  cockpit todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]\n       \
                  cockpit todo drafts | draft discard (ID | --new PROJECT)\n       \
+                 cockpit workflow presets | start ITEM [--preset NAME] | cancel ID\n       \
+                 cockpit workflow list [--project P] [--all] | show ID | packet ID\n       \
+                 cockpit workflow begin ID | checkpoint ID NOTE | unblock ID\n       \
+                 cockpit workflow complete ID --changed T --checked T --outcome T \
+                 [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...\n       \
+                 cockpit workflow release ID [--changed T --checked T --outcome T \
+                 [--needs-human T] [--evidence REF]...]\n       \
+                 cockpit workflow block ID ACTION --detail TEXT\n       \
                  cockpit resources status | profile normal|foreground | pause-queue | resume-queue\n       \
                  cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...\n       \
                  cockpit resources checkpoint RESERVATION | stop RESERVATION\n"

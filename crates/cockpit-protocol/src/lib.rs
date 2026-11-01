@@ -10,6 +10,7 @@ mod request;
 mod resources;
 mod sessions;
 mod tasks;
+mod workflows;
 
 pub use agent::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, LAUNCH_TOKEN_VARIABLE, QuestionSource,
@@ -46,6 +47,12 @@ pub use sessions::{
 pub use tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,
     TaskStatusView, TaskView, TaskWaitView,
+};
+pub use workflows::{
+    WorkflowBlockedActionView, WorkflowBlockedView, WorkflowCheckpointView, WorkflowGoalView,
+    WorkflowHandoffRecordView, WorkflowHandoffView, WorkflowNextView, WorkflowPacketView,
+    WorkflowPresetStepView, WorkflowPresetView, WorkflowStatusView, WorkflowStepStatusView,
+    WorkflowStepView, WorkflowView,
 };
 
 /// Longest frame either side may send, newline included. Frames are one JSON value per line,

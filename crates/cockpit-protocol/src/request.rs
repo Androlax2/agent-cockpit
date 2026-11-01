@@ -11,6 +11,10 @@ use crate::sessions::{ProviderView, SessionFailure, SessionView};
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
 };
+use crate::workflows::{
+    WorkflowBlockedActionView, WorkflowHandoffView, WorkflowPacketView, WorkflowPresetView,
+    WorkflowView,
+};
 
 /// Correlates a [`Response`] with the [`Request`] it answers; chosen by the client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -352,6 +356,84 @@ pub enum Command {
     TaskDraftDiscard {
         target: TaskDraftTargetView,
     },
+    /// The workflow presets this daemon offers, newest version of each.
+    WorkflowPresets,
+    /// Owner only: start a workflow on an open item. Without `preset`, the item's project's
+    /// `workflow.preset`, else `research` for a research item and `code-change` for others.
+    WorkflowStart {
+        item: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preset: Option<String>,
+    },
+    /// The running workflows the sender may see, of one project or all; `all` adds delivered
+    /// and cancelled ones.
+    WorkflowList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default)]
+        all: bool,
+    },
+    WorkflowShow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        workflow: i64,
+    },
+    /// The task packet of the workflow's current step, rebuilt from durable records.
+    WorkflowPacket {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        workflow: i64,
+    },
+    /// Agent socket only: take the workflow's ready agent step. The sender's provider must
+    /// report what the step declares.
+    WorkflowBegin {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        workflow: i64,
+    },
+    /// Agent socket only: record progress in the step the sender is doing.
+    WorkflowCheckpoint {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        workflow: i64,
+        note: String,
+    },
+    /// End the current step with its handoff. `waive` (owner only) names requirements the
+    /// owner waives; no request can claim a requirement passed.
+    WorkflowComplete {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        workflow: i64,
+        handoff: WorkflowHandoffView,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        waive: Vec<String>,
+    },
+    /// Hand the active step back mid-step. An agent hands off; the owner may not.
+    WorkflowRelease {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        workflow: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handoff: Option<WorkflowHandoffView>,
+    },
+    WorkflowBlock {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        workflow: i64,
+        action: WorkflowBlockedActionView,
+        detail: String,
+    },
+    WorkflowUnblock {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        workflow: i64,
+    },
+    /// Owner only.
+    WorkflowCancel {
+        workflow: i64,
+    },
     /// Owner only: the budget, the profile, what this host enforces, and every reservation
     /// with its limits requested, supported and effective.
     ResourceStatus,
@@ -523,6 +605,19 @@ pub enum Reply {
         drafts: Vec<TaskDraftView>,
     },
     TaskDraftDiscarded,
+    Workflow {
+        workflow: Box<WorkflowView>,
+    },
+    /// Oldest first.
+    Workflows {
+        workflows: Vec<WorkflowView>,
+    },
+    WorkflowPacket {
+        packet: Box<WorkflowPacketView>,
+    },
+    WorkflowPresets {
+        presets: Vec<WorkflowPresetView>,
+    },
     ResourceStatus {
         status: Box<ResourceStatusView>,
     },

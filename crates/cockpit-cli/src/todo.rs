@@ -373,20 +373,20 @@ fn item_id(text: &str) -> Result<i64, String> {
     number(text, "an item id")
 }
 
-fn number(text: &str, what: &str) -> Result<i64, String> {
+pub(crate) fn number(text: &str, what: &str) -> Result<i64, String> {
     text.parse().map_err(|_| format!("{text} is not {what}"))
 }
 
 /// Words split into positional ones, `--flag value` pairs and switches. `single` flags take
 /// one value at most once, `repeated` ones any number of times; `switches` take none.
-struct Flags {
+pub(crate) struct Flags {
     positional: Vec<String>,
     values: Vec<(String, String)>,
     switches: Vec<String>,
 }
 
 impl Flags {
-    fn parse(
+    pub(crate) fn parse(
         words: &[&str],
         single: &[&str],
         repeated: &[&str],
@@ -419,17 +419,17 @@ impl Flags {
         Ok(flags)
     }
 
-    fn take(&mut self, flag: &str) -> Option<String> {
+    pub(crate) fn take(&mut self, flag: &str) -> Option<String> {
         let index = self.values.iter().position(|(name, _)| name == flag)?;
         Some(self.values.remove(index).1)
     }
 
-    fn required(&mut self, flag: &str, what: &str) -> Result<String, String> {
+    pub(crate) fn required(&mut self, flag: &str, what: &str) -> Result<String, String> {
         self.take(flag)
             .ok_or_else(|| format!("{flag} is required: {what}"))
     }
 
-    fn number(&mut self, flag: &str, what: &str) -> Result<Option<i64>, String> {
+    pub(crate) fn number(&mut self, flag: &str, what: &str) -> Result<Option<i64>, String> {
         self.take(flag).map(|text| number(&text, what)).transpose()
     }
 
@@ -443,16 +443,16 @@ impl Flags {
             .transpose()
     }
 
-    fn many(&mut self, flag: &str) -> Vec<String> {
+    pub(crate) fn many(&mut self, flag: &str) -> Vec<String> {
         std::iter::from_fn(|| self.take(flag)).collect()
     }
 
-    fn switch(&mut self, flag: &str) -> bool {
+    pub(crate) fn switch(&mut self, flag: &str) -> bool {
         let index = self.switches.iter().position(|name| name == flag);
         index.map(|index| self.switches.remove(index)).is_some()
     }
 
-    fn one_positional(&mut self, what: &str) -> Result<String, String> {
+    pub(crate) fn one_positional(&mut self, what: &str) -> Result<String, String> {
         match self.positional.as_slice() {
             [one] => Ok(one.clone()),
             [] => Err(format!("name {what}")),
@@ -460,7 +460,11 @@ impl Flags {
         }
     }
 
-    fn no_positional(&self) -> Result<(), String> {
+    pub(crate) fn has_values(&self) -> bool {
+        !self.values.is_empty()
+    }
+
+    pub(crate) fn no_positional(&self) -> Result<(), String> {
         match self.positional.first() {
             Some(word) => Err(format!("unexpected argument {word}")),
             None => Ok(()),
