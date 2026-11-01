@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use cockpit_daemon::{RUN_LEADER_FLAG, Serve, StartError, serve};
+use cockpit_daemon::{RUN_LEADER_FLAG, Serve, StartError, own_program, serve};
 
 const USAGE: &str = "usage: cockpit-e2e-daemon --idle-sleep-after-s N --session-tick-ms N";
 
@@ -23,17 +23,16 @@ fn main() -> ExitCode {
     }
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    let (idle_sleep_after, session_tick) = match words.as_slice() {
-        ["--idle-sleep-after-s", idle, "--session-tick-ms", tick] => {
-            match (
-                positive(idle).map(Duration::from_secs),
-                positive(tick).map(Duration::from_millis),
-            ) {
-                (Some(idle), Some(tick)) => (idle, tick),
-                _ => return usage(),
-            }
-        }
-        _ => return usage(),
+    // The idle window is whole seconds: the session pass compares it with report times kept
+    // in seconds, so a millisecond flag would promise a precision it does not have.
+    let ["--idle-sleep-after-s", idle, "--session-tick-ms", tick] = words.as_slice() else {
+        return usage();
+    };
+    let (Some(idle_sleep_after), Some(session_tick)) = (
+        positive(idle).map(Duration::from_secs),
+        positive(tick).map(Duration::from_millis),
+    ) else {
+        return usage();
     };
     match run(idle_sleep_after, session_tick) {
         Ok(()) => ExitCode::SUCCESS,
@@ -49,19 +48,12 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-/// The idle window is whole seconds: the session pass compares it with report times kept in
-/// seconds, so a millisecond flag would promise a precision it does not have.
 fn positive(word: &str) -> Option<u64> {
     word.parse().ok().filter(|count| *count > 0)
 }
 
 fn run(idle_sleep_after: Duration, session_tick: Duration) -> Result<(), StartError> {
-    let program = std::env::current_exe().map_err(|source| StartError::Io {
-        action: "find the daemon's own program",
-        path: "/proc/self/exe".into(),
-        source,
-    })?;
-    let programs_dir: PathBuf = program
+    let programs_dir: PathBuf = own_program()?
         .ancestors()
         .nth(2)
         .expect("Cargo builds examples in <profile>/examples/")

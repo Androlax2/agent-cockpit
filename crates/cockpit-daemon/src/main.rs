@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use cockpit_daemon::{RUN_LEADER_FLAG, SESSION_TICK, Serve, StartError, serve};
+use cockpit_daemon::{RUN_LEADER_FLAG, SESSION_TICK, Serve, StartError, own_program, serve};
 
 const USAGE: &str = "usage: cockpit-daemon [--foreground]";
 
@@ -43,12 +43,7 @@ fn run(foreground: bool) -> Result<(), StartError> {
 
 /// The directory this program is installed in.
 fn programs_dir() -> Result<PathBuf, StartError> {
-    let program = std::env::current_exe().map_err(|source| StartError::Io {
-        action: "find the daemon's own program",
-        path: "/proc/self/exe".into(),
-        source,
-    })?;
-    Ok(program
+    Ok(own_program()?
         .parent()
         .expect("the daemon's program is a file in a directory")
         .to_path_buf())

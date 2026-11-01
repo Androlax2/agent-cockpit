@@ -21,7 +21,7 @@ use cockpit_protocol::{Change, EntityKind, FeedPosition, SessionView};
 
 /// Long enough never to fire in a passing run on a loaded CI runner; a hung step fails with
 /// its screen instead of hanging the suite.
-pub const GENEROUS: Duration = Duration::from_secs(30);
+const GENEROUS: Duration = Duration::from_secs(30);
 /// The owner's terminal: wide enough for the list and the viewer side by side.
 const COLUMNS: u16 = 160;
 const ROWS: u16 = 45;
@@ -347,13 +347,8 @@ impl Cockpit {
         let config = self.root.join("terminal.conf");
         std::fs::write(&config, OUTER_CONFIG).unwrap();
         let tmux = |arguments: &[&str]| {
-            let mut command = self.command(Path::new("tmux"));
-            command
-                .arg("-S")
-                .arg(&socket)
-                .arg("-f")
-                .arg(&config)
-                .args(arguments);
+            let mut command = self.outer_tmux(&socket, &config);
+            command.args(arguments);
             command
         };
         // `cockpit tui` refuses to nest inside the terminal's own tmux, as it would for an
@@ -427,13 +422,16 @@ impl Cockpit {
             .join("\n")
     }
 
+    /// tmux on the owner's terminal server.
+    fn outer_tmux(&self, socket: &Path, config: &Path) -> Command {
+        let mut command = self.command(Path::new("tmux"));
+        command.arg("-S").arg(socket).arg("-f").arg(config);
+        command
+    }
+
     fn terminal_tmux(&self, terminal: &Terminal, arguments: &[&str]) -> Result<String, String> {
         let output = self
-            .command(Path::new("tmux"))
-            .arg("-S")
-            .arg(&terminal.socket)
-            .arg("-f")
-            .arg(&terminal.config)
+            .outer_tmux(&terminal.socket, &terminal.config)
             .args(arguments)
             .output()
             .map_err(|error| error.to_string())?;
@@ -570,6 +568,16 @@ impl Cockpit {
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
+    /// A session started from the CLI, selected and shown in the viewer, its agent at its
+    /// prompt; returns its id.
+    pub fn shown_session(&self) -> String {
+        let session = self.session_from_cli();
+        self.wait_for(&session);
+        self.press(&["Enter"]);
+        self.wait_for(&format!("reply: {FIRST_MESSAGE}"));
+        session
+    }
+
     /// Sends a line to the agent shown in the viewer, as the owner types into it.
     pub fn tell_agent(&self, line: &str) {
         self.click(ManagerPane::Viewer);
@@ -585,23 +593,19 @@ impl Cockpit {
         self.private_tmux(&["send-keys", "-t", &target, "Enter"]);
     }
 
-    /// The pids the fake agent of `session` logged, one per launch, and how each launch
-    /// started (`new` or `resume`), oldest first.
-    pub fn launches(&self, session: &str) -> Vec<(u32, String)> {
+    /// How many times the fake agent of `session` was launched, as its log counts them.
+    pub fn launch_count(&self, session: &str) -> usize {
+        let prefix = format!("{session} pid=");
         std::fs::read_to_string(self.root.join("launches.log"))
             .unwrap_or_default()
             .lines()
-            .filter_map(|line| {
-                let (id, rest) = line.split_once(" pid=")?;
-                let (pid, mode) = rest.split_once(' ')?;
-                (id == session).then(|| (pid.parse().unwrap(), mode.to_owned()))
-            })
-            .collect()
+            .filter(|line| line.starts_with(&prefix))
+            .count()
     }
 
     /// Follows the daemon's change feed from a snapshot until `condition` holds for the
     /// sessions it carries (ended ones included); returns them by id.
-    pub fn wait_for_sessions(
+    fn wait_for_sessions(
         &self,
         what: &str,
         condition: impl Fn(&BTreeMap<String, SessionView>) -> bool,
@@ -733,7 +737,7 @@ pub fn session_ids(text: &str) -> Vec<String> {
 
 /// The screen with what changes from run to run replaced: session ids become `s<1>`,
 /// `s<2>`… in the order they first appear, the scratch home `<home>`.
-pub fn redacted(screen: &str, home: &Path) -> String {
+fn redacted(screen: &str, home: &Path) -> String {
     let mut text = screen.replace(home.to_str().unwrap(), "<home>");
     for (index, id) in session_ids(screen).iter().enumerate() {
         let placeholder = format!("s<{}>", index + 1);

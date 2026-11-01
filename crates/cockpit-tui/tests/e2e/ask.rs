@@ -1,22 +1,13 @@
 //! M1 guide, section 4: an agent's `ask run` and `ask guide` reach the owner in the TUI's
 //! "Waiting on you" pane and the answers reach the agent.
 
-use crate::harness::{Cockpit, FIRST_MESSAGE, ManagerPane};
+use crate::harness::{Cockpit, ManagerPane};
 
 /// The pane's grace hint, as far as the list column shows it on one line.
 const GRACE_HINT: &str = "Read it first:";
 const RUN_KEYS: &str = "y approve   x decline   m more";
 /// The command of the guide's section 4, with a token the run's output must not show.
 const HOST_COMMAND: &str = r#"!cockpit ask run --reason "acceptance check" 'printf "hello from the host\nGITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n"'"#;
-
-/// A session from the CLI shown in the viewer, its agent at its prompt; returns its id.
-fn shown_session(cockpit: &Cockpit) -> String {
-    let session = cockpit.session_from_cli();
-    cockpit.wait_for(&session);
-    cockpit.press(&["Enter"]);
-    cockpit.wait_for(&format!("reply: {FIRST_MESSAGE}"));
-    session
-}
 
 /// The agent asks to run `command` (with its `!`); waits for the pane to show it past its
 /// grace and gives the keys to the list, as the owner's click does (#317).
@@ -29,7 +20,7 @@ fn asked(cockpit: &Cockpit, command: &str) {
 #[test]
 fn a_key_pressed_while_the_pane_asks_to_read_first_does_nothing() {
     let cockpit = Cockpit::start();
-    let session = shown_session(&cockpit);
+    let session = cockpit.shown_session();
     // The keys go to the list before the request, so `y` follows the hint at once.
     cockpit.click(ManagerPane::List);
     cockpit.agent_does(&session, HOST_COMMAND);
@@ -44,7 +35,7 @@ fn a_key_pressed_while_the_pane_asks_to_read_first_does_nothing() {
 #[test]
 fn y_runs_the_command_and_the_agent_gets_its_output_redacted() {
     let cockpit = Cockpit::start();
-    shown_session(&cockpit);
+    cockpit.shown_session();
     asked(&cockpit, HOST_COMMAND);
     let screen = cockpit.wait_for("Reason: acceptance check");
     assert!(screen.contains("Directory:"), "{screen}");
@@ -61,7 +52,7 @@ fn y_runs_the_command_and_the_agent_gets_its_output_redacted() {
 #[test]
 fn x_declines_and_the_agent_gets_exit_125() {
     let cockpit = Cockpit::start();
-    shown_session(&cockpit);
+    cockpit.shown_session();
     asked(
         &cockpit,
         r#"!cockpit ask run --reason "decline check" 'echo should not run'"#,
@@ -74,7 +65,7 @@ fn x_declines_and_the_agent_gets_exit_125() {
 #[test]
 fn a_guide_shows_one_step_at_a_time_and_the_agent_gets_the_answer() {
     let cockpit = Cockpit::start();
-    shown_session(&cockpit);
+    cockpit.shown_session();
     cockpit.tell_agent(
         r"!printf '# Pane guide\n## One\n1. Look at the sky\n   ask: What colour is it?\n2. Press y\n' | cockpit ask guide",
     );

@@ -1,7 +1,7 @@
 //! M1 guide, section 5: an agent's label, doing and question reach its card, `n` opens the
 //! session that needs the owner, and the owner's answer clears the mark.
 
-use crate::harness::{Cockpit, FIRST_MESSAGE};
+use crate::harness::Cockpit;
 
 const LABEL_REPORT: &str = r#"!cockpit agent report --label "acceptance" --doing "checking cards""#;
 const QUESTION_REPORT: &str = r#"!cockpit agent report --needs-input "Pick A or B?""#;
@@ -47,10 +47,7 @@ fn n_opens_the_session_that_needs_you() {
 #[test]
 fn answering_the_agent_clears_the_mark() {
     let cockpit = Cockpit::start();
-    let session = cockpit.session_from_cli();
-    cockpit.wait_for(&session);
-    cockpit.press(&["Enter"]);
-    cockpit.wait_for(&format!("reply: {FIRST_MESSAGE}"));
+    let session = cockpit.shown_session();
     cockpit.tell_agent(QUESTION_REPORT);
     cockpit.wait_until("the card's mark", |screen| {
         card_shows_needs_you(screen, &session)

@@ -44,6 +44,15 @@ pub struct Serve {
     pub idle_sleep_after: Option<Duration>,
 }
 
+/// This program's own path, the start of where its installation's programs are.
+pub fn own_program() -> Result<PathBuf, StartError> {
+    std::env::current_exe().map_err(|source| StartError::Io {
+        action: "find the daemon's own program",
+        path: "/proc/self/exe".into(),
+        source,
+    })
+}
+
 /// Runs the daemon in this process until it stops; prints `ready <socket>` once it accepts.
 pub fn serve(serve: Serve) -> Result<(), StartError> {
     let environment = cockpit_config::Environment::from_process();

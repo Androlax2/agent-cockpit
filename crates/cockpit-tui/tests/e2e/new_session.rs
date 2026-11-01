@@ -1,6 +1,8 @@
 //! M1 guide, section 2: the `N` form starts sessions in place and in a new clone, Enter
 //! shows a session's agent in the viewer, and one started from the CLI appears by itself.
 
+use cockpit_protocol::SessionStateView;
+
 use crate::harness::{Cockpit, FIRST_MESSAGE, PROJECT, session_ids};
 
 /// Opens the form and waits for the daemon's agents in it.
@@ -26,7 +28,7 @@ fn the_form_starts_a_session_in_place_with_its_first_message() {
     cockpit.press(&["Enter"]);
     let session = first_card(&cockpit);
     let view = cockpit.wait_for_session(&session, "runs", |view| {
-        view.state == cockpit_protocol::SessionStateView::Running
+        view.state == SessionStateView::Running
     });
     assert_eq!(view.working_dir, cockpit.project_root().to_str().unwrap());
     cockpit.wait_for(&format!("{session}  claude  running"));
@@ -37,10 +39,7 @@ fn the_form_starts_a_session_in_place_with_its_first_message() {
 #[test]
 fn enter_shows_the_selected_agent_in_the_viewer() {
     let cockpit = Cockpit::start();
-    let session = cockpit.session_from_cli();
-    cockpit.wait_for(&session);
-    cockpit.press(&["Enter"]);
-    cockpit.wait_for(&format!("reply: {FIRST_MESSAGE}"));
+    cockpit.shown_session();
 }
 
 #[test]
@@ -53,7 +52,7 @@ fn the_form_starts_a_session_in_a_new_clone_on_a_branch() {
     cockpit.press(&["Enter"]);
     let session = first_card(&cockpit);
     let view = cockpit.wait_for_session(&session, "runs", |view| {
-        view.state == cockpit_protocol::SessionStateView::Running
+        view.state == SessionStateView::Running
     });
     assert!(
         view.working_dir
