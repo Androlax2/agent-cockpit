@@ -104,6 +104,12 @@ jobs:
       # groups, every cgroup control reported unsupported with its reason.
       - name: Admit resources
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-resource-admission
+      # The TUI end to end (#300): the daemon, `cockpit tui` and the agents in real tmux. The
+      # Linux job runs the same tests inside the workspace's.
+      - name: Install tmux for the TUI's end-to-end tests
+        run: command -v tmux || brew install tmux
+      - name: Drive the TUI end to end
+        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-tui --test e2e
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
