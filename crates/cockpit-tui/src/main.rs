@@ -108,7 +108,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
             .map_err(|error| format!("cannot draw: {error}"))?;
         tokio::select! {
             _ = refresh.tick(), if unanswered_refreshes == 0 => {
-                for command in App::refresh_commands() {
+                for command in App::refresh_commands().into_iter().chain(app.view_refresh_commands()) {
                     unanswered_refreshes += 1;
                     send(&requests, command, true)?;
                 }

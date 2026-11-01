@@ -10,6 +10,7 @@ use cockpit_protocol::{ChangeBatch, Command, Reply};
 use crate::board::{Board, FeedError};
 use crate::form::{Form, FormOutcome};
 use crate::pane::{Pane, PaneOutcome};
+use crate::workflows::{Workflows, WorkflowsOutcome};
 
 /// The log view keeps this many entries.
 const LOG_ENTRIES: usize = 200;
@@ -82,6 +83,7 @@ pub struct App {
     pub(crate) focus: Focus,
     pub(crate) pane: Pane,
     pub(crate) form: Option<Form>,
+    pub(crate) workflows: Option<Workflows>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) confirm: Option<Confirm>,
     pub(crate) log: VecDeque<String>,
@@ -114,6 +116,18 @@ impl App {
             Command::AgentReports,
             Command::ApprovalQueue,
         ]
+    }
+
+    /// What keeps the views open on screen current, sent with every refresh.
+    pub fn view_refresh_commands(&self) -> Vec<Command> {
+        self.workflows
+            .as_ref()
+            .map(Workflows::refresh_commands)
+            .unwrap_or_default()
+    }
+
+    pub fn workflows(&self) -> Option<&Workflows> {
+        self.workflows.as_ref()
     }
 
     pub fn board(&self) -> &Board {
@@ -189,6 +203,18 @@ impl App {
                 FormOutcome::Submit(command) => Step::sending("new-session", command),
             };
         }
+        if let Some(workflows) = &mut self.workflows {
+            return match workflows.key(key) {
+                WorkflowsOutcome::Closed => {
+                    self.workflows = None;
+                    Step::used("workflows-close")
+                }
+                WorkflowsOutcome::Handled { used, send } => Step {
+                    used: Some(used),
+                    send,
+                },
+            };
+        }
         if let Some(confirm) = self.confirm.take() {
             return match (key, confirm) {
                 (Key::Char('y'), Confirm::Restart(session)) => {
@@ -261,6 +287,11 @@ impl App {
                     .collect();
                 self.form = Some(Form::new(roots));
                 Step::sending("new-session-form", Command::ProviderList)
+            }
+            Key::Char('F') => {
+                let (workflows, command) = Workflows::open();
+                self.workflows = Some(workflows);
+                Step::sending("workflows", command)
             }
             Key::Char('r') => self.ask_to_confirm(Confirm::Restart, "restart-ask"),
             Key::Char('x') => self.ask_to_confirm(Confirm::Exit, "exit-ask"),
@@ -372,7 +403,15 @@ impl App {
         {
             self.failure = None;
         }
+        if let Some(workflows) = &mut self.workflows
+            && workflows.answer(&reply)
+        {
+            return;
+        }
         match reply {
+            Reply::Workflows { .. } | Reply::Workflow { .. } | Reply::WorkflowPacket { .. } => {
+                // The answer to a workflow view closed since.
+            }
             Reply::Projects { projects } => self.board.set_projects(projects),
             Reply::AgentReports { reports } => self.board.set_reports(reports),
             Reply::ApprovalQueue { runs, guides } => {
