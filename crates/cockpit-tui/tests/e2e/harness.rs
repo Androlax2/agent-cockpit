@@ -466,7 +466,14 @@ impl Cockpit {
             .stderr(Stdio::null())
             .spawn()
             .expect("a control-mode client starts");
-        let written = announced_writes(watcher.stdout.take().expect("stdout is piped"));
+        let written = match announced_writes(watcher.stdout.take().expect("stdout is piped")) {
+            Ok(written) => written,
+            Err(problem) => {
+                let _ = watcher.kill();
+                let _ = watcher.wait();
+                panic!("the test terminal: {problem}\n{}", self.failure_context());
+            }
+        };
         self.terminal = Some(Terminal {
             socket,
             config,
@@ -741,30 +748,35 @@ impl Cockpit {
     }
 
     /// Sends a line to the agent shown in the viewer, as the owner types into it once the
-    /// viewer shows the agent's prompt.
+    /// viewer shows the agent's prompt; returns once the viewer shows the line at it.
     pub fn tell_agent(&self, line: &str) {
-        self.wait_until("the viewer shows the agent's prompt", |screen| {
-            viewer_rows(screen)
-                .last()
-                .is_some_and(|row| row == FAKE_PROMPT)
+        let screen = self.wait_until("the viewer shows the agent's prompt", |screen| {
+            is_at_prompt(&viewer_rows(screen))
         });
+        let echoed_before = echoes(&viewer_rows(&screen), line);
         self.click(ManagerPane::Viewer);
         self.type_text(line);
         self.press(&["Enter"]);
+        self.wait_until("the viewer shows the line at the prompt", |screen| {
+            echoes(&viewer_rows(screen), line) > echoed_before
+        });
     }
 
     /// Types `line` at the prompt of `session`'s agent without the viewer, as if the agent
     /// decided to run it on its own: for a session the owner is not looking at. Waits for
     /// the prompt first: typed before it, the tty echoes the line into the agent's reply,
     /// and a row that wide leaves the screen for the history once the viewer narrows the
-    /// window (#403, #405).
+    /// window (#403, #405). Returns once the line shows at the prompt, so a next call
+    /// cannot take this prompt for a fresh one.
     pub fn agent_does(&self, session: &str, line: &str) {
-        self.wait_for_agent_screen(session, "the agent's prompt", |screen| {
-            screen.last().is_some_and(|row| row == FAKE_PROMPT)
-        });
+        let screen = self.wait_for_agent_screen(session, "the agent's prompt", is_at_prompt);
+        let echoed_before = echoes(&screen, line);
         let target = format!("={session}:");
         self.private_tmux(&["send-keys", "-t", &target, "-l", "--", line]);
         self.private_tmux(&["send-keys", "-t", &target, "Enter"]);
+        self.wait_for_agent_screen(session, "the line at the prompt", |screen| {
+            echoes(screen, line) > echoed_before
+        });
     }
 
     /// Waits until `condition` holds for `session`'s screen as its agent's pane holds it,
@@ -787,7 +799,17 @@ impl Cockpit {
             .stderr(Stdio::null())
             .spawn()
             .expect("a control-mode client starts");
-        let written = announced_writes(watcher.stdout.take().expect("stdout is piped"));
+        let written = match announced_writes(watcher.stdout.take().expect("stdout is piped")) {
+            Ok(written) => written,
+            Err(problem) => {
+                let _ = watcher.kill();
+                let _ = watcher.wait();
+                panic!(
+                    "waiting for {session}'s screen: {what}: {problem}\n{}",
+                    self.failure_context()
+                );
+            }
+        };
         let deadline = Instant::now() + GENEROUS;
         let outcome = loop {
             while written.try_recv().is_ok() {}
@@ -985,7 +1007,7 @@ struct Terminal {
 /// once the client has attached (`%session-changed`): a write before that is announced to
 /// nobody, and a screen read before it could miss that write and wait for one that never
 /// comes.
-fn announced_writes(stdout: std::process::ChildStdout) -> Receiver<()> {
+fn announced_writes(stdout: std::process::ChildStdout) -> Result<Receiver<()>, String> {
     let (writes, written) = mpsc::channel();
     let (attaching, attached) = mpsc::channel();
     std::thread::spawn(move || {
@@ -999,10 +1021,10 @@ fn announced_writes(stdout: std::process::ChildStdout) -> Receiver<()> {
             }
         }
     });
-    match attached.recv_timeout(GENEROUS) {
-        Ok(()) => written,
-        Err(error) => panic!("the control-mode client did not attach: {error:?}"),
-    }
+    attached
+        .recv_timeout(GENEROUS)
+        .map(|()| written)
+        .map_err(|error| format!("the control-mode client did not attach: {error:?}"))
 }
 
 /// The manager session's panes, in tmux's order.
@@ -1019,6 +1041,21 @@ const UTF8_LOCALE: &str = "C.UTF-8";
 
 /// The fake agent's prompt as a screen row shows it, its trailing space cut.
 const FAKE_PROMPT: &str = "fake>";
+
+/// Whether the last of `rows` is the fake agent's prompt, waiting for a line.
+fn is_at_prompt(rows: &[String]) -> bool {
+    rows.last().is_some_and(|row| row == FAKE_PROMPT)
+}
+
+/// How many times `rows` show `line` typed at the fake agent's prompt. Spaces are left
+/// out on both sides: a line wider than the screen wraps, and trimming cuts the space a
+/// row ends with.
+fn echoes(rows: &[String], line: &str) -> usize {
+    let without_spaces = |text: &str| text.split_whitespace().collect::<String>();
+    without_spaces(&rows.concat())
+        .matches(&without_spaces(&format!("{FAKE_PROMPT} {line}")))
+        .count()
+}
 
 /// Where the viewer starts on the owner's screen: after the list's 39 columns and the border.
 const VIEWER_COLUMN: usize = 40;

@@ -11,6 +11,14 @@ fn open_form(cockpit: &Cockpit) {
     cockpit.wait_for("Agent: claude");
 }
 
+/// Presses each key once the form shows what the key before did (#402).
+fn press_each(cockpit: &Cockpit, keys_and_fields: &[(&str, &str)]) {
+    for (key, field) in keys_and_fields {
+        cockpit.press(&[key]);
+        cockpit.wait_for(field);
+    }
+}
+
 /// The one session the list shows once it shows one.
 fn first_card(cockpit: &Cockpit) -> String {
     let screen = cockpit.wait_until("a card in the list", |screen| {
@@ -23,7 +31,10 @@ fn first_card(cockpit: &Cockpit) -> String {
 fn the_form_starts_a_session_in_place_with_its_first_message() {
     let cockpit = Cockpit::start();
     open_form(&cockpit);
-    cockpit.press(&["Tab", "Tab"]);
+    press_each(
+        &cockpit,
+        &[("Tab", "> Agent: claude"), ("Tab", "> First message:")],
+    );
     cockpit.type_text(FIRST_MESSAGE);
     cockpit.press(&["Enter"]);
     let session = first_card(&cockpit);
@@ -84,17 +95,16 @@ fn the_shown_agent_follows_the_terminal_when_it_is_resized() {
 fn the_form_starts_a_session_in_a_new_clone_on_a_branch() {
     let cockpit = Cockpit::start();
     open_form(&cockpit);
-    // One key at a time, each once the form shows the one before took (#402).
-    for (key, field) in [
-        ("Tab", "> Agent: claude"),
-        ("Tab", "> First message:"),
-        ("Tab", "> Where: in place"),
-        ("Right", "> Where: new clone"),
-        ("Tab", "> Branch:"),
-    ] {
-        cockpit.press(&[key]);
-        cockpit.wait_for(field);
-    }
+    press_each(
+        &cockpit,
+        &[
+            ("Tab", "> Agent: claude"),
+            ("Tab", "> First message:"),
+            ("Tab", "> Where: in place"),
+            ("Right", "> Where: new clone"),
+            ("Tab", "> Branch:"),
+        ],
+    );
     cockpit.type_text("accept-clone");
     cockpit.press(&["Enter"]);
     let session = first_card(&cockpit);
