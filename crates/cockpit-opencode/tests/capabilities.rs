@@ -26,6 +26,7 @@ fn on_the_pinned_version_each_capability_is_tested() {
             Capability::Events,
             Capability::Cancel,
             Capability::Outcome,
+            Capability::Commands,
         ]
         .map(|capability| (capability, tested.clone()))
     );
@@ -63,6 +64,7 @@ fn without_the_bridge_only_resume_is_offered() {
         Capability::Cancel,
         Capability::Events,
         Capability::Outcome,
+        Capability::Commands,
     ] {
         assert_eq!(
             opencode.capabilities().availability(capability),
@@ -72,7 +74,7 @@ fn without_the_bridge_only_resume_is_offered() {
 }
 
 /// A launch cannot choose the TUI's variant, and no compaction, screen reading, remote
-/// control or billing is offered; commands wait for their contract method.
+/// control or billing is offered.
 #[test]
 fn what_it_cannot_honor_is_not_reported() {
     let capabilities = common::opencode().capabilities();
@@ -83,7 +85,6 @@ fn what_it_cannot_honor_is_not_reported() {
         Capability::ScreenReading,
         Capability::RemoteControl,
         Capability::Billing,
-        Capability::Commands,
         Capability::Evidence,
     ] {
         assert!(

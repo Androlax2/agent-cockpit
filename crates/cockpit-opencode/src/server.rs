@@ -7,6 +7,7 @@
 use std::fmt;
 use std::time::Duration;
 
+pub use cockpit_provider_api::{CommandResult as Invocation, NativeCommand};
 use cockpit_provider_api::{ConversationId, LaunchCommand, ProviderError};
 
 use crate::SERVER_USERNAME;
@@ -34,21 +35,6 @@ impl fmt::Debug for Server {
     }
 }
 
-/// One of OpenCode's native commands, as its server lists them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeCommand {
-    pub name: String,
-    pub description: Option<String>,
-    /// `command`, `mcp` or `skill`, when OpenCode says.
-    pub source: Option<String>,
-}
-
-/// A command OpenCode ran: the id of the message it answered with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Invocation {
-    pub message: String,
-}
-
 /// The server could not do what was asked; `reason` says why, for the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerError {
@@ -62,6 +48,14 @@ impl fmt::Display for ServerError {
 }
 
 impl std::error::Error for ServerError {}
+
+impl From<ServerError> for ProviderError {
+    fn from(error: ServerError) -> Self {
+        Self {
+            reason: error.reason,
+        }
+    }
+}
 
 impl From<ProviderError> for ServerError {
     fn from(error: ProviderError) -> ServerError {
@@ -79,6 +73,13 @@ impl Server {
     /// The server `launch` starts, read back from its words: its `--port` and its
     /// `OPENCODE_SERVER_PASSWORD`. `None` for a launch that is not OpenCode's.
     pub fn from_launch(launch: &LaunchCommand) -> Option<Server> {
+        let hostname = launch
+            .arguments
+            .windows(2)
+            .find(|words| words[0] == "--hostname")?;
+        if hostname[1] != crate::SERVER_HOSTNAME {
+            return None;
+        }
         let port = launch
             .arguments
             .iter()
@@ -94,6 +95,13 @@ impl Server {
             .1
             .to_str()?
             .to_owned();
+        let username = launch
+            .environment
+            .iter()
+            .find(|(name, _)| name == "OPENCODE_SERVER_USERNAME")?;
+        if port == 0 || password.is_empty() || username.1 != SERVER_USERNAME {
+            return None;
+        }
         Some(Server::new(port, password))
     }
 
@@ -188,8 +196,12 @@ impl Server {
     /// Aborts the turn under way in `session` (`POST /session/<id>/abort`).
     pub fn abort(&self, session: &ConversationId) -> Result<(), ServerError> {
         let path = format!("/session/{}/abort", session_id(session)?);
-        self.call(Method::Post, &path, None, REQUEST_DEADLINE)
-            .map(drop)
+        let answer = self.json(Method::Post, &path, None, REQUEST_DEADLINE)?;
+        if answer == true {
+            Ok(())
+        } else {
+            Err(unexpected(&path, &answer))
+        }
     }
 
     /// The variants (provider-specific reasoning efforts) of `provider`'s `model`, sorted

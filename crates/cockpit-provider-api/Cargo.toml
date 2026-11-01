@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-provider-api"
-description = "The contract every agent provider adapter implements: identity, sign-in and capabilities with provenance, launch and resume, terminal actions and normalized events."
+description = "The contract every agent provider adapter implements: identity, sign-in and capabilities with provenance, launch and resume, terminal and delivered actions, native commands and normalized events."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

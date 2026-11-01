@@ -44,6 +44,9 @@ pub enum Key {
 /// What a provider's delivery of an action did ([`crate::Provider::deliver`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivered {
+    /// The harness accepted the message, possibly queued behind a turn. It is not proof
+    /// that a turn started or finished.
+    Accepted,
     /// The message started a turn: the agent was not working.
     StartedTurn,
     /// The message joined the turn under way.

@@ -22,7 +22,7 @@ provider and nothing above the contract sees an OpenCode type (#47).
   activity is never known, so submit and cancel would always be refused. Effort is not
   reported: the TUI sends the variant it saved for the model with every prompt, so a
   launch cannot choose one; a variant goes with a message the server delivers instead. Compact and screen reading are not reported. Commands are
-  served (`Server::commands`) but not reported until the contract has their method.
+  reported with the bridge and served through `Provider::commands` and `Provider::invoke_command`.
 - **Standalone server per session.** Every launch runs the TUI with its own server on a free
   loopback port (`--port`, `--hostname 127.0.0.1`), behind a password minted for it
   (`OPENCODE_SERVER_PASSWORD`, user `opencode`). No session shares a server, and no other
@@ -59,6 +59,13 @@ provider and nothing above the contract sees an OpenCode type (#47).
   answered with, `Server::deliver` delivers an inbox message (`prompt_async`, accepted at
   once), `Server::variants` lists a model's variants, `Server::abort` ends a turn. Session
   ids and variant names are checked before they reach a URL or a body.
+- **Provider delivery** (#416). `Provider::deliver` uses the host-retained launch command in
+  `DeliveryTarget::launch` to recover the server. Submit sends literal text through
+  `prompt_async` and returns `Delivered::Accepted`; a queued message proves no turn started.
+  Cancel uses `abort`, requiring its affirmative response. Native commands keep their source
+  labels and run through the same server, with a 10-second response deadline. Missing or
+  malformed launch metadata and server refusals stay errors; no terminal fallback occurs
+  inside this adapter. The daemon's delivery calls and launch retention are owned by #431.
 
 ## Dependency edges
 
@@ -77,7 +84,8 @@ provider and nothing above the contract sees an OpenCode type (#47).
   plugin, and refuses anything else.
 - `tests/plugin.rs`: the plugin, run by Node.js, forwards what it must, in order, to a fake
   bridge.
-- `tests/server.rs`: the server API against a fake OpenCode server on the loopback.
+- `tests/server.rs`: the server API and provider contract against a fake OpenCode server on
+  the loopback, including literal inbox delivery, commands and fail-closed boundaries.
 - `tests/discover.rs`: finding `opencode` and its version.
 - `tests/conformance.rs` (ignored without an installed OpenCode): the installed version is
   the pinned one, its `--help` documents every flag the adapter passes, the binary reads

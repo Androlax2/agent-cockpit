@@ -105,6 +105,7 @@ fn a_provider_without_delivery_refuses_each_action_naming_its_capability() {
             .deliver(
                 &action,
                 &DeliveryTarget {
+                    launch: None,
                     session_dir: Path::new("/run/cockpit/sessions/s-1"),
                     sockets: &NoSockets,
                 },
@@ -116,6 +117,24 @@ fn a_provider_without_delivery_refuses_each_action_naming_its_capability() {
             format!("it does not report the `{capability}` capability")
         );
     }
+}
+
+#[test]
+fn a_provider_without_commands_refuses_discovery_and_invocation() {
+    let provider = LaunchOnly(ProviderName::new("plain").unwrap());
+    let target = DeliveryTarget {
+        launch: None,
+        session_dir: Path::new("/unused"),
+        sockets: &NoSockets,
+    };
+    let expected = ProviderError::unsupported(Capability::Commands);
+    assert_eq!(provider.commands(&target).unwrap_err(), expected);
+    assert_eq!(
+        provider
+            .invoke_command(&target, &ConversationId::new("c-1").unwrap(), "review", "")
+            .unwrap_err(),
+        expected
+    );
 }
 
 #[test]

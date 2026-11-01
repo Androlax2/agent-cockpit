@@ -285,6 +285,7 @@ fn a_session_without_its_app_server_fails_naming_the_socket() {
 fn a_socket_the_daemon_refuses_is_never_spoken_to() {
     let (dir, server) = session(last_turn_is("completed"));
     let target = DeliveryTarget {
+        launch: None,
         session_dir: dir.path(),
         sockets: &common::RefusingSockets,
     };
