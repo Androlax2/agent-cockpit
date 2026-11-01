@@ -4,6 +4,7 @@ use serde_json::Value;
 use crate::agent::{AgentReport, SessionReport};
 use crate::approvals::{GuideView, RunRequestView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
+use crate::coordination::{CoordinatorAuditView, CoordinatorGrantView, ObservedSessionView};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::instructions::{ContextBudgetView, InstructionTopicView};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
@@ -51,6 +52,53 @@ pub enum Command {
     },
     /// Owner only: every session's latest report.
     AgentReports,
+    /// Agent socket only (#410): the sessions the sender's `observe-sessions` grant covers,
+    /// each with its state and latest report.
+    AgentSessions {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+    },
+    /// Agent socket only (#410): queue `text`, one line, to `session`, delivered at its next
+    /// prompt with the sender named. Needs `message-sessions`.
+    AgentMessage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        session: String,
+        text: String,
+    },
+    /// Agent socket only (#410): start a session in `dir` (absolute), with `prompt` as its
+    /// first message, in a new clone on `clone` when given. Needs `start-sessions`; waits in
+    /// the `ask run` queue unless the grant says otherwise.
+    AgentStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clone: Option<String>,
+    },
+    /// Owner only (#410): give `session` one coordinator grant over every session:
+    /// `observe-sessions`, `message-sessions` or `start-sessions`. `without_confirmation` and
+    /// `per_hour` are `start-sessions`' terms; `without_confirmation` needs `per_hour`.
+    SessionGrant {
+        session: String,
+        permission: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        without_confirmation: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        per_hour: Option<u32>,
+    },
+    /// Owner only (#410): revoke `session`'s coordinator grant `permission`.
+    SessionRevoke {
+        session: String,
+        permission: String,
+    },
+    /// Owner only (#410): `session`'s coordinator grants and the latest audit entries it
+    /// made or was the target of.
+    SessionGrants {
+        session: String,
+    },
     /// Register the Git work tree at `path` (absolute) as a project.
     ProjectAdd {
         path: String,
@@ -613,6 +661,25 @@ pub enum Reply {
     },
     AgentReports {
         reports: Vec<SessionReport>,
+    },
+    /// The sessions a coordinator observes, oldest first.
+    AgentSessions {
+        sessions: Vec<ObservedSessionView>,
+    },
+    /// The message waits for `session`'s next prompt; `message` is its audit entry.
+    AgentMessageQueued {
+        session: String,
+        message: i64,
+    },
+    /// A start without confirmation: the session that began.
+    AgentStarted {
+        session: Box<SessionView>,
+    },
+    /// A session's coordinator grants and the newest audit entries about it, newest first.
+    CoordinatorGrants {
+        session: String,
+        grants: Vec<CoordinatorGrantView>,
+        audit: Vec<CoordinatorAuditView>,
     },
     // Checkout views are boxed so every `Outcome` stays small enough to move around.
     ProjectAdded {

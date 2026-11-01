@@ -117,7 +117,7 @@ impl From<cockpit_turso::sql::Error> for Failed {
     }
 }
 
-fn internal(error: &dyn std::fmt::Display) -> Failed {
+pub(crate) fn internal(error: &dyn std::fmt::Display) -> Failed {
     tracing::error!(%error, "an approvals request failed");
     Failed(ProtocolError::new(
         ErrorCode::Internal,
@@ -397,7 +397,12 @@ pub(crate) async fn project_at(
 
 /// The route for one of the owner's decisions; `routes.rs` sends only those here, from the
 /// host-only socket. Decisions are small and latency-bound: the control lane.
-pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: Runner) -> Route {
+pub(crate) fn route_decision(
+    command: Command,
+    database: Arc<Database>,
+    runner: Runner,
+    sessions: Arc<cockpit_sessions::Sessions>,
+) -> Route {
     let work = job(async move {
         match command {
             Command::ApprovalQueue => {
@@ -428,7 +433,7 @@ pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: 
                 request,
                 revision,
                 digest,
-            } => approve(database, runner, request, revision, &digest).await,
+            } => approve(database, runner, sessions, request, revision, &digest).await,
             Command::ApprovalDecline { request } => {
                 let write = database.write().await?;
                 let run = cockpit_approvals::decline_run(&write, RunId(request), now()).await?;
@@ -520,6 +525,7 @@ async fn existing_run(
 async fn approve(
     database: Arc<Database>,
     runner: Runner,
+    sessions: Arc<cockpit_sessions::Sessions>,
     request: i64,
     revision: i64,
     digest: &str,
@@ -530,7 +536,18 @@ async fn approve(
     write.commit().await?;
     tracing::info!(request, revision, "the owner approved a run");
     let reply = run_reply(&run, &runner);
-    tokio::spawn(execute(database, runner, approved));
+    if approved.start.is_some() {
+        // A start request (#410) starts a session; it never runs as a command.
+        tokio::spawn(crate::coordination::start_approved(
+            database,
+            sessions,
+            approved,
+            run.session.clone(),
+            run.asking_grant(),
+        ));
+    } else {
+        tokio::spawn(execute(database, runner, approved));
+    }
     Ok(reply)
 }
 
@@ -653,7 +670,7 @@ async fn safe_git_config(cwd: &Path) -> Result<Vec<String>, String> {
 /// Records the run's end. When that fails after the command started, the run is marked
 /// `outcome-unknown` rather than left running for ever; a daemon restart reconciles what
 /// even that cannot record.
-async fn record_end_or_log(
+pub(crate) async fn record_end_or_log(
     database: &Database,
     approved: &Approved,
     ended: &Result<RunResult, NoResult>,
@@ -706,7 +723,7 @@ pub(crate) fn now() -> i64 {
 }
 
 /// A run request as its asking agent reads it.
-fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
+pub(crate) fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     Reply::RunRequest {
         request: Box::new(run_view(run, &runner.waiting_for_input(), None)),
     }

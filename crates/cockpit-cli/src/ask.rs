@@ -153,7 +153,7 @@ fn check() -> ExitCode {
 }
 
 /// A connection to the agent socket, waited on with blocking sleeps between polls.
-struct Agent {
+pub(crate) struct Agent {
     socket: PathBuf,
     runtime: tokio::runtime::Runtime,
     connection: Connection,
@@ -161,7 +161,7 @@ struct Agent {
 
 impl Agent {
     /// Exit 126 with the fix when the daemon cannot be reached.
-    fn connect() -> Result<Agent, ExitCode> {
+    pub(crate) fn connect() -> Result<Agent, ExitCode> {
         let socket = crate::agent::agent_socket()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -177,12 +177,21 @@ impl Agent {
         }
     }
 
-    fn request(&self, command: Command) -> Result<Reply, ClientError> {
-        self.runtime
-            .block_on(self.connection.request(command, DEADLINE))
+    pub(crate) fn request(&self, command: Command) -> Result<Reply, ClientError> {
+        self.request_within(command, DEADLINE)
     }
 
-    fn failed(&self, outcome: Result<Reply, ClientError>) -> ExitCode {
+    /// [`Agent::request`] for work that may take longer, such as starting a session.
+    pub(crate) fn request_within(
+        &self,
+        command: Command,
+        deadline: Duration,
+    ) -> Result<Reply, ClientError> {
+        self.runtime
+            .block_on(self.connection.request(command, deadline))
+    }
+
+    pub(crate) fn failed(&self, outcome: Result<Reply, ClientError>) -> ExitCode {
         match outcome {
             Err(error @ (ClientError::Connect { .. } | ClientError::Closed(_))) => {
                 unreachable(&self.socket, &error)
@@ -216,7 +225,7 @@ impl Agent {
         }
     }
 
-    fn wait_for_run(&self, id: i64) -> ExitCode {
+    pub(crate) fn wait_for_run(&self, id: i64) -> ExitCode {
         let deadline = Instant::now() + wait_time();
         loop {
             let status = self.request(Command::AskRunStatus {

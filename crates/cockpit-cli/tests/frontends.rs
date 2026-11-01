@@ -123,6 +123,8 @@ async fn session_show_asks_the_daemon_to_show_the_session_and_prints_it() {
                 changed_start_files: Vec::new(),
                 restart_pending: false,
                 finished: false,
+                coordinator_grants: Vec::new(),
+                inbound_message: None,
             }),
         }),
     );

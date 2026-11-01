@@ -137,8 +137,8 @@ async fn session_states(
     let listed = sessions.list(false).await?;
     // The finished label needs the task list; without it every session is kept as published,
     // and the checkouts still go out.
-    let work = match crate::sessions::task_work(sessions).await {
-        Ok(work) => work,
+    let inputs = match crate::sessions::card_inputs(sessions).await {
+        Ok(inputs) => inputs,
         Err(failed) => {
             tracing::warn!(error = ?failed.0, "the sessions on the change feed are left unchanged");
             let kept = listed
@@ -151,7 +151,7 @@ async fn session_states(
     let mut states = States::new();
     let mut kept = BTreeSet::new();
     for session in listed {
-        match crate::sessions::current_view(sessions, &session, &work).await {
+        match crate::sessions::current_view(sessions, &session, &inputs).await {
             Ok(view) => {
                 states.insert(view.id.clone(), state_of(&view));
             }

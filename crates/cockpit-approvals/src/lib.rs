@@ -26,9 +26,10 @@ pub use restart::ended_after_restart;
 pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
 pub use runs::{
     APPROVAL_GRACE_SECONDS, Approved, Interrupted, RunAsk, RunId, RunRequest, RunResult, RunState,
-    action_digest, approve_run, ask_run, decline_run, edit_run, finish_run, interrupted_runs,
-    may_ask, open_runs, queue_order, reconcile_run, record_not_run, record_outcome_unknown,
-    resolve_cwd, run_request, run_status, run_status_if_fresh, shown_run, start_run,
+    StartAsk, StartSession, action_digest, approve_run, ask_run, ask_start, decline_run, edit_run,
+    finish_run, finish_start, interrupted_runs, may_ask, open_runs, queue_order, reconcile_run,
+    record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
+    run_status_if_fresh, shown_run, start_run, validate_start,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an
@@ -128,6 +129,15 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 4,
             sql: "ALTER TABLE approvals_runs ADD COLUMN asking_grant INTEGER;
             ALTER TABLE approvals_guides ADD COLUMN asking_grant INTEGER;",
+        },
+        // #410: a coordinator's request to start a session waits in the same queue; the
+        // daemon starts it once approved instead of running its command, which describes it.
+        Migration {
+            version: 5,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'command'
+                CHECK (kind IN ('command', 'start-session'));
+            ALTER TABLE approvals_runs ADD COLUMN start_prompt TEXT;
+            ALTER TABLE approvals_runs ADD COLUMN start_clone TEXT CHECK (start_clone <> '');",
         },
     ],
 };

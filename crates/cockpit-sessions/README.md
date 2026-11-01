@@ -75,6 +75,9 @@ stopped in the middle of one finishes or repairs it at its next start.
   so a session launched by an older daemon gains a permission added since (#284)
   (`docs/decisions/2026-10-31-31-self-state-grant.md`,
   `docs/decisions/2026-10-31-270-self-run-commands-grant.md`).
+  The same move revokes the session's coordinator grants (#410).
+- **Collaborator messages** (#410). `submit` takes who addresses the agent (`Addressed`): a
+  coordinator's message is typed as a collaborator's, never as the owner's.
 - **Exits.** An agent observed gone ends its session with the reason; `resume` reopens it.
 - **Stops are confirmed.** A stop whose termination `cockpit-processes` cannot confirm puts
   the session back to `running` with the reason and answers an error; it is never recorded

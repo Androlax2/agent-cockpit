@@ -95,6 +95,21 @@ not share code.
 - The asking agent's project is the registered checkout holding its working directory,
   read from `/proc` after its process tree was verified, until sessions record it (#31).
 
+## Coordinator kit (#410)
+
+- On the agent socket, `agent-sessions`, `agent-message` and `agent-start` each identify the
+  sender first and refuse without its coordinator grant, naming the grant and that only the
+  owner gives it. The owner gives, revokes and reads them (`session-grant`, `session-revoke`,
+  `session-grants`) on `daemon.sock` only.
+- A message is audited and queued in the `cockpit-messaging` outbox in one transaction. A
+  supervised loop (`coordinator-messages`) types it at the target's next prompt as a
+  collaborator's message, retrying while its agent cannot take input (a dialog, no report
+  yet), for at most 24 hours. Provider-native delivery is #431.
+- A start that needs confirmation joins the `ask run` queue; approving it starts the session
+  and records it. One without confirmation starts at once, within the grant's hourly cap.
+- Decided in `docs/decisions/2026-11-01-410-coordinator-kit.md`; proven end to end by
+  `tests/coordinator_kit.rs`.
+
 ## Change feed (#41)
 
 - `subscribe` is granted only on `daemon.sock`, to a peer that negotiated `change-feed`; the
@@ -195,6 +210,9 @@ builds it only when asked and no release installs it.
 
 - `tests/startup.rs`: the binary on a clean home, the second daemon, private modes, the
   macOS layout, a stale socket after `kill -9`, reconcile before accept.
+- `tests/coordinator_kit.rs`: issue #410's acceptance with the fake provider: every
+  coordinator verb refused without its grant, then a coordinator that sees a worker's
+  question, messages it and starts a worker the owner approves, audited with both sessions.
 - `tests/protocol.rs`: handshake, version refusal, framing and `not-negotiated`, through the
   binary's socket.
 - `tests/agent_channel.rs`: issue #32's acceptance on the binary's sockets: a launched

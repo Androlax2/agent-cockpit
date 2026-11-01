@@ -284,6 +284,17 @@ pub struct RestartAll {
     pub failed: Vec<(SessionId, Error)>,
 }
 
+/// What a message typed into an agent's terminal is to that agent ([`crate::Sessions::submit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Addressed {
+    /// Work for an agent at its prompt. Any open question holds it back: the agent would
+    /// read it as the answer.
+    Work,
+    /// A collaborator's message (#410), which may answer the agent's own open question. A
+    /// dialog still holds it back.
+    Collaborator,
+}
+
 /// What wakes an asleep session; recorded as the reason of its move to launching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeCause {

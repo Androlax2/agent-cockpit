@@ -22,8 +22,9 @@ use cockpit_turso::Database;
 use crate::model::{LaunchPurpose, validate_link};
 use crate::store::{self, NewSession};
 use crate::{
-    AgentState, Error, LaunchKind, RestartAll, Restored, Session, SessionId, SessionReport,
-    SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
+    Addressed, AgentState, Error, LaunchKind, QuestionSource, RestartAll, Restored, Session,
+    SessionId, SessionReport, SessionState, Settings, SleepRefusal, StartRequest, StopTarget,
+    TickReport, WakeCause,
 };
 
 /// The variable that hands the agent its one-time launch token (report 17).
@@ -631,7 +632,13 @@ impl Sessions {
     /// for the agent's activity as its current launch last reported it (#385). Every error
     /// but [`Error::TypingUnconfirmed`] means nothing was typed. It never waits behind
     /// another operation on the session: one under way refuses it, so a caller retries.
-    pub async fn submit(&self, id: &SessionId, message: &str) -> Result<(), Error> {
+    /// `addressed` says whether the message may answer the agent's own open question.
+    pub async fn submit(
+        &self,
+        id: &SessionId,
+        message: &str,
+        addressed: Addressed,
+    ) -> Result<(), Error> {
         let Ok(guard) = Arc::clone(&self.session_lock(id).operation).try_lock_owned() else {
             return Err(Error::SessionBusy {
                 session: id.clone(),
@@ -655,7 +662,9 @@ impl Sessions {
         let activity = report
             .filter(|report| report.launch == Some(launch.number))
             .and_then(|report| {
-                if report.needs_input.is_some() {
+                let is_answerable = addressed == Addressed::Collaborator
+                    && report.question_source == Some(QuestionSource::Agent);
+                if report.needs_input.is_some() && !is_answerable {
                     return Some(Activity::NeedsYou);
                 }
                 match report.state? {
@@ -1898,15 +1907,34 @@ async fn release(
     }
 }
 
-/// What an ended session gives up, in the transaction that ends it: its clone and its self
-/// grants. Every move to `ended` calls this.
+/// What an ended session gives up, in the transaction that ends it: its clone, its self
+/// grants and the coordinator grants the owner gave it (#410). Every move to `ended` calls
+/// this.
 async fn give_up_on_end(
     write: &cockpit_turso::WriteTransaction<'_>,
     ended: &Session,
 ) -> Result<(), Error> {
     release(write, ended).await?;
     store::clear_restart_request(write, &ended.id).await?;
-    revoke_self_grants(write, &ended.id).await
+    revoke_self_grants(write, &ended.id).await?;
+    revoke_coordinator_grants(write, &ended.id).await
+}
+
+/// Revokes every coordinator grant the session holds: an ended session coordinates nothing,
+/// and its card no longer shows them.
+async fn revoke_coordinator_grants(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    id: &SessionId,
+) -> Result<(), Error> {
+    let session = authorization_session(id)?;
+    let coordinator_grants = cockpit_authorization::active_grants(write, &session)
+        .await?
+        .into_iter()
+        .filter(|grant| grant.permission.is_coordinator());
+    for grant in coordinator_grants {
+        cockpit_authorization::revoke(write, grant.id).await?;
+    }
+    Ok(())
 }
 
 /// Grants the session the [`SELF_PERMISSIONS`] over itself; a grant it holds is kept as it

@@ -27,6 +27,8 @@ the capability crates whose verbs must work without the daemon, listed in
 | `cockpit doctor [--project DIR]`: one line per requirement with its status (report 09) and a `next:` line when it is not available; exits 1 only when one is `missing-prerequisite` or `unsupported` (#50) | partly: without a daemon it reads the configuration and names the daemon as missing | `cockpit-readiness`, served by the daemon |
 | `cockpit version [--all]`: version and source revision; `--all` adds the release bundle's manifest (#96) | yes | `cockpit-cli` |
 | `cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]`, `list [--ended]`, `restart ID\|--all`, `sleep\|wake\|resume\|end ID`, `end --finished` (every session the task list says finished, #157), `link ID URL` | no | `cockpit-sessions` |
+| `cockpit session grant ID observe-sessions\|message-sessions\|start-sessions [--per-hour N] [--without-confirmation]`, `revoke ID PERMISSION`, `grants ID` (the grants and the audit, newest first), #410 | no | `cockpit-authorization`, through the daemon |
+| `cockpit agent sessions [--watch]`, `message ID TEXT`, `start DIR [--prompt TEXT] [--clone BRANCH]` (agent socket, each under its coordinator grant; a confirmed start waits like `ask run`), #410 | no | the daemon's coordinator kit |
 | `cockpit session show ID` (in the manager's viewer, waking it when asleep) | no | the daemon's manager session |
 | `cockpit provider list` (the names `--agent` takes, whether each resumes and reports `events`) | no | the daemon's wiring |
 | `cockpit tui` (opens the manager session with the `cockpit-tui` installed beside `cockpit`, then attaches to it) | no | the daemon's manager session |

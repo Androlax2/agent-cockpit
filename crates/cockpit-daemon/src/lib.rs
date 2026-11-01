@@ -3,6 +3,7 @@
 mod agent;
 mod agent_context;
 mod approvals;
+mod coordination;
 mod error;
 mod feed;
 mod instance;
@@ -136,6 +137,8 @@ pub struct Capabilities {
     pub tmux: Result<String, String>,
     /// Every provider the start tried, wired or not, as readiness reports them.
     pub provider_facts: Vec<cockpit_readiness::ProviderFacts>,
+    /// Notified when a coordinator queues a message, to wake its delivery (#410).
+    pub messages_queued: Arc<tokio::sync::Notify>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -149,6 +152,7 @@ pub struct Daemon {
     retaining: tokio::task::JoinHandle<()>,
     sweeping: tokio::task::JoinHandle<()>,
     dispatching: tokio::task::JoinHandle<()>,
+    delivering: tokio::task::JoinHandle<()>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
 }
@@ -290,6 +294,16 @@ impl Instance {
         let listener = Arc::new(server::bind(&socket_path)?);
         let agent_listener = Arc::new(server::bind(&agent_socket_path)?);
         let limits = options.limits;
+        let messages_queued = Arc::new(tokio::sync::Notify::new());
+        let delivered = coordination::Context {
+            database: Arc::clone(&database),
+            sessions: Arc::clone(&sessions),
+            runner: runner.clone(),
+            queued: Arc::clone(&messages_queued),
+        };
+        let delivering = tokio::spawn(supervisor::supervise("coordinator-messages", move || {
+            coordination::deliver_forever(delivered.clone())
+        }));
         let shared = Arc::new(server::Shared {
             owner_uid: self.owner_uid,
             limits,
@@ -309,6 +323,7 @@ impl Instance {
                 sandbox,
                 tmux: tmux_readiness,
                 provider_facts,
+                messages_queued,
             }),
         });
         let scheduled = scheduling::Context {
@@ -364,6 +379,7 @@ impl Instance {
             retaining,
             sweeping,
             dispatching,
+            delivering,
             _database: database,
             _instance: self,
         })
@@ -476,5 +492,6 @@ impl Drop for Daemon {
         self.retaining.abort();
         self.sweeping.abort();
         self.dispatching.abort();
+        self.delivering.abort();
     }
 }

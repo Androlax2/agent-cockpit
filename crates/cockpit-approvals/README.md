@@ -42,6 +42,12 @@ request here, so nothing is re-read from the sandbox.
    started is `not-run`, ended is `outcome-unknown`, still running stays `running` until
    `Runner::wait_until_ended` sees its end (`ended_after_restart`). None is repeated.
 
+A `start-session` request (#410) is filed by `ask_start` under the asker's `start-sessions`
+grant, never through a shell: approving it hands the start back to the daemon, which starts
+the session and records it with `finish_start`. It shares the queue, the revision, digest and
+grace rules, and the asked-under check (`AskedUnder::StartSessions`). A restart marks an
+approved start never finished `not-run`.
+
 `queue_order` puts what the owner is asked in order: a running command waiting for input
 first, then asking requests oldest first.
 
@@ -69,6 +75,7 @@ bound to its index), reports being stuck there (`report_stuck`) or closes the gu
 - `tests/runs.rs`: the run state machine on a real state database, report 04's
   stale-approval walkthrough and the restart decisions from each execution phase included.
 - `tests/guides.rs`: the guide format and step answers.
+- `tests/starts.rs`: start-session requests: asked under the grant, approved, finished (#410).
 - Mutations return the request as it reads after them, without reading it again; the tests
   compare the returned value with a fresh read.
 - `tests/runner.rs`: a session leader that fails leaves the run not run with what it printed;

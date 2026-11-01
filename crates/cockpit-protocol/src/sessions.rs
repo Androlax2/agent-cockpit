@@ -4,6 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::coordination::InboundMessageView;
 use crate::error::ProtocolError;
 
 /// The owner's desktop session variables, as `desktop-session-import` carries them and the
@@ -47,6 +48,13 @@ pub struct SessionView {
     /// its latest launch (#157, decided in #201; #226). Never read from the agent's own state.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub finished: bool,
+    /// The coordinator grants it holds (#410): `observe-sessions`, `message-sessions`,
+    /// `start-sessions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coordinator_grants: Vec<String>,
+    /// The latest message a coordinator queued to it, with the sender named (#410).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_message: Option<InboundMessageView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

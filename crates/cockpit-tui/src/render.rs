@@ -248,7 +248,32 @@ fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> 
     if !details.is_empty() {
         card.push(format!("{CARD_INDENT}{}", details.join(" · ")));
     }
+    if let Some(coordination) = coordination_line(session) {
+        card.push(format!("{CARD_INDENT}{coordination}"));
+    }
     card
+}
+
+/// The coordinator grants a session holds and the latest message a coordinator queued to it,
+/// with its sender (#410): `grants observe,message · ✉ s1a2 (received): "text"`. A plain line
+/// until the card has a design for them.
+fn coordination_line(session: &SessionView) -> Option<String> {
+    let grants = (!session.coordinator_grants.is_empty()).then(|| {
+        let names: Vec<&str> = session
+            .coordinator_grants
+            .iter()
+            .map(|grant| grant.strip_suffix("-sessions").unwrap_or(grant))
+            .collect();
+        format!("grants {}", names.join(","))
+    });
+    let inbound = session.inbound_message.as_ref().map(|message| {
+        format!(
+            "✉ {} ({}): {:?}",
+            message.from, message.delivery, message.text
+        )
+    });
+    let parts: Vec<String> = grants.into_iter().chain(inbound).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {

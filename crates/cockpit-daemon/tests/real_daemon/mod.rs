@@ -54,6 +54,15 @@ pub const ASK_GUIDE_PROJECT: &str = "ask-guide";
 /// `approvals` topics, checks the skill under `$COCKPIT_INSTRUCTIONS` is readable, and writes
 /// everything it read to [`Home::onboard_log`].
 pub const ONBOARD_PROJECT: &str = "onboard";
+/// A project of this name runs an agent that runs, in order, each `<n>.sh` the test drops
+/// in its `.agent` directory (from 0), writing what it printed and `exit=<code>` to `<n>.out`
+/// (#410): a coordinator the test drives through the real `cockpit`.
+pub const COMMANDED_PROJECT: &str = "commanded";
+/// A project of this name runs an agent that reports [`ASKED_QUESTION`] while it waits at its
+/// prompt, then appends each line typed into its terminal to `inbox.log` in its directory.
+pub const QUESTION_PROJECT: &str = "question";
+/// What the [`QUESTION_PROJECT`] agent asks.
+pub const ASKED_QUESTION: &str = "Which branch should I base the fix on?";
 /// What the [`ASK_RUN_PROJECT`] agent asks to run.
 pub const ASKED_COMMAND: &str = "echo asked from the agent";
 /// The guide the [`ASK_GUIDE_PROJECT`] agent hands the owner, one step.
@@ -82,6 +91,20 @@ case "${PWD##*/}" in
       "${DISPLAY-unset}" "${XAUTHORITY-unset}" "${WAYLAND_DISPLAY-unset}" \
       "${DBUS_SESSION_BUS_ADDRESS-unset}" \
       > '@ENVIRONMENT_LOG@.partial' && mv '@ENVIRONMENT_LOG@.partial' '@ENVIRONMENT_LOG@'
+    exec sleep 3600 ;;
+  @COMMANDED@) n=0
+    while :; do
+      if [ -f ".agent/$n.sh" ]; then
+        sh ".agent/$n.sh" > ".agent/$n.partial" 2>&1
+        printf 'exit=%s\n' "$?" >> ".agent/$n.partial"
+        mv ".agent/$n.partial" ".agent/$n.out"
+        n=$((n + 1))
+      fi
+      sleep 0.1
+    done ;;
+  @QUESTION@) '@COCKPIT@' agent report --state waiting --needs-input '@ASKED_QUESTION_TEXT@' \
+      >> '@REPORT_LOG@' 2>&1
+    while IFS= read -r line; do printf '%s\n' "$line" >> inbox.log; done
     exec sleep 3600 ;;
   @ONBOARD@) { '@COCKPIT@' brief; '@COCKPIT@' docs; for topic in workflow checks approvals; do
       '@COCKPIT@' docs "$topic"; done
@@ -160,6 +183,9 @@ impl Home {
                 .replace("@ASKED_COMMAND@", ASKED_COMMAND)
                 .replace("@ASKED_GUIDE@", ASKED_GUIDE)
                 .replace("@ASK_LOG@", &utf8(&home.ask_log()))
+                .replace("@COMMANDED@", COMMANDED_PROJECT)
+                .replace("@QUESTION@", QUESTION_PROJECT)
+                .replace("@ASKED_QUESTION_TEXT@", ASKED_QUESTION)
                 .replace("@ONBOARD@", ONBOARD_PROJECT)
                 .replace("@ONBOARD_LOG@", &utf8(&home.onboard_log())),
         )
@@ -411,6 +437,39 @@ impl Home {
         match added {
             Ok(Reply::ProjectAdded { project, .. }) => (root, project.name),
             other => panic!("project-add {name}: {other:?}"),
+        }
+    }
+}
+
+impl Home {
+    /// Hands the [`COMMANDED_PROJECT`] agent working in `root` its next shell line; returns
+    /// its number, which [`Home::agent_output`] takes.
+    pub fn command_agent(&self, root: &Path, line: &str) -> usize {
+        let dir = root.join(".agent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let number = (0..)
+            .find(|number| !dir.join(format!("{number}.sh")).exists())
+            .unwrap();
+        let staged = dir.join(format!("{number}.staged"));
+        std::fs::write(&staged, format!("{line}\n")).unwrap();
+        std::fs::rename(&staged, dir.join(format!("{number}.sh"))).unwrap();
+        number
+    }
+
+    /// What the [`COMMANDED_PROJECT`] agent's line `number` printed, ending `exit=<code>`.
+    pub async fn agent_output(&self, root: &Path, number: usize) -> String {
+        let output = root.join(".agent").join(format!("{number}.out"));
+        let deadline = Instant::now() + SETTLED_WITHIN;
+        loop {
+            if let Ok(printed) = std::fs::read_to_string(&output) {
+                return printed;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the agent in {} did not finish line {number}",
+                root.display()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 }

@@ -116,7 +116,7 @@ fn from_wire(report: cockpit_protocol::AgentReport) -> Report {
     }
 }
 
-fn to_wire(report: SessionReport) -> cockpit_protocol::SessionReport {
+pub(crate) fn to_wire(report: SessionReport) -> cockpit_protocol::SessionReport {
     cockpit_protocol::SessionReport {
         session: report.session.as_str().to_owned(),
         state: report.state.map(|state| match state {

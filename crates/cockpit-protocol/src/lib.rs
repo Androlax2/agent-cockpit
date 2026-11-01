@@ -3,6 +3,7 @@
 mod agent;
 mod approvals;
 mod change_feed;
+mod coordination;
 mod error;
 mod handshake;
 mod instructions;
@@ -27,6 +28,9 @@ pub use approvals::{
 pub use change_feed::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
     EntityRevision, FeedPosition,
+};
+pub use coordination::{
+    CoordinatorAuditView, CoordinatorGrantView, InboundMessageView, ObservedSessionView,
 };
 pub use error::{ErrorCode, ProtocolError, Unblock, UnblockedBy};
 pub use handshake::{
