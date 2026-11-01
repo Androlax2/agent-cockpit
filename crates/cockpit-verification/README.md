@@ -55,12 +55,13 @@ stale the moment it changes; each file is hashed at most once per evaluation. Th
 `passed` when every required check passed, `failed` when one failed, and `open`
 otherwise; each check that did not pass names its next action. An empty gate, a check
 required twice or a checkout that does not resolve is refused. Paths are `/`-separated
-and normalized, so one file has one spelling.
+and normalized, so one file has one spelling. Each path is opened one segment at a time below
+the checkout and never through a symbolic link, so no digest of a file outside it is taken.
 
 ## Dependency edges
 
-- Depends on: `cockpit-turso` (transactions, migrations) and `sha2` (artifact digests, the
-  pin `cockpit-approvals` carries).
+- Depends on: `cockpit-turso` (transactions, migrations), `sha2` (artifact digests, the
+  pin `cockpit-approvals` carries) and `rustix` (`openat` with `O_NOFOLLOW`, the workspace's pin).
 - Never on `cockpit-processes`, `cockpit-sessions`, `cockpit-workflows`, `cockpit-tmux`, the
   scheduler or the wire types (`cockpit-workspace-rules/tests/crate_graph.rs`, rules
   `verification -> processes` and `verification -> sessions/workflows/wire types`).
@@ -70,5 +71,7 @@ and normalized, so one file has one spelling.
 
 - `tests/gate.rs`: applicability (edited, removed artifacts; changed check definition; other
   head or uncommitted changes), claims, gate outcomes and next actions.
+- `tests/links.rs` and the unit tests in `src/artifacts.rs`: symbolic links are refused,
+  including one swapped in while a path is being opened.
 - `tests/receipts.rs`: what a receipt keeps, bounded output, duplicate delivery, restart,
   and the requests refused at the boundary.
