@@ -112,6 +112,20 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
         from: Sources::Named(&["cockpit-verification"]),
         to: &["cockpit-processes"],
     },
+    // Verification evaluates evidence: it never launches agents or terminals, never advances
+    // a workflow, and the daemon converts its answers to wire types (#40).
+    ForbiddenEdge {
+        rule: "verification -> sessions/workflows/wire types",
+        from: Sources::Named(&["cockpit-verification"]),
+        to: &[
+            "cockpit-sessions",
+            "cockpit-tmux",
+            "cockpit-workflows",
+            "cockpit-protocol",
+            "cockpit-client",
+            "cockpit-agent-channel",
+        ],
+    },
     // Sessions and tasks occupy checkouts; projects answering about checkouts must not call
     // back up into them (#28).
     ForbiddenEdge {
@@ -482,6 +496,21 @@ fn each_rule_catches_its_forbidden_edge() {
             "verification -> processes",
             "cockpit-verification",
             "cockpit-processes",
+        ),
+        (
+            "verification -> sessions/workflows/wire types",
+            "cockpit-verification",
+            "cockpit-sessions",
+        ),
+        (
+            "verification -> sessions/workflows/wire types",
+            "cockpit-verification",
+            "cockpit-workflows",
+        ),
+        (
+            "verification -> sessions/workflows/wire types",
+            "cockpit-verification",
+            "cockpit-protocol",
         ),
         (
             "projects -> sessions/tasks",

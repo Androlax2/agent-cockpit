@@ -586,6 +586,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-verification"
+version = "0.1.0"
+dependencies = [
+ "cockpit-turso",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cockpit-workspace-rules"
 version = "0.1.0"
 
