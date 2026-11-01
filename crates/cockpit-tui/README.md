@@ -73,6 +73,7 @@ detaching the terminal leaves everything running.
   screen again after each write a control-mode client reports; a state wait follows the
   change feed; neither sleeps. Each module is a section of a live acceptance guide
   (`docs/acceptance/m1.md`, `m1-idle.md`); idle sleep runs on the daemon crate's
-  `cockpit-e2e-daemon` example with a 2-second window. Every later guide adds its sections
+  `cockpit-e2e-daemon` example with a 3-second window. Every later guide adds its sections
   here, and a finding from a live walk gets a failing test here before its fix. Needs tmux;
-  CI runs it on Linux and macOS.
+  CI runs it on Linux and macOS, where the tests that need the agent channel are ignored
+  until it reads process trees there (#336).

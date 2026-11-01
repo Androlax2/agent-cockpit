@@ -79,9 +79,10 @@ fn the_tui_says_the_daemon_is_gone_and_reconnects_when_it_returns() {
     let mut cockpit = Cockpit::start();
     let session = cockpit.shown_session();
     cockpit.kill_daemon();
-    cockpit.wait_for("change feed:");
+    // The status line names whichever request failed first: the feed or a poll.
+    cockpit.wait_for("cannot connect");
     cockpit.start_daemon();
-    cockpit.wait_for_gone("change feed:");
+    cockpit.wait_for_gone("cannot connect");
     cockpit.wait_for(&format!("{session}  claude  running"));
 }
 

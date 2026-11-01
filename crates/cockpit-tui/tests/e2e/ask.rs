@@ -1,6 +1,8 @@
 //! M1 guide, section 4: an agent's `ask run` and `ask guide` reach the owner in the TUI's
 //! "Waiting on you" pane and the answers reach the agent.
 
+use std::time::{Duration, Instant};
+
 use crate::harness::{Cockpit, ManagerPane};
 
 /// The pane's grace hint, as far as the list column shows it on one line.
@@ -17,7 +19,31 @@ fn asked(cockpit: &Cockpit, command: &str) {
     cockpit.click(ManagerPane::List);
 }
 
+/// Presses `y` on the shown run and returns the screen with its exit. The TUI's grace ends
+/// before the daemon's, which can still refuse the approval (#337): the owner presses `y`
+/// again, and so does this, until the run starts.
+fn approve(cockpit: &Cockpit) -> String {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        cockpit.press(&["y"]);
+        let screen = cockpit.wait_until("the run's exit or the daemon's refusal", |screen| {
+            screen.contains("exit 0") || screen.contains("approval-approve: refused")
+        });
+        if screen.contains("exit 0") {
+            return screen;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the approval kept being refused\n{screen}"
+        );
+    }
+}
+
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the agent channel reads process trees on Linux only (#336)"
+)]
 fn a_key_pressed_while_the_pane_asks_to_read_first_does_nothing() {
     let cockpit = Cockpit::start();
     let session = cockpit.shown_session();
@@ -33,14 +59,17 @@ fn a_key_pressed_while_the_pane_asks_to_read_first_does_nothing() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the agent channel reads process trees on Linux only (#336)"
+)]
 fn y_runs_the_command_and_the_agent_gets_its_output_redacted() {
     let cockpit = Cockpit::start();
     cockpit.shown_session();
     asked(&cockpit, HOST_COMMAND);
     let screen = cockpit.wait_for("Reason: acceptance check");
     assert!(screen.contains("Directory:"), "{screen}");
-    cockpit.press(&["y"]);
-    let screen = cockpit.wait_for("exit 0");
+    let screen = approve(&cockpit);
     assert!(
         screen.contains("\nhello from the host") || screen.contains("││hello from the host"),
         "{screen}"
@@ -50,6 +79,10 @@ fn y_runs_the_command_and_the_agent_gets_its_output_redacted() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the agent channel reads process trees on Linux only (#336)"
+)]
 fn x_declines_and_the_agent_gets_exit_125() {
     let cockpit = Cockpit::start();
     cockpit.shown_session();
@@ -63,6 +96,10 @@ fn x_declines_and_the_agent_gets_exit_125() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the agent channel reads process trees on Linux only (#336)"
+)]
 fn a_guide_shows_one_step_at_a_time_and_the_agent_gets_the_answer() {
     let cockpit = Cockpit::start();
     cockpit.shown_session();

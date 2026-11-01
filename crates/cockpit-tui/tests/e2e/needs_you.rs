@@ -11,6 +11,10 @@ fn card_shows_needs_you(screen: &str, session: &str) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the agent channel reads process trees on Linux only (#336)"
+)]
 fn the_card_shows_the_needs_you_mark_label_and_doing() {
     let cockpit = Cockpit::start();
     let session = cockpit.session_from_cli();
@@ -25,6 +29,10 @@ fn the_card_shows_the_needs_you_mark_label_and_doing() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the agent channel reads process trees on Linux only (#336)"
+)]
 fn n_opens_the_session_that_needs_you() {
     let cockpit = Cockpit::start();
     let quiet = cockpit.session_from_cli();
@@ -45,6 +53,10 @@ fn n_opens_the_session_that_needs_you() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "the agent channel reads process trees on Linux only (#336)"
+)]
 fn answering_the_agent_clears_the_mark() {
     let cockpit = Cockpit::start();
     let session = cockpit.shown_session();

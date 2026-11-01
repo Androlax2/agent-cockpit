@@ -351,17 +351,18 @@ impl Cockpit {
             command.args(arguments);
             command
         };
+        let (columns, rows) = (COLUMNS.to_string(), ROWS.to_string());
         // `cockpit tui` refuses to nest inside the terminal's own tmux, as it would for an
         // owner: their terminal is not a tmux pane.
-        let started = tmux(&[
+        let new_session = [
             "new-session",
             "-d",
             "-s",
             "owner",
             "-x",
-            &COLUMNS.to_string(),
+            &columns,
             "-y",
-            &ROWS.to_string(),
+            &rows,
             "--",
             "env",
             "-u",
@@ -370,14 +371,15 @@ impl Cockpit {
             "TMUX_PANE",
             programs().cockpit.to_str().unwrap(),
             "tui",
-        ])
-        .output()
-        .expect("tmux runs");
-        assert!(
-            started.status.success(),
-            "the test terminal did not start: {}",
-            String::from_utf8_lossy(&started.stderr)
-        );
+        ];
+        let started = tmux(&new_session).output().expect("tmux runs");
+        if !started.status.success() {
+            panic!(
+                "the test terminal did not start: {}{}",
+                String::from_utf8_lossy(&started.stderr),
+                self.terminal_start_log(&config, &new_session)
+            );
+        }
         let mut watcher = tmux(&["-C", "attach-session", "-t", "=owner", "-f", "ignore-size"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -420,6 +422,41 @@ impl Cockpit {
             .map(str::trim_end)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// For a terminal that did not start: the tmux version, and the logs of the same start
+    /// retried once with tmux's own logging, on a socket of its own.
+    fn terminal_start_log(&self, config: &Path, new_session: &[&str]) -> String {
+        let logs = self.root.join("terminal-start-logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let version = self.command(Path::new("tmux")).arg("-V").output();
+        let retried = self
+            .outer_tmux(&logs.join("retry.sock"), config)
+            .arg("-vv")
+            .args(new_session)
+            .current_dir(&logs)
+            .output();
+        let mut report = format!(
+            "\n--- tmux -V ---\n{}\n--- retried with -vv ---\n{retried:?}\n",
+            version.map_or_else(
+                |error| error.to_string(),
+                |output| String::from_utf8_lossy(&output.stdout).into_owned()
+            ),
+        );
+        for entry in std::fs::read_dir(&logs).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|extension| extension == "log") {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                let tail = &lines[lines.len().saturating_sub(60)..];
+                report += &format!("--- {} ---\n{}\n", path.display(), tail.join("\n"));
+            }
+        }
+        let _ = self
+            .outer_tmux(&logs.join("retry.sock"), config)
+            .arg("kill-server")
+            .output();
+        report
     }
 
     /// tmux on the owner's terminal server.
