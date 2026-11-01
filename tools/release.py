@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """The release workflows' version, packaging and gate steps (docs/RELEASING.md, issue #96).
 
-Usage: release.py check-tag TAG --main REF --m3-gate open|closed --m5-gate open|closed
-       release.py next-prerelease --main REF --m3-gate open|closed --m5-gate open|closed
+Usage: release.py check-tag TAG --main REF --alpha-checklist open|closed
+                             --beta-checklist open|closed
+       release.py next-prerelease --main REF --alpha-checklist open|closed
+                                  --beta-checklist open|closed
        release.py dry-run-version --main REF
        release.py stamp VERSION
        release.py package --version V --channel C --platform P --revision SHA
@@ -35,11 +37,12 @@ ROOT = Path(__file__).resolve().parents[1]
 # Before the first stable tag, pre-releases count from the greenfield bootstrap (#18, #94).
 BOOTSTRAP_COMMIT = "d2d860474e55d0e6f815ee33e50162351bbb1495"
 CORE_PATTERN = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+# The release milestones' checklist issues that open each pre-release channel (#389).
+ALPHA_CHECKLIST = "the Alpha 1 checklist (#52)"
+BETA_CHECKLIST = "the Beta 1 checklist (#57)"
 TAG_PATTERN = re.compile(
     rf"v(?P<core>{CORE_PATTERN})(?:-(?P<channel>alpha|beta)\.(?P<number>[1-9][0-9]*))?"
 )
-# git-cliff's --tag-pattern for a stable release's notes.
-STABLE_TAG_REGEX = rf"^v{CORE_PATTERN}$"
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-universal")
 # Programs the daemon runs from its own directory, so they ship in bin/ beside it (#185).
 HELPERS = ("cockpit-claude-hook",)
@@ -163,9 +166,7 @@ def newest_lower(tags, candidate):
 
 
 def notes_start(parsed, tags, base):
-    """Where the release notes start (RELEASING.md, Changelog)."""
-    if parsed["channel"] == "stable":
-        return base["ref"]
+    """Where a pre-release's notes start (RELEASING.md, Changelog)."""
     # refuse_released_or_behind guarantees the commit descends from it.
     previous = newest_lower(tags, parsed)
     return previous["tag"] if previous else base["ref"]
@@ -176,49 +177,38 @@ def refuse_off_main(commit, main_ref, cwd):
         raise Refusal(f"{commit[:12]} is not on {main_ref}")
 
 
-def check_tag(tag, main_ref, m3_gate, m5_gate, cwd):
+def check_tag(tag, main_ref, alpha_checklist, beta_checklist, cwd):
     """The release workflow's first step: every rule a tag must meet, however it was made."""
     parsed = parse_tag(tag)
+    if parsed["channel"] == "stable":
+        raise Refusal(f"{tag}: no stable release and no 1.0 until Theo decides (#389)")
+    refuse_channel(parsed, alpha_checklist, beta_checklist)
     refuse_shallow(cwd)
     commit = git("rev-parse", f"{tag}^{{commit}}", cwd=cwd)
     refuse_off_main(commit, main_ref, cwd)
     tags = [other for other in release_tags(cwd, main_ref) if other["tag"] != tag]
     base = base_of(tags, cwd)
     version_at_tag = workspace_version(cwd, commit)
-    outputs = {
+    refuse_prerelease(parsed, commit, version_at_tag, tags, base, cwd)
+    return {
         "tag": tag,
         "channel": parsed["channel"],
         "version": tag.removeprefix("v"),
-        "prerelease": "false" if parsed["channel"] == "stable" else "true",
+        "prerelease": "true",
         "revision": commit,
         "notes_range": f"{notes_start(parsed, tags, base)}..{tag}",
     }
-    if parsed["channel"] == "stable":
-        refuse_stable(parsed, version_at_tag, base, m5_gate, commit)
-        refuse_released_or_behind(parsed, commit, tags, cwd)
-        # One section since the previous stable: its pre-releases are not boundaries.
-        outputs["notes_tag_pattern"] = STABLE_TAG_REGEX
-    else:
-        expected_channel = prerelease_channel(m3_gate, m5_gate)
-        if parsed["channel"] != expected_channel:
-            raise Refusal(
-                f"{tag}: the gates make this an {expected_channel}, not a {parsed['channel']}"
-            )
-        refuse_prerelease(parsed, commit, version_at_tag, tags, base, cwd)
-    return outputs
 
 
-def refuse_stable(parsed, version_at_tag, base, m5_gate, commit):
+def refuse_channel(parsed, alpha_checklist, beta_checklist):
+    """A pre-release tag's channel must be the one the checklists open."""
     tag = parsed["tag"]
-    if m5_gate == "open":
-        raise Refusal(f"{tag}: no stable release while the M5 gate issue (#66) is open")
-    if version_at_tag != parsed["core"]:
-        raise Refusal(
-            f"{tag}: the workspace version at {commit[:12]} is {version_at_tag}; "
-            "a stable tag must equal it"
-        )
-    if base["is_stable_tag"] and parse_core(parsed["core"]) <= parse_core(base["version"]):
-        raise Refusal(f"{tag}: not above the previous stable {base['ref']}")
+    if parsed["channel"] == "beta" and beta_checklist == "open":
+        raise Refusal(f"{tag}: no beta while {BETA_CHECKLIST} is open")
+    if parsed["channel"] == "alpha" and beta_checklist == "closed":
+        raise Refusal(f"{tag}: no alpha once {BETA_CHECKLIST} is closed; pre-releases are betas")
+    if parsed["channel"] == "alpha" and alpha_checklist == "open":
+        raise Refusal(f"{tag}: no alpha while {ALPHA_CHECKLIST} is open")
 
 
 def refuse_released_or_behind(candidate, commit, tags, cwd):
@@ -272,17 +262,17 @@ def refuse_core_against_base(core, base):
         )
 
 
-def prerelease_channel(m3_gate, m5_gate):
-    if m5_gate == "closed":
+def prerelease_channel(alpha_checklist, beta_checklist):
+    if beta_checklist == "closed":
         return "beta"
-    if m3_gate == "open":
-        raise Refusal("no alpha while the M3 gate issue (#52) is open")
+    if alpha_checklist == "open":
+        raise Refusal(f"no alpha while {ALPHA_CHECKLIST} is open")
     return "alpha"
 
 
-def next_prerelease(main_ref, m3_gate, m5_gate, cwd):
+def next_prerelease(main_ref, alpha_checklist, beta_checklist, cwd):
     """The tag the dispatched prerelease workflow cuts on HEAD, after every refusal."""
-    channel = prerelease_channel(m3_gate, m5_gate)
+    channel = prerelease_channel(alpha_checklist, beta_checklist)
     refuse_shallow(cwd)
     commit = git("rev-parse", "HEAD", cwd=cwd)
     refuse_off_main(commit, main_ref, cwd)
@@ -565,8 +555,8 @@ def parse_arguments(arguments):
     check_command.add_argument("tag")
     next_command = commands.add_parser("next-prerelease")
     for gated_command in (check_command, next_command):
-        for gate in ("--m3-gate", "--m5-gate"):
-            gated_command.add_argument(gate, choices=("open", "closed"), required=True)
+        for checklist in ("--alpha-checklist", "--beta-checklist"):
+            gated_command.add_argument(checklist, choices=("open", "closed"), required=True)
     dry_run_command = commands.add_parser("dry-run-version")
     for command in (check_command, next_command, dry_run_command):
         command.add_argument("--main", required=True)
@@ -586,10 +576,18 @@ def main(arguments, cwd=ROOT):
     try:
         if options.command == "check-tag":
             print_outputs(
-                check_tag(options.tag, options.main, options.m3_gate, options.m5_gate, cwd)
+                check_tag(
+                    options.tag,
+                    options.main,
+                    options.alpha_checklist,
+                    options.beta_checklist,
+                    cwd,
+                )
             )
         elif options.command == "next-prerelease":
-            print_outputs(next_prerelease(options.main, options.m3_gate, options.m5_gate, cwd))
+            print_outputs(
+                next_prerelease(options.main, options.alpha_checklist, options.beta_checklist, cwd)
+            )
         elif options.command == "dry-run-version":
             print_outputs(dry_run_version(options.main, cwd))
         elif options.command == "stamp":

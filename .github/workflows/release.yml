@@ -53,7 +53,6 @@ jobs:
       revision: ${{ steps.version.outputs.revision }}
       notes_range: ${{ steps.version.outputs.notes_range }}
       notes_tag: ${{ steps.version.outputs.notes_tag }}
-      notes_tag_pattern: ${{ steps.version.outputs.notes_tag_pattern }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,11 +71,11 @@ jobs:
         # other, and the tag-only jobs follow the `tag` output, which a dry run leaves empty.
         run: |
           if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
-            # The same gates prerelease.yml reads: a hand-made tag meets every rule too.
-            m3=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
-            m5=$(gh issue view 66 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+            # The same checklists prerelease.yml reads: a hand-made tag meets every rule too.
+            alpha=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+            beta=$(gh issue view 57 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
             python3 tools/release.py check-tag "$TAG" --main origin/main \
-              --m3-gate "$m3" --m5-gate "$m5" | tee -a "$GITHUB_OUTPUT"
+              --alpha-checklist "$alpha" --beta-checklist "$beta" | tee -a "$GITHUB_OUTPUT"
           else
             python3 tools/release.py dry-run-version --main origin/main | tee -a "$GITHUB_OUTPUT"
           fi
@@ -99,11 +98,9 @@ jobs:
           CHANNEL: ${{ needs.plan.outputs.channel }}
           NOTES_RANGE: ${{ needs.plan.outputs.notes_range }}
           NOTES_TAG: ${{ needs.plan.outputs.notes_tag }}
-          NOTES_TAG_PATTERN: ${{ needs.plan.outputs.notes_tag_pattern }}
         run: |
           flags=()
           if [ -n "$NOTES_TAG" ]; then flags+=(--tag "$NOTES_TAG"); fi
-          if [ -n "$NOTES_TAG_PATTERN" ]; then flags+=(--tag-pattern "$NOTES_TAG_PATTERN"); fi
           git cliff --config cliff.toml --strip all "${flags[@]}" "$NOTES_RANGE" > notes.md
           # Alpha notes carry the known gaps; check-tag refuses an alpha without them.
           if [ "$CHANNEL" = alpha ]; then

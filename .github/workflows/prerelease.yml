@@ -43,25 +43,25 @@ jobs:
           fetch-depth: 0
       - name: Test the release tool
         run: python3 -m unittest discover -s tools/tests -p test_release.py
-      # The M3 gate (#52) opens alphas; the M5 gate (#66) switches them to betas.
-      - name: Read the gate issues
-        id: gates
+      # The Alpha 1 checklist (#52) opens alphas; the Beta 1 checklist (#57) turns them to betas.
+      - name: Read the checklist issues
+        id: checklists
         env:
           GH_TOKEN: ${{ github.token }}
         # The same two lines as release.yml's plan job reads.
         run: |
-          m3=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
-          m5=$(gh issue view 66 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
-          echo "m3=$m3" | tee -a "$GITHUB_OUTPUT"
-          echo "m5=$m5" | tee -a "$GITHUB_OUTPUT"
+          alpha=$(gh issue view 52 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          beta=$(gh issue view 57 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          echo "alpha=$alpha" | tee -a "$GITHUB_OUTPUT"
+          echo "beta=$beta" | tee -a "$GITHUB_OUTPUT"
       - name: Compute the next pre-release tag
         id: next
         env:
-          M3_GATE: ${{ steps.gates.outputs.m3 }}
-          M5_GATE: ${{ steps.gates.outputs.m5 }}
+          ALPHA_CHECKLIST: ${{ steps.checklists.outputs.alpha }}
+          BETA_CHECKLIST: ${{ steps.checklists.outputs.beta }}
         run: |
           python3 tools/release.py next-prerelease --main origin/main \
-            --m3-gate "$M3_GATE" --m5-gate "$M5_GATE" \
+            --alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST" \
             | tee -a "$GITHUB_OUTPUT"
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         if: ${{ !inputs.dry_run }}

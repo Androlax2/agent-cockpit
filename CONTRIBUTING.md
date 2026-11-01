@@ -16,9 +16,9 @@ exists today under `apps/`. Everyone follows the
 
 1. Read [the design reports' README](docs/design/greenfield/README.md): its decision
    register and status legend (`decided`, `proposed`, `validate`).
-2. Pick an open issue labelled `greenfield` whose **Depends on** issues are closed.
-   Milestones run in order: the next one starts only when the previous milestone's `gate`
-   issue is closed with its proof linked.
+2. Pick an open issue labelled `greenfield` whose **Depends on** issues are closed. An
+   issue starts as soon as those are merged, whatever its milestone; a release's checklist
+   issue is a checkpoint that closes later with its proof linked, not a blocker.
 3. Read the reports named on the issue's **Read** line, and nothing more.
 4. Read [Development](docs/DEVELOPMENT.md) for prerequisites and the check commands.
 
@@ -63,7 +63,7 @@ every check is green.
 | --- | --- |
 | `greenfield` | Part of the refactor under `crates/` |
 | `area:<name>` | The capability an issue belongs to (`build`, `daemon`, `protocol`, `security`, `state`, `sessions`, `tasks`, `teams-chief`, `providers`, `usage`, `clients`, `plugins`, `release`, `ux`) |
-| `gate` | Milestone gate: all listed proof must pass before the next milestone starts |
+| `gate` | A release milestone's checklist issue: closes when all its listed proof passes |
 | `validate` | A claim that needs a test or measurement before it counts |
 | `decision-needed` | Blocked on a decision by the maintainer |
 | `bug`, `enhancement`, `documentation`, `accessibility`, `question` | The kind of change or report |
@@ -72,10 +72,18 @@ every check is green.
 
 ## Milestones
 
-M0 Foundation, M1 Single-session parity, M2 Tasks and scheduling, M3 Providers and
-onboarding, M4 Teams and Chief, M5 Full parity and cutover, M6 Designed UI, M7 Plugins.
-What each one proves, and its gate, live on GitHub and in the
-[refactoring plan](docs/design/greenfield/20-refactoring-plan.md#milestones-and-gates).
+Milestones are releases (decided 2026-11-01): Alpha 1, Alpha 2, Beta 1, Beta 2: cutover,
+Beta 3: designed UI, then Plugins, Desktop app and Native phone apps (research). `Hardening`
+holds follow-ups no release needs. M0 Foundation and M1 Single-session parity closed under
+their old names; the [refactoring plan](docs/design/greenfield/20-refactoring-plan.md#milestones-and-gates)
+maps the other M-numbers to these names. A release milestone:
+
+- holds about 25 issues at most; a new issue goes to the release it blocks, otherwise to
+  `Hardening`;
+- has one checklist issue (labelled `gate`) that closes with its proof linked;
+- ends with a live acceptance walk by the maintainer before its checklist closes;
+- ships on a channel: alphas from Alpha 1, betas from Beta 1. No stable release is planned
+  until users have used the betas for a long time ([Releasing](docs/RELEASING.md#channels-and-what-each-promises)).
 
 ## Stale branches
 
