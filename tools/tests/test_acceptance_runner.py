@@ -8,7 +8,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools/acceptance/run.sh"
-GUIDE = REPO / "docs/acceptance/m1.md"
+GUIDES = (REPO / "docs/acceptance/m1.md", REPO / "docs/acceptance/m1-idle.md")
 BINARIES = ("cockpit", "cockpit-daemon", "cockpit-tui", "cockpit-claude-hook")
 # ask-to-guide's limit (apps/cockpit/src/bin/ask-to-guide.rs MAX_STEPS).
 MAX_STEPS = 60
@@ -43,19 +43,22 @@ def guide_steps(text):
 
 
 class GuideTests(unittest.TestCase):
-    def test_the_m1_guide_fits_ask_to_guide(self):
-        steps = guide_steps(GUIDE.read_text())
-        self.assertGreater(len(steps), 0)
-        self.assertLessEqual(len(steps), MAX_STEPS)
+    def test_the_m1_guides_fit_ask_to_guide(self):
+        for guide in GUIDES:
+            with self.subTest(guide=guide.name):
+                steps = guide_steps(guide.read_text())
+                self.assertGreater(len(steps), 0)
+                self.assertLessEqual(len(steps), MAX_STEPS)
 
     def test_every_run_step_goes_through_the_runner(self):
-        for step in guide_steps(GUIDE.read_text()):
-            if "run" not in step:
-                continue
-            with self.subTest(run=step["run"]):
-                words = step["run"].split()
-                self.assertEqual(words[:2], ["bash", "tools/acceptance/run.sh"])
-                self.assertIn(words[2], RUNNER_VERBS)
+        for guide in GUIDES:
+            for step in guide_steps(guide.read_text()):
+                if "run" not in step:
+                    continue
+                with self.subTest(guide=guide.name, run=step["run"]):
+                    words = step["run"].split()
+                    self.assertEqual(words[:2], ["bash", "tools/acceptance/run.sh"])
+                    self.assertIn(words[2], RUNNER_VERBS)
 
 
 # Stands in for each program: `cockpit session new` prints a session line for s-new, another
@@ -230,7 +233,7 @@ class RunnerTests(unittest.TestCase):
         started = self.run_script("session", "new", "--prompt", "hi")
         self.assertEqual(started.returncode, 0, started.stderr)
         self.assertTrue(started.stdout.startswith("s-new\t"))
-        for verb in ("sleep", "wake", "end", "resume"):
+        for verb in ("sleep", "wake", "end", "resume", "show"):
             with self.subTest(verb=verb):
                 result = self.run_script("session", verb)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -243,7 +246,7 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("run.sh session new", result.stderr)
 
     def test_unknown_verbs_print_the_usage(self):
-        for arguments in ((), ("deploy",), ("session", "show")):
+        for arguments in ((), ("deploy",), ("session", "list")):
             with self.subTest(arguments=arguments):
                 result = self.run_script(*arguments)
                 self.assertEqual(result.returncode, 2)

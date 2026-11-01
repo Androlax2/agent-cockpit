@@ -8,7 +8,7 @@
 #   run.sh tui-window         open the TUI in its own opaque kitty window (Hyprland)
 #   run.sh cockpit ARGS...    run this clone's `cockpit`, from the scratch projects directory
 #   run.sh session new ARGS   start a session in `demo` (`cockpit session new` options), remember it
-#   run.sh session VERB       sleep|wake|resume|end the session `session new` remembered
+#   run.sh session VERB       sleep|wake|resume|end|show the session `session new` remembered
 #   run.sh kill-daemon        kill -9 the daemon, leaving its sessions running
 #   run.sh stop               stop the daemon and the scratch tmux server
 #   run.sh clean              stop, then delete the scratch directory
@@ -18,7 +18,7 @@
 # uses the owner's Claude Code login.
 set -euo pipefail
 
-usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | cockpit ARGS... | session new [OPTIONS] | session sleep|wake|resume|end"
+usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | cockpit ARGS... | session new [OPTIONS] | session sleep|wake|resume|end|show"
 
 clone=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 bin="$clone/target/release"
@@ -226,7 +226,7 @@ session)
         echo "$line"
         echo "${line%%$'\t'*}" >"$scratch/session"
         ;;
-    sleep | wake | resume | end)
+    sleep | wake | resume | end | show)
         require_binaries
         enter_projects
         [[ -s $scratch/session ]] || {

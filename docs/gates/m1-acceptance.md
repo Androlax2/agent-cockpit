@@ -9,7 +9,8 @@ completed by Theo". The guide is [docs/acceptance/m1.md](../acceptance/m1.md), i
 - Build this clone: `cargo build --release --manifest-path Cargo.toml --bin cockpit --bin
   cockpit-daemon --bin cockpit-tui --bin cockpit-claude-hook`.
 - From the clone root, the worker hands the guide over: `ask-to-guide < docs/acceptance/m1.md`.
-  Its `run:` steps call `tools/acceptance/run.sh`, which runs `target/release` on scratch
+  Idle sleep (30 minutes at least, the configuration's floor) is a guide of its own, so Theo can
+  leave during the wait: `ask-to-guide < docs/acceptance/m1-idle.md`. Their `run:` steps call `tools/acceptance/run.sh`, which runs `target/release` on scratch
   `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` and `TMUX_TMPDIR`
   under `/tmp/cockpit-acceptance-<uid>`, never the installed cockpit. Until #134 lands this is
   the only isolation; from then on the `cockpit-next` profile replaces it.
@@ -75,3 +76,13 @@ completed by Theo". The guide is [docs/acceptance/m1.md](../acceptance/m1.md), i
 - Seen in the screenshots: the owner's Claude Code stop hooks fail to notify ("Cannot autolaunch
   D-Bus without X11 $DISPLAY"): daemon-launched agents get no `DISPLAY` or `WAYLAND_DISPLAY`:
   #303.
+
+### 2026-11-01, Theo's idle-sleep re-walk
+
+- Commit `37d3486` (main with #309), `docs/acceptance/m1-idle.md` walked on its own; Theo left
+  during the wait. The 30-minute floor stays: a product floor is not lowered for a test.
+- Claude replied OK at 04:22 CET. The daemon log: "an idle session went to sleep" at 04:52:46 CET, then
+  a `Wake` run at 04:55:22 when Theo opened the card. `run.sh session show` after the wake read
+  `running` with launch kind `wake`.
+- Woken by a message: it kept its conversation and answered ("yes"). Pass.
+- With this, every section of the M1 walk has passed live.
