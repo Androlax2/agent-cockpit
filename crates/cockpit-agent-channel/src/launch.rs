@@ -146,7 +146,7 @@ const ROOT_EXPECTED_WITHIN_SECONDS: i64 = 30;
 /// not written yet. A request carrying it is refused [`Refusal::LaunchNotStarted`] now and
 /// identified once the launcher records the root, which follows the agent's start within
 /// moments (#279); a caller may wait for that, outside any write transaction. Malformed,
-/// unknown and spent tokens, and launches older than [`ROOT_EXPECTED_WITHIN_SECONDS`], are
+/// unknown and spent tokens, and launches older than `ROOT_EXPECTED_WITHIN_SECONDS`, are
 /// `false`.
 pub async fn awaits_root(connection: &Connection, token: &str) -> Result<bool, Error> {
     if !LaunchToken::is_well_formed(token) {
