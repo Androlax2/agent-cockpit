@@ -111,6 +111,8 @@ pub struct EffectiveConfig {
     pub asleep_expiry: Sourced<Duration>,
     /// Whether launched agents reach the owner's desktop session (#305).
     pub agents_desktop_session: Sourced<DesktopSession>,
+    /// The checks the project declares, in its order: what Cockpit runs and a gate requires.
+    pub checks: Vec<Sourced<Check>>,
 }
 
 /// Whether a launched agent gets the owner's display and session bus variables. The one
@@ -132,6 +134,23 @@ impl DesktopSession {
             Self::Withheld => "withheld",
         }
     }
+}
+
+/// A check a project declares (report 09): its own runner (Cargo, Make, ...) stays the source
+/// of truth; Cockpit runs the command and records what it found. `cockpit-verification`
+/// validates the fields when the check runs or a gate is asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Check {
+    /// What a gate requires it by, unique in the project.
+    pub name: String,
+    /// A shell command line.
+    pub command: String,
+    /// Relative to the checkout; `.` (the default) is its root.
+    pub working_directory: String,
+    /// Where it runs; `native` by default.
+    pub environment: String,
+    /// The files it covers, relative to the checkout: a change to one makes its result stale.
+    pub artifacts: Vec<String>,
 }
 
 impl EffectiveConfig {
@@ -211,12 +230,24 @@ struct SettingsFile {
     tasks: Option<Spanned<TasksTable>>,
     sessions: Option<Spanned<SessionsTable>>,
     agents: Option<Spanned<AgentsTable>>,
+    checks: Option<Spanned<Vec<Spanned<CheckEntry>>>>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentsTable {
     desktop_session: Option<Spanned<DesktopSession>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckEntry {
+    name: String,
+    command: String,
+    working_directory: Option<String>,
+    environment: Option<String>,
+    #[serde(default)]
+    artifacts: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,6 +328,9 @@ pub fn load(
     let mut layers = Vec::new();
     let (user_file, user_layer) =
         read_layer(layout.user_config_file(), LayerOrigin::User, "user config")?;
+    if let Some(layer) = &user_layer {
+        reject_project_settings(layer)?;
+    }
     layers.extend(user_layer);
 
     let mut project_file = None;
@@ -335,6 +369,7 @@ pub fn load(
         idle_sleep_after: idle_sleep_after(&layers)?,
         asleep_expiry: asleep_expiry(&layers)?,
         agents_desktop_session: agents_desktop_session(&layers),
+        checks: checks(&layers)?,
     })
 }
 
@@ -387,6 +422,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         sessions,
         agents,
         workflow: _,
+        checks: _,
     } = &layer.settings;
     if let Some(tasks) = tasks {
         return Err(ConfigError::OwnerOnly {
@@ -416,6 +452,19 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "agents",
             source: layer.source_at(agents.span()),
+        });
+    }
+    Ok(())
+}
+
+/// The owner's file declares no checks: they would apply to every project.
+fn reject_project_settings(layer: &Layer) -> Result<(), ConfigError> {
+    if let Some(checks) = &layer.settings.checks {
+        return Err(ConfigError::Invalid {
+            key: "checks".to_string(),
+            source: layer.source_at(checks.span()),
+            reason: "describes a project; declare it in the project's .cockpit/config.toml"
+                .to_string(),
         });
     }
     Ok(())
@@ -752,4 +801,50 @@ fn validate_start_file(
         path,
         providers: entry.providers.clone(),
     })
+}
+
+/// The project's `[[checks]]`, in its order. Only the project file declares them, so there
+/// is one list and no precedence.
+fn checks(layers: &[Layer]) -> Result<Vec<Sourced<Check>>, ConfigError> {
+    let mut checks: Vec<Sourced<Check>> = Vec::new();
+    for layer in layers {
+        let Some(entries) = &layer.settings.checks else {
+            continue;
+        };
+        for entry in entries.get_ref() {
+            let source = layer.source_at(entry.span());
+            let check = entry.get_ref();
+            let invalid = |reason: String| ConfigError::Invalid {
+                key: "checks".to_string(),
+                source: source.clone(),
+                reason: format!("entry {reason}"),
+            };
+            if check.name.trim().is_empty() {
+                return Err(invalid("has an empty name".to_string()));
+            }
+            if check.command.trim().is_empty() {
+                return Err(invalid(format!("{:?} has an empty command", check.name)));
+            }
+            if checks.iter().any(|known| known.value.name == check.name) {
+                return Err(invalid(format!("repeats the name {:?}", check.name)));
+            }
+            checks.push(Sourced::new(
+                Check {
+                    name: check.name.clone(),
+                    command: check.command.clone(),
+                    working_directory: check
+                        .working_directory
+                        .clone()
+                        .unwrap_or_else(|| ".".to_string()),
+                    environment: check
+                        .environment
+                        .clone()
+                        .unwrap_or_else(|| "native".to_string()),
+                    artifacts: check.artifacts.clone(),
+                },
+                source,
+            ));
+        }
+    }
+    Ok(checks)
 }

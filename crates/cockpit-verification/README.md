@@ -65,7 +65,7 @@ the checkout and never through a symbolic link, so no digest of a file outside i
 - Never on `cockpit-processes`, `cockpit-sessions`, `cockpit-workflows`, `cockpit-tmux`, the
   scheduler or the wire types (`cockpit-workspace-rules/tests/crate_graph.rs`, rules
   `verification -> processes` and `verification -> sessions/workflows/wire types`).
-- Used by: the daemon (not wired yet).
+- Used by: `cockpit-daemon` (#313), which converts its types to the wire.
 
 ## Tests
 

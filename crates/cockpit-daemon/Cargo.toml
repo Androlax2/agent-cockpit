@@ -28,6 +28,7 @@ cockpit-sessions = { path = "../cockpit-sessions", version = "0.1.0" }
 cockpit-tasks = { path = "../cockpit-tasks", version = "0.1.0" }
 cockpit-tmux = { path = "../cockpit-tmux", version = "0.1.0" }
 cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+cockpit-verification = { path = "../cockpit-verification", version = "0.1.0" }
 cockpit-workflows = { path = "../cockpit-workflows", version = "0.1.0" }
 serde = "1.0.229"
 serde_json = "1.0.154"

@@ -14,7 +14,7 @@ use cockpit_protocol::{
 };
 
 /// Long enough for a busy daemon, short enough that a hook never hangs its agent.
-const DEADLINE: Duration = Duration::from_secs(10);
+pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
 
 /// `--state working|waiting`, `--label`, `--doing`, `--needs-input`, `--dialog`, the
 /// value-less `--prompt`, `--outcome completed|failed|quota-stopped`, `--outcome-reason`

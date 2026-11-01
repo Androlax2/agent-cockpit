@@ -190,7 +190,7 @@ impl Git {
     /// An empty value for every program-running driver the configuration seen from `dir`
     /// names. Driver names are chosen by whoever writes the configuration, so they cannot be
     /// listed in [`SAFE_CONFIG`]; reading the configuration runs nothing.
-    fn drivers_off(&self, dir: &Path) -> Result<Vec<String>, Error> {
+    pub(crate) fn drivers_off(&self, dir: &Path) -> Result<Vec<String>, Error> {
         let arguments = [
             arg("config"),
             arg("--includes"),
@@ -229,7 +229,7 @@ impl Git {
         Ok(settings)
     }
 
-    fn command(&self, dir: &Path, extra_config: &[&str]) -> Command {
+    pub(crate) fn command(&self, dir: &Path, extra_config: &[&str]) -> Command {
         let mut command = Command::new(&self.program);
         command.current_dir(dir);
         for setting in SAFE_CONFIG.iter().chain(extra_config) {

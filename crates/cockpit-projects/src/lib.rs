@@ -6,6 +6,7 @@ mod git;
 mod model;
 mod push;
 mod register;
+mod source;
 mod store;
 mod sweep;
 
@@ -20,6 +21,7 @@ pub use model::{
 };
 pub use push::{Pushed, push};
 pub use register::register_project;
+pub use source::SourceState;
 pub use store::{MIGRATIONS, checkouts, claim, project_named, projects, release};
 pub use sweep::{Kept, SweepReport, sweep};
 

@@ -37,6 +37,20 @@ pub async fn record_receipt(
     now: i64,
 ) -> Result<Receipt, Error> {
     let output_bytes = new.output.len() as u64;
+    record_receipt_of_tail(write, new, output_bytes, now).await
+}
+
+/// [`record_receipt`] for a runner that read only the end of a long output: `new.output` is
+/// that end and `output_bytes` the full size, refused when smaller than what was read.
+pub async fn record_receipt_of_tail(
+    write: &WriteTransaction<'_>,
+    new: NewReceipt,
+    output_bytes: u64,
+    now: i64,
+) -> Result<Receipt, Error> {
+    if output_bytes < new.output.len() as u64 {
+        return Err(invalid("output_bytes", "is less than the output given").into());
+    }
     let stored_output_bytes =
         i64::try_from(output_bytes).map_err(|_| invalid("output", "is too large"))?;
     let new = validated(new, now)?;
@@ -145,6 +159,17 @@ pub async fn record_claim(
         statement: new.statement,
         claimed_at: now,
     })
+}
+
+/// The receipt of run `run_id` in `project`, `None` while it is not recorded.
+pub async fn receipt(
+    connection: &Connection,
+    project: &str,
+    run_id: &str,
+) -> Result<Option<Receipt>, Error> {
+    required("project", project, NAME_MAX_CHARS)?;
+    required("run_id", run_id, NAME_MAX_CHARS)?;
+    receipt_of_run(connection, project, run_id).await
 }
 
 /// What `project` holds about a gate requiring `checks` on the exact `source`: each check's
@@ -471,7 +496,7 @@ fn validated(mut new: NewReceipt, now: i64) -> Result<NewReceipt, Refusal> {
     Ok(new)
 }
 
-fn check_definition(check: &CheckDefinition) -> Result<(), Refusal> {
+pub(crate) fn check_definition(check: &CheckDefinition) -> Result<(), Refusal> {
     required("check.name", &check.name, NAME_MAX_CHARS)?;
     required("check.command", &check.command, COMMAND_MAX_CHARS)?;
     if check.working_directory != "." {

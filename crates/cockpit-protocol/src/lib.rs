@@ -10,6 +10,7 @@ mod request;
 mod resources;
 mod sessions;
 mod tasks;
+mod verification;
 mod workflows;
 
 pub use agent::{
@@ -47,6 +48,10 @@ pub use sessions::{
 pub use tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,
     TaskStatusView, TaskView, TaskWaitView,
+};
+pub use verification::{
+    CheckArtifactView, CheckClaimView, CheckOutcomeView, CheckReceiptView, CheckStatusView,
+    GateCheckView, GateOutcomeView, GateView, StaleReasonView,
 };
 pub use workflows::{
     WorkflowBlockedActionView, WorkflowBlockedView, WorkflowCheckpointView, WorkflowGoalView,

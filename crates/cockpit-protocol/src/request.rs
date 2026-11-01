@@ -11,6 +11,7 @@ use crate::sessions::{ProviderView, SessionFailure, SessionView};
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
 };
+use crate::verification::{CheckClaimView, CheckReceiptView, GateView};
 use crate::workflows::{
     WorkflowBlockedActionView, WorkflowHandoffView, WorkflowPacketView, WorkflowPresetView,
     WorkflowView,
@@ -434,6 +435,39 @@ pub enum Command {
     WorkflowCancel {
         workflow: i64,
     },
+    /// Owner only: run the project's declared check `check` in its checkout `checkout` (the
+    /// project's root when absent) and record its receipt once it ends. Answers once the run
+    /// started; `check-receipt` reads the result.
+    CheckRun {
+        project: String,
+        check: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkout: Option<String>,
+    },
+    /// Owner only: the receipt of the run `check-run` started, `None` until it ended.
+    CheckReceipt {
+        project: String,
+        run: String,
+    },
+    /// Where the project's declared checks stand on the checkout's current result. The owner
+    /// names the project (and a checkout, its root when absent); an agent's is the checkout
+    /// it works in.
+    CheckGate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkout: Option<String>,
+    },
+    /// Agent socket only: the sender says `check` passed on its checkout's current result.
+    /// Recorded as a claim, never as evidence: only a run the daemon executed is.
+    CheckClaim {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        check: String,
+        statement: String,
+    },
     /// Owner only: the budget, the profile, what this host enforces, and every reservation
     /// with its limits requested, supported and effective.
     ResourceStatus,
@@ -626,6 +660,19 @@ pub enum Reply {
     },
     WorkflowPresets {
         presets: Vec<WorkflowPresetView>,
+    },
+    /// The daemon's execution running the check.
+    CheckRunStarted {
+        run: String,
+    },
+    CheckReceipt {
+        receipt: Option<Box<CheckReceiptView>>,
+    },
+    CheckClaimed {
+        claim: Box<CheckClaimView>,
+    },
+    CheckGate {
+        gate: Box<GateView>,
     },
     ResourceStatus {
         status: Box<ResourceStatusView>,

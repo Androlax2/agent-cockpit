@@ -73,6 +73,11 @@ the wire. Report 14 treats this contract as stable from the first release.
    `next`, what has to happen for the run to move; `workflow-packet` answers the task packet
    rebuilt from durable records. A completion has no field claiming a requirement passed:
    `waive` names the owner's waivers, and verification reports what passed (#40).
+10. Verification (#313): `check-run` (answers `check-run-started` with its run id) and
+    `check-receipt` (the run's receipt once recorded, else none) are the owner's;
+    `check-claim` is the agent's, answered with the recorded claim; `check-gate` serves both
+    (the owner names the project, an agent's is its checkout's) and answers each check's
+    status, receipt and next action. No request carries an outcome to record.
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are

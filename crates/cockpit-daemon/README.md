@@ -20,7 +20,9 @@ not share code.
   commands), `cockpit-sessions` (whose verbs `Routes` serves to the owner, and whose restore
   and periodic pass it runs), `cockpit-tasks` (whose verbs `Routes` serves to the owner and
   to agents), `cockpit-workflows` (whose verbs `Routes` serves to the owner and to agents,
-  and whose migrations it runs), `cockpit-tmux` (the private server sessions run in) and
+  and whose migrations it runs), `cockpit-verification` (whose receipts it records from the
+  check runs it executes, whose gate `Routes` serves to the owner and to agents, and whose
+  migrations it runs), `cockpit-tmux` (the private server sessions run in) and
   `cockpit-provider-api` (the providers it is wired with; the adapters arrive with #33);
   `tokio`, `serde`, `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
@@ -128,6 +130,26 @@ not share code.
 - No request can claim a requirement passed: completions carry the owner's waivers only,
   until `cockpit-verification` reports what passed (#40).
 
+## Verification (#313)
+
+- `check-run` and `check-receipt` are the owner's: the daemon runs a check the project
+  declares under `[[checks]]` in its checkout, as an execution of its one supervisor, under
+  `/bin/sh` with the approved commands' environment (Git settings included). Only a checkout
+  the owner trusts runs checks, never a review checkout; only `native` checks run. Anything
+  else is refused before anything starts; a launch that may have started is recorded
+  `unknown`.
+- Before the run starts, the daemon fingerprints the check's artifacts and reads the
+  checkout's head and uncommitted changes with its own Git (`Git::source_state`). The run id
+  is `execution-<id>`. When the program exits, the receipt is recorded with the exit code and
+  the end of its output; nothing a request carries is recorded as evidence.
+- `check-claim` is an agent's: its statement that a check passed, about the checkout it
+  works in, recorded as a claim once the session holds `change-state` over itself. The gate
+  shows a check with only claims as `unverified`.
+- `check-gate` serves both: the owner names the project (and a checkout), an agent gets the
+  checkout it works in. Evidence is read on a read transaction; the checkout is read after
+  it ends.
+- A daemon that stops while a check runs records nothing for it (#351).
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -185,6 +207,10 @@ builds it only when asked and no release installs it.
 - `tests/workflows.rs`: issue #39 on the binary's sockets: a restart mid-step resuming at
   the checkpoint, the project's preset and the owner's, socket roles, a sender without a
   session record refused a step, and requirements met only by the owner's waiver.
+- `tests/verification.rs`: issue #313 on the binary's sockets: a run yields the receipt the
+  gate counts, a failure is recorded failed with its output, a change after the run is stale,
+  an agent cannot run a check or read a receipt, an agent's claim stays unverified, socket
+  roles, and checks refused before they run (undeclared, untrusted, another environment).
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket

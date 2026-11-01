@@ -16,6 +16,7 @@ mod session_feed;
 mod sessions;
 mod supervisor;
 mod tasks;
+mod verification;
 mod workflows;
 
 use std::path::{Path, PathBuf};
@@ -34,7 +35,7 @@ pub use serve::{SESSION_TICK, Serve, own_program, serve};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 10] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 11] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
@@ -45,6 +46,7 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 10] = [
     cockpit_tasks::MIGRATIONS,
     cockpit_resource_admission::MIGRATIONS,
     cockpit_workflows::MIGRATIONS,
+    cockpit_verification::MIGRATIONS,
 ];
 
 /// How often expired and ended reservations are released.
@@ -102,6 +104,8 @@ pub struct Capabilities {
     /// session begins it.
     pub provider_capabilities:
         std::collections::BTreeMap<String, cockpit_provider_api::Capabilities>,
+    /// How approved commands run: a check the owner runs gets the same shell and environment.
+    pub run_settings: Arc<cockpit_approvals::RunSettings>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -150,6 +154,7 @@ impl Instance {
             containment = ?processes.launch_containment(),
             "new executions use this containment"
         );
+        let run_settings = Arc::new(wiring.run_settings.clone());
         let runner = cockpit_approvals::Runner::new(wiring.run_settings, processes.clone());
         reconcile(&database, &processes, &runner).await?;
         let admission = Arc::new(
@@ -231,6 +236,7 @@ impl Instance {
                 manager,
                 providers,
                 provider_capabilities,
+                run_settings,
             }),
         });
         let published_database = Arc::clone(&database);

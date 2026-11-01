@@ -290,3 +290,59 @@ async fn fingerprinting_refuses_a_path_named_twice_or_a_missing_checkout() {
         cockpit_verification::fingerprint(&fixture.dir.path().join("gone"), &["src/lib.rs"]);
     assert_eq!(refused_field(nowhere.unwrap_err()), "checkout");
 }
+
+#[tokio::test]
+async fn a_run_reads_back_by_its_id_once_recorded() {
+    let fixture = Fixture::new().await;
+    let recorded = fixture
+        .record_run(
+            "execution-7",
+            &check("test"),
+            &clean_source(),
+            &[],
+            Outcome::Failed,
+        )
+        .await;
+    let read = fixture.database.read().await.unwrap();
+
+    let found = cockpit_verification::receipt(&read, common::PROJECT, "execution-7").await;
+    let pending = cockpit_verification::receipt(&read, common::PROJECT, "execution-8").await;
+
+    assert_eq!(found.unwrap(), Some(recorded));
+    assert_eq!(pending.unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_tail_keeps_the_full_size_its_runner_counted() {
+    let fixture = Fixture::new().await;
+    let mut new = fixture.receipt(
+        "run-1",
+        &check("test"),
+        &clean_source(),
+        &[],
+        Outcome::Passed,
+    );
+    new.output = "last lines\n".to_owned();
+    let write = fixture.database.write().await.unwrap();
+
+    let short = cockpit_verification::record_receipt_of_tail(&write, new.clone(), 3, NOW).await;
+    let receipt = cockpit_verification::record_receipt_of_tail(&write, new, 1_000_000, NOW)
+        .await
+        .unwrap();
+
+    assert_eq!(refused_field(refusal(short)), "output_bytes");
+    assert_eq!(receipt.output_bytes, 1_000_000);
+    assert!(receipt.is_output_truncated());
+}
+
+#[test]
+fn a_check_definition_is_refused_before_it_runs() {
+    let mut escaping = check("test");
+    escaping.working_directory = "../elsewhere".to_owned();
+
+    assert_eq!(
+        refused_field(escaping.validate().unwrap_err()),
+        "check.working_directory"
+    );
+    assert_eq!(check("test").validate(), Ok(()));
+}

@@ -455,6 +455,7 @@ dependencies = [
  "cockpit-tasks",
  "cockpit-tmux",
  "cockpit-turso",
+ "cockpit-verification",
  "cockpit-workflows",
  "serde",
  "serde_json",

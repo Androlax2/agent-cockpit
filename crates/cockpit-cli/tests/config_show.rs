@@ -584,6 +584,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit workflow release ID [--changed T --checked T --outcome T \
                  [--needs-human T] [--evidence REF]...]\n       \
                  cockpit workflow block ID ACTION --detail TEXT\n       \
+                 cockpit check run CHECK --project P [--checkout PATH] | gate [--project P] [--checkout PATH]\n       \
+                 cockpit check claim CHECK STATEMENT\n       \
                  cockpit resources status | profile normal|foreground | pause-queue | resume-queue\n       \
                  cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...\n       \
                  cockpit resources checkpoint RESERVATION | stop RESERVATION\n"
