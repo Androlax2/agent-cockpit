@@ -108,7 +108,7 @@ fn every_command_the_manual_names_is_a_verb_of_this_cli() {
     let home = TestHome::new();
     let _daemon = home.start();
     let manual = home.cockpit_ok(&["--skill"]);
-    let usage = home.cockpit_err(&[]);
+    let usage = home.cockpit_err(&["--help"]);
     let usage_lines: Vec<&str> = usage
         .lines()
         .map(|line| line.trim().trim_start_matches("usage: "))

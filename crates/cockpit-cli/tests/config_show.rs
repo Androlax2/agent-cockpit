@@ -579,6 +579,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit sandbox show DIR [--agent NAME]\n       \
                  cockpit provider list\n       \
                  cockpit desktop-session import\n       \
+                 cockpit init\n       \
                  cockpit doctor [--project DIR]\n       \
                  cockpit tui\n       \
                  cockpit version [--all]\n       \
@@ -638,7 +639,7 @@ fn a_non_utf8_project_path_is_reported_not_a_crash() {
 
 #[test]
 fn an_unknown_verb_prints_usage_and_exits_2() {
-    for arguments in [&[][..], &["config"][..], &["configure", "show"][..]] {
+    for arguments in [&["config"][..], &["configure", "show"][..]] {
         let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
             .args(arguments)
             .env_clear()

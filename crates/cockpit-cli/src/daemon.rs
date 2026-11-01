@@ -55,6 +55,27 @@ pub(crate) fn exchange(
     }))
 }
 
+/// The replies of the daemon at `socket` to `commands`, sent in order over one connection,
+/// or the first client error; exit 1 only when no request could be made.
+pub(crate) fn exchange_all(
+    socket: &std::path::Path,
+    commands: Vec<Command>,
+    deadline: Duration,
+) -> Result<Result<Vec<Reply>, ClientError>, ExitCode> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| fail(&format!("cannot start the client runtime: {error}")))?;
+    Ok(runtime.block_on(async {
+        let connection = Connection::open(socket, CONTROL_DEADLINE).await?;
+        let mut replies = Vec::with_capacity(commands.len());
+        for command in commands {
+            replies.push(connection.request(command, deadline).await?);
+        }
+        Ok(replies)
+    }))
+}
+
 /// Exit 1 after saying why the request failed.
 pub(crate) fn failed(error: &ClientError) -> ExitCode {
     match error {
