@@ -589,7 +589,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit check claim CHECK STATEMENT\n       \
                  cockpit resources status | profile normal|foreground | pause-queue | resume-queue\n       \
                  cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...\n       \
-                 cockpit resources checkpoint RESERVATION | stop RESERVATION\n"
+                 cockpit resources checkpoint RESERVATION | stop RESERVATION\n       \
+                 cockpit queue explain [ITEM] | dispatch\n"
             )
         );
     }

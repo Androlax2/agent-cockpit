@@ -6,6 +6,7 @@ use crate::approvals::{GuideView, RunRequestView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
+use crate::queue::{QueueExplanationView, QueuePlacementView};
 use crate::resources::{ProfileView, ReservationView, ResourceStatusView, VerdictView};
 use crate::sessions::{AppliedSettingView, ProviderView, SessionFailure, SessionView};
 use crate::tasks::{
@@ -498,6 +499,14 @@ pub enum Command {
     ResourceStop {
         reservation: i64,
     },
+    /// Owner only: why each open item waits, as the last scheduling pass explained it, in
+    /// dispatch order; with `item`, that item's explanation alone.
+    QueueExplain {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item: Option<i64>,
+    },
+    /// Owner only: run a scheduling pass now instead of waiting for the next one.
+    QueueDispatch,
     /// Show the session in the manager's viewer pane, waking it first when it is asleep.
     SessionShow {
         session: String,
@@ -694,6 +703,17 @@ pub enum Reply {
     ResourceStopped {
         reservation: i64,
         observed_ended: bool,
+    },
+    /// In dispatch order: the queue first, then the items waiting outside it.
+    QueueExplanations {
+        explanations: Vec<QueueExplanationView>,
+    },
+    /// What the pass placed and the placements it ended; `waiting` counts the items it
+    /// explained.
+    QueueDispatched {
+        placed: Vec<QueuePlacementView>,
+        ended: Vec<i64>,
+        waiting: u64,
     },
     Providers {
         providers: Vec<ProviderView>,

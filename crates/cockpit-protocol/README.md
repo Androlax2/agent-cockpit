@@ -78,6 +78,10 @@ the wire. Report 14 treats this contract as stable from the first release.
     `check-claim` is the agent's, answered with the recorded claim; `check-gate` serves both
     (the owner names the project, an agent's is its checkout's) and answers each check's
     status, receipt and next action. No request carries an outcome to record.
+11. Scheduling (#43): `queue-explain` answers `queue-explanations`, why each open item waits
+    as the last pass explained it (one with `item`); `queue-dispatch` runs a pass now and
+    answers `queue-dispatched`, what it placed and ended. Reasons and who acts travel as
+    their stable names. Owner socket only.
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are

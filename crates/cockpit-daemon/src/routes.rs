@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
-    Capabilities, Manager, agent, approvals, feed, manager, projects, resources, sessions, tasks,
-    verification, workflows,
+    Capabilities, Manager, agent, approvals, feed, manager, projects, resources, scheduling,
+    sessions, tasks, verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -94,16 +94,26 @@ pub struct Routes {
     resources: resources::Resources,
     workflows: workflows::Context,
     verification: verification::Context,
+    scheduling: scheduling::Context,
 }
 
 impl Routes {
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
+        let provider_capabilities = Arc::new(capabilities.provider_capabilities);
         Routes {
             workflows: workflows::Context {
                 database: Arc::clone(&capabilities.database),
                 environment: environment.clone(),
                 sessions: Arc::clone(&capabilities.sessions),
-                provider_capabilities: Arc::new(capabilities.provider_capabilities),
+                provider_capabilities: Arc::clone(&provider_capabilities),
+            },
+            scheduling: scheduling::Context {
+                database: Arc::clone(&capabilities.database),
+                sessions: Arc::clone(&capabilities.sessions),
+                admission: Arc::clone(&capabilities.admission),
+                manager: Arc::clone(&capabilities.manager),
+                provider_capabilities,
+                settings: capabilities.scheduling,
             },
             verification: verification::Context {
                 database: Arc::clone(&capabilities.database),
@@ -360,6 +370,13 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => resources::route(command, self.resources.clone()),
             },
+            (command @ (Command::QueueExplain { .. } | Command::QueueDispatch), peer) => {
+                match peer {
+                    // What runs where is the owner's to see and to trigger (report 10).
+                    Peer::Agent { .. } => Route::Answer(owner_only()),
+                    Peer::Owner => scheduling::route(command, self.scheduling.clone()),
+                }
+            }
             (
                 command @ (Command::ManagerOpen { .. }
                 | Command::ManagerFocus

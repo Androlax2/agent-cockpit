@@ -10,6 +10,7 @@ mod manager;
 mod projects;
 mod resources;
 mod routes;
+mod scheduling;
 mod serve;
 mod server;
 mod session_feed;
@@ -35,7 +36,7 @@ pub use serve::{SESSION_TICK, Serve, own_program, serve};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 11] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 12] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
@@ -47,6 +48,7 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 11] = [
     cockpit_resource_admission::MIGRATIONS,
     cockpit_workflows::MIGRATIONS,
     cockpit_verification::MIGRATIONS,
+    cockpit_scheduling::MIGRATIONS,
 ];
 
 /// How often expired and ended reservations are released.
@@ -72,6 +74,8 @@ pub struct Wiring {
     /// The owner's environment, for the configuration the checkouts published on the change
     /// feed read (trusted projects).
     pub environment: cockpit_config::Environment,
+    /// How waiting work is placed on sessions: the idle window, the pass interval, aging.
+    pub scheduling: cockpit_scheduling::Settings,
 }
 
 /// The sessions' settings the owner configured, the idle window and the asleep expiry
@@ -115,6 +119,7 @@ pub struct Capabilities {
         std::collections::BTreeMap<String, cockpit_provider_api::Capabilities>,
     /// How approved commands run: a check the owner runs gets the same shell and environment.
     pub run_settings: Arc<cockpit_approvals::RunSettings>,
+    pub scheduling: cockpit_scheduling::Settings,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -127,6 +132,7 @@ pub struct Daemon {
     publishing: tokio::task::JoinHandle<()>,
     retaining: tokio::task::JoinHandle<()>,
     sweeping: tokio::task::JoinHandle<()>,
+    dispatching: tokio::task::JoinHandle<()>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
 }
@@ -185,7 +191,7 @@ impl Instance {
         );
         let stopper = processes.clone();
         let sweeper = processes.clone();
-        let provider_capabilities = wiring
+        let provider_capabilities: std::collections::BTreeMap<_, _> = wiring
             .providers
             .iter()
             .map(|provider| (provider.name().as_str().to_owned(), provider.capabilities()))
@@ -246,14 +252,26 @@ impl Instance {
                 git: wiring.git,
                 sessions: Arc::clone(&sessions),
                 runner,
-                admission,
+                admission: Arc::clone(&admission),
                 processes: stopper,
-                manager,
+                manager: Arc::clone(&manager),
                 providers,
-                provider_capabilities,
+                provider_capabilities: provider_capabilities.clone(),
                 run_settings,
+                scheduling: wiring.scheduling,
             }),
         });
+        let scheduled = scheduling::Context {
+            database: Arc::clone(&database),
+            sessions: Arc::clone(&sessions),
+            admission: Arc::clone(&admission),
+            manager,
+            provider_capabilities: Arc::new(provider_capabilities),
+            settings: wiring.scheduling,
+        };
+        let dispatching = tokio::spawn(supervisor::supervise("scheduling", move || {
+            scheduling::dispatch_forever(scheduled.clone())
+        }));
         let published_database = Arc::clone(&database);
         let published_sessions = Arc::clone(&sessions);
         let environment = wiring.environment;
@@ -295,6 +313,7 @@ impl Instance {
             publishing,
             retaining,
             sweeping,
+            dispatching,
             _database: database,
             _instance: self,
         })
@@ -406,5 +425,6 @@ impl Drop for Daemon {
         self.publishing.abort();
         self.retaining.abort();
         self.sweeping.abort();
+        self.dispatching.abort();
     }
 }

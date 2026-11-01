@@ -202,6 +202,21 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
             "cockpit-agent-channel",
         ],
     },
+    // Scheduling places what waits on the sessions the daemon passes it: the Chief proposes
+    // and never places (report 07), sessions and tmux stay the daemon's, and the daemon
+    // converts to wire types (#43).
+    ForbiddenEdge {
+        rule: "scheduling -> chief/sessions/wire types",
+        from: Sources::Named(&["cockpit-scheduling"]),
+        to: &[
+            "cockpit-chief",
+            "cockpit-sessions",
+            "cockpit-tmux",
+            "cockpit-protocol",
+            "cockpit-client",
+            "cockpit-agent-channel",
+        ],
+    },
 ];
 
 /// Report 02 states these rules as what a crate may import, not what it may not.
@@ -668,6 +683,21 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-workflows",
             "cockpit-protocol",
         ),
+        (
+            "scheduling -> chief/sessions/wire types",
+            "cockpit-scheduling",
+            "cockpit-chief",
+        ),
+        (
+            "scheduling -> chief/sessions/wire types",
+            "cockpit-scheduling",
+            "cockpit-sessions",
+        ),
+        (
+            "scheduling -> chief/sessions/wire types",
+            "cockpit-scheduling",
+            "cockpit-protocol",
+        ),
     ] {
         let manifest_path = fixture_workspace(
             &format!("{source}_to_{target}"),
@@ -696,6 +726,9 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-messaging", "cockpit-turso"),
         ("cockpit-workflows", "cockpit-tasks"),
         ("cockpit-workflows", "cockpit-provider-api"),
+        ("cockpit-scheduling", "cockpit-workflows"),
+        ("cockpit-scheduling", "cockpit-resource-admission"),
+        ("cockpit-daemon", "cockpit-scheduling"),
     ] {
         let manifest_path = fixture_workspace(
             &format!("allowed_{source}_to_{target}"),

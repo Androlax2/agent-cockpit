@@ -22,7 +22,9 @@ not share code.
   to agents), `cockpit-workflows` (whose verbs `Routes` serves to the owner and to agents,
   and whose migrations it runs), `cockpit-verification` (whose receipts it records from the
   check runs it executes, whose gate `Routes` serves to the owner and to agents, and whose
-  migrations it runs), `cockpit-tmux` (the private server sessions run in) and
+  migrations it runs), `cockpit-scheduling` (whose pass it runs every 30 seconds and on
+  `queue-dispatch`, and whose explanations `Routes` serves to the owner), `cockpit-tmux`
+  (the private server sessions run in) and
   `cockpit-provider-api` (the providers it is wired with; the adapters arrive with #33);
   `tokio`, `serde`, `serde_json`, `tracing`.
 - Used by: nothing. Frontends reach it only through `cockpit-client` over the socket; the
@@ -150,6 +152,14 @@ not share code.
   it ends.
 - A daemon that stops while a check runs records nothing for it (#351).
 
+## Scheduling (#43)
+
+- A pass runs every `Wiring::scheduling` interval and on `queue-dispatch`, owner only. The
+  daemon passes every session not ended as a candidate: its project from its checkout, its
+  provider's capabilities, and what its current launch's agent last reported. The session
+  last shown in the manager's viewer is the one the owner views.
+- `queue-explain` reads the records the last pass wrote; nothing is computed on request.
+
 ## Requests
 
 - Peers are served only when the kernel's peer credentials name the daemon's own user.
@@ -216,6 +226,8 @@ builds it only when asked and no release installs it.
   gate counts, a failure is recorded failed with its output, a change after the run is stale,
   an agent cannot run a check or read a receipt, an agent's claim stays unverified, socket
   roles, and checks refused before they run (undeclared, untrusted, another environment).
+- `tests/scheduling.rs`: issue #43 on the binary's sockets: a queued item placed on the idle
+  session of its project, the working session named in its explanation.
 - `tests/executions.rs`: a daemon started after a killed one reattaches an execution that
   kept running and releases one that ended meanwhile, before it accepts requests.
 - `tests/overload.rs`: issue #26's overload fixture and panic containment, on the real socket
