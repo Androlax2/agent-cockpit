@@ -23,7 +23,7 @@ use cockpit_protocol::{Change, EntityKind, FeedPosition, SessionView};
 /// its screen instead of hanging the suite.
 const GENEROUS: Duration = Duration::from_secs(30);
 /// The owner's terminal: wide enough for the list and the viewer side by side.
-const COLUMNS: u16 = 160;
+pub const COLUMNS: u16 = 160;
 const ROWS: u16 = 45;
 /// The project every test starts with, as `tools/acceptance/run.sh` registers it.
 pub const PROJECT: &str = "demo";
@@ -310,19 +310,21 @@ impl Cockpit {
         daemon.wait().expect("the daemon is reaped");
     }
 
-    /// What a failed wait shows after the screen: the daemon's stderr, the end of its log
-    /// and the fake agent's launches.
+    /// What a failed wait shows after the screen: the daemon's stderr, the end of its log and
+    /// of the TUI's (which keys it took), and the fake agent's launches.
     fn daemon_stderr(&self) -> String {
         let read = |path: &Path| {
             String::from_utf8_lossy(&std::fs::read(path).unwrap_or_default()).into_owned()
         };
         let mut report = read(&self.root.join("daemon.stderr"));
-        let logs = self.root.join("state/cockpit/logs/daemon");
-        for entry in std::fs::read_dir(&logs).into_iter().flatten().flatten() {
-            let text = read(&entry.path());
-            let lines: Vec<&str> = text.lines().collect();
-            let tail = &lines[lines.len().saturating_sub(30)..];
-            report += &format!("\n--- {} ---\n{}", entry.path().display(), tail.join("\n"));
+        for process in ["daemon", "tui"] {
+            let logs = self.root.join("state/cockpit/logs").join(process);
+            for entry in std::fs::read_dir(&logs).into_iter().flatten().flatten() {
+                let text = read(&entry.path());
+                let lines: Vec<&str> = text.lines().collect();
+                let tail = &lines[lines.len().saturating_sub(30)..];
+                report += &format!("\n--- {} ---\n{}", entry.path().display(), tail.join("\n"));
+            }
         }
         report
             + "\n--- launches ---\n"
@@ -569,6 +571,30 @@ impl Cockpit {
         arguments.extend_from_slice(keys);
         self.terminal_tmux(terminal, &arguments)
             .unwrap_or_else(|problem| panic!("cannot press {keys:?}: {problem}"));
+    }
+
+    /// Resizes the owner's terminal to `columns` wide and presses `key` in the same tmux
+    /// command, so the TUI's resize and the key reach it together.
+    pub fn resize_and_press(&self, columns: u16, key: &str) {
+        let terminal = self.terminal();
+        let columns = columns.to_string();
+        let rows = ROWS.to_string();
+        let arguments = [
+            "resize-window",
+            "-t",
+            "=owner:",
+            "-x",
+            &columns,
+            "-y",
+            &rows,
+            ";",
+            "send-keys",
+            "-t",
+            "=owner:",
+            key,
+        ];
+        self.terminal_tmux(terminal, &arguments)
+            .unwrap_or_else(|problem| panic!("cannot resize and press {key:?}: {problem}"));
     }
 
     /// Types `text` in the owner's terminal, every character a key.
