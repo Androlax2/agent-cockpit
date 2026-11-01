@@ -18,8 +18,15 @@ do not see placements").
 - **Typing is never repeated after an unconfirmed send** (`Redelivery::Never`): a second copy
   of a brief starts the work twice. A send that never reached tmux is retried on the next pass,
   at most 3 attempts; a failed or expired delivery ends the placement as `delivery-failed` and
-  hands the work back (item to `todo` and the queue, step to ready). An unconfirmed send stays
-  `uncertain` with its placement active; resolving it is #414.
+  hands the work back (item to `todo` and the queue, step to ready). The daemon does that as
+  soon as delivery fails, and every pass also ends a placement whose envelope the outbox holds
+  failed or expired, so a missed reaction (an error, a crash) is caught from durable state.
+  A tmux refusal or a gone pane types nothing and counts as not sent. An unconfirmed send
+  stays `uncertain` with its placement active and its reservation held; resolving it is #414.
+- **The brief goes to the terminal's first pane,** the one `new-session` opened for the
+  agent, not the active pane: a shell the owner split off and left focused must not run it.
+- **Each producer's worker claims only its own envelopes** (`claim_due`/`deliver_due` take
+  the producer), so scheduling's delivery never fails another producer's messages.
 - **A placed turn holds an admission reservation in the new `held` state.** It is charged in
   `in_use` like a running one, never expires and no sweep releases it, because the turn runs
   inside the session's long-lived execution, which admission cannot observe ending. The

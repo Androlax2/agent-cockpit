@@ -97,14 +97,16 @@ async fn pass(context: &Context) -> Result<Dispatched, Failed> {
     Ok(dispatched)
 }
 
-/// The outbox deliveries a pass makes at most: one per session is the most it places.
+/// The outbox deliveries a pass makes at most; the rest wait for the next pass.
 const DELIVERIES_PER_PASS: usize = 64;
 
-/// Delivers every due envelope, then ends the placement of each delivery that failed for
-/// good, so its work goes back to the queue.
+/// Delivers scheduling's due envelopes, then ends the placement of each delivery that failed
+/// for good, so its work goes back to the queue. One this misses (an error, a crash) the next
+/// pass ends from the outbox's state.
 async fn deliver(context: &Context) -> Result<(), DeliveryError> {
     let delivered = cockpit_messaging::deliver_due(
         &context.database,
+        cockpit_scheduling::DELIVERY_PRODUCER,
         &Typist { context },
         now(),
         DELIVERIES_PER_PASS,
@@ -117,17 +119,19 @@ async fn deliver(context: &Context) -> Result<(), DeliveryError> {
         };
         drop(read);
         let Some(placement) = cockpit_scheduling::placement_of_delivery(&envelope.effect_key)
-            .filter(|_| envelope.producer == cockpit_scheduling::DELIVERY_PRODUCER)
         else {
             continue;
         };
+        let reason = envelope.note.as_deref();
         match state {
             DeliveryState::Received => tracing::info!(
                 placement = placement.0,
                 session = envelope.destination.as_str(),
                 "delivered placed work to its agent"
             ),
-            DeliveryState::Failed | DeliveryState::Expired => {
+            // Expiry happens while claiming, so it never comes back from `deliver_due`; the
+            // pass ends an expired delivery's placement.
+            DeliveryState::Failed => {
                 let write = context.database.write().await?;
                 let ended = cockpit_scheduling::delivery_failed(&write, placement, now()).await?;
                 write.commit().await?;
@@ -135,7 +139,7 @@ async fn deliver(context: &Context) -> Result<(), DeliveryError> {
                     tracing::warn!(
                         placement = placement.0,
                         session = envelope.destination.as_str(),
-                        reason = envelope.note.as_deref().unwrap_or(""),
+                        reason,
                         "placed work could not be delivered; it goes back to the queue"
                     );
                 }
@@ -143,10 +147,13 @@ async fn deliver(context: &Context) -> Result<(), DeliveryError> {
             DeliveryState::Uncertain => tracing::warn!(
                 placement = placement.0,
                 session = envelope.destination.as_str(),
-                reason = envelope.note.as_deref().unwrap_or(""),
+                reason,
                 "placed work may or may not have reached its agent; the placement stays"
             ),
-            DeliveryState::Queued | DeliveryState::Submitting | DeliveryState::Superseded => {}
+            DeliveryState::Queued
+            | DeliveryState::Submitting
+            | DeliveryState::Expired
+            | DeliveryState::Superseded => {}
         }
     }
     Ok(())
@@ -162,14 +169,6 @@ impl Deliverer for Typist<'_> {
         let context = self.context;
         async move {
             let rejected = |reason: String| Delivery::Failed(Failure::Rejected { reason });
-            // Scheduling is the outbox's only producer so far; one added later wires its
-            // own delivery here rather than having its envelopes typed to an agent.
-            if claim.producer != cockpit_scheduling::DELIVERY_PRODUCER {
-                return rejected(format!(
-                    "the daemon delivers nothing for {}",
-                    claim.producer
-                ));
-            }
             let Some(placement) = cockpit_scheduling::placement_of_delivery(&claim.effect_key)
             else {
                 return rejected(format!("{:?} names no placement", claim.effect_key));

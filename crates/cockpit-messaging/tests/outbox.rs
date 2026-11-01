@@ -39,7 +39,9 @@ async fn state(database: &Database, id: EnvelopeId) -> DeliveryState {
 
 async fn claim(database: &Database, now: i64) -> Vec<Claim> {
     let write = database.write().await.unwrap();
-    let claims = cockpit_messaging::claim_due(&write, now, 10).await.unwrap();
+    let claims = cockpit_messaging::claim_due(&write, "teams", now, 10)
+        .await
+        .unwrap();
     write.commit().await.unwrap();
     claims
 }
@@ -119,7 +121,7 @@ impl Deliverer for Receiver {
 }
 
 async fn deliver(database: &Database, receiver: &Receiver) -> Vec<(EnvelopeId, DeliveryState)> {
-    cockpit_messaging::deliver_due(database, receiver, NOW, 10)
+    cockpit_messaging::deliver_due(database, "teams", receiver, NOW, 10)
         .await
         .unwrap()
 }
@@ -528,6 +530,7 @@ async fn an_outcome_that_cannot_be_recorded_leaves_the_other_deliveries_recorded
 
     let pass = cockpit_messaging::deliver_due(
         &fixture.database,
+        "teams",
         &EmptyReceiptFor { bad_key: "bad" },
         NOW,
         10,
@@ -546,5 +549,33 @@ async fn an_outcome_that_cannot_be_recorded_leaves_the_other_deliveries_recorded
     assert_eq!(
         state(&fixture.database, last).await,
         DeliveryState::Received
+    );
+}
+
+#[tokio::test]
+async fn a_worker_claims_only_its_own_producers_envelopes() {
+    let fixture = Fixture::new().await;
+    let ours = queued_id(enqueue(&fixture.database, &envelope("ours", "chief", "a")).await);
+    let theirs = queued_id(
+        enqueue(
+            &fixture.database,
+            &Envelope {
+                producer: "scheduling".to_owned(),
+                ..envelope("theirs", "chief", "b")
+            },
+        )
+        .await,
+    );
+
+    let claimed: Vec<EnvelopeId> = claim(&fixture.database, NOW)
+        .await
+        .into_iter()
+        .map(|claim| claim.id)
+        .collect();
+
+    assert_eq!(claimed, vec![ours]);
+    assert_eq!(
+        state(&fixture.database, theirs).await,
+        DeliveryState::Queued
     );
 }

@@ -143,7 +143,7 @@ pub async fn enqueue(
         Coalescing::Never => None,
         Coalescing::ReplaceableObservation { slot } => Some(slot.as_str()),
     };
-    if let Some(existing) = by_effect_key(write, &envelope.effect_key).await? {
+    if let Some(existing) = envelope_by_key(write, &envelope.effect_key).await? {
         let is_same_effect = existing.producer == envelope.producer
             && existing.destination == envelope.destination
             && existing.payload == envelope.payload
@@ -206,11 +206,13 @@ pub struct Claim {
     pub payload: String,
 }
 
-/// Marks queued envelopes past their expiry `expired`, then takes up to `limit` due ones,
-/// oldest due first, for delivery. Commit before delivering: no delivery runs inside a
-/// transaction (report 02).
+/// Marks queued envelopes past their expiry `expired`, then takes up to `limit` of
+/// `producer`'s due ones, oldest due first, for delivery. Each producer's worker claims only
+/// its own envelopes, so one never fails another's for want of a receiver. Commit before
+/// delivering: no delivery runs inside a transaction (report 02).
 pub async fn claim_due(
     write: &WriteTransaction<'_>,
+    producer: &str,
     now: i64,
     limit: usize,
 ) -> Result<Vec<Claim>, Error> {
@@ -225,8 +227,8 @@ pub async fn claim_due(
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let due = envelopes_where(
         write,
-        "state = 'queued' AND due_at <= ?1 ORDER BY due_at, id LIMIT ?2",
-        (now, limit),
+        "state = 'queued' AND due_at <= ?1 AND producer = ?3 ORDER BY due_at, id LIMIT ?2",
+        (now, limit, producer),
     )
     .await?;
     let mut claims = Vec::with_capacity(due.len());
@@ -420,18 +422,20 @@ pub trait Deliverer {
     fn deliver(&self, claim: &Claim) -> impl Future<Output = Delivery> + Send;
 }
 
-/// One pass of the delivery worker: claims up to `limit` due envelopes and commits, delivers
+/// One pass of `producer`'s delivery worker: claims up to `limit` of its due envelopes and
+/// commits, delivers
 /// each through `deliverer`, then records each outcome in its own transaction. A crash in
 /// between leaves the envelopes `submitting` for [`reconcile_deliveries`]. An outcome that
 /// cannot be recorded is returned as the error after every other outcome was recorded.
 pub async fn deliver_due(
     database: &Database,
+    producer: &str,
     deliverer: &impl Deliverer,
     now: i64,
     limit: usize,
 ) -> Result<Vec<(EnvelopeId, DeliveryState)>, Error> {
     let write = database.write().await?;
-    let claims = claim_due(&write, now, limit).await?;
+    let claims = claim_due(&write, producer, now, limit).await?;
     write.commit().await?;
     let mut delivered = Vec::with_capacity(claims.len());
     // One outcome that cannot be recorded must not leave the other claims submitting.
@@ -564,7 +568,8 @@ async fn set_ended(
     Ok(())
 }
 
-async fn by_effect_key(
+/// The envelope of `effect_key`, in whatever state it is.
+pub async fn envelope_by_key(
     connection: &Connection,
     effect_key: &str,
 ) -> Result<Option<StoredEnvelope>, Error> {

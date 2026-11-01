@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use cockpit_authorization::{Permission, Scope, SessionId};
-use cockpit_messaging::{Coalescing, Envelope, Redelivery};
+use cockpit_messaging::{Coalescing, DeliveryState, Envelope, Redelivery};
 use cockpit_resource_admission::{
     Admission, AdmissionRequest, ControlSupport, Demand, Hold, Limits, Policy, ReservationId,
     Verdict, Workload,
@@ -538,7 +538,17 @@ async fn settle(
             .candidates
             .iter()
             .any(|candidate| candidate.session == placement.session);
-        let reason = match (is_working(&placement, items, runs), is_present) {
+        let is_working = is_working(&placement, items, runs);
+        let reason = match (is_working, is_present) {
+            // The daemon ends it as soon as delivery fails; this catches a failure it did
+            // not get to (a crash, an error), from the outbox's durable state.
+            _ if is_undelivered(write, placement.id).await? => {
+                if is_working {
+                    hand_back(write, &placement, inputs.now).await?;
+                    settled.handed_back = true;
+                }
+                "delivery-failed"
+            }
             (true, true) => continue,
             (true, false) => {
                 hand_back(write, &placement, inputs.now).await?;
@@ -592,6 +602,18 @@ pub async fn delivery_failed(
     }
     end(write, &placement, "delivery-failed", now).await?;
     Ok(true)
+}
+
+/// Whether the placement's delivery failed or expired for good: its agent never got the
+/// work. A placement from before delivery has no envelope and is not undelivered.
+async fn is_undelivered(connection: &Connection, placement: PlacementId) -> Result<bool, Error> {
+    let envelope = cockpit_messaging::envelope_by_key(connection, &delivery_key(placement)).await?;
+    Ok(envelope.is_some_and(|envelope| {
+        matches!(
+            envelope.state,
+            DeliveryState::Failed | DeliveryState::Expired
+        )
+    }))
 }
 
 /// Whether the placement's session still does its work.

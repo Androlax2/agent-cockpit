@@ -3,7 +3,7 @@
 
 mod common;
 
-use cockpit_messaging::{DeliveryState, Redelivery};
+use cockpit_messaging::{Delivery, DeliveryState, Failure, Redelivery};
 use cockpit_scheduling::{Placement, Unit};
 use cockpit_tasks::{Actor, Priority, Status};
 use cockpit_workflows::RESEARCH;
@@ -14,25 +14,10 @@ async fn envelope_of(
     placement: &Placement,
 ) -> cockpit_messaging::StoredEnvelope {
     let read = fixture.database.read().await.unwrap();
-    let mut rows = read
-        .query(
-            "SELECT id FROM messaging_envelopes WHERE effect_key = ?1",
-            [cockpit_scheduling::delivery_key(placement.id)],
-        )
-        .await
-        .unwrap();
-    let id = rows
-        .next()
+    cockpit_messaging::envelope_by_key(&read, &cockpit_scheduling::delivery_key(placement.id))
         .await
         .unwrap()
         .expect("an envelope")
-        .get(0)
-        .unwrap();
-    drop(rows);
-    cockpit_messaging::envelope(&read, cockpit_messaging::EnvelopeId(id))
-        .await
-        .unwrap()
-        .unwrap()
 }
 
 async fn fail_delivery(fixture: &Fixture, placement: &Placement, now: i64) -> bool {
@@ -162,4 +147,32 @@ async fn a_failed_delivery_of_a_placement_already_ended_changes_nothing() {
         .await
         .unwrap();
     assert_eq!(finished.status, Status::Done);
+}
+
+#[tokio::test]
+async fn a_delivery_the_outbox_failed_ends_its_placement_at_the_next_pass_even_unreported() {
+    let fixture = Fixture::with_budget(2).await;
+    let session = fixture.session("a-1", "a").await;
+    let item = fixture.queued("a", "Fix the login", Priority::NORMAL).await;
+    let first = fixture
+        .dispatch_at(NOW, std::slice::from_ref(&session))
+        .await;
+    let write = fixture.database.write().await.unwrap();
+    let claims =
+        cockpit_messaging::claim_due(&write, cockpit_scheduling::DELIVERY_PRODUCER, NOW, 10)
+            .await
+            .unwrap();
+    let rejected = Delivery::Failed(Failure::Rejected {
+        reason: "the session is gone".to_owned(),
+    });
+    cockpit_messaging::record_delivery(&write, claims[0].id, claims[0].attempt, &rejected, NOW)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let again = fixture.dispatch_at(NOW + 60, &[session]).await;
+
+    assert_eq!(again.ended, vec![first.placed[0].id], "{again:?}");
+    assert_eq!(again.placed.len(), 1, "{again:?}");
+    assert_eq!(again.placed[0].item, item.id);
 }
