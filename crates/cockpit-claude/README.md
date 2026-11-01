@@ -53,6 +53,7 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 
 - Depends on: `cockpit-provider-api` only (crate-graph rule
   `provider adapters -> provider-api only`), `serde_json` for hook payloads.
+- Also uses the workspace-pinned `rustix` process API for sign-in probe cleanup.
 - Used by: the daemon's wiring only (`capabilities -> provider adapters`).
 
 ## Tests

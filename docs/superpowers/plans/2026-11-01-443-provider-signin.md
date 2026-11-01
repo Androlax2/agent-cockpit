@@ -19,7 +19,8 @@ dependency edge. No persistent state or new protocol fields are needed.
 ## Constraints
 
 - Keep submit/cancel and delivery behavior, installed paths and authorization unchanged.
-- No dependencies, credential-file inference, model calls, or live user state in tests.
+- No new libraries, credential-file inference, model calls, or live user state in tests.
+  Process cleanup reuses the workspace-pinned `rustix` 1.1.6 after independent review.
 - Status output never enters reports or logs: it may contain account identifiers or keys.
 - Unknown includes a reason and next step; an operational failure is not signed out.
 - Conformance stays unverified until measured against the exact harness version.

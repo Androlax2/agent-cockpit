@@ -1,4 +1,6 @@
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -83,11 +85,13 @@ fn status_output(
     let (mut stderr, err) = pair()?;
     let mut child = Command::new(program)
         .args(arguments)
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err)
         .spawn()
         .map_err(|_| "cannot run the status command".to_owned())?;
+    let pid = Pid::from_child(&child);
     let ends_at = Instant::now() + deadline;
     let result = (|| {
         let mut output = Vec::new();
@@ -95,15 +99,16 @@ fn status_output(
         loop {
             let out_done = read_status_pipe(&mut stdout, &mut output)?;
             let err_done = read_status_pipe(&mut stderr, &mut error)?;
-            let status = child
-                .try_wait()
-                .map_err(|_| "cannot wait for the status command")?;
-            if let Some(status) = status.filter(|_| out_done && err_done) {
-                return Ok(std::process::Output {
-                    status,
-                    stdout: output,
-                    stderr: error,
-                });
+            // Keep the leader waitable until group cleanup, so its pid cannot be reused
+            // when a wrapper exits before its descendants close the output streams.
+            let exited = rustix::process::waitid(
+                WaitId::Pid(pid),
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+            )
+            .map_err(|_| "cannot wait for the status command")?
+            .is_some();
+            if exited && out_done && err_done {
+                return Ok((output, error));
             }
             if Instant::now() >= ends_at {
                 return Err(format!(
@@ -114,11 +119,22 @@ fn status_output(
             std::thread::sleep(Duration::from_millis(20));
         }
     })();
-    if result.is_err() {
+    // Status commands own no long-lived workers, including after a successful answer.
+    let cleanup = rustix::process::kill_process_group(pid, Signal::KILL);
+    if cleanup.is_err() {
         let _ = child.kill();
-        let _ = child.wait();
     }
-    result
+    let status = child.wait().map_err(|_| "cannot reap the status command")?;
+    match cleanup {
+        Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+        Err(_) => return Err("cannot stop the status command's process group".to_owned()),
+    }
+    let (stdout, stderr) = result?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn read_status_pipe(pipe: &mut impl Read, bytes: &mut Vec<u8>) -> Result<bool, String> {

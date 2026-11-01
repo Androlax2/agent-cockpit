@@ -12,8 +12,11 @@ Issue #443. Decided by the worker, following reports 08 and 09 and the harness c
 - **Bound and discard raw output.** Every probe has a ten-second deadline and 64 KiB per
   stream. Nonblocking socket pairs avoid blocked reader threads when wrappers leave their
   output open. Only normalized status and fixed next actions reach readiness; account
-  names, paths and masked keys do not. Each adapter owns its runner, preserving the existing
-  contract-only dependency rule and leaving discovery and delivery behavior unchanged.
+  names, paths and masked keys do not. Each probe leads its own process group, stopped
+  before reaping its leader so a reused PID cannot be signalled. This reuses the workspace's
+  pinned `rustix` 1.1.6 process API (already used by Codex and the process supervisor).
+  Each adapter owns its runner, preserving the existing contract-only dependency rule and
+  leaving discovery and delivery behavior unchanged.
 - **Provenance belongs to the probe.** Isolated-home conformance passed on Claude 2.1.316
   and Codex 0.166.0, using only placeholder API keys. Codex's other capabilities retain
   their 0.161.0 pin. OpenCode's source-backed count parser remains discovered until the

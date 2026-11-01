@@ -64,6 +64,7 @@ provider and nothing above the contract sees an OpenCode type (#47).
 
 - Depends on: `cockpit-provider-api` only (crate-graph rule
   `provider adapters -> provider-api only`), `serde_json` for events and the server's JSON.
+- Also uses the workspace-pinned `rustix` process API for sign-in probe cleanup.
 - Used by: the daemon's wiring only (`capabilities -> provider adapters`).
 
 ## Tests

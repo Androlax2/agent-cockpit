@@ -100,3 +100,45 @@ fn only_a_measured_sign_in_version_is_tested() {
         cockpit_provider_api::Provenance::Discovered
     );
 }
+
+#[test]
+fn a_timeout_stops_descendants_even_after_the_wrapper_exits() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+    for ending in ["wait", "exit 0"] {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("descendant");
+        let program = common::script(
+            dir.path(),
+            "agent",
+            &format!("sleep 3 &\necho $! > '{}'\n{ending}", pid_file.display()),
+        );
+        let adapter = Codex::new(program, None, None);
+        let answer = adapter.sign_in_within(Duration::from_millis(200));
+        assert!(matches!(answer.status, SignInStatus::Unknown { .. }));
+        let pid = std::fs::read_to_string(pid_file).unwrap();
+        let running = || {
+            let state = Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", pid.trim()])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&state.stdout);
+            !state.trim().is_empty() && !state.trim_start().starts_with('Z')
+        };
+        let until = Instant::now() + Duration::from_millis(500);
+        while running() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let survived = running();
+        // Clean up the fixture even when reproducing the regression.
+        if survived {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", pid.trim()])
+                .status();
+        }
+        assert!(
+            !survived,
+            "the {ending} wrapper left its descendant running"
+        );
+    }
+}
