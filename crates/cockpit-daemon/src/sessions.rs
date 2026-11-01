@@ -280,7 +280,9 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::CannotResume { .. }
         | Error::SleepRefused { .. }
         | Error::LaunchInProgress { .. }
+        | Error::TerminalBusy { .. }
         | Error::StopUnconfirmed { .. } => ErrorCode::Conflict,
+        Error::StepsBusy { .. } => ErrorCode::Busy,
         Error::Provider(_) | Error::TmuxUnavailable { .. } => ErrorCode::Refused,
         Error::Projects(error) => crate::projects::error_code(error),
         _ => ErrorCode::Internal,

@@ -67,6 +67,10 @@ pub struct Sessions {
     /// The owner's desktop session variables the next launch gets: none until the daemon
     /// imports its start's, then each owner import (#307).
     desktop_environment: Mutex<Vec<(OsString, OsString)>>,
+    /// One permit per outstanding blocking step, held by its thread until the step returns,
+    /// not until its caller stops waiting (report 03: "cancellation has two facts"), so hung
+    /// steps cannot take the whole blocking pool (#325).
+    blocking_permits: Arc<tokio::sync::Semaphore>,
 }
 
 /// A session's operation lock, and whether a launch holds it. A stop never
@@ -81,6 +85,27 @@ struct SessionLock {
     /// Wakes the stops waiting for the lock when a launch starts, so they refuse at once
     /// instead of waiting behind it.
     launch_started: tokio::sync::Notify,
+    /// How many steps that may close or open the session's terminal have not returned,
+    /// timed-out ones included. A launch opens the terminal only at zero (#324): the terminal
+    /// is named by the session alone, so a stale step would act on the new launch's.
+    terminal_steps: tokio::sync::watch::Sender<usize>,
+}
+
+/// A step counted in [`SessionLock::terminal_steps`], moved into its thread so it counts
+/// until the step returns.
+struct TerminalStep(Arc<SessionLock>);
+
+impl TerminalStep {
+    fn start(session: &Arc<SessionLock>) -> TerminalStep {
+        session.terminal_steps.send_modify(|steps| *steps += 1);
+        TerminalStep(Arc::clone(session))
+    }
+}
+
+impl Drop for TerminalStep {
+    fn drop(&mut self) {
+        self.0.terminal_steps.send_modify(|steps| *steps -= 1);
+    }
 }
 
 /// A held session lock: every owner operation and periodic step holds one. Only a launch
@@ -118,7 +143,12 @@ impl Sessions {
         providers: Vec<Arc<dyn Provider>>,
         settings: Settings,
     ) -> Sessions {
+        assert!(
+            settings.blocking_steps > 0,
+            "the sessions need at least one blocking step permit"
+        );
         Sessions {
+            blocking_permits: Arc::new(tokio::sync::Semaphore::new(settings.blocking_steps)),
             database,
             processes,
             tmux,
@@ -1201,6 +1231,7 @@ impl Sessions {
         first_message: Option<&str>,
     ) -> Result<Session, Error> {
         let tmux = self.tmux()?;
+        self.wait_for_terminal_steps(id).await?;
         let session = self.get(id).await?;
         let command = {
             let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
@@ -1283,14 +1314,10 @@ impl Sessions {
             columns: self.settings.columns,
             rows: self.settings.rows,
         };
-        let opened = self
-            .blocking("open the terminal", move || {
-                close_if_open(&tmux, &terminal.name)?;
-                tmux.new_session(&terminal).map(drop).map_err(Error::from)
-            })
-            .await;
+        let opened = self.open_terminal(id, tmux, terminal).await;
         if let Err(error) = opened {
-            // A timed-out open may still create the terminal and start the agent later.
+            // A timed-out open may still create the terminal and start the agent later; one
+            // refused for lack of a permit never ran.
             if matches!(error, Error::StepTimedOut { .. }) {
                 self.discard_launch(id, execution).await;
             } else {
@@ -1426,23 +1453,79 @@ impl Sessions {
         .await
     }
 
+    /// Closes the session's terminal. Never waits behind an earlier terminal step, so the
+    /// owner can end a session whose launch hung in tmux (#272); a stale step that later
+    /// closes or opens it acts on no newer launch, since none opens before it returns.
     async fn close_terminal(&self, id: &SessionId) -> Result<(), Error> {
         let tmux = self.tmux()?;
         let name = terminal_name(id)?;
-        self.blocking("close the terminal", move || close_if_open(&tmux, &name))
-            .await
+        let counted = TerminalStep::start(&self.session_lock(id));
+        self.blocking("close the terminal", move || {
+            let _counted = counted;
+            close_if_open(&tmux, &name)
+        })
+        .await
     }
 
-    /// Runs a blocking step off the async workers and waits for it at most the step
-    /// timeout (#272). A step that runs out of it keeps running, since started blocking
-    /// work cannot be aborted (report 03): its caller undoes what it may still do.
+    /// Opens a launch's terminal; [`Self::wait_for_terminal_steps`] ran first.
+    async fn open_terminal(
+        &self,
+        id: &SessionId,
+        tmux: Arc<Server>,
+        terminal: SessionLaunch,
+    ) -> Result<(), Error> {
+        let counted = TerminalStep::start(&self.session_lock(id));
+        self.blocking("open the terminal", move || {
+            let _counted = counted;
+            close_if_open(&tmux, &terminal.name)?;
+            tmux.new_session(&terminal).map(drop).map_err(Error::from)
+        })
+        .await
+    }
+
+    /// Waits, at most the step timeout, until every earlier step that may close or open the
+    /// session's terminal returned (#324), before a launch prepares anything. The caller
+    /// holds the session's lock, so no step of it starts until the open: the ones counted
+    /// are stale and only return.
+    async fn wait_for_terminal_steps(&self, id: &SessionId) -> Result<(), Error> {
+        let mut steps = self.session_lock(id).terminal_steps.subscribe();
+        match tokio::time::timeout(
+            self.settings.step_timeout,
+            steps.wait_for(|steps| *steps == 0),
+        )
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(_) => Err(Error::TerminalBusy {
+                session: id.clone(),
+            }),
+        }
+    }
+
+    /// Runs a blocking step off the async workers, holding one of the capability's permits
+    /// (#325). Waits at most the step timeout for the permit, then at most the step timeout
+    /// for the step (#272). A step that runs out of it keeps running, and keeps its permit
+    /// until it returns, since started blocking work cannot be aborted (report 03): its
+    /// caller undoes what it may still do.
     async fn blocking<T: Send + 'static>(
         &self,
         name: &'static str,
         step: impl FnOnce() -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
         let timeout = self.settings.step_timeout;
-        match tokio::time::timeout(timeout, tokio::task::spawn_blocking(step)).await {
+        let permits = Arc::clone(&self.blocking_permits);
+        let Ok(permit) = tokio::time::timeout(timeout, permits.acquire_owned()).await else {
+            return Err(Error::StepsBusy {
+                step: name,
+                limit: self.settings.blocking_steps,
+            });
+        };
+        let permit = permit.expect("the blocking step permits are never closed");
+        let running = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            step()
+        });
+        match tokio::time::timeout(timeout, running).await {
             Ok(joined) => joined.map_err(|error| Error::Blocking(error.to_string()))?,
             Err(_) => Err(Error::StepTimedOut {
                 step: name,

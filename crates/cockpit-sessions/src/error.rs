@@ -84,6 +84,17 @@ pub enum Error {
         step: &'static str,
         after: std::time::Duration,
     },
+    /// Every blocking step permit is held, by steps still running or timed out and not yet
+    /// returned (#325); retrying later may work.
+    StepsBusy {
+        step: &'static str,
+        limit: usize,
+    },
+    /// A launch would open the session's terminal while an earlier step on it, one that
+    /// timed out, has not returned and may still close or open it (#324).
+    TerminalBusy {
+        session: SessionId,
+    },
 }
 
 impl fmt::Display for Error {
@@ -161,6 +172,16 @@ impl fmt::Display for Error {
             Error::StepTimedOut { step, after } => write!(
                 formatter,
                 "the step to {step} did not finish within {after:?}; it may still finish"
+            ),
+            Error::StepsBusy { step, limit } => write!(
+                formatter,
+                "cannot {step}: all {limit} blocking steps are still running, some may be \
+                 hung in tmux or a provider; retry later"
+            ),
+            Error::TerminalBusy { session } => write!(
+                formatter,
+                "session {session}'s terminal cannot be opened: an earlier step on it timed \
+                 out and has not returned yet; retry once tmux answers"
             ),
         }
     }

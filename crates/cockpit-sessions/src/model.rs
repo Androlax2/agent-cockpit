@@ -373,6 +373,10 @@ pub struct Settings {
     /// command, a tmux call, a file or process read. A step that runs out of it fails, so a
     /// hung launch ends and the owner can stop its session (#272).
     pub step_timeout: Duration,
+    /// How many blocking steps may be outstanding at once, timed-out ones included until
+    /// they return: a hung tmux or provider keeps its thread, and the runtime's blocking pool
+    /// is shared with every capability (#325, report 03). At least 1.
+    pub blocking_steps: usize,
 }
 
 impl Default for Settings {
@@ -391,6 +395,9 @@ impl Default for Settings {
             desktop_session: crate::DesktopSession::Shared,
             start_files: Vec::new(),
             step_timeout: Duration::from_secs(30),
+            // An eighth of Tokio's default blocking pool (512), so a hung tmux leaves the
+            // rest of the daemon its threads.
+            blocking_steps: 64,
         }
     }
 }
