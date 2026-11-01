@@ -25,6 +25,7 @@ CRATES = Path(__file__).resolve().parents[1] / "crates"
 # The crates ci.yml's platform jobs test with `-p`, and those whose programs their tests run:
 # the daemon's tests and the TUI's end-to-end harness start `cockpit` and `cockpit-claude-hook`.
 PLATFORM_ROOTS = [
+    "cockpit-agent-channel",
     "cockpit-cli",
     "cockpit-claude",
     "cockpit-daemon",

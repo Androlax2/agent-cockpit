@@ -112,6 +112,9 @@ jobs:
       # groups, every cgroup control reported unsupported with its reason.
       - name: Admit resources
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-resource-admission
+      # The agent channel's macOS process trees (#336): ps and sysctl, real processes.
+      - name: Identify agents
+        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-agent-channel
       # The TUI end to end (#300): the daemon, `cockpit tui` and the agents in real tmux. The
       # Linux job runs the same tests inside the workspace's.
       - name: Install tmux for the TUI's end-to-end tests

@@ -1,6 +1,5 @@
 //! Issue #32: who a sender is comes from its launch token and its verified process tree, never
 //! from a payload. Real processes on a real state database.
-#![cfg(target_os = "linux")]
 
 mod common;
 

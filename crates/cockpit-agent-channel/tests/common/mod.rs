@@ -125,9 +125,15 @@ impl Process {
         let pid = self.pid();
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let children =
-                std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap();
-            if let Some(child) = children.split_whitespace().next() {
+            // `pgrep` rather than `/proc/<pid>/task/<pid>/children`: macOS has no `/proc`.
+            let children = Command::new("pgrep")
+                .args(["-P", &pid.to_string()])
+                .output()
+                .expect("pgrep runs");
+            if let Some(child) = String::from_utf8_lossy(&children.stdout)
+                .split_whitespace()
+                .next()
+            {
                 return child.parse().unwrap();
             }
             assert!(Instant::now() < deadline, "process {pid} started no child");

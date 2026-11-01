@@ -156,10 +156,6 @@ pub enum DaemonKind {
     Product,
     /// The tests' daemon: an idle session sleeps after `idle_seconds`, checked every
     /// `tick_ms`.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "only the Linux-only idle tests use it (#336)")
-    )]
     ShortIdle { idle_seconds: u64, tick_ms: u64 },
 }
 
@@ -620,10 +616,6 @@ impl Cockpit {
 
     /// Waits until `pane` has the keys. tmux redraws the manager's pane borders when the
     /// active pane changes, which is a write to the terminal that wakes the wait.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "only the Linux-only ask tests use it (#336)")
-    )]
     pub fn wait_for_focus(&self, pane: ManagerPane) {
         self.wait_until(&format!("the {pane:?} has the keys"), |_| {
             self.focused() == pane
