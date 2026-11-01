@@ -71,7 +71,13 @@ pub(crate) fn send(
             .map_err(|error| error.to_string())?;
         match limited.read(&mut buffer) {
             Ok(0) => break,
-            Ok(read) => raw.extend_from_slice(&buffer[..read]),
+            Ok(read) => {
+                raw.extend_from_slice(&buffer[..read]);
+                // A server may keep the connection open after a whole answer.
+                if is_complete(&raw) {
+                    break;
+                }
+            }
             Err(error)
                 if matches!(
                     error.kind(),
@@ -109,6 +115,33 @@ fn encode(port: u16, user: &str, password: &str, request: &Request<'_>) -> Vec<u
     let mut bytes = head.into_bytes();
     bytes.extend_from_slice(body.as_bytes());
     bytes
+}
+
+/// Whether `raw` holds a whole answer: its headers and all the body its `Content-Length`
+/// announces, or the last of its chunks. An answer that says neither ends with the
+/// connection.
+fn is_complete(raw: &[u8]) -> bool {
+    let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let Ok(head) = std::str::from_utf8(&raw[..split]) else {
+        return false;
+    };
+    let body = &raw[split + 4..];
+    let header = |name: &str| {
+        head.split("\r\n").skip(1).find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_ascii_lowercase())
+        })
+    };
+    if header("transfer-encoding").is_some_and(|encoding| encoding.contains("chunked")) {
+        return body.ends_with(b"0\r\n\r\n");
+    }
+    header("content-length")
+        .and_then(|length| length.parse::<usize>().ok())
+        .is_some_and(|length| body.len() >= length)
 }
 
 /// A whole response: its status and its body, decoded from chunks when it came in chunks.

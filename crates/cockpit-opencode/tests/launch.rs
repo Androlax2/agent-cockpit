@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 use cockpit_opencode::{OpenCode, PLUGIN_VARIABLES, SERVER_HOSTNAME, SERVER_USERNAME, Server};
@@ -120,7 +120,7 @@ fn a_resumed_id_that_is_not_an_opencode_session_is_refused() {
 }
 
 #[test]
-fn the_first_message_goes_as_the_prompt() {
+fn the_first_message_goes_as_the_prompt_in_one_word_even_when_it_starts_with_a_dash() {
     let launch = common::opencode()
         .launch(&LaunchRequest {
             first_message: Some("--fix the parser"),
@@ -128,10 +128,7 @@ fn the_first_message_goes_as_the_prompt() {
         })
         .unwrap();
 
-    assert_eq!(
-        words(&launch.arguments)[4..],
-        ["--prompt", "--fix the parser"]
-    );
+    assert_eq!(words(&launch.arguments)[4..], ["--prompt=--fix the parser"]);
 }
 
 #[test]
@@ -162,6 +159,37 @@ fn a_launch_with_the_bridge_loads_the_plugin_into_its_own_server() {
         common::variable(&launch, port_variable),
         Some(port.as_str())
     );
+}
+
+#[test]
+fn the_owners_inline_config_is_kept_and_the_plugin_joins_its_plugins() {
+    let bridge = common::bridge();
+    let owner = r#"{"model":"anthropic/claude-sonnet-5-5","plugin":["their-plugin"]}"#;
+
+    let config: serde_json::Value =
+        serde_json::from_str(&bridge.inline_config(Some(OsStr::new(owner))).unwrap()).unwrap();
+
+    assert_eq!(
+        config,
+        serde_json::json!({
+            "model": "anthropic/claude-sonnet-5-5",
+            "plugin": ["their-plugin", bridge.plugin.to_str().unwrap()],
+        })
+    );
+}
+
+#[test]
+fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
+    let bridge = common::bridge();
+
+    for owner in ["not json", "[]", r#"{"plugin":"one"}"#] {
+        let refusal = bridge.inline_config(Some(OsStr::new(owner))).unwrap_err();
+
+        assert!(
+            refusal.reason.starts_with("OPENCODE_CONFIG_CONTENT "),
+            "{owner}: {refusal:?}"
+        );
+    }
 }
 
 #[test]

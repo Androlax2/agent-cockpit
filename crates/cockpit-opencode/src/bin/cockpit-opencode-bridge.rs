@@ -9,8 +9,12 @@
 
 use std::io::Read;
 use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 use cockpit_opencode::events;
+
+/// How long one report may take before the bridge gives up on it.
+const REPORT_DEADLINE: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     match run() {
@@ -39,12 +43,33 @@ fn run() -> Result<(), String> {
     let Some(report) = events::bridge_arguments(&event) else {
         return Ok(());
     };
-    let status = Command::new(&cockpit)
+    let mut child = Command::new(&cockpit)
         .args(&report)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .status()
+        .spawn()
         .map_err(|error| format!("cannot run {}: {error}", cockpit.to_string_lossy()))?;
+    // The plugin runs one bridge at a time, so a report that never ends would hold back
+    // every later event.
+    let ends_at = Instant::now() + REPORT_DEADLINE;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("cannot wait for `cockpit`: {error}"))?
+        {
+            break status;
+        }
+        if Instant::now() > ends_at {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "`cockpit {}` did not end within {} ms",
+                report.join(" "),
+                REPORT_DEADLINE.as_millis()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     if !status.success() {
         return Err(format!("`cockpit {}` failed ({status})", report.join(" ")));
     }

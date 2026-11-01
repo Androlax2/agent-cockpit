@@ -21,6 +21,9 @@ pub const FORWARDED_EVENTS: [&str; 6] = [
 /// Assistant `finish` reasons after which OpenCode's loop goes on: the turn is not over.
 const UNFINISHED: [&str; 2] = ["tool-calls", "unknown"];
 
+/// The error an assistant message ends with when the owner interrupts its turn.
+const ABORTED: &str = "MessageAbortedError";
+
 /// The agent channel's longest needs-input question, in characters.
 const QUESTION_MAX_CHARS: usize = 300;
 /// The agent channel's longest outcome reason, in characters.
@@ -128,6 +131,10 @@ fn turn_end(properties: &serde_json::Value) -> Option<EventKind> {
     }
     // Not `QuotaStopped` for an `APIError`: a spent plan and a transient 429 look alike.
     if let Some(error) = info.get("error") {
+        // The owner interrupted the turn: it did not fail, and it has no other outcome.
+        if error.get("name").and_then(serde_json::Value::as_str) == Some(ABORTED) {
+            return Some(EventKind::Idle);
+        }
         return Some(EventKind::TurnEnded {
             outcome: TurnOutcome::Failed {
                 reason: error

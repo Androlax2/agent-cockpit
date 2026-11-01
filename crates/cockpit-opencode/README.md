@@ -7,12 +7,12 @@ provider and nothing above the contract sees an OpenCode type (#47).
 
 ## Rules
 
-- **Capabilities with provenance.** Resume, submit and cancel are `tested` only when the
-  running OpenCode is `CONFORMANCE_VERSION`; on any other or unknown version they are
-  `discovered` (unverified). `events` and `outcome` need the plugin bridge: an adapter wired
-  without it loads no plugin. Effort is not reported: the TUI sends the variant it saved for
-  the model with every prompt, so a launch cannot choose one; a variant goes with a message
-  the server delivers instead. Compact and screen reading are not reported. Commands are
+- **Capabilities with provenance.** Every capability is `tested` only when the running
+  OpenCode is `CONFORMANCE_VERSION`; on any other or unknown version it is `discovered`
+  (unverified). Without the plugin bridge only resume is offered: no events means the
+  activity is never known, so submit and cancel would always be refused. Effort is not
+  reported: the TUI sends the variant it saved for the model with every prompt, so a
+  launch cannot choose one; a variant goes with a message the server delivers instead. Compact and screen reading are not reported. Commands are
   served (`Server::commands`) but not reported until the contract has their method.
 - **Standalone server per session.** Every launch runs the TUI with its own server on a free
   loopback port (`--port`, `--hostname 127.0.0.1`), behind a password minted for it
@@ -23,10 +23,11 @@ provider and nothing above the contract sees an OpenCode type (#47).
 - **Launch.** A resumed conversation runs `--session <id>` (an id of the form `ses…`); a new
   one runs unnamed, because OpenCode creates its session at the first prompt and refuses a
   `--session` it does not know: the bridge's first report names it. The first message goes
-  as `--prompt`.
+  as one word, `--prompt=<message>`, so a message starting with `-` is not a flag.
 - **Plugin bridge.** With a bridge, a launch sets `OPENCODE_CONFIG_CONTENT` to load
   `plugin/cockpit-opencode-plugin.js` (`PLUGIN_SOURCE`, written by the daemon where
-  `Bridge::plugin` says) on top of the owner's configuration, and tells it the bridge, the
+  `Bridge::plugin` says) on top of the owner's configuration (an `OPENCODE_CONFIG_CONTENT`
+  the owner set is kept, the plugin joining its list; one it cannot join refuses the launch), and tells it the bridge, the
   `cockpit` program and its server's port. The plugin forwards `session.created`,
   `session.status` (`busy`, `idle`), `permission.asked`, `question.asked`, a tool part that
   completed or failed, and an assistant message that ended its turn, in order, to
@@ -36,7 +37,9 @@ provider and nothing above the contract sees an OpenCode type (#47).
   terminal and are reported under the root session. The plugin stays silent in an `opencode` whose server is not its launch's.
   A turn ends `completed` when the assistant message finishes for a reason OpenCode's loop
   stops on, `failed` with its error's name otherwise; an `APIError` is never
-  `quota-stopped`. Questions and reasons are cut to what the agent channel accepts.
+  `quota-stopped`, and a turn the owner interrupted (`MessageAbortedError`) has no outcome.
+  The bridge gives up on a report after 5 seconds, so a stalled one never holds back the
+  next event. Questions and reasons are cut to what the agent channel accepts.
 - **Terminal actions.** A message is typed then entered while it waits or works (OpenCode
   queues it behind the turn), refused while a dialog is open or the activity is unknown,
   and refused when typing it would open a menu (`/`, `!` first, any `@`) or quit

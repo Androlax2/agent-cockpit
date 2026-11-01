@@ -27,6 +27,13 @@ impl FakeCockpit {
         FakeCockpit { dir }
     }
 
+    /// A `cockpit` whose report never ends, as on a stalled agent socket.
+    fn never_ending() -> FakeCockpit {
+        let dir = tempfile::tempdir().unwrap();
+        common::script(dir.path(), "cockpit", "exec sleep 60");
+        FakeCockpit { dir }
+    }
+
     fn program(&self) -> PathBuf {
         self.dir.path().join("cockpit")
     }
@@ -105,6 +112,27 @@ fn an_event_that_proves_no_activity_runs_no_report() {
 
     assert!(output.status.success(), "{output:?}");
     assert_eq!(cockpit.arguments(), None);
+}
+
+/// The plugin runs one bridge at a time: a report that never ended would hold back every
+/// later event.
+#[test]
+fn a_report_that_never_ends_is_given_up_on() {
+    let cockpit = FakeCockpit::never_ending();
+    let started = std::time::Instant::now();
+
+    let output = run_bridge(&cockpit.program(), &common::fixture("session-status-idle"));
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("did not end within"),
+        "{output:?}"
+    );
 }
 
 #[test]

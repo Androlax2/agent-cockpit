@@ -15,7 +15,8 @@ Issue #47. Decided by the worker, from OpenCode 1.19.5's source and documentatio
 - **The plugin loads through `OPENCODE_CONFIG_CONTENT`** with an absolute path, merged over
   the owner's configuration, and reports only in the server whose port its launch set
   (`COCKPIT_OPENCODE_PORT`): an `opencode` a tool starts inherits the environment, not the
-  port. Rejected: writing into `~/.config/opencode` or the project's `.opencode/` (changes the
+  port. An `OPENCODE_CONFIG_CONTENT` the owner already set is kept with the plugin added to
+  its list; one that is not a JSON object refuses the launch rather than being dropped. Rejected: writing into `~/.config/opencode` or the project's `.opencode/` (changes the
   owner's files and loads the plugin in every OpenCode).
 - **The plugin filters, Rust decides.** It forwards a fixed list of event forms, in order, to
   `cockpit-opencode-bridge`; normalization lives in `events.rs` with its tests. It drops
@@ -23,7 +24,10 @@ Issue #47. Decided by the worker, from OpenCode 1.19.5's source and documentatio
   same terminal and go under the root session, and forwards an ended assistant message once.
 - **A turn's outcome comes from the assistant message that ends it**, by OpenCode's own rule
   (`finish` not `tool-calls`/`unknown`); its `error` name is the failure reason. An
-  `APIError` is `failed`, never `quota-stopped`, as with Claude (#212).
+  `APIError` is `failed`, never `quota-stopped`, as with Claude (#212). A turn the owner
+  interrupted (`MessageAbortedError`) did not fail: it reports waiting with no outcome.
+- **Submit and cancel need the bridge.** `input` acts only on a known activity, and without
+  the plugin's events none is ever known.
 - **Effort is not reported.** The TUI sends the variant it saved for the model with every
   prompt, so no launch flag or configuration sets it reliably; variants go with messages the
   server delivers (`Server::deliver`, `Server::invoke_command`, `Server::variants`).

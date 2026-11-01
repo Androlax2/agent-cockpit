@@ -6,6 +6,7 @@ use std::net::{Ipv4Addr, TcpListener};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use cockpit_opencode::server::REQUEST_DEADLINE;
 use cockpit_opencode::{Invocation, NativeCommand, Server};
 use cockpit_provider_api::ConversationId;
 
@@ -28,11 +29,24 @@ struct FakeServer {
 
 impl FakeServer {
     fn answering(answers: Vec<(u16, &'static str, String)>) -> FakeServer {
+        FakeServer::start(answers, false)
+    }
+
+    /// Keeps each connection open after its whole answer, as a server ignoring
+    /// `Connection: close` would.
+    fn answering_and_keeping_connections_open(
+        answers: Vec<(u16, &'static str, String)>,
+    ) -> FakeServer {
+        FakeServer::start(answers, true)
+    }
+
+    fn start(answers: Vec<(u16, &'static str, String)>, keeps_open: bool) -> FakeServer {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let received = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&received);
         std::thread::spawn(move || {
+            let mut open = Vec::new();
             for (status, headers, body) in answers {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -75,6 +89,9 @@ impl FakeServer {
                     "HTTP/1.1 {status} X\r\n{headers}{framing}Connection: close\r\n\r\n{body}"
                 )
                 .unwrap();
+                if keeps_open {
+                    open.push(stream);
+                }
             }
         });
         FakeServer { port, received }
@@ -162,6 +179,32 @@ fn native_commands_are_listed_with_their_source() {
         ]
     );
     assert_eq!(fake.received()[0].path, "/command");
+}
+
+#[test]
+fn a_whole_answer_is_read_without_waiting_for_the_connection_to_close() {
+    let fake = FakeServer::answering_and_keeping_connections_open(vec![
+        ok(r#"{"healthy":true,"version":"1.19.5"}"#),
+        (
+            200,
+            "Transfer-Encoding: chunked\r\n",
+            "5\r\n[{\"na\r\n17;ext=1\r\nme\":\"init\",\"hints\":[]}]\r\n0\r\n\r\n".to_owned(),
+        ),
+    ]);
+    let started = std::time::Instant::now();
+
+    let version = fake.server().health().unwrap();
+    let commands = fake.server().commands().unwrap();
+
+    assert_eq!(
+        (version.as_str(), commands[0].name.as_str()),
+        ("1.19.5", "init")
+    );
+    assert!(
+        started.elapsed() < REQUEST_DEADLINE,
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 /// Bun answers a large JSON body in chunks.

@@ -130,10 +130,31 @@ impl Bridge {
         Ok(())
     }
 
-    /// `OPENCODE_CONFIG_CONTENT`: OpenCode merges it over the owner's configuration and
-    /// appends its plugin to theirs.
-    fn inline_config(&self) -> String {
-        serde_json::json!({ "plugin": [self.plugin.to_string_lossy()] }).to_string()
+    /// `OPENCODE_CONFIG_CONTENT`: OpenCode merges it over the owner's configuration files
+    /// and appends its plugin to theirs. `owner` is the value the owner already set, which
+    /// this one replaces: its settings are kept and the plugin appended to its own. Refused
+    /// when it is not a JSON object, rather than dropping the owner's settings unseen.
+    pub fn inline_config(&self, owner: Option<&OsStr>) -> Result<String, ProviderError> {
+        let refused = |why: &str| ProviderError {
+            reason: format!("OPENCODE_CONFIG_CONTENT {why}, so the plugin cannot join it"),
+        };
+        let mut config = match owner {
+            None => serde_json::json!({}),
+            Some(owner) => {
+                let text = owner.to_str().ok_or_else(|| refused("is not UTF-8"))?;
+                serde_json::from_str(text).map_err(|_| refused("is not JSON"))?
+            }
+        };
+        let config_object = config
+            .as_object_mut()
+            .ok_or_else(|| refused("is not a JSON object"))?;
+        let plugins = config_object
+            .entry("plugin")
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| refused("has a `plugin` that is not a list"))?;
+        plugins.push(self.plugin.to_string_lossy().into());
+        Ok(config.to_string())
     }
 }
 
@@ -224,13 +245,16 @@ impl Provider for OpenCode {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Events and outcomes both reach Cockpit only through the plugin bridge.
-        let bridged = self
-            .bridge
-            .is_some()
-            .then_some([Capability::Events, Capability::Outcome]);
+        // Events and outcomes reach Cockpit only through the plugin bridge, and without
+        // them the activity is never known, so `input` would refuse every submit and cancel.
+        let bridged = self.bridge.is_some().then_some([
+            Capability::Submit,
+            Capability::Cancel,
+            Capability::Events,
+            Capability::Outcome,
+        ]);
         let provenance = self.provenance();
-        [Capability::Resume, Capability::Submit, Capability::Cancel]
+        [Capability::Resume]
             .into_iter()
             .chain(bridged.into_iter().flatten())
             .fold(Capabilities::none(), |capabilities, capability| {
@@ -257,8 +281,11 @@ impl Provider for OpenCode {
                 Some(id)
             }
         };
+        // One word, so a message starting with `-` is never read as a flag.
         if let Some(message) = request.first_message {
-            arguments.extend(["--prompt".into(), message.into()]);
+            let mut prompt = OsString::from("--prompt=");
+            prompt.push(message);
+            arguments.push(prompt);
         }
         let mut environment: Vec<(OsString, OsString)> = vec![
             ("OPENCODE_SERVER_PASSWORD".into(), new_password()?.into()),
@@ -269,7 +296,9 @@ impl Provider for OpenCode {
             environment.extend([
                 (
                     "OPENCODE_CONFIG_CONTENT".into(),
-                    bridge.inline_config().into(),
+                    bridge
+                        .inline_config(std::env::var_os("OPENCODE_CONFIG_CONTENT").as_deref())?
+                        .into(),
                 ),
                 (bridge_variable.into(), bridge.bridge_program.clone().into()),
                 (

@@ -50,14 +50,20 @@ fn on_another_version_each_capability_is_unverified() {
 }
 
 #[test]
-fn without_the_bridge_events_and_outcomes_are_unavailable() {
+fn without_the_bridge_only_resume_is_offered() {
     let opencode = OpenCode::new(
         PathBuf::from("/usr/bin/opencode"),
         Some(CONFORMANCE_VERSION.to_owned()),
         None,
     );
 
-    for capability in [Capability::Events, Capability::Outcome] {
+    // Without events the activity is never known, so a submit or cancel would be refused.
+    for capability in [
+        Capability::Submit,
+        Capability::Cancel,
+        Capability::Events,
+        Capability::Outcome,
+    ] {
         assert_eq!(
             opencode.capabilities().availability(capability),
             Availability::Unavailable

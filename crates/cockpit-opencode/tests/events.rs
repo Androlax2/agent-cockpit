@@ -70,7 +70,7 @@ fn each_pinned_event_normalizes_to_its_kind() {
             },
         ),
         ("message-assistant-tool-calls", EventKind::Unknown),
-        ("message-assistant-aborted", failed("MessageAbortedError")),
+        ("message-assistant-aborted", EventKind::Idle),
         ("message-assistant-api-error", failed("APIError")),
         ("message-assistant-streaming", EventKind::Unknown),
         ("session-idle", EventKind::Unknown),
@@ -103,10 +103,7 @@ fn each_event_reports_its_state_from_its_session() {
             "message-assistant-stop",
             "agent report --state waiting --outcome completed",
         ),
-        (
-            "message-assistant-aborted",
-            "agent report --state waiting --outcome failed --outcome-reason MessageAbortedError",
-        ),
+        ("message-assistant-aborted", "agent report --state waiting"),
     ] {
         let mut expected = words(expected);
         expected.extend(["--conversation".to_owned(), SESSION.to_owned()]);
