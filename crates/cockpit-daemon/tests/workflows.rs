@@ -6,7 +6,8 @@
 //! This process has no session record, so it cannot begin a step through the daemon (the
 //! daemon reads the session's provider to check the step's capabilities): the restart fixture
 //! begins the step through `cockpit-workflows` before the daemon starts, as a launched
-//! session's `workflow begin` would have.
+//! session's `workflow begin` would have. `workflow_begin.rs` begins one from a launched
+//! session's agent (#329).
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -17,8 +18,8 @@ use cockpit_agent_channel::{LaunchToken, identity_of};
 use cockpit_authorization::{Permission, SessionId};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, ErrorCode, Reply, UnblockedBy, WorkflowHandoffView, WorkflowNextView,
-    WorkflowPacketView, WorkflowStepStatusView, WorkflowView,
+    Command, ErrorCode, Reply, TaskStatusView, UnblockedBy, WorkflowHandoffView, WorkflowNextView,
+    WorkflowPacketView, WorkflowStatusView, WorkflowStepStatusView, WorkflowView,
 };
 use cockpit_provider_api::{Capabilities, Capability, Provenance};
 use common::{GENEROUS, TestHome, refused};
@@ -429,5 +430,41 @@ async fn the_presets_list_names_each_step_and_its_requirements() {
     assert_eq!(
         (check.name.as_str(), check.requirements.clone()),
         ("check", vec!["checks".to_owned(), "review".to_owned()])
+    );
+}
+
+/// #333: the item closes outside the workflow; the run stays running and its packet answers,
+/// then says the item is gone once it is deleted.
+#[tokio::test]
+async fn the_packet_of_a_run_whose_item_was_finished_then_deleted_still_answers() {
+    let workflows = started("").await;
+    let item = workflows.owner_adds("Fix it").await;
+    let run = workflow(workflows.owner_starts(item, None).await).id;
+    workflows
+        .as_owner(Command::TaskDone {
+            launch_token: None,
+            item,
+            summary: Some("fixed by hand".to_owned()),
+        })
+        .await
+        .unwrap();
+
+    let finished = workflows.packet(run).await;
+    workflows
+        .as_owner(Command::TaskDelete {
+            launch_token: None,
+            item,
+        })
+        .await
+        .unwrap();
+    let deleted = workflows.packet(run).await;
+
+    assert_eq!(
+        finished.goal.map(|goal| goal.item_status),
+        Some(TaskStatusView::Done)
+    );
+    assert_eq!(
+        (deleted.item, deleted.goal, deleted.status),
+        (item, None, WorkflowStatusView::Running)
     );
 }

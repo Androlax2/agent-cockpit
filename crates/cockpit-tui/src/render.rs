@@ -26,6 +26,12 @@ Sessions
   r                  restart the selected session (confirm with y)
   x                  exit the selected session (confirm with y)
   X                  exit every finished session (confirm with y)
+Workflows
+  F                  the running workflows; j / k select, Enter opens one
+  a                  complete its step, waiving the step's requirements (type the handoff)
+  p                  release the session doing the step (confirm with y)
+  b                  unblock it
+  x                  cancel it (confirm with y);  Esc goes back
 Approval pane (Tab moves between the list and the pane)
   y                  approve the command shown / done with the guide step
   x                  decline the command / close the guide
@@ -60,9 +66,10 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         Constraint::Length(1),
     ])
     .areas(area);
-    match app.form() {
-        Some(form) => draw_form(form, frame, main),
-        None => draw_list(app, frame, main),
+    match (app.form(), app.workflows()) {
+        (Some(form), _) => draw_form(form, frame, main),
+        (None, Some(workflows)) => workflows.draw(frame, main),
+        (None, None) => draw_list(app, frame, main),
     }
     if pane_height > 0 {
         draw_pane(app, frame, pane, now);

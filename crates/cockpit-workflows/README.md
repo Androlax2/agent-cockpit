@@ -53,6 +53,10 @@ The preset a task follows: the one the owner names, else the project's `workflow
   `reconcile-result`, with what exactly is needed. A blocked run's step is not placed, begun or
   completed until it is unblocked.
 - **Cancel.** The owner stops a run; the item may start another.
+- **Item closed outside the run.** A run whose item is finished or deleted stays `running`
+  but offers no ready step; reopening the item resumes it at its checkpoint. Its packet still
+  answers, without a goal once the item is deleted, so the owner can see it and cancel it
+  (`docs/decisions/2026-11-01-333-closed-item-keeps-its-run.md`).
 
 ## Handoffs
 
@@ -95,4 +99,6 @@ cancelling, completing owner steps and waiving requirements are the owner's.
 - `tests/restart.rs`: a run reopened from its database resumes at its checkpoint with the
   same packet.
 - Through the sockets: `cockpit-daemon` `tests/workflows.rs` (a daemon killed mid-step
-  answers the same packet after its restart) and `cockpit-cli` `tests/workflow.rs`.
+  answers the same packet after its restart), `tests/workflow_begin.rs` (a launched
+  session's agent begins a step, checked against its provider's capabilities) and
+  `cockpit-cli` `tests/workflow.rs`.

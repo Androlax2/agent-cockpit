@@ -5,7 +5,7 @@ through cockpit-client.
 
 Deliberately basic until M6 (decision 17, report 05): the session list grouped by project,
 open, next needing you, new session (`N`, the one form), restart, exit, the approval pane,
-the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
+the workflow view (`F`, #330), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
 capabilities only; no key reaches them here.
 
 ## Dependency edges
@@ -67,6 +67,8 @@ detaching the terminal leaves everything running.
 - `tests/keys.rs`: open, next needing you, restart and exit after `y`, help, the log view,
   and every key counted as a named command.
 - `tests/form.rs`: the `N` form, from a fresh install's one project to `session-new`.
+- `tests/workflows.rs`: the `F` view, a running workflow's steps, checkpoint, next action
+  and last handoff, and the owner's complete, release, unblock and cancel keys.
 - `tests/usage.rs`: each key's command reaches the TUI's log by name.
 - `tests/e2e/` (#300): the TUI end to end, the way Playwright drives a browser. A real
   daemon on a scratch home under `/tmp`, `cockpit tui` attached in a pane of a test-owned

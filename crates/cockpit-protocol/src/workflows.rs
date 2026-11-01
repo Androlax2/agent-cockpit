@@ -212,7 +212,10 @@ pub struct WorkflowPacketView {
     pub status: WorkflowStatusView,
     pub preset: String,
     pub preset_version: u32,
-    pub goal: WorkflowGoalView,
+    /// The item the workflow follows.
+    pub item: i64,
+    /// None once the item was deleted: the workflow still answers, for the owner to cancel.
+    pub goal: Option<WorkflowGoalView>,
     /// The authorized scope of its steps.
     pub project: String,
     /// None once the run is delivered or cancelled.
@@ -226,7 +229,6 @@ pub struct WorkflowPacketView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowGoalView {
-    pub item: i64,
     pub title: String,
     pub notes: String,
     pub kind: TaskKindView,

@@ -2,7 +2,9 @@
 //! or resumed conversation and reports `resume`, nothing else. Its agent is a shell script
 //! that appends one line per launch to a log (session, conversation mode and id, first
 //! message, pid, launch token), then sleeps until stopped (`FAKE_AGENT_SLEEP` seconds,
-//! 600 by default).
+//! 600 by default). A test may give it more capabilities ([`FakeProvider::reporting`]) and a
+//! program its agent runs, in its own process tree, before it sleeps
+//! ([`FakeProvider::running`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -14,6 +16,7 @@ use crate::{
 };
 
 const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s\n' "$COCKPIT_SESSION" "$1" "$2" "${3:-}" "$$" "$COCKPIT_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
+if [ -n "${FAKE_AGENT_RUN:-}" ]; then "$FAKE_AGENT_RUN"; fi
 exec sleep "${FAKE_AGENT_SLEEP:-600}""#;
 
 pub struct FakeProvider {
@@ -21,6 +24,8 @@ pub struct FakeProvider {
     log: PathBuf,
     can_resume: bool,
     names_conversation: bool,
+    reported: Capabilities,
+    agent_program: Option<PathBuf>,
     conversations: AtomicUsize,
 }
 
@@ -34,6 +39,8 @@ impl FakeProvider {
             log,
             can_resume: true,
             names_conversation: true,
+            reported: Capabilities::none(),
+            agent_program: None,
             conversations: AtomicUsize::new(logged),
         }
     }
@@ -47,6 +54,19 @@ impl FakeProvider {
     /// Never names the conversation it launches, so it cannot be resumed.
     pub fn unnamed_conversations(mut self) -> FakeProvider {
         self.names_conversation = false;
+        self
+    }
+
+    /// Also reports `capability`, as discovered.
+    pub fn reporting(mut self, capability: Capability) -> FakeProvider {
+        self.reported = self.reported.with(capability, Provenance::Discovered);
+        self
+    }
+
+    /// Its agent runs `program` (no arguments) after it logs its launch, then sleeps: a
+    /// process of the agent's own tree, with its environment and working directory.
+    pub fn running(mut self, program: PathBuf) -> FakeProvider {
+        self.agent_program = Some(program);
         self
     }
 
@@ -67,14 +87,14 @@ impl Provider for FakeProvider {
 
     fn capabilities(&self) -> Capabilities {
         if self.can_resume {
-            Capabilities::none().with(
+            self.reported.clone().with(
                 Capability::Resume,
                 Provenance::Tested {
                     version: "fake".to_owned(),
                 },
             )
         } else {
-            Capabilities::none()
+            self.reported.clone()
         }
     }
 
@@ -97,13 +117,17 @@ impl Provider for FakeProvider {
             conversation.as_str().into(),
         ];
         arguments.extend(request.first_message.map(OsString::from));
+        let mut environment: Vec<(OsString, OsString)> = vec![
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("FAKE_AGENT_LOG".into(), self.log.clone().into()),
+        ];
+        if let Some(program) = &self.agent_program {
+            environment.push(("FAKE_AGENT_RUN".into(), program.clone().into()));
+        }
         Ok(LaunchCommand {
             program: "/bin/sh".into(),
             arguments,
-            environment: vec![
-                ("PATH".into(), "/usr/bin:/bin".into()),
-                ("FAKE_AGENT_LOG".into(), self.log.clone().into()),
-            ],
+            environment,
             conversation: self.names_conversation.then_some(conversation),
         })
     }
