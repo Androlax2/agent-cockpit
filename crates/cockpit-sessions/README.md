@@ -64,7 +64,9 @@ stopped in the middle of one finishes or repairs it at its next start.
 - **Self grants.** Each launch grants the session `change-state` and `run-commands` over
   itself (`SELF_PERMISSIONS`), in the transaction that mints its launch token, so its
   agent's reports and asks are accepted; every move to `ended` or `failed` revokes both in
-  the same transaction (`docs/decisions/2026-10-31-31-self-state-grant.md`,
+  the same transaction. A restore that finds the agent still running grants any it lacks,
+  so a session launched by an older daemon gains a permission added since (#284)
+  (`docs/decisions/2026-10-31-31-self-state-grant.md`,
   `docs/decisions/2026-10-31-270-self-run-commands-grant.md`).
 - **Exits.** An agent observed gone ends its session with the reason; `resume` reopens it.
 - **Stops are confirmed.** A stop whose termination `cockpit-processes` cannot confirm puts

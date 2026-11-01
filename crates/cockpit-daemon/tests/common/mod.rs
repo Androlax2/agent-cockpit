@@ -16,6 +16,11 @@ use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{ProtocolError, Reply};
 
+/// Whether `pid` runs: a zombie, killed but not yet reaped, does not.
+pub fn is_alive(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| !stat.contains(") Z "))
+}
+
 /// Long enough never to fire in a passing test, short enough to fail a hung one quickly.
 pub const GENEROUS: Duration = Duration::from_secs(10);
 

@@ -25,9 +25,10 @@ use crate::{
 /// Variables of the terminal tmux emulates, kept from the pane: they describe the host.
 const TERMINAL_VARIABLES: [&str; 2] = ["TERM", "COLORTERM"];
 
-/// What every launch grants the session over itself, and every move to `ended` or `failed`
-/// revokes: reporting its own state (#143), and asking the owner to run a command or follow
-/// a guide (#270), which the owner still approves one by one.
+/// What every launch and every restore of a still-running session grants the session over
+/// itself, and every move to `ended` or `failed` revokes: reporting its own state (#143),
+/// and asking the owner to run a command or follow a guide (#270), which the owner still
+/// approves one by one.
 const SELF_PERMISSIONS: [Permission; 2] = [Permission::ChangeState, Permission::RunCommands];
 
 /// The states the owner's restart starts from: running, and the transitional states an
@@ -662,10 +663,22 @@ impl Sessions {
     async fn restore_one(&self, lock: &Operation, session: &Session) -> Result<Restored, Error> {
         let id = &session.id;
         if self.agent_is_running(session).await? {
+            // A daemon older than a self permission launched it without that grant (#284);
+            // granted with the move to running, so neither commits without the other.
+            let write = self.database.write().await?;
             if session.state != SessionState::Running {
-                self.transition(id, &[session.state], SessionState::Running, None, "restore")
-                    .await?;
+                store::transition(
+                    &write,
+                    id,
+                    &[session.state],
+                    SessionState::Running,
+                    None,
+                    "restore",
+                )
+                .await?;
             }
+            grant_self_permissions(&write, &authorization_session(id)?).await?;
+            write.commit().await?;
             return Ok(Restored::StillRunning(id.clone()));
         }
         if let Err(error) = self.stop_previous_agent(session).await {
@@ -1209,15 +1222,7 @@ impl Sessions {
         let (token, execution) = {
             let write = self.database.write().await?;
             let token = cockpit_agent_channel::mint(&write, &channel_session).await?;
-            for permission in SELF_PERMISSIONS {
-                cockpit_authorization::grant(
-                    &write,
-                    &channel_session,
-                    permission,
-                    &Scope::Session(channel_session.clone()),
-                )
-                .await?;
-            }
+            grant_self_permissions(&write, &channel_session).await?;
             let execution = self
                 .processes
                 .reserve(&write, self.database.epoch())
@@ -1549,6 +1554,19 @@ async fn give_up_on_end(
     release(write, ended).await?;
     store::clear_restart_request(write, &ended.id).await?;
     revoke_self_grants(write, &ended.id).await
+}
+
+/// Grants the session the [`SELF_PERMISSIONS`] over itself; a grant it holds is kept as it
+/// is, without advancing the authorization revision.
+async fn grant_self_permissions(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    session: &cockpit_authorization::SessionId,
+) -> Result<(), Error> {
+    let itself = Scope::Session(session.clone());
+    for permission in SELF_PERMISSIONS {
+        cockpit_authorization::grant(write, session, permission, &itself).await?;
+    }
+    Ok(())
 }
 
 /// Revokes the [`SELF_PERMISSIONS`] over itself a launch granted the session, so its agent
