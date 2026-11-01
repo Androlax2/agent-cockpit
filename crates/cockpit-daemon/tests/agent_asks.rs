@@ -2,13 +2,16 @@
 //! binary and the agent socket, as soon as it starts; the ask reaches the owner's queue under
 //! that session, and the owner's answer reaches the agent as `cockpit ask`'s exit code.
 //! Issue #285: once the session ends, what it asked leaves the queue and cannot be approved.
+//! Issue #347: the owner's show verbs read such an ask as expired, as the agent does.
 
 mod real_daemon;
 
 use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
-use cockpit_protocol::{Command, ErrorCode, GuideView, Reply, RunRequestView, SessionView};
+use cockpit_protocol::{
+    Command, ErrorCode, GuideStateView, GuideView, Reply, RunRequestView, RunStateView, SessionView,
+};
 use real_daemon::{
     ASK_GUIDE_PROJECT, ASK_RUN_PROJECT, ASKED_COMMAND, GENEROUS, Home, cockpit_program, new_session,
 };
@@ -69,22 +72,28 @@ async fn end(owner: &Connection, session: &SessionView) {
         .expect("the owner ends the session");
 }
 
+/// What a session's agent asked, as the owner's queue showed it.
+struct Asked {
+    run: Option<RunRequestView>,
+    guide: Option<GuideView>,
+}
+
 /// A session of `project` whose agent's ask reached the owner's queue, then ended.
 async fn ended_after_asking(
     home: &Home,
     owner: &Connection,
     project: &str,
-) -> (SessionView, Option<RunRequestView>) {
+) -> (SessionView, Asked) {
     let (root, _) = home.project(owner, project).await;
     let session = new_session(owner, &root).await;
-    let run = queued(home, owner, |runs, guides| {
+    let asked = queued(home, owner, |runs, guides| {
         let run = runs.into_iter().find(|run| run.session == session.id);
-        let has_guide = guides.iter().any(|guide| guide.session == session.id);
-        (run.is_some() || has_guide).then_some(run)
+        let guide = guides.into_iter().find(|guide| guide.session == session.id);
+        (run.is_some() || guide.is_some()).then_some(Asked { run, guide })
     })
     .await;
     end(owner, &session).await;
-    (session, run)
+    (session, asked)
 }
 
 /// The exit code the agent's `cockpit ask <verb>` ended with, from its `<verb>=<code>` line.
@@ -172,8 +181,8 @@ async fn an_ask_run_of_a_session_that_ended_cannot_be_approved() {
     let home = Home::new();
     let _daemon = home.start();
     let owner = home.connect().await;
-    let (_, run) = ended_after_asking(&home, &owner, ASK_RUN_PROJECT).await;
-    let run = run.expect("the agent asked to run a command");
+    let (_, asked) = ended_after_asking(&home, &owner, ASK_RUN_PROJECT).await;
+    let run = asked.run.expect("the agent asked to run a command");
 
     let approved = owner
         .request(
@@ -205,4 +214,47 @@ async fn an_ask_guide_of_a_session_that_ended_leaves_the_owners_queue() {
         guides.iter().all(|guide| guide.session != session.id),
         "{guides:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_run_of_a_session_that_ended_shows_as_expired_without_build_files() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (_, asked) = ended_after_asking(&home, &owner, ASK_RUN_PROJECT).await;
+    let run = asked.run.expect("the agent asked to run a command");
+
+    let shown = match owner
+        .request(Command::ApprovalShow { request: run.id }, GENEROUS)
+        .await
+    {
+        Ok(Reply::RunRequest { request }) => request,
+        other => panic!("approval-show answered {other:?}"),
+    };
+
+    assert_eq!(
+        (shown.state, shown.changed_build_files),
+        (RunStateView::Expired, None)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_guide_of_a_session_that_ended_shows_as_expired() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (_, asked) = ended_after_asking(&home, &owner, ASK_GUIDE_PROJECT).await;
+    let guide = asked.guide.expect("the agent asked for a guide");
+
+    let shown = match owner
+        .request(Command::GuideShow { guide: guide.id }, GENEROUS)
+        .await
+    {
+        Ok(Reply::Guide { guide }) => guide,
+        other => panic!("guide-show answered {other:?}"),
+    };
+
+    assert_eq!(shown.state, GuideStateView::Expired);
 }

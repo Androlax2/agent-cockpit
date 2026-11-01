@@ -7,7 +7,7 @@ use cockpit_approvals::{
     Approved, EXPIRES_AFTER_SECONDS, Error, Interrupted, Output, Refusal, RunId, RunRequest,
     RunResult, RunState, action_digest, approve_run, ask_run, decline_run, edit_run, finish_run,
     interrupted_runs, open_runs, queue_order, reconcile_run, record_not_run,
-    record_outcome_unknown, resolve_cwd, run_request, run_status, start_run,
+    record_outcome_unknown, resolve_cwd, run_request, run_status, shown_run, start_run,
 };
 use cockpit_authorization::Permission;
 use cockpit_processes::{EndReason, ExecutionId, Phase};
@@ -659,6 +659,27 @@ async fn an_ask_whose_session_may_no_longer_ask_can_still_be_declined() {
     let write = fixture.database.write().await.unwrap();
     let declined = decline_run(&write, run.id, NOW).await.unwrap();
     assert_eq!(declined.state, RunState::Declined);
+}
+
+#[tokio::test]
+async fn an_ask_whose_session_may_no_longer_ask_shows_as_expired() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let read = fixture.database.read().await.unwrap();
+    let shown = shown_run(&read, run.id, NOW).await.unwrap().unwrap();
+    assert_eq!(shown.state, RunState::Expired);
+}
+
+#[tokio::test]
+async fn an_ask_whose_session_may_still_ask_shows_as_asking() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+
+    let read = fixture.database.read().await.unwrap();
+    let shown = shown_run(&read, run.id, NOW).await.unwrap().unwrap();
+    assert_eq!(shown.state, RunState::Asking);
 }
 
 #[tokio::test]

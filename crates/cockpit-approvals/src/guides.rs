@@ -450,25 +450,37 @@ fn moved_expiry(guide: &GuideRequest, now: i64) -> Option<i64> {
         .flatten()
 }
 
-/// The guide `id`, which only its asking session may see. One the owner may no longer
-/// answer ([`may_still_ask`]) reads as expired, so a poll neither keeps it alive nor leaves
-/// the agent waiting (#285).
+/// The guide `id`, which only its asking session may see, as [`shown_guide`] reads it.
 async fn guide_of(
     connection: &Connection,
     session: &SessionId,
     id: GuideId,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut guide = match guide_request(connection, id, now).await? {
-        Some(guide) if guide.session == *session => guide,
-        _ => return Err(not_found(KIND, id.0).into()),
+    match shown_guide(connection, id, now).await? {
+        Some(guide) if guide.session == *session => Ok(guide),
+        _ => Err(not_found(KIND, id.0).into()),
+    }
+}
+
+/// The guide `id` as the owner and its asking session read it. One the owner may no longer
+/// answer ([`may_still_ask`]) reads as expired, as [`open_guides`] leaves it out: a poll
+/// neither keeps it alive nor leaves the agent waiting (#285), and the owner's view offers
+/// no answer (#347).
+pub async fn shown_guide(
+    connection: &Connection,
+    id: GuideId,
+    now: i64,
+) -> Result<Option<GuideRequest>, Error> {
+    let Some(mut guide) = guide_request(connection, id, now).await? else {
+        return Ok(None);
     };
     if guide.state == GuideState::Asking
         && !may_still_ask(connection, &guide.session, guide.asking_grant).await?
     {
         guide.state = GuideState::Expired;
     }
-    Ok(guide)
+    Ok(Some(guide))
 }
 
 /// The owner's answer to step `step`, the one shown now. A step that asks a question needs

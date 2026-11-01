@@ -6,7 +6,7 @@ mod common;
 use cockpit_approvals::{
     EXPIRES_AFTER_SECONDS, Error, GuideId, GuideRequest, GuideState, Refusal, RunState,
     answer_step, ask_guide, close_guide, guide_request, guide_status, open_guides, parse_guide,
-    report_stuck, run_request,
+    report_stuck, run_request, shown_guide,
 };
 use common::{Fixture, NOW, session};
 
@@ -447,6 +447,27 @@ async fn a_guide_whose_session_may_no_longer_ask_leaves_the_owners_queue() {
 
     let read = fixture.database.read().await.unwrap();
     assert_eq!(open_guides(&read, NOW).await.unwrap(), []);
+}
+
+#[tokio::test]
+async fn a_guide_whose_session_may_no_longer_ask_shows_as_expired() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let read = fixture.database.read().await.unwrap();
+    let shown = shown_guide(&read, guide.id, NOW).await.unwrap().unwrap();
+    assert_eq!(shown.state, GuideState::Expired);
+}
+
+#[tokio::test]
+async fn a_guide_whose_session_may_still_ask_shows_as_asking() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+
+    let read = fixture.database.read().await.unwrap();
+    let shown = shown_guide(&read, guide.id, NOW).await.unwrap().unwrap();
+    assert_eq!(shown.state, GuideState::Asking);
 }
 
 #[tokio::test]
