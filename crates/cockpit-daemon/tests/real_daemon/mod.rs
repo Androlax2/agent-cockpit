@@ -87,6 +87,7 @@ pub const ASKED_GUIDE: &str = "# Asked from the agent\nLook at the panel\n";
 /// the version the adapter's conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
+if [ "$*" = 'auth status' ]; then exit 2; fi
 printf '%s pid=%s\n' "$COCKPIT_SESSION" "$$" >> '@LOG@'
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;

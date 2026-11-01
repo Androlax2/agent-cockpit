@@ -143,6 +143,7 @@ impl Routes {
                 sandbox: capabilities.sandbox,
                 tmux: capabilities.tmux,
                 providers: capabilities.provider_facts,
+                sign_in_providers: capabilities.sign_in_providers,
                 environment: environment.clone(),
             },
             resources: resources::Resources {

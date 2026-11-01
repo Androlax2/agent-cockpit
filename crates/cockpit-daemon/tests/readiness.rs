@@ -52,6 +52,70 @@ fn declare_docker(root: &Path) {
     .unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_reports_each_sign_in_answer_and_refreshes_without_a_restart() {
+    let home = Home::new();
+    let program = home.path().join("bin/claude");
+    std::fs::write(
+        &program,
+        r#"#!/bin/sh
+if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
+[ "$*" = 'auth status' ] || exit 99
+cat "$HOME/sign-in.json"
+exit "$(cat "$HOME/sign-in.exit")"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _daemon = home.start();
+
+    for (answer, exit, expected, next_command, onboarding) in [
+        (
+            r#"{"loggedIn":true,"email":"private@example.invalid"}"#,
+            "0",
+            "available",
+            None,
+            "done",
+        ),
+        (
+            r#"{"loggedIn":false}"#,
+            "1",
+            "needs-authorization",
+            Some("claude auth login"),
+            "todo",
+        ),
+        (
+            "private malformed output",
+            "2",
+            "unknown",
+            Some("claude auth status"),
+            "unknown",
+        ),
+        (r#"{"loggedIn":true}"#, "0", "available", None, "done"),
+    ] {
+        std::fs::write(home.path().join("sign-in.json"), answer).unwrap();
+        std::fs::write(home.path().join("sign-in.exit"), exit).unwrap();
+        let doctor = home.cockpit(&["doctor"], &[]).await;
+        let report = text(&doctor.stdout);
+        assert!(doctor.status.success(), "{report}{}", text(&doctor.stderr));
+        let (line, next) = requirement(&report, "provider claude sign-in");
+        assert_eq!(status(line), expected, "{report}");
+        match next_command {
+            Some(command) => assert!(next.unwrap().contains(command), "{report}"),
+            None => assert!(next.is_none(), "{report}"),
+        }
+        assert!(!report.contains("private"), "{report}");
+        let init = home.cockpit(&["init"], &[]).await;
+        let checklist = text(&init.stdout);
+        assert!(
+            checklist
+                .lines()
+                .any(|line| line.contains("Sign in") && line.contains(onboarding)),
+            "{checklist}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_with_its_programs_reports_them_available_and_exits_0() {
     let home = Home::new();

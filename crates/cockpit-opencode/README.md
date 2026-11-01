@@ -7,6 +7,15 @@ provider and nothing above the contract sees an OpenCode type (#47).
 
 ## Rules
 
+- **Sign-in.** `opencode auth list` reports saved credentials and environment credential
+  counts, using the output documented by 1.19.5's
+  [providers command](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/cli/cmd/providers.ts).
+  A positive count is signed in; zero names `opencode auth login` or a credential-free
+  model as the next step. This does not prove that a selected model works. Failed or
+  unfamiliar output is unknown. A ten-second deadline and 64 KiB per output stream bound
+  the probe; raw output never leaves the adapter. Provenance remains `discovered`:
+  `tests/sign_in_conformance.rs` needs the pinned harness, which was unavailable for #443.
+
 - **Capabilities with provenance.** Every capability is `tested` only when the running
   OpenCode is `CONFORMANCE_VERSION`; on any other or unknown version it is `discovered`
   (unverified). Without the plugin bridge only resume is offered: no events means the
@@ -55,6 +64,7 @@ provider and nothing above the contract sees an OpenCode type (#47).
 
 - Depends on: `cockpit-provider-api` only (crate-graph rule
   `provider adapters -> provider-api only`), `serde_json` for events and the server's JSON.
+- Also uses the workspace-pinned `rustix` process API for sign-in probe cleanup.
 - Used by: the daemon's wiring only (`capabilities -> provider adapters`).
 
 ## Tests

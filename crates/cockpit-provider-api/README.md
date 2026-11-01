@@ -1,6 +1,6 @@
 # cockpit-provider-api
 
-The contract every agent provider adapter implements: identity, capabilities with provenance, launch and resume, terminal actions and normalized events.
+The contract every agent provider adapter implements: identity, sign-in and capabilities with provenance, launch and resume, terminal actions and normalized events.
 
 A provider is an agent program (Claude Code, Codex, OpenCode) seen through its adapter.
 `cockpit-sessions` owns the session and its lifecycle; it asks the provider for the command
@@ -9,6 +9,12 @@ Nothing above this contract is keyed on a provider's name, only on its reported
 [`Capabilities`]. No adapter type or path belongs here or above it (#33).
 
 ## Rules
+
+- **Sign-in.** [`Provider::sign_in`] reports [`SignInStatus`] with independent provenance:
+  signed in, not signed in with the harness's next step, or unknown with a reason and next
+  step. This is the harness's local credential status, not proof of model access, a valid
+  token or host authorization. Probes are bounded, run off async workers, and never return
+  raw credential or account output. The default is unknown; adapters own detection.
 
 - **Capabilities with provenance** (report 08). Each reported [`Capability`] is `tested`
   against the exact harness version running, or `discovered` (shown as unverified); one not

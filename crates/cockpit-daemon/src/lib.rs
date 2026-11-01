@@ -142,6 +142,8 @@ pub struct Capabilities {
     pub tmux: Result<String, String>,
     /// Every provider the start tried, wired or not, as readiness reports them.
     pub provider_facts: Vec<cockpit_readiness::ProviderFacts>,
+    /// The adapters readiness asks for current sign-in facts (#443).
+    pub sign_in_providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
     /// Notified when a coordinator queues a message, to wake its delivery (#410).
     pub messages_queued: Arc<tokio::sync::Notify>,
     /// What every bug report draft carries about this daemon (#427).
@@ -292,6 +294,7 @@ impl Instance {
             }))
             .collect();
         let manager = Arc::new(Manager::new(tmux.clone()));
+        let sign_in_providers = wiring.providers.clone();
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
             processes,
@@ -363,6 +366,7 @@ impl Instance {
                 sandbox,
                 tmux: tmux_readiness,
                 provider_facts,
+                sign_in_providers,
                 messages_queued,
                 bug_report_facts: Arc::clone(&bug_report_facts),
                 state_dir: options.state_dir.clone(),

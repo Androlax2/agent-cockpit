@@ -4,6 +4,7 @@ mod capabilities;
 mod events;
 #[cfg(feature = "fake")]
 pub mod fake;
+mod sign_in;
 mod terminal;
 
 use std::ffi::OsString;
@@ -15,6 +16,7 @@ pub use capabilities::{Availability, Capabilities, Capability, Provenance};
 pub use events::{
     Activity, Confidence, EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
 };
+pub use sign_in::{SignIn, SignInStatus};
 pub use terminal::{Action, Delivered, Key, TerminalInput};
 
 /// Longest provider name; it is typed on the command line (`--agent`).
@@ -185,6 +187,16 @@ pub trait Provider: Send + Sync + 'static {
     }
 
     fn capabilities(&self) -> Capabilities;
+
+    /// The harness's current local sign-in status, not host authorization or proof of
+    /// model access. May block for at most ten seconds; run off async workers. Never
+    /// includes raw command output, credentials or account identifiers.
+    fn sign_in(&self) -> SignIn {
+        SignIn::unknown(
+            "this adapter cannot read sign-in status",
+            format!("start {} in a terminal and check its sign-in", self.name()),
+        )
+    }
 
     /// The command for `request`. Must not block: it builds words, it starts nothing. It
     /// refuses a request that needs a capability it does not report

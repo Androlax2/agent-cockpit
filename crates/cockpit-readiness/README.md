@@ -40,7 +40,10 @@ engine. The engine's ID, name and version identify it, and a rootful engine on L
 `missing-prerequisite`: whoever reaches its socket is root on the host (report 11). The probe
 moves to `cockpit-containers` when that crate exists (#390).
 
-Provider sign-in is `unknown` until the adapters can report it (#443).
+Provider sign-in comes from the adapter on each readiness request (#443): signed in is
+`available`, explicitly signed out is `needs-authorization` with the provider's next step,
+and an unavailable or failed probe is `unknown`. Its detail names the probe's own provenance.
+This reports local credentials, not token validity, model access or host permission.
 
 A provider the daemon wires but cannot use (not installed, or failing its version) is
 `available` with `not usable, optional` and how to install it, as an unsandboxed owner is: a

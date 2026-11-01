@@ -11,6 +11,18 @@ use cockpit_provider_api::{
 
 struct LaunchOnly(ProviderName);
 
+#[test]
+fn a_provider_without_a_sign_in_probe_reports_unknown_with_a_next_step() {
+    let provider = LaunchOnly(ProviderName::new("plain").unwrap());
+    let sign_in = provider.sign_in();
+    assert_eq!(sign_in.provenance, Provenance::Discovered);
+    let cockpit_provider_api::SignInStatus::Unknown { reason, next } = sign_in.status else {
+        panic!("an unimplemented probe must not claim a sign-in status");
+    };
+    assert!(!reason.is_empty());
+    assert!(next.contains("plain"));
+}
+
 impl Provider for LaunchOnly {
     fn name(&self) -> &ProviderName {
         &self.0

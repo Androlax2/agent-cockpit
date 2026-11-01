@@ -7,6 +7,13 @@ provider and nothing above the contract sees a Codex type (#48).
 
 ## Rules
 
+- **Sign-in.** `codex login status` supplies local credential status. Exit 1 alone is not
+  proof of being signed out: it must say `Not logged in`. Both the older `Logged in using`
+  form and the newer `API key configured` form are recognized; raw output, including any
+  masked key, is discarded. The probe has a ten-second deadline and a 64 KiB output limit
+  per stream. `tests/sign_in_conformance.rs` proved signed-out and placeholder API-key states
+  on `SIGN_IN_CONFORMANCE_VERSION` (0.166.0), independently of the delivery capability pin.
+
 - **Capabilities with provenance.** Resume and, with the bridge, events, submit, cancel and
   outcome are `tested` only when the running Codex is `CONFORMANCE_VERSION`; on any other or
   unknown version they are `discovered` (unverified). Effort, compact, billing, commands,

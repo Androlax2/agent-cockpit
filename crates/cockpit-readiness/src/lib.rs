@@ -152,6 +152,16 @@ pub struct ProviderFound {
     pub tested: bool,
     /// The capabilities it reports, by their protocol names.
     pub capabilities: Vec<String>,
+    pub sign_in: SignInFacts,
+}
+
+/// The adapter's current credential observation, mapped by the daemon. Unknown stays
+/// distinct from an explicit signed-out answer; detail includes the probe's provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignInFacts {
+    pub signed_in: Option<bool>,
+    pub detail: String,
+    pub next: String,
 }
 
 /// One resource control and whether the admission backend enforces it.
