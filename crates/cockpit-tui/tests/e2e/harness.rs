@@ -51,7 +51,8 @@ done
 transcript='@CONVERSATIONS@'/$conversation
 printf '%s pid=%s %s\n' "$COCKPIT_SESSION" "$$" "$mode" >> '@LAUNCHES@'
 # A report before the daemon recorded this launch's process tree is refused (#279): retry
-# that refusal only; any other is final and shown.
+# that refusal only; any other is final and logged for the failure report. Not printed:
+# a refusal that wraps cuts the viewer's first screen short.
 report() {
   tries=0
   until refusal=$(cockpit agent report "$@" 2>&1 >/dev/null); do
@@ -59,7 +60,7 @@ report() {
     case $refusal in
       *"no process tree yet"*) [ "$tries" -lt 100 ] && { sleep 0.1; continue; } ;;
     esac
-    echo "fake agent: report $* refused: $refusal"
+    echo "report $* refused: $refusal" >> '@REFUSALS@'
     return 1
   done
 }
@@ -201,7 +202,8 @@ impl Cockpit {
             &fake,
             FAKE_CLAUDE
                 .replace("@CONVERSATIONS@", &utf8(root.join("conversations")))
-                .replace("@LAUNCHES@", &utf8(root.join("launches.log"))),
+                .replace("@LAUNCHES@", &utf8(root.join("launches.log")))
+                .replace("@REFUSALS@", &utf8(root.join("refusals.log"))),
         )
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -325,6 +327,8 @@ impl Cockpit {
         report
             + "\n--- launches ---\n"
             + &read(&self.root.join("launches.log"))
+            + "\n--- the agents' refused reports ---\n"
+            + &read(&self.root.join("refusals.log"))
             + &self.agent_panes()
     }
 
