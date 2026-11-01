@@ -34,6 +34,10 @@ use cockpit_provider_api::{
 use common::GENEROUS;
 use tokio::sync::Semaphore;
 
+/// The stops' grace. Only the agent that ignores `SIGTERM` waits it out, so it is long
+/// enough that the refusal it must precede never races the kill on a loaded machine.
+const GRACE: Duration = Duration::from_secs(10);
+
 /// One worker and no waiting place in the lanes the fixture fills, so one held job fills a
 /// lane and the next request in it is answered `busy`.
 const ONE_PLACE: LaneLimits = LaneLimits {
@@ -119,6 +123,7 @@ impl Provider for GatedProvider {
         let mut command = self.inner.launch(request)?;
         if self.agents_ignore_term.load(Ordering::SeqCst) {
             // `-c SCRIPT`: an ignored signal stays ignored across the script's `exec`.
+            assert_eq!(command.arguments[0], "-c", "the fake agent's script moved");
             let script = &mut command.arguments[1];
             *script = format!("trap '' TERM; {}", script.to_string_lossy()).into();
         }
@@ -183,7 +188,7 @@ impl Home {
             })],
         );
         wiring.sessions.stop = cockpit_processes::Escalation {
-            grace: Duration::from_secs(2),
+            grace: GRACE,
             kill_wait: Duration::from_secs(5),
         };
         let options = Options {
@@ -518,6 +523,7 @@ async fn ending_a_restarting_session_answers_conflict_while_its_old_agent_waits_
         other => panic!("session-new: {other:?}"),
     };
     let old_agent = FakeProvider::launches(&home.path().join("agent.log"))[0].pid;
+    home.agents_ignore_term.store(false, Ordering::SeqCst);
     let _restarting = {
         let client = Arc::clone(&client);
         let session = id.clone();
@@ -527,7 +533,7 @@ async fn ending_a_restarting_session_answers_conflict_while_its_old_agent_waits_
 
     assert_refused_mid_launch(&client, Command::SessionEnd { session: id }).await;
     assert!(
-        is_alive(old_agent),
+        common::is_alive(old_agent),
         "the refusal came after the stop phase, once the old agent was killed"
     );
 }
@@ -555,12 +561,4 @@ async fn wait_until_stopping(client: &Connection, id: &str) {
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-}
-
-fn is_alive(pid: i32) -> bool {
-    Process::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .unwrap()
-        .success()
 }
