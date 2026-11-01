@@ -496,6 +496,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-opencode"
+version = "0.1.0"
+dependencies = [
+ "cockpit-provider-api",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cockpit-processes"
 version = "0.1.0"
 dependencies = [

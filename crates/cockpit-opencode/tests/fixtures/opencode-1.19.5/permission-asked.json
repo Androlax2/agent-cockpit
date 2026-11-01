@@ -1,0 +1,1 @@
+{"id":"evt_e3b0c44200000006","type":"permission.asked","properties":{"id":"per_e3b0c4421002Mn5oP6qR7sT8","sessionID":"ses_1c4f2e8a3ffeJ7qkR2mWbXzD0v","permission":"bash","patterns":["git push origin main"],"metadata":{},"always":["git push *"],"tool":{"messageID":"msg_e3b0c4421001Xh2pK8sLqW4nZr","callID":"toolu_01AbCdEf"}}}
