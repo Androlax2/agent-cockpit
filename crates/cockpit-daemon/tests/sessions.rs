@@ -484,6 +484,31 @@ async fn a_launch_gives_the_agent_its_sessions_own_private_directory() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn ended_session_directory_is_removed_again_by_the_sweep() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    home.launches(1).await;
+    session_reply(
+        &client,
+        Command::SessionEnd {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+    let dir = home.path().join("run/cockpit/sessions").join(&started.id);
+    assert!(!dir.exists());
+    std::fs::create_dir(&dir).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while dir.exists() {
+        assert!(Instant::now() < deadline, "ended directory was not swept");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_new_session_in_a_clone_occupies_a_parallel_clone_on_its_branch() {
     let home = Home::new();
     let daemon = home.start(BASELINE, settings()).await;
@@ -547,6 +572,13 @@ async fn restart_stops_the_agent_and_resumes_the_same_conversation_in_place() {
     let started = new_session(&client, &root, None).await;
     home.launches(1).await;
 
+    let marker = home
+        .path()
+        .join("run/cockpit/sessions")
+        .join(&started.id)
+        .join("keep-me");
+    std::fs::write(&marker, "kept").unwrap();
+
     let restarted = session_reply(
         &client,
         Command::SessionRestart {
@@ -566,6 +598,7 @@ async fn restart_stops_the_agent_and_resumes_the_same_conversation_in_place() {
     assert!(!is_alive(launches[0].pid));
     assert!(is_alive(launches[1].pid));
     assert_ne!(launches[0].token, launches[1].token);
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "kept");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -576,6 +609,13 @@ async fn sleep_stops_the_agent_and_wake_resumes_its_conversation() {
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
     let first = home.launches(1).await;
+
+    let marker = home
+        .path()
+        .join("run/cockpit/sessions")
+        .join(&started.id)
+        .join("keep-me");
+    std::fs::write(&marker, "kept").unwrap();
 
     let asleep = session_reply(
         &client,
@@ -602,6 +642,7 @@ async fn sleep_stops_the_agent_and_wake_resumes_its_conversation() {
         (launches[1].mode.as_str(), launches[1].conversation.as_str()),
         ("resume", "conversation-1")
     );
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "kept");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1055,6 +1096,13 @@ async fn end_stops_the_agent_and_releases_the_clone() {
 
     assert_eq!(ended.state, SessionStateView::Ended);
     assert!(!is_alive(first[0].pid));
+    assert!(
+        !home
+            .path()
+            .join("run/cockpit/sessions")
+            .join(&started.id)
+            .exists()
+    );
     let checkouts = match request(&client, Command::CheckoutList { project: None }).await {
         Ok(Reply::Checkouts { checkouts }) => checkouts,
         other => panic!("{other:?}"),

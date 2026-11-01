@@ -312,12 +312,19 @@ async fn a_session_whose_launch_hung_can_be_ended() {
     let (_daemon, client, _answer) = a_hung_launch(&home).await;
     let id = the_only_session(&client).await.id;
 
-    let ended = request(&client, Command::SessionEnd { session: id }).await;
+    let ended = request(
+        &client,
+        Command::SessionEnd {
+            session: id.clone(),
+        },
+    )
+    .await;
 
     match ended {
         Ok(Reply::Session { session }) => assert_eq!(session.state, SessionStateView::Ended),
         other => panic!("session-end: {other:?}"),
     }
+    assert!(home.root.join("run/cockpit/sessions").join(id).exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
