@@ -190,6 +190,26 @@ impl Home {
         );
     }
 
+    /// Splits a pane off `session`'s terminal and leaves it focused, as the owner might; what
+    /// is typed into it lands in the returned file.
+    fn split_focused_pane_in(&self, session: &str) -> std::path::PathBuf {
+        let typed = self.path().join(format!("{session}-split.log"));
+        let output = Process::new("tmux")
+            .arg("-S")
+            .arg(self.path().join("tmux.sock"))
+            .args(["split-window", "-t", &format!("={session}:")])
+            .arg(format!("cat > '{}'", typed.display()))
+            .env_remove("TMUX")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        typed
+    }
+
     fn kill_every_agent(&self) {
         let _ = Process::new("tmux")
             .arg("-S")
@@ -351,6 +371,28 @@ async fn queue_dispatch_types_the_placed_item_to_its_agent() {
              finish it with `cockpit todo done {item} --summary '<what you did>'`."
         )]
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_brief_goes_to_the_agents_pane_not_a_pane_the_owner_left_focused() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let idle = home
+        .session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    let split = home.split_focused_pane_in(&idle.id);
+    let item = queued_item(&client, "Fix the login").await;
+
+    request(&client, Command::QueueDispatch).await.unwrap();
+
+    let delivered = home.messages_of(&idle.id, 1).await;
+    assert!(
+        delivered[0].contains(&format!("item {item}")),
+        "{delivered:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&split).unwrap_or_default(), "");
 }
 
 #[tokio::test(flavor = "multi_thread")]

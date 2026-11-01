@@ -16,7 +16,7 @@ use cockpit_provider_api::{
     Action, Activity, Capability, Conversation, Key, LaunchRequest, Provider, ProviderError,
     TerminalInput,
 };
-use cockpit_tmux::{Keystroke, Server, SessionLaunch, SessionName};
+use cockpit_tmux::{Keystroke, PaneId, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
 
 use crate::model::{LaunchPurpose, validate_link};
@@ -659,7 +659,7 @@ impl Sessions {
         let session_id = id.clone();
         self.blocking("type a message to the agent", move || {
             let _guard = guard;
-            let pane = tmux.active_pane(&name)?;
+            let pane = agent_pane(&tmux, &name)?;
             let keys: Vec<Keystroke> = input
                 .iter()
                 .map(|step| match step {
@@ -669,11 +669,15 @@ impl Sessions {
                     TerminalInput::Key(Key::Control(letter)) => Keystroke::Control(*letter),
                 })
                 .collect();
-            tmux.send_keys(&pane, &keys)
-                .map_err(|error| Error::TypingUnconfirmed {
+            tmux.send_keys(&pane, &keys).map_err(|error| match error {
+                // tmux refused the list or found no pane to run it on: nothing was typed.
+                cockpit_tmux::Error::CommandFailed { .. }
+                | cockpit_tmux::Error::InvalidArgument { .. } => Error::Tmux(error),
+                other => Error::TypingUnconfirmed {
                     session: session_id,
-                    reason: format!("tmux: {error}"),
-                })
+                    reason: format!("tmux: {other}"),
+                },
+            })
         })
         .await
         .map_err(|error| match error {
@@ -1842,4 +1846,20 @@ fn canonical_dir(dir: PathBuf) -> Result<PathBuf, Error> {
         return Err(Error::NotInProject { dir: canonical });
     }
     Ok(canonical)
+}
+
+/// The pane the agent runs in: the terminal's first pane, the one `new-session` opened.
+/// Not the active one: a pane the owner split off and left focused is not the agent.
+fn agent_pane(tmux: &Server, name: &SessionName) -> Result<PaneId, Error> {
+    let number = |pane: &PaneId| pane.as_str()[1..].parse::<u64>().unwrap_or(u64::MAX);
+    tmux.panes(name)?
+        .into_iter()
+        .map(|pane| pane.id)
+        .min_by_key(number)
+        .ok_or_else(|| {
+            Error::Tmux(cockpit_tmux::Error::UnexpectedOutput {
+                arguments: Vec::new(),
+                output: format!("terminal {name} has no pane"),
+            })
+        })
 }

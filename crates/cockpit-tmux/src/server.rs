@@ -469,7 +469,8 @@ impl Server {
     }
 
     /// Types `keys` into `pane`, in order, as one tmux command list: tmux parses the whole
-    /// list before it runs any of it, so a refused list types nothing. Text is typed
+    /// list before it runs any of it, and every command names the same pane, so a refused
+    /// list or a gone pane (`CommandFailed`) types nothing. Text is typed
     /// literally (`send-keys -l`), never read as key names.
     pub fn send_keys(&self, pane: &PaneId, keys: &[Keystroke]) -> Result<(), Error> {
         let mut arguments = Vec::new();

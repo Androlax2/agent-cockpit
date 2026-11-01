@@ -12,7 +12,7 @@ inbox per feature. It moves effects and state; it decides nothing about them.
    commits with that state or not at all. `effect_key` is the one idempotency key of the
    logical effect: enqueuing it again with the same content finds the existing envelope
    (`AlreadyEnqueued`); with other content it is refused (`EffectKeyReused`).
-2. A worker takes due envelopes with `claim_due` and commits (`submitting`), delivers outside
+2. A producer's worker takes its own due envelopes with `claim_due` and commits (`submitting`), delivers outside
    any transaction, then records the outcome with `record_delivery`. `deliver_due` is that
    pass over a `Deliverer`.
 3. `received` needs the receiver's receipt. A receipt is recorded whenever it arrives, late
