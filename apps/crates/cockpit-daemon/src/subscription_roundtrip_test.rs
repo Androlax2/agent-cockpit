@@ -164,7 +164,9 @@ import json,os,sys,time
 from pathlib import Path
 root=Path(os.environ['ROUNDTRIP_ROOT'])
 original=(root/'initial-agent').read_text()
-if sys.argv[1].endswith('codex-session.py'):
+if sys.argv[1].endswith('codex-trust.py'):
+    os.execv('/usr/bin/python3', ['/usr/bin/python3', *sys.argv[1:]])
+elif sys.argv[1].endswith('codex-session.py'):
     print(json.dumps({'thread':sys.argv[2],'model':'gpt-fixture','provider':'openai','effort':'high',
         'messages':[{'id':'native-user','role':'user','text':'Finish the same requested change'}],
         'latest_user':'Finish the same requested change','truncated':False,

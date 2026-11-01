@@ -12,6 +12,7 @@ codex_launch() { # directory native-arguments...
     local directory=$1 name size
     shift
     require_plain_directory "$directory" || return
+    python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/codex-trust.py" hooks || return
     name="claude-retry-codex-$(date +%s%N)"
     size=$(detached_size)
     # The child shell owns argv, exit status and working directory expansion.

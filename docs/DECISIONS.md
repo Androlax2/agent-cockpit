@@ -1,5 +1,33 @@
 # Engineering decisions
 
+## 2026-11-01 — Prepare legacy Codex trust on the host
+
+`cockpit-agents/codex-trust.py` inherits an exact trusted source's folder decision
+only during fresh non-PR clone creation. It never reconstructs provenance from a
+clone's name, Git remote or project-owned files. Explicit destination decisions stay intact.
+All native Cockpit Codex launch modes prepare hook trust before starting tmux.
+Only the seven reviewed user-level `cockpit-codex-hook` declarations qualify;
+changed declarations and TOML hook definitions require host review. Project hooks
+receive no trust entries, and disabled user hooks remain disabled.
+
+The format is sourced from Codex's `rust-v0.161.0` tag:
+[hook keys](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/hooks/src/lib.rs),
+[normalization](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/hooks/src/engine/discovery.rs),
+[hashing](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/config/src/fingerprint.rs)
+and [TUI persistence](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/tui/src/hooks_rpc.rs).
+Folder trust is `projects."<absolute path>".trust_level = "trusted"`;
+hook trust is `hooks.state."<hooks.json path>:<snake_case event>:0:0".trusted_hash`,
+containing `sha256:` followed by the normalized identity's canonical JSON hash.
+
+The helper parses both the original and proposed TOML before appending missing tables.
+It never truncates or replaces the inode that existing sandboxes bind-mount.
+Existing entries needing edits fail closed rather than guessing how to rewrite TOML.
+An advisory lock serializes Cockpit writers, with content/inode checks around the write.
+Codex's own writer uses atomic replacement without this lock: simultaneous native
+host config edits are not supported; detected replacements stop preparation.
+The sandbox's config and hook write restrictions remain the security boundary.
+Tests use scratch homes, fake launch commands and the manager's clone entry point.
+
 ## 2026-10-30 — Keep Chief coordination separate from observed todo ownership
 
 An observed in-progress todo remains a work reservation, but does not by itself mean

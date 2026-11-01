@@ -3616,6 +3616,62 @@ fn a_clone_of_an_untrusted_repository_still_asks() {
 }
 
 #[test]
+fn codex_clone_trust_requires_a_trusted_source_and_a_non_pr_clone() {
+    for (source_trust, branch, expected) in [
+        ("trusted", "feat", true),
+        ("untrusted", "feat", false),
+        ("trusted", "pr-123", false),
+    ] {
+        let manager = Manager::new();
+        manager.git_repository();
+        let codex = manager.sandbox.home.join(".codex");
+        fs::create_dir_all(&codex).unwrap();
+        let config = codex.join("config.toml");
+        let source = fs::canonicalize(&manager.project).unwrap();
+        fs::write(
+            &config,
+            format!(
+                "[projects.{}]\ntrust_level = {source_trust:?}\n",
+                json!(source)
+            ),
+        )
+        .unwrap();
+        let clones = fs::canonicalize(&manager.sandbox.root)
+            .unwrap()
+            .join("clones");
+        let output = manager.run(
+            &[
+                "--agent",
+                "codex",
+                "parallel",
+                &path_str(&manager.project),
+                branch,
+            ],
+            &[("COCKPIT_CLONES", &path_str(&clones))],
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
+        let parsed = manager
+            .sandbox
+            .command("python3", &[])
+            .args([
+                "-c",
+                "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], 'rb'))))",
+            ])
+            .arg(&config)
+            .output()
+            .unwrap();
+        assert!(parsed.status.success(), "{}", stderr(&parsed));
+        let settings: Value = serde_json::from_slice(&parsed.stdout).unwrap();
+        assert_eq!(
+            settings["projects"][path_str(&clones.join("proj-a").join(branch))]["trust_level"]
+                == "trusted",
+            expected,
+            "source {source_trust}, clone {branch}",
+        );
+    }
+}
+
+#[test]
 fn memory_planted_for_a_fresh_clone_is_set_aside() {
     // Security audit H2: a session started before the clone existed could write its Claude folder.
     let manager = Manager::new();
@@ -3647,6 +3703,45 @@ fn memory_planted_for_a_fresh_clone_is_set_aside() {
         !memory.exists(),
         "the planted memory is still where Claude loads it"
     );
+}
+
+#[test]
+fn failed_codex_trust_preparation_cannot_skip_clone_memory_quarantine() {
+    let manager = Manager::new();
+    manager.git_repository();
+    let clones = fs::canonicalize(&manager.sandbox.root)
+        .unwrap()
+        .join("clones");
+    let slug: String = path_str(&clones.join("proj-a/feat"))
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let memory = manager
+        .sandbox
+        .home
+        .join(".claude/projects")
+        .join(slug)
+        .join("memory");
+    fs::create_dir_all(&memory).unwrap();
+    fs::write(memory.join("MEMORY.md"), "unreviewed memory").unwrap();
+    let codex = manager.sandbox.home.join(".codex");
+    fs::create_dir_all(&codex).unwrap();
+    fs::write(codex.join("config.toml"), "[broken\n").unwrap();
+    let output = manager.run(
+        &["parallel", &path_str(&manager.project), "feat"],
+        &[("COCKPIT_CLONES", &path_str(&clones))],
+    );
+    assert!(!output.status.success());
+    assert!(
+        !memory.exists(),
+        "trust failure left planted memory loadable"
+    );
+    let retry = manager.run(
+        &["parallel", &path_str(&manager.project), "feat"],
+        &[("COCKPIT_CLONES", &path_str(&clones))],
+    );
+    assert!(retry.status.success(), "{}", stderr(&retry));
+    assert!(!memory.exists(), "retry loaded planted memory");
 }
 
 #[test]

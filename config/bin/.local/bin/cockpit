@@ -2166,14 +2166,15 @@ clone_for() { # source-dir name -> prints the clone's path, created on first use
         if origin=$(git -C "$top" remote get-url origin 2>/dev/null); then
             git -C "$clone" remote set-url origin "$origin"
         fi
+        set_aside_claude_memory "$clone" || return
         # A pull request's clone gets someone else's code (its .claude/settings.json hooks, its
         # CLAUDE.md): Claude Code's trust dialog must ask about it, never inherit the yes.
         # Its hooks too: out here, git fetches and switches a pull request's head in it.
         if [[ $name != pr-* ]]; then
             inherit_trust "$top" "$clone"
+            python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cockpit-agents/codex-trust.py" inherit "$top" "$clone" || return
             install_lefthook_hooks "$clone"
         fi
-        set_aside_claude_memory "$clone"
     fi
     printf '%s\n' "$clone"
 }
