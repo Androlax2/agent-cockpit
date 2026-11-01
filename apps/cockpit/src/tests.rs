@@ -14057,6 +14057,25 @@ fn subscription_poll_starts_one_background_sweep_without_blocking_the_sidebar() 
 }
 
 #[test]
+fn the_subscription_sweep_runs_at_most_every_five_minutes() {
+    let (fixture, mut app) = queue_fixture("waiting", 7200);
+    let sweeps = |fixture: &Fixture| {
+        std::thread::sleep(Duration::from_millis(100));
+        fixture
+            .calls("cockpit")
+            .iter()
+            .filter(|call| call.contains("subscription-sweep"))
+            .count()
+    };
+    app.subscription_polled_at = Some(util::now() - 299.0);
+    app.poll_subscription_routes();
+    assert_eq!(sweeps(&fixture), 0);
+    app.subscription_polled_at = Some(util::now() - 301.0);
+    app.poll_subscription_routes();
+    assert_eq!(sweeps(&fixture), 1);
+}
+
+#[test]
 fn automatic_actions_leave_routing_held_sessions_and_their_work_untouched() {
     for action in ["queue", "prompt", "restart", "sleep"] {
         let (fixture, mut app) = queue_fixture("waiting", 7200);

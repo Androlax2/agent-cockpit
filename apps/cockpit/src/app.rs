@@ -1596,7 +1596,7 @@ pub struct App {
     subscription_error: Option<String>,
     /// origin -> the waiting reason last shown, so each reason appears once.
     subscription_waiting_shown: HashMap<String, String>,
-    subscription_polled_at: Option<f64>,
+    pub(crate) subscription_polled_at: Option<f64>,
     /// craft app -> the checkout folders its running instances serve (sessions::craft_roots).
     pub(crate) craft_roots: HashMap<String, HashSet<String>>,
     pub(crate) todo_counts: [usize; 5],
@@ -1946,7 +1946,7 @@ impl App {
         let now = util::now();
         if self
             .subscription_polled_at
-            .is_some_and(|last| now - last < 60.0)
+            .is_some_and(|last| now - last < SUBSCRIPTION_SWEEP_INTERVAL_S)
             || self
                 .pending
                 .iter()
@@ -10049,6 +10049,9 @@ pub fn read_key(timeout: Option<Duration>, last_click: &mut Option<(Instant, u16
 pub const POLL_INTERVAL: Duration = POLL;
 /// How often the column looks whether another session went into the session pane (Ctrl+Tab, a
 /// banner, n): its Todo and Pull requests follow within this, not at the next full tick.
+/// The subscription sweep observes every session and reloads the todo list for each: every
+/// minute it took 7-35 s with 15-20 sessions, mostly to learn nothing had changed.
+pub(crate) const SUBSCRIPTION_SWEEP_INTERVAL_S: f64 = 300.0;
 pub const VIEW_CHECK_INTERVAL: Duration = Duration::from_millis(40);
 
 impl App {
