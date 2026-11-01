@@ -34,6 +34,7 @@ mod doctor;
 mod installations;
 mod instructions;
 mod mcp;
+mod onboarding;
 mod profile;
 mod projects;
 mod queue;
@@ -90,6 +91,7 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit sandbox show DIR [--agent NAME]
        cockpit provider list
        cockpit desktop-session import
+       cockpit init
        cockpit doctor [--project DIR]
        cockpit tui
        cockpit version [--all]
@@ -144,6 +146,10 @@ fn main() -> ExitCode {
     }
     let verb: Vec<Option<&str>> = arguments.iter().take(2).map(|word| word.to_str()).collect();
     match verb[..] {
+        [] => onboarding::first_run(),
+        [Some("init"), ..] => {
+            onboarding::init(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
         [Some("--skill"), ..] => instructions::skill(&arguments[1..])
             .unwrap_or_else(|problem| usage_error(Some(problem))),
         [Some("docs"), ..] => {
