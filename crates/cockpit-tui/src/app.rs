@@ -203,7 +203,11 @@ impl App {
                 FormOutcome::Submit(command) => Step::sending("new-session", command),
             };
         }
-        if let Some(workflows) = &mut self.workflows {
+        // The approval pane keeps its keys while the view is open, and Tab moves to it.
+        if let Some(workflows) = &mut self.workflows
+            && self.focus == Focus::List
+            && (key != Key::Tab || workflows.is_typing())
+        {
             return match workflows.key(key) {
                 WorkflowsOutcome::Closed => {
                     self.workflows = None;
@@ -404,8 +408,17 @@ impl App {
             self.failure = None;
         }
         if let Some(workflows) = &mut self.workflows
-            && workflows.answer(&reply)
+            && workflows.answer(command, &reply)
         {
+            if let Reply::Workflow { workflow } = &reply
+                && !matches!(command, Command::WorkflowShow { .. })
+            {
+                self.note(format!(
+                    "workflow {} is {}",
+                    workflow.id,
+                    workflow.status.as_str()
+                ));
+            }
             return;
         }
         match reply {
@@ -476,6 +489,9 @@ impl App {
     }
 
     fn failed(&mut self, command: &Command, problem: String) {
+        if let Some(workflows) = &mut self.workflows {
+            workflows.failed(command, &problem);
+        }
         if let Some(form) = &mut self.form
             && form.submitted.as_ref() == Some(command)
         {

@@ -31,13 +31,19 @@ pub enum WorkflowConfirm {
     Cancel,
 }
 
-/// The handoff the owner types to complete the opened workflow's step.
+/// The handoff the owner types to complete the opened workflow's step: the step it was opened
+/// for, and the requirements the owner saw it would waive.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandoffEntry {
+    pub(crate) position: Option<u32>,
+    pub(crate) waive: Vec<String>,
     /// Changed, checked, outcome.
     pub(crate) fields: [String; 3],
     pub(crate) field: usize,
     pub(crate) problem: Option<String>,
+    /// The `workflow-complete` sent and not answered yet: the entry stays until it is
+    /// accepted, so a refusal keeps what the owner typed.
+    pub(crate) submitted: Option<Command>,
 }
 
 const HANDOFF_LABELS: [&str; 3] = ["What changed", "What was checked", "Outcome"];
@@ -67,6 +73,13 @@ fn list_command() -> Command {
     }
 }
 
+fn show_command(workflow: i64) -> Command {
+    Command::WorkflowShow {
+        launch_token: None,
+        workflow,
+    }
+}
+
 fn packet_command(workflow: i64) -> Command {
     Command::WorkflowPacket {
         launch_token: None,
@@ -88,10 +101,18 @@ impl Workflows {
         self.selected
     }
 
-    /// What keeps the view current, sent with every refresh while it is open.
+    /// Whether the owner is typing a handoff: every key is text then.
+    pub fn is_typing(&self) -> bool {
+        self.handoff.is_some()
+    }
+
+    /// What keeps the view current, sent with every refresh while it is open. The opened
+    /// workflow is shown by itself, so one delivered or cancelled elsewhere shows how it ended.
     pub fn refresh_commands(&self) -> Vec<Command> {
         let mut commands = vec![list_command()];
-        commands.extend(self.opened.as_ref().map(|run| packet_command(run.id)));
+        if let Some(run) = &self.opened {
+            commands.extend([show_command(run.id), packet_command(run.id)]);
+        }
         commands
     }
 
@@ -155,7 +176,7 @@ impl Workflows {
                 handled("workflow-back", Vec::new())
             }
             Key::Char('a') => {
-                self.handoff = Some(HandoffEntry::default());
+                self.handoff = Some(self.handoff_for_current_step());
                 handled("workflow-complete-form", Vec::new())
             }
             Key::Char('p') => {
@@ -207,23 +228,44 @@ impl Workflows {
         }
     }
 
-    /// Completes the opened workflow's current step with the typed handoff, waiving every
-    /// requirement the step declares: a requirement the owner does not waive waits for
-    /// verification, which the TUI cannot claim.
+    /// A handoff for the opened workflow's current step, waiving every requirement the step
+    /// declares: a requirement the owner does not waive waits for verification, which the TUI
+    /// cannot claim.
+    fn handoff_for_current_step(&self) -> HandoffEntry {
+        let current = self.opened.as_ref().and_then(|run| {
+            let position = current_position(&run.next)?;
+            run.steps.iter().find(|step| step.position == position)
+        });
+        HandoffEntry {
+            position: current.map(|step| step.position),
+            waive: current
+                .map(|step| step.requirements.clone())
+                .unwrap_or_default(),
+            ..HandoffEntry::default()
+        }
+    }
+
+    /// Completes the opened workflow's step with the typed handoff, refused here when the
+    /// workflow moved on to another step since the entry opened: the owner waives only the
+    /// requirements shown.
     fn complete(&mut self) -> WorkflowsOutcome {
         let (Some(entry), Some(run)) = (&mut self.handoff, &self.opened) else {
             unreachable!("the handoff is typed only for an opened workflow");
         };
+        if entry.submitted.is_some() {
+            return handled("workflow-complete", Vec::new());
+        }
+        if current_position(&run.next) != entry.position {
+            entry.problem = Some(
+                "the workflow moved on to another step: Esc, then a to complete that one"
+                    .to_owned(),
+            );
+            return handled("workflow-complete", Vec::new());
+        }
         if entry.fields.iter().any(|field| field.trim().is_empty()) {
             entry.problem = Some("each of the three fields is needed".to_owned());
             return handled("workflow-complete", Vec::new());
         }
-        let waive = run
-            .steps
-            .iter()
-            .find(|step| Some(step.position) == current_position(&run.next))
-            .map(|step| step.requirements.clone())
-            .unwrap_or_default();
         let [changed, checked, outcome] = entry.fields.clone();
         let command = Command::WorkflowComplete {
             launch_token: None,
@@ -235,10 +277,21 @@ impl Workflows {
                 needs_human: String::new(),
                 evidence: Vec::new(),
             },
-            waive,
+            waive: entry.waive.clone(),
         };
-        self.handoff = None;
+        entry.problem = None;
+        entry.submitted = Some(command.clone());
         handled("workflow-complete", vec![command])
+    }
+
+    /// The daemon refused `command`: a refused complete keeps the typed handoff, with why.
+    pub fn failed(&mut self, command: &Command, problem: &str) {
+        if let Some(entry) = &mut self.handoff
+            && entry.submitted.as_ref() == Some(command)
+        {
+            entry.submitted = None;
+            entry.problem = Some(problem.to_owned());
+        }
     }
 
     fn move_selection(&mut self, step: isize) {
@@ -258,7 +311,7 @@ impl Workflows {
     }
 
     /// Takes the daemon's answer to a workflow command; returns whether it was one.
-    pub fn answer(&mut self, reply: &Reply) -> bool {
+    pub fn answer(&mut self, command: &Command, reply: &Reply) -> bool {
         match reply {
             Reply::Workflows { workflows } => {
                 self.runs = workflows.clone();
@@ -272,6 +325,13 @@ impl Workflows {
                 }
             }
             Reply::Workflow { workflow } => {
+                if self
+                    .handoff
+                    .as_ref()
+                    .is_some_and(|entry| entry.submitted.as_ref() == Some(command))
+                {
+                    self.handoff = None;
+                }
                 if let Some(opened) = &mut self.opened
                     && opened.id == workflow.id
                 {

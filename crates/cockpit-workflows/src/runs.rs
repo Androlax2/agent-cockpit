@@ -619,7 +619,15 @@ pub(crate) async fn task_of(
     connection: &Connection,
     run: &Run,
 ) -> Result<Option<cockpit_tasks::Item>, Error> {
-    match task_item(connection, run.item).await {
+    existing_item(connection, run.item).await
+}
+
+/// The item, or `None` once it was deleted.
+async fn existing_item(
+    connection: &Connection,
+    item: ItemId,
+) -> Result<Option<cockpit_tasks::Item>, Error> {
+    match task_item(connection, item).await {
         Ok(task) => Ok(Some(task)),
         Err(Error::Refused(Refusal::ItemNotFound { .. })) => Ok(None),
         Err(error) => Err(error),
@@ -693,11 +701,9 @@ fn is_open(status: cockpit_tasks::Status) -> bool {
 
 /// Whether the item still exists and is open; a deleted one is not.
 async fn is_item_open(connection: &Connection, item: ItemId) -> Result<bool, Error> {
-    match task_item(connection, item).await {
-        Ok(task) => Ok(is_open(task.status)),
-        Err(Error::Refused(Refusal::ItemNotFound { .. })) => Ok(false),
-        Err(error) => Err(error),
-    }
+    Ok(existing_item(connection, item)
+        .await?
+        .is_some_and(|task| is_open(task.status)))
 }
 
 /// A running run no blocker holds: the only kind whose step may be begun or completed.

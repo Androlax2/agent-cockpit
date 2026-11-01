@@ -144,7 +144,10 @@ fn opened(run: WorkflowView, packet: WorkflowPacketView, now: Instant) -> App {
         },
         now,
     );
-    assert_eq!(sent(&press(&mut app, &[Key::Enter], now)), [packet_command(7)]);
+    assert_eq!(
+        sent(&press(&mut app, &[Key::Enter], now)),
+        [packet_command(7)]
+    );
     answer(
         &mut app,
         packet_command(7),
@@ -163,7 +166,10 @@ fn a_running_code_change_workflow_shows_its_active_steps_checkpoint_and_next() {
 
     let shown = screen_text(&app, now);
 
-    assert!(shown.contains("1 implement  agent  active  by s0123456789ab"), "{shown}");
+    assert!(
+        shown.contains("1 implement  agent  active  by s0123456789ab"),
+        "{shown}"
+    );
     assert!(
         shown.contains("checkpoint: Validation rewritten; tests next"),
         "{shown}"
@@ -172,7 +178,10 @@ fn a_running_code_change_workflow_shows_its_active_steps_checkpoint_and_next() {
         shown.contains("next: s0123456789ab works on step 1"),
         "{shown}"
     );
-    assert!(shown.contains("item 3: Fix the login form (doing)"), "{shown}");
+    assert!(
+        shown.contains("item 3: Fix the login form (doing)"),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -227,7 +236,17 @@ fn while_open_the_refresh_keeps_the_list_and_the_packet_current() {
     let now = Instant::now();
     let app = opened(code_change(), packet(Some(goal())), now);
 
-    assert_eq!(app.view_refresh_commands(), [LIST, packet_command(7)]);
+    assert_eq!(
+        app.view_refresh_commands(),
+        [
+            LIST,
+            Command::WorkflowShow {
+                launch_token: None,
+                workflow: 7
+            },
+            packet_command(7)
+        ]
+    );
 }
 
 #[test]
@@ -348,4 +367,129 @@ fn esc_goes_back_to_the_list_then_closes_the_view() {
 
     assert_eq!(used, [Some("workflow-back"), Some("workflows-close")]);
     assert!(app.workflows().is_none());
+}
+
+#[test]
+fn a_handoff_typed_for_one_step_is_not_sent_once_the_workflow_moved_on() {
+    let now = Instant::now();
+    let mut app = opened(at_check(), packet(Some(goal())), now);
+    press(&mut app, &[Key::Char('a')], now);
+    typing(&mut app, "a", now);
+    press(&mut app, &[Key::Tab], now);
+    typing(&mut app, "b", now);
+    press(&mut app, &[Key::Tab], now);
+    typing(&mut app, "c", now);
+    let mut moved_on = at_check();
+    moved_on.steps[1].status = WorkflowStepStatusView::Done;
+    moved_on.steps[2].status = WorkflowStepStatusView::Ready;
+    moved_on.next = WorkflowNextView::AwaitPlacement { position: 3 };
+    answer(
+        &mut app,
+        Command::WorkflowShow {
+            launch_token: None,
+            workflow: 7,
+        },
+        Reply::Workflow {
+            workflow: Box::new(moved_on),
+        },
+        now,
+    );
+
+    let completed = sent(&press(&mut app, &[Key::Enter], now));
+
+    assert_eq!(completed, []);
+    assert!(
+        screen_text(&app, now).contains("the workflow moved on to another step"),
+        "{}",
+        screen_text(&app, now)
+    );
+}
+
+#[test]
+fn a_refused_complete_keeps_the_typed_handoff_and_says_why() {
+    let now = Instant::now();
+    let mut app = opened(at_check(), packet(Some(goal())), now);
+    press(&mut app, &[Key::Char('a')], now);
+    typing(&mut app, "Reviewed by hand", now);
+    press(&mut app, &[Key::Tab], now);
+    typing(&mut app, "commit def456", now);
+    press(&mut app, &[Key::Tab], now);
+    typing(&mut app, "read the diff", now);
+    let complete = sent(&press(&mut app, &[Key::Enter], now)).remove(0);
+
+    app.answer(
+        &complete,
+        Err("conflict: workflow 7 is blocked".to_owned()),
+        now,
+    );
+
+    let shown = screen_text(&app, now);
+    assert!(
+        shown.contains("What changed: Reviewed by hand")
+            && shown.contains("Cannot complete: conflict: workflow 7 is blocked"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn the_opened_workflow_is_shown_by_itself_so_one_delivered_elsewhere_shows_how_it_ended() {
+    let now = Instant::now();
+    let mut app = opened(code_change(), packet(Some(goal())), now);
+    let show = Command::WorkflowShow {
+        launch_token: None,
+        workflow: 7,
+    };
+    assert!(app.view_refresh_commands().contains(&show));
+    let mut delivered = code_change();
+    delivered.status = WorkflowStatusView::Delivered;
+    delivered.next = WorkflowNextView::Nothing;
+
+    answer(
+        &mut app,
+        LIST,
+        Reply::Workflows {
+            workflows: Vec::new(),
+        },
+        now,
+    );
+    answer(
+        &mut app,
+        show,
+        Reply::Workflow {
+            workflow: Box::new(delivered),
+        },
+        now,
+    );
+
+    assert!(
+        screen_text(&app, now).contains("code-change v1  delivered"),
+        "{}",
+        screen_text(&app, now)
+    );
+}
+
+#[test]
+fn an_approval_pane_that_takes_focus_keeps_its_keys_while_the_view_is_open() {
+    let now = Instant::now();
+    let mut app = opened(code_change(), packet(Some(goal())), now);
+    common::queue(
+        &mut app,
+        vec![common::run(1, "s1", "make test")],
+        Vec::new(),
+        now,
+    );
+
+    let declined = sent(&press(
+        &mut app,
+        &[Key::Char('x')],
+        now + cockpit_tui::INPUT_GRACE,
+    ));
+
+    assert!(
+        !declined
+            .iter()
+            .any(|command| matches!(command, Command::WorkflowCancel { .. })),
+        "{declined:?}"
+    );
+    assert_eq!(app.focus(), cockpit_tui::Focus::Pane);
 }
