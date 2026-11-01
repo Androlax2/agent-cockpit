@@ -1,13 +1,14 @@
 //! Issue #286: an agent the daemon launched asks the owner through the real `cockpit ask`
 //! binary and the agent socket, as soon as it starts; the ask reaches the owner's queue under
 //! that session, and the owner's answer reaches the agent as `cockpit ask`'s exit code.
+//! Issue #285: once the session ends, what it asked leaves the queue and cannot be approved.
 
 mod real_daemon;
 
 use std::time::{Duration, Instant};
 
-use cockpit_client::Connection;
-use cockpit_protocol::{Command, GuideView, Reply, RunRequestView};
+use cockpit_client::{ClientError, Connection};
+use cockpit_protocol::{Command, ErrorCode, GuideView, Reply, RunRequestView, SessionView};
 use real_daemon::{
     ASK_GUIDE_PROJECT, ASK_RUN_PROJECT, ASKED_COMMAND, GENEROUS, Home, cockpit_program, new_session,
 };
@@ -46,6 +47,44 @@ async fn queued<T>(
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// The owner's queue as it reads now.
+async fn queue(owner: &Connection) -> (Vec<RunRequestView>, Vec<GuideView>) {
+    match owner.request(Command::ApprovalQueue, GENEROUS).await {
+        Ok(Reply::ApprovalQueue { runs, guides }) => (runs, guides),
+        other => panic!("approval-queue answered {other:?}"),
+    }
+}
+
+async fn end(owner: &Connection, session: &SessionView) {
+    owner
+        .request(
+            Command::SessionEnd {
+                session: session.id.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .expect("the owner ends the session");
+}
+
+/// A session of `project` whose agent's ask reached the owner's queue, then ended.
+async fn ended_after_asking(
+    home: &Home,
+    owner: &Connection,
+    project: &str,
+) -> (SessionView, Option<RunRequestView>) {
+    let (root, _) = home.project(owner, project).await;
+    let session = new_session(owner, &root).await;
+    let run = queued(home, owner, |runs, guides| {
+        let run = runs.into_iter().find(|run| run.session == session.id);
+        let has_guide = guides.iter().any(|guide| guide.session == session.id);
+        (run.is_some() || has_guide).then_some(run)
+    })
+    .await;
+    end(owner, &session).await;
+    (session, run)
 }
 
 /// The exit code the agent's `cockpit ask <verb>` ended with, from its `<verb>=<code>` line.
@@ -113,4 +152,57 @@ async fn a_launched_agents_ask_guide_reaches_the_owner_and_hears_the_close() {
         .expect("the owner closes the guide");
 
     assert_eq!(exit_code_of(&home, "guide").await, DECLINED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_run_of_a_session_that_ended_leaves_the_owners_queue() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (session, _) = ended_after_asking(&home, &owner, ASK_RUN_PROJECT).await;
+
+    let (runs, _) = queue(&owner).await;
+    assert!(runs.iter().all(|run| run.session != session.id), "{runs:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_run_of_a_session_that_ended_cannot_be_approved() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (_, run) = ended_after_asking(&home, &owner, ASK_RUN_PROJECT).await;
+    let run = run.expect("the agent asked to run a command");
+
+    let approved = owner
+        .request(
+            Command::ApprovalApprove {
+                request: run.id,
+                revision: run.revision,
+                digest: run.digest.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+
+    assert!(
+        matches!(&approved, Err(ClientError::Daemon(error)) if error.code == ErrorCode::Conflict),
+        "{approved:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_guide_of_a_session_that_ended_leaves_the_owners_queue() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (session, _) = ended_after_asking(&home, &owner, ASK_GUIDE_PROJECT).await;
+
+    let (_, guides) = queue(&owner).await;
+    assert!(
+        guides.iter().all(|guide| guide.session != session.id),
+        "{guides:?}"
+    );
 }

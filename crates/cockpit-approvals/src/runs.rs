@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cockpit_authorization::{Actor, Outcome, Permission, Scope, SessionId};
+use cockpit_authorization::{Actor, Basis, Outcome, Permission, Scope, SessionId};
 use cockpit_processes::{EndReason, ExecutionId, Phase};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
@@ -23,7 +23,7 @@ use crate::error::invalid;
 use crate::pty::Output;
 use crate::rows::{
     AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
-    refreshed_expiry, session_from, state_at, still_asking,
+    refreshed_expiry, session_from, state_at, still_asking, stored_row,
 };
 use crate::{Error, Refusal};
 
@@ -38,10 +38,9 @@ const TABLE: &str = "approvals_runs";
 const KIND: &str = "run request";
 
 /// The columns `run_from` reads, in its order.
-const SELECT_RUNS: &str = "SELECT id, session, revision, command, asked_command, cwd, project,
+const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, project,
         project_root, reason, state, asked_at, expires_at, exit_code, output,
-        output_omitted_lines, output_truncated_bytes, redacted, note, revised_at
-     FROM approvals_runs";
+        output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub i64);
@@ -137,6 +136,8 @@ pub struct RunRequest {
     pub expires_at: i64,
     pub result: Option<RunResult>,
     pub note: Option<String>,
+    /// The `run-commands` grant the session asked under (#285).
+    pub(crate) asking_grant: Option<i64>,
 }
 
 impl RunRequest {
@@ -212,23 +213,79 @@ pub async fn ask_run(
 ) -> Result<RunRequest, Error> {
     validate_command("command", &ask.command)?;
     validate_reason(&ask.reason)?;
-    may_ask(write, session).await?;
-    insert_run(write, session, &ask, now).await
+    let grant = asking_grant(write, session).await?;
+    insert_run(write, session, &ask, grant, now).await
 }
 
 /// Whether `cockpit-authorization` allows `session` to ask the owner: `run-commands` over
 /// itself. Every ask is evaluated so; `ask check` asks it alone.
 pub async fn may_ask(write: &WriteTransaction<'_>, session: &SessionId) -> Result<(), Error> {
+    asking_grant(write, session).await.map(drop)
+}
+
+/// The grant `session` may ask the owner under now, which its request records; refused like
+/// [`may_ask`].
+pub(crate) async fn asking_grant(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+) -> Result<Option<i64>, Error> {
+    match run_commands_over_itself(write, session).await? {
+        Outcome::Allowed(basis) => Ok(grant_of(&basis)),
+        Outcome::Refused(refusal) => Err(Refusal::NotAuthorized(refusal).into()),
+    }
+}
+
+/// Refuses the owner's decision on a request the owner may no longer decide
+/// ([`may_still_ask`]).
+pub(crate) async fn asker_may_still_ask(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    asked_under: Option<i64>,
+) -> Result<(), Error> {
+    if may_still_ask(write, session, asked_under).await? {
+        Ok(())
+    } else {
+        Err(Refusal::AskerMayNotAsk.into())
+    }
+}
+
+/// Whether the grant a request was asked under, `asked_under`, still lets `session` ask:
+/// once a session ends or fails it loses `run-commands`, and nobody waits for its requests,
+/// even if a restart grants it again (#285). A request recorded without a grant is dead.
+pub(crate) async fn may_still_ask(
+    connection: &Connection,
+    session: &SessionId,
+    asked_under: Option<i64>,
+) -> Result<bool, Error> {
+    if asked_under.is_none() {
+        return Ok(false);
+    }
+    Ok(match run_commands_over_itself(connection, session).await? {
+        Outcome::Allowed(basis) => grant_of(&basis) == asked_under,
+        Outcome::Refused(_) => false,
+    })
+}
+
+async fn run_commands_over_itself(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Outcome, Error> {
     let decision = cockpit_authorization::evaluate(
-        write,
+        connection,
         &Actor::Session(session.clone()),
         Permission::RunCommands,
         &Scope::Session(session.clone()),
     )
     .await?;
-    match decision.outcome {
-        Outcome::Allowed(_) => Ok(()),
-        Outcome::Refused(refusal) => Err(Refusal::NotAuthorized(refusal).into()),
+    Ok(decision.outcome)
+}
+
+/// The grant an allowed session asks under; a session is never allowed on the owner's own
+/// basis.
+fn grant_of(basis: &Basis) -> Option<i64> {
+    match basis {
+        Basis::Grant(grant) => Some(grant.value()),
+        Basis::Owner => None,
     }
 }
 
@@ -237,6 +294,7 @@ pub(crate) async fn insert_run(
     write: &WriteTransaction<'_>,
     session: &SessionId,
     ask: &RunAsk,
+    asking_grant: Option<i64>,
     now: i64,
 ) -> Result<RunRequest, Error> {
     let id = next_id(write, TABLE).await?;
@@ -246,49 +304,37 @@ pub(crate) async fn insert_run(
         .as_ref()
         .map(|project| text_of(&project.root))
         .transpose()?;
-    write
-        .execute(
-            "INSERT INTO approvals_runs (id, session, revision, command, asked_command, cwd,
-                project, project_root, reason, state, asked_at, revised_at, expires_at)
-             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9)",
-            (
-                id,
-                session.as_str(),
-                ask.command.as_str(),
-                cwd,
-                ask.project.as_ref().map(|project| project.name.clone()),
-                project_root,
-                ask.reason.as_str(),
-                now,
-                now + EXPIRES_AFTER_SECONDS,
-            ),
-        )
-        .await?;
-    Ok(RunRequest {
-        id: RunId(id),
-        session: session.clone(),
-        revision: 1,
-        command: ask.command.clone(),
-        asked_command: ask.command.clone(),
-        cwd: ask.cwd.clone(),
-        project: ask.project.clone(),
-        reason: ask.reason.clone(),
-        state: RunState::Asking,
-        asked_at: now,
-        revised_at: now,
-        expires_at: now + EXPIRES_AFTER_SECONDS,
-        result: None,
-        note: None,
-    })
+    stored_run(
+        write,
+        "INSERT INTO approvals_runs (id, session, revision, command, asked_command, cwd,
+                project, project_root, reason, state, asked_at, revised_at, expires_at,
+                asking_grant)
+             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9, ?10)",
+        (
+            id,
+            session.as_str(),
+            ask.command.as_str(),
+            cwd,
+            ask.project.as_ref().map(|project| project.name.clone()),
+            project_root,
+            ask.reason.as_str(),
+            now,
+            now + EXPIRES_AFTER_SECONDS,
+            asking_grant,
+        ),
+        now,
+    )
+    .await
 }
 
-/// Requests the owner still has to see: asking (not expired), approved and running, oldest
-/// first. [`queue_order`] puts them in the order the owner is asked.
+/// Requests the owner still has to see: asking (not expired, from a session that may still
+/// ask), approved and running, oldest first. [`queue_order`] puts them in the order the owner
+/// is asked.
 pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunRequest>, Error> {
     let mut rows = connection
         .query(
             &format!(
-                "{SELECT_RUNS} WHERE state IN ('approved', 'running')
+                "SELECT {RUN_COLUMNS} FROM approvals_runs WHERE state IN ('approved', 'running')
                     OR (state = 'asking' AND expires_at > ?1)
                  ORDER BY asked_at, id"
             ),
@@ -299,7 +345,15 @@ pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunReque
     while let Some(row) = rows.next().await? {
         runs.push(run_from(&row, now)?);
     }
-    Ok(runs)
+    let mut open = Vec::with_capacity(runs.len());
+    for run in runs {
+        if run.state != RunState::Asking
+            || may_still_ask(connection, &run.session, run.asking_grant).await?
+        {
+            open.push(run);
+        }
+    }
+    Ok(open)
 }
 
 /// Report 17's queue: one approval asks at a time per owner. A running command that waits
@@ -323,7 +377,10 @@ pub async fn run_request(
     now: i64,
 ) -> Result<Option<RunRequest>, Error> {
     let mut rows = connection
-        .query(&format!("{SELECT_RUNS} WHERE id = ?1"), [id.0])
+        .query(
+            &format!("SELECT {RUN_COLUMNS} FROM approvals_runs WHERE id = ?1"),
+            [id.0],
+        )
         .await?;
     match rows.next().await? {
         Some(row) => Ok(Some(run_from(&row, now)?)),
@@ -340,17 +397,17 @@ pub async fn run_status(
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = run_of(write, session, id, now).await?;
-    if let Some(expires_at) = moved_expiry(&run, now) {
-        write
-            .execute(
-                "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1",
-                (id.0, expires_at),
-            )
-            .await?;
-        run.expires_at = expires_at;
-    }
-    Ok(run)
+    let run = run_of(write, session, id, now).await?;
+    let Some(expires_at) = moved_expiry(&run, now) else {
+        return Ok(run);
+    };
+    stored_run(
+        write,
+        "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1",
+        (id.0, expires_at),
+        now,
+    )
+    .await
 }
 
 /// [`run_status`] when the poll writes nothing, read in any transaction; `None` when the
@@ -372,17 +429,25 @@ fn moved_expiry(run: &RunRequest, now: i64) -> Option<i64> {
         .flatten()
 }
 
-/// The request `id`, which only its asking session may see.
+/// The request `id`, which only its asking session may see. One the owner may no longer
+/// decide ([`may_still_ask`]) reads as expired, so a poll neither keeps it alive nor leaves
+/// the agent waiting (#285).
 async fn run_of(
     connection: &Connection,
     session: &SessionId,
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    match run_request(connection, id, now).await? {
-        Some(run) if run.session == *session => Ok(run),
-        _ => Err(not_found(KIND, id.0).into()),
+    let mut run = match run_request(connection, id, now).await? {
+        Some(run) if run.session == *session => run,
+        _ => return Err(not_found(KIND, id.0).into()),
+    };
+    if run.state == RunState::Asking
+        && !may_still_ask(connection, &run.session, run.asking_grant).await?
+    {
+        run.state = RunState::Expired;
     }
+    Ok(run)
 }
 
 /// The owner's edit: `command` replaces the current one as a new revision, so a decision
@@ -394,19 +459,16 @@ pub async fn edit_run(
     command: &str,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = undecided_at(write, id, revision, now).await?;
+    undecided_at(write, id, revision, now).await?;
     validate_command("command", command)?;
-    write
-        .execute(
-            "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3
+    stored_run(
+        write,
+        "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3
              WHERE id = ?1",
-            (id.0, command, now),
-        )
-        .await?;
-    run.command = command.to_owned();
-    run.revision += 1;
-    run.revised_at = now;
-    Ok(run)
+        (id.0, command, now),
+        now,
+    )
+    .await
 }
 
 pub async fn decline_run(
@@ -414,15 +476,14 @@ pub async fn decline_run(
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = undecided(write, id, now).await?;
-    write
-        .execute(
-            "UPDATE approvals_runs SET state = 'declined', decided_at = ?2 WHERE id = ?1",
-            (id.0, now),
-        )
-        .await?;
-    run.state = RunState::Declined;
-    Ok(run)
+    undecided(write, id, now).await?;
+    stored_run(
+        write,
+        "UPDATE approvals_runs SET state = 'declined', decided_at = ?2 WHERE id = ?1",
+        (id.0, now),
+        now,
+    )
+    .await
 }
 
 /// The owner's approval of exactly `revision`, whose digest must be `digest`. It is consumed
@@ -437,7 +498,7 @@ pub async fn approve_run(
     digest: &str,
     now: i64,
 ) -> Result<(Approved, RunRequest), Error> {
-    let mut run = undecided_at(write, id, revision, now).await?;
+    let run = undecided_at(write, id, revision, now).await?;
     let current_digest = run.digest();
     if current_digest != digest {
         return Err(Refusal::DigestMismatch.into());
@@ -449,14 +510,14 @@ pub async fn approve_run(
         }
         .into());
     }
-    write
-        .execute(
-            "UPDATE approvals_runs SET state = 'approved', decided_at = ?2, approved_digest = ?3
+    let run = stored_run(
+        write,
+        "UPDATE approvals_runs SET state = 'approved', decided_at = ?2, approved_digest = ?3
              WHERE id = ?1",
-            (id.0, now, current_digest),
-        )
-        .await?;
-    run.state = RunState::Approved;
+        (id.0, now, current_digest),
+        now,
+    )
+    .await?;
     let approved = Approved {
         id,
         revision: run.revision,
@@ -637,6 +698,22 @@ pub async fn reconcile_run(
     Ok(RunState::OutcomeUnknown)
 }
 
+/// Runs `sql`, an `INSERT` or `UPDATE` of one request, and returns it as stored.
+async fn stored_run(
+    write: &WriteTransaction<'_>,
+    sql: &str,
+    params: impl cockpit_turso::sql::IntoParams,
+    now: i64,
+) -> Result<RunRequest, Error> {
+    stored_row(
+        write,
+        &format!("{sql} RETURNING {RUN_COLUMNS}"),
+        params,
+        |row| run_from(row, now),
+    )
+    .await
+}
+
 async fn fenced_update(
     write: &WriteTransaction<'_>,
     run: &Approved,
@@ -661,8 +738,9 @@ async fn undecided(write: &WriteTransaction<'_>, id: RunId, now: i64) -> Result<
     Ok(run)
 }
 
-/// The request if the owner may still decide it and it is still at `revision`, the one the
-/// owner read.
+/// The request if the owner may still approve or edit it: undecided, asked by a session
+/// that may still ask, and still at `revision`, the one the owner read. A decline needs only
+/// [`undecided`].
 async fn undecided_at(
     write: &WriteTransaction<'_>,
     id: RunId,
@@ -670,6 +748,7 @@ async fn undecided_at(
     now: i64,
 ) -> Result<RunRequest, Error> {
     let run = undecided(write, id, now).await?;
+    asker_may_still_ask(write, &run.session, run.asking_grant).await?;
     if run.revision != revision {
         return Err(Refusal::StaleRevision {
             current: run.revision,
@@ -764,5 +843,6 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
         expires_at,
         result,
         note: row.get(17)?,
+        asking_grant: row.get(19)?,
     })
 }

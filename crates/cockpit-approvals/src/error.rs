@@ -20,6 +20,10 @@ pub enum Refusal {
     DigestMismatch,
     /// Nobody waited for the request any more, so it can no longer be decided.
     Expired,
+    /// The `run-commands` grant the request was asked under no longer covers its session (it
+    /// ended, failed or lost the grant, even if granted again since), so the request can no
+    /// longer be approved, edited or answered (#285).
+    AskerMayNotAsk,
     /// The request was decided already; a decision is taken once.
     AlreadyDecided { state: &'static str },
     /// Input goes to a running command only.
@@ -69,6 +73,10 @@ impl Refusal {
             Refusal::Expired => (
                 UnblockedBy::Agent,
                 "ask again if the command is still needed".to_owned(),
+            ),
+            Refusal::AskerMayNotAsk => (
+                UnblockedBy::Owner,
+                "nothing to do: its session reads it as expired".to_owned(),
             ),
             Refusal::AlreadyDecided { .. } => (
                 UnblockedBy::Owner,
@@ -123,6 +131,10 @@ impl fmt::Display for Refusal {
             Refusal::Expired => {
                 formatter.write_str("the request expired: nobody waited for its answer")
             }
+            Refusal::AskerMayNotAsk => formatter.write_str(
+                "the session that asked may no longer ask the owner: it ended, failed or lost \
+                 its run-commands grant",
+            ),
             Refusal::AlreadyDecided { state } => {
                 write!(formatter, "the request was decided already; it is {state}")
             }

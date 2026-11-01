@@ -4,8 +4,9 @@
 mod common;
 
 use cockpit_approvals::{
-    Error, GuideId, GuideRequest, GuideState, Refusal, RunState, answer_step, ask_guide,
-    close_guide, guide_request, guide_status, open_guides, parse_guide, report_stuck, run_request,
+    EXPIRES_AFTER_SECONDS, Error, GuideId, GuideRequest, GuideState, Refusal, RunState,
+    answer_step, ask_guide, close_guide, guide_request, guide_status, open_guides, parse_guide,
+    report_stuck, run_request,
 };
 use common::{Fixture, NOW, session};
 
@@ -352,6 +353,30 @@ async fn answered_up_to(fixture: &Fixture, last_step: usize) -> (GuideRequest, G
 }
 
 #[tokio::test]
+async fn an_ask_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(guide, stored(&write, guide.id).await);
+}
+
+#[tokio::test]
+async fn a_poll_that_moves_the_expiry_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    let polled_at = NOW + 60;
+    let write = fixture.database.write().await.unwrap();
+    let seen = guide_status(&write, &session("s1"), guide.id, polled_at)
+        .await
+        .unwrap();
+    assert_eq!(seen.expires_at, polled_at + EXPIRES_AFTER_SECONDS);
+    assert_eq!(
+        guide_request(&write, guide.id, polled_at).await.unwrap(),
+        Some(seen)
+    );
+}
+
+#[tokio::test]
 async fn answering_an_open_step_returns_the_guide_as_it_now_reads() {
     let fixture = Fixture::new().await;
     let (answered, stored) = answered_up_to(&fixture, 0).await;
@@ -412,4 +437,82 @@ async fn another_sessions_guide_is_not_found_for_the_asker() {
             id: guide.id.0 + 1
         }
     );
+}
+
+#[tokio::test]
+async fn a_guide_whose_session_may_no_longer_ask_leaves_the_owners_queue() {
+    let fixture = Fixture::new().await;
+    fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(open_guides(&read, NOW).await.unwrap(), []);
+}
+
+#[tokio::test]
+async fn a_guide_whose_session_may_no_longer_ask_cannot_be_answered() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(
+        refusal(answer_step(&write, guide.id, 0, None, NOW).await),
+        Refusal::AskerMayNotAsk
+    );
+}
+
+#[tokio::test]
+async fn a_guide_whose_session_may_no_longer_ask_can_still_be_closed() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let write = fixture.database.write().await.unwrap();
+    let closed = close_guide(&write, guide.id, NOW).await.unwrap();
+    assert_eq!(closed.state, GuideState::Closed);
+}
+
+#[tokio::test]
+async fn a_guide_stays_out_of_the_queue_when_its_session_is_granted_again() {
+    let fixture = Fixture::new().await;
+    fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+    fixture.grant(&session("s1")).await;
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(open_guides(&read, NOW).await.unwrap(), []);
+}
+
+#[tokio::test]
+async fn a_stale_answer_to_a_guide_whose_session_may_no_longer_ask_names_the_session() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(
+        refusal(answer_step(&write, guide.id, 1, None, NOW).await),
+        Refusal::AskerMayNotAsk
+    );
+}
+
+#[tokio::test]
+async fn a_poll_of_a_guide_whose_session_may_no_longer_ask_reads_expired_and_writes_nothing() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+    let before = fixture.revision().await;
+
+    let write = fixture.database.write().await.unwrap();
+    let seen = guide_status(&write, &session("s1"), guide.id, NOW + 60)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(
+        (seen.state, seen.expires_at),
+        (GuideState::Expired, guide.expires_at)
+    );
+    assert_eq!(fixture.revision().await, before);
 }

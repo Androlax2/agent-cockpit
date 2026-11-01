@@ -120,5 +120,13 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE approvals_runs ADD COLUMN execution INTEGER
                 CHECK (execution >= 1);",
         },
+        // #285: the `run-commands` grant a request was asked under; the owner may decide it
+        // only while that same grant still covers the session. Earlier rows keep NULL and
+        // read as asked by a session that may no longer ask.
+        Migration {
+            version: 4,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN asking_grant INTEGER;
+            ALTER TABLE approvals_guides ADD COLUMN asking_grant INTEGER;",
+        },
     ],
 };

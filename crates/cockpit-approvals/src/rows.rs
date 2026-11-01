@@ -73,6 +73,17 @@ pub(crate) async fn next_id(write: &WriteTransaction<'_>, table: &str) -> Result
         .get::<i64>(0)?)
 }
 
+/// Runs `sql`, which writes one row and returns it, and decodes that row as stored.
+pub(crate) async fn stored_row<T>(
+    write: &WriteTransaction<'_>,
+    sql: &str,
+    params: impl cockpit_turso::sql::IntoParams,
+    decode: impl FnOnce(&Row) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let row = write.prepare(sql).await?.query_row(params).await?;
+    decode(&row)
+}
+
 /// No such request, or another session's: the asker learns nothing about it.
 pub(crate) fn not_found(kind: &'static str, id: i64) -> Refusal {
     Refusal::NotFound { kind, id }

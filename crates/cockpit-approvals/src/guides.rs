@@ -19,9 +19,12 @@ use crate::display::is_outside_project;
 use crate::error::invalid;
 use crate::rows::{
     AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
-    refreshed_expiry, session_from, state_at, still_asking,
+    refreshed_expiry, session_from, state_at, still_asking, stored_row,
 };
-use crate::runs::{REASON_MAX_CHARS, RunAsk, RunId, insert_run, may_ask, validate_command};
+use crate::runs::{
+    REASON_MAX_CHARS, RunAsk, RunId, asker_may_still_ask, asking_grant, insert_run, may_still_ask,
+    validate_command,
+};
 use crate::{Error, Refusal};
 
 const GUIDE_MAX_BYTES: usize = 64 * 1024;
@@ -31,13 +34,12 @@ const ANSWER_MAX_CHARS: usize = 1000;
 const TABLE: &str = "approvals_guides";
 const KIND: &str = "guide";
 
-const SELECT_GUIDES: &str = "SELECT id, session, title, cwd, project, project_root, state,
-        current_step, stuck_note, asked_at, expires_at
-     FROM approvals_guides";
+/// The columns `guide_from` reads, in its order.
+const GUIDE_COLUMNS: &str = "id, session, title, cwd, project, project_root, state,
+        current_step, stuck_note, asked_at, expires_at, asking_grant";
 
 /// The columns `step_from` reads, in its order, after the guide's id.
-const SELECT_STEPS: &str = "SELECT guide, section, text, open, copy, ask, run, answer, run_request
-     FROM approvals_guide_steps";
+const STEP_COLUMNS: &str = "guide, section, text, open, copy, ask, run, answer, run_request";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GuideId(pub i64);
@@ -128,6 +130,8 @@ pub struct GuideRequest {
     pub stuck_note: Option<String>,
     pub asked_at: i64,
     pub expires_at: i64,
+    /// The `run-commands` grant the session asked under (#285).
+    pub(crate) asking_grant: Option<i64>,
 }
 
 impl GuideRequest {
@@ -267,7 +271,7 @@ pub async fn ask_guide(
     project: Option<Project>,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    may_ask(write, session).await?;
+    let grant = asking_grant(write, session).await?;
     let id = next_id(write, TABLE).await?;
     let cwd_text = cwd.to_str().ok_or_else(|| invalid("cwd", "is not UTF-8"))?;
     let project_root = project
@@ -279,72 +283,58 @@ pub async fn ask_guide(
                 .ok_or_else(|| invalid("cwd", "the project root is not UTF-8"))
         })
         .transpose()?;
-    write
-        .execute(
-            "INSERT INTO approvals_guides (id, session, title, cwd, project, project_root,
-                state, current_step, step_count, asked_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'asking', 0, ?7, ?8, ?9)",
+    let mut asked = stored_guide(
+        write,
+        "INSERT INTO approvals_guides (id, session, title, cwd, project, project_root,
+                state, current_step, step_count, asked_at, expires_at, asking_grant)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'asking', 0, ?7, ?8, ?9, ?10)",
+        (
+            id,
+            session.as_str(),
+            guide.title.as_str(),
+            cwd_text,
+            project.as_ref().map(|project| project.name.clone()),
+            project_root,
+            i64::try_from(guide.steps.len()).expect("at most GUIDE_MAX_STEPS"),
+            now,
+            now + EXPIRES_AFTER_SECONDS,
+            grant,
+        ),
+        now,
+    )
+    .await?;
+    for (position, step) in guide.steps.iter().enumerate() {
+        let stored = stored_step(
+            write,
+            "INSERT INTO approvals_guide_steps
+                    (guide, position, section, text, open, copy, ask, run)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             (
                 id,
-                session.as_str(),
-                guide.title.as_str(),
-                cwd_text,
-                project.as_ref().map(|project| project.name.clone()),
-                project_root,
-                i64::try_from(guide.steps.len()).expect("at most GUIDE_MAX_STEPS"),
-                now,
-                now + EXPIRES_AFTER_SECONDS,
+                i64::try_from(position).expect("at most GUIDE_MAX_STEPS"),
+                step.section.clone(),
+                step.text.as_str(),
+                step.open.join("\n"),
+                step.copy.join("\n"),
+                step.ask.clone(),
+                step.run.clone(),
             ),
         )
         .await?;
-    for (position, step) in guide.steps.iter().enumerate() {
-        write
-            .execute(
-                "INSERT INTO approvals_guide_steps
-                    (guide, position, section, text, open, copy, ask, run)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                (
-                    id,
-                    i64::try_from(position).expect("at most GUIDE_MAX_STEPS"),
-                    step.section.clone(),
-                    step.text.as_str(),
-                    step.open.join("\n"),
-                    step.copy.join("\n"),
-                    step.ask.clone(),
-                    step.run.clone(),
-                ),
-            )
-            .await?;
+        asked.steps.push(stored);
     }
-    Ok(GuideRequest {
-        id: GuideId(id),
-        session: session.clone(),
-        title: guide.title.clone(),
-        cwd,
-        project,
-        state: GuideState::Asking,
-        current_step: 0,
-        steps: guide
-            .steps
-            .iter()
-            .map(|step| GuideStep {
-                step: step.clone(),
-                answer: None,
-                run_request: None,
-            })
-            .collect(),
-        stuck_note: None,
-        asked_at: now,
-        expires_at: now + EXPIRES_AFTER_SECONDS,
-    })
+    Ok(asked)
 }
 
-/// Guides still asking, oldest first.
+/// Guides still asking, from a session that may still ask, oldest first.
 pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideRequest>, Error> {
     const OPEN: &str = "state = 'asking' AND expires_at > ?1";
     let mut rows = connection
         .query(
-            &format!("{SELECT_GUIDES} WHERE {OPEN} ORDER BY asked_at, id"),
+            &format!(
+                "SELECT {GUIDE_COLUMNS} FROM approvals_guides WHERE {OPEN}
+                 ORDER BY asked_at, id"
+            ),
             [now],
         )
         .await?;
@@ -355,7 +345,8 @@ pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideR
     let mut rows = connection
         .query(
             &format!(
-                "{SELECT_STEPS} WHERE guide IN (SELECT id FROM approvals_guides WHERE {OPEN})
+                "SELECT {STEP_COLUMNS} FROM approvals_guide_steps
+                 WHERE guide IN (SELECT id FROM approvals_guides WHERE {OPEN})
                  ORDER BY guide, position"
             ),
             [now],
@@ -365,13 +356,17 @@ pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideR
     while let Some(row) = rows.next().await? {
         steps.entry(row.get(0)?).or_default().push(step_from(&row)?);
     }
-    for guide in &mut guides {
+    let mut open = Vec::with_capacity(guides.len());
+    for mut guide in guides {
         // Both queries read one snapshot and every guide has a step: a miss is a broken row.
         guide.steps = steps
             .remove(&guide.id.0)
             .ok_or_else(|| invalid_row(TABLE, format!("guide {} has no steps", guide.id.0)))?;
+        if may_still_ask(connection, &guide.session, guide.asking_grant).await? {
+            open.push(guide);
+        }
     }
-    Ok(guides)
+    Ok(open)
 }
 
 pub async fn guide_request(
@@ -380,7 +375,10 @@ pub async fn guide_request(
     now: i64,
 ) -> Result<Option<GuideRequest>, Error> {
     let mut rows = connection
-        .query(&format!("{SELECT_GUIDES} WHERE id = ?1"), [id.0])
+        .query(
+            &format!("SELECT {GUIDE_COLUMNS} FROM approvals_guides WHERE id = ?1"),
+            [id.0],
+        )
         .await?;
     let Some(row) = rows.next().await? else {
         return Ok(None);
@@ -388,7 +386,10 @@ pub async fn guide_request(
     let mut guide = guide_from(&row, now)?;
     let mut rows = connection
         .query(
-            &format!("{SELECT_STEPS} WHERE guide = ?1 ORDER BY position"),
+            &format!(
+                "SELECT {STEP_COLUMNS} FROM approvals_guide_steps WHERE guide = ?1
+                 ORDER BY position"
+            ),
             [id.0],
         )
         .await?;
@@ -406,27 +407,28 @@ pub async fn guide_status(
     id: GuideId,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut guide = guide_of(write, session, id, now).await?;
-    if let Some(expires_at) = moved_expiry(&guide, now) {
-        write
-            .execute(
-                "UPDATE approvals_guides SET expires_at = ?2 WHERE id = ?1",
-                (id.0, expires_at),
-            )
-            .await?;
-        // The agent waits on the guide, not on the requests its `run:` steps filed; they stay
-        // before the owner as long as the guide does.
-        write
-            .execute(
-                "UPDATE approvals_runs SET expires_at = ?2
-                 WHERE state = 'asking' AND expires_at > ?3
-                   AND id IN (SELECT run_request FROM approvals_guide_steps WHERE guide = ?1)",
-                (id.0, expires_at, now),
-            )
-            .await?;
-        guide.expires_at = expires_at;
-    }
-    Ok(guide)
+    let guide = guide_of(write, session, id, now).await?;
+    let Some(expires_at) = moved_expiry(&guide, now) else {
+        return Ok(guide);
+    };
+    // The agent waits on the guide, not on the requests its `run:` steps filed; they stay
+    // before the owner as long as the guide does.
+    write
+        .execute(
+            "UPDATE approvals_runs SET expires_at = ?2
+             WHERE state = 'asking' AND expires_at > ?3
+               AND id IN (SELECT run_request FROM approvals_guide_steps WHERE guide = ?1)",
+            (id.0, expires_at, now),
+        )
+        .await?;
+    updated_guide(
+        write,
+        guide.steps,
+        "UPDATE approvals_guides SET expires_at = ?2 WHERE id = ?1",
+        (id.0, expires_at),
+        now,
+    )
+    .await
 }
 
 /// [`guide_status`] when the poll writes nothing, read in any transaction; `None` when the
@@ -448,21 +450,30 @@ fn moved_expiry(guide: &GuideRequest, now: i64) -> Option<i64> {
         .flatten()
 }
 
-/// The guide `id`, which only its asking session may see.
+/// The guide `id`, which only its asking session may see. One the owner may no longer
+/// answer ([`may_still_ask`]) reads as expired, so a poll neither keeps it alive nor leaves
+/// the agent waiting (#285).
 async fn guide_of(
     connection: &Connection,
     session: &SessionId,
     id: GuideId,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    match guide_request(connection, id, now).await? {
-        Some(guide) if guide.session == *session => Ok(guide),
-        _ => Err(not_found(KIND, id.0).into()),
+    let mut guide = match guide_request(connection, id, now).await? {
+        Some(guide) if guide.session == *session => guide,
+        _ => return Err(not_found(KIND, id.0).into()),
+    };
+    if guide.state == GuideState::Asking
+        && !may_still_ask(connection, &guide.session, guide.asking_grant).await?
+    {
+        guide.state = GuideState::Expired;
     }
+    Ok(guide)
 }
 
 /// The owner's answer to step `step`, the one shown now. A step that asks a question needs
 /// `answer`; a `run:` step files its command as an `ask run` request of the guide's session.
+/// Refused once that session may no longer ask: nobody waits for the answer (#285).
 pub async fn answer_step(
     write: &WriteTransaction<'_>,
     id: GuideId,
@@ -470,7 +481,9 @@ pub async fn answer_step(
     answer: Option<String>,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut guide = asking_at(write, id, step, now).await?;
+    let guide = asking(write, id, now).await?;
+    asker_may_still_ask(write, &guide.session, guide.asking_grant).await?;
+    let mut guide = at_step(guide, step)?;
     let shown = &guide.steps[step].step;
     let answer = answer.map(|answer| checked_answer(&answer)).transpose()?;
     if shown.ask.is_some() && answer.is_none() {
@@ -478,49 +491,40 @@ pub async fn answer_step(
     }
     let run_request = match &shown.run {
         Some(command) => {
-            may_ask(write, &guide.session).await?;
             let ask = RunAsk {
                 command: command.clone(),
                 cwd: guide.cwd.clone(),
                 reason: run_reason(&guide, step),
                 project: guide.project.clone(),
             };
-            Some(insert_run(write, &guide.session, &ask, now).await?.id)
+            Some(
+                insert_run(write, &guide.session, &ask, guide.asking_grant, now)
+                    .await?
+                    .id,
+            )
         }
         None => None,
     };
     let position = i64::try_from(step).expect("at most GUIDE_MAX_STEPS");
-    write
-        .execute(
-            "UPDATE approvals_guide_steps SET answer = ?3, run_request = ?4, answered_at = ?5
+    guide.steps[step] = stored_step(
+        write,
+        "UPDATE approvals_guide_steps SET answer = ?3, run_request = ?4, answered_at = ?5
              WHERE guide = ?1 AND position = ?2",
-            (
-                id.0,
-                position,
-                answer.clone(),
-                run_request.map(|run| run.0),
-                now,
-            ),
-        )
-        .await?;
+        (id.0, position, answer, run_request.map(|run| run.0), now),
+    )
+    .await?;
     let is_last = step + 1 == guide.steps.len();
-    write
-        .execute(
-            "UPDATE approvals_guides SET current_step = ?2,
-                state = CASE WHEN ?3 THEN 'done' ELSE state END,
-                ended_at = CASE WHEN ?3 THEN ?4 ELSE ended_at END
-             WHERE id = ?1",
-            (id.0, position + 1, is_last, now),
-        )
-        .await?;
-    let answered = &mut guide.steps[step];
-    answered.answer = answer;
-    answered.run_request = run_request;
-    guide.current_step = step + 1;
-    if is_last {
-        guide.state = GuideState::Done;
-    }
-    Ok(guide)
+    updated_guide(
+        write,
+        guide.steps,
+        "UPDATE approvals_guides SET current_step = ?2,
+            state = CASE WHEN ?3 THEN 'done' ELSE state END,
+            ended_at = CASE WHEN ?3 THEN ?4 ELSE ended_at END
+         WHERE id = ?1",
+        (id.0, position + 1, is_last, now),
+        now,
+    )
+    .await
 }
 
 /// The owner is stuck at step `step`; `note` says where and why.
@@ -531,23 +535,22 @@ pub async fn report_stuck(
     note: &str,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut guide = asking_at(write, id, step, now).await?;
+    let guide = at_step(asking(write, id, now).await?, step)?;
     let note = checked_answer(note).map_err(|_| {
         invalid(
             "note",
             format!("must be 1 to {ANSWER_MAX_CHARS} characters without NUL"),
         )
     })?;
-    write
-        .execute(
-            "UPDATE approvals_guides SET state = 'stuck', stuck_note = ?2, ended_at = ?3
-             WHERE id = ?1",
-            (id.0, note.as_str(), now),
-        )
-        .await?;
-    guide.state = GuideState::Stuck;
-    guide.stuck_note = Some(note);
-    Ok(guide)
+    updated_guide(
+        write,
+        guide.steps,
+        "UPDATE approvals_guides SET state = 'stuck', stuck_note = ?2, ended_at = ?3
+         WHERE id = ?1",
+        (id.0, note.as_str(), now),
+        now,
+    )
+    .await
 }
 
 pub async fn close_guide(
@@ -555,15 +558,61 @@ pub async fn close_guide(
     id: GuideId,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut guide = asking(write, id, now).await?;
-    write
-        .execute(
-            "UPDATE approvals_guides SET state = 'closed', ended_at = ?2 WHERE id = ?1",
-            (guide.id.0, now),
-        )
-        .await?;
-    guide.state = GuideState::Closed;
-    Ok(guide)
+    let guide = asking(write, id, now).await?;
+    updated_guide(
+        write,
+        guide.steps,
+        "UPDATE approvals_guides SET state = 'closed', ended_at = ?2 WHERE id = ?1",
+        (id.0, now),
+        now,
+    )
+    .await
+}
+
+/// Runs `update`, an `UPDATE` of one guide's row, and returns the guide as stored with
+/// `steps`, which `update` leaves alone.
+async fn updated_guide(
+    write: &WriteTransaction<'_>,
+    steps: Vec<GuideStep>,
+    update: &str,
+    params: impl cockpit_turso::sql::IntoParams,
+    now: i64,
+) -> Result<GuideRequest, Error> {
+    let mut updated = stored_guide(write, update, params, now).await?;
+    updated.steps = steps;
+    Ok(updated)
+}
+
+/// Runs `sql`, an `INSERT` or `UPDATE` of one guide, and returns it as stored, without its
+/// steps.
+async fn stored_guide(
+    write: &WriteTransaction<'_>,
+    sql: &str,
+    params: impl cockpit_turso::sql::IntoParams,
+    now: i64,
+) -> Result<GuideRequest, Error> {
+    stored_row(
+        write,
+        &format!("{sql} RETURNING {GUIDE_COLUMNS}"),
+        params,
+        |row| guide_from(row, now),
+    )
+    .await
+}
+
+/// Runs `sql`, an `INSERT` or `UPDATE` of one step, and returns it as stored.
+async fn stored_step(
+    write: &WriteTransaction<'_>,
+    sql: &str,
+    params: impl cockpit_turso::sql::IntoParams,
+) -> Result<GuideStep, Error> {
+    stored_row(
+        write,
+        &format!("{sql} RETURNING {STEP_COLUMNS}"),
+        params,
+        step_from,
+    )
+    .await
 }
 
 /// The reason an `ask run` request filed by a `run:` step shows the owner.
@@ -601,19 +650,12 @@ async fn asking(
     Ok(guide)
 }
 
-/// The guide if it still asks and `step` is the step it shows now.
-async fn asking_at(
-    write: &WriteTransaction<'_>,
-    id: GuideId,
-    step: usize,
-    now: i64,
-) -> Result<GuideRequest, Error> {
-    let guide = asking(write, id, now).await?;
+/// The guide if `step` is the step it shows now.
+fn at_step(guide: GuideRequest, step: usize) -> Result<GuideRequest, Refusal> {
     if guide.current_step != step {
         return Err(Refusal::StaleStep {
             current: guide.current_step,
-        }
-        .into());
+        });
     }
     Ok(guide)
 }
@@ -637,10 +679,11 @@ fn guide_from(row: &Row, now: i64) -> Result<GuideRequest, Error> {
         stuck_note: row.get(8)?,
         asked_at: row.get(9)?,
         expires_at,
+        asking_grant: row.get(11)?,
     })
 }
 
-/// A step from a [`SELECT_STEPS`] row.
+/// A step from a [`STEP_COLUMNS`] row.
 fn step_from(row: &Row) -> Result<GuideStep, Error> {
     let values = |column: usize| -> Result<Vec<String>, Error> {
         let joined: String = row.get(column)?;
