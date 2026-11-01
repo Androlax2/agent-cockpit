@@ -472,10 +472,19 @@ fn the_opened_workflow_is_shown_by_itself_so_one_delivered_elsewhere_shows_how_i
 fn an_approval_pane_that_takes_focus_keeps_its_keys_while_the_view_is_open() {
     let now = Instant::now();
     let mut app = opened(code_change(), packet(Some(goal())), now);
-    common::queue(
+    let asked_for_keys = common::queue(
         &mut app,
         vec![common::run(1, "s1", "make test")],
         Vec::new(),
+        now,
+    )
+    .expect("the pane asks for the column's keys");
+    common::answer(
+        &mut app,
+        asked_for_keys,
+        Reply::ManagerFocused {
+            took_from_viewer: false,
+        },
         now,
     );
 
@@ -485,11 +494,5 @@ fn an_approval_pane_that_takes_focus_keeps_its_keys_while_the_view_is_open() {
         now + cockpit_tui::INPUT_GRACE,
     ));
 
-    assert!(
-        !declined
-            .iter()
-            .any(|command| matches!(command, Command::WorkflowCancel { .. })),
-        "{declined:?}"
-    );
-    assert_eq!(app.focus(), cockpit_tui::Focus::Pane);
+    assert_eq!(declined, [Command::ApprovalDecline { request: 1 }]);
 }

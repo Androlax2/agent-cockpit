@@ -6,7 +6,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{Command, HiddenView, ManagerPaneView, Reply};
+use cockpit_protocol::{Command, GuideView, HiddenView, ManagerPaneView, Reply, RunRequestView};
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
     answer, app_with, folded, guide, hidden, press, queue, run, screen_text, sent, session, typing,
@@ -15,7 +15,8 @@ use common::{
 
 const SESSION: &str = "s00000000000a";
 
-fn app_asked(now: Instant) -> App {
+/// A request shown, its column focus not answered yet.
+fn app_asking(now: Instant) -> App {
     let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
     queue(
         &mut app,
@@ -24,6 +25,26 @@ fn app_asked(now: Instant) -> App {
         now,
     );
     app
+}
+
+/// A request shown, and tmux's keys for the column there at once (a prompt daemon).
+fn app_asked(now: Instant) -> App {
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+    shown_with_keys(
+        &mut app,
+        vec![run(3, SESSION, "make test")],
+        Vec::new(),
+        now,
+    );
+    app
+}
+
+/// The queue shows `runs` and `guides`; the column focus it asks for, if any, is answered
+/// at once.
+fn shown_with_keys(app: &mut App, runs: Vec<RunRequestView>, guides: Vec<GuideView>, now: Instant) {
+    if let Some(asked_for_keys) = queue(app, runs, guides, now) {
+        answer(app, asked_for_keys, focused(false), now);
+    }
 }
 
 fn focus(pane: ManagerPaneView) -> Command {
@@ -46,7 +67,7 @@ fn after_grace(now: Instant) -> Instant {
 #[test]
 fn a_request_appearing_takes_focus_and_its_keys_are_ignored_for_the_grace() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
 
     let early = app.key(Key::Char('y'), now + INPUT_GRACE - Duration::from_millis(1));
 
@@ -99,7 +120,7 @@ fn a_key_ignored_in_the_grace_starts_it_again() {
 #[test]
 fn the_keys_arriving_from_tmux_start_the_grace_again() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     let focused_at = after_grace(now);
     answer(
         &mut app,
@@ -114,6 +135,105 @@ fn the_keys_arriving_from_tmux_start_the_grace_again() {
         (first.used, first.send),
         (Some("approval-ignored-in-grace"), Vec::new())
     );
+}
+
+/// The column's keys answered later than the grace (#439): the daemon was slow.
+fn late(now: Instant) -> Instant {
+    after_grace(now) + Duration::from_secs(1)
+}
+
+#[test]
+fn while_the_column_s_keys_are_on_their_way_the_pane_says_to_read_first() {
+    let now = Instant::now();
+    let app = app_asking(now);
+
+    assert!(screen_text(&app, late(now)).contains("Read it first: keys work again in a moment."));
+}
+
+#[test]
+fn a_key_before_the_column_s_keys_arrive_is_ignored() {
+    let now = Instant::now();
+    let mut app = app_asking(now);
+
+    let early = app.key(Key::Char('y'), late(now));
+
+    assert_eq!(
+        (early.used, early.send),
+        (Some("approval-ignored-in-grace"), Vec::new())
+    );
+}
+
+#[test]
+fn once_late_keys_arrive_the_first_y_after_the_grace_approves() {
+    let now = Instant::now();
+    let mut app = app_asking(now);
+    answer(
+        &mut app,
+        focus(ManagerPaneView::Column),
+        focused(true),
+        late(now),
+    );
+
+    let approved = app.key(Key::Char('y'), after_grace(late(now)));
+
+    assert_eq!(approved.used, Some("approval-approve"));
+}
+
+#[test]
+fn a_failed_column_focus_lets_the_pane_take_keys_after_a_grace() {
+    let now = Instant::now();
+    let mut app = app_asking(now);
+    app.answer(
+        &focus(ManagerPaneView::Column),
+        Err("no manager".to_owned()),
+        late(now),
+    );
+
+    let approved = app.key(Key::Char('y'), after_grace(late(now)));
+
+    assert_eq!(approved.used, Some("approval-approve"));
+}
+
+#[test]
+fn the_pane_reads_first_until_every_column_focus_it_asked_for_is_answered() {
+    let now = Instant::now();
+    let mut app = app_asking(now);
+    emptied(&mut app, now);
+    queue(
+        &mut app,
+        vec![run(4, SESSION, "make lint")],
+        Vec::new(),
+        now,
+    );
+    answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+
+    let early = app.key(Key::Char('y'), late(now));
+
+    assert_eq!(early.used, Some("approval-ignored-in-grace"));
+}
+
+#[test]
+fn the_last_column_focus_answer_lets_y_approve_after_its_grace() {
+    let now = Instant::now();
+    let mut app = app_asking(now);
+    emptied(&mut app, now);
+    queue(
+        &mut app,
+        vec![run(4, SESSION, "make lint")],
+        Vec::new(),
+        now,
+    );
+    answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+    answer(
+        &mut app,
+        focus(ManagerPaneView::Column),
+        focused(false),
+        late(now),
+    );
+
+    let approved = app.key(Key::Char('y'), after_grace(late(now)));
+
+    assert_eq!(approved.used, Some("approval-approve"));
 }
 
 #[test]
@@ -201,7 +321,7 @@ fn an_edited_revision_starts_the_grace_again_and_the_approval_names_it() {
 fn while_the_owner_types_into_a_waiting_command_a_new_request_never_takes_its_place() {
     let now = Instant::now();
     let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
-    queue(&mut app, vec![waiting_run(5, SESSION)], Vec::new(), now);
+    shown_with_keys(&mut app, vec![waiting_run(5, SESSION)], Vec::new(), now);
     let typing_at = after_grace(now);
     app.key(Key::Char('i'), typing_at);
     typing(&mut app, "yes", typing_at);
@@ -263,7 +383,7 @@ fn the_pane_shows_every_warning_from_the_wire_and_folds_the_command_behind_more(
     asked.timeout_without_foreground = true;
     asked.changed_build_files = Some(vec!["Makefile".to_owned()]);
     asked.outside_project = true;
-    queue(&mut app, vec![asked], Vec::new(), now);
+    shown_with_keys(&mut app, vec![asked], Vec::new(), now);
 
     let folded_screen = screen_text(&app, after_grace(now));
     app.key(Key::Char('m'), after_grace(now));
@@ -290,7 +410,7 @@ fn the_pane_shows_every_warning_from_the_wire_and_folds_the_command_behind_more(
 #[test]
 fn within_the_grace_the_pane_says_to_read_first() {
     let now = Instant::now();
-    let app = app_asked(now);
+    let app = app_asking(now);
 
     assert!(screen_text(&app, now).contains("Read it first: keys work again in a moment."));
 }
@@ -299,7 +419,7 @@ fn within_the_grace_the_pane_says_to_read_first() {
 fn a_guide_step_that_asks_sends_the_typed_answer_for_that_step() {
     let now = Instant::now();
     let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
-    queue(
+    shown_with_keys(
         &mut app,
         Vec::new(),
         vec![guide(4, SESSION, Some("The token id?"))],
@@ -326,7 +446,7 @@ fn x_declines_a_run_and_closes_a_guide() {
     let now = Instant::now();
     let mut declining = app_asked(now);
     let mut closing = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
-    queue(&mut closing, Vec::new(), vec![guide(4, SESSION, None)], now);
+    shown_with_keys(&mut closing, Vec::new(), vec![guide(4, SESSION, None)], now);
 
     let declined = declining.key(Key::Char('x'), after_grace(now));
     let closed = closing.key(Key::Char('x'), after_grace(now));
@@ -362,7 +482,7 @@ fn a_refused_approval_shows_the_daemons_reason_on_the_status_line() {
 fn while_the_owner_types_question_marks_and_capital_l_are_text_not_help_or_log() {
     let now = Instant::now();
     let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
-    queue(
+    shown_with_keys(
         &mut app,
         Vec::new(),
         vec![guide(4, SESSION, Some("The login?"))],
@@ -388,7 +508,7 @@ fn while_the_owner_types_question_marks_and_capital_l_are_text_not_help_or_log()
 #[test]
 fn the_keys_taken_from_the_viewer_go_back_to_it_once_the_queue_empties() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
 
     let sent_on_empty = emptied(&mut app, after_grace(now));
@@ -399,7 +519,7 @@ fn the_keys_taken_from_the_viewer_go_back_to_it_once_the_queue_empties() {
 #[test]
 fn the_keys_the_list_already_had_stay_there_once_the_queue_empties() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     answer(
         &mut app,
         focus(ManagerPaneView::Column),
@@ -415,7 +535,7 @@ fn the_keys_the_list_already_had_stay_there_once_the_queue_empties() {
 #[test]
 fn the_keys_go_back_to_the_viewer_once_only() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
     emptied(&mut app, after_grace(now));
 
@@ -427,7 +547,7 @@ fn the_keys_go_back_to_the_viewer_once_only() {
 #[test]
 fn keys_tmux_moves_after_the_queue_emptied_go_back_to_the_viewer_at_once() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     let sent_on_empty = emptied(&mut app, now);
 
     let sent_on_reply = answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
@@ -441,7 +561,7 @@ fn keys_tmux_moves_after_the_queue_emptied_go_back_to_the_viewer_at_once() {
 #[test]
 fn a_second_request_s_focus_does_not_forget_the_viewer_had_the_keys() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
     answer(
         &mut app,
@@ -458,7 +578,7 @@ fn a_second_request_s_focus_does_not_forget_the_viewer_had_the_keys() {
 #[test]
 fn a_failed_focus_leaves_the_keys_where_they_are_once_the_queue_empties() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     app.answer(
         &focus(ManagerPaneView::Column),
         Err("no manager".to_owned()),
@@ -473,7 +593,7 @@ fn a_failed_focus_leaves_the_keys_where_they_are_once_the_queue_empties() {
 #[test]
 fn keys_the_owner_uses_in_the_list_stay_there_once_the_queue_empties() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
     app.key(Key::Tab, after_grace(now));
 
@@ -485,7 +605,7 @@ fn keys_the_owner_uses_in_the_list_stay_there_once_the_queue_empties() {
 #[test]
 fn keys_the_owner_reads_the_help_with_stay_once_the_queue_empties() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
     app.key(Key::Char('?'), after_grace(now));
 
@@ -497,7 +617,7 @@ fn keys_the_owner_reads_the_help_with_stay_once_the_queue_empties() {
 #[test]
 fn keys_arriving_after_the_queue_emptied_stay_while_the_form_is_open() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     emptied(&mut app, now);
     app.key(Key::Char('N'), now);
 
@@ -509,7 +629,7 @@ fn keys_arriving_after_the_queue_emptied_stay_while_the_form_is_open() {
 #[test]
 fn keys_arriving_after_the_queue_emptied_stay_while_the_workflow_view_is_open() {
     let now = Instant::now();
-    let mut app = app_asked(now);
+    let mut app = app_asking(now);
     emptied(&mut app, now);
     app.key(Key::Char('F'), now);
 

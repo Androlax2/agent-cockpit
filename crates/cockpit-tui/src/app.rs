@@ -407,7 +407,7 @@ impl App {
         let reply = match answer {
             Ok(reply) => reply,
             Err(problem) => {
-                self.failed(command, problem);
+                self.failed(command, problem, now);
                 return None;
             }
         };
@@ -500,9 +500,12 @@ impl App {
         send
     }
 
-    fn failed(&mut self, command: &Command, problem: String) {
-        if is_column_focus(command) && self.taken_keys == TakenKeys::Asking {
-            self.taken_keys = TakenKeys::NotTaken;
+    fn failed(&mut self, command: &Command, problem: String, now: Instant) {
+        if is_column_focus(command) {
+            self.pane.keys_answered(now);
+            if self.taken_keys == TakenKeys::Asking {
+                self.taken_keys = TakenKeys::NotTaken;
+            }
         }
         if let Some(workflows) = &mut self.workflows {
             workflows.failed(command, &problem);
@@ -535,6 +538,7 @@ impl App {
         match (was_showing, self.pane.shown().is_some()) {
             (false, true) => {
                 self.focus = Focus::Pane;
+                self.pane.ask_for_keys();
                 if self.taken_keys == TakenKeys::NotTaken {
                     self.taken_keys = TakenKeys::Asking;
                 }
@@ -557,7 +561,8 @@ impl App {
     }
 
     /// tmux moved the keys `command` asked for. A request's keys came perhaps long after the
-    /// pane showed it: the first key they bring waits out the grace again.
+    /// pane showed it, and the pane offered no key until then: the first key they bring
+    /// waits out the grace again (#439).
     fn keys_moved(
         &mut self,
         command: &Command,
@@ -572,8 +577,8 @@ impl App {
         } else if self.taken_keys == TakenKeys::Asking {
             self.taken_keys = TakenKeys::NotTaken;
         }
+        self.pane.keys_answered(now);
         if self.pane.shown().is_some() {
-            self.pane.focus(now);
             return None;
         }
         // The queue emptied while tmux moved them.
