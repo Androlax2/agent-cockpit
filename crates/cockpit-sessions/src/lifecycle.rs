@@ -1785,7 +1785,10 @@ impl Sessions {
     // The caller holds the operation lock; counted work also excludes a later launch
     // if removal times out and continues on its blocking thread.
     async fn remove_session_dir(&self, id: &SessionId) -> Result<(), Error> {
-        self.wait_for_terminal_steps(id).await?;
+        if *self.session_lock(id).terminal_steps.borrow() != 0 {
+            tracing::debug!(session = %id, "directory cleanup deferred until outstanding steps return");
+            return Ok(());
+        }
         let path = self.session_dir(id);
         let counted = TerminalStep::start(&self.session_lock(id));
         self.blocking("remove the session's directory", move || {
