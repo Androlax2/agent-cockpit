@@ -75,6 +75,7 @@ pub fn session_settings(config: &cockpit_config::EffectiveConfig) -> cockpit_ses
     cockpit_sessions::Settings {
         idle_sleep_after: config.idle_sleep_after.value,
         asleep_expiry: config.asleep_expiry.value,
+        desktop_session: config.agents_desktop_session.value,
         ..cockpit_sessions::Settings::default()
     }
 }

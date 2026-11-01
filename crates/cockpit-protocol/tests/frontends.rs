@@ -86,3 +86,32 @@ fn a_manager_focus_and_its_reply_carry_only_their_kind() {
         json!({"kind": "manager-focused"})
     );
 }
+
+#[test]
+fn a_desktop_session_import_carries_only_the_set_variables_and_its_reply_says_withheld() {
+    let wire = json!({
+        "id": 3,
+        "command": {
+            "kind": "desktop-session-import",
+            "variables": {"DISPLAY": ":1", "WAYLAND_DISPLAY": "wayland-1"}
+        }
+    });
+
+    let request = decode_request(&wire.to_string()).unwrap();
+
+    assert_eq!(
+        request.command,
+        Command::DesktopSessionImport {
+            variables: [
+                ("DISPLAY".to_owned(), ":1".to_owned()),
+                ("WAYLAND_DISPLAY".to_owned(), "wayland-1".to_owned()),
+            ]
+            .into(),
+        }
+    );
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    assert_eq!(
+        serde_json::to_value(Reply::DesktopSessionImported { withheld: true }).unwrap(),
+        json!({"kind": "desktop-session-imported", "withheld": true})
+    );
+}

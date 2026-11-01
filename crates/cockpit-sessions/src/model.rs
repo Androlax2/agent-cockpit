@@ -363,6 +363,12 @@ pub struct Settings {
     /// Variables every agent gets before its provider's own, such as `HOME` and `PATH`;
     /// the daemon passes its own values.
     pub base_environment: Vec<(OsString, OsString)>,
+    /// The owner's display and session bus variables agents get after the base ones while
+    /// [`Settings::desktop_session`] shares them, until the owner imports fresher ones
+    /// ([`crate::Sessions::import_desktop_environment`], #307).
+    pub desktop_environment: Vec<(OsString, OsString)>,
+    /// Whether agents get [`Settings::desktop_environment`] at all (#305).
+    pub desktop_session: crate::DesktopSession,
     /// The files agents read only at launch (`cockpit-config`); each launch records their
     /// state, and `restart --all` restarts the sessions whose files changed since.
     pub start_files: Vec<cockpit_config::StartFile>,
@@ -385,6 +391,8 @@ impl Default for Settings {
             columns: 200,
             rows: 50,
             base_environment: Vec::new(),
+            desktop_environment: Vec::new(),
+            desktop_session: crate::DesktopSession::Shared,
             start_files: Vec::new(),
             step_timeout: Duration::from_secs(30),
         }

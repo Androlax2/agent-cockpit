@@ -163,6 +163,39 @@ impl Home {
             .join(cockpit_config::DAEMON_SOCKET)
     }
 
+    pub fn agent_socket_path(&self) -> PathBuf {
+        self.path()
+            .join("run/cockpit")
+            .join(cockpit_config::AGENT_SOCKET_DIR)
+            .join(cockpit_config::AGENT_SOCKET)
+    }
+
+    /// Writes the owner's `config.toml`, which the next daemon start reads.
+    pub fn write_owner_config(&self, contents: &str) {
+        let dir = self.path().join("config/cockpit");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), contents).unwrap();
+    }
+
+    /// Runs the real [`cockpit_program`] as the owner in this home, with `extra` as its only
+    /// other environment, off the test's runtime threads.
+    pub async fn cockpit(
+        &self,
+        arguments: &[&str],
+        extra: &[(&str, &str)],
+    ) -> std::process::Output {
+        let mut command = Process::new(cockpit_program());
+        command
+            .args(arguments)
+            .env_clear()
+            .env("HOME", self.path())
+            .env("XDG_RUNTIME_DIR", self.path().join("run"))
+            .envs(extra.iter().copied());
+        tokio::task::spawn_blocking(move || command.output().expect("cockpit runs"))
+            .await
+            .unwrap()
+    }
+
     /// Every launch the fake agent logged, oldest first.
     pub fn launches(&self) -> Vec<Launch> {
         std::fs::read_to_string(self.launch_log())

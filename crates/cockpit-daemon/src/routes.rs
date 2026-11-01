@@ -371,6 +371,13 @@ impl Handler for Routes {
                 }
             }
             (Command::ProviderList, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            // The desktop session is the owner's; an agent must not point others at another.
+            (Command::DesktopSessionImport { variables }, Peer::Owner) => {
+                sessions::import_desktop_session(variables, Arc::clone(&self.sessions))
+            }
+            (Command::DesktopSessionImport { .. }, Peer::Agent { .. }) => {
+                Route::Answer(owner_only())
+            }
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(
                 ErrorCode::UnknownCommand,

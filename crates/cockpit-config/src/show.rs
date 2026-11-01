@@ -81,6 +81,11 @@ pub fn render(config: &EffectiveConfig) -> String {
             &setting.source,
         ));
     }
+    lines.push(line(
+        "agents.desktop_session",
+        &Value::from(config.agents_desktop_session.value.as_str()).to_string(),
+        &config.agents_desktop_session.source,
+    ));
     for start_file in &config.start_files {
         let mut fields = Table::new();
         fields.insert("path".to_string(), path_toml(&start_file.value.path));

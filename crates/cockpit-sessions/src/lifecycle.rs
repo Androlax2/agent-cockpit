@@ -3,6 +3,7 @@
 //! repairs the transition at its next start ([`Sessions::restore`]).
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -63,6 +64,9 @@ pub struct Sessions {
     /// the periodic pass never acts on a launch an owner operation just replaced. Entries
     /// stay for the daemon's life: one per session ever touched.
     operations: Mutex<HashMap<SessionId, Arc<SessionLock>>>,
+    /// The owner's desktop session variables the next launch gets: the settings' until the
+    /// owner imports others (#307).
+    desktop_environment: Mutex<Vec<(OsString, OsString)>>,
 }
 
 /// A session's operation lock, and whether a launch holds it. A stop never
@@ -120,9 +124,25 @@ impl Sessions {
             tmux,
             git,
             providers,
+            desktop_environment: Mutex::new(settings.desktop_environment.clone()),
             settings,
             operations: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Replaces the owner's desktop session variables every later launch gets (#307). The
+    /// whole set: a variable missing from `variables` is unset in later agents. Running
+    /// agents keep the values they started with.
+    pub fn import_desktop_environment(&self, variables: Vec<(OsString, OsString)>) {
+        *self
+            .desktop_environment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = variables;
+    }
+
+    /// Whether launched agents get the owner's desktop session variables (#305).
+    pub fn desktop_session(&self) -> crate::DesktopSession {
+        self.settings.desktop_session
     }
 
     /// The state database the sessions live in, for the daemon's views that join them with
@@ -1232,6 +1252,15 @@ impl Sessions {
             (token, execution)
         };
         let mut environment = self.settings.base_environment.clone();
+        if self.settings.desktop_session == crate::DesktopSession::Shared {
+            environment.extend(
+                self.desktop_environment
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .cloned(),
+            );
+        }
         environment.extend(command.environment);
         environment.push(("COCKPIT_SESSION".into(), id.as_str().into()));
         environment.push(("COCKPIT_LAUNCH_TOKEN".into(), token.as_str().into()));

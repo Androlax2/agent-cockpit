@@ -109,6 +109,29 @@ pub struct EffectiveConfig {
     pub idle_sleep_after: Sourced<Duration>,
     /// How long a session may sleep before it ends.
     pub asleep_expiry: Sourced<Duration>,
+    /// Whether launched agents reach the owner's desktop session (#305).
+    pub agents_desktop_session: Sourced<DesktopSession>,
+}
+
+/// Whether a launched agent gets the owner's display and session bus variables. The one
+/// named opt-out (#305): the owner's `agents.desktop_session` selects it today, a sandbox
+/// profile later (#61). The session bus can start units outside the agent's containment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DesktopSession {
+    /// The agent gets the variables the daemon has, as #303 decided.
+    Shared,
+    /// The agent gets none of them.
+    Withheld,
+}
+
+impl DesktopSession {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Withheld => "withheld",
+        }
+    }
 }
 
 impl EffectiveConfig {
@@ -187,6 +210,13 @@ struct SettingsFile {
     start_files: Option<Spanned<Vec<Spanned<StartFileEntry>>>>,
     tasks: Option<Spanned<TasksTable>>,
     sessions: Option<Spanned<SessionsTable>>,
+    agents: Option<Spanned<AgentsTable>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentsTable {
+    desktop_session: Option<Spanned<DesktopSession>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -304,6 +334,7 @@ pub fn load(
         tasks_cross_project_open_max: tasks_cross_project_open_max(&layers)?,
         idle_sleep_after: idle_sleep_after(&layers)?,
         asleep_expiry: asleep_expiry(&layers)?,
+        agents_desktop_session: agents_desktop_session(&layers),
     })
 }
 
@@ -354,6 +385,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         start_files,
         tasks,
         sessions,
+        agents,
         workflow: _,
     } = &layer.settings;
     if let Some(tasks) = tasks {
@@ -378,6 +410,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "sessions",
             source: layer.source_at(sessions.span()),
+        });
+    }
+    if let Some(agents) = agents {
+        return Err(ConfigError::OwnerOnly {
+            key: "agents",
+            source: layer.source_at(agents.span()),
         });
     }
     Ok(())
@@ -609,6 +647,22 @@ fn idle_sleep_after(layers: &[Layer]) -> Result<Sourced<Duration>, ConfigError> 
 
 fn asleep_expiry(layers: &[Layer]) -> Result<Sourced<Duration>, ConfigError> {
     ASLEEP_EXPIRY_DAYS.resolve(layers, |sessions| sessions.asleep_expiry_days.as_ref())
+}
+
+fn agents_desktop_session(layers: &[Layer]) -> Sourced<DesktopSession> {
+    let mut resolved = Sourced::new(DesktopSession::Shared, Source::ProductDefault);
+    for layer in layers {
+        let Some(value) = layer
+            .settings
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.get_ref().desktop_session.as_ref())
+        else {
+            continue;
+        };
+        resolved = Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+    }
+    resolved
 }
 
 /// Product defaults, then each `[[start_files]]` entry: a new label adds a file, an existing

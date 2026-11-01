@@ -17,9 +17,10 @@ stopped in the middle of one finishes or repairs it at its next start.
   A main checkout is shared by the sessions started in it.
 - **Agent process.** The agent runs in a tmux pane on Cockpit's private server, as a hosted
   execution of `cockpit-processes`: its containment and whole-tree termination are the same
-  as any execution's. It gets the daemon's base environment, its provider's variables,
-  `COCKPIT_SESSION` and a one-use `COCKPIT_LAUNCH_TOKEN`, and only `TERM` and `COLORTERM`
-  from tmux.
+  as any execution's. It gets the daemon's base environment, the owner's desktop session
+  variables as last imported unless the owner withholds them (`DesktopSession`, #305, #307),
+  its provider's variables, `COCKPIT_SESSION` and a one-use `COCKPIT_LAUNCH_TOKEN`, and only
+  `TERM` and `COLORTERM` from tmux.
 - **Restart, sleep, wake and resume** relaunch the same conversation, so each needs a
   provider with the `resume` capability that named the conversation; otherwise they are
   refused before anything stops.

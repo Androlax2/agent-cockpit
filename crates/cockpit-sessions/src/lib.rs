@@ -7,6 +7,7 @@ mod model;
 mod reports;
 mod store;
 
+pub use cockpit_config::DesktopSession;
 pub use error::Error;
 pub use lifecycle::Sessions;
 pub use model::{
