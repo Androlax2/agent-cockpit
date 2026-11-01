@@ -4,13 +4,14 @@
 //! that a check passed is recorded only as a claim. Nothing here grants itself authority: the
 //! caller decides who may reach which function.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row, Value, params_from_iter};
 
 use crate::artifacts::{check_artifact_paths, check_relative};
 use crate::error::invalid;
+use crate::gate::CheckEvidence;
 use crate::{
     Artifact, CheckDefinition, Claim, ClaimId, Error, Evidence, NewClaim, NewReceipt, Outcome,
     Receipt, ReceiptId, Refusal, Source,
@@ -19,9 +20,6 @@ use crate::{
 /// Recording keeps the last this many bytes of a run's output: failures print last, and the
 /// full output stays where `output_references` point.
 pub const OUTPUT_MAX_BYTES: usize = 16 * 1024;
-/// [`evidence`] loads this many of a check's newest receipts on the source asked about. An
-/// older one shows as missing or stale: a rerun, never a hidden pass.
-pub const RECEIPTS_LOADED_PER_CHECK: u32 = 20;
 /// [`evidence`] loads this many of a check's newest claims on the source asked about.
 pub const CLAIMS_LOADED_PER_CHECK: u32 = 20;
 pub const NAME_MAX_CHARS: usize = 200;
@@ -81,21 +79,23 @@ pub async fn record_receipt(
         ))
         .await?
         .get::<i64>(0)?;
+    let mut insert_artifact = write
+        .prepare("INSERT INTO verification_artifacts (receipt, path, digest) VALUES (?1, ?2, ?3)")
+        .await?;
     for artifact in &new.artifacts {
-        write
-            .execute(
-                "INSERT INTO verification_artifacts (receipt, path, digest) VALUES (?1, ?2, ?3)",
-                (id, artifact.path.as_str(), artifact.digest.as_str()),
-            )
+        insert_artifact
+            .execute((id, artifact.path.as_str(), artifact.digest.as_str()))
             .await?;
     }
+    let mut insert_reference = write
+        .prepare(
+            "INSERT INTO verification_output_references (receipt, position, reference)
+             VALUES (?1, ?2, ?3)",
+        )
+        .await?;
     for (position, reference) in (0_i64..).zip(&new.output_references) {
-        write
-            .execute(
-                "INSERT INTO verification_output_references (receipt, position, reference)
-                 VALUES (?1, ?2, ?3)",
-                (id, position, reference.as_str()),
-            )
+        insert_reference
+            .execute((id, position, reference.as_str()))
             .await?;
     }
     Ok(Receipt {
@@ -147,61 +147,88 @@ pub async fn record_claim(
     })
 }
 
-/// What `project` holds about `check_names` on the exact `source`: each check's newest
-/// receipts and claims there, and its newest receipt on any other source.
+/// What `project` holds about a gate requiring `checks` on the exact `source`: each check's
+/// newest receipt of exactly its definition there, the source of its newest other receipt,
+/// and its claims about the source. Refused for an empty gate or a check required twice.
 pub async fn evidence(
     connection: &Connection,
     project: &str,
     source: &Source,
-    check_names: &[&str],
+    checks: &[CheckDefinition],
 ) -> Result<Evidence, Error> {
-    let mut evidence = Evidence {
-        source: source.clone(),
-        receipts: BTreeMap::new(),
-        newest_elsewhere: BTreeMap::new(),
-        claims: BTreeMap::new(),
-    };
-    for check_name in check_names.iter().collect::<BTreeSet<_>>() {
-        let check = || {
-            vec![
-                Value::Text(project.to_owned()),
-                Value::Text((*check_name).to_owned()),
-                Value::Text(source.head.clone()),
-                source.dirty.clone().map_or(Value::Null, Value::Text),
-            ]
-        };
-        let on_source = load_receipts(
-            connection,
-            &format!("{SAME_SOURCE} ORDER BY id DESC LIMIT {RECEIPTS_LOADED_PER_CHECK}"),
-            check(),
-        )
-        .await?;
-        let elsewhere = load_receipts(
-            connection,
-            &format!(
-                "NOT ({SAME_SOURCE}) AND project = ?1 AND check_name = ?2 ORDER BY id DESC LIMIT 1"
-            ),
-            check(),
-        )
-        .await?;
-        let claims = claims_on_source(connection, check()).await?;
-        evidence
-            .receipts
-            .insert((*check_name).to_owned(), on_source);
-        if let Some(receipt) = elsewhere.into_iter().next() {
-            evidence
-                .newest_elsewhere
-                .insert((*check_name).to_owned(), receipt);
-        }
-        evidence.claims.insert((*check_name).to_owned(), claims);
+    if checks.is_empty() {
+        return Err(invalid("checks", "a gate requires at least one check").into());
     }
-    Ok(evidence)
+    let mut seen = BTreeSet::new();
+    if let Some(twice) = checks
+        .iter()
+        .find(|check| !seen.insert(check.name.as_str()))
+    {
+        return Err(invalid("checks", format!("`{}` is required twice", twice.name)).into());
+    }
+    let mut loaded = Vec::with_capacity(checks.len());
+    for check in checks {
+        let on_source = vec![
+            Value::Text(project.to_owned()),
+            Value::Text(check.name.clone()),
+            Value::Text(source.head.clone()),
+            source.dirty.clone().map_or(Value::Null, Value::Text),
+        ];
+        let exact: Vec<Value> = on_source
+            .iter()
+            .cloned()
+            .chain([
+                Value::Text(check.command.clone()),
+                Value::Text(check.working_directory.clone()),
+                Value::Text(check.environment.clone()),
+            ])
+            .collect();
+        let receipt = load_receipts(
+            connection,
+            &format!("{EXACT} ORDER BY id DESC LIMIT 1"),
+            exact.clone(),
+        )
+        .await?
+        .pop();
+        loaded.push(CheckEvidence {
+            check: check.clone(),
+            receipt,
+            other_source: other_source(connection, exact).await?,
+            claims: claims_on_source(connection, on_source).await?,
+        });
+    }
+    Ok(Evidence {
+        source: source.clone(),
+        checks: loaded,
+    })
 }
 
-/// The rows of check `?2` in project `?1` on head `?3` with uncommitted changes `?4`.
-/// `dirty` is never stored empty, so `''` stands for clean without NULL comparisons.
-const SAME_SOURCE: &str = "project = ?1 AND check_name = ?2 AND head = ?3
-    AND coalesce(dirty, '') = coalesce(?4, '')";
+/// The receipts of check `?2` in project `?1` on head `?3` with uncommitted changes `?4`
+/// (`IS`: equal when both are clean), of command `?5` in `?6` on environment `?7`.
+const EXACT: &str = "project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4
+    AND command = ?5 AND working_directory = ?6 AND environment = ?7";
+
+/// The source of the newest receipt of check `?2` in project `?1` that is not [`EXACT`].
+async fn other_source(connection: &Connection, exact: Vec<Value>) -> Result<Option<Source>, Error> {
+    let mut rows = connection
+        .query(
+            &format!(
+                "SELECT head, base, dirty FROM verification_receipts
+                 WHERE project = ?1 AND check_name = ?2 AND NOT ({EXACT})
+                 ORDER BY id DESC LIMIT 1"
+            ),
+            params_from_iter(exact),
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    Ok(Some(Source {
+        head: row.get(0)?,
+        base: row.get(1)?,
+        dirty: row.get(2)?,
+    }))
+}
 
 async fn receipt_of_run(
     connection: &Connection,
@@ -345,7 +372,7 @@ async fn output_references_of(
     Ok(references)
 }
 
-/// `parameters` are [`SAME_SOURCE`]'s.
+/// The claims of check `?2` in project `?1` about head `?3` with uncommitted changes `?4`.
 async fn claims_on_source(
     connection: &Connection,
     parameters: Vec<Value>,
@@ -354,7 +381,8 @@ async fn claims_on_source(
         .query(
             &format!(
                 "SELECT id, check_name, head, base, dirty, claimant, statement, claimed_at
-                 FROM verification_claims WHERE {SAME_SOURCE}
+                 FROM verification_claims
+                 WHERE project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4
                  ORDER BY id DESC LIMIT {CLAIMS_LOADED_PER_CHECK}"
             ),
             params_from_iter(parameters),
@@ -385,8 +413,10 @@ fn validated(mut new: NewReceipt) -> Result<NewReceipt, Refusal> {
     required("run_id", &new.run_id, NAME_MAX_CHARS)?;
     required("check.name", &new.check.name, NAME_MAX_CHARS)?;
     required("check.command", &new.check.command, COMMAND_MAX_CHARS)?;
-    check_relative(&new.check.working_directory, true)
-        .map_err(|reason| invalid("check.working_directory", reason))?;
+    if new.check.working_directory != "." {
+        check_relative(&new.check.working_directory)
+            .map_err(|reason| invalid("check.working_directory", reason))?;
+    }
     required("check.environment", &new.check.environment, NAME_MAX_CHARS)?;
     check_source(&new.source)?;
     check_exit_code(new.outcome, new.exit_code)?;

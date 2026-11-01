@@ -2,79 +2,78 @@
 //! up to. Freshness is computed when asked, never stored, so a receipt cannot be marked
 //! current after its artifact changed.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::artifacts::Checkout;
-use crate::error::invalid;
 use crate::{
     CheckDefinition, CheckReport, CheckStatus, Claim, GateOutcome, GateReport, Outcome, Receipt,
     Refusal, Source, StaleReason,
 };
 
-/// The evidence of some checks of one project on one exact source, as [`crate::evidence`]
-/// loaded it.
+/// What a project holds about a gate's required checks on one exact source, as
+/// [`crate::evidence`] loaded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evidence {
     pub(crate) source: Source,
-    /// Per check: its receipts on this source, newest first.
-    pub(crate) receipts: BTreeMap<String, Vec<Receipt>>,
-    /// Per check: its newest receipt on any other source, which explains a stale check.
-    pub(crate) newest_elsewhere: BTreeMap<String, Receipt>,
-    /// Per check: its claims on this source, newest first.
-    pub(crate) claims: BTreeMap<String, Vec<Claim>>,
+    /// In the order the gate requires the checks.
+    pub(crate) checks: Vec<CheckEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheckEvidence {
+    pub(crate) check: CheckDefinition,
+    /// The newest receipt of exactly this definition on exactly this source.
+    pub(crate) receipt: Option<Receipt>,
+    /// The source of the newest receipt of this check that is not such a match: it
+    /// explains why the check is stale when no receipt matches.
+    pub(crate) other_source: Option<Source>,
+    /// Claims about this source, newest first.
+    pub(crate) claims: Vec<Claim>,
 }
 
 /// Each artifact's digest, read at most once per evaluation.
 type DigestCache = HashMap<String, Result<Option<String>, String>>;
 
 impl Evidence {
-    pub fn source(&self) -> &Source {
-        &self.source
+    /// The newest receipt of the check's exact definition on this source.
+    pub fn receipt(&self, check_name: &str) -> Option<&Receipt> {
+        self.check(check_name)?.receipt.as_ref()
     }
 
-    /// The check's receipts on this source, newest first; at most
-    /// [`crate::RECEIPTS_LOADED_PER_CHECK`].
-    pub fn receipts(&self, check_name: &str) -> &[Receipt] {
-        self.receipts.get(check_name).map_or(&[], Vec::as_slice)
-    }
-
-    /// The check's claims on this source, newest first; at most
+    /// The check's claims about this source, newest first; at most
     /// [`crate::CLAIMS_LOADED_PER_CHECK`].
     pub fn claims(&self, check_name: &str) -> &[Claim] {
-        self.claims.get(check_name).map_or(&[], Vec::as_slice)
+        self.check(check_name)
+            .map_or(&[], |evidence| evidence.claims.as_slice())
     }
 
-    /// The outcome of a gate requiring `checks` on this evidence's source in `checkout`.
-    /// Reads the receipts' artifacts from the checkout, so call it outside a transaction.
-    pub fn evaluate(
-        &self,
-        checks: &[CheckDefinition],
-        checkout: &Path,
-    ) -> Result<GateReport, Refusal> {
-        if checks.is_empty() {
-            return Err(invalid("checks", "a gate requires at least one check"));
-        }
-        let mut seen = BTreeSet::new();
-        for check in checks {
-            if !seen.insert(check.name.as_str()) {
-                return Err(invalid(
-                    "checks",
-                    format!("`{}` is required twice", check.name),
-                ));
-            }
-            if !self.receipts.contains_key(&check.name) {
-                return Err(invalid(
-                    "checks",
-                    format!("the evidence of `{}` was not loaded", check.name),
-                ));
-            }
-        }
+    fn check(&self, check_name: &str) -> Option<&CheckEvidence> {
+        self.checks
+            .iter()
+            .find(|evidence| evidence.check.name == check_name)
+    }
+
+    /// The gate's outcome in `checkout`. Reads the receipts' artifacts from the checkout, so
+    /// call it outside a transaction.
+    pub fn evaluate(&self, checkout: &Path) -> Result<GateReport, Refusal> {
         let checkout = Checkout::open(checkout)?;
         let mut digests = DigestCache::new();
-        let reports: Vec<CheckReport> = checks
+        let reports: Vec<CheckReport> = self
+            .checks
             .iter()
-            .map(|check| self.report(check, &checkout, &mut digests))
+            .map(|evidence| {
+                let status = self.status(evidence, &checkout, &mut digests);
+                let receipt = match status {
+                    CheckStatus::Checked(_) => evidence.receipt.as_ref().map(|receipt| receipt.id),
+                    _ => None,
+                };
+                CheckReport {
+                    name: evidence.check.name.clone(),
+                    status,
+                    receipt,
+                }
+            })
             .collect();
         Ok(GateReport {
             outcome: gate_outcome(&reports),
@@ -82,42 +81,34 @@ impl Evidence {
         })
     }
 
-    /// The newest receipt of this exact check on this source decides: once its artifacts
-    /// changed, an older receipt of the same source and check does not stand in for it.
-    fn report(
+    /// The newest exact receipt decides: once its artifacts changed, an older receipt of the
+    /// same source and check does not stand in for it.
+    fn status(
         &self,
-        check: &CheckDefinition,
+        evidence: &CheckEvidence,
         checkout: &Checkout,
         digests: &mut DigestCache,
-    ) -> CheckReport {
-        let receipts = self.receipts(&check.name);
-        let (status, receipt) = match receipts
-            .iter()
-            .find(|receipt| receipt.recorded.check == *check)
-        {
-            Some(receipt) => match changed_artifact(receipt, checkout, digests) {
-                None => (
-                    CheckStatus::Checked(receipt.recorded.outcome),
-                    Some(receipt.id),
-                ),
-                Some(reason) => (CheckStatus::Stale(reason), None),
-            },
-            None if !receipts.is_empty() => (CheckStatus::Stale(StaleReason::CheckChanged), None),
-            None => match self.newest_elsewhere.get(&check.name) {
-                Some(elsewhere) => (
-                    CheckStatus::Stale(StaleReason::SourceChanged {
-                        recorded: elsewhere.recorded.source.clone(),
-                    }),
-                    None,
-                ),
-                None if self.claims(&check.name).is_empty() => (CheckStatus::Missing, None),
-                None => (CheckStatus::Unverified, None),
-            },
-        };
-        CheckReport {
-            name: check.name.clone(),
-            status,
-            receipt,
+    ) -> CheckStatus {
+        if let Some(receipt) = &evidence.receipt {
+            return match changed_artifact(receipt, checkout, digests) {
+                None => CheckStatus::Checked(receipt.recorded.outcome),
+                Some(reason) => CheckStatus::Stale(reason),
+            };
+        }
+        if let Some(other) = &evidence.other_source {
+            let is_same_source = other.head == self.source.head && other.dirty == self.source.dirty;
+            return CheckStatus::Stale(if is_same_source {
+                StaleReason::CheckChanged
+            } else {
+                StaleReason::SourceChanged {
+                    recorded: other.clone(),
+                }
+            });
+        }
+        if evidence.claims.is_empty() {
+            CheckStatus::Missing
+        } else {
+            CheckStatus::Unverified
         }
     }
 }
@@ -129,16 +120,17 @@ fn changed_artifact(
     digests: &mut DigestCache,
 ) -> Option<StaleReason> {
     receipt.recorded.artifacts.iter().find_map(|artifact| {
-        let current = digests
-            .entry(artifact.path.clone())
-            .or_insert_with(|| checkout.digest(&artifact.path));
-        let path = artifact.path.clone();
+        if !digests.contains_key(&artifact.path) {
+            digests.insert(artifact.path.clone(), checkout.digest(&artifact.path));
+        }
+        let current = &digests[&artifact.path];
+        let path = || artifact.path.clone();
         match current {
             Ok(Some(digest)) if *digest == artifact.digest => None,
-            Ok(Some(_)) => Some(StaleReason::ArtifactChanged { path }),
-            Ok(None) => Some(StaleReason::ArtifactMissing { path }),
+            Ok(Some(_)) => Some(StaleReason::ArtifactChanged { path: path() }),
+            Ok(None) => Some(StaleReason::ArtifactMissing { path: path() }),
             Err(reason) => Some(StaleReason::ArtifactUnreadable {
-                path,
+                path: path(),
                 reason: reason.clone(),
             }),
         }

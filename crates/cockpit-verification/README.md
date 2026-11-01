@@ -32,18 +32,20 @@ evidence.
 
 ## Gates
 
-`evidence` loads, for one exact source (head and uncommitted changes), each required
-check's newest `RECEIPTS_LOADED_PER_CHECK` receipts and `CLAIMS_LOADED_PER_CHECK` claims on
-that source, and its newest receipt on any other source. Parallel clones recording the same
-check on other heads therefore never push this source's receipts out. `Evidence::evaluate`
-answers, outside any transaction because it reads the checkout, where each check stands:
+`evidence` takes the gate's required check definitions and one exact source (head and
+uncommitted changes), and loads per check the newest receipt of exactly that definition on
+exactly that source, the source of its newest other receipt, and its newest
+`CLAIMS_LOADED_PER_CHECK` claims about the source. Matching happens in the query, so no
+number of other clones' or other definitions' runs pushes the matching receipt out.
+`Evidence::evaluate` answers, outside any transaction because it reads the checkout, where
+each check stands:
 
 | Status | When |
 | --- | --- |
 | `checked(outcome)` | the newest receipt of this exact check definition on this source, every artifact unchanged |
 | `stale(artifact-changed / -missing / -unreadable)` | that receipt's artifacts changed; an older receipt does not stand in for it |
-| `stale(check-changed)` | receipts on this source ran another definition of the check |
-| `stale(source-changed)` | receipts only on other heads or uncommitted changes |
+| `stale(check-changed)` | the newest other receipt ran another definition on this source |
+| `stale(source-changed)` | the newest other receipt ran on another head or other uncommitted changes |
 | `unverified` | no receipt, only claims about this source |
 | `missing` | nothing |
 
@@ -51,8 +53,7 @@ Freshness is computed at evaluation, never stored, so an edited file makes its r
 stale the moment it changes; each file is hashed at most once per evaluation. The gate is
 `passed` when every required check passed, `failed` when one failed, and `open`
 otherwise; each check that did not pass names its next action. An empty gate, a check
-required twice, one whose evidence was not loaded, or a checkout that does not resolve is
-refused. Paths are `/`-separated and normalized, so one file has one spelling.
+required twice or a checkout that does not resolve is refused. Paths are `/`-separated and normalized, so one file has one spelling.
 
 ## Dependency edges
 

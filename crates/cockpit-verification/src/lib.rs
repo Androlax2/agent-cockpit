@@ -17,8 +17,8 @@ pub use model::{
 };
 pub use receipts::{
     ARTIFACTS_MAX, CLAIMS_LOADED_PER_CHECK, COMMAND_MAX_CHARS, NAME_MAX_CHARS, OUTPUT_MAX_BYTES,
-    OUTPUT_REFERENCES_MAX, PATH_MAX_CHARS, RECEIPTS_LOADED_PER_CHECK, STATEMENT_MAX_CHARS,
-    evidence, record_claim, record_receipt,
+    OUTPUT_REFERENCES_MAX, PATH_MAX_CHARS, STATEMENT_MAX_CHARS, evidence, record_claim,
+    record_receipt,
 };
 
 /// The verification tables. Receipts and claims are append-only: evidence is never edited,
@@ -50,8 +50,10 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK (outcome <> 'failed' OR exit_code IS NULL OR exit_code <> 0),
                 UNIQUE (project, run_id)
             );
-            CREATE INDEX verification_receipts_by_check
+            CREATE INDEX verification_receipts_by_source
                 ON verification_receipts (project, check_name, head, id);
+            CREATE INDEX verification_receipts_by_check
+                ON verification_receipts (project, check_name, id);
             CREATE TABLE verification_artifacts (
                 receipt INTEGER NOT NULL REFERENCES verification_receipts (id),
                 path TEXT NOT NULL CHECK (path <> ''),

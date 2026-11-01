@@ -39,8 +39,7 @@ pub(crate) fn check_artifact_paths(sorted: &[&str]) -> Result<(), Refusal> {
         return Err(invalid("artifacts", format!("at most {ARTIFACTS_MAX}")));
     }
     for path in sorted {
-        check_relative(path, false)
-            .map_err(|reason| invalid("artifacts", format!("{path}: {reason}")))?;
+        check_relative(path).map_err(|reason| invalid("artifacts", format!("{path}: {reason}")))?;
     }
     if let Some(pair) = sorted.windows(2).find(|pair| pair[0] == pair[1]) {
         return Err(invalid("artifacts", format!("{} is named twice", pair[0])));
@@ -69,7 +68,7 @@ impl Checkout {
     /// The digest of `path` now: `None` when nothing is there, the reason when it is not a
     /// readable file inside the checkout.
     pub(crate) fn digest(&self, path: &str) -> Result<Option<String>, String> {
-        check_relative(path, false)?;
+        check_relative(path)?;
         let full = match self.root.join(path).canonicalize() {
             Ok(full) => full,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -99,17 +98,13 @@ fn sha256_of(path: &Path) -> io::Result<String> {
 }
 
 /// Refuses an empty, absolute, too long or non-normalized path: `/`-separated segments,
-/// none empty, `.` or `..`, so one file has one spelling. `.` alone names the root only
-/// where `allows_root`.
-pub(crate) fn check_relative(path: &str, allows_root: bool) -> Result<(), String> {
+/// none empty, `.` or `..`, so one file has one spelling.
+pub(crate) fn check_relative(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("is empty".to_owned());
     }
     if path.chars().count() > PATH_MAX_CHARS {
         return Err(format!("is longer than {PATH_MAX_CHARS} characters"));
-    }
-    if allows_root && path == "." {
-        return Ok(());
     }
     let is_normalized = path
         .split('/')

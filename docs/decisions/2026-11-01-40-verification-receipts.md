@@ -13,11 +13,12 @@ Issue #40. Decided by the worker, implementing reports 06 and 09 as written.
 - **Artifacts are fingerprinted before the run** (`fingerprint`, SHA-256 per file inside the
   checkout, symbolic links resolved and kept inside it). An edit during the run therefore
   makes the receipt stale too: the safe direction.
-- **Evidence is loaded per exact source; the newest receipt of the current check
-  definition there decides.** Once its artifacts changed it is stale, and an older pass on
-  the same source does not stand in for a newer failure. Loading per source (the newest
-  `RECEIPTS_LOADED_PER_CHECK`, 20) keeps parallel clones' receipts on other heads from
-  pushing this source's out; the newest receipt elsewhere only explains `source-changed`.
+- **A receipt's identity is its source and its check definition, matched in the query.**
+  `evidence` loads the newest receipt of exactly the required definition on exactly the
+  source asked about; once its artifacts changed it is stale, and an older pass does not
+  stand in for a newer failure. No loading window exists, so parallel clones' runs on
+  other heads cannot crowd it out. The source of the newest other receipt only explains
+  `check-changed` (same source) or `source-changed`.
 - **A run id makes delivery idempotent.** The same run again returns its receipt; another
   result under the same run id is refused, so evidence is append-only.
 - **Prose claims are kept, never counted, and bound to a source.** A check with only claims

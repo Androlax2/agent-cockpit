@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use cockpit_turso::Database;
 use cockpit_verification::{
-    CheckDefinition, Claim, Evidence, NewClaim, NewReceipt, Outcome, Receipt, Source,
+    CheckDefinition, Claim, Evidence, GateReport, NewClaim, NewReceipt, Outcome, Receipt, Source,
 };
 
 pub const NOW: i64 = 1_800_000_000;
@@ -54,9 +54,31 @@ impl Fixture {
         claimed
     }
 
-    pub async fn evidence(&self, source: &Source, check_names: &[&str]) -> Evidence {
+    pub async fn evidence(&self, source: &Source, checks: &[CheckDefinition]) -> Evidence {
         let read = self.database.read().await.unwrap();
-        cockpit_verification::evidence(&read, PROJECT, source, check_names)
+        cockpit_verification::evidence(&read, PROJECT, source, checks)
+            .await
+            .unwrap()
+    }
+
+    /// The outcome of a gate requiring `checks` on `source` in the checkout.
+    pub async fn gate(&self, source: &Source, checks: &[CheckDefinition]) -> GateReport {
+        self.evidence(source, checks)
+            .await
+            .evaluate(&self.checkout())
+            .unwrap()
+    }
+
+    /// Records [`Fixture::receipt`], which must be accepted.
+    pub async fn record_run(
+        &self,
+        run_id: &str,
+        check: &CheckDefinition,
+        source: &Source,
+        artifacts: &[&str],
+        outcome: Outcome,
+    ) -> Receipt {
+        self.record(self.receipt(run_id, check, source, artifacts, outcome))
             .await
             .unwrap()
     }
@@ -107,6 +129,14 @@ pub fn clean_source() -> Source {
     }
 }
 
+/// The clean source on another head.
+pub fn other_head() -> Source {
+    Source {
+        head: "9".repeat(40),
+        ..clean_source()
+    }
+}
+
 pub fn claim(check_name: &str) -> NewClaim {
     NewClaim {
         project: PROJECT.to_owned(),
@@ -124,5 +154,13 @@ pub fn refusal<T: std::fmt::Debug>(
     match result {
         Err(cockpit_verification::Error::Refused(refusal)) => refusal,
         other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// The field an `InvalidRequest` refusal names, failing the test on anything else.
+pub fn refused_field(refusal: cockpit_verification::Refusal) -> &'static str {
+    match refusal {
+        cockpit_verification::Refusal::InvalidRequest { field, .. } => field,
+        other => panic!("expected an invalid request, got {other:?}"),
     }
 }

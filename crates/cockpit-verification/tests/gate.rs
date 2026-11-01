@@ -2,7 +2,7 @@
 mod common;
 
 use cockpit_verification::{CheckStatus, GateOutcome, Outcome, Source, StaleReason};
-use common::{Fixture, check, claim, clean_source};
+use common::{Fixture, PROJECT, check, claim, clean_source, other_head, refusal, refused_field};
 
 #[tokio::test]
 async fn an_edited_file_makes_its_receipt_stale() {
@@ -10,20 +10,17 @@ async fn an_edited_file_makes_its_receipt_stale() {
     fixture.write_file("src/lib.rs", "pub fn answer() -> u8 { 42 }\n");
     let tests = check("test");
     fixture
-        .record(fixture.receipt(
+        .record_run(
             "run-1",
             &tests,
             &clean_source(),
             &["src/lib.rs"],
             Outcome::Passed,
-        ))
-        .await
-        .unwrap();
+        )
+        .await;
     let before = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(std::slice::from_ref(&tests), &fixture.checkout())
-        .unwrap();
+        .gate(&clean_source(), std::slice::from_ref(&tests))
+        .await;
     assert_eq!(
         before.checks[0].status,
         CheckStatus::Checked(Outcome::Passed)
@@ -31,11 +28,7 @@ async fn an_edited_file_makes_its_receipt_stale() {
 
     fixture.write_file("src/lib.rs", "pub fn answer() -> u8 { 41 }\n");
 
-    let after = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+    let after = fixture.gate(&clean_source(), &[tests]).await;
     assert_eq!(
         after.checks[0].status,
         CheckStatus::Stale(StaleReason::ArtifactChanged {
@@ -51,22 +44,17 @@ async fn a_removed_file_makes_its_receipt_stale() {
     fixture.write_file("docs/report.md", "# Report\n");
     let tests = check("test");
     fixture
-        .record(fixture.receipt(
+        .record_run(
             "run-1",
             &tests,
             &clean_source(),
             &["docs/report.md"],
             Outcome::Passed,
-        ))
-        .await
-        .unwrap();
+        )
+        .await;
     std::fs::remove_file(fixture.checkout().join("docs/report.md")).unwrap();
 
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[tests]).await;
     assert_eq!(
         report.checks[0].status,
         CheckStatus::Stale(StaleReason::ArtifactMissing {
@@ -91,14 +79,9 @@ async fn a_changed_check_definition_makes_its_receipts_stale() {
     ] {
         let fixture = Fixture::new().await;
         fixture
-            .record(fixture.receipt("run-1", &recorded, &clean_source(), &[], Outcome::Passed))
-            .await
-            .unwrap();
-        let report = fixture
-            .evidence(&clean_source(), &["test"])
-            .await
-            .evaluate(&[current], &fixture.checkout())
-            .unwrap();
+            .record_run("run-1", &recorded, &clean_source(), &[], Outcome::Passed)
+            .await;
+        let report = fixture.gate(&clean_source(), &[current]).await;
         assert_eq!(
             report.checks[0].status,
             CheckStatus::Stale(StaleReason::CheckChanged),
@@ -117,12 +100,8 @@ async fn a_receipt_of_another_head_or_dirty_state_does_not_apply() {
         dirty: Some("b2".repeat(32)),
         ..clean_source()
     };
-    let other_head = Source {
-        head: "9".repeat(40),
-        ..clean_source()
-    };
     for (case, recorded, current) in [
-        ("other head", clean_source(), other_head),
+        ("other head", clean_source(), other_head()),
         ("now dirty", clean_source(), dirty.clone()),
         ("now clean", dirty.clone(), clean_source()),
         ("other changes", dirty, other_dirty),
@@ -130,14 +109,9 @@ async fn a_receipt_of_another_head_or_dirty_state_does_not_apply() {
         let fixture = Fixture::new().await;
         let tests = check("test");
         fixture
-            .record(fixture.receipt("run-1", &tests, &recorded, &[], Outcome::Passed))
-            .await
-            .unwrap();
-        let report = fixture
-            .evidence(&current, &["test"])
-            .await
-            .evaluate(&[tests], &fixture.checkout())
-            .unwrap();
+            .record_run("run-1", &tests, &recorded, &[], Outcome::Passed)
+            .await;
+        let report = fixture.gate(&current, &[tests]).await;
         assert_eq!(
             report.checks[0].status,
             CheckStatus::Stale(StaleReason::SourceChanged {
@@ -155,18 +129,13 @@ async fn a_receipt_applies_whatever_base_it_named() {
     let fixture = Fixture::new().await;
     let tests = check("test");
     fixture
-        .record(fixture.receipt("run-1", &tests, &clean_source(), &[], Outcome::Passed))
-        .await
-        .unwrap();
+        .record_run("run-1", &tests, &clean_source(), &[], Outcome::Passed)
+        .await;
     let rebased_base = Source {
         base: None,
         ..clean_source()
     };
-    let report = fixture
-        .evidence(&rebased_base, &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&rebased_base, &[tests]).await;
     assert_eq!(
         report.checks[0].status,
         CheckStatus::Checked(Outcome::Passed)
@@ -177,28 +146,17 @@ async fn a_receipt_applies_whatever_base_it_named() {
 async fn the_newest_receipt_that_applies_decides() {
     let fixture = Fixture::new().await;
     let tests = check("test");
-    let other_head = Source {
-        head: "9".repeat(40),
-        ..clean_source()
-    };
     let failed = fixture
-        .record(fixture.receipt("run-1", &tests, &clean_source(), &[], Outcome::Failed))
-        .await
-        .unwrap();
+        .record_run("run-1", &tests, &clean_source(), &[], Outcome::Failed)
+        .await;
     let passed = fixture
-        .record(fixture.receipt("run-2", &tests, &clean_source(), &[], Outcome::Passed))
-        .await
-        .unwrap();
+        .record_run("run-2", &tests, &clean_source(), &[], Outcome::Passed)
+        .await;
     fixture
-        .record(fixture.receipt("run-3", &tests, &other_head, &[], Outcome::Failed))
-        .await
-        .unwrap();
+        .record_run("run-3", &tests, &other_head(), &[], Outcome::Failed)
+        .await;
 
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[tests]).await;
     assert_eq!(
         report.checks[0].status,
         CheckStatus::Checked(Outcome::Passed)
@@ -212,11 +170,7 @@ async fn a_prose_claim_alone_is_unverified() {
     let fixture = Fixture::new().await;
     fixture.claim(claim("test")).await.unwrap();
 
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[check("test")], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[check("test")]).await;
     assert_eq!(report.checks[0].status, CheckStatus::Unverified);
     assert_eq!(report.outcome, GateOutcome::Open);
 }
@@ -227,23 +181,18 @@ async fn a_claim_after_a_stale_receipt_leaves_it_stale() {
     fixture.write_file("src/lib.rs", "one\n");
     let tests = check("test");
     fixture
-        .record(fixture.receipt(
+        .record_run(
             "run-1",
             &tests,
             &clean_source(),
             &["src/lib.rs"],
             Outcome::Passed,
-        ))
-        .await
-        .unwrap();
+        )
+        .await;
     fixture.write_file("src/lib.rs", "two\n");
     fixture.claim(claim("test")).await.unwrap();
 
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[tests]).await;
     assert!(
         matches!(report.checks[0].status, CheckStatus::Stale(_)),
         "{:?}",
@@ -254,11 +203,7 @@ async fn a_claim_after_a_stale_receipt_leaves_it_stale() {
 #[tokio::test]
 async fn a_check_without_evidence_is_missing() {
     let fixture = Fixture::new().await;
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[check("test")], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[check("test")]).await;
     assert_eq!(report.checks[0].status, CheckStatus::Missing);
     assert_eq!(report.checks[0].receipt, None);
 }
@@ -271,11 +216,7 @@ async fn another_projects_receipts_are_not_evidence_here() {
     elsewhere.project = "dotfiles".to_owned();
     fixture.record(elsewhere).await.unwrap();
 
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[tests]).await;
     assert_eq!(report.checks[0].status, CheckStatus::Missing);
 }
 
@@ -292,19 +233,13 @@ async fn the_gate_passes_only_when_every_required_check_passed() {
         let fixture = Fixture::new().await;
         let (tests, lint) = (check("test"), check("lint"));
         fixture
-            .record(fixture.receipt("run-1", &tests, &clean_source(), &[], Outcome::Passed))
-            .await
-            .unwrap();
+            .record_run("run-1", &tests, &clean_source(), &[], Outcome::Passed)
+            .await;
         fixture
-            .record(fixture.receipt("run-2", &lint, &clean_source(), &[], lint_outcome))
-            .await
-            .unwrap();
+            .record_run("run-2", &lint, &clean_source(), &[], lint_outcome)
+            .await;
 
-        let report = fixture
-            .evidence(&clean_source(), &["test", "lint"])
-            .await
-            .evaluate(&[tests, lint], &fixture.checkout())
-            .unwrap();
+        let report = fixture.gate(&clean_source(), &[tests, lint]).await;
         assert_eq!(report.outcome, expected, "{lint_outcome:?}");
         assert_eq!(report.checks[1].status, CheckStatus::Checked(lint_outcome));
     }
@@ -315,14 +250,9 @@ async fn a_failed_check_fails_the_gate_even_when_another_is_missing() {
     let fixture = Fixture::new().await;
     let tests = check("test");
     fixture
-        .record(fixture.receipt("run-1", &tests, &clean_source(), &[], Outcome::Failed))
-        .await
-        .unwrap();
-    let report = fixture
-        .evidence(&clean_source(), &["test", "lint"])
-        .await
-        .evaluate(&[tests, check("lint")], &fixture.checkout())
-        .unwrap();
+        .record_run("run-1", &tests, &clean_source(), &[], Outcome::Failed)
+        .await;
+    let report = fixture.gate(&clean_source(), &[tests, check("lint")]).await;
     assert_eq!(report.outcome, GateOutcome::Failed);
 }
 
@@ -337,30 +267,23 @@ async fn every_check_that_did_not_pass_names_its_next_action() {
         check("missing"),
     );
     fixture
-        .record(fixture.receipt("run-1", &failed, &clean_source(), &[], Outcome::Failed))
-        .await
-        .unwrap();
+        .record_run("run-1", &failed, &clean_source(), &[], Outcome::Failed)
+        .await;
     fixture
-        .record(fixture.receipt(
+        .record_run(
             "run-2",
             &stale,
             &clean_source(),
             &["src/lib.rs"],
             Outcome::Passed,
-        ))
-        .await
-        .unwrap();
+        )
+        .await;
     fixture.write_file("src/lib.rs", "two\n");
     fixture.claim(claim("unverified")).await.unwrap();
 
     let report = fixture
-        .evidence(
-            &clean_source(),
-            &["failed", "stale", "unverified", "missing"],
-        )
-        .await
-        .evaluate(&[failed, stale, unverified, missing], &fixture.checkout())
-        .unwrap();
+        .gate(&clean_source(), &[failed, stale, unverified, missing])
+        .await;
     for check_report in &report.checks {
         let next_action = check_report.next_action().unwrap_or_default();
         assert!(
@@ -376,54 +299,24 @@ async fn a_passed_check_needs_no_action() {
     let fixture = Fixture::new().await;
     let tests = check("test");
     fixture
-        .record(fixture.receipt("run-1", &tests, &clean_source(), &[], Outcome::Passed))
-        .await
-        .unwrap();
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+        .record_run("run-1", &tests, &clean_source(), &[], Outcome::Passed)
+        .await;
+    let report = fixture.gate(&clean_source(), &[tests]).await;
     assert_eq!(report.checks[0].next_action(), None);
 }
 
 #[tokio::test]
 async fn a_gate_without_checks_or_with_a_check_twice_is_refused() {
     let fixture = Fixture::new().await;
-    let evidence = fixture.evidence(&clean_source(), &["test"]).await;
+    let read = fixture.database.read().await.unwrap();
     for (case, checks) in [
         ("empty", Vec::new()),
         ("twice", vec![check("test"), check("test")]),
     ] {
-        let refused = evidence.evaluate(&checks, &fixture.checkout());
-        assert!(
-            matches!(
-                refused,
-                Err(cockpit_verification::Refusal::InvalidRequest {
-                    field: "checks",
-                    ..
-                })
-            ),
-            "{case}: {refused:?}"
-        );
+        let refused =
+            cockpit_verification::evidence(&read, PROJECT, &clean_source(), &checks).await;
+        assert_eq!(refused_field(refusal(refused)), "checks", "{case}");
     }
-}
-
-#[tokio::test]
-async fn a_gate_asking_for_evidence_it_was_not_loaded_with_is_refused() {
-    let fixture = Fixture::new().await;
-    let evidence = fixture.evidence(&clean_source(), &["test"]).await;
-    let refused = evidence.evaluate(&[check("lint")], &fixture.checkout());
-    assert!(
-        matches!(
-            refused,
-            Err(cockpit_verification::Refusal::InvalidRequest {
-                field: "checks",
-                ..
-            })
-        ),
-        "{refused:?}"
-    );
 }
 
 /// A newer run of the same check on the same source decides even once its artifacts
@@ -434,26 +327,20 @@ async fn an_older_pass_does_not_stand_in_for_a_newer_stale_failure() {
     fixture.write_file("target/generated.rs", "one\n");
     let tests = check("test");
     fixture
-        .record(fixture.receipt("run-1", &tests, &clean_source(), &[], Outcome::Passed))
-        .await
-        .unwrap();
+        .record_run("run-1", &tests, &clean_source(), &[], Outcome::Passed)
+        .await;
     fixture
-        .record(fixture.receipt(
+        .record_run(
             "run-2",
             &tests,
             &clean_source(),
             &["target/generated.rs"],
             Outcome::Failed,
-        ))
-        .await
-        .unwrap();
+        )
+        .await;
     fixture.write_file("target/generated.rs", "two\n");
 
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[tests]).await;
     assert_eq!(
         report.checks[0].status,
         CheckStatus::Stale(StaleReason::ArtifactChanged {
@@ -469,31 +356,25 @@ async fn receipts_of_other_sources_do_not_crowd_out_this_ones() {
     let fixture = Fixture::new().await;
     let tests = check("test");
     let passed = fixture
-        .record(fixture.receipt("run-mine", &tests, &clean_source(), &[], Outcome::Passed))
-        .await
-        .unwrap();
-    for clone in 0..cockpit_verification::RECEIPTS_LOADED_PER_CHECK + 5 {
+        .record_run("run-mine", &tests, &clean_source(), &[], Outcome::Passed)
+        .await;
+    for clone in 0..25 {
         let elsewhere = Source {
             head: format!("{clone:040}"),
             ..clean_source()
         };
         fixture
-            .record(fixture.receipt(
+            .record_run(
                 &format!("run-{clone}"),
                 &tests,
                 &elsewhere,
                 &[],
                 Outcome::Failed,
-            ))
-            .await
-            .unwrap();
+            )
+            .await;
     }
 
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[tests], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[tests]).await;
     assert_eq!(report.checks[0].receipt, Some(passed.id));
 }
 
@@ -501,30 +382,38 @@ async fn receipts_of_other_sources_do_not_crowd_out_this_ones() {
 async fn a_claim_about_another_head_does_not_show_here() {
     let fixture = Fixture::new().await;
     let mut old_claim = claim("test");
-    old_claim.source.head = "9".repeat(40);
+    old_claim.source = other_head();
     fixture.claim(old_claim).await.unwrap();
 
-    let report = fixture
-        .evidence(&clean_source(), &["test"])
-        .await
-        .evaluate(&[check("test")], &fixture.checkout())
-        .unwrap();
+    let report = fixture.gate(&clean_source(), &[check("test")]).await;
     assert_eq!(report.checks[0].status, CheckStatus::Missing);
 }
 
 #[tokio::test]
 async fn evaluating_in_a_checkout_that_is_gone_is_refused() {
     let fixture = Fixture::new().await;
-    let evidence = fixture.evidence(&clean_source(), &["test"]).await;
-    let refused = evidence.evaluate(&[check("test")], &fixture.dir.path().join("gone"));
-    assert!(
-        matches!(
-            refused,
-            Err(cockpit_verification::Refusal::InvalidRequest {
-                field: "checkout",
-                ..
-            })
-        ),
-        "{refused:?}"
+    let refused = fixture
+        .evidence(&clean_source(), &[check("test")])
+        .await
+        .evaluate(&fixture.dir.path().join("gone"));
+    assert_eq!(refused_field(refused.unwrap_err()), "checkout");
+}
+
+#[tokio::test]
+async fn a_receipt_on_the_same_uncommitted_changes_applies() {
+    let fixture = Fixture::new().await;
+    let dirty = Source {
+        dirty: Some("a1".repeat(32)),
+        ..clean_source()
+    };
+    let tests = check("test");
+    fixture
+        .record_run("run-1", &tests, &dirty, &[], Outcome::Passed)
+        .await;
+
+    let report = fixture.gate(&dirty, &[tests]).await;
+    assert_eq!(
+        report.checks[0].status,
+        CheckStatus::Checked(Outcome::Passed)
     );
 }

@@ -4,30 +4,39 @@ mod common;
 
 use cockpit_turso::Database;
 use cockpit_verification::{CheckStatus, OUTPUT_MAX_BYTES, Outcome, Refusal};
-use common::{Fixture, NOW, check, claim, clean_source, refusal};
+use common::{Fixture, NOW, check, claim, clean_source, refusal, refused_field};
 
 #[tokio::test]
 async fn a_receipt_keeps_what_was_checked() {
     let fixture = Fixture::new().await;
     fixture.write_file("src/lib.rs", "pub fn answer() {}\n");
+    fixture.write_file("Cargo.lock", "# lock\n");
     let tests = check("test");
     let mut new = fixture.receipt(
         "run-1",
         &tests,
         &clean_source(),
-        &["src/lib.rs"],
+        &["src/lib.rs", "Cargo.lock"],
         Outcome::Failed,
     );
-    new.output_references = vec!["logs/run-1.log".to_owned()];
+    new.output_references = vec![
+        "logs/run-1.log".to_owned(),
+        "logs/run-1.junit.xml".to_owned(),
+    ];
     let recorded = fixture.record(new.clone()).await.unwrap();
 
-    let evidence = fixture.evidence(&clean_source(), &["test"]).await;
-    let stored = &evidence.receipts("test")[0];
+    let evidence = fixture.evidence(&clean_source(), &[tests]).await;
+    let stored = evidence.receipt("test").unwrap();
     assert_eq!(stored, &recorded);
     assert_eq!(stored.recorded, new);
     assert_eq!(stored.recorded_at, NOW);
-    assert_eq!(stored.recorded.artifacts[0].path, "src/lib.rs");
-    assert_eq!(stored.recorded.artifacts[0].digest.len(), 64);
+    let paths: Vec<&str> = stored
+        .recorded
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.path.as_str())
+        .collect();
+    assert_eq!(paths, ["Cargo.lock", "src/lib.rs"]);
 }
 
 #[tokio::test]
@@ -83,14 +92,17 @@ async fn the_same_run_delivered_twice_is_one_receipt() {
     let second = fixture.record(new).await.unwrap();
 
     assert_eq!(first, second);
-    assert_eq!(
-        fixture
-            .evidence(&clean_source(), &["test"])
-            .await
-            .receipts("test")
-            .len(),
-        1
-    );
+    let read = fixture.database.read().await.unwrap();
+    let stored = read
+        .prepare("SELECT count(*) FROM verification_receipts")
+        .await
+        .unwrap()
+        .query_row(())
+        .await
+        .unwrap()
+        .get::<i64>(0)
+        .unwrap();
+    assert_eq!(stored, 1);
 }
 
 #[tokio::test]
@@ -98,9 +110,8 @@ async fn a_run_delivered_again_with_another_result_is_refused() {
     let fixture = Fixture::new().await;
     let tests = check("test");
     let first = fixture
-        .record(fixture.receipt("run-1", &tests, &clean_source(), &[], Outcome::Failed))
-        .await
-        .unwrap();
+        .record_run("run-1", &tests, &clean_source(), &[], Outcome::Failed)
+        .await;
     let rewritten = fixture.receipt("run-1", &tests, &clean_source(), &[], Outcome::Passed);
 
     assert_eq!(
@@ -118,15 +129,14 @@ async fn receipts_and_claims_survive_a_restart() {
     fixture.write_file("src/lib.rs", "one\n");
     let tests = check("test");
     fixture
-        .record(fixture.receipt(
+        .record_run(
             "run-1",
             &tests,
             &clean_source(),
             &["src/lib.rs"],
             Outcome::Passed,
-        ))
-        .await
-        .unwrap();
+        )
+        .await;
     fixture.claim(claim("lint")).await.unwrap();
     let path = fixture.dir.path().join("state.db");
     let common::Fixture { dir, database } = fixture;
@@ -136,13 +146,15 @@ async fn receipts_and_claims_survive_a_restart() {
         .await
         .unwrap();
     let read = reopened.read().await.unwrap();
-    let evidence =
-        cockpit_verification::evidence(&read, common::PROJECT, &clean_source(), &["test", "lint"])
-            .await
-            .unwrap();
-    let report = evidence
-        .evaluate(&[tests, check("lint")], &dir.path().join("checkout"))
-        .unwrap();
+    let evidence = cockpit_verification::evidence(
+        &read,
+        common::PROJECT,
+        &clean_source(),
+        &[tests, check("lint")],
+    )
+    .await
+    .unwrap();
+    let report = evidence.evaluate(&dir.path().join("checkout")).unwrap();
     assert_eq!(
         report.checks[0].status,
         CheckStatus::Checked(Outcome::Passed)
@@ -161,14 +173,9 @@ async fn an_exit_code_contradicting_the_outcome_is_refused() {
         let fixture = Fixture::new().await;
         let mut new = fixture.receipt("run-1", &check("test"), &clean_source(), &[], outcome);
         new.exit_code = exit_code;
-        assert!(
-            matches!(
-                refusal(fixture.record(new).await),
-                Refusal::InvalidRequest {
-                    field: "exit_code",
-                    ..
-                }
-            ),
+        assert_eq!(
+            refused_field(refusal(fixture.record(new).await)),
+            "exit_code",
             "{outcome:?} {exit_code:?}"
         );
     }
@@ -229,22 +236,16 @@ async fn an_artifact_named_twice_or_outside_the_checkout_is_refused() {
         Outcome::Passed,
     );
     new.artifacts.push(new.artifacts[0].clone());
-    assert!(matches!(
-        refusal(fixture.record(new.clone()).await),
-        Refusal::InvalidRequest {
-            field: "artifacts",
-            ..
-        }
-    ));
+    assert_eq!(
+        refused_field(refusal(fixture.record(new.clone()).await)),
+        "artifacts"
+    );
     new.artifacts.truncate(1);
     new.artifacts[0].path = "../secrets".to_owned();
-    assert!(matches!(
-        refusal(fixture.record(new).await),
-        Refusal::InvalidRequest {
-            field: "artifacts",
-            ..
-        }
-    ));
+    assert_eq!(
+        refused_field(refusal(fixture.record(new).await)),
+        "artifacts"
+    );
 }
 
 #[tokio::test]
@@ -257,18 +258,12 @@ async fn fingerprinting_refuses_what_is_not_a_file_in_the_checkout() {
         "/etc/hostname",
         "src/../../state.db",
         "",
+        "src/./lib.rs",
+        "src//lib.rs",
+        "src/lib.rs/",
     ] {
         let refused = cockpit_verification::fingerprint(&fixture.checkout(), &[path]);
-        assert!(
-            matches!(
-                refused,
-                Err(Refusal::InvalidRequest {
-                    field: "artifacts",
-                    ..
-                })
-            ),
-            "{path}: {refused:?}"
-        );
+        assert_eq!(refused_field(refused.unwrap_err()), "artifacts", "{path}");
     }
 }
 
@@ -277,13 +272,10 @@ async fn an_empty_claim_is_refused() {
     let fixture = Fixture::new().await;
     let mut empty = claim("test");
     empty.statement = "  ".to_owned();
-    assert!(matches!(
-        refusal(fixture.claim(empty).await),
-        Refusal::InvalidRequest {
-            field: "statement",
-            ..
-        }
-    ));
+    assert_eq!(
+        refused_field(refusal(fixture.claim(empty).await)),
+        "statement"
+    );
 }
 
 #[tokio::test]
@@ -292,26 +284,8 @@ async fn fingerprinting_refuses_a_path_named_twice_or_a_missing_checkout() {
     fixture.write_file("src/lib.rs", "one\n");
     let twice =
         cockpit_verification::fingerprint(&fixture.checkout(), &["src/lib.rs", "src/lib.rs"]);
-    assert!(
-        matches!(
-            twice,
-            Err(Refusal::InvalidRequest {
-                field: "artifacts",
-                ..
-            })
-        ),
-        "{twice:?}"
-    );
+    assert_eq!(refused_field(twice.unwrap_err()), "artifacts");
     let nowhere =
         cockpit_verification::fingerprint(&fixture.dir.path().join("gone"), &["src/lib.rs"]);
-    assert!(
-        matches!(
-            nowhere,
-            Err(Refusal::InvalidRequest {
-                field: "checkout",
-                ..
-            })
-        ),
-        "{nowhere:?}"
-    );
+    assert_eq!(refused_field(nowhere.unwrap_err()), "checkout");
 }
