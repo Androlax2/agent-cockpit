@@ -5,6 +5,7 @@ use crate::agent::{AgentReport, SessionReport};
 use crate::approvals::{GuideView, RunRequestView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
+use crate::instructions::{ContextBudgetView, InstructionTopicView};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 use crate::queue::{QueueExplanationView, QueuePlacementView};
 use crate::resources::{ProfileView, ReservationView, ResourceStatusView, VerdictView};
@@ -527,6 +528,19 @@ pub enum Command {
     /// invalid file is refused and nothing changes. Start files still count from the next
     /// daemon start.
     ConfigReload,
+    /// Both sockets: the instruction bundle's topics, each with when to read it (#49).
+    InstructionCatalog,
+    /// Both sockets: one topic of the instruction bundle, or every topic at once (the one-read
+    /// manual `cockpit --skill` prints) without `topic`.
+    InstructionsRead {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        topic: Option<String>,
+    },
+    /// Agent socket only: the sender's launch brief, assembled from what its owners say now.
+    AgentBrief {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+    },
     /// Open the manager tmux session, or find the one already open. `column` (the TUI) runs
     /// in its left pane and `viewer` in the pane beside it until a session is shown there,
     /// both from `dir` (absolute). Words are never parsed by a shell.
@@ -733,6 +747,22 @@ pub enum Reply {
     /// The owner settings the daemon applies now, each with the value it applied before.
     ConfigReloaded {
         settings: Vec<AppliedSettingView>,
+    },
+    /// The running release's instruction topics; `manifest` is its instruction-manifest id.
+    InstructionCatalog {
+        version: String,
+        manifest: String,
+        topics: Vec<InstructionTopicView>,
+    },
+    Instructions {
+        version: String,
+        manifest: String,
+        text: String,
+    },
+    AgentBrief {
+        brief: String,
+        manifest: String,
+        budget: ContextBudgetView,
     },
     /// The manager session: `attach` are the words that attach a terminal to it; `created`
     /// says whether this request opened it.

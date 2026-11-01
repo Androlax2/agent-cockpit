@@ -5,6 +5,7 @@ mod approvals;
 mod change_feed;
 mod error;
 mod handshake;
+mod instructions;
 mod projects;
 mod queue;
 mod request;
@@ -31,6 +32,7 @@ pub use handshake::{
     Capability, HandshakeReply, Hello, ProtocolVersion, Refusal, RefusalReason, SUPPORTED_VERSIONS,
     Welcome, decode_hello, negotiate,
 };
+pub use instructions::{ContextBudgetView, InstructionTopicView};
 pub use projects::{
     CheckoutKindView, CheckoutView, KeptCheckout, KeptReason, ProjectView, TrustView,
 };

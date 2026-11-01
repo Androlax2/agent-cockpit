@@ -141,7 +141,7 @@ impl TestHome {
         .unwrap();
     }
 
-    fn base_command(&self, program: &Path) -> Command {
+    pub fn base_command(&self, program: &Path) -> Command {
         let mut command = Command::new(program);
         command
             .env_clear()

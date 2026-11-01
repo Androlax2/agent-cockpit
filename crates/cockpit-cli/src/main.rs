@@ -26,6 +26,8 @@ mod ask;
 mod check;
 mod daemon;
 mod desktop_session;
+mod instructions;
+mod mcp;
 mod projects;
 mod queue;
 mod resources;
@@ -91,13 +93,27 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit resources status | profile normal|foreground | pause-queue | resume-queue
        cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...
        cockpit resources checkpoint RESERVATION | stop RESERVATION
-       cockpit queue explain [ITEM] | dispatch";
+       cockpit queue explain [ITEM] | dispatch
+       cockpit --skill
+       cockpit docs [TOPIC]
+       cockpit brief [--measure]
+       cockpit mcp";
 
 fn main() -> ExitCode {
     // OsString: a project path need not be UTF-8.
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     let verb: Vec<Option<&str>> = arguments.iter().take(2).map(|word| word.to_str()).collect();
     match verb[..] {
+        [Some("--skill"), ..] => instructions::skill(&arguments[1..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
+        [Some("docs"), ..] => {
+            instructions::docs(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
+        [Some("brief"), ..] => instructions::brief(&arguments[1..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
+        [Some("mcp"), ..] => {
+            mcp::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
         [Some("config"), Some("show")] => config_show(&arguments[2..]),
         [Some("config"), Some("reload")] => config_reload(&arguments[2..]),
         [Some("agent"), Some("report")] => {

@@ -1,0 +1,18 @@
+[package]
+name = "cockpit-agent-context"
+description = "Owns what an agent is told: the version-matched instruction bundle, its manifest with provenance, the launch brief assembled from owners' facts, and how much context Cockpit adds; never an authority."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

@@ -35,9 +35,11 @@ the capability crates whose verbs must work without the daemon, listed in
 | `cockpit workflow begin ID`, `checkpoint ID NOTE` (agent socket); `start ITEM [--preset NAME]`, `cancel ID` (the owner's) | no | `cockpit-workflows` |
 | `cockpit check run CHECK --project P [--checkout PATH]` (the owner's: prints the run's output and receipt, exits 0 only on a pass), `gate [--project P] [--checkout PATH]` (one line per check: status, receipt, next action; exits 0 only when the gate passed), `claim CHECK STATEMENT` (agent socket; recorded unverified) | no | `cockpit-verification` |
 | `cockpit queue explain [ITEM]` (why each open item waits), `dispatch` (a scheduling pass now) | no | `cockpit-scheduling` |
+| `cockpit --skill` (the whole agent manual in one read), `cockpit docs [TOPIC]` (the topics, or one), `cockpit brief [--measure]` (a launched session's launch brief; `--measure` adds the context budget, agent socket) | no | `cockpit-agent-context`, served by the daemon |
+| `cockpit mcp` (an MCP server on standard input and output: the topics as resources, the `cockpit_docs` and `cockpit_brief` tools) | no | `cockpit-agent-context`, served by the daemon |
 | `cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]`, `priority ID LEVEL`, `queue`/`unqueue`/`approve`/`decline`/`reopen ID`, `after`/`unwait ID ON...`, `image add ID FILE`, `image get ID NUMBER FILE`, `draft save (ID \| --new PROJECT)`, `drafts`, `draft discard` | no | `cockpit-tasks` |
 
-`cockpit todo` picks its socket from `COCKPIT_LAUNCH_TOKEN`: a launched session's verbs go to
+`cockpit todo` (and `docs`, `brief`, `mcp`, `--skill`) picks its socket from `COCKPIT_LAUNCH_TOKEN`: a launched session's verbs go to
 the agent socket, where the daemon identifies it; without the token they are the owner's.
 `show` ends with `next:`, what has to happen for the item to move.
 

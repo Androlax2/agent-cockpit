@@ -49,6 +49,11 @@ pub const ASK_RUN_PROJECT: &str = "ask-run";
 /// `cockpit ask guide`, waits for the answer and appends `guide=<exit code>` to
 /// [`Home::ask_log`].
 pub const ASK_GUIDE_PROJECT: &str = "ask-guide";
+/// A project of this name runs an agent that has nothing but what Cockpit launched it with
+/// (#49): it runs `cockpit brief`, `cockpit docs` and the `workflow`, `checks` and
+/// `approvals` topics, checks the skill under `$COCKPIT_INSTRUCTIONS` is readable, and writes
+/// everything it read to [`Home::onboard_log`].
+pub const ONBOARD_PROJECT: &str = "onboard";
 /// What the [`ASK_RUN_PROJECT`] agent asks to run.
 pub const ASKED_COMMAND: &str = "echo asked from the agent";
 /// The guide the [`ASK_GUIDE_PROJECT`] agent hands the owner, one step.
@@ -56,8 +61,8 @@ pub const ASKED_GUIDE: &str = "# Asked from the agent\nLook at the panel\n";
 
 /// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
 /// [`STALL_PROJECT`], [`REPORT_PROJECT`], [`ENVIRONMENT_PROJECT`], [`ASK_RUN_PROJECT`],
-/// [`ASK_GUIDE_PROJECT`]); anything else sleeps. `--version` answers the version the adapter's
-/// conformance tests ran on.
+/// [`ASK_GUIDE_PROJECT`], [`ONBOARD_PROJECT`]); anything else sleeps. `--version` answers
+/// the version the adapter's conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
 printf '%s pid=%s\n' "$COCKPIT_SESSION" "$$" >> '@LOG@'
@@ -77,6 +82,11 @@ case "${PWD##*/}" in
       "${DISPLAY-unset}" "${XAUTHORITY-unset}" "${WAYLAND_DISPLAY-unset}" \
       "${DBUS_SESSION_BUS_ADDRESS-unset}" \
       > '@ENVIRONMENT_LOG@.partial' && mv '@ENVIRONMENT_LOG@.partial' '@ENVIRONMENT_LOG@'
+    exec sleep 3600 ;;
+  @ONBOARD@) { '@COCKPIT@' brief; '@COCKPIT@' docs; for topic in workflow checks approvals; do
+      '@COCKPIT@' docs "$topic"; done
+    test -r "$COCKPIT_INSTRUCTIONS/cockpit/SKILL.md" && echo 'skill readable on disk'
+    } > '@ONBOARD_LOG@.partial' 2>&1; mv '@ONBOARD_LOG@.partial' '@ONBOARD_LOG@'
     exec sleep 3600 ;;
   *) exec sleep 3600 ;;
 esac
@@ -126,7 +136,9 @@ impl Home {
                 .replace("@ASK_GUIDE@", ASK_GUIDE_PROJECT)
                 .replace("@ASKED_COMMAND@", ASKED_COMMAND)
                 .replace("@ASKED_GUIDE@", ASKED_GUIDE)
-                .replace("@ASK_LOG@", &utf8(&home.ask_log())),
+                .replace("@ASK_LOG@", &utf8(&home.ask_log()))
+                .replace("@ONBOARD@", ONBOARD_PROJECT)
+                .replace("@ONBOARD_LOG@", &utf8(&home.onboard_log())),
         )
         .unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -153,6 +165,11 @@ impl Home {
     }
 
     /// What the [`ENVIRONMENT_PROJECT`] agent wrote, once it wrote all of it.
+    /// What the [`ONBOARD_PROJECT`] agent read, written whole once it is done.
+    pub fn onboard_log(&self) -> PathBuf {
+        self.path().join("onboard.log")
+    }
+
     pub fn environment_log(&self) -> PathBuf {
         self.path().join("environment.log")
     }

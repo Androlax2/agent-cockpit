@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod agent;
+mod agent_context;
 mod approvals;
 mod error;
 mod feed;
@@ -50,6 +51,9 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 12] = [
     cockpit_verification::MIGRATIONS,
     cockpit_scheduling::MIGRATIONS,
 ];
+
+/// Names the directory holding the instruction bundle in every agent's environment.
+pub const INSTRUCTIONS_VARIABLE: &str = "COCKPIT_INSTRUCTIONS";
 
 /// How often expired and ended reservations are released.
 const RESOURCE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
@@ -152,10 +156,24 @@ impl Instance {
     /// receives, over the daemon's one supervisor of executions.
     pub async fn start(
         self,
-        wiring: Wiring,
+        mut wiring: Wiring,
         routes: impl FnOnce(Capabilities) -> Arc<dyn Handler>,
     ) -> Result<Daemon, StartError> {
         let options = &self.options;
+        // Rewritten at every start, so what agents read on disk matches this release (#49).
+        let bundle_dir = options.state_dir.join(agent_context::BUNDLE_DIR);
+        let bundle = cockpit_agent_context::write_bundle(&bundle_dir)
+            .map_err(StartError::InstructionBundle)?;
+        tracing::info!(
+            manifest = %bundle.id,
+            supersedes = bundle.supersedes.as_deref().unwrap_or("none"),
+            dir = %bundle_dir.display(),
+            "wrote the agent instruction bundle"
+        );
+        wiring
+            .sessions
+            .base_environment
+            .push((INSTRUCTIONS_VARIABLE.into(), bundle_dir.into_os_string()));
         let database = Arc::new(
             cockpit_turso::Database::open(&options.database_path(), &MIGRATION_SETS).await?,
         );

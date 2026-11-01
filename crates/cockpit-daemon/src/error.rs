@@ -38,6 +38,8 @@ pub enum StartError {
     Restore(cockpit_sessions::Error),
     /// Probing what this host enforces, or releasing ended reservations, failed.
     Admission(cockpit_resource_admission::Error),
+    /// The agent instruction bundle could not be written: agents would read a stale one.
+    InstructionBundle(cockpit_agent_context::WriteError),
 }
 
 impl StartError {
@@ -81,6 +83,9 @@ impl fmt::Display for StartError {
             Self::Tmux(error) => write!(formatter, "tmux: {error}"),
             Self::Restore(error) => write!(formatter, "restoring sessions: {error}"),
             Self::Admission(error) => write!(formatter, "resource admission: {error}"),
+            Self::InstructionBundle(error) => {
+                write!(formatter, "agent instruction bundle: {error}")
+            }
         }
     }
 }
