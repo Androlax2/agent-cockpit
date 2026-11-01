@@ -35,6 +35,7 @@ behavior, SQL queries and tests. No `core`, `domain`, `common`, `host`, `store` 
 | `cockpit-github` | PRs, issues, tokens, review sessions; an evidence source (reports 06, 16) |
 | `cockpit-audit` | Hash-chained security audit log and verification (report 11) |
 | `cockpit-config` | Owner settings, precedence, provenance, start-file change detection (report 09) |
+| `cockpit-readiness` | Per-requirement readiness status with a next action, from owners' facts (report 09; added by #50) |
 | `cockpit-notify` | Desktop notifications, status file, hold rules; a client, not daemon code (report 19) |
 
 ### Integration and surfaces

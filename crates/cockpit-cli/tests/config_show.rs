@@ -565,6 +565,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit sandbox show DIR [--agent NAME]\n       \
                  cockpit provider list\n       \
                  cockpit desktop-session import\n       \
+                 cockpit doctor [--project DIR]\n       \
                  cockpit tui\n       \
                  cockpit version [--all]\n       \
                  cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \

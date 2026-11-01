@@ -24,7 +24,8 @@ not share code.
   and whose migrations it runs), `cockpit-verification` (whose receipts it records from the
   check runs it executes, whose gate `Routes` serves to the owner and to agents, and whose
   migrations it runs), `cockpit-scheduling` (whose pass it runs every 30 seconds and on
-  `queue-dispatch`, and whose explanations `Routes` serves to the owner), `cockpit-tmux`
+  `queue-dispatch`, and whose explanations `Routes` serves to the owner), `cockpit-readiness`
+  (which assesses the facts `readiness` gathers from these owners, #50), `cockpit-tmux`
   (the private server sessions run in) and
   `cockpit-provider-api` (the providers it is wired with; the adapters arrive with #33);
   `tokio`, `serde`, `serde_json`, `tracing`.

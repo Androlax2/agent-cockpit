@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
-    Capabilities, Manager, agent, agent_context, approvals, feed, manager, projects, resources,
-    scheduling, sessions, tasks, verification, workflows,
+    Capabilities, Manager, agent, agent_context, approvals, feed, manager, projects, readiness,
+    resources, scheduling, sessions, tasks, verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -95,6 +95,7 @@ pub struct Routes {
     workflows: workflows::Context,
     verification: verification::Context,
     scheduling: scheduling::Context,
+    readiness: readiness::Context,
 }
 
 impl Routes {
@@ -120,6 +121,15 @@ impl Routes {
                 git: capabilities.git.clone(),
                 processes: capabilities.processes.clone(),
                 run_settings: capabilities.run_settings,
+                environment: environment.clone(),
+            },
+            readiness: readiness::Context {
+                database: Arc::clone(&capabilities.database),
+                sessions: Arc::clone(&capabilities.sessions),
+                admission: Arc::clone(&capabilities.admission),
+                sandbox: capabilities.sandbox,
+                tmux: capabilities.tmux,
+                providers: capabilities.provider_facts,
                 environment: environment.clone(),
             },
             resources: resources::Resources {
@@ -421,6 +431,12 @@ impl Handler for Routes {
                 }
             }
             (Command::ProviderList, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            // What the host has, the owner's settings and the owner's projects are the
+            // owner's to see (report 11).
+            (Command::Readiness { project }, Peer::Owner) => {
+                readiness::route(project, self.readiness.clone())
+            }
+            (Command::Readiness { .. }, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // The desktop session is the owner's; an agent must not point others at another.
             (Command::DesktopSessionImport { variables }, Peer::Owner) => {
                 sessions::import_desktop_session(variables, Arc::clone(&self.sessions))

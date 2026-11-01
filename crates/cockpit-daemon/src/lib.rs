@@ -9,6 +9,7 @@ mod instance;
 mod lanes;
 mod manager;
 mod projects;
+mod readiness;
 mod resources;
 mod routes;
 mod scheduling;
@@ -68,6 +69,9 @@ pub struct Wiring {
     pub git: cockpit_projects::Git,
     /// The agent providers sessions may launch.
     pub providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
+    /// The providers the start looked for and could not wire, each with why: the readiness
+    /// report names them (#50).
+    pub unavailable_providers: Vec<(String, String)>,
     pub sessions: cockpit_sessions::Settings,
     /// The owner's desktop session variables agents get until the owner imports others
     /// (#307): the daemon start's.
@@ -126,6 +130,12 @@ pub struct Capabilities {
     /// How approved commands run: a check the owner runs gets the same shell and environment.
     pub run_settings: Arc<cockpit_approvals::RunSettings>,
     pub scheduling: cockpit_scheduling::Settings,
+    /// The sandbox launches go through, for the readiness report (#50).
+    pub sandbox: cockpit_sandbox::Sandbox,
+    /// The tmux version the start found, or why it refused it.
+    pub tmux: Result<String, String>,
+    /// Every provider the start tried, wired or not, as readiness reports them.
+    pub provider_facts: Vec<cockpit_readiness::ProviderFacts>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -245,6 +255,22 @@ impl Instance {
             Err(error) => return Err(StartError::Tmux(error)),
             Ok(server) => Ok(Arc::new(server)),
         };
+        let tmux_readiness = tmux
+            .as_ref()
+            .map(|server| server.version().to_string())
+            .map_err(Clone::clone);
+        let sandbox = wiring.sessions.sandbox.clone();
+        let provider_facts = wiring
+            .providers
+            .iter()
+            .map(|provider| readiness::provider_found(provider.as_ref()))
+            .chain(wiring.unavailable_providers.iter().map(|(name, reason)| {
+                cockpit_readiness::ProviderFacts {
+                    name: name.clone(),
+                    found: Err(reason.clone()),
+                }
+            }))
+            .collect();
         let manager = Arc::new(Manager::new(tmux.clone()));
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
@@ -280,6 +306,9 @@ impl Instance {
                 provider_capabilities: provider_capabilities.clone(),
                 run_settings,
                 scheduling: wiring.scheduling,
+                sandbox,
+                tmux: tmux_readiness,
+                provider_facts,
             }),
         });
         let scheduled = scheduling::Context {

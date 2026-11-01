@@ -8,6 +8,7 @@ mod handshake;
 mod instructions;
 mod projects;
 mod queue;
+mod readiness;
 mod request;
 mod resources;
 mod sessions;
@@ -37,6 +38,7 @@ pub use projects::{
     CheckoutKindView, CheckoutView, KeptCheckout, KeptReason, ProjectView, TrustView,
 };
 pub use queue::{QueueExplanationView, QueuePlacementView, QueueSessionNoteView, QueueStepView};
+pub use readiness::{ReadinessStatusView, RequirementView};
 pub use request::{
     Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,
     decode_request,
