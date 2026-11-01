@@ -6,6 +6,7 @@ mod change_feed;
 mod error;
 mod handshake;
 mod projects;
+mod queue;
 mod request;
 mod resources;
 mod sessions;
@@ -33,6 +34,7 @@ pub use handshake::{
 pub use projects::{
     CheckoutKindView, CheckoutView, KeptCheckout, KeptReason, ProjectView, TrustView,
 };
+pub use queue::{QueueExplanationView, QueuePlacementView, QueueSessionNoteView, QueueStepView};
 pub use request::{
     Command, Outcome, Reply, Request, RequestId, RequestRejection, Response, ServerFrame,
     decode_request,

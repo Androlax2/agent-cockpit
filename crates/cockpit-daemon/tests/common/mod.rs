@@ -324,6 +324,11 @@ pub fn wiring_in(
             home: Some(dir.join("home").into()),
             ..cockpit_config::Environment::default()
         },
+        // A test runs its passes with `queue-dispatch`, not on a timer.
+        scheduling: cockpit_scheduling::Settings {
+            interval: Duration::from_secs(3600),
+            ..cockpit_scheduling::Settings::default()
+        },
     }
 }
 

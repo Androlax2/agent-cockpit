@@ -25,6 +25,9 @@ pub struct Manager {
     /// Held while the manager is checked and built, so two `cockpit tui` at once build it
     /// once.
     opening: Mutex<()>,
+    /// The session last shown in the viewer: the owner views it, so scheduling gives it no
+    /// new work (#43).
+    shown: Mutex<Option<SessionId>>,
 }
 
 impl Manager {
@@ -32,7 +35,16 @@ impl Manager {
         Manager {
             tmux,
             opening: Mutex::new(()),
+            shown: Mutex::new(None),
         }
+    }
+
+    /// The session the viewer shows, until another is shown.
+    pub(crate) fn viewed(&self) -> Option<SessionId> {
+        self.shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn tmux(&self) -> Result<&cockpit_tmux::Server, ProtocolError> {
@@ -218,13 +230,18 @@ async fn show(
             .map_err(|error| crate::sessions::protocol_error(&error))?;
     }
     let target = SessionName::new(id.as_str()).map_err(tmux_error)?;
+    let showing = Arc::clone(&manager);
     tmux_blocking(move || {
-        manager
+        showing
             .tmux()?
             .show_in_viewer(&viewer, &target)
             .map_err(tmux_error)
     })
     .await?;
+    *manager
+        .shown
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
     crate::sessions::session_reply(sessions, &shown)
         .await
         .map_err(|crate::approvals::Failed(error)| error)

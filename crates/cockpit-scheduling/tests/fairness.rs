@@ -167,7 +167,9 @@ async fn startup_headroom_ends_once_a_placement_finished_in_the_project() {
     let first_session = fixture.session("a-1", "a").await;
     let second_session = fixture.session("a-2", "a").await;
     let first = fixture.queued("a", "first", Priority::NORMAL).await;
-    fixture.dispatch_at(NOW, std::slice::from_ref(&first_session)).await;
+    fixture
+        .dispatch_at(NOW, std::slice::from_ref(&first_session))
+        .await;
     fixture.finish("a-1", "a", first.id).await;
     fixture.queued("a", "second", Priority::NORMAL).await;
     fixture.queued("a", "third", Priority::NORMAL).await;

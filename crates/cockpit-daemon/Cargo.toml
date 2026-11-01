@@ -24,6 +24,7 @@ cockpit-projects = { path = "../cockpit-projects", version = "0.1.0" }
 cockpit-protocol = { path = "../cockpit-protocol", version = "0.1.0" }
 cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0" }
 cockpit-resource-admission = { path = "../cockpit-resource-admission", version = "0.1.0" }
+cockpit-scheduling = { path = "../cockpit-scheduling", version = "0.1.0" }
 cockpit-sessions = { path = "../cockpit-sessions", version = "0.1.0" }
 cockpit-tasks = { path = "../cockpit-tasks", version = "0.1.0" }
 cockpit-tmux = { path = "../cockpit-tmux", version = "0.1.0" }

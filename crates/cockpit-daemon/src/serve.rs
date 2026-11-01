@@ -114,6 +114,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             session_tick: serve.session_tick,
             run_settings,
             environment: environment.clone(),
+            scheduling: cockpit_scheduling::Settings::default(),
         };
         let daemon = instance
             .start(wiring, |capabilities| {

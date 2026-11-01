@@ -152,7 +152,9 @@ async fn a_session_without_the_change_state_grant_gets_no_work() {
 async fn a_session_doing_an_item_takes_no_second_one() {
     let (fixture, first) = one_item().await;
     let session = fixture.session("a-1", "a").await;
-    fixture.dispatch_at(NOW, std::slice::from_ref(&session)).await;
+    fixture
+        .dispatch_at(NOW, std::slice::from_ref(&session))
+        .await;
     let second = fixture.queued("a", "second", Priority::NORMAL).await;
 
     let dispatched = fixture.dispatch_at(NOW + 60, &[session]).await;
@@ -230,7 +232,10 @@ async fn a_session_whose_provider_lacks_the_steps_capabilities_does_not_take_it(
 async fn a_placement_ends_when_its_item_is_finished() {
     let (fixture, item) = one_item().await;
     let session = fixture.session("a-1", "a").await;
-    let placed = fixture.dispatch_at(NOW, std::slice::from_ref(&session)).await.placed;
+    let placed = fixture
+        .dispatch_at(NOW, std::slice::from_ref(&session))
+        .await
+        .placed;
     fixture.finish("a-1", "a", item.id).await;
 
     let dispatched = fixture.dispatch_at(NOW + 60, &[session]).await;
@@ -260,7 +265,10 @@ async fn a_placement_ends_when_its_session_is_gone() {
 async fn a_placement_lasts_while_its_session_does_the_work() {
     let (fixture, _) = one_item().await;
     let session = fixture.session("a-1", "a").await;
-    let placed = fixture.dispatch_at(NOW, std::slice::from_ref(&session)).await.placed;
+    let placed = fixture
+        .dispatch_at(NOW, std::slice::from_ref(&session))
+        .await
+        .placed;
 
     let dispatched = fixture.dispatch_at(NOW + 60, &[session]).await;
 

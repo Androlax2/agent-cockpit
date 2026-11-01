@@ -33,6 +33,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `cockpit workflow presets`, `list [--project P] [--all]`, `show ID`, `packet ID`, `complete ID --changed T --checked T --outcome T [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...`, `release ID [handoff flags]`, `block ID ACTION --detail TEXT`, `unblock ID` (agent socket in a launched session, else the owner's) | no | `cockpit-workflows` |
 | `cockpit workflow begin ID`, `checkpoint ID NOTE` (agent socket); `start ITEM [--preset NAME]`, `cancel ID` (the owner's) | no | `cockpit-workflows` |
 | `cockpit check run CHECK --project P [--checkout PATH]` (the owner's: prints the run's output and receipt, exits 0 only on a pass), `gate [--project P] [--checkout PATH]` (one line per check: status, receipt, next action; exits 0 only when the gate passed), `claim CHECK STATEMENT` (agent socket; recorded unverified) | no | `cockpit-verification` |
+| `cockpit queue explain [ITEM]` (why each open item waits), `dispatch` (a scheduling pass now) | no | `cockpit-scheduling` |
 | `cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]`, `priority ID LEVEL`, `queue`/`unqueue`/`approve`/`decline`/`reopen ID`, `after`/`unwait ID ON...`, `image add ID FILE`, `image get ID NUMBER FILE`, `draft save (ID \| --new PROJECT)`, `drafts`, `draft discard` | no | `cockpit-tasks` |
 
 `cockpit todo` picks its socket from `COCKPIT_LAUNCH_TOKEN`: a launched session's verbs go to

@@ -27,6 +27,7 @@ mod check;
 mod daemon;
 mod desktop_session;
 mod projects;
+mod queue;
 mod resources;
 mod sessions;
 mod todo;
@@ -88,7 +89,8 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit check claim CHECK STATEMENT
        cockpit resources status | profile normal|foreground | pause-queue | resume-queue
        cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...
-       cockpit resources checkpoint RESERVATION | stop RESERVATION";
+       cockpit resources checkpoint RESERVATION | stop RESERVATION
+       cockpit queue explain [ITEM] | dispatch";
 
 fn main() -> ExitCode {
     // OsString: a project path need not be UTF-8.
@@ -141,6 +143,10 @@ fn main() -> ExitCode {
         },
         [Some("resources"), ..] => match resources::parse(&arguments[1..]) {
             Ok(command) => resources::run(command),
+            Err(problem) => usage_error(Some(problem)),
+        },
+        [Some("queue"), ..] => match queue::parse(&arguments[1..]) {
+            Ok(command) => queue::run(command),
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("provider"), ..] => match sessions::parse_provider(&arguments[1..]) {

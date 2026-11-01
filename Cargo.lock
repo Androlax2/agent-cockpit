@@ -451,6 +451,7 @@ dependencies = [
  "cockpit-protocol",
  "cockpit-provider-api",
  "cockpit-resource-admission",
+ "cockpit-scheduling",
  "cockpit-sessions",
  "cockpit-tasks",
  "cockpit-tmux",
