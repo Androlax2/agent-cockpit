@@ -726,3 +726,23 @@ async fn a_stale_approval_of_an_ask_whose_session_may_no_longer_ask_names_the_se
         Refusal::AskerMayNotAsk
     );
 }
+
+#[tokio::test]
+async fn a_poll_of_an_ask_whose_session_may_no_longer_ask_reads_expired_and_writes_nothing() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    fixture.revoke_all(&session("s1")).await;
+    let before = fixture.revision().await;
+
+    let write = fixture.database.write().await.unwrap();
+    let seen = run_status(&write, &session("s1"), run.id, NOW + 60)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(
+        (seen.state, seen.expires_at),
+        (RunState::Expired, run.expires_at)
+    );
+    assert_eq!(fixture.revision().await, before);
+}

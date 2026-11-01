@@ -10,6 +10,11 @@ Issue #285. Decided by the worker: the issue offered two options; the crate grap
   refuse them with `Refusal::AskerMayNotAsk` (wire code `conflict`), before any stale
   revision or step. Ending, failing or an owner revoking the grant all reach this rule
   through the grant's one owner.
+- **The asking session reads such a request as `expired`.** `run_status` / `guide_status`
+  (and their read-only `_if_fresh` forms) report it expired and no longer move its expiry, so
+  an agent still polling after an owner revoke hears an answer instead of waiting forever.
+- **An ask belongs to its own grant.** Revoking the grant it was asked under ends it even if
+  another grant still covers the session; the agent can ask again.
 - **A new grant does not revive old asks.** A restart grants the session `run-commands`
   again; the agent that asked is gone, so its requests stay out. Rows from before migration
   4 hold no grant and read as dead; they would expire within 15 minutes anyway.

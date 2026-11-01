@@ -345,7 +345,8 @@ pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideR
     let mut rows = connection
         .query(
             &format!(
-                "SELECT {STEP_COLUMNS} FROM approvals_guide_steps WHERE guide IN (SELECT id FROM approvals_guides WHERE {OPEN})
+                "SELECT {STEP_COLUMNS} FROM approvals_guide_steps
+                 WHERE guide IN (SELECT id FROM approvals_guides WHERE {OPEN})
                  ORDER BY guide, position"
             ),
             [now],
@@ -449,17 +450,25 @@ fn moved_expiry(guide: &GuideRequest, now: i64) -> Option<i64> {
         .flatten()
 }
 
-/// The guide `id`, which only its asking session may see.
+/// The guide `id`, which only its asking session may see. One the owner may no longer
+/// answer ([`may_still_ask`]) reads as expired, so a poll neither keeps it alive nor leaves
+/// the agent waiting (#285).
 async fn guide_of(
     connection: &Connection,
     session: &SessionId,
     id: GuideId,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    match guide_request(connection, id, now).await? {
-        Some(guide) if guide.session == *session => Ok(guide),
-        _ => Err(not_found(KIND, id.0).into()),
+    let mut guide = match guide_request(connection, id, now).await? {
+        Some(guide) if guide.session == *session => guide,
+        _ => return Err(not_found(KIND, id.0).into()),
+    };
+    if guide.state == GuideState::Asking
+        && !may_still_ask(connection, &guide.session, guide.asking_grant).await?
+    {
+        guide.state = GuideState::Expired;
     }
+    Ok(guide)
 }
 
 /// The owner's answer to step `step`, the one shown now. A step that asks a question needs

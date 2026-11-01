@@ -76,7 +76,7 @@ impl Refusal {
             ),
             Refusal::AskerMayNotAsk => (
                 UnblockedBy::Owner,
-                "nothing to do: nobody waits for the request, and it expires by itself".to_owned(),
+                "nothing to do: its session reads it as expired".to_owned(),
             ),
             Refusal::AlreadyDecided { .. } => (
                 UnblockedBy::Owner,

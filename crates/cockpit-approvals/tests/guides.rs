@@ -496,3 +496,23 @@ async fn a_stale_answer_to_a_guide_whose_session_may_no_longer_ask_names_the_ses
         Refusal::AskerMayNotAsk
     );
 }
+
+#[tokio::test]
+async fn a_poll_of_a_guide_whose_session_may_no_longer_ask_reads_expired_and_writes_nothing() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+    let before = fixture.revision().await;
+
+    let write = fixture.database.write().await.unwrap();
+    let seen = guide_status(&write, &session("s1"), guide.id, NOW + 60)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(
+        (seen.state, seen.expires_at),
+        (GuideState::Expired, guide.expires_at)
+    );
+    assert_eq!(fixture.revision().await, before);
+}

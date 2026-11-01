@@ -251,12 +251,15 @@ pub(crate) async fn asker_may_still_ask(
 
 /// Whether the grant a request was asked under, `asked_under`, still lets `session` ask:
 /// once a session ends or fails it loses `run-commands`, and nobody waits for its requests,
-/// even if a restart grants it again (#285).
+/// even if a restart grants it again (#285). A request recorded without a grant is dead.
 pub(crate) async fn may_still_ask(
     connection: &Connection,
     session: &SessionId,
     asked_under: Option<i64>,
 ) -> Result<bool, Error> {
+    if asked_under.is_none() {
+        return Ok(false);
+    }
     Ok(match run_commands_over_itself(connection, session).await? {
         Outcome::Allowed(basis) => grant_of(&basis) == asked_under,
         Outcome::Refused(_) => false,
@@ -426,17 +429,25 @@ fn moved_expiry(run: &RunRequest, now: i64) -> Option<i64> {
         .flatten()
 }
 
-/// The request `id`, which only its asking session may see.
+/// The request `id`, which only its asking session may see. One the owner may no longer
+/// decide ([`may_still_ask`]) reads as expired, so a poll neither keeps it alive nor leaves
+/// the agent waiting (#285).
 async fn run_of(
     connection: &Connection,
     session: &SessionId,
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    match run_request(connection, id, now).await? {
-        Some(run) if run.session == *session => Ok(run),
-        _ => Err(not_found(KIND, id.0).into()),
+    let mut run = match run_request(connection, id, now).await? {
+        Some(run) if run.session == *session => run,
+        _ => return Err(not_found(KIND, id.0).into()),
+    };
+    if run.state == RunState::Asking
+        && !may_still_ask(connection, &run.session, run.asking_grant).await?
+    {
+        run.state = RunState::Expired;
     }
+    Ok(run)
 }
 
 /// The owner's edit: `command` replaces the current one as a new revision, so a decision
