@@ -64,3 +64,23 @@ async fn unknown_malformed_and_missing_tokens_await_nothing() {
         assert!(!awaits(&database, token).await, "{token:?}");
     }
 }
+
+/// A launch whose root never came (its launch failed, or its agent could not be identified)
+/// is not waited for: its stray agent's requests are refused at once.
+#[tokio::test]
+async fn a_launch_minted_long_ago_without_its_root_awaits_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = open(dir.path()).await;
+    let token = mint_committed(&database, "s1").await;
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE agent_channel_launches SET minted_at = minted_at - 31 WHERE session = 's1'",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert!(!awaits(&database, Some(token.as_str())).await);
+}

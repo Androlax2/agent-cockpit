@@ -137,19 +137,25 @@ pub async fn identify_bound(
     bound_session(connection, ancestry, token).await.map(Some)
 }
 
-/// Whether `token` names a pending launch whose root [`record_root`] has not written yet. A
-/// request carrying it is refused [`Refusal::LaunchNotStarted`] now and identified once the
-/// launcher records the root, which follows the agent's start within moments (#279); a
-/// caller may wait for that, outside any write transaction. Malformed, unknown and spent
-/// tokens are `false`.
+/// How long after its mint a launch may still be waiting for its root. The launcher records
+/// the root within its launch timeout (10 s); a launch older than this without one failed
+/// or could not identify its agent, and waiting for it would only delay the refusal.
+const ROOT_EXPECTED_WITHIN_SECONDS: i64 = 30;
+
+/// Whether `token` names a pending launch, minted moments ago, whose root [`record_root`] has
+/// not written yet. A request carrying it is refused [`Refusal::LaunchNotStarted`] now and
+/// identified once the launcher records the root, which follows the agent's start within
+/// moments (#279); a caller may wait for that, outside any write transaction. Malformed,
+/// unknown and spent tokens, and launches older than 30 s, are `false`.
 pub async fn awaits_root(connection: &Connection, token: Option<&str>) -> Result<bool, Error> {
     let Some(token) = well_formed(token) else {
         return Ok(false);
     };
     let mut rows = connection
         .query(
-            "SELECT 1 FROM agent_channel_launches WHERE token = ?1 AND root_pid IS NULL",
-            [token],
+            "SELECT 1 FROM agent_channel_launches
+             WHERE token = ?1 AND root_pid IS NULL AND minted_at >= ?2",
+            (token, unix_seconds() - ROOT_EXPECTED_WITHIN_SECONDS),
         )
         .await?;
     Ok(rows.next().await?.is_some())

@@ -21,7 +21,7 @@ pub(crate) async fn report(
     report: cockpit_protocol::AgentReport,
 ) -> Outcome {
     let peer_pid = connector.as_ref().ok().map(|process| process.pid);
-    let sender = match Sender::of(connector, &database, launch_token.as_deref()).await {
+    let sender = match Sender::once_launched(connector, &database, launch_token.as_deref()).await {
         Ok(sender) => sender,
         Err(Failed(error)) => return Outcome::Error(error),
     };
