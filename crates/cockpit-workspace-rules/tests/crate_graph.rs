@@ -186,6 +186,22 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
             "cockpit-agent-channel",
         ],
     },
+    // Workflows own the next step and its progress: they never place work on a session, never
+    // evaluate evidence (the daemon passes the requirements verification says passed), never
+    // launch, and the daemon converts to wire types (#39). Scheduling is the capabilities rule.
+    ForbiddenEdge {
+        rule: "workflows -> sessions/verification/processes/wire types",
+        from: Sources::Named(&["cockpit-workflows"]),
+        to: &[
+            "cockpit-sessions",
+            "cockpit-verification",
+            "cockpit-processes",
+            "cockpit-tmux",
+            "cockpit-protocol",
+            "cockpit-client",
+            "cockpit-agent-channel",
+        ],
+    },
 ];
 
 /// Report 02 states these rules as what a crate may import, not what it may not.
@@ -632,6 +648,26 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-tasks",
             "cockpit-agent-channel",
         ),
+        (
+            "workflows -> sessions/verification/processes/wire types",
+            "cockpit-workflows",
+            "cockpit-sessions",
+        ),
+        (
+            "workflows -> sessions/verification/processes/wire types",
+            "cockpit-workflows",
+            "cockpit-verification",
+        ),
+        (
+            "workflows -> sessions/verification/processes/wire types",
+            "cockpit-workflows",
+            "cockpit-processes",
+        ),
+        (
+            "workflows -> sessions/verification/processes/wire types",
+            "cockpit-workflows",
+            "cockpit-protocol",
+        ),
     ] {
         let manifest_path = fixture_workspace(
             &format!("{source}_to_{target}"),
@@ -658,6 +694,8 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-daemon", "cockpit-claude"),
         ("cockpit-claude", "cockpit-provider-api"),
         ("cockpit-messaging", "cockpit-turso"),
+        ("cockpit-workflows", "cockpit-tasks"),
+        ("cockpit-workflows", "cockpit-provider-api"),
     ] {
         let manifest_path = fixture_workspace(
             &format!("allowed_{source}_to_{target}"),

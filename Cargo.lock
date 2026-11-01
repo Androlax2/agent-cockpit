@@ -596,6 +596,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-workflows"
+version = "0.1.0"
+dependencies = [
+ "cockpit-authorization",
+ "cockpit-provider-api",
+ "cockpit-tasks",
+ "cockpit-turso",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "cockpit-workspace-rules"
 version = "0.1.0"
 
