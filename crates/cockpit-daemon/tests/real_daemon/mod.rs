@@ -31,10 +31,9 @@ const SETTLED_WITHIN: Duration = Duration::from_secs(30);
 pub const FLOOD_PROJECT: &str = "flood";
 /// A project of this name runs an agent that ignores `SIGTERM` and never ends on its own.
 pub const STALL_PROJECT: &str = "stall";
-/// A project of this name runs an agent that reports through the `cockpit` built beside the
-/// daemon, as the Claude hook bridge does, appending its output to [`Home::report_log`]. It
-/// retries for 5 s: a report before the daemon recorded the launch's process tree is
-/// refused (#279).
+/// A project of this name runs an agent that reports once through the `cockpit` built beside
+/// the daemon, as the Claude hook bridge does, as soon as it starts, appending its output to
+/// [`Home::report_log`].
 pub const REPORT_PROJECT: &str = "report";
 /// The label the [`REPORT_PROJECT`] agent reports.
 pub const REPORTED_LABEL: &str = "reported from the agent";
@@ -42,9 +41,22 @@ pub const REPORTED_LABEL: &str = "reported from the agent";
 /// `DBUS_SESSION_BUS_ADDRESS` as it was started with to [`Home::environment_log`],
 /// `<name>=unset` for each one it lacks.
 pub const ENVIRONMENT_PROJECT: &str = "environment";
+/// A project of this name runs an agent that, as soon as it starts, asks the owner to run
+/// [`ASKED_COMMAND`] through that `cockpit ask run`, waits for the answer and appends
+/// `run=<exit code>` to [`Home::ask_log`].
+pub const ASK_RUN_PROJECT: &str = "ask-run";
+/// A project of this name runs an agent that hands the owner [`ASKED_GUIDE`] through that
+/// `cockpit ask guide`, waits for the answer and appends `guide=<exit code>` to
+/// [`Home::ask_log`].
+pub const ASK_GUIDE_PROJECT: &str = "ask-guide";
+/// What the [`ASK_RUN_PROJECT`] agent asks to run.
+pub const ASKED_COMMAND: &str = "echo asked from the agent";
+/// The guide the [`ASK_GUIDE_PROJECT`] agent hands the owner, one step.
+pub const ASKED_GUIDE: &str = "# Asked from the agent\nLook at the panel\n";
 
 /// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
-/// [`STALL_PROJECT`], [`REPORT_PROJECT`], [`ENVIRONMENT_PROJECT`]); anything else sleeps. `--version` answers the version the adapter's
+/// [`STALL_PROJECT`], [`REPORT_PROJECT`], [`ENVIRONMENT_PROJECT`], [`ASK_RUN_PROJECT`],
+/// [`ASK_GUIDE_PROJECT`]); anything else sleeps. `--version` answers the version the adapter's
 /// conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
@@ -52,9 +64,14 @@ printf '%s pid=%s\n' "$COCKPIT_SESSION" "$$" >> '@LOG@'
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
   @STALL@) trap '' TERM; while :; do sleep 1; done ;;
-  @REPORT@) tries=0
-    until '@COCKPIT@' agent report --state working --label '@LABEL@' >> '@REPORT_LOG@' 2>&1 \
-      || [ "$tries" -ge 50 ]; do tries=$((tries + 1)); sleep 0.1; done
+  @REPORT@) '@COCKPIT@' agent report --state working --label '@LABEL@' >> '@REPORT_LOG@' 2>&1
+    exec sleep 3600 ;;
+  @ASK_RUN@) '@COCKPIT@' ask run --reason 'proves the agent socket' '@ASKED_COMMAND@' \
+      2>> '@ASK_LOG@'
+    printf 'run=%s\n' "$?" >> '@ASK_LOG@'
+    exec sleep 3600 ;;
+  @ASK_GUIDE@) printf '@ASKED_GUIDE@' | '@COCKPIT@' ask guide 2>> '@ASK_LOG@'
+    printf 'guide=%s\n' "$?" >> '@ASK_LOG@'
     exec sleep 3600 ;;
   @ENVIRONMENT@) printf 'DISPLAY=%s\nWAYLAND_DISPLAY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' \
       "${DISPLAY-unset}" "${WAYLAND_DISPLAY-unset}" "${DBUS_SESSION_BUS_ADDRESS-unset}" \
@@ -103,7 +120,12 @@ impl Home {
                 .replace("@LABEL@", REPORTED_LABEL)
                 .replace("@REPORT_LOG@", &utf8(&home.report_log()))
                 .replace("@ENVIRONMENT@", ENVIRONMENT_PROJECT)
-                .replace("@ENVIRONMENT_LOG@", &utf8(&home.environment_log())),
+                .replace("@ENVIRONMENT_LOG@", &utf8(&home.environment_log()))
+                .replace("@ASK_RUN@", ASK_RUN_PROJECT)
+                .replace("@ASK_GUIDE@", ASK_GUIDE_PROJECT)
+                .replace("@ASKED_COMMAND@", ASKED_COMMAND)
+                .replace("@ASKED_GUIDE@", ASKED_GUIDE)
+                .replace("@ASK_LOG@", &utf8(&home.ask_log())),
         )
         .unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -121,6 +143,12 @@ impl Home {
     /// What the [`REPORT_PROJECT`] agent's `cockpit agent report` printed.
     pub fn report_log(&self) -> PathBuf {
         self.path().join("reports.log")
+    }
+
+    /// What the [`ASK_RUN_PROJECT`] and [`ASK_GUIDE_PROJECT`] agents' `cockpit ask` printed,
+    /// and the exit code each one ended with.
+    pub fn ask_log(&self) -> PathBuf {
+        self.path().join("asks.log")
     }
 
     /// What the [`ENVIRONMENT_PROJECT`] agent wrote, once it wrote all of it.

@@ -9,6 +9,7 @@ use cockpit_provider_api::TurnOutcome;
 use cockpit_sessions::{AgentState, Error, QuestionSource, Report, SessionReport};
 use cockpit_turso::Database;
 
+use crate::approvals::{Failed, Sender};
 use crate::routes::refusal;
 
 /// Identifies the sender from its process tree, then records its report in one write
@@ -20,17 +21,21 @@ pub(crate) async fn report(
     report: cockpit_protocol::AgentReport,
 ) -> Outcome {
     let peer_pid = connector.as_ref().ok().map(|process| process.pid);
-    let peer = tokio::task::spawn_blocking(move || {
-        connector.and_then(|process| cockpit_agent_channel::ancestry_of(&process))
-    })
-    .await
-    .expect("reading the process table does not panic");
+    let sender = match Sender::of(connector, &database, launch_token.as_deref()).await {
+        Ok(sender) => sender,
+        Err(Failed(error)) => return Outcome::Error(error),
+    };
     let write = match database.write().await {
         Ok(write) => write,
         Err(error) => return internal(&error),
     };
-    let recorded =
-        cockpit_sessions::report(&write, &peer, launch_token.as_deref(), from_wire(report)).await;
+    let recorded = cockpit_sessions::report(
+        &write,
+        sender.ancestry(),
+        launch_token.as_deref(),
+        from_wire(report),
+    )
+    .await;
     match recorded {
         Ok(recorded) => match write.commit().await {
             Ok(()) => Outcome::Ok(Reply::AgentReported {

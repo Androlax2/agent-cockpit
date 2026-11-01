@@ -137,6 +137,24 @@ pub async fn identify_bound(
     bound_session(connection, ancestry, token).await.map(Some)
 }
 
+/// Whether `token` names a pending launch whose root [`record_root`] has not written yet. A
+/// request carrying it is refused [`Refusal::LaunchNotStarted`] now and identified once the
+/// launcher records the root, which follows the agent's start within moments (#279); a
+/// caller may wait for that, outside any write transaction. Malformed, unknown and spent
+/// tokens are `false`.
+pub async fn awaits_root(connection: &Connection, token: Option<&str>) -> Result<bool, Error> {
+    let Some(token) = well_formed(token) else {
+        return Ok(false);
+    };
+    let mut rows = connection
+        .query(
+            "SELECT 1 FROM agent_channel_launches WHERE token = ?1 AND root_pid IS NULL",
+            [token],
+        )
+        .await?;
+    Ok(rows.next().await?.is_some())
+}
+
 fn verified(peer: &PeerAncestry) -> Result<&[ProcessIdentity], Error> {
     peer.as_deref()
         .map_err(|error| Refusal::PeerUnverifiable(error.clone()).into())
