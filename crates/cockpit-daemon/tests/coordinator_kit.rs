@@ -276,6 +276,15 @@ async fn an_unconfirmed_start_begins_at_once_until_the_hourly_cap() {
 
     assert!(first.ends_with("exit=0\n"), "{first}");
     assert!(first.starts_with("started session "), "{first}");
+    let first_session = first
+        .lines()
+        .find_map(|line| line.strip_prefix("started session "))
+        .unwrap_or_else(|| panic!("the start names its session: {first}"));
+    assert_eq!(
+        listed(&owner, first_session).await.agent,
+        listed(&owner, &coordinator.id).await.agent,
+        "a start without confirmation runs the coordinator's agent"
+    );
     assert!(second.ends_with("exit=1\n"), "{second}");
     assert!(
         second.contains("has made its 1 starts of the past hour"),
