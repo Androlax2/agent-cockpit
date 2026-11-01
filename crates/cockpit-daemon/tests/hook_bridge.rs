@@ -47,8 +47,8 @@ async fn the_opencode_plugin_the_daemon_writes_is_this_releases() {
     let _daemon = home.start();
 
     let plugin = home
-        .path()
-        .join("state/cockpit/opencode-plugin/cockpit-opencode-plugin.js");
+        .state_dir()
+        .join("opencode-plugin/cockpit-opencode-plugin.js");
 
     assert_eq!(
         std::fs::read_to_string(&plugin).unwrap(),

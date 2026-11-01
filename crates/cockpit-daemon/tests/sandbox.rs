@@ -85,11 +85,7 @@ async fn readable_folders(home: &Home) -> Vec<String> {
 }
 
 fn state_folder(home: &Home, folder: &str) -> String {
-    home.path()
-        .join("state/cockpit")
-        .join(folder)
-        .display()
-        .to_string()
+    home.state_dir().join(folder).display().to_string()
 }
 
 /// Greywall denies every read it was not told to allow: the instruction bundle the launch
