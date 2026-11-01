@@ -316,6 +316,50 @@ impl Supervisor {
         let write = database.write().await?;
         let id = self.reserve(&write, database.epoch()).await?;
         write.commit().await?;
+        self.prepare_host_command(database, id, spec, &environment, &host_script)
+            .await
+    }
+
+    /// [`Supervisor::prepare_hosted`] for the committed intent `id`, which the caller
+    /// reserved with [`Supervisor::reserve`] in the transaction that records what the
+    /// execution is for: a crash between the two commits would otherwise leave a reserved
+    /// execution nobody names (#256). A refused `spec` ends the intent as never started.
+    pub async fn prepare_reserved_hosted(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+        spec: &LaunchSpec,
+        host_variables: &[&str],
+    ) -> Result<HostedLaunch, Error> {
+        let reserved = store::execution(database, id).await?;
+        if reserved.phase != Phase::Launching || reserved.process_group.is_some() {
+            return Err(Error::NotReserved { execution: id });
+        }
+        let prepared = self.launch_environment(spec).and_then(|environment| {
+            let host_script = host_script(host_variables, &environment)?;
+            Ok((environment, host_script))
+        });
+        let (environment, host_script) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                store::record_ended(database, id, EndReason::NeverStarted).await?;
+                return Err(error);
+            }
+        };
+        self.prepare_host_command(database, id, spec, &environment, &host_script)
+            .await
+    }
+
+    /// The host's command for the reserved execution `id`: its private directory and
+    /// environment file, then the words that run `spec` in its containment.
+    async fn prepare_host_command(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+        spec: &LaunchSpec,
+        environment: &[(OsString, OsString)],
+        host_script: &str,
+    ) -> Result<HostedLaunch, Error> {
         let containment = store::execution(database, id).await?.containment;
         let dir = self.execution_dir(database, id);
         if let Err(error) = DirBuilder::new().recursive(true).mode(0o700).create(&dir) {
@@ -325,11 +369,11 @@ impl Supervisor {
         // Values travel in a private file, never in argv, where any local process could
         // read them: the launch token among them.
         let environment_file = dir.join(ENVIRONMENT_FILE);
-        if let Err(error) = write_environment_file(&environment_file, &environment) {
+        if let Err(error) = write_environment_file(&environment_file, environment) {
             store::record_ended(database, id, EndReason::NeverStarted).await?;
             return Err(Error::io("write", environment_file)(error));
         }
-        let mut command = ["/bin/sh", "-c", &host_script, "cockpit-host"]
+        let mut command = ["/bin/sh", "-c", host_script, "cockpit-host"]
             .map(OsString::from)
             .to_vec();
         command.push(environment_file.into_os_string());

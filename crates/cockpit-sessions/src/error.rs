@@ -157,6 +157,24 @@ impl fmt::Display for Error {
     }
 }
 
+impl Error {
+    /// Whether the state database failed, directly or under the capability that reported
+    /// it: the one failure that stops the daemon's start in reboot restore (#251).
+    pub(crate) fn is_database(&self) -> bool {
+        matches!(
+            self,
+            Error::Database(_)
+                | Error::Sql(_)
+                | Error::Processes(cockpit_processes::Error::Database(_))
+                | Error::Authorization(cockpit_authorization::Error::Database(_))
+                | Error::AgentChannel(cockpit_agent_channel::Error::Database(_))
+                | Error::Projects(
+                    cockpit_projects::Error::Database(_) | cockpit_projects::Error::Sql(_)
+                )
+        )
+    }
+}
+
 fn list(names: &[String]) -> String {
     if names.is_empty() {
         return "none".to_owned();

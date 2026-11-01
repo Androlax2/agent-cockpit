@@ -243,7 +243,7 @@ fn error_code(error: &Error) -> ErrorCode {
 }
 
 /// The restart contract's sessions step: reopen what was active, before accepting.
-pub(crate) async fn restore(sessions: &Sessions) -> Result<(), Error> {
+pub(crate) async fn restore(sessions: &Arc<Sessions>) -> Result<(), Error> {
     let restored = sessions.restore().await?;
     for outcome in &restored {
         match outcome {

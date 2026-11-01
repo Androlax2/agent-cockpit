@@ -79,7 +79,16 @@ stopped in the middle of one finishes or repairs it at its next start.
   agent still runs is kept; a stop under way is finished; any other active session is
   reopened on its conversation. A reopen that fails, for any reason, leaves the session
   `failed` with the reason, and it is never retried silently: the owner resumes or ends it.
-  Only a database error stops the daemon's start.
+  Only a state-database error, reported by this crate or by the capability it called,
+  stops the daemon's start, also while a stop is finished or a restart relaunched (#251).
+  Sessions are restored together, so agents that ignore `SIGTERM` delay the first accepted
+  request by one stop grace, not one per agent (#254). A restart whose stop committed
+  before the daemon stopped relaunches as a `restart` (#252,
+  `docs/decisions/2026-11-01-252-interrupted-restart-kind.md`).
+- **Launch records** (#256). A launch reserves its `cockpit-processes` execution in the
+  transaction that records it, so a crash never leaves an execution the session does not
+  name. A stop of an agent whose start was never confirmed closes its terminal and releases
+  the execution if its command never ran, instead of waiting out the launch timeout.
 - **tmux may be missing.** The daemon still starts. Each operation that needs a terminal
   refuses, naming tmux, before it changes anything; restore and the periodic pass leave
   active sessions as they are until a daemon starts with tmux.
@@ -112,4 +121,8 @@ stopped in the middle of one finishes or repairs it at its next start.
   socket, against a fake provider with only the baseline contract, real processes and a
   private tmux server; `session_restarts.rs`: restart-all after a start file changed, and
   the wake paths.
+- `cockpit-daemon/tests/session_restore_crash.rs`: restore after a crash or a database
+  failure midway through a stop or a launch (#251, #252, #256);
+  `restore_stalled_stops.rs`: stalled stops finished together, through the daemon binary
+  (#254).
 - `cockpit-cli/tests/sessions.rs`: each `cockpit session` verb's request and output.
