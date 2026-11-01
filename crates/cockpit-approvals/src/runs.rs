@@ -38,10 +38,9 @@ const TABLE: &str = "approvals_runs";
 const KIND: &str = "run request";
 
 /// The columns `run_from` reads, in its order.
-const SELECT_RUNS: &str = "SELECT id, session, revision, command, asked_command, cwd, project,
+const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, project,
         project_root, reason, state, asked_at, expires_at, exit_code, output,
-        output_omitted_lines, output_truncated_bytes, redacted, note, revised_at
-     FROM approvals_runs";
+        output_omitted_lines, output_truncated_bytes, redacted, note, revised_at";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub i64);
@@ -246,40 +245,28 @@ pub(crate) async fn insert_run(
         .as_ref()
         .map(|project| text_of(&project.root))
         .transpose()?;
-    write
-        .execute(
+    stored_run(
+        write,
+        &format!(
             "INSERT INTO approvals_runs (id, session, revision, command, asked_command, cwd,
                 project, project_root, reason, state, asked_at, revised_at, expires_at)
-             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9)",
-            (
-                id,
-                session.as_str(),
-                ask.command.as_str(),
-                cwd,
-                ask.project.as_ref().map(|project| project.name.clone()),
-                project_root,
-                ask.reason.as_str(),
-                now,
-                now + EXPIRES_AFTER_SECONDS,
-            ),
-        )
-        .await?;
-    Ok(RunRequest {
-        id: RunId(id),
-        session: session.clone(),
-        revision: 1,
-        command: ask.command.clone(),
-        asked_command: ask.command.clone(),
-        cwd: ask.cwd.clone(),
-        project: ask.project.clone(),
-        reason: ask.reason.clone(),
-        state: RunState::Asking,
-        asked_at: now,
-        revised_at: now,
-        expires_at: now + EXPIRES_AFTER_SECONDS,
-        result: None,
-        note: None,
-    })
+             VALUES (?1, ?2, 1, ?3, ?3, ?4, ?5, ?6, ?7, 'asking', ?8, ?8, ?9)
+             RETURNING {RUN_COLUMNS}"
+        ),
+        (
+            id,
+            session.as_str(),
+            ask.command.as_str(),
+            cwd,
+            ask.project.as_ref().map(|project| project.name.clone()),
+            project_root,
+            ask.reason.as_str(),
+            now,
+            now + EXPIRES_AFTER_SECONDS,
+        ),
+        now,
+    )
+    .await
 }
 
 /// Requests the owner still has to see: asking (not expired), approved and running, oldest
@@ -288,7 +275,7 @@ pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunReque
     let mut rows = connection
         .query(
             &format!(
-                "{SELECT_RUNS} WHERE state IN ('approved', 'running')
+                "SELECT {RUN_COLUMNS} FROM approvals_runs WHERE state IN ('approved', 'running')
                     OR (state = 'asking' AND expires_at > ?1)
                  ORDER BY asked_at, id"
             ),
@@ -323,7 +310,10 @@ pub async fn run_request(
     now: i64,
 ) -> Result<Option<RunRequest>, Error> {
     let mut rows = connection
-        .query(&format!("{SELECT_RUNS} WHERE id = ?1"), [id.0])
+        .query(
+            &format!("SELECT {RUN_COLUMNS} FROM approvals_runs WHERE id = ?1"),
+            [id.0],
+        )
         .await?;
     match rows.next().await? {
         Some(row) => Ok(Some(run_from(&row, now)?)),
@@ -340,17 +330,22 @@ pub async fn run_status(
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = run_of(write, session, id, now).await?;
-    if let Some(expires_at) = moved_expiry(&run, now) {
-        write
-            .execute(
-                "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1",
+    let run = run_of(write, session, id, now).await?;
+    match moved_expiry(&run, now) {
+        Some(expires_at) => {
+            stored_run(
+                write,
+                &format!(
+                    "UPDATE approvals_runs SET expires_at = ?2 WHERE id = ?1
+                     RETURNING {RUN_COLUMNS}"
+                ),
                 (id.0, expires_at),
+                now,
             )
-            .await?;
-        run.expires_at = expires_at;
+            .await
+        }
+        None => Ok(run),
     }
-    Ok(run)
 }
 
 /// [`run_status`] when the poll writes nothing, read in any transaction; `None` when the
@@ -394,19 +389,19 @@ pub async fn edit_run(
     command: &str,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = undecided_at(write, id, revision, now).await?;
+    undecided_at(write, id, revision, now).await?;
     validate_command("command", command)?;
-    write
-        .execute(
+    stored_run(
+        write,
+        &format!(
             "UPDATE approvals_runs SET command = ?2, revision = revision + 1, revised_at = ?3
-             WHERE id = ?1",
-            (id.0, command, now),
-        )
-        .await?;
-    run.command = command.to_owned();
-    run.revision += 1;
-    run.revised_at = now;
-    Ok(run)
+             WHERE id = ?1
+             RETURNING {RUN_COLUMNS}"
+        ),
+        (id.0, command, now),
+        now,
+    )
+    .await
 }
 
 pub async fn decline_run(
@@ -414,15 +409,17 @@ pub async fn decline_run(
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = undecided(write, id, now).await?;
-    write
-        .execute(
-            "UPDATE approvals_runs SET state = 'declined', decided_at = ?2 WHERE id = ?1",
-            (id.0, now),
-        )
-        .await?;
-    run.state = RunState::Declined;
-    Ok(run)
+    undecided(write, id, now).await?;
+    stored_run(
+        write,
+        &format!(
+            "UPDATE approvals_runs SET state = 'declined', decided_at = ?2 WHERE id = ?1
+             RETURNING {RUN_COLUMNS}"
+        ),
+        (id.0, now),
+        now,
+    )
+    .await
 }
 
 /// The owner's approval of exactly `revision`, whose digest must be `digest`. It is consumed
@@ -437,7 +434,7 @@ pub async fn approve_run(
     digest: &str,
     now: i64,
 ) -> Result<(Approved, RunRequest), Error> {
-    let mut run = undecided_at(write, id, revision, now).await?;
+    let run = undecided_at(write, id, revision, now).await?;
     let current_digest = run.digest();
     if current_digest != digest {
         return Err(Refusal::DigestMismatch.into());
@@ -449,14 +446,17 @@ pub async fn approve_run(
         }
         .into());
     }
-    write
-        .execute(
+    let run = stored_run(
+        write,
+        &format!(
             "UPDATE approvals_runs SET state = 'approved', decided_at = ?2, approved_digest = ?3
-             WHERE id = ?1",
-            (id.0, now, current_digest),
-        )
-        .await?;
-    run.state = RunState::Approved;
+             WHERE id = ?1
+             RETURNING {RUN_COLUMNS}"
+        ),
+        (id.0, now, current_digest),
+        now,
+    )
+    .await?;
     let approved = Approved {
         id,
         revision: run.revision,
@@ -635,6 +635,18 @@ pub async fn reconcile_run(
     };
     record_outcome_unknown(write, run, note, now).await?;
     Ok(RunState::OutcomeUnknown)
+}
+
+/// Runs `sql`, an `INSERT` or `UPDATE` of one row `RETURNING` [`RUN_COLUMNS`], and returns
+/// that row as it was stored.
+async fn stored_run(
+    write: &WriteTransaction<'_>,
+    sql: &str,
+    params: impl cockpit_turso::sql::IntoParams,
+    now: i64,
+) -> Result<RunRequest, Error> {
+    let row = write.prepare(sql).await?.query_row(params).await?;
+    run_from(&row, now)
 }
 
 async fn fenced_update(

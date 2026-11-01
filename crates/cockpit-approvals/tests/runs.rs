@@ -293,6 +293,14 @@ async fn stored(write: &cockpit_turso::WriteTransaction<'_>, id: RunId) -> RunRe
 }
 
 #[tokio::test]
+async fn an_ask_returns_the_request_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(run, stored(&write, run.id).await);
+}
+
+#[tokio::test]
 async fn an_edit_returns_the_request_as_it_now_reads() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "ls").await;

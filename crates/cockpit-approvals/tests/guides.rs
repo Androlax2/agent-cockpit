@@ -4,8 +4,9 @@
 mod common;
 
 use cockpit_approvals::{
-    Error, GuideId, GuideRequest, GuideState, Refusal, RunState, answer_step, ask_guide,
-    close_guide, guide_request, guide_status, open_guides, parse_guide, report_stuck, run_request,
+    EXPIRES_AFTER_SECONDS, Error, GuideId, GuideRequest, GuideState, Refusal, RunState,
+    answer_step, ask_guide, close_guide, guide_request, guide_status, open_guides, parse_guide,
+    report_stuck, run_request,
 };
 use common::{Fixture, NOW, session};
 
@@ -349,6 +350,30 @@ async fn answered_up_to(fixture: &Fixture, last_step: usize) -> (GuideRequest, G
     let stored = stored(&write, guide.id).await;
     write.commit().await.unwrap();
     (answered.unwrap(), stored)
+}
+
+#[tokio::test]
+async fn an_ask_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(guide, stored(&write, guide.id).await);
+}
+
+#[tokio::test]
+async fn a_poll_that_moves_the_expiry_returns_the_guide_as_it_now_reads() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    let polled_at = NOW + 60;
+    let write = fixture.database.write().await.unwrap();
+    let seen = guide_status(&write, &session("s1"), guide.id, polled_at)
+        .await
+        .unwrap();
+    assert_eq!(seen.expires_at, polled_at + EXPIRES_AFTER_SECONDS);
+    assert_eq!(
+        guide_request(&write, guide.id, polled_at).await.unwrap(),
+        Some(seen)
+    );
 }
 
 #[tokio::test]
