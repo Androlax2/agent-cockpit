@@ -353,7 +353,7 @@ async fn start(
     }
     cockpit_authorization::record_audit(&write, &audit).await?;
     write.commit().await?;
-    let started = context.sessions.start(start_request(dir, start)).await?;
+    let started = start_as(&context.sessions, &coordinator, dir, start).await?;
     tracing::info!(
         from = coordinator.as_str(),
         session = %started.id,
@@ -398,10 +398,7 @@ pub(crate) async fn start_approved(
         .start
         .clone()
         .expect("only a start request is carried out as a start");
-    match sessions
-        .start(start_request(approved.cwd.clone(), start))
-        .await
-    {
+    match start_as(&sessions, &asker, approved.cwd.clone(), start).await {
         Ok(started) => {
             tracing::info!(request, session = %started.id, "an approved start began");
             let grant = finish_approved(&database, &approved, asked_under, &started).await;
@@ -480,13 +477,24 @@ async fn try_finish_approved(
     Ok(grant.id)
 }
 
-fn start_request(dir: PathBuf, start: StartSession) -> StartRequest {
-    StartRequest {
-        dir,
-        provider: None,
-        first_message: start.prompt,
-        clone_branch: start.clone,
-    }
+/// Starts the session with the coordinator's own agent: with several providers available a
+/// start must name one (#474), and the coordinator's is the one its grant was given for.
+async fn start_as(
+    sessions: &Sessions,
+    coordinator: &Holder,
+    dir: PathBuf,
+    start: StartSession,
+) -> Result<Session, cockpit_sessions::Error> {
+    let coordinator = cockpit_sessions::SessionId::parse(coordinator.as_str())?;
+    let provider = sessions.get(&coordinator).await?.provider;
+    sessions
+        .start(StartRequest {
+            dir,
+            provider: Some(provider.as_str().to_owned()),
+            first_message: start.prompt,
+            clone_branch: start.clone,
+        })
+        .await
 }
 
 /// Audits the session a start made, with both sessions named.

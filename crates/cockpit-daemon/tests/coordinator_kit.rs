@@ -220,6 +220,11 @@ async fn a_coordinator_sees_a_question_messages_the_worker_and_starts_one_the_ow
         listed(&owner, &new_worker).await.working_dir,
         new_root.display().to_string()
     );
+    assert_eq!(
+        listed(&owner, &new_worker).await.agent,
+        listed(&owner, &pair.coordinator.id).await.agent,
+        "a coordinator's start runs its own agent"
+    );
 
     let audit = audit_of(&owner, &pair.coordinator.id).await;
     let actions: Vec<(&str, Option<&str>)> = audit
