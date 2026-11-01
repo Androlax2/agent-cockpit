@@ -15,7 +15,7 @@ use cockpit_provider_api::{Capability, Conversation, LaunchRequest, Provider, Pr
 use cockpit_tmux::{Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
 
-use crate::model::validate_link;
+use crate::model::{LaunchPurpose, validate_link};
 use crate::store::{self, NewSession};
 use crate::{
     AgentState, Error, LaunchKind, RestartAll, Restored, Session, SessionId, SessionReport,
@@ -197,7 +197,9 @@ impl Sessions {
     pub async fn start(&self, request: StartRequest) -> Result<Session, Error> {
         self.tmux()?;
         let provider = self.provider(request.provider.as_deref())?;
-        let dir = canonical_dir(request.dir).await?;
+        let dir = self
+            .blocking("resolve the directory", move || canonical_dir(request.dir))
+            .await?;
         let (checkout, relative) = self.checkout_containing(&dir).await?;
         let checkout = match &request.clone_branch {
             Some(branch) => {
@@ -239,6 +241,7 @@ impl Sessions {
             &operation,
             &id,
             LaunchKind::Start,
+            LaunchPurpose::Work,
             Conversation::New,
             request.first_message.as_deref(),
         )
@@ -254,20 +257,15 @@ impl Sessions {
         let operation = self.lock(id).await;
         let session = self.get(id).await?;
         self.resumable(&session)?;
-        self.stop(&operation, id, &RESTARTABLE, StopTarget::Restart, "restart")
+        self.restart_from(&operation, id, &RESTARTABLE, LaunchPurpose::Work)
             .await
     }
 
-    /// Restarts a running session's agent; the caller holds its lock.
+    /// Restarts a running session's agent on the current start files (`restart --all` and
+    /// its deferred restart), keeping its finished label; the caller holds its lock.
     async fn restart_locked(&self, lock: &Operation, id: &SessionId) -> Result<Session, Error> {
-        self.stop(
-            lock,
-            id,
-            &[SessionState::Running],
-            StopTarget::Restart,
-            "restart",
-        )
-        .await
+        self.restart_from(lock, id, &[SessionState::Running], LaunchPurpose::Upkeep)
+            .await
     }
 
     /// Restarts the running sessions whose start files changed since their launch, so
@@ -336,7 +334,7 @@ impl Sessions {
             store::start_files(&read, launch.number, session.provider.as_str()).await?
         };
         let start_files = self.settings.start_files.clone();
-        blocking(move || {
+        self.blocking("compare the start files", move || {
             Ok(snapshot
                 .changed(&start_files)
                 .into_iter()
@@ -415,8 +413,15 @@ impl Sessions {
         )
         .await?;
         write.commit().await?;
-        self.launch(operation, id, LaunchKind::Wake, conversation, None)
-            .await
+        self.launch(
+            operation,
+            id,
+            LaunchKind::Wake,
+            LaunchPurpose::Work,
+            conversation,
+            None,
+        )
+        .await
     }
 
     /// Reopens an ended or failed session's conversation. A failed launch may have left its
@@ -446,8 +451,15 @@ impl Sessions {
             cockpit_projects::claim(&write, session.checkout, &holder(id)).await?;
         }
         write.commit().await?;
-        self.launch(&operation, id, LaunchKind::Resume, conversation, None)
-            .await
+        self.launch(
+            &operation,
+            id,
+            LaunchKind::Resume,
+            LaunchPurpose::Work,
+            conversation,
+            None,
+        )
+        .await
     }
 
     /// Refuses to launch `session`'s conversation while another session's agent of it is
@@ -624,7 +636,11 @@ impl Sessions {
         if to != StopTarget::Restart {
             return Ok(Restored::StopFinished(id, stopped.state));
         }
-        match self.relaunch(&operation, &stopped).await {
+        // Who asked for the interrupted restart is not kept: a working one ([`LaunchPurpose`]).
+        match self
+            .relaunch(&operation, &stopped, LaunchPurpose::Work)
+            .await
+        {
             Ok(relaunched) => Ok(Restored::StopFinished(id, relaunched.state)),
             Err(error) => self.reopen_failed(&id, error).await,
         }
@@ -662,7 +678,11 @@ impl Sessions {
         } else {
             LaunchKind::Restore
         };
-        if session.state != SessionState::Launching {
+        // A session left `launching` was in a launch a crash interrupted: a working one
+        // ([`LaunchPurpose`]).
+        let purpose = if session.state == SessionState::Launching {
+            LaunchPurpose::Work
+        } else {
             self.transition(
                 id,
                 &[session.state],
@@ -671,7 +691,8 @@ impl Sessions {
                 "restore",
             )
             .await?;
-        }
+            LaunchPurpose::Upkeep
+        };
         let conversation = match self.resumable(session) {
             Ok(conversation) => conversation,
             Err(error) => {
@@ -680,7 +701,10 @@ impl Sessions {
                     .await;
             }
         };
-        match self.launch(lock, id, kind, conversation, None).await {
+        match self
+            .launch(lock, id, kind, purpose, conversation, None)
+            .await
+        {
             Ok(_) => Ok(Restored::Reopened(id.clone())),
             Err(error) => self.reopen_failed(id, error).await,
         }
@@ -966,24 +990,41 @@ impl Sessions {
         Ok(failed)
     }
 
-    /// Moves the session from one of `from` to stopping, then stops its agent.
-    /// A restart is marked as a launch from here, its stop phase included.
+    /// Moves the session from one of `from` to stopping, then stops its agent; a restart
+    /// goes through [`Self::restart_from`].
     async fn stop(
         &self,
-        lock: &Operation,
+        _lock: &Operation,
         id: &SessionId,
         from: &[SessionState],
         to: StopTarget,
         operation: &'static str,
     ) -> Result<Session, Error> {
+        assert!(
+            to != StopTarget::Restart,
+            "a restart goes through restart_from, which relaunches it"
+        );
         self.transition(id, from, SessionState::Stopping { to }, None, operation)
             .await?;
-        if to != StopTarget::Restart {
-            return self.finish_stop(id, to).await;
-        }
+        self.finish_stop(id, to).await
+    }
+
+    /// Moves the session from one of `from` to stopping, stops its agent and launches its
+    /// conversation again for `purpose`. Marked as a launch from here, its stop phase
+    /// included.
+    async fn restart_from(
+        &self,
+        lock: &Operation,
+        id: &SessionId,
+        from: &[SessionState],
+        purpose: LaunchPurpose,
+    ) -> Result<Session, Error> {
+        let to = StopTarget::Restart;
+        self.transition(id, from, SessionState::Stopping { to }, None, "restart")
+            .await?;
         let _launching = lock.launching();
         let stopped = self.finish_stop(id, to).await?;
-        self.relaunch(lock, &stopped).await
+        self.relaunch(lock, &stopped, purpose).await
     }
 
     /// Stops a stopping session's agent and moves it on: asleep, ended, or `launching` for
@@ -1026,7 +1067,12 @@ impl Sessions {
 
     /// Launches a restart's conversation again once its stop finished. A failure leaves the
     /// session `failed` with the reason, and is returned.
-    async fn relaunch(&self, lock: &Operation, stopped: &Session) -> Result<Session, Error> {
+    async fn relaunch(
+        &self,
+        lock: &Operation,
+        stopped: &Session,
+        purpose: LaunchPurpose,
+    ) -> Result<Session, Error> {
         let conversation = match self.resumable(stopped) {
             Ok(conversation) => conversation,
             Err(error) => {
@@ -1034,8 +1080,15 @@ impl Sessions {
                 return Err(error);
             }
         };
-        self.launch(lock, &stopped.id, LaunchKind::Restart, conversation, None)
-            .await
+        self.launch(
+            lock,
+            &stopped.id,
+            LaunchKind::Restart,
+            purpose,
+            conversation,
+            None,
+        )
+        .await
     }
 
     /// Stops the agent of the session's latest launch, if any, and closes its terminal;
@@ -1088,12 +1141,13 @@ impl Sessions {
         lock: &Operation,
         id: &SessionId,
         kind: LaunchKind,
+        purpose: LaunchPurpose,
         conversation: Conversation,
         first_message: Option<&str>,
     ) -> Result<Session, Error> {
         let _launching = lock.launching();
         match self
-            .try_launch(id, kind, &conversation, first_message)
+            .try_launch(id, kind, purpose, &conversation, first_message)
             .await
         {
             Ok(session) => Ok(session),
@@ -1109,19 +1163,30 @@ impl Sessions {
         &self,
         id: &SessionId,
         kind: LaunchKind,
+        purpose: LaunchPurpose,
         conversation: &Conversation,
         first_message: Option<&str>,
     ) -> Result<Session, Error> {
         let tmux = self.tmux()?;
         let session = self.get(id).await?;
-        let provider = self.provider(Some(session.provider.as_str()))?;
-        let command = provider.launch(&LaunchRequest {
-            working_dir: &session.working_dir,
-            conversation,
-            first_message,
-            effort: None,
-            remote_control: false,
-        })?;
+        let command = {
+            let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
+            let working_dir = session.working_dir.clone();
+            let conversation = conversation.clone();
+            let first_message = first_message.map(str::to_owned);
+            // Off the async workers and bounded: the contract says it does not block, but
+            // a provider that does would otherwise hold the launch forever (#272).
+            self.blocking("build the provider's command", move || {
+                Ok(provider.launch(&LaunchRequest {
+                    working_dir: &working_dir,
+                    conversation: &conversation,
+                    first_message: first_message.as_deref(),
+                    effort: None,
+                    remote_control: false,
+                })?)
+            })
+            .await?
+        };
         if let Conversation::Resume(requested) = conversation
             && command.conversation.as_ref() != Some(requested)
         {
@@ -1134,7 +1199,10 @@ impl Sessions {
         let start_files = {
             let declared = self.settings.start_files.clone();
             let provider = session.provider.as_str().to_owned();
-            blocking(move || Ok(StartFileSnapshot::capture(&declared, &provider))).await?
+            self.blocking("capture the start files", move || {
+                Ok(StartFileSnapshot::capture(&declared, &provider))
+            })
+            .await?
         };
         // The execution is reserved in the transaction that records the launch, so a crash
         // never leaves one the session does not name (#256).
@@ -1154,7 +1222,7 @@ impl Sessions {
                 .processes
                 .reserve(&write, self.database.epoch())
                 .await?;
-            store::insert_launch(&write, id, kind, execution, &start_files).await?;
+            store::insert_launch(&write, id, kind, purpose, execution, &start_files).await?;
             write.commit().await?;
             (token, execution)
         };
@@ -1181,15 +1249,21 @@ impl Sessions {
             columns: self.settings.columns,
             rows: self.settings.rows,
         };
-        let opened = blocking(move || {
-            close_if_open(&tmux, &terminal.name)?;
-            tmux.new_session(&terminal).map(drop).map_err(Error::from)
-        })
-        .await;
+        let opened = self
+            .blocking("open the terminal", move || {
+                close_if_open(&tmux, &terminal.name)?;
+                tmux.new_session(&terminal).map(drop).map_err(Error::from)
+            })
+            .await;
         if let Err(error) = opened {
-            self.processes
-                .abandon_hosted(&self.database, execution)
-                .await?;
+            // A timed-out open may still create the terminal and start the agent later.
+            if matches!(error, Error::StepTimedOut { .. }) {
+                self.discard_launch(id, execution).await;
+            } else {
+                self.processes
+                    .abandon_hosted(&self.database, execution)
+                    .await?;
+            }
             return Err(error);
         }
         let confirmed = match self.confirm_agent(&channel_session, execution).await {
@@ -1232,8 +1306,9 @@ impl Sessions {
         Ok(execution)
     }
 
-    /// Undoes a launch whose terminal opened but whose agent could not be confirmed:
-    /// closing the terminal hangs up the pane, then the execution is released or stopped.
+    /// Undoes a launch whose terminal opened, or whose open timed out and may still open
+    /// it, but whose agent could not be confirmed: closing the terminal hangs up the pane,
+    /// then the execution is released or stopped.
     /// Best effort, since the launch already failed; what remains is logged.
     async fn discard_launch(&self, id: &SessionId, execution: ExecutionId) {
         if let Err(error) = self.close_terminal(id).await {
@@ -1279,7 +1354,11 @@ impl Sessions {
                 ),
             });
         };
-        let identity = blocking(move || Ok(cockpit_agent_channel::identity_of(pid))).await?;
+        let identity = self
+            .blocking("identify the agent's process", move || {
+                Ok(cockpit_agent_channel::identity_of(pid))
+            })
+            .await?;
         match identity {
             Ok(root) => {
                 let write = self.database.write().await?;
@@ -1307,13 +1386,35 @@ impl Sessions {
         }
         let tmux = self.tmux()?;
         let name = terminal_name(&session.id)?;
-        blocking(move || Ok(tmux.sessions()?.contains(&name))).await
+        self.blocking("list the terminals", move || {
+            Ok(tmux.sessions()?.contains(&name))
+        })
+        .await
     }
 
     async fn close_terminal(&self, id: &SessionId) -> Result<(), Error> {
         let tmux = self.tmux()?;
         let name = terminal_name(id)?;
-        blocking(move || close_if_open(&tmux, &name)).await
+        self.blocking("close the terminal", move || close_if_open(&tmux, &name))
+            .await
+    }
+
+    /// Runs a blocking step off the async workers and waits for it at most the step
+    /// timeout (#272). A step that runs out of it keeps running, since started blocking
+    /// work cannot be aborted (report 03): its caller undoes what it may still do.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        name: &'static str,
+        step: impl FnOnce() -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let timeout = self.settings.step_timeout;
+        match tokio::time::timeout(timeout, tokio::task::spawn_blocking(step)).await {
+            Ok(joined) => joined.map_err(|error| Error::Blocking(error.to_string()))?,
+            Err(_) => Err(Error::StepTimedOut {
+                step: name,
+                after: timeout,
+            }),
+        }
     }
 
     fn tmux(&self) -> Result<Arc<Server>, Error> {
@@ -1492,26 +1593,14 @@ fn close_if_open(tmux: &Server, name: &SessionName) -> Result<(), Error> {
     Ok(())
 }
 
-async fn canonical_dir(dir: PathBuf) -> Result<PathBuf, Error> {
-    blocking(move || {
-        let canonical = dir.canonicalize().map_err(|source| Error::Io {
-            action: "resolve",
-            path: dir.clone(),
-            source,
-        })?;
-        if !canonical.is_dir() {
-            return Err(Error::NotInProject { dir: canonical });
-        }
-        Ok(canonical)
-    })
-    .await
-}
-
-/// Runs a blocking tmux or filesystem step off the async workers and waits for it.
-async fn blocking<T: Send + 'static>(
-    step: impl FnOnce() -> Result<T, Error> + Send + 'static,
-) -> Result<T, Error> {
-    tokio::task::spawn_blocking(step)
-        .await
-        .map_err(|error| Error::Blocking(error.to_string()))?
+fn canonical_dir(dir: PathBuf) -> Result<PathBuf, Error> {
+    let canonical = dir.canonicalize().map_err(|source| Error::Io {
+        action: "resolve",
+        path: dir.clone(),
+        source,
+    })?;
+    if !canonical.is_dir() {
+        return Err(Error::NotInProject { dir: canonical });
+    }
+    Ok(canonical)
 }

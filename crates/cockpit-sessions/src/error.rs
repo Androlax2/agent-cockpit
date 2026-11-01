@@ -79,6 +79,11 @@ pub enum Error {
     Sql(cockpit_turso::sql::Error),
     /// A blocking tmux or filesystem step panicked.
     Blocking(String),
+    /// A blocking step did not return within the step timeout; it may still finish (#272).
+    StepTimedOut {
+        step: &'static str,
+        after: std::time::Duration,
+    },
 }
 
 impl fmt::Display for Error {
@@ -153,6 +158,10 @@ impl fmt::Display for Error {
             Error::Database(error) => write!(formatter, "database: {error}"),
             Error::Sql(error) => write!(formatter, "database: {error}"),
             Error::Blocking(reason) => write!(formatter, "a blocking step failed: {reason}"),
+            Error::StepTimedOut { step, after } => write!(
+                formatter,
+                "the step to {step} did not finish within {after:?}; it may still finish"
+            ),
         }
     }
 }

@@ -144,6 +144,18 @@ impl fmt::Display for SessionState {
     }
 }
 
+/// Whether a launch is made to give the session work, which drops its finished label: a
+/// start, a resume, the owner's restart, every wake. The others relaunch the same
+/// conversation with no new input and keep the label: the restore on daemon start,
+/// `restart --all` and its deferred restart (#269, decided in #312). A launch or restart a
+/// crash interrupted is finished as `Work`: who asked for it is not kept, and dropping the
+/// label is the safe direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaunchPurpose {
+    Work,
+    Upkeep,
+}
+
 /// Why a launch happened; each launch of a session is one row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchKind {
@@ -210,6 +222,10 @@ pub struct Session {
     pub created_at: i64,
     pub changed_at: i64,
     pub launch: Option<Launch>,
+    /// Where the latest launch made to give the session work lies among the database's
+    /// commits ([`cockpit_turso::WriteTransaction::commit_order`]): a finish ordered after it
+    /// counts for the finished label (#269, decided in #312; #273). `None` before any.
+    pub working_launch_order: Option<i64>,
     /// `restart --all` deferred its restart until the agent waits at its prompt; the
     /// periodic pass restarts it then.
     pub restart_pending: bool,
@@ -350,6 +366,10 @@ pub struct Settings {
     /// The files agents read only at launch (`cockpit-config`); each launch records their
     /// state, and `restart --all` restarts the sessions whose files changed since.
     pub start_files: Vec<cockpit_config::StartFile>,
+    /// How long one step that waits outside the daemon may take: the provider building its
+    /// command, a tmux call, a file or process read. A step that runs out of it fails, so a
+    /// hung launch ends and the owner can stop its session (#272).
+    pub step_timeout: Duration,
 }
 
 impl Default for Settings {
@@ -366,6 +386,7 @@ impl Default for Settings {
             rows: 50,
             base_environment: Vec::new(),
             start_files: Vec::new(),
+            step_timeout: Duration::from_secs(30),
         }
     }
 }

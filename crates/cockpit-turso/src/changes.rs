@@ -152,6 +152,21 @@ impl WriteTransaction<'_> {
         Ok(Some(discarded_through))
     }
 
+    /// A number that orders this transaction among commits without the clock (#273): at
+    /// least the revision of every commit before it, below its own revision once committed.
+    /// So a row stamped with it in one transaction and a row stamped in a later one compare
+    /// in commit order, however close in time; it is the newest change row, which
+    /// [`WriteTransaction::discard_changes`] never discards.
+    pub async fn commit_order(&self) -> Result<i64, turso::Error> {
+        let mut rows = self
+            .query("SELECT coalesce(max(change_id), 0) FROM turso_cdc", ())
+            .await?;
+        match rows.next().await? {
+            Some(row) => row.get(0),
+            None => Ok(0),
+        }
+    }
+
     /// The first column of the first row, which an aggregate makes `NULL` over no rows.
     async fn optional_integer(
         &self,
