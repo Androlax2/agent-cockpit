@@ -13,8 +13,13 @@ Issue #336. Decided by the worker: it needs neither a new dependency nor `unsafe
   started in the same second needs the first to exit and the kernel to hand its pid out again
   (out of 99999) within that second. A parent that started in the same second as its child
   stays in the chain, as on Linux the same tick does.
-- **Each `ps` or `sysctl` has five seconds**, then the read is `Unreadable` and the sender is
-  refused, never identified from a partial table.
+- **Each `ps` or `sysctl` has five seconds** to print and exit, then the read is
+  `Unreadable` and the sender is refused; a failed `ps -A` is refused too, never walked as a
+  partial table. Lines are parsed only when the walk reaches them, so a malformed line of an
+  unrelated process refuses nobody.
+- **Accepted: a wall clock stepped back** between a parent's start and its child's makes the
+  parent look younger, and the walk stops there: the child is refused or unidentified (fails
+  closed) until it is restarted. Linux's ticks since boot never step back.
 - **Rejected:** `sysctl(3)` `kern.proc.pid` or `proc_pidinfo` (microseconds, no spawn): both
   need `unsafe` FFI, which the workspace denies, and the `libc` dependency. `sysinfo`
   reports seconds too; the `libproc` crate needs `bindgen` at build time.

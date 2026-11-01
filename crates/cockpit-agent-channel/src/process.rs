@@ -167,7 +167,7 @@ mod platform {
     use std::process::{Command, Stdio};
     use std::sync::OnceLock;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::{ProcessError, ProcessIdentity, walk};
 
@@ -178,14 +178,21 @@ mod platform {
         let boot = boot_id()?;
         // One snapshot of the whole table rather than one `ps` per ancestor: a deep agent
         // tree costs one process spawn, and every entry comes from the same instant.
-        let (_, output) = run("/bin/ps", &["-A", "-o", "pid=,ppid=,lstart="])?;
-        let mut table = HashMap::new();
-        for line in output.lines().filter(|line| !line.trim().is_empty()) {
-            let (process, parent) = parse_line(line, boot)?;
-            table.insert(process.pid, (process, parent));
+        let (succeeded, output) = run("/bin/ps", &["-A", "-o", "pid=,ppid=,lstart="])?;
+        if !succeeded {
+            return Err(unreadable(
+                "ps -A failed; its table may be partial".to_owned(),
+            ));
         }
-        walk(pid, |pid| {
-            table.get(&pid).cloned().ok_or(ProcessError::Gone { pid })
+        // Lines are keyed by pid and parsed only when the walk reaches them: a malformed
+        // line of an unrelated process refuses nobody.
+        let table: HashMap<u32, &str> = output
+            .lines()
+            .filter_map(|line| Some((line.split_whitespace().next()?.parse().ok()?, line)))
+            .collect();
+        walk(pid, |pid| match table.get(&pid) {
+            Some(line) => parse_line(line, boot),
+            None => Err(ProcessError::Gone { pid }),
         })
     }
 
@@ -197,8 +204,11 @@ mod platform {
         )?;
         let line = output.trim();
         // `ps -p` exits 1 and prints nothing when no such process exists.
-        if !succeeded && line.is_empty() {
+        if line.is_empty() {
             return Err(ProcessError::Gone { pid });
+        }
+        if !succeeded {
+            return Err(unreadable(format!("ps -p {pid} failed")));
         }
         let (process, _) = parse_line(line, boot)?;
         if process.pid != pid {
@@ -254,11 +264,13 @@ mod platform {
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
         let month = MONTHS.iter().position(|name| *name == month)? as i64 + 1;
-        let day: i64 = day.parse().ok()?;
-        let year: i64 = year.parse().ok()?;
+        let day: i64 = day.parse().ok().filter(|day| (1..=31).contains(day))?;
+        let year: i64 = year.parse().ok().filter(|year| *year >= 1970)?;
         let mut clock = time.split(':').map(|part| part.parse::<i64>().ok());
         let (hours, minutes, seconds) = (clock.next()??, clock.next()??, clock.next()??);
-        if clock.next().is_some() {
+        let in_range = (0..24).contains(&hours) && (0..60).contains(&minutes);
+        // 60 is a leap second, which `ps` prints as is.
+        if clock.next().is_some() || !in_range || !(0..=60).contains(&seconds) {
             return None;
         }
         let days = days_from_civil(year, month, day);
@@ -280,6 +292,7 @@ mod platform {
     /// Runs a system program with a fixed locale and time zone, so `ps` prints its dates in
     /// one format whatever the user's settings; whether it succeeded, and its output.
     fn run(program: &str, arguments: &[&str]) -> Result<(bool, String), ProcessError> {
+        let started = Instant::now();
         let mut child = Command::new(program)
             .args(arguments)
             .env("LC_ALL", "C")
@@ -308,9 +321,23 @@ mod platform {
                 )));
             }
         };
-        let status = child
-            .wait()
-            .map_err(|error| unreadable(format!("{program}: {error}")))?;
+        // Closing its output is not exiting: the wait shares the deadline too.
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if started.elapsed() < HOST_COMMAND_DEADLINE => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(unreadable(format!(
+                        "{program} did not exit within {HOST_COMMAND_DEADLINE:?}"
+                    )));
+                }
+                Err(error) => return Err(unreadable(format!("{program}: {error}"))),
+            }
+        };
         let output = String::from_utf8(output)
             .map_err(|_| unreadable(format!("{program} printed something other than UTF-8")))?;
         Ok((status.success(), output))
