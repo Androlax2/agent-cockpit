@@ -1,8 +1,9 @@
 //! A provider with the baseline contract only, for tests (feature `fake`): it launches a new
 //! or resumed conversation and reports `resume`, nothing else. Its agent is a shell script
 //! that appends one line per launch to a log (session, conversation mode and id, first
-//! message, pid, launch token), then sleeps until stopped (`FAKE_AGENT_SLEEP` seconds,
-//! 600 by default). A test may give it more capabilities ([`FakeProvider::reporting`]) and a
+//! message, pid, launch token), leaves an `agent-was-here` file in the session's directory
+//! ([`crate::LaunchRequest::session_dir`]), then sleeps until stopped (`FAKE_AGENT_SLEEP`
+//! seconds, 600 by default). A test may give it more capabilities ([`FakeProvider::reporting`]) and a
 //! program its agent runs, in its own process tree, before it sleeps
 //! ([`FakeProvider::running`]), or have it read the messages typed to it
 //! ([`FakeProvider::reading_messages`]).
@@ -17,6 +18,7 @@ use crate::{
 };
 
 const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s\n' "$COCKPIT_SESSION" "$1" "$2" "${3:-}" "$$" "$COCKPIT_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
+: > "$FAKE_AGENT_SESSION_DIR/agent-was-here"
 if [ -n "${FAKE_AGENT_RUN:-}" ]; then "$FAKE_AGENT_RUN"; fi
 if [ -n "${FAKE_AGENT_MESSAGES:-}" ]; then
   while IFS= read -r line; do printf '%s %s\n' "$COCKPIT_SESSION" "$line" >> "$FAKE_AGENT_MESSAGES"; done
@@ -145,6 +147,7 @@ impl Provider for FakeProvider {
         let mut environment: Vec<(OsString, OsString)> = vec![
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("FAKE_AGENT_LOG".into(), self.log.clone().into()),
+            ("FAKE_AGENT_SESSION_DIR".into(), request.session_dir.into()),
         ];
         if let Some(program) = &self.agent_program {
             environment.push(("FAKE_AGENT_RUN".into(), program.clone().into()));

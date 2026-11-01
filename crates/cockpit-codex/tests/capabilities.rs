@@ -7,7 +7,13 @@ use std::path::PathBuf;
 use cockpit_codex::{CONFORMANCE_VERSION, Codex};
 use cockpit_provider_api::{Availability, Capability, Provenance, Provider};
 
-const REPORTED: [Capability; 2] = [Capability::Resume, Capability::Events];
+const REPORTED: [Capability; 5] = [
+    Capability::Resume,
+    Capability::Events,
+    Capability::Submit,
+    Capability::Cancel,
+    Capability::Outcome,
+];
 
 fn on_version(version: Option<&str>) -> Codex {
     Codex::new(
@@ -63,10 +69,10 @@ fn with_an_unknown_version_each_capability_is_unverified() {
     }
 }
 
-/// The honest set (#48): submit and cancel wait on the app-server delivery (#407); outcome
-/// would claim an end a failed turn never sends.
+/// The tested set (#48, #407): effort, compact, billing, commands, evidence, remote control
+/// and screen reading are not.
 #[test]
-fn it_reports_nothing_beyond_resume_and_events() {
+fn it_reports_nothing_beyond_resume_events_submit_cancel_and_outcome() {
     let capabilities = common::codex().capabilities();
 
     for capability in Capability::ALL {
@@ -81,16 +87,19 @@ fn it_reports_nothing_beyond_resume_and_events() {
 }
 
 #[test]
-fn without_the_bridge_events_are_unavailable() {
+fn without_the_bridge_only_resume_is_reported() {
     let codex = Codex::new(
         PathBuf::from("/usr/bin/codex"),
         Some(CONFORMANCE_VERSION.to_owned()),
         None,
     );
+    let capabilities = codex.capabilities();
 
-    assert_eq!(
-        codex.capabilities().availability(Capability::Events),
-        Availability::Unavailable
-    );
-    assert!(codex.capabilities().supports(Capability::Resume));
+    for capability in Capability::ALL {
+        assert_eq!(
+            capabilities.supports(capability),
+            capability == Capability::Resume,
+            "{capability:?}"
+        );
+    }
 }

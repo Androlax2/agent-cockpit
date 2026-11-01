@@ -20,10 +20,16 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   remote control. A provider names the conversation it started when it can
   ([`LaunchCommand::conversation`]); a session whose conversation is unknown cannot be
   resumed, restarted or put to sleep. A resumed launch keeps the conversation it was asked
-  for.
-- **Terminal actions** ([`Provider::input`]): submit, cancel and compact become text and keys
-  for the agent's terminal, decided from its current [`Activity`]; the provider refuses one
-  the activity makes unsafe, such as typing into an open dialog.
+  for. Each launch gets the session's private directory ([`LaunchRequest::session_dir`]),
+  made before the launch, reachable by the agent and the daemon, and short enough to hold a
+  unix socket.
+- **Actions.** A provider performs submit, cancel and compact one of two ways. Terminal
+  actions ([`Provider::input`]) become text and keys for the agent's terminal, decided from
+  its current [`Activity`]; the provider refuses one the activity makes unsafe, such as
+  typing into an open dialog. Delivered actions ([`Provider::deliver`]) are performed by the
+  adapter itself in a named conversation, through what the launch left in the session's
+  directory, and say whether they started a turn, joined the one under way or interrupted it
+  ([`Delivered`]; Codex, #407). Both refuse an action whose capability is not reported.
 - **Events.** Adapters map their harness's events onto [`EventKind`] and keep the raw event
   beside it; unknown events stay raw. Acceptance of a prompt is not completion: completion
   arrives as a turn-end event.
@@ -35,20 +41,22 @@ Nothing above this contract is keyed on a provider's name, only on its reported
 ## The fake provider
 
 Feature `fake` ships `fake::FakeProvider` for other crates' tests: the baseline contract
-only (launch a new or resumed conversation, `resume`), a shell agent that logs each launch.
+only (launch a new or resumed conversation, `resume`), a shell agent that logs each launch
+and marks the session's directory.
 `cockpit-daemon`'s session tests launch it; release builds never enable the feature.
 
 ## Dependency edges
 
 - Depends on: the standard library only (`tests/dependencies.rs`).
 - Must not depend on a user interface (`providers -> UI` in the crate-graph rule).
-- Used by: `cockpit-sessions`, the daemon's wiring, and the adapters (`cockpit-claude`).
+- Used by: `cockpit-sessions`, the daemon's wiring, and the adapters (`cockpit-claude`,
+  `cockpit-codex`).
 
 ## Tests
 
 - `tests/names.rs`: provider names and conversation ids.
 - `tests/capabilities.rs`: provenance, availability and refusals.
-- `tests/contract.rs`: the capabilities a launch needs; default refusals.
+- `tests/contract.rs`: the capabilities a launch needs; default refusals, delivery included.
 - `tests/events.rs`: the activity each normalized event proves.
 - `tests/fake.rs`: the fake provider and its agent's log.
 - `tests/dependencies.rs`: no dependency.

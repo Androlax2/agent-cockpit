@@ -1,5 +1,6 @@
-//! `Bridge::check` (#203): the daemon's start check that the hook bridge it ships runs here,
-//! so a bundle whose hook is present but unusable shows at once, not as missing events.
+//! `Bridge::check` (#203): the daemon's start check that the bridge it ships (hook and
+//! session launcher) runs here, so a bundle whose programs are present but unusable shows
+//! at once, not as missing events or failed launches.
 
 mod common;
 
@@ -8,12 +9,18 @@ use std::path::{Path, PathBuf};
 
 use cockpit_codex::Bridge;
 
-/// A bridge whose hook is `hook`, beside a `cockpit` that is an executable file.
+fn built_session() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-session"))
+}
+
+/// A bridge whose hook is `hook`, beside the built session launcher and a `cockpit` that is
+/// an executable file.
 fn bridge_with(dir: &Path, hook: PathBuf) -> Bridge {
     let cockpit = dir.join("cockpit");
     std::fs::write(&cockpit, "").unwrap();
     std::fs::set_permissions(&cockpit, std::fs::Permissions::from_mode(0o755)).unwrap();
     Bridge {
+        session_program: built_session(),
         hook_program: hook,
         cockpit_program: cockpit,
     }
@@ -42,6 +49,38 @@ fn the_built_hook_bridge_answers_its_version() {
         String::from_utf8(output.stdout).unwrap().trim(),
         cockpit_codex::hook_version_line()
     );
+}
+
+#[test]
+fn the_built_session_launcher_answers_its_version() {
+    let output = std::process::Command::new(built_session())
+        .arg("--version")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        cockpit_codex::version_line("cockpit-codex-session")
+    );
+}
+
+#[test]
+fn another_program_in_the_session_launchers_place_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bridge = bridge_with(
+        dir.path(),
+        PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-hook")),
+    );
+    bridge.session_program = common::script(
+        dir.path(),
+        "cockpit-codex-session",
+        "echo 'cockpit-codex-session 0.0.0'",
+    );
+
+    let reason = bridge.check().unwrap_err();
+
+    assert!(reason.contains("not this release's"), "{reason}");
 }
 
 #[test]
@@ -81,7 +120,7 @@ fn another_program_in_the_hooks_place_is_refused() {
 
     let reason = bridge_with(dir.path(), hook).check().unwrap_err();
 
-    assert!(reason.contains("not a hook bridge"), "{reason}");
+    assert!(reason.contains("not cockpit-codex-hook"), "{reason}");
 }
 
 #[test]

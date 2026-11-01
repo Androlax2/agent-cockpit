@@ -462,6 +462,27 @@ async fn a_new_session_runs_its_agent_in_place_with_its_first_message() {
     assert_eq!(home.tmux_sessions(), [session.id]);
 }
 
+/// A provider keeps what its delivery needs there, such as Codex's app-server socket (#407).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_gives_the_agent_its_sessions_own_private_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let session = new_session(&client, &root, None).await;
+    home.launches(1).await;
+
+    let session_dir = home.path().join("run/cockpit/sessions").join(&session.id);
+    let mode = std::fs::metadata(&session_dir)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+    assert!(session_dir.join("agent-was-here").exists());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_session_in_a_clone_occupies_a_parallel_clone_on_its_branch() {
     let home = Home::new();

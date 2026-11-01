@@ -27,6 +27,7 @@ impl Provider for LaunchOnly {
 fn request(conversation: &Conversation) -> LaunchRequest<'_> {
     LaunchRequest {
         working_dir: Path::new("/work"),
+        session_dir: Path::new("/run/cockpit/sessions/s-1"),
         conversation,
         first_message: None,
         effort: None,
@@ -69,6 +70,30 @@ fn a_provider_without_terminal_actions_refuses_each_naming_its_capability() {
     ] {
         let error = provider
             .input(&action, Some(Activity::Waiting))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("it does not report the `{capability}` capability")
+        );
+    }
+}
+
+#[test]
+fn a_provider_without_delivery_refuses_each_action_naming_its_capability() {
+    let provider = LaunchOnly(ProviderName::new("plain").unwrap());
+    let conversation = ConversationId::new("c-1").unwrap();
+
+    for (action, capability) in [
+        (Action::Submit("hello"), "submit"),
+        (Action::Cancel, "cancel"),
+        (Action::Compact, "compact"),
+    ] {
+        let error = provider
+            .deliver(
+                &action,
+                Path::new("/run/cockpit/sessions/s-1"),
+                &conversation,
+            )
             .unwrap_err();
         assert_eq!(
             error.to_string(),

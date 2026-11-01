@@ -10,6 +10,7 @@ use cockpit_provider_api::{
 fn request(conversation: &Conversation) -> LaunchRequest<'_> {
     LaunchRequest {
         working_dir: std::path::Path::new("/"),
+        session_dir: std::path::Path::new("/run/cockpit/sessions/s-1"),
         conversation,
         first_message: Some("hello"),
         effort: None,
@@ -74,7 +75,12 @@ fn an_unnamed_fake_launches_without_naming_the_conversation() {
 fn the_fake_agent_logs_its_launch_and_the_log_reads_back() {
     let dir = tempfile::tempdir().unwrap();
     let provider = fake(&dir);
-    let command = provider.launch(&request(&Conversation::New)).unwrap();
+    let command = provider
+        .launch(&LaunchRequest {
+            session_dir: dir.path(),
+            ..request(&Conversation::New)
+        })
+        .unwrap();
     let mut agent = std::process::Command::new(&command.program);
     agent
         .args(&command.arguments)
@@ -99,6 +105,7 @@ fn the_fake_agent_logs_its_launch_and_the_log_reads_back() {
         ),
         ("s000000000001", "new", "conversation-1", "hello", "token-1")
     );
+    assert!(dir.path().join("agent-was-here").exists());
 }
 
 #[test]
