@@ -16,7 +16,7 @@ pub use model::{
     Blocked, BlockedAction, Checkpoint, Handoff, HandoffKind, HandoffRecord, NextAction, ReadyStep,
     Run, RunFilter, RunId, RunStatus, Step, StepStatus,
 };
-pub use packet::{Goal, Packet, PacketStep, packet};
+pub use packet::{Goal, Packet, packet};
 pub use presets::{
     CODE_CHANGE, DESIGN_LED, Doer, PRESETS, Preset, RESEARCH, StepDefinition, preset,
     preset_version, presets, select_preset,

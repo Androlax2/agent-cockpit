@@ -3,15 +3,11 @@
 //! session yields the same packet. Grants are not part of it: they are evaluated at every
 //! mediated action, never carried over from a packet.
 
-use cockpit_authorization::SessionId;
 use cockpit_tasks::{ItemId, Kind, Wait};
 use cockpit_turso::sql::Connection;
 
 use crate::runs::{accessible, handoffs_of, task_of};
-use crate::{
-    Actor, Blocked, Checkpoint, Error, HandoffRecord, NextAction, Preset, RunId, RunStatus,
-    StepDefinition, StepStatus,
-};
+use crate::{Actor, Blocked, Error, HandoffRecord, NextAction, Preset, RunId, RunStatus, Step};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Packet {
@@ -22,7 +18,7 @@ pub struct Packet {
     /// The project the run's sessions work in: the authorized scope of its steps.
     pub project: String,
     /// The current step and who holds it; `None` once the run is delivered or cancelled.
-    pub step: Option<PacketStep>,
+    pub step: Option<Step>,
     pub next_action: NextAction,
     pub blocked: Option<Blocked>,
     /// What the items this one waited on passed on when they finished: the decisions it
@@ -54,31 +50,11 @@ impl Goal {
     }
 }
 
-/// The step and the identities bound to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PacketStep {
-    pub position: u32,
-    pub definition: &'static StepDefinition,
-    pub status: StepStatus,
-    /// Which time a session began it; 0 while none has.
-    pub attempt: u32,
-    pub session: Option<SessionId>,
-    /// Where the step's previous holder left off.
-    pub checkpoint: Option<Checkpoint>,
-}
-
 pub async fn packet(connection: &Connection, actor: &Actor, id: RunId) -> Result<Packet, Error> {
     let run = accessible(connection, actor, id).await?;
     let task = task_of(connection, &run).await?;
     let handoffs = handoffs_of(connection, &run).await?;
-    let step = run.current_step().map(|step| PacketStep {
-        position: step.position,
-        definition: step.definition,
-        status: step.status,
-        attempt: step.attempts,
-        session: step.session.clone(),
-        checkpoint: step.checkpoint.clone(),
-    });
+    let step = run.current_step().cloned();
     Ok(Packet {
         run: run.id,
         run_status: run.status,

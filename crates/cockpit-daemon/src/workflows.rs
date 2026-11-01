@@ -11,11 +11,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use cockpit_protocol::{
-    Command, ErrorCode, ProtocolError, Reply, TaskKindView, TaskStatusView, TaskWaitView, Unblock,
-    UnblockedBy, WorkflowBlockedActionView, WorkflowBlockedView, WorkflowCheckpointView,
-    WorkflowGoalView, WorkflowHandoffRecordView, WorkflowHandoffView, WorkflowNextView,
-    WorkflowPacketView, WorkflowPresetStepView, WorkflowPresetView, WorkflowStatusView,
-    WorkflowStepStatusView, WorkflowStepView, WorkflowView,
+    Command, ErrorCode, Outcome, ProtocolError, Reply, TaskWaitView, UnblockedBy,
+    WorkflowBlockedActionView, WorkflowBlockedView, WorkflowCheckpointView, WorkflowGoalView,
+    WorkflowHandoffRecordView, WorkflowHandoffView, WorkflowNextView, WorkflowPacketView,
+    WorkflowPresetStepView, WorkflowPresetView, WorkflowStatusView, WorkflowStepStatusView,
+    WorkflowStepView, WorkflowView,
 };
 use cockpit_provider_api::Capabilities;
 use cockpit_turso::sql::Connection;
@@ -27,6 +27,7 @@ use cockpit_workflows::{
 
 use crate::approvals::{Answer, Failed, Sender, job, now};
 use crate::routes::{Peer, Route, WorkClass};
+use crate::tasks::{kind_view, refused, status_view as task_status_view, unblocked_by};
 
 /// What a workflow command needs besides the database: the owner's environment for the
 /// project's `workflow.preset`, the sessions for the sender's provider, and what each
@@ -42,6 +43,9 @@ pub(crate) struct Context {
 /// The route for a workflow command; `routes.rs` sends only those here, after the socket
 /// rules. Agent requests run in the bulk lane like every agent request (#32).
 pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
+    if matches!(command, Command::WorkflowPresets) {
+        return Route::Answer(Outcome::Ok(presets_reply()));
+    }
     let class = match peer {
         Peer::Agent { .. } => WorkClass::Bulk,
         Peer::Owner => WorkClass::Control,
@@ -62,7 +66,6 @@ pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
 
 async fn owner(command: Command, context: &Context) -> Answer {
     match command {
-        Command::WorkflowPresets => Ok(presets_reply()),
         Command::WorkflowStart { item, preset } => start(context, item, preset).await,
         command if is_read(&command) => {
             let read = context.database.read().await?;
@@ -81,9 +84,6 @@ async fn owner(command: Command, context: &Context) -> Answer {
 /// read transaction, answers reads there, and takes the writer only to change state. A
 /// launch not bound yet is identified, and so bound, under the writer.
 async fn agent(command: Command, sender: Sender, context: &Context) -> Answer {
-    if matches!(command, Command::WorkflowPresets) {
-        return Ok(presets_reply());
-    }
     let token = launch_token(&command);
     let read = context.database.read().await?;
     let bound = sender.identify_bound(&read, token.as_deref()).await?;
@@ -155,7 +155,7 @@ async fn start(context: &Context, item: i64, asked: Option<String>) -> Answer {
                         item: cockpit_tasks::ItemId(item),
                     })
                 }
-                error => internal(&error),
+                error => Failed::from(error),
             })?;
         let configured = match asked {
             Some(name) => Some(name),
@@ -368,18 +368,31 @@ fn handoff_view(handoff: &Handoff) -> WorkflowHandoffView {
 }
 
 fn blocked_action(view: WorkflowBlockedActionView) -> Result<BlockedAction, Failed> {
-    BlockedAction::parse(view.as_str()).ok_or_else(|| {
-        refused(
-            ErrorCode::InvalidArgument,
-            "action: unknown blocker action".to_owned(),
-            &format!("use one of {}", WorkflowBlockedActionView::known_names()),
-            UnblockedBy::Agent,
-        )
+    Ok(match view {
+        WorkflowBlockedActionView::AnswerQuestion => BlockedAction::AnswerQuestion,
+        WorkflowBlockedActionView::ApproveOperation => BlockedAction::ApproveOperation,
+        WorkflowBlockedActionView::RestoreCapability => BlockedAction::RestoreCapability,
+        WorkflowBlockedActionView::WaitForCapacity => BlockedAction::WaitForCapacity,
+        WorkflowBlockedActionView::ReconcileResult => BlockedAction::ReconcileResult,
+        WorkflowBlockedActionView::Unknown => {
+            return Err(refused(
+                ErrorCode::InvalidArgument,
+                "action: unknown blocker action".to_owned(),
+                &format!("use one of {}", WorkflowBlockedActionView::known_names()),
+                UnblockedBy::Agent,
+            ));
+        }
     })
 }
 
 fn blocked_action_view(action: BlockedAction) -> WorkflowBlockedActionView {
-    WorkflowBlockedActionView::parse(action.as_str()).unwrap_or(WorkflowBlockedActionView::Unknown)
+    match action {
+        BlockedAction::AnswerQuestion => WorkflowBlockedActionView::AnswerQuestion,
+        BlockedAction::ApproveOperation => WorkflowBlockedActionView::ApproveOperation,
+        BlockedAction::RestoreCapability => WorkflowBlockedActionView::RestoreCapability,
+        BlockedAction::WaitForCapacity => WorkflowBlockedActionView::WaitForCapacity,
+        BlockedAction::ReconcileResult => WorkflowBlockedActionView::ReconcileResult,
+    }
 }
 
 fn workflow_view(run: &Run) -> WorkflowView {
@@ -410,28 +423,13 @@ fn packet_view(packet: Packet) -> WorkflowPacketView {
             intent_changed: packet.goal.is_intent_changed(),
             title: packet.goal.title,
             notes: packet.goal.notes,
-            kind: TaskKindView::parse(packet.goal.kind.as_str()).unwrap_or(TaskKindView::Unknown),
+            kind: kind_view(packet.goal.kind),
             item_status: task_status_view(packet.goal.item_status),
             started_on_intent: packet.goal.started_on_intent,
             intent_revision: packet.goal.intent_revision,
         },
         project: packet.project,
-        step: packet.step.map(|step| WorkflowStepView {
-            position: step.position,
-            name: step.definition.name.to_owned(),
-            purpose: step.definition.purpose.to_owned(),
-            doer: step.definition.doer.as_str().to_owned(),
-            status: step_status_view(step.status),
-            session: step.session.map(|session| session.as_str().to_owned()),
-            checkpoint: step.checkpoint.map(|checkpoint| WorkflowCheckpointView {
-                note: checkpoint.note,
-                revision: checkpoint.revision,
-                at: checkpoint.at,
-            }),
-            attempts: step.attempt,
-            requirements: requirements(step.definition),
-            required_capabilities: required_capabilities(step.definition),
-        }),
+        step: packet.step.as_ref().map(step_view),
         next: next_view(packet.next_action),
         blocked: packet.blocked.as_ref().map(blocked_view),
         decisions: packet
@@ -543,27 +541,6 @@ fn step_status_view(status: StepStatus) -> WorkflowStepStatusView {
     }
 }
 
-fn task_status_view(status: cockpit_tasks::Status) -> TaskStatusView {
-    match status {
-        cockpit_tasks::Status::Proposed => TaskStatusView::Proposed,
-        cockpit_tasks::Status::Todo => TaskStatusView::Todo,
-        cockpit_tasks::Status::Doing => TaskStatusView::Doing,
-        cockpit_tasks::Status::Done => TaskStatusView::Done,
-        cockpit_tasks::Status::Declined => TaskStatusView::Declined,
-    }
-}
-
-fn refused(code: ErrorCode, message: String, action: &str, by: UnblockedBy) -> Failed {
-    Failed(ProtocolError {
-        code,
-        message,
-        unblock: Some(Unblock {
-            action: action.to_owned(),
-            by,
-        }),
-    })
-}
-
 fn internal(error: &dyn std::fmt::Display) -> Failed {
     tracing::error!(%error, "a workflows request failed");
     Failed(ProtocolError::new(
@@ -591,15 +568,7 @@ impl From<Refusal> for Failed {
             Refusal::MissingCapabilities { .. } => ErrorCode::Refused,
         };
         let (by, action) = refusal.unblock();
-        refused(
-            code,
-            refusal.to_string(),
-            &action,
-            match by {
-                cockpit_workflows::UnblockedBy::Owner => UnblockedBy::Owner,
-                cockpit_workflows::UnblockedBy::Agent => UnblockedBy::Agent,
-            },
-        )
+        refused(code, refusal.to_string(), &action, unblocked_by(by))
     }
 }
 

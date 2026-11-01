@@ -59,7 +59,7 @@ async fn the_next_session_resumes_a_released_step_from_its_checkpoint_after_a_re
 
     let packet = fixture.packet(&second, run.id).await;
     let step = packet.step.unwrap();
-    assert_eq!((step.position, step.attempt), (1, 2));
+    assert_eq!((step.position, step.attempts), (1, 2));
     assert_eq!(
         step.checkpoint.map(|checkpoint| checkpoint.note),
         Some("Validation rewritten; tests next".to_owned())

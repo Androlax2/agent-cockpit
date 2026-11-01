@@ -242,8 +242,7 @@ pub async fn begin(
             (id.0, i64::from(step.position), session.as_str()),
         )
         .await?;
-    touch(write, id, now).await?;
-    required(write, id).await
+    touched(write, id, now).await
 }
 
 /// Records the progress the session doing the current step has made; the next session that
@@ -274,8 +273,7 @@ pub async fn checkpoint(
             (id.0, i64::from(step.position), note.as_str(), now),
         )
         .await?;
-    touch(write, id, now).await?;
-    required(write, id).await
+    touched(write, id, now).await
 }
 
 /// Ends the current step with its handoff once each requirement passed or was waived; the
@@ -363,8 +361,7 @@ pub async fn complete(
             )
             .await?;
     }
-    touch(write, id, now).await?;
-    required(write, id).await
+    touched(write, id, now).await
 }
 
 /// Hands the active step back mid-step: it is ready again, keeping its checkpoint. The session
@@ -389,9 +386,7 @@ pub async fn release(
     if step.status != StepStatus::Active {
         return Err(wrong_step(&run, step, "be released"));
     }
-    if matches!(actor, Actor::Session { .. }) {
-        session_doing(&run, step, actor)?;
-    }
+    session_doing(&run, step, actor)?;
     write
         .execute(
             "UPDATE workflows_steps SET status = 'ready', session = NULL
@@ -413,8 +408,7 @@ pub async fn release(
         )
         .await?;
     }
-    touch(write, id, now).await?;
-    required(write, id).await
+    touched(write, id, now).await
 }
 
 /// Marks the run as waiting on `action`; a new block replaces the one before. The session
@@ -429,9 +423,7 @@ pub async fn block(
 ) -> Result<Run, Error> {
     let detail = text::note("detail", detail, BLOCKED_DETAIL_MAX_CHARS)?;
     let run = open_run(write, actor, id).await?;
-    if matches!(actor, Actor::Session { .. }) {
-        session_doing(&run, current(&run)?, actor)?;
-    }
+    session_doing(&run, current(&run)?, actor)?;
     write
         .execute(
             "UPDATE workflows_runs SET blocked_action = ?2, blocked_detail = ?3,
@@ -440,8 +432,7 @@ pub async fn block(
             (id.0, action.as_str(), detail.as_str(), now),
         )
         .await?;
-    touch(write, id, now).await?;
-    required(write, id).await
+    touched(write, id, now).await
 }
 
 pub async fn unblock(
@@ -451,9 +442,7 @@ pub async fn unblock(
     now: i64,
 ) -> Result<Run, Error> {
     let run = open_run(write, actor, id).await?;
-    if matches!(actor, Actor::Session { .. }) {
-        session_doing(&run, current(&run)?, actor)?;
-    }
+    session_doing(&run, current(&run)?, actor)?;
     if run.blocked.is_none() {
         return Err(invalid("run", format!("workflow {} is not blocked", id.0)).into());
     }
@@ -465,8 +454,7 @@ pub async fn unblock(
             [id.0],
         )
         .await?;
-    touch(write, id, now).await?;
-    required(write, id).await
+    touched(write, id, now).await
 }
 
 /// The owner stops the run. Its steps stay as they were, and the item may start another.
@@ -491,8 +479,7 @@ pub async fn cancel(
             [id.0],
         )
         .await?;
-    touch(write, id, now).await?;
-    required(write, id).await
+    touched(write, id, now).await
 }
 
 /// Every handoff of the run, oldest first.
@@ -698,6 +685,12 @@ async fn unblocked_run(connection: &Connection, actor: &Actor, id: RunId) -> Res
         return Err(Refusal::Blocked { run: id }.into());
     }
     Ok(run)
+}
+
+/// Marks the run changed at `now` and reads it back as it now stands.
+async fn touched(write: &WriteTransaction<'_>, id: RunId, now: i64) -> Result<Run, Error> {
+    touch(write, id, now).await?;
+    required(write, id).await
 }
 
 async fn open_run(connection: &Connection, actor: &Actor, id: RunId) -> Result<Run, Error> {

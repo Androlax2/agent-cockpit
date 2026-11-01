@@ -8,8 +8,8 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
-    Command, Reply, WorkflowBlockedActionView, WorkflowHandoffView, WorkflowNextView,
-    WorkflowPacketView, WorkflowPresetView, WorkflowStepView, WorkflowView,
+    Command, Reply, WorkflowBlockedActionView, WorkflowBlockedView, WorkflowHandoffView,
+    WorkflowNextView, WorkflowPacketView, WorkflowPresetView, WorkflowStepView, WorkflowView,
 };
 
 use crate::agent::{exchange, failed, launch_token};
@@ -200,17 +200,21 @@ fn details(workflow: &WorkflowView) -> String {
         workflow.status.as_str()
     );
     if let Some(blocked) = &workflow.blocked {
-        text.push_str(&format!(
-            "blocked: {}: {}\n",
-            blocked.action.as_str(),
-            prose(&blocked.detail)
-        ));
+        text.push_str(&blocked_line(blocked));
     }
     for step in &workflow.steps {
         text.push_str(&step_line(step));
     }
     text.push_str(&format!("next: {}\n", next(&workflow.next)));
     text
+}
+
+fn blocked_line(blocked: &WorkflowBlockedView) -> String {
+    format!(
+        "blocked: {}: {}\n",
+        blocked.action.as_str(),
+        prose(&blocked.detail)
+    )
 }
 
 /// `step N name (status, session) checkpoint` on one line.
@@ -261,11 +265,7 @@ fn packet_text(packet: &WorkflowPacketView) -> String {
         }
     }
     if let Some(blocked) = &packet.blocked {
-        text.push_str(&format!(
-            "blocked: {}: {}\n",
-            blocked.action.as_str(),
-            prose(&blocked.detail)
-        ));
+        text.push_str(&blocked_line(blocked));
     }
     for decision in &packet.decisions {
         text.push_str(&format!("decided: {} {}", decision.item, decision.title));

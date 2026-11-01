@@ -56,12 +56,8 @@ pub enum Refusal {
     },
 }
 
-/// Who can lift a refusal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnblockedBy {
-    Owner,
-    Agent,
-}
+/// Who can lift a refusal: the same answer the task list gives.
+pub use cockpit_tasks::UnblockedBy;
 
 impl Refusal {
     /// What would lift the refusal, and who can do it.
