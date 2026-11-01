@@ -58,6 +58,66 @@ pub struct Bridge {
     pub cockpit_program: PathBuf,
 }
 
+/// The argument that makes `cockpit-claude-hook` print [`hook_version_line`] and exit.
+pub const HOOK_VERSION_FLAG: &str = "--version";
+
+/// What `cockpit-claude-hook --version` prints: its name and the version it was built as.
+pub fn hook_version_line() -> String {
+    format!("cockpit-claude-hook {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// How long the hook bridge may take to answer [`HOOK_VERSION_FLAG`] at the daemon's start.
+const HOOK_CHECK_DEADLINE: Duration = Duration::from_secs(10);
+
+impl Bridge {
+    /// Whether this bridge can run here (#203): both programs are files, `cockpit` has its
+    /// execute bit, and the hook runs and answers [`HOOK_VERSION_FLAG`] with this release's
+    /// [`hook_version_line`], so a wrong architecture, a lost execute bit or a stale hook shows
+    /// at the daemon's start, not as missing events. The reason when not. Blocks up to 10
+    /// seconds.
+    pub fn check(&self) -> Result<(), String> {
+        self.check_within(HOOK_CHECK_DEADLINE)
+    }
+
+    /// [`Bridge::check`], giving up on the hook after `deadline`.
+    pub fn check_within(&self, deadline: Duration) -> Result<(), String> {
+        let missing: Vec<String> = [&self.hook_program, &self.cockpit_program]
+            .into_iter()
+            .filter(|program| !program.is_file())
+            .map(|program| program.display().to_string())
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!("{} missing", missing.join(" and ")));
+        }
+        if !is_executable(&self.cockpit_program) {
+            return Err(format!(
+                "{} has no execute bit, so the hook cannot run it",
+                self.cockpit_program.display()
+            ));
+        }
+        let answer = run_with_deadline(&self.hook_program, HOOK_VERSION_FLAG, deadline)
+            .map_err(|reason| format!("{}: {reason}", self.hook_program.display()))?;
+        if !answer.starts_with("cockpit-claude-hook ") {
+            return Err(format!(
+                "{}: `{HOOK_VERSION_FLAG}` printed {answer:?}, not a hook bridge",
+                self.hook_program.display()
+            ));
+        }
+        let expected = hook_version_line();
+        if answer != expected {
+            return Err(format!(
+                "{}: the hook bridge is {answer:?}, not this release's {expected:?}",
+                self.hook_program.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn is_executable(program: &Path) -> bool {
+    std::fs::metadata(program).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+}
+
 /// The Claude Code adapter.
 #[derive(Debug)]
 pub struct ClaudeCode {

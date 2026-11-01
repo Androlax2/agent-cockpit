@@ -14,7 +14,7 @@ use cockpit_turso::{Database, WriteTransaction};
 use tokio::sync::{OnceCell, oneshot};
 
 use crate::output::{OutputKind, OutputLimits, OutputStream};
-use crate::platform::{self, LAUNCH_SCRIPT};
+use crate::platform::{self, HOSTED_LAUNCH_SCRIPT, LAUNCH_SCRIPT};
 use crate::systemd::SystemdTools;
 use crate::{
     Containment, EndReason, Error, Escalation, Execution, ExecutionId, HostedLaunch, Identity,
@@ -22,6 +22,8 @@ use crate::{
 };
 
 const LEADER_FILE: &str = "leader";
+/// Written by [`Supervisor::release_hosted`]: a hosted program waits for it before it runs.
+const RELEASE_FILE: &str = "release";
 /// A hosted launch's environment, read and deleted by its host step before the program runs.
 const ENVIRONMENT_FILE: &str = "environment";
 /// How often a wait for a launch confirmation or for an empty execution looks again.
@@ -64,6 +66,11 @@ pub struct Supervisor {
     systemd: SystemdTools,
     /// How long a launch waits for the program to confirm its start.
     pub launch_timeout: Duration,
+    /// How long a hosted program waits for [`Supervisor::release_hosted`], counted from its
+    /// start, before it gives up without running (60 s by default). The daemon sets it past
+    /// the launch's confirm and the session step that records the agent's root, so a slow but
+    /// live daemon still releases it.
+    pub release_window: Duration,
     pub output_limits: OutputLimits,
     /// Read once: the boot id cannot change while this process runs.
     boot_id: Arc<OnceCell<String>>,
@@ -95,6 +102,7 @@ impl Supervisor {
             launch_containment,
             systemd,
             launch_timeout: Duration::from_secs(10),
+            release_window: Duration::from_secs(60),
             output_limits: OutputLimits::default(),
             boot_id: Arc::new(OnceCell::new()),
             takes_expand_environment: Arc::new(OnceCell::new()),
@@ -299,9 +307,11 @@ impl Supervisor {
     /// Commits the launch intent of an execution whose program a host starts itself: a tmux
     /// pane, whose terminal the program needs (report 05). The host runs the returned
     /// command in `spec.working_dir` as the leader of a new process group (tmux makes each
-    /// pane's process one); [`Supervisor::confirm_hosted`] then waits for its start, or
-    /// [`Supervisor::abandon_hosted`] releases the reservation when the host could not start
-    /// it. The command clears the host's environment, so the program gets exactly
+    /// pane's process one); [`Supervisor::confirm_hosted`] then waits for its start and
+    /// [`Supervisor::release_hosted`] lets the program run, or [`Supervisor::abandon_hosted`]
+    /// releases the reservation when the host could not start it. Until released, the
+    /// command holds the program, for at most [`Supervisor::release_window`]. The command
+    /// clears the host's environment, so the program gets exactly
     /// `spec.environment` plus the `host_variables` the host has set: those describe the
     /// host itself, as `TERM` names the terminal tmux emulates. Output goes to the host's
     /// terminal, not to the output files.
@@ -385,8 +395,12 @@ impl Supervisor {
                 scope_only,
             ));
         }
-        command.extend(["/bin/sh", "-c", LAUNCH_SCRIPT, "cockpit-launch"].map(OsString::from));
+        command
+            .extend(["/bin/sh", "-c", HOSTED_LAUNCH_SCRIPT, "cockpit-launch"].map(OsString::from));
         command.push(dir.join(LEADER_FILE).into_os_string());
+        command.push(dir.join(RELEASE_FILE).into_os_string());
+        let looks = self.release_window.as_millis() / OBSERVE_INTERVAL.as_millis();
+        command.push(looks.to_string().into());
         command.push(spec.program.clone().into_os_string());
         command.extend(spec.arguments.iter().cloned());
         Ok(HostedLaunch {
@@ -415,8 +429,9 @@ impl Supervisor {
     }
 
     /// Waits for a hosted execution's start confirmation, the leader file its command
-    /// writes; the leader's pid is its process group. On [`Error::LaunchTimedOut`] the
-    /// execution keeps its reservation, as for [`Supervisor::launch`].
+    /// writes; the leader's pid is its process group. The program waits for
+    /// [`Supervisor::release_hosted`]. On [`Error::LaunchTimedOut`] the execution keeps its
+    /// reservation, as for [`Supervisor::launch`].
     pub async fn confirm_hosted(
         &self,
         database: &Database,
@@ -434,6 +449,21 @@ impl Supervisor {
             }
             tokio::time::sleep(OBSERVE_INTERVAL).await;
         }
+    }
+
+    /// Lets a confirmed hosted execution's program run: until now its launcher waited, its
+    /// process already known (see [`Supervisor::confirm_hosted`]), so whatever the caller
+    /// records about that process is in place before the program can act (#316).
+    pub async fn release_hosted(&self, database: &Database, id: ExecutionId) -> Result<(), Error> {
+        let path = self.execution_dir(database, id).join(RELEASE_FILE);
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .await
+            .map(drop)
+            .map_err(Error::io("create", path))
     }
 
     /// Releases a hosted execution's reservation when its host never ran the command: no

@@ -20,9 +20,9 @@ process acts for:
 nothing (the approval status polls) use `identify_bound` in a read transaction: it gives
 the same session or refusal, and `None` when a pending token needs `identify` to bind it.
 
-The agent can send its first request before the launcher's `record_root` has run.
-`awaits_root` says, read-only, whether a request's token names such a launch, so the daemon
-can wait for the root, outside any write transaction, instead of refusing it (#279).
+The launcher runs `record_root` before the agent can run (`cockpit-sessions` holds a hosted
+agent until then, #316), so the channel never waits for a root: a request whose launch has
+none is refused `LaunchNotStarted` at once.
 
 A process is identified by boot id, pid and start time, so a reused pid never matches. The
 walk stops at a parent that started after its child. Reading process trees is implemented
@@ -54,5 +54,4 @@ read-only into that project's sandboxes only.
   real state database with real processes.
 - `tests/identify_bound.rs`: the read-only path beside a held writer, pending tokens left
   to `identify`, and the same refusals.
-- `tests/awaits_root.rs`: only a pending launch without its root is worth waiting for.
 - `tests/answers.rs`: directory modes, refused names and write-once answers.

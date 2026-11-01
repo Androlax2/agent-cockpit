@@ -40,6 +40,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE]...
+       cockpit config reload
        cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
        cockpit agent reports
        cockpit project add DIR [--name NAME]
@@ -96,6 +97,7 @@ fn main() -> ExitCode {
     let verb: Vec<Option<&str>> = arguments.iter().take(2).map(|word| word.to_str()).collect();
     match verb[..] {
         [Some("config"), Some("show")] => config_show(&arguments[2..]),
+        [Some("config"), Some("reload")] => config_reload(&arguments[2..]),
         [Some("agent"), Some("report")] => {
             agent::report(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }
@@ -189,6 +191,39 @@ fn usage_error(problem: Option<String>) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Has the running daemon re-read the owner's file and apply its session settings (#354);
+/// prints each one it applies, and the value it replaced when that differs.
+fn config_reload(arguments: &[OsString]) -> ExitCode {
+    if let Some(argument) = arguments.first() {
+        return usage_error(Some(format!(
+            "unknown argument {}",
+            argument.to_string_lossy()
+        )));
+    }
+    match daemon::request(
+        cockpit_protocol::Command::ConfigReload,
+        daemon::CONTROL_DEADLINE,
+    ) {
+        Ok(cockpit_protocol::Reply::ConfigReloaded { settings }) => {
+            for setting in settings {
+                if setting.value == setting.before {
+                    outln!("{} = {}", setting.key, setting.value);
+                } else {
+                    outln!(
+                        "{} = {}  # was {}",
+                        setting.key,
+                        setting.value,
+                        setting.before
+                    );
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(other) => daemon::unexpected(&other),
+        Err(code) => code,
+    }
+}
+
 /// Prints every effective configuration value with its source; reads files only.
 fn config_show(flags: &[OsString]) -> ExitCode {
     let mut flags = flags.iter();
@@ -230,6 +265,12 @@ fn config_show(flags: &[OsString]) -> ExitCode {
     ) {
         Ok(config) => {
             out!("{}", cockpit_config::render(&config));
+            // The daemon read the file at its start (#354); stdout stays the values alone.
+            eprintln!(
+                "cockpit: a running daemon applies a changed agents.desktop_session, \
+                 sessions.idle_sleep_after_minutes or sessions.asleep_expiry_days after \
+                 `cockpit config reload`, and start files from its next start"
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {

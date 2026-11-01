@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    Command, DESKTOP_SESSION_VARIABLES, ErrorCode, LaunchKindView, LaunchView, Outcome,
-    ProtocolError, Reply, SessionFailure, SessionStateView, SessionView, StopTargetView,
+    AppliedSettingView, Command, DESKTOP_SESSION_VARIABLES, ErrorCode, LaunchKindView, LaunchView,
+    Outcome, ProtocolError, Reply, SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 use cockpit_sessions::{
     DesktopSession, Error, LaunchKind, Restored, Session, SessionId, SessionState, Sessions,
@@ -159,6 +159,56 @@ pub(crate) fn import_desktop_session(
             Outcome::Ok(Reply::DesktopSessionImported {
                 withheld: sessions.desktop_session() == DesktopSession::Withheld,
             })
+        }),
+    }
+}
+
+/// Re-reads the owner's configuration file and applies its session settings to later
+/// launches and passes (#354). An invalid file is refused and the settings in force stay.
+pub(crate) fn reload_config(
+    environment: cockpit_config::Environment,
+    sessions: Arc<Sessions>,
+    reloads: Arc<tokio::sync::Mutex<()>>,
+) -> Route {
+    Route::Run {
+        class: WorkClass::Control,
+        job: job(async move {
+            let _one_reload_at_a_time = reloads.lock().await;
+            let loaded =
+                tokio::task::spawn_blocking(move || cockpit_config::load(&environment, None, &[]))
+                    .await
+                    .expect("loading the configuration does not panic");
+            let config = loaded.map_err(|error| {
+                tracing::warn!(%error, "config reload refused: the owner configuration is invalid");
+                Failed(ProtocolError {
+                    code: ErrorCode::InvalidArgument,
+                    message: format!(
+                        "the owner configuration is invalid, so nothing changed: {error}"
+                    ),
+                    unblock: Some(cockpit_protocol::Unblock {
+                        action: "fix the owner configuration file, then reload again".to_owned(),
+                        by: cockpit_protocol::UnblockedBy::Owner,
+                    }),
+                })
+            })?;
+            let applied = crate::owner_session_settings(&config);
+            let before = sessions.apply_owner_settings(applied);
+            tracing::info!(
+                ?before,
+                ?applied,
+                "the owner's session settings were reloaded"
+            );
+            let settings = applied
+                .rendered()
+                .into_iter()
+                .zip(before.rendered())
+                .map(|((key, value), (_, before))| AppliedSettingView {
+                    key: key.to_owned(),
+                    value,
+                    before,
+                })
+                .collect();
+            Ok(Reply::ConfigReloaded { settings })
         }),
     }
 }

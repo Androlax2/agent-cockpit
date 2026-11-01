@@ -16,6 +16,7 @@ fn providers(names: &[&str]) -> Reply {
             .map(|name| ProviderView {
                 name: (*name).to_owned(),
                 resume: true,
+                events: false,
             })
             .collect(),
     }

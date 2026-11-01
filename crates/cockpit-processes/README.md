@@ -46,7 +46,11 @@ the intent and answers the command the host runs: `env -i` with the spec's envir
 the host variables named (such as `TERM`), the scope wrapper when there is one, and the
 launch script, so the leader file confirms the start as above (`confirm_hosted`). The pane's
 process leads its own process group, so observation and termination are the same as for a
-launched execution. `abandon_hosted` releases a reservation whose host never ran the command.
+launched execution. The launch script then holds the program until `release_hosted` writes
+the execution's release file, so the caller records what it needs of the confirmed process
+first (`cockpit-sessions` records the agent's root, #316); unreleased within `release_window` (the daemon's: 70 s), it exits
+126 without running the program. `abandon_hosted` releases a reservation whose host never
+ran the command.
 Its output stays in the host's terminal. The environment's values never travel in argv,
 where any local process could read them: they are written to a 0600 file in the execution's
 directory, which the host step reads and deletes before the program starts. Names must be
@@ -92,7 +96,8 @@ themselves are not size-limited yet.
 - `tests/reattach.rs`: issue #29's orphan fixture (timed-out launcher, process still
   running, reservation kept and reconciled) and the restart cases of reconciliation.
 - `tests/hosted.rs`: an execution a host (playing tmux) starts: confirmed as its own
-  process group, exactly its environment, no value in its command, abandoned launches.
+  process group, exactly its environment, no value in its command, abandoned launches, and
+  a program that runs only once released.
 - `tests/hosted_reserved.rs`: a hosted execution the caller reserved in its own
   transaction: run as that execution, ended as never started on a refused spec, refused
   once no longer reserved.

@@ -7,7 +7,7 @@ use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 use crate::resources::{ProfileView, ReservationView, ResourceStatusView, VerdictView};
-use crate::sessions::{ProviderView, SessionFailure, SessionView};
+use crate::sessions::{AppliedSettingView, ProviderView, SessionFailure, SessionView};
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
 };
@@ -510,6 +510,12 @@ pub enum Command {
     DesktopSessionImport {
         variables: std::collections::BTreeMap<String, String>,
     },
+    /// Owner only: re-read the owner's configuration file and apply its session settings
+    /// (`agents.desktop_session`, `sessions.idle_sleep_after_minutes`,
+    /// `sessions.asleep_expiry_days`) to later launches and sessions passes (#354). An
+    /// invalid file is refused and nothing changes. Start files still count from the next
+    /// daemon start.
+    ConfigReload,
     /// Open the manager tmux session, or find the one already open. `column` (the TUI) runs
     /// in its left pane and `viewer` in the pane beside it until a session is shown there,
     /// both from `dir` (absolute). Words are never parsed by a shell.
@@ -696,6 +702,10 @@ pub enum Reply {
     /// agents off the desktop session, so none of them gets it (#305).
     DesktopSessionImported {
         withheld: bool,
+    },
+    /// The owner settings the daemon applies now, each with the value it applied before.
+    ConfigReloaded {
+        settings: Vec<AppliedSettingView>,
     },
     /// The manager session: `attach` are the words that attach a terminal to it; `created`
     /// says whether this request opened it.

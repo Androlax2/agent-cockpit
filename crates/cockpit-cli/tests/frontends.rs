@@ -75,10 +75,12 @@ async fn provider_list_prints_each_provider_and_whether_it_resumes() {
                 ProviderView {
                     name: "claude".to_owned(),
                     resume: true,
+                    events: true,
                 },
                 ProviderView {
                     name: "plain".to_owned(),
                     resume: false,
+                    events: false,
                 },
             ],
         }),
@@ -87,7 +89,10 @@ async fn provider_list_prints_each_provider_and_whether_it_resumes() {
     let output = home.cockpit(&["provider", "list"]).await;
 
     assert!(output.status.success(), "{}", text(&output.stderr));
-    assert_eq!(text(&output.stdout), "claude\tresume\nplain\tno-resume\n");
+    assert_eq!(
+        text(&output.stdout),
+        "claude\tresume\tevents\nplain\tno-resume\tno-events\n"
+    );
     assert_eq!(daemon.await.unwrap(), Command::ProviderList);
 }
 

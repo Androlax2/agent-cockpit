@@ -11,13 +11,15 @@ use crate::{Error, Signal};
 /// How long a host query (`ps`, `sysctl`, `systemctl`) may take before it counts as failed.
 pub(crate) const HOST_COMMAND_DEADLINE: Duration = Duration::from_secs(5);
 
-/// The script the launched shell runs before it becomes the program: it writes its own pid
-/// (the process group, since it leads one) and start token to `$1`, then execs the rest. The
-/// token comes from the same source [`leader_start`] reads, so the two compare exactly.
-/// The file is the launcher's confirmation that the program started, written by the
-/// execution itself: a daemon that crashed between spawn and commit still finds it.
+/// The first lines of every launch script: the launched shell writes its own pid (the process
+/// group, since it leads one) and start token to `$1`. The token comes from the same source
+/// [`leader_start`] reads, so the two compare exactly. The file is the launcher's confirmation
+/// that the program started, written by the execution itself: a daemon that crashed between
+/// spawn and commit still finds it.
 #[cfg(target_os = "linux")]
-pub(crate) const LAUNCH_SCRIPT: &str = r#"read -r stat < /proc/$$/stat
+macro_rules! write_leader_file {
+    () => {
+        r#"read -r stat < /proc/$$/stat
 stat=${stat##*) }
 field=3
 for value in $stat; do
@@ -25,14 +27,39 @@ for value in $stat; do
   field=$((field + 1))
 done
 printf '%s\n%s\n' "$$" "$start" > "$1.partial" && /bin/mv -f "$1.partial" "$1" || exit 127
-shift
-exec "$@""#;
+"#
+    };
+}
 
 #[cfg(target_os = "macos")]
-pub(crate) const LAUNCH_SCRIPT: &str = r#"start=$(LC_ALL=C /bin/ps -o lstart= -p $$)
+macro_rules! write_leader_file {
+    () => {
+        r#"start=$(LC_ALL=C /bin/ps -o lstart= -p $$)
 printf '%s\n%s\n' "$$" "$start" > "$1.partial" && /bin/mv -f "$1.partial" "$1" || exit 127
-shift
-exec "$@""#;
+"#
+    };
+}
+
+/// The script the launched shell runs before it becomes the program: it writes the leader
+/// file `$1`, then execs the rest.
+pub(crate) const LAUNCH_SCRIPT: &str = concat!(write_leader_file!(), "shift\nexec \"$@\"");
+
+/// [`LAUNCH_SCRIPT`] for a hosted program, which also waits for the release file `$2` before
+/// it execs the rest: the daemon records what it must know of the process (its launch's root,
+/// #316) between the two, so the program never runs unrecorded. It looks every 20 ms, at
+/// most `$3` times, then gives up without running the program (exit 126), so a launch the
+/// daemon abandoned, or a daemon that died meanwhile, never starts it.
+pub(crate) const HOSTED_LAUNCH_SCRIPT: &str = concat!(
+    write_leader_file!(),
+    r#"release=$2 looks=$3
+shift 3
+while [ ! -e "$release" ]; do
+  [ "$looks" -gt 0 ] || { echo 'cockpit: the launch was never released' >&2; exit 126; }
+  looks=$((looks - 1))
+  /bin/sleep 0.02
+done
+exec "$@""#
+);
 
 #[cfg(target_os = "linux")]
 pub(crate) async fn boot_id() -> Result<String, Error> {

@@ -452,13 +452,26 @@ class StampTests(unittest.TestCase):
 
 # Stand-ins for the built binaries: the real ones are proven by the release workflow's
 # install jobs, which run this same check on every platform's archive.
+# `provider list` prints what the fake daemon found; `version --all` the bundle's manifest.
 FAKE_COCKPIT = """#!/bin/sh
+if [ "$1" = provider ]; then cat "$HOME/providers"; exit; fi
 prefix=$(cd "$(dirname "$0")/.." && pwd)
 echo "cockpit 0.1.0-alpha.7 (revision 0123abcd)"
 echo "bundle manifest $prefix/share/cockpit/manifest.json:"
 cat "$prefix/share/cockpit/manifest.json"
 """
+# As the real daemon: Claude Code reports events when `claude --version` answers and the
+# hook bridge beside it runs.
 FAKE_DAEMON = """#!/bin/sh
+if claude --version > /dev/null 2>&1; then
+  if "$(dirname "$0")/cockpit-claude-hook" --version > /dev/null 2>&1; then
+    printf 'claude\\tresume\\tevents\\n' > "$HOME/providers"
+  else
+    printf 'claude\\tresume\\tno-events\\n' > "$HOME/providers"
+  fi
+else
+  : > "$HOME/providers"
+fi
 echo "ready $HOME/.local/state/cockpit/run/daemon.sock"
 exec sleep 60
 """
@@ -640,7 +653,8 @@ class VerifyInstallTests(PackagingTestCase):
     def test_a_daemon_whose_helper_keeps_its_pipes_open_does_not_hang_the_check(self):
         self.write_fake(
             "cockpit-daemon",
-            '#!/bin/sh\nsleep 600 &\necho "ready $HOME/daemon.sock"\nexec sleep 600\n',
+            "#!/bin/sh\nprintf 'claude\\tresume\\tevents\\n' > \"$HOME/providers\"\n"
+            'sleep 600 &\necho "ready $HOME/daemon.sock"\nexec sleep 600\n',
         )
         _code, outputs, _error = self.package()
         code, _verified, error = self.verify(outputs["root"])
@@ -659,6 +673,35 @@ class VerifyInstallTests(PackagingTestCase):
         code, _verified, error = self.verify(outputs["root"], revision="fedcba98")
         self.assertEqual(code, 1)
         self.assertIn("expected 'cockpit 0.1.0-alpha.7 (revision fedcba98)'", error)
+
+    def test_an_install_whose_hook_bridge_cannot_run_fails(self):
+        self.write_fake("cockpit-claude-hook", "#!/bin/sh\nexit 126\n")
+        _code, outputs, _error = self.package()
+        code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("did not find a runnable Claude hook bridge", error)
+        self.assertIn("no-events", error)
+
+    def test_a_provider_list_that_hangs_fails_with_the_daemon_log(self):
+        # A FIFO nobody writes keeps the fake `cockpit provider list` reading forever.
+        self.write_fake(
+            "cockpit-daemon",
+            "#!/bin/sh\nmkfifo \"$HOME/providers\"\necho 'stuck on the hook bridge' >&2\n"
+            'echo "ready $HOME/daemon.sock"\nexec sleep 600\n',
+        )
+        _code, outputs, _error = self.package()
+        with patch.object(release, "COMMAND_TIMEOUT_SECONDS", 1):
+            code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("provider list did not finish in 1s", error)
+        self.assertIn("stuck on the hook bridge", error)
+
+    def test_the_daemon_is_started_with_a_claude_that_answers_its_version(self):
+        _code, outputs, _error = self.package()
+        with patch.object(release, "STAND_IN_CLAUDE", "#!/bin/sh\nexit 1\n"):
+            code, _verified, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("did not find a runnable Claude hook bridge", error)
 
     def test_a_daemon_that_does_not_become_ready_fails(self):
         self.write_fake("cockpit-daemon", "#!/bin/sh\necho 'no state dir' >&2\nexit 1\n")

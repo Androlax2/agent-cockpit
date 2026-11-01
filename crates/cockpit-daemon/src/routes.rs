@@ -83,8 +83,12 @@ pub struct Routes {
     sessions: Arc<cockpit_sessions::Sessions>,
     manager: Arc<Manager>,
     providers: Vec<cockpit_protocol::ProviderView>,
-    /// Read for `projects.trusted` on each answer, so a changed owner config applies at once.
+    /// Read for `projects.trusted` on each answer, so a changed owner config applies at once,
+    /// and by `config-reload` for the session settings (#354).
     environment: cockpit_config::Environment,
+    /// Held from a `config-reload`'s read of the file until its values are applied, so a
+    /// reload that read an older file never lands after one that read a newer file.
+    config_reloads: Arc<tokio::sync::Mutex<()>>,
     /// Runs what the owner approved, and holds the runs in progress.
     runner: cockpit_approvals::Runner,
     resources: resources::Resources,
@@ -120,6 +124,7 @@ impl Routes {
             manager: capabilities.manager,
             providers: capabilities.providers,
             environment,
+            config_reloads: Arc::default(),
             runner: capabilities.runner,
         }
     }
@@ -408,6 +413,12 @@ impl Handler for Routes {
             (command @ Command::CheckGate { .. }, peer) => {
                 verification::route(command, peer, self.verification.clone())
             }
+            (Command::ConfigReload, Peer::Owner) => sessions::reload_config(
+                self.environment.clone(),
+                Arc::clone(&self.sessions),
+                Arc::clone(&self.config_reloads),
+            ),
+            (Command::ConfigReload, Peer::Agent { .. }) => Route::Answer(owner_only()),
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(
                 ErrorCode::UnknownCommand,

@@ -10,10 +10,7 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, ErrorCode, Reply};
-use real_daemon::{
-    ENVIRONMENT_PROJECT, GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_program,
-    new_session,
-};
+use real_daemon::{GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_program, new_session};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launched_agent_reports_to_a_daemon_on_a_scratch_layout() {
@@ -55,7 +52,7 @@ async fn a_launched_agent_sees_the_daemons_display_variables() {
     let home = Home::new();
     let _daemon = home.start_with(&DESKTOP_AT_START);
 
-    let seen = environment_of_a_launched_agent(&home).await;
+    let seen = home.environment_of_a_launched_agent().await;
 
     assert_eq!(
         seen,
@@ -69,7 +66,7 @@ async fn a_launched_agent_gets_no_display_variable_the_daemon_lacks() {
     let home = Home::new();
     let _daemon = home.start_with(&[("WAYLAND_DISPLAY", "wayland-7")]);
 
-    let seen = environment_of_a_launched_agent(&home).await;
+    let seen = home.environment_of_a_launched_agent().await;
 
     assert_eq!(
         seen,
@@ -91,7 +88,7 @@ async fn an_owner_who_withholds_the_desktop_session_launches_agents_without_any_
     home.write_owner_config("[agents]\ndesktop_session = \"withheld\"\n");
     let _daemon = home.start_with(&DESKTOP_AT_START);
 
-    let seen = environment_of_a_launched_agent(&home).await;
+    let seen = home.environment_of_a_launched_agent().await;
 
     assert_eq!(
         seen,
@@ -115,7 +112,7 @@ async fn an_agent_launched_after_an_import_sees_the_imported_desktop_session() {
         "{}",
         String::from_utf8_lossy(&imported.stderr)
     );
-    let seen = environment_of_a_launched_agent(&home).await;
+    let seen = home.environment_of_a_launched_agent().await;
 
     assert_eq!(
         seen,
@@ -160,20 +157,5 @@ async fn an_import_of_another_variable_or_a_nul_byte_is_refused_with_its_name() 
 fn import_of(name: &str, value: &str) -> Command {
     Command::DesktopSessionImport {
         variables: [(name.to_owned(), value.to_owned())].into(),
-    }
-}
-
-/// Starts a session of the [`ENVIRONMENT_PROJECT`] agent and returns what it wrote.
-async fn environment_of_a_launched_agent(home: &Home) -> String {
-    let client = home.connect().await;
-    let (root, _) = home.project(&client, ENVIRONMENT_PROJECT).await;
-    new_session(&client, &root).await;
-    let deadline = Instant::now() + GENEROUS;
-    loop {
-        if let Ok(written) = std::fs::read_to_string(home.environment_log()) {
-            return written;
-        }
-        assert!(Instant::now() < deadline, "the agent wrote no environment");
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

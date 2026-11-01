@@ -1,6 +1,7 @@
 //! The wire form of the commands the TUI and the CLI add for #35: the provider list for the
-//! new-session form, the manager session and showing a session in its viewer.
-use cockpit_protocol::{Command, ProviderView, Reply, decode_request};
+//! new-session form, the manager session and showing a session in its viewer; and the owner's
+//! desktop-session import (#307) and config reload (#354).
+use cockpit_protocol::{AppliedSettingView, Command, ProviderView, Reply, decode_request};
 use serde_json::json;
 
 #[test]
@@ -54,6 +55,7 @@ fn the_providers_and_manager_replies_name_their_fields_on_the_wire() {
         providers: vec![ProviderView {
             name: "claude".to_owned(),
             resume: true,
+            events: true,
         }],
     };
     let manager = Reply::Manager {
@@ -67,7 +69,7 @@ fn the_providers_and_manager_replies_name_their_fields_on_the_wire() {
             serde_json::to_value(manager).unwrap()
         ),
         (
-            json!({"kind": "providers", "providers": [{"name": "claude", "resume": true}]}),
+            json!({"kind": "providers", "providers": [{"name": "claude", "resume": true, "events": true}]}),
             json!({"kind": "manager", "attach": ["tmux", "-L", "cockpit"], "created": true})
         )
     );
@@ -113,5 +115,33 @@ fn a_desktop_session_import_carries_only_the_set_variables_and_its_reply_says_wi
     assert_eq!(
         serde_json::to_value(Reply::DesktopSessionImported { withheld: true }).unwrap(),
         json!({"kind": "desktop-session-imported", "withheld": true})
+    );
+}
+
+#[test]
+fn a_config_reload_carries_nothing_and_its_reply_lists_each_setting_with_its_old_value() {
+    let wire = json!({"id": 4, "command": {"kind": "config-reload"}});
+
+    let request = decode_request(&wire.to_string()).unwrap();
+
+    assert_eq!(request.command, Command::ConfigReload);
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    assert_eq!(
+        serde_json::to_value(Reply::ConfigReloaded {
+            settings: vec![AppliedSettingView {
+                key: "agents.desktop_session".to_owned(),
+                value: "\"withheld\"".to_owned(),
+                before: "\"shared\"".to_owned(),
+            }],
+        })
+        .unwrap(),
+        json!({
+            "kind": "config-reloaded",
+            "settings": [{
+                "key": "agents.desktop_session",
+                "value": "\"withheld\"",
+                "before": "\"shared\""
+            }]
+        })
     );
 }

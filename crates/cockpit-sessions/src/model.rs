@@ -351,10 +351,13 @@ impl fmt::Display for SleepRefusal {
 /// The lifecycle's settings; [`Settings::default`] holds the product's values.
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// How long an agent waits at its prompt before it is put to sleep.
-    pub idle_sleep_after: Duration,
-    /// How long a session may sleep before it is ended.
-    pub asleep_expiry: Duration,
+    /// The owner's idle window (how long an agent waits at its prompt before it is put to
+    /// sleep), asleep expiry (how long a session may sleep before it is ended) and desktop
+    /// session choice (whether agents get the owner's desktop session variables, as last
+    /// given to [`crate::Sessions::import_desktop_environment`], after the base ones, #305).
+    /// These are the start values only: the lifecycle reads them through
+    /// `Sessions::owner_settings`, which `Sessions::apply_owner_settings` replaces (#354).
+    pub owner: cockpit_config::SessionSettings,
     /// How an agent is stopped: `SIGTERM`, then `SIGKILL` to its whole containment.
     pub stop: Escalation,
     /// The window size of a new session's terminal until a client attaches.
@@ -363,9 +366,6 @@ pub struct Settings {
     /// Variables every agent gets before its provider's own, such as `HOME` and `PATH`;
     /// the daemon passes its own values.
     pub base_environment: Vec<(OsString, OsString)>,
-    /// Whether agents get the owner's desktop session variables, as last given to
-    /// [`crate::Sessions::import_desktop_environment`], after the base ones (#305).
-    pub desktop_session: crate::DesktopSession,
     /// The files agents read only at launch (`cockpit-config`); each launch records their
     /// state, and `restart --all` restarts the sessions whose files changed since.
     pub start_files: Vec<cockpit_config::StartFile>,
@@ -382,9 +382,12 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Settings {
         Settings {
-            // The current cockpit's `idle-sleep-after` default and expiry (sleep.rs).
-            idle_sleep_after: Duration::from_secs(60 * 60),
-            asleep_expiry: Duration::from_secs(7 * 24 * 60 * 60),
+            owner: cockpit_config::SessionSettings {
+                // The current cockpit's `idle-sleep-after` default and expiry (sleep.rs).
+                idle_sleep_after: Duration::from_secs(60 * 60),
+                asleep_expiry: Duration::from_secs(7 * 24 * 60 * 60),
+                desktop_session: crate::DesktopSession::Shared,
+            },
             stop: Escalation {
                 grace: Duration::from_secs(5),
                 kill_wait: Duration::from_secs(5),
@@ -392,7 +395,6 @@ impl Default for Settings {
             columns: 200,
             rows: 50,
             base_environment: Vec::new(),
-            desktop_session: crate::DesktopSession::Shared,
             start_files: Vec::new(),
             step_timeout: Duration::from_secs(30),
             // An eighth of Tokio's default blocking pool (512), so a hung tmux leaves the

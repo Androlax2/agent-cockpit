@@ -632,9 +632,10 @@ async fn waking_a_running_session_is_refused_as_a_conflict() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_that_waits_at_its_prompt_past_the_idle_window_is_put_to_sleep() {
     let home = Home::new();
-    let idle_at_once = cockpit_sessions::Settings {
-        idle_sleep_after: Duration::ZERO,
-        ..settings()
+    let idle_at_once = {
+        let mut settings = settings();
+        settings.owner.idle_sleep_after = Duration::ZERO;
+        settings
     };
     let daemon = home.start(BASELINE, idle_at_once).await;
     let client = connect(&daemon).await;
@@ -658,9 +659,10 @@ async fn an_agent_that_waits_at_its_prompt_past_the_idle_window_is_put_to_sleep(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_working_agent_is_not_put_to_sleep_however_long_it_works() {
     let home = Home::new();
-    let idle_at_once = cockpit_sessions::Settings {
-        idle_sleep_after: Duration::ZERO,
-        ..settings()
+    let idle_at_once = {
+        let mut settings = settings();
+        settings.owner.idle_sleep_after = Duration::ZERO;
+        settings
     };
     let daemon = home.start(BASELINE, idle_at_once).await;
     let client = connect(&daemon).await;
@@ -683,9 +685,10 @@ async fn a_working_agent_is_not_put_to_sleep_however_long_it_works() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_report_from_the_previous_launch_does_not_put_the_restarted_agent_to_sleep() {
     let home = Home::new();
-    let idle_at_once = cockpit_sessions::Settings {
-        idle_sleep_after: Duration::ZERO,
-        ..settings()
+    let idle_at_once = {
+        let mut settings = settings();
+        settings.owner.idle_sleep_after = Duration::ZERO;
+        settings
     };
     let daemon = home.start(BASELINE, idle_at_once).await;
     let client = connect(&daemon).await;
@@ -748,9 +751,10 @@ async fn end_finishes_a_stop_an_error_left_unfinished() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_asleep_session_past_the_expiry_ends() {
     let home = Home::new();
-    let expire_at_once = cockpit_sessions::Settings {
-        asleep_expiry: Duration::ZERO,
-        ..settings()
+    let expire_at_once = {
+        let mut settings = settings();
+        settings.owner.asleep_expiry = Duration::ZERO;
+        settings
     };
     let daemon = home.start(BASELINE, expire_at_once).await;
     let client = connect(&daemon).await;
@@ -1331,6 +1335,5 @@ fn a_clean_owner_configuration_keeps_the_sessions_product_defaults() {
     let configured = cockpit_daemon::session_settings(&config);
     let product = cockpit_sessions::Settings::default();
 
-    assert_eq!(configured.idle_sleep_after, product.idle_sleep_after);
-    assert_eq!(configured.asleep_expiry, product.asleep_expiry);
+    assert_eq!(configured.owner, product.owner);
 }
