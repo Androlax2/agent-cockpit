@@ -52,6 +52,7 @@ fn n_opens_the_next_session_that_needs_you_wrapping_around() {
                 needs_input: Some("Which branch?".to_owned()),
                 outcome: None,
                 question_source: Some(cockpit_protocol::QuestionSource::Agent),
+                covered_question: None,
                 reported_at: 1,
             }],
         },

@@ -227,7 +227,8 @@ pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> Exit
 }
 
 /// `session state label="…" doing="…" needs-input="…" outcome=… outcome-reason="…"`, leaving
-/// out what was never reported; a dialog's question shows as `dialog="…"`.
+/// out what was never reported; a dialog's question shows as `dialog="…"`, followed by
+/// `also-waiting="…"` for the agent's own question it covers (#250).
 fn render(report: &SessionReport) -> String {
     let mut line = report.session.clone();
     line.push(' ');
@@ -240,6 +241,7 @@ fn render(report: &SessionReport) -> String {
         ("label", &report.label),
         ("doing", &report.doing),
         (question_key, &report.needs_input),
+        ("also-waiting", &report.covered_question),
     ] {
         if let Some(value) = value {
             line.push_str(&format!(" {key}={value:?}"));

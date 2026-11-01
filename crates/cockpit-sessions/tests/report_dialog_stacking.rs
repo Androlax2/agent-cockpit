@@ -89,14 +89,7 @@ async fn a_dialog_over_the_agents_question_shows_while_open() {
 
 #[tokio::test]
 async fn the_agents_question_shows_again_once_the_dialog_clears() {
-    let answered_reports = [
-        state(AgentState::Working),
-        state(AgentState::Waiting),
-        Report {
-            label: Some("Agent channel issue".to_owned()),
-            ..Report::default()
-        },
-    ];
+    let answered_reports = [state(AgentState::Working), state(AgentState::Waiting)];
     for answered in answered_reports {
         let dir = tempfile::tempdir().unwrap();
         let database = dialog_over_own_question(dir.path()).await;
@@ -144,8 +137,9 @@ async fn a_second_dialog_keeps_the_agents_question_beneath() {
     );
 }
 
+/// A stateless report leaves the dialog open (#216), so the new question waits beneath it.
 #[tokio::test]
-async fn a_new_question_from_the_agent_answers_the_dialog_and_replaces_its_own() {
+async fn a_new_question_from_the_agent_replaces_its_own_beneath_the_dialog() {
     let dir = tempfile::tempdir().unwrap();
     let database = dialog_over_own_question(dir.path()).await;
 
@@ -155,9 +149,9 @@ async fn a_new_question_from_the_agent_answers_the_dialog_and_replaces_its_own()
 
     assert_eq!(
         shown(&recorded),
-        Some(("Which schema?", QuestionSource::Agent))
+        Some(("Allow Bash?", QuestionSource::Dialog))
     );
-    assert_eq!(recorded.covered_question, None);
+    assert_eq!(recorded.covered_question.as_deref(), Some("Which schema?"));
 }
 
 #[tokio::test]

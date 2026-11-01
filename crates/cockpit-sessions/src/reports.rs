@@ -44,10 +44,13 @@ impl AgentState {
 /// Where an open question came from, which decides what clears it (#200).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuestionSource {
-    /// The agent asked it (`--needs-input`): open until a new prompt or a new launch.
+    /// The agent asked it (`--needs-input`): open until a new prompt, a new launch or a new
+    /// conversation (#225).
     Agent,
-    /// The provider bridge saw a dialog (permission, elicitation): open until the next
-    /// report, since any later event means the dialog was answered.
+    /// The provider bridge saw a dialog (permission, elicitation): open until a report says
+    /// what the agent does (a state or a turn's outcome), which means the dialog was
+    /// answered, or a new launch or conversation; a stateless label or doing-now may come
+    /// from a subagent meanwhile (#216).
     Dialog,
 }
 
@@ -139,21 +142,24 @@ pub async fn report(
     }
     let previous = latest_report(write, &session).await?;
     let launch = latest_launch(write, &session).await?;
-    if let Some(conversation) = &conversation {
-        conversations::check(
-            write,
-            &session,
-            launch,
-            conversation,
-            report.is_conversation_ending,
-        )
-        .await?;
-    }
+    let is_new_conversation = match &conversation {
+        Some(conversation) => {
+            conversations::check(
+                write,
+                &session,
+                launch,
+                conversation,
+                report.is_conversation_ending,
+            )
+            .await?
+        }
+        None => false,
+    };
     // An announced end reports nothing about the agent: the latest report stays as it is.
     if report.is_conversation_ending {
         return Ok(previous.unwrap_or_else(|| unreported(&session)));
     }
-    let merged = merge(&session, previous, report, launch);
+    let merged = merge(&session, previous, report, launch, is_new_conversation);
     write
         .execute(
             "DELETE FROM session_reports WHERE session = ?1",
@@ -247,44 +253,45 @@ fn unreported(session: &SessionId) -> SessionReport {
     }
 }
 
+/// `is_new_conversation`: the session just followed the conversation that replaced an ended
+/// one, which, like a newer launch, owes nothing to the previous conversation (#311).
 fn merge(
     session: &SessionId,
     previous: Option<SessionReport>,
     report: Report,
     launch: Option<i64>,
+    is_new_conversation: bool,
 ) -> SessionReport {
     let previous = previous.unwrap_or_else(|| unreported(session));
+    let is_continuing = previous.launch == launch && !is_new_conversation;
     let is_asking = report.needs_input.is_some() || report.dialog.is_some();
-    // A report after a dialog means the dialog was answered and the agent goes on, so a
-    // stateless one leaves it working rather than in the waiting the dialog forced.
-    let is_answering_dialog =
-        previous.question_source == Some(QuestionSource::Dialog) && previous.launch == launch;
+    // Only a report saying what the agent does answers a dialog: a label, a doing-now or the
+    // agent's own question may come from a parallel tool or a subagent while the dialog
+    // still blocks the agent (#216).
+    let is_answering_dialog = report.state.is_some() || report.outcome.is_some();
     // A question is only asked, and a turn only ended, while the agent waits.
     let state = if is_asking || report.outcome.is_some() {
         Some(AgentState::Waiting)
-    } else if is_answering_dialog {
-        report.state.or(Some(AgentState::Working))
     } else {
         report.state.or(previous.state)
     };
     let outcome = match (report.outcome, state) {
         (Some(outcome), _) => Some(outcome),
         (None, Some(AgentState::Working)) => None,
-        // A turn of an earlier launch says nothing about this launch's agent.
-        (None, _) if previous.launch != launch => None,
+        (None, _) if !is_continuing => None,
         (None, _) => previous.outcome,
     };
-    let previous_agent_question = match previous.question_source {
-        Some(QuestionSource::Agent) => previous.needs_input,
-        Some(QuestionSource::Dialog) => previous.covered_question,
-        None => None,
+    let (previous_agent_question, previous_dialog) = match previous.question_source {
+        Some(QuestionSource::Agent) => (previous.needs_input, None),
+        Some(QuestionSource::Dialog) => (previous.covered_question, previous.needs_input),
+        None => (None, None),
     };
     let kept_agent_question =
-        previous_agent_question.filter(|_| !report.is_new_prompt && previous.launch == launch);
+        previous_agent_question.filter(|_| !report.is_new_prompt && is_continuing);
     let agent_question = report.needs_input.or(kept_agent_question);
-    // A previous dialog is answered by this report, so only this report's dialog is open;
-    // it shows over the agent's question, which waits beneath it.
-    let (needs_input, question_source, covered_question) = match report.dialog {
+    let kept_dialog = previous_dialog.filter(|_| !is_answering_dialog && is_continuing);
+    // An open dialog shows over the agent's question, which waits beneath it.
+    let (needs_input, question_source, covered_question) = match report.dialog.or(kept_dialog) {
         Some(dialog) => (Some(dialog), Some(QuestionSource::Dialog), agent_question),
         None => {
             let question_source = agent_question.as_ref().map(|_| QuestionSource::Agent);

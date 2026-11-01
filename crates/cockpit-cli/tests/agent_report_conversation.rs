@@ -46,6 +46,7 @@ fn reported() -> Outcome {
             doing: None,
             needs_input: None,
             question_source: None,
+            covered_question: None,
             outcome: None,
             reported_at: 1,
         }),

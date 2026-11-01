@@ -66,6 +66,7 @@ fn session_report(session: &str) -> SessionReport {
         needs_input: Some("Start now?".to_owned()),
         outcome: None,
         question_source: Some(QuestionSource::Agent),
+        covered_question: None,
         reported_at: 1,
     }
 }

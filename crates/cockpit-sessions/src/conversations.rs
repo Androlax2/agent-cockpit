@@ -15,34 +15,37 @@ use crate::{Error, store};
 
 /// Accepts a report from `reported` for `session`'s `launch`, following an announced change,
 /// or refuses it. `is_ending` announces that `reported` ends for another conversation.
+/// Returns whether the session followed a new conversation, which starts afresh (#213, #225).
 pub(crate) async fn check(
     write: &WriteTransaction<'_>,
     session: &SessionId,
     launch: Option<i64>,
     reported: &ConversationId,
     is_ending: bool,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let id = crate::SessionId::parse(session.as_str())?;
-    let Some(current) = store::session(write, &id).await?.conversation else {
+    match store::session(write, &id).await?.conversation {
         // A provider that never named its conversation is named by its first report.
-        store::change_conversation(write, &id, reported).await?;
-        return record_end(write, session, launch, reported, is_ending).await;
-    };
-    if *reported == current {
-        return record_end(write, session, launch, reported, is_ending).await;
+        None => store::change_conversation(write, &id, reported).await?,
+        Some(current) if *reported == current => {}
+        Some(current) => {
+            if !is_ending && announced_end(write, session, launch, &current).await? {
+                clear_end(write, session).await?;
+                store::change_conversation(write, &id, reported).await?;
+                return Ok(true);
+            }
+            return Err(refused(invalid(
+                "conversation",
+                format!(
+                    "{reported} is not session {}'s conversation ({current}), which announced \
+                     no change; a report of another conversation never moves this session",
+                    session.as_str()
+                ),
+            )));
+        }
     }
-    if !is_ending && announced_end(write, session, launch, &current).await? {
-        clear_end(write, session).await?;
-        return store::change_conversation(write, &id, reported).await;
-    }
-    Err(refused(invalid(
-        "conversation",
-        format!(
-            "{reported} is not session {}'s conversation ({current}), which announced no \
-             change; a report of another conversation never moves this session",
-            session.as_str()
-        ),
-    )))
+    record_end(write, session, launch, reported, is_ending).await?;
+    Ok(false)
 }
 
 /// A report of the current conversation closes any change it announced, and opens one when
