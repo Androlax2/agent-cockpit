@@ -12,19 +12,19 @@ use cockpit_authorization::{Permission, Scope};
 use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
-use cockpit_provider_api::{
-    Action, Activity, Capability, Conversation, Key, LaunchRequest, Provider, ProviderError,
-    TerminalInput,
-};
-use cockpit_tmux::{Keystroke, PaneId, Server, SessionLaunch, SessionName};
+use cockpit_provider_api::{Capability, Conversation, LaunchRequest, Provider, ProviderError};
+use cockpit_tmux::{PaneId, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
+
+#[path = "messaging.rs"]
+mod messaging;
 
 use crate::model::{LaunchPurpose, validate_link};
 use crate::store::{self, NewSession};
 use crate::{
-    Addressed, AgentState, Error, LaunchKind, QuestionSource, RestartAll, Restored, Session,
-    SessionId, SessionReport, SessionState, Settings, SleepRefusal, StartRequest, StopTarget,
-    TickReport, WakeCause,
+    AgentState, Error, LaunchKind, QuestionSource, RestartAll, Restored, Session, SessionId,
+    SessionReport, SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport,
+    WakeCause,
 };
 
 /// The variable that hands the agent its one-time launch token (report 17).
@@ -62,6 +62,7 @@ const RESTARTABLE: [SessionState; 5] = [
 /// tmux server and the available providers.
 pub struct Sessions {
     database: Arc<Database>,
+    connect_socket: crate::ConnectSessionSocket,
     processes: Supervisor,
     /// Cockpit's tmux server, which the caller opens and may share, or why it could not be
     /// opened: the daemon starts without tmux (report 09), and each operation that needs a
@@ -152,6 +153,10 @@ impl Drop for Launching<'_> {
 }
 
 impl Sessions {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "capabilities and the daemon-owned socket boundary"
+    )]
     pub fn new(
         database: Arc<Database>,
         processes: Supervisor,
@@ -160,6 +165,7 @@ impl Sessions {
         providers: Vec<Arc<dyn Provider>>,
         settings: Settings,
         session_dirs: PathBuf,
+        connect_socket: crate::ConnectSessionSocket,
     ) -> Sessions {
         assert!(
             settings.blocking_steps > 0,
@@ -168,6 +174,7 @@ impl Sessions {
         Sessions {
             blocking_permits: Arc::new(tokio::sync::Semaphore::new(settings.blocking_steps)),
             database,
+            connect_socket,
             processes,
             tmux,
             git,
@@ -627,88 +634,6 @@ impl Sessions {
         write.commit().await?;
         self.remove_session_dir(id).await?;
         Ok(ended)
-    }
-
-    /// Types `message` into the running agent's terminal, with the keys its provider gives
-    /// for the agent's activity as its current launch last reported it (#385). Every error
-    /// but [`Error::TypingUnconfirmed`] means nothing was typed. It never waits behind
-    /// another operation on the session: one under way refuses it, so a caller retries.
-    /// `addressed` says whether the message may answer the agent's own open question.
-    pub async fn submit(
-        &self,
-        id: &SessionId,
-        message: &str,
-        addressed: Addressed,
-    ) -> Result<(), Error> {
-        let Ok(guard) = Arc::clone(&self.session_lock(id).operation).try_lock_owned() else {
-            return Err(Error::SessionBusy {
-                session: id.clone(),
-            });
-        };
-        let read = self.database.read().await?;
-        let session = store::session(&read, id).await?;
-        let report = crate::reports::latest_report(&read, &authorization_session(id)?).await?;
-        drop(read);
-        let Some(launch) = session
-            .launch
-            .as_ref()
-            .filter(|_| session.state == SessionState::Running)
-        else {
-            return Err(Error::WrongState {
-                session: id.clone(),
-                state: session.state,
-                operation: "type a message to its agent",
-            });
-        };
-        let activity = report
-            .filter(|report| report.launch == Some(launch.number))
-            .and_then(|report| {
-                let is_answerable = addressed == Addressed::Collaborator
-                    && report.question_source == Some(QuestionSource::Agent);
-                if report.needs_input.is_some() && !is_answerable {
-                    return Some(Activity::NeedsYou);
-                }
-                match report.state? {
-                    AgentState::Working => Some(Activity::Working),
-                    AgentState::Waiting => Some(Activity::Waiting),
-                }
-            });
-        let provider = self.provider(Some(session.provider.as_str()))?;
-        let input = provider.input(&Action::Submit(message), activity)?;
-        let tmux = self.tmux()?;
-        let name = terminal_name(id)?;
-        let session_id = id.clone();
-        self.blocking("type a message to the agent", move || {
-            let _guard = guard;
-            let pane = agent_pane(&tmux, &name)?;
-            let keys: Vec<Keystroke> = input
-                .iter()
-                .map(|step| match step {
-                    TerminalInput::Text(text) => Keystroke::Text(text),
-                    TerminalInput::Key(Key::Enter) => Keystroke::Enter,
-                    TerminalInput::Key(Key::Escape) => Keystroke::Escape,
-                    TerminalInput::Key(Key::Control(letter)) => Keystroke::Control(*letter),
-                })
-                .collect();
-            tmux.send_keys(&pane, &keys).map_err(|error| match error {
-                // tmux refused the list or found no pane to run it on: nothing was typed.
-                cockpit_tmux::Error::CommandFailed { .. }
-                | cockpit_tmux::Error::InvalidArgument { .. } => Error::Tmux(error),
-                other => Error::TypingUnconfirmed {
-                    session: session_id,
-                    reason: format!("tmux: {other}"),
-                },
-            })
-        })
-        .await
-        .map_err(|error| match error {
-            // The step may still type after its caller stopped waiting for it.
-            Error::StepTimedOut { .. } | Error::Blocking(_) => Error::TypingUnconfirmed {
-                session: id.clone(),
-                reason: error.to_string(),
-            },
-            other => other,
-        })
     }
 
     /// Records a design link (any http or https URL) on the session.
@@ -1426,6 +1351,7 @@ impl Sessions {
             })
             .await?
         };
+        let delivery_launch = command.clone();
         let mut environment = self.launch_environment();
         environment.extend(command.environment);
         environment.push(("COCKPIT_SESSION".into(), id.as_str().into()));
@@ -1475,6 +1401,14 @@ impl Sessions {
                 .await?;
             store::insert_launch(&write, id, kind, purpose, execution, &start_files).await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
+            let reach = prepared
+                .settings
+                .as_ref()
+                .map_or(cockpit_sandbox::ProviderReach::Direct, |plan| {
+                    plan.reach.clone()
+                });
+            crate::delivery_context::record_launch(&write, execution.0, &reach, &delivery_launch)
+                .await?;
             write.commit().await?;
             (token, execution)
         };
@@ -1638,7 +1572,7 @@ impl Sessions {
             .processes
             .confirm_hosted(&self.database, execution)
             .await?;
-        self.record_agent_root(session, execution.process_group)
+        self.record_agent_root(session, execution.id, execution.process_group)
             .await?;
         // Only now may the agent run: its first request finds its root recorded (#316).
         self.processes
@@ -1685,6 +1619,7 @@ impl Sessions {
     async fn record_agent_root(
         &self,
         session: &cockpit_authorization::SessionId,
+        execution: ExecutionId,
         process_group: Option<i32>,
     ) -> Result<(), Error> {
         let Some(pid) = process_group.and_then(|group| u32::try_from(group).ok()) else {
@@ -1704,6 +1639,7 @@ impl Sessions {
             Ok(root) => {
                 let write = self.database.write().await?;
                 cockpit_agent_channel::record_root(&write, session, &root).await?;
+                crate::delivery_context::record_root(&write, execution.0, &root).await?;
                 write.commit().await?;
             }
             Err(error) => tracing::warn!(

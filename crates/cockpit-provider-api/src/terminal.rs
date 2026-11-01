@@ -47,6 +47,9 @@ pub enum Delivered {
     /// The harness accepted the message, possibly queued behind a turn. It is not proof
     /// that a turn started or finished.
     Accepted,
+    /// This adapter has no direct transport for the action. Nothing was sent; the caller
+    /// may ask for terminal input. A failed or uncertain delivery must return an error.
+    Unsupported,
     /// The message started a turn: the agent was not working.
     StartedTurn,
     /// The message joined the turn under way.

@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod conversations;
+mod delivery_context;
 mod error;
 mod lifecycle;
 mod model;
@@ -8,6 +9,7 @@ mod reports;
 mod store;
 
 pub use cockpit_config::DesktopSession;
+pub use delivery_context::{ConnectSessionSocket, DeliveryContext};
 pub use error::Error;
 pub use lifecycle::Sessions;
 pub use model::{

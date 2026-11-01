@@ -80,7 +80,11 @@ not share code.
   only when the kernel's listening process descends from the session's agent root (#442).
   A link into a folder the sandbox mounts from the session's own (Codex's, #446) is read as
   that folder's entry, and delivery to a session whose sandbox could not mount it is refused with the
-  plan's typed `ProviderReach::Unreachable` reason. Delivering through it is wired with #431.
+  plan's typed `ProviderReach::Unreachable` reason. Owner `session-send` and `session-cancel`,
+  queued work and coordinator messages use this connector through sessions (#431).
+- OpenCode delivery receives its original launch's port and password from the host-owned
+  sessions database, never from an agent-written endpoint file (#416). The same endpoint
+  is retained when the daemon restarts; provider acceptance is not task completion.
 
 ## Approvals (#34)
 
@@ -108,9 +112,10 @@ not share code.
   owner gives it. The owner gives, revokes and reads them (`session-grant`, `session-revoke`,
   `session-grants`) on `daemon.sock` only.
 - A message is audited and queued in the `cockpit-messaging` outbox in one transaction. A
-  supervised loop (`coordinator-messages`) types it at the target's next prompt as a
+  supervised loop (`coordinator-messages`) delivers it at the target's next prompt as a
   collaborator's message, while its sender still holds the grant and in the order sent, retrying while its agent cannot take input (a dialog, no report
-  yet), for at most 24 hours. Provider-native delivery is #431.
+  yet), for at most 24 hours. It uses the provider first, then terminal input only when
+  delivery is unsupported (#431); an uncertain delivery is never retried as a fresh message.
 - A start that needs confirmation joins the `ask run` queue; approving it starts the session
   and records it. One without confirmation starts at once, within the grant's hourly cap.
 - Decided in `docs/decisions/2026-11-01-410-coordinator-kit.md`; proven end to end by

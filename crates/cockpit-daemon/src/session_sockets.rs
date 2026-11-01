@@ -137,3 +137,15 @@ async fn connect_within_timeout(socket: &Path) -> Result<(UnixStream, u32), Stri
     stream.set_nonblocking(false).map_err(unreadable)?;
     Ok((stream, pid))
 }
+
+/// The socket boundary injected into sessions; the context belongs to the recorded launch.
+pub(crate) fn connect(
+    context: &cockpit_sessions::DeliveryContext,
+    socket: &Path,
+) -> Result<UnixStream, ProviderError> {
+    SessionTreeSockets {
+        root: context.root.clone(),
+        reach: context.reach.clone(),
+    }
+    .connect(socket)
+}

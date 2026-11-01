@@ -181,3 +181,38 @@ impl SessionSockets for NoSockets {
         panic!("a provider without delivery opened {}", socket.display())
     }
 }
+
+#[test]
+fn unsupported_delivery_is_explicit_and_does_not_open_a_socket() {
+    let provider = LaunchOnly(ProviderName::new("plain").unwrap());
+    let outcome = provider.deliver(
+        &Action::Submit("hello"),
+        &DeliveryTarget {
+            launch: None,
+            session_dir: Path::new("/session"),
+            sockets: &NoSockets,
+        },
+        &ConversationId::new("c-1").unwrap(),
+    );
+    // A provider must still refuse a capability it does not report.
+    assert!(outcome.unwrap_err().reason.contains("submit"));
+    let provider = cockpit_provider_api::fake::FakeProvider::new(
+        ProviderName::new("fake").unwrap(),
+        Path::new("/unused").into(),
+    )
+    .reporting(Capability::Submit);
+    assert_eq!(
+        provider
+            .deliver(
+                &Action::Submit("hello"),
+                &DeliveryTarget {
+                    launch: None,
+                    session_dir: Path::new("/session"),
+                    sockets: &NoSockets
+                },
+                &ConversationId::new("c-1").unwrap(),
+            )
+            .unwrap(),
+        cockpit_provider_api::Delivered::Unsupported
+    );
+}

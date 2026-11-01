@@ -163,6 +163,41 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE INDEX session_launches_by_working_order
                 ON session_launches (session_id, working_order);",
         },
+        Migration {
+            version: 8,
+            sql: "CREATE TABLE session_delivery (
+                execution_id INTEGER PRIMARY KEY,
+                provider_program BLOB NOT NULL CHECK (length(provider_program) > 0),
+                provider_conversation TEXT CHECK (provider_conversation <> ''),
+                reach TEXT NOT NULL CHECK (reach IN ('direct', 'mounted', 'unreachable')),
+                reason TEXT CHECK (reason <> ''),
+                root_boot TEXT CHECK (root_boot <> ''),
+                root_pid INTEGER CHECK (root_pid > 0),
+                root_start INTEGER CHECK (root_start >= 0),
+                CHECK ((reach = 'unreachable') = (reason IS NOT NULL)),
+                CHECK ((root_boot IS NULL) = (root_pid IS NULL)
+                    AND (root_pid IS NULL) = (root_start IS NULL))
+            );
+            CREATE TABLE session_delivery_mounts (
+                execution_id INTEGER NOT NULL REFERENCES session_delivery (execution_id),
+                host TEXT NOT NULL CHECK (host <> ''),
+                sandbox TEXT NOT NULL CHECK (sandbox <> ''),
+                PRIMARY KEY (execution_id, sandbox)
+            );
+            CREATE TABLE session_delivery_arguments (
+                execution_id INTEGER NOT NULL REFERENCES session_delivery (execution_id),
+                position INTEGER NOT NULL CHECK (position >= 0),
+                value BLOB NOT NULL,
+                PRIMARY KEY (execution_id, position)
+            );
+            CREATE TABLE session_delivery_environment (
+                execution_id INTEGER NOT NULL REFERENCES session_delivery (execution_id),
+                position INTEGER NOT NULL CHECK (position >= 0),
+                name BLOB NOT NULL,
+                value BLOB NOT NULL,
+                PRIMARY KEY (execution_id, position)
+            );",
+        },
     ],
 };
 

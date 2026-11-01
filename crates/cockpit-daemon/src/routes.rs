@@ -350,6 +350,8 @@ impl Handler for Routes {
                 | Command::SessionSleep { .. }
                 | Command::SessionWake { .. }
                 | Command::SessionResume { .. }
+                | Command::SessionSend { .. }
+                | Command::SessionCancel { .. }
                 | Command::SessionEnd { .. }
                 | Command::SessionEndFinished { .. }
                 | Command::SessionLink { .. }

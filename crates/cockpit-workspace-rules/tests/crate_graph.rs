@@ -158,6 +158,12 @@ const FORBIDDEN_EDGES: &[ForbiddenEdge] = &[
             "cockpit-client",
         ],
     },
+    // #431: the daemon injects socket verification; sessions never import its wiring.
+    ForbiddenEdge {
+        rule: "sessions -> daemon",
+        from: Sources::Named(&["cockpit-sessions"]),
+        to: &[DAEMON],
+    },
     // Sessions drive every provider through the `cockpit-provider-api` contract alone; no
     // provider's type or path reaches them (#31).
     ForbiddenEdge {
@@ -539,6 +545,7 @@ fn each_rule_catches_its_forbidden_edge() {
         ),
         ("clients -> tmux", "cockpit-notify", "cockpit-tmux"),
         ("providers -> UI", "cockpit-provider-api", "cockpit-web"),
+        ("sessions -> daemon", "cockpit-sessions", DAEMON),
         (
             "capabilities -> scheduling",
             "cockpit-workflows",

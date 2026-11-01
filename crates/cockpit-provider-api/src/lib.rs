@@ -225,7 +225,9 @@ pub trait Provider: Send + Sync + 'static {
     /// ([`Provider::input`]). Every socket it reaches there is opened through
     /// [`DeliveryTarget::sockets`], never by its path alone. Blocks for a few seconds at
     /// most, so callers run it off their async workers. Refuses an action whose capability
-    /// it does not report; the default performs none, and callers use [`Provider::input`].
+    /// it does not report. Only [`Delivered::Unsupported`] permits fallback to
+    /// [`Provider::input`]; errors never do, since the action may already have reached the
+    /// harness. The default checks the capability and reports unsupported delivery.
     fn deliver(
         &self,
         action: &Action<'_>,
@@ -233,7 +235,8 @@ pub trait Provider: Send + Sync + 'static {
         conversation: &ConversationId,
     ) -> Result<Delivered, ProviderError> {
         let _ = (target, conversation);
-        Err(ProviderError::unsupported(action.capability()))
+        self.capabilities().require(action.capability())?;
+        Ok(Delivered::Unsupported)
     }
 
     /// Lists native commands from this launch's endpoint. Requires `commands`; the
