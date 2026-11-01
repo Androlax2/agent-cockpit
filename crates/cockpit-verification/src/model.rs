@@ -12,6 +12,14 @@ pub struct CheckDefinition {
     pub environment: String,
 }
 
+impl CheckDefinition {
+    /// Refused as recording a receipt of it would be, so a runner refuses a check before
+    /// running it instead of after.
+    pub fn validate(&self) -> Result<(), crate::Refusal> {
+        crate::receipts::check_definition(self)
+    }
+}
+
 /// The exact source a check ran on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {

@@ -206,6 +206,15 @@ impl TestHome {
             .expect("the cockpit binary runs")
     }
 
+    /// Runs `cockpit <arguments>` from `dir` and waits for it.
+    pub fn cockpit_in(&self, dir: &Path, arguments: &[&str]) -> Output {
+        self.base_command(Path::new(env!("CARGO_BIN_EXE_cockpit")))
+            .current_dir(dir)
+            .args(arguments)
+            .output()
+            .expect("the cockpit binary runs")
+    }
+
     /// Runs `cockpit <arguments>`, failing the test unless it succeeds; returns stdout.
     pub fn cockpit_ok(&self, arguments: &[&str]) -> String {
         let output = self.cockpit(arguments);

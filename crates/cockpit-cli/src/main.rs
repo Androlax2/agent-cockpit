@@ -23,6 +23,7 @@ macro_rules! outln {
 mod agent;
 mod approvals;
 mod ask;
+mod check;
 mod daemon;
 mod desktop_session;
 mod projects;
@@ -83,6 +84,8 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit workflow complete ID --changed T --checked T --outcome T [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...
        cockpit workflow release ID [--changed T --checked T --outcome T [--needs-human T] [--evidence REF]...]
        cockpit workflow block ID ACTION --detail TEXT
+       cockpit check run CHECK --project P [--checkout PATH] | gate [--project P] [--checkout PATH]
+       cockpit check claim CHECK STATEMENT
        cockpit resources status | profile normal|foreground | pause-queue | resume-queue
        cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...
        cockpit resources checkpoint RESERVATION | stop RESERVATION";
@@ -130,6 +133,10 @@ fn main() -> ExitCode {
         },
         [Some("workflow"), ..] => match workflow::parse(&arguments[1..]) {
             Ok(request) => workflow::run(request),
+            Err(problem) => usage_error(Some(problem)),
+        },
+        [Some("check"), ..] => match check::parse(&arguments[1..]) {
+            Ok(request) => check::run(request),
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("resources"), ..] => match resources::parse(&arguments[1..]) {

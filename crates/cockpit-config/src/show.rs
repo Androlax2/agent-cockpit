@@ -102,6 +102,30 @@ pub fn render(config: &EffectiveConfig) -> String {
             &start_file.source,
         ));
     }
+    for check in &config.checks {
+        let mut fields = Table::new();
+        fields.insert(
+            "command".to_string(),
+            Value::from(check.value.command.as_str()),
+        );
+        fields.insert(
+            "working_directory".to_string(),
+            Value::from(check.value.working_directory.as_str()),
+        );
+        fields.insert(
+            "environment".to_string(),
+            Value::from(check.value.environment.as_str()),
+        );
+        fields.insert(
+            "artifacts".to_string(),
+            Value::from(check.value.artifacts.clone()),
+        );
+        lines.push(line(
+            &format!("checks.{}", Value::from(check.value.name.as_str())),
+            &Value::Table(fields).to_string(),
+            &check.source,
+        ));
+    }
     lines.join("\n") + "\n"
 }
 

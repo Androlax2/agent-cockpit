@@ -76,7 +76,7 @@ impl RunSettings {
 
     /// The environment, with `git_config` passed as `GIT_CONFIG_*` so every Git in the run
     /// applies it over the repository's own configuration.
-    fn run_environment(&self, git_config: &[String]) -> Vec<(OsString, OsString)> {
+    pub fn run_environment(&self, git_config: &[String]) -> Vec<(OsString, OsString)> {
         let mut environment: Vec<(OsString, OsString)> = self
             .environment
             .iter()

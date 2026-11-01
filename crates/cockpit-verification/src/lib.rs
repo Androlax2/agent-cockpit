@@ -17,8 +17,8 @@ pub use model::{
 };
 pub use receipts::{
     ARTIFACTS_MAX, CLAIMS_LOADED_PER_CHECK, COMMAND_MAX_CHARS, NAME_MAX_CHARS, OUTPUT_MAX_BYTES,
-    OUTPUT_REFERENCES_MAX, PATH_MAX_CHARS, STATEMENT_MAX_CHARS, evidence, record_claim,
-    record_receipt,
+    OUTPUT_REFERENCES_MAX, PATH_MAX_CHARS, STATEMENT_MAX_CHARS, evidence, receipt, record_claim,
+    record_receipt, record_receipt_of_tail,
 };
 
 /// The verification tables. Receipts and claims are append-only: evidence is never edited,

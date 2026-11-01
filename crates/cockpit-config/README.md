@@ -15,11 +15,13 @@ grants: owner settings are inputs to `cockpit-authorization`, which decides.
 | --- | --- | --- |
 | Product defaults | this crate | everything |
 | Owner config | `$XDG_CONFIG_HOME/cockpit/config.toml` (default `~/.config/cockpit/config.toml`) | everything |
-| Project config | `<project>/.cockpit/config.toml` | describing settings only (`workflow.preset`) |
+| Project config | `<project>/.cockpit/config.toml` | describing settings only (`workflow.preset`, `[[checks]]`) |
 | Overrides | `--set key=value` (TOML value) | `projects.trusted`, `workflow.preset` |
 
 A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`) fails with its file and
-line: repository configuration describes requirements, owner settings grant. Unknown keys,
+line: repository configuration describes requirements, owner settings grant. An owner file
+that declares `[[checks]]` fails the same way: a check describes a project (#313); each needs
+a `name` and a `command`, and a name declared twice fails at its second line. Unknown keys,
 relative paths and unknown providers fail the same way. State and cache go under
 `$XDG_STATE_HOME/cockpit` and `$XDG_CACHE_HOME/cockpit`; the runtime directory is
 `$XDG_RUNTIME_DIR/cockpit` and shown as unset when that variable is.

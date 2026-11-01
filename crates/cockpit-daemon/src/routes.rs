@@ -14,7 +14,7 @@ use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
     Capabilities, Manager, agent, approvals, feed, manager, projects, resources, sessions, tasks,
-    workflows,
+    verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -89,6 +89,7 @@ pub struct Routes {
     runner: cockpit_approvals::Runner,
     resources: resources::Resources,
     workflows: workflows::Context,
+    verification: verification::Context,
 }
 
 impl Routes {
@@ -99,6 +100,13 @@ impl Routes {
                 environment: environment.clone(),
                 sessions: Arc::clone(&capabilities.sessions),
                 provider_capabilities: Arc::new(capabilities.provider_capabilities),
+            },
+            verification: verification::Context {
+                database: Arc::clone(&capabilities.database),
+                git: capabilities.git.clone(),
+                processes: capabilities.processes.clone(),
+                run_settings: capabilities.run_settings,
+                environment: environment.clone(),
             },
             resources: resources::Resources {
                 database: Arc::clone(&capabilities.database),
@@ -377,6 +385,28 @@ impl Handler for Routes {
             }
             (Command::DesktopSessionImport { .. }, Peer::Agent { .. }) => {
                 Route::Answer(owner_only())
+            }
+            // Running a check executes the project's command on the host, and only a run the
+            // daemon executed yields a receipt: the owner's alone (#313). An agent's word that
+            // a check passed is a claim, filed from its session.
+            (command @ (Command::CheckRun { .. } | Command::CheckReceipt { .. }), peer) => {
+                match peer {
+                    Peer::Agent { .. } => Route::Answer(owner_only()),
+                    Peer::Owner => verification::route(command, peer, self.verification.clone()),
+                }
+            }
+            (command @ Command::CheckClaim { .. }, peer) => match peer {
+                peer @ Peer::Agent { .. } => {
+                    verification::route(command, peer, self.verification.clone())
+                }
+                Peer::Owner => Route::Answer(wrong_socket(
+                    "a claim is a session's statement about its own work; the owner runs the check",
+                    "use `cockpit check run` on the host",
+                    UnblockedBy::Owner,
+                )),
+            },
+            (command @ Command::CheckGate { .. }, peer) => {
+                verification::route(command, peer, self.verification.clone())
             }
             // `decode_request` refuses unknown kinds before routing; kept total on purpose.
             (Command::Unknown, _) => Route::Answer(refusal(

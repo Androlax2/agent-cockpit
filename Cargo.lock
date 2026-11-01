@@ -455,6 +455,7 @@ dependencies = [
  "cockpit-tasks",
  "cockpit-tmux",
  "cockpit-turso",
+ "cockpit-verification",
  "cockpit-workflows",
  "serde",
  "serde_json",
@@ -591,6 +592,7 @@ name = "cockpit-verification"
 version = "0.1.0"
 dependencies = [
  "cockpit-turso",
+ "rustix 1.1.6",
  "sha2",
  "tempfile",
  "tokio",
