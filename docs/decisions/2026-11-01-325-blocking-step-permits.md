@@ -4,12 +4,13 @@ Issue #325. Decided by the worker: report 03 asks for finite blocking ops behind
 and its "cancellation has two facts" rule says when the permit is released.
 
 - **One semaphore for the capability, `Settings::blocking_steps` permits (64 by default).**
-  Every blocking step (`Sessions::blocking_by`, `crates/cockpit-sessions/src/lifecycle.rs`)
+  Every blocking step (`Sessions::blocking`, `crates/cockpit-sessions/src/lifecycle.rs`)
   takes one before `spawn_blocking` and moves it into the thread, so a timed-out step keeps
   its permit until it really returns. Hung tmux or provider calls can hold at most 64 of
   Tokio's 512 shared blocking threads; the rest of the daemon keeps its share.
-- **The permit wait and the step share one step timeout.** A step that gets no permit in
-  time is answered `busy` (`Error::StepsBusy`), retryable, never queued without bound.
+- **The permit wait and the step each get one step timeout.** A step that gets no permit in
+  time is answered `busy` (`Error::StepsBusy`), retryable, never queued without bound; one
+  that queued is not cut short and misreported as hung.
 - **Rejected:** refusing a session's new steps while one of its timed-out steps is
   outstanding (the issue's option B) as the bound: it limits threads per session, not in
   total, so many sessions or the periodic pass still drain the pool. Per-session ordering is

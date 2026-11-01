@@ -3,8 +3,9 @@
 Issue #324. Decided by the worker, with the reason below.
 
 - **Each step that may close or open a session's terminal is counted until its thread
-  returns; a launch's open waits, within its step timeout, for the count to reach zero**
-  (`Sessions::open_terminal`, `crates/cockpit-sessions/src/lifecycle.rs`), and is refused
+  returns; a launch waits, within one step timeout and before it prepares anything, for
+  the count to reach zero** (`Sessions::wait_for_terminal_steps`,
+  `crates/cockpit-sessions/src/lifecycle.rs`), and is refused
   `conflict` (`Error::TerminalBusy`) otherwise. A stale step therefore finishes before the
   newer launch's terminal exists, and the open's own `close_if_open` clears what it left.
 - **Closes never wait.** The owner can still end a session whose launch hung in tmux (#272);

@@ -1231,6 +1231,7 @@ impl Sessions {
         first_message: Option<&str>,
     ) -> Result<Session, Error> {
         let tmux = self.tmux()?;
+        self.wait_for_terminal_steps(id).await?;
         let session = self.get(id).await?;
         let command = {
             let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
@@ -1316,7 +1317,7 @@ impl Sessions {
         let opened = self.open_terminal(id, tmux, terminal).await;
         if let Err(error) = opened {
             // A timed-out open may still create the terminal and start the agent later; one
-            // refused for lack of a permit or behind an earlier step never ran.
+            // refused for lack of a permit never ran.
             if matches!(error, Error::StepTimedOut { .. }) {
                 self.discard_launch(id, execution).await;
             } else {
@@ -1459,37 +1460,22 @@ impl Sessions {
         let tmux = self.tmux()?;
         let name = terminal_name(id)?;
         let counted = TerminalStep::start(&self.session_lock(id));
-        let deadline = self.step_deadline();
-        self.blocking_by(deadline, "close the terminal", move || {
+        self.blocking("close the terminal", move || {
             let _counted = counted;
             close_if_open(&tmux, &name)
         })
         .await
     }
 
-    /// Opens a launch's terminal once every earlier step on it returned (#324), within one
-    /// step timeout for the wait and the step together.
+    /// Opens a launch's terminal; [`Self::wait_for_terminal_steps`] ran first.
     async fn open_terminal(
         &self,
         id: &SessionId,
         tmux: Arc<Server>,
         terminal: SessionLaunch,
     ) -> Result<(), Error> {
-        let session = self.session_lock(id);
-        let deadline = self.step_deadline();
-        let mut steps = session.terminal_steps.subscribe();
-        // The session's lock is held, so no step of this session starts in between: the
-        // ones counted are stale and only return.
-        if tokio::time::timeout_at(deadline, steps.wait_for(|steps| *steps == 0))
-            .await
-            .is_err()
-        {
-            return Err(Error::TerminalBusy {
-                session: id.clone(),
-            });
-        }
-        let counted = TerminalStep::start(&session);
-        self.blocking_by(deadline, "open the terminal", move || {
+        let counted = TerminalStep::start(&self.session_lock(id));
+        self.blocking("open the terminal", move || {
             let _counted = counted;
             close_if_open(&tmux, &terminal.name)?;
             tmux.new_session(&terminal).map(drop).map_err(Error::from)
@@ -1497,32 +1483,38 @@ impl Sessions {
         .await
     }
 
-    /// Runs a blocking step off the async workers and waits for it at most the step
-    /// timeout (#272).
+    /// Waits, at most the step timeout, until every earlier step that may close or open the
+    /// session's terminal returned (#324), before a launch prepares anything. The caller
+    /// holds the session's lock, so no step of it starts until the open: the ones counted
+    /// are stale and only return.
+    async fn wait_for_terminal_steps(&self, id: &SessionId) -> Result<(), Error> {
+        let mut steps = self.session_lock(id).terminal_steps.subscribe();
+        match tokio::time::timeout(
+            self.settings.step_timeout,
+            steps.wait_for(|steps| *steps == 0),
+        )
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(_) => Err(Error::TerminalBusy {
+                session: id.clone(),
+            }),
+        }
+    }
+
+    /// Runs a blocking step off the async workers, holding one of the capability's permits
+    /// (#325). Waits at most the step timeout for the permit, then at most the step timeout
+    /// for the step (#272). A step that runs out of it keeps running, and keeps its permit
+    /// until it returns, since started blocking work cannot be aborted (report 03): its
+    /// caller undoes what it may still do.
     async fn blocking<T: Send + 'static>(
         &self,
         name: &'static str,
         step: impl FnOnce() -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
-        self.blocking_by(self.step_deadline(), name, step).await
-    }
-
-    fn step_deadline(&self) -> tokio::time::Instant {
-        tokio::time::Instant::now() + self.settings.step_timeout
-    }
-
-    /// Runs a blocking step off the async workers, holding one of the capability's permits
-    /// (#325), and waits for the permit and the step until `deadline`. A step that runs out
-    /// of it keeps running, and keeps its permit until it returns, since started blocking
-    /// work cannot be aborted (report 03): its caller undoes what it may still do.
-    async fn blocking_by<T: Send + 'static>(
-        &self,
-        deadline: tokio::time::Instant,
-        name: &'static str,
-        step: impl FnOnce() -> Result<T, Error> + Send + 'static,
-    ) -> Result<T, Error> {
+        let timeout = self.settings.step_timeout;
         let permits = Arc::clone(&self.blocking_permits);
-        let Ok(permit) = tokio::time::timeout_at(deadline, permits.acquire_owned()).await else {
+        let Ok(permit) = tokio::time::timeout(timeout, permits.acquire_owned()).await else {
             return Err(Error::StepsBusy {
                 step: name,
                 limit: self.settings.blocking_steps,
@@ -1533,11 +1525,11 @@ impl Sessions {
             let _permit = permit;
             step()
         });
-        match tokio::time::timeout_at(deadline, running).await {
+        match tokio::time::timeout(timeout, running).await {
             Ok(joined) => joined.map_err(|error| Error::Blocking(error.to_string()))?,
             Err(_) => Err(Error::StepTimedOut {
                 step: name,
-                after: self.settings.step_timeout,
+                after: timeout,
             }),
         }
     }
