@@ -101,8 +101,9 @@ impl LaunchGate {
 struct GatedProvider {
     inner: FakeProvider,
     gate: Arc<LaunchGate>,
-    /// Whether the agents it launches ignore `SIGTERM`, so each stop waits out its grace.
-    agents_ignore_term: Arc<AtomicBool>,
+    /// Whether the next agent it launches ignores `SIGTERM`, so its stop waits out the
+    /// grace; cleared by that launch.
+    next_agent_ignores_term: Arc<AtomicBool>,
 }
 
 impl Provider for GatedProvider {
@@ -121,7 +122,7 @@ impl Provider for GatedProvider {
         }
         self.gate.held.fetch_sub(1, Ordering::SeqCst);
         let mut command = self.inner.launch(request)?;
-        if self.agents_ignore_term.load(Ordering::SeqCst) {
+        if self.next_agent_ignores_term.swap(false, Ordering::SeqCst) {
             // `-c SCRIPT`: an ignored signal stays ignored across the script's `exec`.
             assert_eq!(command.arguments[0], "-c", "the fake agent's script moved");
             let script = &mut command.arguments[1];
@@ -153,7 +154,7 @@ struct Home {
     root: PathBuf,
     held: Arc<Held>,
     launches: Arc<LaunchGate>,
-    agents_ignore_term: Arc<AtomicBool>,
+    next_agent_ignores_term: Arc<AtomicBool>,
 }
 
 impl Home {
@@ -167,7 +168,7 @@ impl Home {
                 gate: Semaphore::new(0),
             }),
             launches: Arc::default(),
-            agents_ignore_term: Arc::default(),
+            next_agent_ignores_term: Arc::default(),
         }
     }
 
@@ -184,7 +185,7 @@ impl Home {
                     self.path().join("agent.log"),
                 ),
                 gate: Arc::clone(&self.launches),
-                agents_ignore_term: Arc::clone(&self.agents_ignore_term),
+                next_agent_ignores_term: Arc::clone(&self.next_agent_ignores_term),
             })],
         );
         wiring.sessions.stop = cockpit_processes::Escalation {
@@ -509,7 +510,7 @@ async fn ending_a_restarting_session_answers_conflict_without_waiting_for_the_re
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ending_a_restarting_session_answers_conflict_while_its_old_agent_waits_out_the_grace() {
     let home = Home::new();
-    home.agents_ignore_term.store(true, Ordering::SeqCst);
+    home.next_agent_ignores_term.store(true, Ordering::SeqCst);
     let daemon = home
         .start(Limits {
             stop: ONE_PLACE,
@@ -523,7 +524,6 @@ async fn ending_a_restarting_session_answers_conflict_while_its_old_agent_waits_
         other => panic!("session-new: {other:?}"),
     };
     let old_agent = FakeProvider::launches(&home.path().join("agent.log"))[0].pid;
-    home.agents_ignore_term.store(false, Ordering::SeqCst);
     let _restarting = {
         let client = Arc::clone(&client);
         let session = id.clone();

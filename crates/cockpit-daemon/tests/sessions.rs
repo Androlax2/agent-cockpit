@@ -19,7 +19,7 @@ use cockpit_daemon::{Capabilities, Daemon, Instance, Limits, Options, Routes, Wi
 use cockpit_protocol::{Command, ErrorCode, LaunchKindView, Reply, SessionStateView, SessionView};
 use cockpit_provider_api::ProviderName;
 use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
-use common::GENEROUS;
+use common::{GENEROUS, is_alive};
 
 struct Home {
     dir: tempfile::TempDir,
@@ -257,7 +257,6 @@ impl Home {
             .await
             .unwrap();
         write.commit().await.unwrap();
-        assert!(!self.may(session.as_str(), permission).await);
     }
 
     /// Asks the owner to run `command` as the agent `launch` would with `cockpit ask run`:
@@ -426,13 +425,6 @@ async fn wait_for_state(client: &Connection, id: &str, state: SessionStateView) 
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-}
-
-fn is_alive(pid: i32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
-        && !std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .unwrap_or_default()
-            .contains(") Z ")
 }
 
 fn unix_now() -> i64 {
@@ -1120,6 +1112,11 @@ async fn on_daemon_start_a_session_still_running_without_run_commands_is_granted
     home.launches(1).await;
     home.revoke_over_itself(&started.id, cockpit_authorization::Permission::RunCommands)
         .await;
+    assert!(
+        !home
+            .may(&started.id, cockpit_authorization::Permission::RunCommands)
+            .await
+    );
     drop(client);
     home.stop(daemon);
 
