@@ -50,19 +50,38 @@ pub enum Permission {
     RunCommands,
     ReadPaneContents,
     WriteClipboard,
+    /// Read the session list and each session's state, doing-now, open question and latest
+    /// report, never pane contents or transcripts (#410).
+    ObserveSessions,
+    /// Queue a message to another session, delivered at its next prompt (#410).
+    MessageSessions,
+    /// Ask to start a session; each start needs the owner's approval unless the grant's
+    /// [`StartTerms`] say otherwise, and is capped per hour (#410).
+    StartSessions,
     /// Owner-only actions such as `handoff-install` and `system-install` (report 17). Never
     /// granted to a session.
     HostActions,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 6] = [
+    pub const ALL: [Permission; 9] = [
         Permission::ReadState,
         Permission::ChangeState,
         Permission::RunCommands,
         Permission::ReadPaneContents,
         Permission::WriteClipboard,
+        Permission::ObserveSessions,
+        Permission::MessageSessions,
+        Permission::StartSessions,
         Permission::HostActions,
+    ];
+
+    /// The coordinator grants (#410): the one mechanism by which a session acts on other
+    /// sessions. Only the owner gives them, one at a time; no other grant implies them.
+    pub const COORDINATOR: [Permission; 3] = [
+        Permission::ObserveSessions,
+        Permission::MessageSessions,
+        Permission::StartSessions,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -72,12 +91,19 @@ impl Permission {
             Permission::RunCommands => "run-commands",
             Permission::ReadPaneContents => "read-pane-contents",
             Permission::WriteClipboard => "write-clipboard",
+            Permission::ObserveSessions => "observe-sessions",
+            Permission::MessageSessions => "message-sessions",
+            Permission::StartSessions => "start-sessions",
             Permission::HostActions => "host-actions",
         }
     }
 
     pub fn is_owner_only(self) -> bool {
         self == Permission::HostActions
+    }
+
+    pub fn is_coordinator(self) -> bool {
+        Permission::COORDINATOR.contains(&self)
     }
 }
 
@@ -152,6 +178,109 @@ pub struct Grant {
     pub permission: Permission,
     pub scope: Scope,
     pub granted_at: Revision,
+    /// A `start-sessions` grant's terms; `None` for every other permission.
+    pub start_terms: Option<StartTerms>,
+}
+
+/// How a `start-sessions` grant lets its holder start sessions (#410).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StartTerms {
+    /// Starts asked or made in any hour, at most; at least 1.
+    pub per_hour: u32,
+    /// Each start waits for the owner's approval in the `ask run` queue. Without it, the
+    /// daemon starts the session at once.
+    pub needs_confirmation: bool,
+}
+
+impl StartTerms {
+    /// The terms [`crate::grant`] gives: every start confirmed, ten an hour.
+    pub const DEFAULT: StartTerms = StartTerms {
+        per_hour: 10,
+        needs_confirmation: true,
+    };
+}
+
+/// Whether the holder of a `start-sessions` grant may start a session now (#410).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartAllowance {
+    /// Allowed under `grant`, read at `revision`; with `needs_confirmation` the start waits
+    /// for the owner's approval.
+    Allowed {
+        grant: GrantId,
+        revision: Revision,
+        needs_confirmation: bool,
+    },
+    /// The grant's hourly cap is reached; one more start is allowed from `retry_at`
+    /// (seconds since 1970).
+    Capped {
+        per_hour: u32,
+        retry_at: i64,
+    },
+    Refused(Refusal),
+}
+
+/// What a coordinator did with its grant, as the audit records it (#410).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuditedAction {
+    /// Queued a message to the target session.
+    Message,
+    /// Asked to start a session, or started one without confirmation; counts against the
+    /// grant's hourly cap.
+    Start,
+    /// The session a start asked for began; the target is the new session.
+    Started,
+}
+
+impl AuditedAction {
+    pub const ALL: [AuditedAction; 3] = [
+        AuditedAction::Message,
+        AuditedAction::Start,
+        AuditedAction::Started,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuditedAction::Message => "message",
+            AuditedAction::Start => "start",
+            AuditedAction::Started => "started",
+        }
+    }
+
+    pub(crate) fn parse(name: &str) -> Option<AuditedAction> {
+        AuditedAction::ALL
+            .into_iter()
+            .find(|action| action.as_str() == name)
+    }
+}
+
+impl fmt::Display for AuditedAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// One use of a coordinator grant, as the caller records it in the transaction of its
+/// effect: who acted, under which grant read at which revision, on which session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Audit {
+    pub actor: SessionId,
+    pub permission: Permission,
+    pub grant: GrantId,
+    pub revision: Revision,
+    pub action: AuditedAction,
+    /// The session acted on; `None` until a start's session exists.
+    pub target: Option<SessionId>,
+    /// What the action carried that the audit keeps, such as the approval request's id.
+    pub detail: Option<String>,
+    /// Seconds since 1970.
+    pub at: i64,
+}
+
+/// An [`Audit`] as stored, with its id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub audit: Audit,
 }
 
 /// The answer to "may this happen", with the revision of the grants it read. Callers record

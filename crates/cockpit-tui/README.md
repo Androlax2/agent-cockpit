@@ -62,6 +62,9 @@ detaching the terminal leaves everything running.
   share an indented line under the id, wrapped at the list's width under that indent rather
   than cut (#291).
 - The list scrolls to keep the selected card whole on screen (#291).
+- A card names its session's coordinator grants and the latest message a coordinator queued
+  to it, sender and delivery state included, on one plain line until the card has a design
+  (#410).
 
 ## Tests
 
@@ -76,6 +79,7 @@ detaching the terminal leaves everything running.
 - `tests/workflows.rs`: the `F` view, a running workflow's steps, checkpoint, next action
   and last handoff, and the owner's complete, release, unblock and cancel keys.
 - `tests/usage.rs`: each key's command reaches the TUI's log by name.
+- `tests/coordination.rs`: the card's coordinator grants and inbound message line (#410).
 - `tests/e2e/` (#300): the TUI end to end, the way Playwright drives a browser. A real
   daemon on a scratch home under `/tmp`, `cockpit tui` attached in a pane of a test-owned
   tmux server (the owner's terminal), a fake `claude` that reports through the agent channel

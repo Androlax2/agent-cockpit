@@ -203,6 +203,11 @@ impl Runner {
         run: &Approved,
         git_config: &[String],
     ) -> Result<Ran, NoResult> {
+        if run.start.is_some() {
+            return Err(NoResult::NotStarted(
+                "a start request is carried out by the daemon, not run as a command".to_owned(),
+            ));
+        }
         match std::fs::canonicalize(&run.cwd) {
             Ok(resolved) if resolved == run.cwd => {}
             Ok(resolved) => {

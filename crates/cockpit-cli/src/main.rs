@@ -25,6 +25,7 @@ mod agent;
 mod approvals;
 mod ask;
 mod check;
+mod coordination;
 mod daemon;
 mod daemon_install;
 mod desktop_session;
@@ -52,6 +53,9 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit config reload
        cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
        cockpit agent reports
+       cockpit agent sessions [--watch]
+       cockpit agent message SESSION TEXT
+       cockpit agent start DIR [--prompt TEXT] [--clone BRANCH]
        cockpit project add DIR [--name NAME]
        cockpit project list
        cockpit checkout list [PROJECT]
@@ -73,6 +77,9 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit session sleep|wake|resume|end|show SESSION
        cockpit session end --finished
        cockpit session link SESSION URL
+       cockpit session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]]
+       cockpit session revoke SESSION observe-sessions|message-sessions|start-sessions
+       cockpit session grants SESSION
        cockpit session sandbox SESSION
        cockpit sandbox show DIR [--agent NAME]
        cockpit provider list
@@ -149,6 +156,12 @@ fn main() -> ExitCode {
         [Some("agent"), Some("reports")] => {
             agent::reports(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }
+        [Some("agent"), Some("sessions")] => coordination::sessions(&arguments[2..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
+        [Some("agent"), Some("message")] => coordination::message(&arguments[2..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
+        [Some("agent"), Some("start")] => coordination::start(&arguments[2..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
         [Some("ask"), Some("run")] => {
             ask::run(&arguments[2..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }

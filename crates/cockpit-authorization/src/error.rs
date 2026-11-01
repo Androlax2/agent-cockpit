@@ -26,6 +26,19 @@ pub enum Error {
         grant: GrantId,
         reason: String,
     },
+    /// A `start-sessions` grant's terms break their rule; `reason` says how.
+    InvalidStartTerms {
+        reason: &'static str,
+    },
+    /// Only coordinator grants are audited (#410).
+    NotAudited {
+        permission: Permission,
+    },
+    /// A stored audit entry breaks this crate's schema rules; `reason` says how.
+    InvalidStoredAudit {
+        entry: i64,
+        reason: String,
+    },
     Database(cockpit_turso::sql::Error),
 }
 
@@ -49,6 +62,18 @@ impl fmt::Display for Error {
             }
             Error::InvalidStoredGrant { grant, reason } => {
                 write!(formatter, "stored grant {grant}: {reason}")
+            }
+            Error::InvalidStartTerms { reason } => {
+                write!(formatter, "invalid start-sessions terms: {reason}")
+            }
+            Error::NotAudited { permission } => {
+                write!(
+                    formatter,
+                    "{permission} is not a coordinator grant; it is not audited"
+                )
+            }
+            Error::InvalidStoredAudit { entry, reason } => {
+                write!(formatter, "stored audit entry {entry}: {reason}")
             }
             Error::Database(source) => write!(formatter, "database: {source}"),
         }

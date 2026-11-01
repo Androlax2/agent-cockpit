@@ -206,7 +206,8 @@ pub async fn latest_reports(connection: &Connection) -> Result<Vec<SessionReport
     Ok(reports)
 }
 
-pub(crate) async fn latest_report(
+/// `session`'s latest report, if its agent ever reported.
+pub async fn latest_report(
     connection: &Connection,
     session: &SessionId,
 ) -> Result<Option<SessionReport>, Error> {

@@ -14,8 +14,12 @@ mod grants;
 mod model;
 
 pub use error::Error;
-pub use grants::{MIGRATIONS, active_grants, current_revision, evaluate, grant, revoke};
+pub use grants::{
+    MIGRATIONS, active_coordinator_grants, active_grant, active_grants, audit_entry, audit_of,
+    current_revision, evaluate, grant, grant_start_sessions, latest_audit_on,
+    latest_audits_by_target, record_audit, revoke, start_allowance, stored_grant,
+};
 pub use model::{
-    Actor, Basis, Decision, Grant, GrantId, Outcome, Permission, Refusal, Revision, Scope,
-    SessionId, TaskId,
+    Actor, Audit, AuditEntry, AuditedAction, Basis, Decision, Grant, GrantId, Outcome, Permission,
+    Refusal, Revision, Scope, SessionId, StartAllowance, StartTerms, TaskId,
 };

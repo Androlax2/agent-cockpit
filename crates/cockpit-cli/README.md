@@ -28,6 +28,8 @@ the capability crates whose verbs must work without the daemon, listed in
 | `cockpit version [--all]`: version and source revision; `--all` adds the profile, the build and the release bundle's manifest (#96, #196) | yes | `cockpit-cli` |
 | `cockpit daemon install`: the active profile's daemon as a systemd user unit or launchd agent, started now; refuses the default profile beside a legacy Cockpit (#134) | yes | `cockpit-cli` |
 | `cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]`, `list [--ended]`, `restart ID\|--all`, `sleep\|wake\|resume\|end ID`, `end --finished` (every session the task list says finished, #157), `link ID URL` | no | `cockpit-sessions` |
+| `cockpit session grant ID observe-sessions\|message-sessions\|start-sessions [--per-hour N] [--without-confirmation]`, `revoke ID PERMISSION`, `grants ID` (the grants and the audit, newest first), #410 | no | `cockpit-authorization`, through the daemon |
+| `cockpit agent sessions [--watch]`, `message ID TEXT`, `start DIR [--prompt TEXT] [--clone BRANCH]` (agent socket, each under its coordinator grant; a confirmed start waits like `ask run`), #410 | no | the daemon's coordinator kit |
 | `cockpit session show ID` (in the manager's viewer, waking it when asleep) | no | the daemon's manager session |
 | `cockpit provider list` (the names `--agent` takes, whether each resumes and reports `events`) | no | the daemon's wiring |
 | `cockpit tui` (opens the manager session with the `cockpit-tui` installed beside `cockpit`, then attaches to it) | no | the daemon's manager session |

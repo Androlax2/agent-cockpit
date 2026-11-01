@@ -19,6 +19,7 @@ use cockpit_authorization::SessionId as TaskSession;
 use cockpit_tasks::SessionWork;
 
 use crate::approvals::{Answer, Failed, job};
+use crate::coordination;
 use crate::routes::{Route, WorkClass, refusal};
 
 /// The route for one of the session commands; `routes.rs` sends only those here. Listing
@@ -34,10 +35,10 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
     };
     let job: crate::Job = match command {
         Command::SessionList { ended } => job(async move {
-            let work = task_work(&sessions).await?;
+            let inputs = card_inputs(&sessions).await?;
             let mut views = Vec::new();
             for session in sessions.list(ended).await? {
-                views.push(current_view(&sessions, &session, &work).await?);
+                views.push(current_view(&sessions, &session, &inputs).await?);
             }
             Ok(Reply::Sessions { sessions: views })
         }),
@@ -47,7 +48,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             prompt,
             clone,
         } => job(async move {
-            let work = task_work(&sessions).await?;
+            let inputs = card_inputs(&sessions).await?;
             let started = sessions
                 .start(StartRequest {
                     dir: dir.into(),
@@ -56,22 +57,22 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                     clone_branch: clone,
                 })
                 .await?;
-            reply(&sessions, &started, &work).await
+            reply(&sessions, &started, &inputs).await
         }),
         Command::SessionRestartAll => job(async move {
             // Read before restarting: a failed read must not report a restart that ran.
-            let work = task_work(&sessions).await?;
+            let inputs = card_inputs(&sessions).await?;
             let outcome = sessions.restart_all().await?;
             // A restarted agent was just launched on the current start files.
             let restarted = outcome
                 .restarted
                 .iter()
-                .map(|session| session_view(session, Vec::new(), &work))
+                .map(|session| session_view(session, Vec::new(), &inputs))
                 .collect();
             let deferred = outcome
                 .deferred
                 .into_iter()
-                .map(|(session, changed)| session_view(&session, changed, &work))
+                .map(|(session, changed)| session_view(&session, changed, &inputs))
                 .collect();
             let failed = outcome
                 .failed
@@ -248,9 +249,9 @@ where
     job(async move {
         let id = SessionId::parse(&session)?;
         // Read before the operation: a failed read must not report an operation that ran.
-        let work = task_work(&sessions).await?;
+        let inputs = card_inputs(&sessions).await?;
         let changed = operation(Arc::clone(&sessions), id).await?;
-        reply(&sessions, &changed, &work).await
+        reply(&sessions, &changed, &inputs).await
     })
 }
 
@@ -265,7 +266,7 @@ impl From<Error> for Failed {
 /// others. Each is checked again just before it ends, so one that took an item while another
 /// was ending is kept.
 async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Answer {
-    let work = task_work(&sessions).await?;
+    let inputs = card_inputs(&sessions).await?;
     let candidates: Vec<Session> = sessions
         .list(false)
         .await?
@@ -273,7 +274,7 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
         .filter(|session| {
             only.as_ref()
                 .is_none_or(|only| only.iter().any(|id| id == session.id.as_str()))
-                && is_finished(session, &work)
+                && is_finished(session, &inputs.items)
         })
         .collect();
     let mut ended = Vec::new();
@@ -284,7 +285,7 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
             continue;
         }
         match sessions.end(&session.id).await {
-            Ok(over) => ended.push(session_view(&over, Vec::new(), &work)),
+            Ok(over) => ended.push(session_view(&over, Vec::new(), &inputs)),
             Err(error) => failed.push(SessionFailure {
                 session: session.id.to_string(),
                 error: protocol_error(&error),
@@ -294,10 +295,24 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
     Ok(Reply::EndedFinished { ended, failed })
 }
 
-/// Each session's items, as the task list records them.
-pub(crate) type Work = HashMap<TaskSession, SessionWork>;
+/// What session cards show besides the sessions themselves, read once per answer in one
+/// transaction: each session's items, as the task list records them, and its coordinator
+/// grants and latest inbound message (#410).
+pub(crate) struct CardInputs {
+    items: HashMap<TaskSession, SessionWork>,
+    coordination: coordination::Notes,
+}
 
-pub(crate) async fn task_work(sessions: &Sessions) -> Result<Work, Failed> {
+pub(crate) async fn card_inputs(sessions: &Sessions) -> Result<CardInputs, Failed> {
+    let read = sessions.database().read().await.map_err(Error::from)?;
+    Ok(CardInputs {
+        items: cockpit_tasks::session_work(&read).await?,
+        coordination: coordination::notes(&read).await?,
+    })
+}
+
+/// Each session's items alone: what the finished label needs.
+async fn task_work(sessions: &Sessions) -> Result<HashMap<TaskSession, SessionWork>, Failed> {
     let read = sessions.database().read().await.map_err(Error::from)?;
     Ok(cockpit_tasks::session_work(&read).await?)
 }
@@ -309,7 +324,7 @@ pub(crate) async fn task_work(sessions: &Sessions) -> Result<Work, Failed> {
 /// restart keeps the label. Both are ordered by their commits, never by the clock (#273). A
 /// session mid-launch, mid-stop, failed or ended is not labelled: the failed one needs the
 /// owner, the ended one has nothing left to exit.
-fn is_finished(session: &Session, work: &Work) -> bool {
+fn is_finished(session: &Session, items: &HashMap<TaskSession, SessionWork>) -> bool {
     if matches!(
         session.state,
         SessionState::Launching
@@ -324,7 +339,7 @@ fn is_finished(session: &Session, work: &Work) -> bool {
     };
     let id = TaskSession::new(session.id.as_str())
         .expect("a session id is never empty, so it is a valid task-list session id");
-    work.get(&id).is_some_and(|work| {
+    items.get(&id).is_some_and(|work| {
         work.doing == 0
             && work
                 .last_finished_order
@@ -445,13 +460,13 @@ pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
 }
 
 pub(crate) async fn session_reply(sessions: &Sessions, session: &Session) -> Answer {
-    let work = task_work(sessions).await?;
-    reply(sessions, session, &work).await
+    let inputs = card_inputs(sessions).await?;
+    reply(sessions, session, &inputs).await
 }
 
-async fn reply(sessions: &Sessions, session: &Session, work: &Work) -> Answer {
+async fn reply(sessions: &Sessions, session: &Session, inputs: &CardInputs) -> Answer {
     Ok(Reply::Session {
-        session: Box::new(current_view(sessions, session, work).await?),
+        session: Box::new(current_view(sessions, session, inputs).await?),
     })
 }
 
@@ -459,13 +474,34 @@ async fn reply(sessions: &Sessions, session: &Session, work: &Work) -> Answer {
 pub(crate) async fn current_view(
     sessions: &Sessions,
     session: &Session,
-    work: &Work,
+    inputs: &CardInputs,
 ) -> Result<SessionView, Error> {
     let changed = sessions.changed_start_files(session).await?;
-    Ok(session_view(session, changed, work))
+    Ok(session_view(session, changed, inputs))
 }
 
-fn session_view(session: &Session, changed_start_files: Vec<String>, work: &Work) -> SessionView {
+pub(crate) fn state_view(state: SessionState) -> SessionStateView {
+    match state {
+        SessionState::Launching => SessionStateView::Launching,
+        SessionState::Running => SessionStateView::Running,
+        SessionState::Stopping { to } => SessionStateView::Stopping {
+            to: match to {
+                StopTarget::Asleep => StopTargetView::Asleep,
+                StopTarget::Ended => StopTargetView::Ended,
+                StopTarget::Restart => StopTargetView::Restart,
+            },
+        },
+        SessionState::Asleep => SessionStateView::Asleep,
+        SessionState::Ended => SessionStateView::Ended,
+        SessionState::Failed => SessionStateView::Failed,
+    }
+}
+
+fn session_view(
+    session: &Session,
+    changed_start_files: Vec<String>,
+    inputs: &CardInputs,
+) -> SessionView {
     SessionView {
         id: session.id.to_string(),
         agent: session.provider.to_string(),
@@ -474,20 +510,7 @@ fn session_view(session: &Session, changed_start_files: Vec<String>, work: &Work
         working_dir: session.working_dir.to_string_lossy().into_owned(),
         conversation: session.conversation.as_ref().map(ToString::to_string),
         design_link: session.design_link.clone(),
-        state: match session.state {
-            SessionState::Launching => SessionStateView::Launching,
-            SessionState::Running => SessionStateView::Running,
-            SessionState::Stopping { to } => SessionStateView::Stopping {
-                to: match to {
-                    StopTarget::Asleep => StopTargetView::Asleep,
-                    StopTarget::Ended => StopTargetView::Ended,
-                    StopTarget::Restart => StopTargetView::Restart,
-                },
-            },
-            SessionState::Asleep => SessionStateView::Asleep,
-            SessionState::Ended => SessionStateView::Ended,
-            SessionState::Failed => SessionStateView::Failed,
-        },
+        state: state_view(session.state),
         reason: session.reason.clone(),
         revision: session.revision,
         created_at: session.created_at,
@@ -505,6 +528,8 @@ fn session_view(session: &Session, changed_start_files: Vec<String>, work: &Work
         }),
         changed_start_files,
         restart_pending: session.restart_pending,
-        finished: is_finished(session, work),
+        finished: is_finished(session, &inputs.items),
+        coordinator_grants: inputs.coordination.grants_of(session.id.as_str()),
+        inbound_message: inputs.coordination.inbound_message_of(session.id.as_str()),
     }
 }

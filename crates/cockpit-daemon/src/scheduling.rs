@@ -187,7 +187,11 @@ impl Deliverer for Typist<'_> {
                 Ok(session) => session,
                 Err(error) => return rejected(error.to_string()),
             };
-            match context.sessions.submit(&session, &claim.payload).await {
+            match context
+                .sessions
+                .submit(&session, &claim.payload, cockpit_sessions::Addressed::Work)
+                .await
+            {
                 Ok(()) => Delivery::Received {
                     receipt: format!("typed into session {session}'s terminal"),
                 },

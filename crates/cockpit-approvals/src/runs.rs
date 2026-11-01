@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cockpit_authorization::{Actor, Basis, Outcome, Permission, Scope, SessionId};
+use cockpit_authorization::{Actor, Basis, GrantId, Outcome, Permission, Scope, SessionId};
 use cockpit_processes::{EndReason, ExecutionId, Phase};
 use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
@@ -40,7 +40,10 @@ const KIND: &str = "run request";
 /// The columns `run_from` reads, in its order.
 const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, project,
         project_root, reason, state, asked_at, expires_at, exit_code, output,
-        output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant";
+        output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
+        kind, start_prompt, start_clone";
+const START_PROMPT_MAX_CHARS: usize = 4000;
+const START_KIND: &str = "start-session";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub i64);
@@ -136,8 +139,59 @@ pub struct RunRequest {
     pub expires_at: i64,
     pub result: Option<RunResult>,
     pub note: Option<String>,
-    /// The `run-commands` grant the session asked under (#285).
+    /// The `run-commands` grant the session asked under (#285); for a start request, its
+    /// `start-sessions` grant (#410).
     pub(crate) asking_grant: Option<i64>,
+    /// A request to start a session (#410) rather than to run a command: the daemon starts
+    /// it in [`RunRequest::cwd`] once approved, and `command` is how the owner reads it.
+    pub start: Option<StartSession>,
+}
+
+/// The session a start request asks for, besides its directory, the request's `cwd` (#410).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartSession {
+    /// The first message its agent gets.
+    pub prompt: Option<String>,
+    /// Start it in a new clone on this branch instead of in the directory itself.
+    pub clone: Option<String>,
+}
+
+/// What a coordinator session asks to start (#410). `dir` is canonical, like
+/// [`RunAsk::cwd`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartAsk {
+    pub dir: PathBuf,
+    pub start: StartSession,
+    pub reason: String,
+    pub project: Option<Project>,
+}
+
+/// Which grant a request was asked under, and so which grant must still cover its session
+/// for the owner to decide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AskedUnder {
+    /// `run-commands` over the session itself: commands and guides.
+    RunCommands,
+    /// `start-sessions` over the owner's scope: start requests (#410).
+    StartSessions,
+}
+
+impl RunRequest {
+    pub(crate) fn asked_under(&self) -> AskedUnder {
+        match self.start {
+            Some(_) => AskedUnder::StartSessions,
+            None => AskedUnder::RunCommands,
+        }
+    }
+}
+
+impl RunRequest {
+    /// The id of the grant the session asked under: `run-commands`, or `start-sessions` for
+    /// a start request; `None` for a request filed before grants were recorded (#285).
+    /// `cockpit_authorization::stored_grant` reads it.
+    pub fn asking_grant(&self) -> Option<i64> {
+        self.asking_grant
+    }
 }
 
 impl RunRequest {
@@ -166,6 +220,9 @@ pub struct Approved {
     pub revision: i64,
     pub command: String,
     pub cwd: PathBuf,
+    /// A start request (#410): the daemon starts this session in `cwd` instead of running
+    /// `command`, which only describes it.
+    pub start: Option<StartSession>,
 }
 
 /// SHA-256 over a versioned, length-prefixed encoding of the directory and the command, as
@@ -217,6 +274,94 @@ pub async fn ask_run(
     insert_run(write, session, &ask, grant, now).await
 }
 
+/// Files a coordinator's request to start a session (#410) for the owner's approval in the
+/// `ask run` queue. The caller evaluated `cockpit_authorization::start_allowance` for
+/// `session` in this same transaction: `asked_under` is the `start-sessions` grant it
+/// allowed the start under, and the request may be decided only while that grant covers the
+/// session. Owner edits are refused: the owner declines, and the agent asks again.
+pub async fn ask_start(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    ask: StartAsk,
+    asked_under: GrantId,
+    now: i64,
+) -> Result<RunRequest, Error> {
+    validate_reason(&ask.reason)?;
+    let command = validate_start(&ask.dir, &ask.start)?;
+    let run_ask = RunAsk {
+        command,
+        cwd: ask.dir,
+        reason: ask.reason,
+        project: ask.project,
+    };
+    let run = insert_run(write, session, &run_ask, Some(asked_under.value()), now).await?;
+    stored_run(
+        write,
+        "UPDATE approvals_runs SET kind = ?2, start_prompt = ?3, start_clone = ?4
+         WHERE id = ?1",
+        (
+            run.id.0,
+            START_KIND,
+            ask.start.prompt.clone(),
+            ask.start.clone.clone(),
+        ),
+        now,
+    )
+    .await
+}
+
+/// The checks [`ask_start`] makes on a start in `dir`, also made on a start the owner's
+/// grant lets go without confirmation, so both refuse the same starts (#410). Returns how
+/// the owner reads it.
+pub fn validate_start(dir: &Path, start: &StartSession) -> Result<String, Refusal> {
+    if let Some(prompt) = &start.prompt {
+        if prompt.trim().is_empty() {
+            return Err(invalid(
+                "prompt",
+                "is empty; leave it out to start without one",
+            ));
+        }
+        let count = prompt.chars().count();
+        if count > START_PROMPT_MAX_CHARS {
+            return Err(invalid(
+                "prompt",
+                format!("is {count} characters; at most {START_PROMPT_MAX_CHARS}"),
+            ));
+        }
+        if prompt.contains('\0') {
+            return Err(invalid("prompt", "contains a NUL character"));
+        }
+    }
+    if let Some(branch) = &start.clone
+        && (branch.is_empty() || branch.chars().any(|c| c.is_control() || c.is_whitespace()))
+    {
+        return Err(invalid(
+            "clone",
+            "must be a branch name, without spaces or control characters",
+        ));
+    }
+    let command = start_command(dir, start)?;
+    validate_command("start", &command)?;
+    Ok(command)
+}
+
+/// How the owner reads a start request: the `cockpit session new` that does the same, each
+/// value quoted for a POSIX shell. The digest an approval binds covers it, and so every field.
+fn start_command(dir: &Path, start: &StartSession) -> Result<String, Refusal> {
+    let mut command = format!("cockpit session new {}", shell_quoted(text_of(dir)?));
+    if let Some(prompt) = &start.prompt {
+        command.push_str(&format!(" --prompt {}", shell_quoted(prompt)));
+    }
+    if let Some(branch) = &start.clone {
+        command.push_str(&format!(" --clone {}", shell_quoted(branch)));
+    }
+    Ok(command)
+}
+
+fn shell_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
 /// Whether `cockpit-authorization` allows `session` to ask the owner: `run-commands` over
 /// itself. Every ask is evaluated so; `ask check` asks it alone.
 pub async fn may_ask(write: &WriteTransaction<'_>, session: &SessionId) -> Result<(), Error> {
@@ -240,9 +385,10 @@ pub(crate) async fn asking_grant(
 pub(crate) async fn asker_may_still_ask(
     write: &WriteTransaction<'_>,
     session: &SessionId,
+    asked_for: AskedUnder,
     asked_under: Option<i64>,
 ) -> Result<(), Error> {
-    if may_still_ask(write, session, asked_under).await? {
+    if may_still_ask(write, session, asked_for, asked_under).await? {
         Ok(())
     } else {
         Err(Refusal::AskerMayNotAsk.into())
@@ -251,16 +397,30 @@ pub(crate) async fn asker_may_still_ask(
 
 /// Whether the grant a request was asked under, `asked_under`, still lets `session` ask:
 /// once a session ends or fails it loses `run-commands`, and nobody waits for its requests,
-/// even if a restart grants it again (#285). A request recorded without a grant is dead.
+/// even if a restart grants it again (#285). A start request needs its `start-sessions`
+/// grant the same way (#410). A request recorded without a grant is dead.
 pub(crate) async fn may_still_ask(
     connection: &Connection,
     session: &SessionId,
+    asked_for: AskedUnder,
     asked_under: Option<i64>,
 ) -> Result<bool, Error> {
     if asked_under.is_none() {
         return Ok(false);
     }
-    Ok(match run_commands_over_itself(connection, session).await? {
+    let outcome = match asked_for {
+        AskedUnder::RunCommands => run_commands_over_itself(connection, session).await?,
+        AskedUnder::StartSessions => {
+            evaluate(
+                connection,
+                session,
+                Permission::StartSessions,
+                &Scope::Owner,
+            )
+            .await?
+        }
+    };
+    Ok(match outcome {
         Outcome::Allowed(basis) => grant_of(&basis) == asked_under,
         Outcome::Refused(_) => false,
     })
@@ -270,11 +430,26 @@ async fn run_commands_over_itself(
     connection: &Connection,
     session: &SessionId,
 ) -> Result<Outcome, Error> {
+    evaluate(
+        connection,
+        session,
+        Permission::RunCommands,
+        &Scope::Session(session.clone()),
+    )
+    .await
+}
+
+async fn evaluate(
+    connection: &Connection,
+    session: &SessionId,
+    permission: Permission,
+    scope: &Scope,
+) -> Result<Outcome, Error> {
     let decision = cockpit_authorization::evaluate(
         connection,
         &Actor::Session(session.clone()),
-        Permission::RunCommands,
-        &Scope::Session(session.clone()),
+        permission,
+        scope,
     )
     .await?;
     Ok(decision.outcome)
@@ -348,7 +523,13 @@ pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunReque
     let mut open = Vec::with_capacity(runs.len());
     for run in runs {
         if run.state != RunState::Asking
-            || may_still_ask(connection, &run.session, run.asking_grant).await?
+            || may_still_ask(
+                connection,
+                &run.session,
+                run.asked_under(),
+                run.asking_grant,
+            )
+            .await?
         {
             open.push(run);
         }
@@ -455,7 +636,13 @@ pub async fn shown_run(
         return Ok(None);
     };
     if run.state == RunState::Asking
-        && !may_still_ask(connection, &run.session, run.asking_grant).await?
+        && !may_still_ask(
+            connection,
+            &run.session,
+            run.asked_under(),
+            run.asking_grant,
+        )
+        .await?
     {
         run.state = RunState::Expired;
     }
@@ -471,7 +658,15 @@ pub async fn edit_run(
     command: &str,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    undecided_at(write, id, revision, now).await?;
+    let run = undecided_at(write, id, revision, now).await?;
+    if run.start.is_some() {
+        return Err(invalid(
+            "command",
+            "describes a start request, which is not edited: decline it, and the agent asks \
+             again",
+        )
+        .into());
+    }
     validate_command("command", command)?;
     stored_run(
         write,
@@ -535,6 +730,7 @@ pub async fn approve_run(
         revision: run.revision,
         command: run.command.clone(),
         cwd: run.cwd.clone(),
+        start: run.start.clone(),
     };
     Ok((approved, run))
 }
@@ -580,6 +776,33 @@ pub async fn finish_run(
             count_column(result.output.omitted_lines),
             count_column(result.output.truncated_bytes),
             count_column(result.output.redacted),
+            now,
+        ),
+    )
+    .await
+}
+
+/// Records that the approved start request started `session` (#410). Fenced on the approved
+/// revision, like [`finish_run`]; a start request is never `running`.
+pub async fn finish_start(
+    write: &WriteTransaction<'_>,
+    run: &Approved,
+    session: &str,
+    now: i64,
+) -> Result<(), Error> {
+    if run.start.is_none() {
+        return Err(invalid("request", "is a command, not a start request").into());
+    }
+    fenced_update(
+        write,
+        run,
+        "UPDATE approvals_runs SET state = 'finished', exit_code = 0, output = ?3,
+            output_omitted_lines = 0, output_truncated_bytes = 0, redacted = 0, ended_at = ?4
+         WHERE id = ?1 AND revision = ?2 AND state = 'approved' AND kind = 'start-session'",
+        (
+            run.id.0,
+            run.revision,
+            format!("started session {session}"),
             now,
         ),
     )
@@ -637,7 +860,9 @@ pub struct Interrupted {
 pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted>, Error> {
     let mut rows = connection
         .query(
-            "SELECT id, revision, command, cwd, state, execution FROM approvals_runs
+            "SELECT id, revision, command, cwd, state, execution, kind, start_prompt,
+                 start_clone
+             FROM approvals_runs
              WHERE state IN ('approved', 'running') ORDER BY id",
             (),
         )
@@ -651,6 +876,7 @@ pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted
                 revision: row.get(1)?,
                 command: row.get(2)?,
                 cwd: PathBuf::from(row.get::<String>(3)?),
+                start: start_from(&row, 6)?,
             },
             state: if state == "running" {
                 RunState::Running
@@ -760,7 +986,7 @@ async fn undecided_at(
     now: i64,
 ) -> Result<RunRequest, Error> {
     let run = undecided(write, id, now).await?;
-    asker_may_still_ask(write, &run.session, run.asking_grant).await?;
+    asker_may_still_ask(write, &run.session, run.asked_under(), run.asking_grant).await?;
     if run.revision != revision {
         return Err(Refusal::StaleRevision {
             current: run.revision,
@@ -856,5 +1082,20 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
         result,
         note: row.get(17)?,
         asking_grant: row.get(19)?,
+        start: start_from(row, 20)?,
     })
+}
+
+/// The start request read from `kind, start_prompt, start_clone` at `first`; `None` for a
+/// command.
+fn start_from(row: &Row, first: usize) -> Result<Option<StartSession>, Error> {
+    let kind: String = row.get(first)?;
+    let prompt: Option<String> = row.get(first + 1)?;
+    let clone: Option<String> = row.get(first + 2)?;
+    match kind.as_str() {
+        START_KIND => Ok(Some(StartSession { prompt, clone })),
+        "command" if prompt.is_none() && clone.is_none() => Ok(None),
+        "command" => Err(invalid_row(TABLE, "a command with start fields".to_owned())),
+        other => Err(invalid_row(TABLE, format!("kind {other:?}"))),
+    }
 }

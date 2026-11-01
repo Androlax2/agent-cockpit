@@ -542,6 +542,9 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] \
                  [--conversation ID [--conversation-ends]]\n       \
                  cockpit agent reports\n       \
+                 cockpit agent sessions [--watch]\n       \
+                 cockpit agent message SESSION TEXT\n       \
+                 cockpit agent start DIR [--prompt TEXT] [--clone BRANCH]\n       \
                  cockpit project add DIR [--name NAME]\n       \
                  cockpit project list\n       \
                  cockpit checkout list [PROJECT]\n       \
@@ -563,6 +566,9 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit session sleep|wake|resume|end|show SESSION\n       \
                  cockpit session end --finished\n       \
                  cockpit session link SESSION URL\n       \
+                 cockpit session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]]\n       \
+                 cockpit session revoke SESSION observe-sessions|message-sessions|start-sessions\n       \
+                 cockpit session grants SESSION\n       \
                  cockpit session sandbox SESSION\n       \
                  cockpit sandbox show DIR [--agent NAME]\n       \
                  cockpit provider list\n       \

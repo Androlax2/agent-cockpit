@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
-    Capabilities, Manager, agent, agent_context, approvals, feed, manager, projects, readiness,
-    resources, scheduling, sessions, tasks, verification, workflows,
+    Capabilities, Manager, agent, agent_context, approvals, coordination, feed, manager, projects,
+    readiness, resources, scheduling, sessions, tasks, verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -96,12 +96,19 @@ pub struct Routes {
     verification: verification::Context,
     scheduling: scheduling::Context,
     readiness: readiness::Context,
+    coordination: coordination::Context,
 }
 
 impl Routes {
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         let provider_capabilities = Arc::new(capabilities.provider_capabilities);
         Routes {
+            coordination: coordination::Context {
+                database: Arc::clone(&capabilities.database),
+                sessions: Arc::clone(&capabilities.sessions),
+                runner: capabilities.runner.clone(),
+                queued: capabilities.messages_queued,
+            },
             workflows: workflows::Context {
                 database: Arc::clone(&capabilities.database),
                 environment: environment.clone(),
@@ -274,7 +281,35 @@ impl Handler for Routes {
                     command,
                     Arc::clone(&self.database),
                     self.runner.clone(),
+                    Arc::clone(&self.sessions),
                 ),
+            },
+            // The coordinator kit (#410): a session acts on others only through the owner's
+            // grants, which `cockpit-authorization` evaluates per request.
+            (
+                command @ (Command::AgentSessions { .. }
+                | Command::AgentMessage { .. }
+                | Command::AgentStart { .. }),
+                peer,
+            ) => match peer {
+                Peer::Agent { connector } => {
+                    coordination::route_agent(command, connector, self.coordination.clone())
+                }
+                Peer::Owner => Route::Answer(wrong_socket(
+                    "observing, messaging and starting sessions as a coordinator are a session's requests",
+                    "use `cockpit session list` or `cockpit session new` on the host",
+                    UnblockedBy::Owner,
+                )),
+            },
+            (
+                command @ (Command::SessionGrant { .. }
+                | Command::SessionRevoke { .. }
+                | Command::SessionGrants { .. }),
+                peer,
+            ) => match peer {
+                // No session gives itself or another a grant.
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => coordination::route_owner(command, self.coordination.clone()),
             },
             (
                 command @ (Command::SessionNew { .. }

@@ -9,9 +9,9 @@ use std::process::Output;
 mod scripted;
 
 use cockpit_protocol::{
-    Command, ErrorCode, LaunchKindView, LaunchView, Outcome, ProtocolError, Reply,
-    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
-    SessionView, StopTargetView,
+    Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, LaunchKindView, LaunchView,
+    Outcome, ProtocolError, Reply, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView,
+    SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -87,6 +87,8 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
         changed_start_files: Vec::new(),
         restart_pending: false,
         finished: false,
+        coordinator_grants: Vec::new(),
+        inbound_message: None,
     }
 }
 
@@ -318,6 +320,8 @@ async fn session_list_marks_a_finished_session_in_its_work_column() {
             sessions: vec![
                 SessionView {
                     finished: true,
+                    coordinator_grants: Vec::new(),
+                    inbound_message: None,
                     ..view("s000000000001", SessionStateView::Running)
                 },
                 view("s000000000002", SessionStateView::Running),
@@ -538,6 +542,184 @@ async fn malformed_sandbox_arguments_exit_2_before_any_connection() {
         &["sandbox", "show"],
         &["sandbox", "show", "/p/app", "--agent"],
         &["session", "sandbox"],
+    ];
+    for arguments in cases {
+        let output = home.cockpit(home.dir.path(), arguments).await;
+
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        assert!(
+            text(&output.stderr).contains("usage:"),
+            "{arguments:?}: {}",
+            text(&output.stderr)
+        );
+    }
+}
+
+// #410: the owner's coordinator verbs; which permission takes which terms is the daemon's
+// rule, proven in `cockpit-daemon/tests/coordinator_kit.rs`.
+
+#[tokio::test]
+async fn session_grant_sends_the_permission_and_its_start_terms() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::CoordinatorGrants {
+            session: "s0123456789ab".to_owned(),
+            grants: Vec::new(),
+            audit: Vec::new(),
+        }),
+    );
+
+    let output = home
+        .cockpit(
+            home.dir.path(),
+            &[
+                "session",
+                "grant",
+                "s0123456789ab",
+                "start-sessions",
+                "--per-hour",
+                "3",
+                "--without-confirmation",
+            ],
+        )
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionGrant {
+            session: "s0123456789ab".to_owned(),
+            permission: "start-sessions".to_owned(),
+            without_confirmation: true,
+            per_hour: Some(3),
+        }
+    );
+}
+
+#[tokio::test]
+async fn session_grants_prints_each_grant_then_the_audit_newest_first() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::CoordinatorGrants {
+            session: "s0123456789ab".to_owned(),
+            grants: vec![
+                CoordinatorGrantView {
+                    permission: "observe-sessions".to_owned(),
+                    grant: 4,
+                    per_hour: None,
+                    needs_confirmation: None,
+                },
+                CoordinatorGrantView {
+                    permission: "start-sessions".to_owned(),
+                    grant: 5,
+                    per_hour: Some(10),
+                    needs_confirmation: Some(true),
+                },
+            ],
+            audit: vec![
+                CoordinatorAuditView {
+                    id: 9,
+                    actor: "s0123456789ab".to_owned(),
+                    permission: "start-sessions".to_owned(),
+                    action: "start".to_owned(),
+                    target: None,
+                    detail: Some("approval request 2".to_owned()),
+                    at: 1_700_000_100,
+                },
+                CoordinatorAuditView {
+                    id: 8,
+                    actor: "s0123456789ab".to_owned(),
+                    permission: "message-sessions".to_owned(),
+                    action: "message".to_owned(),
+                    target: Some("s000000000002".to_owned()),
+                    detail: Some("rebase on main".to_owned()),
+                    at: 1_700_000_000,
+                },
+            ],
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "grants", "s0123456789ab"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "grant\tobserve-sessions\t4\t-\n\
+         grant\tstart-sessions\t5\tper-hour=10 confirmed\n\
+         audit\t9\t1700000100\ts0123456789ab\tstart\t-\t\"approval request 2\"\n\
+         audit\t8\t1700000000\ts0123456789ab\tmessage\ts000000000002\t\"rebase on main\"\n"
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionGrants {
+            session: "s0123456789ab".to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn session_revoke_sends_the_permission_to_take_back() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::CoordinatorGrants {
+            session: "s0123456789ab".to_owned(),
+            grants: Vec::new(),
+            audit: Vec::new(),
+        }),
+    );
+
+    let output = home
+        .cockpit(
+            home.dir.path(),
+            &["session", "revoke", "s0123456789ab", "message-sessions"],
+        )
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionRevoke {
+            session: "s0123456789ab".to_owned(),
+            permission: "message-sessions".to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn malformed_grant_arguments_exit_2_before_any_connection() {
+    let home = Home::new();
+    let cases: [&[&str]; 6] = [
+        &["session", "grant", "s0123456789ab"],
+        &[
+            "session",
+            "grant",
+            "s0123456789ab",
+            "start-sessions",
+            "--per-hour",
+        ],
+        &[
+            "session",
+            "grant",
+            "s0123456789ab",
+            "start-sessions",
+            "--per-hour",
+            "many",
+        ],
+        &[
+            "session",
+            "grant",
+            "s0123456789ab",
+            "start-sessions",
+            "--without-confirmation",
+            "--without-confirmation",
+        ],
+        &["session", "revoke", "s0123456789ab"],
+        &["session", "grants"],
     ];
     for arguments in cases {
         let output = home.cockpit(home.dir.path(), arguments).await;
