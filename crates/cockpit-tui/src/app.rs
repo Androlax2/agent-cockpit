@@ -419,7 +419,7 @@ impl App {
                     workflow.status.as_str()
                 ));
             }
-            return;
+            return None;
         }
         match reply {
             Reply::Workflows { .. } | Reply::Workflow { .. } | Reply::WorkflowPacket { .. } => {
