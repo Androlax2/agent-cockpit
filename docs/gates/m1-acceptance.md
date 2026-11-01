@@ -9,7 +9,8 @@ completed by Theo". The guide is [docs/acceptance/m1.md](../acceptance/m1.md), i
 - Build this clone: `cargo build --release --manifest-path Cargo.toml --bin cockpit --bin
   cockpit-daemon --bin cockpit-tui --bin cockpit-claude-hook`.
 - From the clone root, the worker hands the guide over: `ask-to-guide < docs/acceptance/m1.md`.
-  Its `run:` steps call `tools/acceptance/run.sh`, which runs `target/release` on scratch
+  Idle sleep (30 minutes at least, the configuration's floor) is a guide of its own, so Theo can
+  leave during the wait: `ask-to-guide < docs/acceptance/m1-idle.md`. Their `run:` steps call `tools/acceptance/run.sh`, which runs `target/release` on scratch
   `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` and `TMUX_TMPDIR`
   under `/tmp/cockpit-acceptance-<uid>`, never the installed cockpit. Until #134 lands this is
   the only isolation; from then on the `cockpit-next` profile replaces it.
