@@ -147,7 +147,9 @@ impl fmt::Display for SessionState {
 /// Whether a launch is made to give the session work, which drops its finished label: a
 /// start, a resume, the owner's restart, every wake. The others relaunch the same
 /// conversation with no new input and keep the label: the restore on daemon start,
-/// `restart --all` and its deferred restart (#269, decided in #312).
+/// `restart --all` and its deferred restart (#269, decided in #312). A launch or restart a
+/// crash interrupted is finished as `Work`: who asked for it is not kept, and dropping the
+/// label is the safe direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaunchPurpose {
     Work,

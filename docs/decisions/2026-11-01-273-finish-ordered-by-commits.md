@@ -5,7 +5,7 @@ shared sequence); the shared sequence already exists, needs no clock, and cannot
 
 - **`WriteTransaction::commit_order` (`cockpit-turso`):** the newest change-capture row when
   asked, at least every earlier commit's revision and below the transaction's own. The finish
-  (`tasks_items.finished_order`) and the launch (`session_launches.commit_order`) each store
+  (`tasks_items.finished_order`) and the launch (`session_launches.working_order`) each store
   theirs; a finish counts when its order is greater, so one committed after the launch counts
   in the same second, and one committed before never does, whatever its time says. A clock
   stepping back changes nothing.

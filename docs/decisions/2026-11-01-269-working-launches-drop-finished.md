@@ -8,7 +8,7 @@ Issue #269. Decided by Theo's coordinator in #312 (option A).
 - **Upkeep launches keep it: the restore on daemon start, `restart --all` and its deferred
   start-file restart.** They relaunch the same conversation with no new input, so a finished
   session stays folded after a reboot or a start-file change.
-- **One column, `session_launches.is_working`, set by the launch's caller.** The launch kind
+- **One column, `session_launches.working_order`, set by the launch's caller: its commit order for a working launch, `NULL` for upkeep.** The launch kind
   alone cannot tell: `restart` covers the owner's restart and the start-file restarts.
   `Session::working_launch_order` is the latest working launch's commit order (#273); the
   daemon compares the latest finish with it.

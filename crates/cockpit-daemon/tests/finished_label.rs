@@ -6,14 +6,13 @@
 //! Issue #273: a finish and a launch are ordered by their commits, not by the clock's
 //! seconds, so a finish in the launch's own second counts.
 //!
-//! Same setting as `session_restarts.rs`: the daemon runs in this process with a fake
-//! provider that can resume, a real state database, real processes and a private tmux
+//! Same setting as `session_restarts.rs`: the daemon runs in this process with the fake
+//! provider (it resumes), a real state database, real processes and a private tmux
 //! server. The periodic pass is left at the fixture's hour, so it never runs mid-test.
 #![cfg(target_os = "linux")]
 
 mod common;
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::sync::{Arc, Mutex};
@@ -22,60 +21,12 @@ use std::time::{Duration, Instant};
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Daemon, Instance, Limits, Options, Routes};
 use cockpit_protocol::{Command, LaunchKindView, Reply, SessionStateView, SessionView};
-use cockpit_provider_api::{
-    Capabilities as ProviderCapabilities, Capability, Conversation, ConversationId, LaunchCommand,
-    LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
-};
+use cockpit_provider_api::ProviderName;
+use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
 use cockpit_sessions::AgentState;
 use common::GENEROUS;
 
-const AGENT_SCRIPT: &str = r#"printf '%s pid=%s token=%s\n' "$COCKPIT_SESSION" "$$" "$COCKPIT_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
-exec sleep 600"#;
-
 const START_FILE: &str = "instructions";
-
-struct FakeProvider {
-    name: ProviderName,
-    log: PathBuf,
-}
-
-impl Provider for FakeProvider {
-    fn name(&self) -> &ProviderName {
-        &self.name
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::none().with(
-            Capability::Resume,
-            Provenance::Tested {
-                version: "fake".to_owned(),
-            },
-        )
-    }
-
-    fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
-        let conversation = match request.conversation {
-            Conversation::New => {
-                ConversationId::new(format!("conversation-{}", request.working_dir.display()))
-                    .unwrap()
-            }
-            Conversation::Resume(id) => id.clone(),
-        };
-        Ok(LaunchCommand {
-            program: PathBuf::from("/bin/sh"),
-            arguments: vec!["-c".into(), AGENT_SCRIPT.into()],
-            environment: vec![("FAKE_AGENT_LOG".into(), OsString::from(&self.log))],
-            conversation: Some(conversation),
-        })
-    }
-}
-
-/// One line of the agent log: a launch's agent, with what identifies it to the channel.
-struct AgentLaunch {
-    session: String,
-    pid: i32,
-    token: String,
-}
 
 struct Home {
     dir: tempfile::TempDir,
@@ -106,24 +57,8 @@ impl Home {
     }
 
     fn launches_of(&self, session: &str) -> Vec<AgentLaunch> {
-        std::fs::read_to_string(self.path().join("agent.log"))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| {
-                let words: Vec<&str> = line.split(' ').collect();
-                let field = |prefix: &str| {
-                    words
-                        .iter()
-                        .find_map(|word| word.strip_prefix(prefix))
-                        .unwrap()
-                        .to_owned()
-                };
-                AgentLaunch {
-                    session: words[0].to_owned(),
-                    pid: field("pid=").parse().unwrap(),
-                    token: field("token="),
-                }
-            })
+        FakeProvider::launches(&self.path().join("agent.log"))
+            .into_iter()
             .filter(|launch| launch.session == session)
             .collect()
     }
@@ -136,10 +71,10 @@ impl Home {
                 state_dir: self.path().join("state/cockpit"),
                 limits: Limits::default(),
             };
-            let provider = FakeProvider {
-                name: ProviderName::new("fake").unwrap(),
-                log: self.path().join("agent.log"),
-            };
+            let provider = FakeProvider::new(
+                ProviderName::new("fake").unwrap(),
+                self.path().join("agent.log"),
+            );
             let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
             wiring.sessions = cockpit_sessions::Settings {
                 stop: cockpit_processes::Escalation {

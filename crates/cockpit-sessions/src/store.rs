@@ -152,16 +152,16 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 launch_id INTEGER
             );",
         },
-        // #269 (decided in #312) and #273: whether a launch was made to give the session
-        // work, and where it lies among the commits, which the finished label compares a
-        // finish with. Earlier launches count as working ones, except restores, ordered
-        // before every finish that has an order.
+        // #269 (decided in #312) and #273: where a launch made to give the session work
+        // lies among the commits, which the finished label compares a finish with; `NULL`
+        // for a launch that keeps the label. Earlier launches count as working ones, except
+        // restores, ordered before every finish that has an order.
         Migration {
             version: 7,
-            sql: "ALTER TABLE session_launches ADD COLUMN is_working INTEGER NOT NULL DEFAULT 1
-                CHECK (is_working IN (0, 1));
-            ALTER TABLE session_launches ADD COLUMN commit_order INTEGER NOT NULL DEFAULT 0;
-            UPDATE session_launches SET is_working = 0 WHERE kind = 'restore';",
+            sql: "ALTER TABLE session_launches ADD COLUMN working_order INTEGER;
+            UPDATE session_launches SET working_order = 0 WHERE kind <> 'restore';
+            CREATE INDEX session_launches_by_working_order
+                ON session_launches (session_id, working_order);",
         },
     ],
 };
@@ -188,8 +188,7 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     s.conversation, s.design_link, s.state, s.stopping_to, s.reason, s.revision, s.created_at,
     s.changed_at, l.id, l.kind, l.execution_id, l.launched_at,
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
-    (SELECT max(w.commit_order) FROM session_launches w
-        WHERE w.session_id = s.id AND w.is_working = 1)";
+    (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id)";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)";
 
@@ -415,19 +414,21 @@ pub(crate) async fn insert_launch(
     execution: ExecutionId,
     start_files: &StartFileSnapshot,
 ) -> Result<(), Error> {
-    let order = write.commit_order().await?;
+    let working_order = match purpose {
+        LaunchPurpose::Work => Value::Integer(write.commit_order().await?),
+        LaunchPurpose::Upkeep => Value::Null,
+    };
     write
         .execute(
             "INSERT INTO session_launches
-                (session_id, kind, execution_id, launched_at, is_working, commit_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (session_id, kind, execution_id, launched_at, working_order)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             (
                 id.as_str(),
                 kind.column(),
                 execution.0,
                 now(),
-                i64::from(purpose == LaunchPurpose::Work),
-                order,
+                working_order,
             ),
         )
         .await?;

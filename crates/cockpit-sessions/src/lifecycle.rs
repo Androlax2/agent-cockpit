@@ -691,6 +691,10 @@ impl Sessions {
                 "restore",
             )
             .await?;
+        }
+        let purpose = if was_launching {
+            LaunchPurpose::Work
+        } else {
             LaunchPurpose::Upkeep
         };
         let conversation = match self.resumable(session) {
