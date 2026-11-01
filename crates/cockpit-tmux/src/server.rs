@@ -289,6 +289,13 @@ impl Server {
             .map(drop)
     }
 
+    /// Gives `pane` the keys: it becomes its window's active pane, where an attached
+    /// client's keys go.
+    pub fn select_pane(&self, pane: &PaneId) -> Result<(), Error> {
+        self.run(&words(&["select-pane", "-t", pane.as_str()]))
+            .map(drop)
+    }
+
     /// Splits a pane off `parent`, to its right (`side_by_side`) or below it, holding
     /// `percent` of its size, and returns the new pane's id. Focus stays where it was, so
     /// keys keep going to the pane the human typed in.

@@ -72,3 +72,17 @@ fn the_providers_and_manager_replies_name_their_fields_on_the_wire() {
         )
     );
 }
+
+#[test]
+fn a_manager_focus_and_its_reply_carry_only_their_kind() {
+    let wire = json!({"id": 3, "command": {"kind": "manager-focus"}});
+
+    let request = decode_request(&wire.to_string()).unwrap();
+
+    assert_eq!(request.command, Command::ManagerFocus);
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    assert_eq!(
+        serde_json::to_value(Reply::ManagerFocused).unwrap(),
+        json!({"kind": "manager-focused"})
+    );
+}

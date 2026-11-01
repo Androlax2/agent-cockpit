@@ -6,10 +6,10 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{Command, HiddenView};
+use cockpit_protocol::{Command, HiddenView, Reply};
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
-    app_with, folded, guide, hidden, press, queue, run, screen_text, sent, session, typing,
+    answer, app_with, folded, guide, hidden, press, queue, run, screen_text, sent, session, typing,
     waiting_run,
 };
 
@@ -40,6 +40,62 @@ fn a_request_appearing_takes_focus_and_its_keys_are_ignored_for_the_grace() {
     assert_eq!(app.focus(), Focus::Pane);
     assert_eq!(
         (early.used, early.send),
+        (Some("approval-ignored-in-grace"), Vec::new())
+    );
+}
+
+#[test]
+fn a_request_appearing_asks_the_daemon_once_for_the_keys_the_viewer_may_hold() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+
+    let appeared = queue(
+        &mut app,
+        vec![run(3, SESSION, "make test")],
+        Vec::new(),
+        now,
+    );
+    let still_shown = queue(
+        &mut app,
+        vec![run(3, SESSION, "make test")],
+        Vec::new(),
+        after_grace(now),
+    );
+
+    assert_eq!((appeared, still_shown), (Some(Command::ManagerFocus), None));
+}
+
+#[test]
+fn a_key_ignored_in_the_grace_starts_it_again() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    let typed_at = now + INPUT_GRACE - Duration::from_millis(1);
+    app.key(Key::Char('e'), typed_at);
+
+    let still_typing = app.key(Key::Char('y'), after_grace(now));
+
+    assert_eq!(
+        (still_typing.used, still_typing.send),
+        (Some("approval-ignored-in-grace"), Vec::new())
+    );
+}
+
+#[test]
+fn the_keys_arriving_from_tmux_start_the_grace_again() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    let focused_at = after_grace(now);
+    answer(
+        &mut app,
+        Command::ManagerFocus,
+        Reply::ManagerFocused,
+        focused_at,
+    );
+
+    let first = app.key(Key::Char('y'), after_grace(now) + Duration::from_millis(1));
+
+    assert_eq!(
+        (first.used, first.send),
         (Some("approval-ignored-in-grace"), Vec::new())
     );
 }
@@ -93,11 +149,9 @@ fn taking_focus_again_starts_the_grace_again() {
     app.key(Key::Tab, later);
     app.key(Key::Tab, later);
 
-    let early = app.key(
-        Key::Char('y'),
-        later + INPUT_GRACE - Duration::from_millis(1),
-    );
-    let approved = app.key(Key::Char('y'), after_grace(later));
+    let early_at = later + INPUT_GRACE - Duration::from_millis(1);
+    let early = app.key(Key::Char('y'), early_at);
+    let approved = app.key(Key::Char('y'), after_grace(early_at));
 
     assert_eq!(early.used, Some("approval-ignored-in-grace"));
     assert_eq!(approved.used, Some("approval-approve"));

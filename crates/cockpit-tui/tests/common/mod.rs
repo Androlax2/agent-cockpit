@@ -221,17 +221,22 @@ pub fn after_snapshot(changes: Vec<ChangeEvent>) -> ChangeBatch {
     }
 }
 
-pub fn answer(app: &mut App, command: Command, reply: Reply, now: Instant) {
-    app.answer(&command, Ok(reply), now);
+pub fn answer(app: &mut App, command: Command, reply: Reply, now: Instant) -> Option<Command> {
+    app.answer(&command, Ok(reply), now)
 }
 
-pub fn queue(app: &mut App, runs: Vec<RunRequestView>, guides: Vec<GuideView>, now: Instant) {
+pub fn queue(
+    app: &mut App,
+    runs: Vec<RunRequestView>,
+    guides: Vec<GuideView>,
+    now: Instant,
+) -> Option<Command> {
     answer(
         app,
         Command::ApprovalQueue,
         Reply::ApprovalQueue { runs, guides },
         now,
-    );
+    )
 }
 
 pub fn press(app: &mut App, keys: &[Key], now: Instant) -> Vec<Step> {

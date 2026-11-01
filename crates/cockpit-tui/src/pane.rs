@@ -3,7 +3,9 @@
 //!
 //! - Approving is `y` only: no navigation key (`j`, `k`, arrows, Enter) approves.
 //! - Input is ignored for [`INPUT_GRACE`] after the pane shows a request (a new one or a new
-//!   revision) or takes focus. The daemon's own grace refusal is the backstop.
+//!   revision) or takes focus, and for [`INPUT_GRACE`] after each key it ignored: an owner
+//!   still typing to an agent when the pane took tmux's keys approves nothing (#317). The
+//!   daemon's own grace refusal is the backstop.
 //! - While the owner types into the pane, the request shown stays, whatever arrives.
 
 use std::time::{Duration, Instant};
@@ -13,8 +15,11 @@ use cockpit_protocol::{Command, GuideStateView, GuideView, RunRequestView, RunSt
 use crate::Key;
 use crate::board::Board;
 
-/// How long the pane ignores input after it shows a request or takes focus.
-pub const INPUT_GRACE: Duration = Duration::from_millis(1000);
+/// How long the pane ignores input after it shows a request or takes focus. The daemon
+/// refuses an approval until two whole seconds after the revision appeared (between one and
+/// two real seconds); the pane shows a revision only after the daemon created it, so two
+/// seconds from showing always outlast that, and a `y` after the hint is never refused (#337).
+pub const INPUT_GRACE: Duration = Duration::from_secs(2);
 
 /// The request the pane shows, as it was when shown: an approval names this revision and
 /// digest, never a newer one the owner has not seen.
@@ -120,6 +125,7 @@ impl Pane {
             return PaneOutcome::NotMine;
         };
         if self.in_grace(now) {
+            self.focus(now);
             return PaneOutcome::IgnoredInGrace;
         }
         if let Some(typing) = self.typing {

@@ -355,6 +355,42 @@ async fn reopening_the_manager_keeps_the_pane_its_owner_focused() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn manager_focus_gives_the_keys_back_to_the_column() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+    home.tmux(&["select-pane", "-t", "=cockpit:.1"]);
+
+    let reply = request(&client, Command::ManagerFocus).await.unwrap();
+
+    assert_eq!(
+        (reply, focused_pane(&home)),
+        (Reply::ManagerFocused, "0".to_owned())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manager_focus_before_the_manager_is_open_is_refused_naming_the_fix() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    let error = refusal(request(&client, Command::ManagerFocus).await);
+
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert!(
+        error.message.contains("run `cockpit tui`"),
+        "{}",
+        error.message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn showing_an_asleep_session_wakes_it_and_attaches_the_viewer_to_it() {
     let home = Home::new();
     let daemon = home.start().await;
@@ -436,7 +472,7 @@ async fn showing_a_session_before_the_manager_is_open_is_refused_naming_the_fix(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_may_neither_open_the_manager_nor_list_providers() {
+async fn an_agent_may_neither_open_nor_focus_the_manager_nor_list_providers() {
     let home = Home::new();
     let daemon = home.start().await;
     let agent = Connection::open(daemon.agent_socket_path(), GENEROUS)
@@ -445,10 +481,18 @@ async fn an_agent_may_neither_open_the_manager_nor_list_providers() {
 
     let codes = [
         refusal(home.open_manager(&agent).await).code,
+        refusal(request(&agent, Command::ManagerFocus).await).code,
         refusal(request(&agent, Command::ProviderList).await).code,
     ];
 
-    assert_eq!(codes, [ErrorCode::NotAuthorized, ErrorCode::NotAuthorized]);
+    assert_eq!(
+        codes,
+        [
+            ErrorCode::NotAuthorized,
+            ErrorCode::NotAuthorized,
+            ErrorCode::NotAuthorized
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
