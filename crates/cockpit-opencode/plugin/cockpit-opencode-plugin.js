@@ -24,6 +24,9 @@ const FORWARDED = [
 
 // How long `cockpit brief` may take before the prompt goes without it.
 const BRIEF_DEADLINE_MS = 10000
+// How long after a failed `cockpit brief` the next model call asks again: the hook runs before
+// every model call of a turn, which must not each wait out a daemon that is down.
+const BRIEF_RETRY_MS = 60000
 
 // OpenCode's loop goes on after an assistant message that finished for these reasons.
 const UNFINISHED = ["tool-calls", "unknown"]
@@ -89,9 +92,10 @@ export const CockpitBridge = async ({ serverUrl }) => {
       }
     })
 
-  // What `cockpit brief` printed, asked once; a failed read is asked again on the next
-  // prompt, and the prompt meanwhile goes without it rather than wait.
+  // What `cockpit brief` printed, asked once; a failed read (null) is asked again once
+  // BRIEF_RETRY_MS have passed, and the prompts meanwhile go without it rather than wait.
   let brief
+  let failedAt = -Infinity
   const readBrief = () =>
     new Promise((resolve) => {
       try {
@@ -102,25 +106,29 @@ export const CockpitBridge = async ({ serverUrl }) => {
         child.stdout.on("data", (chunk) => {
           text += chunk
         })
-        child.on("error", () => resolve(""))
+        child.on("error", () => resolve(null))
         child.on("close", (code) => {
           clearTimeout(timer)
-          resolve(code === 0 ? text.trim() : "")
+          resolve(code === 0 ? text.trim() : null)
         })
       } catch {
-        resolve("")
+        resolve(null)
       }
     })
 
   return {
     "experimental.chat.system.transform": async (_input, output) => {
-      brief ??= readBrief()
+      if (brief === undefined) {
+        if (Date.now() - failedAt < BRIEF_RETRY_MS) return
+        brief = readBrief()
+      }
       const text = await brief
-      if (!text) {
+      if (text === null) {
         brief = undefined
+        failedAt = Date.now()
         return
       }
-      output.system.push(text)
+      if (text) output.system.push(text)
     },
     event: async ({ event }) => {
       if (!isForwarded(event)) return

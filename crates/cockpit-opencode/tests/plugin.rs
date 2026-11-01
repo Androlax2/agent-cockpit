@@ -231,19 +231,23 @@ fn a_bridge_that_cannot_run_never_stops_the_plugin() {
 /// Calls the plugin's system transform twice with `cockpit` as the `cockpit` program and
 /// prints each resulting system prompt as JSON, one line each.
 const SYSTEM_DRIVER: &str = r#"
-const [plugin, port] = process.argv.slice(2)
+const [plugin, port, apart] = process.argv.slice(2)
 const { CockpitBridge } = await import(plugin)
 const hooks = await CockpitBridge({ serverUrl: new URL(`http://127.0.0.1:${port}`) })
-for (let call = 0; call < 2; call++) {
+const now = Date.now
+let elapsed = 0
+Date.now = () => now() + elapsed
+for (let call = 0; call < 3; call++) {
+  if (call > 0) elapsed += Number(apart)
   const output = { system: ["OpenCode's own prompt"] }
   await hooks["experimental.chat.system.transform"]({ sessionID: "ses_1", model: {} }, output)
   console.log(JSON.stringify(output.system))
 }
 "#;
 
-/// The system prompts two model calls get, with a fake `cockpit` that runs `brief_body` for
-/// `cockpit brief`, and how many times it ran.
-fn system_prompts(brief_body: &str) -> (Vec<String>, usize) {
+/// The system prompts three model calls `apart_ms` apart get, with a fake `cockpit` that runs
+/// `brief_body` for `cockpit brief`, and how many times it ran.
+fn system_prompts(brief_body: &str, apart_ms: u64) -> (Vec<String>, usize) {
     let dir = tempfile::tempdir().unwrap();
     let plugin = dir.path().join("cockpit-opencode-plugin.mjs");
     std::fs::write(&plugin, PLUGIN_SOURCE).unwrap();
@@ -262,6 +266,7 @@ fn system_prompts(brief_body: &str) -> (Vec<String>, usize) {
         .arg(&driver)
         .arg(&plugin)
         .arg(PORT)
+        .arg(apart_ms.to_string())
         .env(
             "COCKPIT_OPENCODE_BRIDGE",
             dir.path().join("cockpit-opencode-bridge"),
@@ -285,34 +290,44 @@ fn system_prompts(brief_body: &str) -> (Vec<String>, usize) {
     (prompts, runs)
 }
 
+const OWN_PROMPT: &str = r#"["OpenCode's own prompt"]"#;
+
 /// #419: the agent sees its launch brief without asking, in every model call, read once.
 #[test]
 fn every_system_prompt_carries_the_launch_brief_read_once() {
-    let (prompts, runs) = system_prompts("printf '# Cockpit launch brief\\n'");
+    let (prompts, runs) = system_prompts("printf '# Cockpit launch brief\\n'", 0);
 
     assert_eq!(
         prompts,
-        [
-            r##"["OpenCode's own prompt","# Cockpit launch brief"]"##,
-            r##"["OpenCode's own prompt","# Cockpit launch brief"]"##,
-        ]
+        [r##"["OpenCode's own prompt","# Cockpit launch brief"]"##; 3]
     );
     assert_eq!(runs, 1);
 }
 
-/// A brief that cannot be read leaves the prompt as OpenCode made it and is asked again.
+/// The hook runs before every model call of a turn: a daemon that is down must not make each
+/// of them wait for `cockpit brief` again.
 #[test]
-fn a_brief_that_cannot_be_read_is_asked_again_and_never_blocks_the_prompt() {
-    let (prompts, runs) = system_prompts("echo 'no daemon' >&2; exit 1");
+fn a_brief_that_cannot_be_read_never_blocks_the_prompt_nor_is_asked_each_call() {
+    let (prompts, runs) = system_prompts("echo 'no daemon' >&2; exit 1", 1_000);
 
-    assert_eq!(
-        prompts,
-        [
-            r#"["OpenCode's own prompt"]"#,
-            r#"["OpenCode's own prompt"]"#,
-        ]
-    );
-    assert_eq!(runs, 2);
+    assert_eq!(prompts, [OWN_PROMPT; 3]);
+    assert_eq!(runs, 1);
+}
+
+#[test]
+fn a_brief_that_cannot_be_read_is_asked_again_a_minute_later() {
+    let (prompts, runs) = system_prompts("exit 1", 61_000);
+
+    assert_eq!(prompts, [OWN_PROMPT; 3]);
+    assert_eq!(runs, 3);
+}
+
+#[test]
+fn an_empty_brief_adds_nothing_and_is_read_once() {
+    let (prompts, runs) = system_prompts("exit 0", 61_000);
+
+    assert_eq!(prompts, [OWN_PROMPT; 3]);
+    assert_eq!(runs, 1);
 }
 
 /// The plugin's list and the adapter's must not drift apart.

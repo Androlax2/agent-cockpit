@@ -154,6 +154,18 @@ fn each_session_start_adds_the_launch_brief_to_codexs_context() {
     }
 }
 
+/// The report and the brief run side by side; when both fail, neither failure is hidden.
+#[test]
+fn a_start_whose_report_and_brief_both_fail_names_both() {
+    let cockpit = FakeCockpit::answering_brief_with(3, 3);
+    let output = run_hook(&cockpit.program(), &common::fixture("session-start"), None);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`cockpit agent report"), "{stderr}");
+    assert!(stderr.contains("`cockpit brief` failed"), "{stderr}");
+}
+
 #[test]
 fn a_brief_that_cannot_be_read_still_lets_the_start_report_and_exits_1() {
     let cockpit = FakeCockpit::answering_brief_with(0, 3);

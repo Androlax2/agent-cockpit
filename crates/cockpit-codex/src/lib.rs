@@ -330,8 +330,29 @@ pub fn mcp_configs(cockpit: &Path) -> Vec<String> {
             hooks::toml_string(&cockpit.to_string_lossy())
         ),
         format!("mcp_servers.{MCP_SERVER_NAME}.args=[\"mcp\"]"),
+        format!(
+            "mcp_servers.{MCP_SERVER_NAME}.env_vars=[{}]",
+            MCP_ENVIRONMENT
+                .iter()
+                .map(|variable| format!("\"{variable}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
     ]
 }
+
+/// What `cockpit mcp` needs from the launch's environment to reach its session: Codex hands
+/// a stdio MCP server only `HOME`, `PATH` and a few locale variables unless a server names
+/// more (`DEFAULT_ENV_VARS`, codex-rs/rmcp-client at rust-v0.161.0).
+const MCP_ENVIRONMENT: [&str; 7] = [
+    "COCKPIT_LAUNCH_TOKEN",
+    "COCKPIT_AGENT_SOCKET",
+    "COCKPIT_INSTRUCTIONS",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+];
 
 /// `[resume] --no-daemon [-- [<thread id>] [<first message>]]`: every word after `--` is
 /// positional, so neither can be read as a flag.

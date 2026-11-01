@@ -138,8 +138,8 @@ impl Bridge {
     /// and appends its plugin to theirs; it also registers `cockpit mcp` as the
     /// [`MCP_SERVER_NAME`] MCP server (#419). `owner` is the value the owner already set,
     /// which this one replaces: its settings are kept, the plugin appended to its own and the
-    /// server added to its own. Refused when it is not a JSON object, rather than dropping the
-    /// owner's settings unseen.
+    /// server added to its own. Refused when it is not a JSON object or already names a
+    /// [`MCP_SERVER_NAME`] server, rather than dropping the owner's settings unseen.
     pub fn inline_config(&self, owner: Option<&OsStr>) -> Result<String, ProviderError> {
         let refused = |why: &str| ProviderError {
             reason: format!("OPENCODE_CONFIG_CONTENT {why}, so the plugin cannot join it"),
@@ -165,6 +165,11 @@ impl Bridge {
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
             .ok_or_else(|| refused("has an `mcp` that is not an object"))?;
+        if servers.contains_key(MCP_SERVER_NAME) {
+            return Err(refused(&format!(
+                "already has an `mcp.{MCP_SERVER_NAME}` server"
+            )));
+        }
         servers.insert(
             MCP_SERVER_NAME.to_owned(),
             serde_json::json!({

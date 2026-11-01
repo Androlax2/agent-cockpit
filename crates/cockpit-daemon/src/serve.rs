@@ -117,18 +117,27 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         Ok(opencode) => providers.push(Arc::new(opencode)),
         Err(reason) => unavailable_providers.push(("opencode".to_owned(), reason)),
     }
+    // The plugin folder exists only once OpenCode was found and its plugin written: a missing
+    // path handed to the sandbox would fail every launch, OpenCode or not.
+    let opencode_plugin_dir = plugin_dir.is_dir().then_some(plugin_dir);
     let sandbox = sandbox(
         instance.options(),
         &environment,
         &[
-            serve.programs_dir.clone(),
-            plugin_dir,
-            // `$COCKPIT_INSTRUCTIONS`, which the launch brief points agents at (#419).
-            instance
-                .options()
-                .state_dir
-                .join(crate::agent_context::BUNDLE_DIR),
-        ],
+            Some(serve.programs_dir.clone()),
+            opencode_plugin_dir,
+            // `$COCKPIT_INSTRUCTIONS`, which the launch brief points agents at (#419); the
+            // daemon writes it at its start, before any launch.
+            Some(
+                instance
+                    .options()
+                    .state_dir
+                    .join(crate::agent_context::BUNDLE_DIR),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>(),
         &config,
     );
     let mut sessions = cockpit_sessions::Settings {

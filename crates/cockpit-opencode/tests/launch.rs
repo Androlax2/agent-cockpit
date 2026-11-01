@@ -203,7 +203,13 @@ fn a_launch_with_the_bridge_registers_cockpits_mcp_server_beside_the_owners() {
 fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
     let bridge = common::bridge();
 
-    for owner in ["not json", "[]", r#"{"plugin":"one"}"#, r#"{"mcp":[]}"#] {
+    for owner in [
+        "not json",
+        "[]",
+        r#"{"plugin":"one"}"#,
+        r#"{"mcp":[]}"#,
+        r#"{"mcp":{"cockpit":{"type":"local","command":["theirs"]}}}"#,
+    ] {
         let refusal = bridge.inline_config(Some(OsStr::new(owner))).unwrap_err();
 
         assert!(
