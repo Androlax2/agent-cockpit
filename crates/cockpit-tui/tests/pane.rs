@@ -469,3 +469,39 @@ fn a_failed_focus_leaves_the_keys_where_they_are_once_the_queue_empties() {
 
     assert_eq!(sent_on_empty, None);
 }
+
+#[test]
+fn keys_the_owner_uses_in_the_list_stay_there_once_the_queue_empties() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+    app.key(Key::Tab, after_grace(now));
+
+    let sent_on_empty = emptied(&mut app, after_grace(now));
+
+    assert_eq!(sent_on_empty, None);
+}
+
+#[test]
+fn keys_the_owner_reads_the_help_with_stay_once_the_queue_empties() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+    app.key(Key::Char('?'), after_grace(now));
+
+    let sent_on_empty = emptied(&mut app, after_grace(now));
+
+    assert_eq!(sent_on_empty, None);
+}
+
+#[test]
+fn keys_arriving_after_the_queue_emptied_stay_while_the_form_is_open() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    emptied(&mut app, now);
+    app.key(Key::Char('N'), now);
+
+    let sent_on_reply = answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+
+    assert_eq!(sent_on_reply, None);
+}

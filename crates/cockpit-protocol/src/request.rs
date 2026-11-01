@@ -537,8 +537,10 @@ pub enum Command {
     },
     /// Give the keys to a pane of the manager: the column, where the TUI shows what waits on
     /// the owner (#317), or back to the viewer the column took them from (#345). The TUI
-    /// does not run tmux, the daemon does.
+    /// does not run tmux, the daemon does. Without `pane`, as a TUI before #345 sends it,
+    /// the column.
     ManagerFocus {
+        #[serde(default = "ManagerPaneView::column")]
         pane: ManagerPaneView,
     },
     /// A kind this version does not know. Read only: `decode_request` refuses it as

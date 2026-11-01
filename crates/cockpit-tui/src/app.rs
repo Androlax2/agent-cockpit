@@ -543,7 +543,13 @@ impl App {
                 })
             }
             (_, false) => {
+                // The owner left the pane for the list, the help or the log: they use the
+                // column, so its keys stay.
+                let was_in_pane = self.focus == Focus::Pane;
                 self.focus = Focus::List;
+                if !was_in_pane || self.overlay.is_some() {
+                    self.keep_keys();
+                }
                 self.give_keys_back()
             }
             _ => None,
@@ -574,7 +580,21 @@ impl App {
         self.give_keys_back()
     }
 
+    /// Keys the owner now uses in the column are theirs: none go back to the viewer.
+    fn keep_keys(&mut self) {
+        if self.taken_keys == TakenKeys::FromViewer {
+            self.taken_keys = TakenKeys::NotTaken;
+        }
+    }
+
+    /// Keys taken from the viewer go back to it, unless the owner is typing in the column:
+    /// a form, a confirmation or an overlay is open.
     fn give_keys_back(&mut self) -> Option<Command> {
+        let is_owner_in_column =
+            self.form.is_some() || self.confirm.is_some() || self.overlay.is_some();
+        if is_owner_in_column {
+            self.keep_keys();
+        }
         if self.taken_keys != TakenKeys::FromViewer {
             return None;
         }

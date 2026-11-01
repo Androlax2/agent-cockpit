@@ -93,10 +93,17 @@ fn a_manager_focus_names_the_pane_that_takes_the_keys() {
 }
 
 #[test]
-fn a_manager_focus_without_its_pane_is_refused() {
+fn a_manager_focus_without_its_pane_gives_the_column_the_keys_as_before_345() {
     let wire = json!({"id": 3, "command": {"kind": "manager-focus"}});
 
-    assert!(decode_request(&wire.to_string()).is_err());
+    let request = decode_request(&wire.to_string()).unwrap();
+
+    assert_eq!(
+        request.command,
+        Command::ManagerFocus {
+            pane: ManagerPaneView::Column
+        }
+    );
 }
 
 #[test]

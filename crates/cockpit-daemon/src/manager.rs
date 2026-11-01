@@ -28,6 +28,9 @@ pub struct Manager {
     /// The session last shown in the viewer: the owner views it, so scheduling gives it no
     /// new work (#43).
     shown: Mutex<Option<SessionId>>,
+    /// Held while the keys move, so a give-back between another focus's look at the active
+    /// pane and its select cannot falsify `took_from_viewer`.
+    focusing: Mutex<()>,
 }
 
 impl Manager {
@@ -36,6 +39,7 @@ impl Manager {
             tmux,
             opening: Mutex::new(()),
             shown: Mutex::new(None),
+            focusing: Mutex::new(()),
         }
     }
 
@@ -258,6 +262,10 @@ async fn show(
 fn focus(manager: &Manager, pane: ManagerPaneView) -> Result<Reply, ProtocolError> {
     let tmux = manager.tmux()?;
     let panes = whole_manager(tmux)?;
+    let _focusing = manager
+        .focusing
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let took_from_viewer = tmux.active_pane(&manager_name()).map_err(tmux_error)? == panes.viewer;
     let target = match pane {
         ManagerPaneView::Column => &panes.column,

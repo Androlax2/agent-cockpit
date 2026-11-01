@@ -167,6 +167,13 @@ pub enum ManagerPaneView {
     Viewer,
 }
 
+impl ManagerPaneView {
+    /// The pane `manager-focus` meant before it named one (#345).
+    pub fn column() -> ManagerPaneView {
+        ManagerPaneView::Column
+    }
+}
+
 /// A provider a session may be started with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderView {

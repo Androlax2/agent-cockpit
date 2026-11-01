@@ -195,13 +195,17 @@ fn wrapped(text: &str, width: usize, indent: &str) -> Vec<String> {
         }
         gap.clear();
         // The word starts this row; one wider than a row is cut where the row ends.
+        let mut row_columns = columns(&row);
         let mut row_has_char = false;
         for character in word.chars() {
             let character = character.to_string();
-            if row_has_char && columns(&row) + columns(&character) > width {
+            let character_columns = columns(&character);
+            if row_has_char && row_columns + character_columns > width {
                 rows.push(std::mem::replace(&mut row, indent.to_owned()));
+                row_columns = columns(indent);
             }
             row.push_str(&character);
+            row_columns += character_columns;
             row_has_char = true;
         }
         row_has_word = true;

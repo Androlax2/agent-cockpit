@@ -44,7 +44,8 @@ detaching the terminal leaves everything running.
 - When a request appears and nothing was shown, the pane takes focus and asks the daemon
   for tmux's keys (`manager-focus`), so the next key reaches the pane, not the agent in the
   viewer (#317). The daemon answers whether the viewer had them; when nothing waits any
-  more, keys taken from the viewer go back to it, and keys the list already had stay (#345).
+  more, keys taken from the viewer go back to it, unless the owner tabbed to the list or has a
+  form, confirmation, help or log open; keys the list already had stay (#345).
 - `y` approves the request shown, naming its revision and digest; no navigation key does.
 - Input is ignored for [`INPUT_GRACE`] after the pane shows a request (or a new revision),
   takes focus (in the TUI, or tmux's keys arriving) or ignored a key; the daemon refuses an
