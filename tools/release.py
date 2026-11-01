@@ -5,7 +5,7 @@ Usage: release.py check-tag TAG --main REF --alpha-checklist open|closed
                              --beta-checklist open|closed
        release.py next-prerelease --main REF --alpha-checklist open|closed
                                   --beta-checklist open|closed
-       release.py dry-run-version --main REF
+       release.py dry-run-version
        release.py stamp VERSION
        release.py package --version V --channel C --platform P --revision SHA
                           --binaries DIR --out DIR
@@ -34,12 +34,15 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# Before the first stable tag, pre-releases count from the greenfield bootstrap (#18, #94).
+# Pre-releases count from the greenfield bootstrap (#18, #94): no stable tag is a base (#389).
 BOOTSTRAP_COMMIT = "d2d860474e55d0e6f815ee33e50162351bbb1495"
 CORE_PATTERN = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
-# The release milestones' checklist issues that open each pre-release channel (#389).
-ALPHA_CHECKLIST = "the Alpha 1 checklist (#52)"
-BETA_CHECKLIST = "the Beta 1 checklist (#57)"
+# The release milestones' checklist issues that open each pre-release channel (#389); both
+# workflows read these issues' states.
+ALPHA_CHECKLIST_ISSUE = 52
+BETA_CHECKLIST_ISSUE = 57
+ALPHA_CHECKLIST = f"the Alpha 1 checklist (#{ALPHA_CHECKLIST_ISSUE})"
+BETA_CHECKLIST = f"the Beta 1 checklist (#{BETA_CHECKLIST_ISSUE})"
 TAG_PATTERN = re.compile(
     rf"v(?P<core>{CORE_PATTERN})(?:-(?P<channel>alpha|beta)\.(?P<number>[1-9][0-9]*))?"
 )
@@ -70,7 +73,7 @@ GATE_CHECKS = {
     "sustained responsiveness run (report 03) against the candidate": (None, ()),
     "upgrade from the previous release of the channel": (None, ("alpha",)),
 }
-CHANNELS = ("alpha", "beta", "stable")
+CHANNELS = ("alpha", "beta")
 
 
 class Refusal(Exception):
@@ -124,9 +127,13 @@ def has_file(commit, path, cwd):
 
 
 def release_tags(cwd, main_ref):
-    """Every tag of a release shape on main; a tag elsewhere was never a release."""
+    """Every pre-release tag on main; a tag elsewhere was never a release.
+
+    A stable tag is refused (#389), so one left on main is not a release and never the base.
+    """
     tags = git("tag", "--list", "v*", "--merged", main_ref, cwd=cwd).splitlines()
-    return [parse_tag(tag) for tag in tags if TAG_PATTERN.fullmatch(tag)]
+    parsed_tags = [parse_tag(tag) for tag in tags if TAG_PATTERN.fullmatch(tag)]
+    return [tag for tag in parsed_tags if tag["channel"] != "stable"]
 
 
 def workspace_version(cwd, revision=None):
@@ -137,17 +144,9 @@ def workspace_version(cwd, revision=None):
     return tomllib.loads(manifest)["workspace"]["package"]["version"]
 
 
-def base_of(tags, cwd):
-    """The newest stable tag, published or not, else the bootstrap commit."""
-    stable_tags = [tag for tag in tags if tag["channel"] == "stable"]
-    if not stable_tags:
-        return {
-            "ref": BOOTSTRAP_COMMIT,
-            "version": workspace_version(cwd, BOOTSTRAP_COMMIT),
-            "is_stable_tag": False,
-        }
-    newest = max(stable_tags, key=version_order)
-    return {"ref": newest["tag"], "version": newest["core"], "is_stable_tag": True}
+def base_of(cwd):
+    """The bootstrap commit: pre-releases count from it while no stable tag exists (#389)."""
+    return {"ref": BOOTSTRAP_COMMIT, "version": workspace_version(cwd, BOOTSTRAP_COMMIT)}
 
 
 def commits_since(base_ref, commit, cwd):
@@ -187,7 +186,7 @@ def check_tag(tag, main_ref, alpha_checklist, beta_checklist, cwd):
     commit = git("rev-parse", f"{tag}^{{commit}}", cwd=cwd)
     refuse_off_main(commit, main_ref, cwd)
     tags = [other for other in release_tags(cwd, main_ref) if other["tag"] != tag]
-    base = base_of(tags, cwd)
+    base = base_of(cwd)
     version_at_tag = workspace_version(cwd, commit)
     refuse_prerelease(parsed, commit, version_at_tag, tags, base, cwd)
     return {
@@ -203,12 +202,11 @@ def check_tag(tag, main_ref, alpha_checklist, beta_checklist, cwd):
 def refuse_channel(parsed, alpha_checklist, beta_checklist):
     """A pre-release tag's channel must be the one the checklists open."""
     tag = parsed["tag"]
+    # Checked first so a beta tag names the checklist it waits for, not the alpha one.
     if parsed["channel"] == "beta" and beta_checklist == "open":
         raise Refusal(f"{tag}: no beta while {BETA_CHECKLIST} is open")
-    if parsed["channel"] == "alpha" and beta_checklist == "closed":
+    if parsed["channel"] != prerelease_channel(alpha_checklist, beta_checklist):
         raise Refusal(f"{tag}: no alpha once {BETA_CHECKLIST} is closed; pre-releases are betas")
-    if parsed["channel"] == "alpha" and alpha_checklist == "open":
-        raise Refusal(f"{tag}: no alpha while {ALPHA_CHECKLIST} is open")
 
 
 def refuse_released_or_behind(candidate, commit, tags, cwd):
@@ -243,23 +241,16 @@ def refuse_prerelease(candidate, commit, version_at_commit, tags, base, cwd):
     count = commits_since(base["ref"], commit, cwd)
     if candidate["number"] != count:
         raise Refusal(f"{tag}: N must be the commit count since {base['ref']}, which is {count}")
-    prereleases = [other for other in tags if other["channel"] != "stable"]
-    if not prereleases:
+    if not tags:
         return
-    newest = max(prereleases, key=version_order)
+    newest = max(tags, key=version_order)
     if version_order(candidate) <= version_order(newest):
         raise Refusal(f"{tag} is not above the newest pre-release {newest['tag']}")
 
 
 def refuse_core_against_base(core, base):
-    if base["is_stable_tag"]:
-        if parse_core(core) <= parse_core(base["version"]):
-            raise Refusal(f"{core} is not above the previous stable {base['version']}")
-    elif core != base["version"]:
-        raise Refusal(
-            f"{core}: before the first stable tag a pre-release uses the workspace's "
-            f"{base['version']}"
-        )
+    if core != base["version"]:
+        raise Refusal(f"{core}: a pre-release uses the bootstrap workspace's {base['version']}")
 
 
 def prerelease_channel(alpha_checklist, beta_checklist):
@@ -278,10 +269,7 @@ def next_prerelease(main_ref, alpha_checklist, beta_checklist, cwd):
     refuse_off_main(commit, main_ref, cwd)
     # Every tag on main, not only HEAD's: a re-run on an older commit meets the newer tags.
     tags = release_tags(cwd, main_ref)
-    base = base_of(tags, cwd)
-    if base["is_stable_tag"]:
-        # The version comes from the open release PR, which nothing reads yet (#101).
-        raise Refusal("a pre-release after a stable tag needs the release PR's version (#101)")
+    base = base_of(cwd)
     version = workspace_version(cwd, commit)
     number = commits_since(base["ref"], commit, cwd)
     candidate = parse_tag(f"v{version}-{channel}.{number}")
@@ -289,10 +277,10 @@ def next_prerelease(main_ref, alpha_checklist, beta_checklist, cwd):
     return {"tag": candidate["tag"], "channel": channel, "revision": commit}
 
 
-def dry_run_version(main_ref, cwd):
+def dry_run_version(cwd):
     """A version no release tag can have, for builds that are never published."""
     refuse_shallow(cwd)
-    base = base_of(release_tags(cwd, main_ref), cwd)
+    base = base_of(cwd)
     count = commits_since(base["ref"], "HEAD", cwd)
     version = f"{workspace_version(cwd)}-dev.{count}"
     return {
@@ -557,8 +545,8 @@ def parse_arguments(arguments):
     for gated_command in (check_command, next_command):
         for checklist in ("--alpha-checklist", "--beta-checklist"):
             gated_command.add_argument(checklist, choices=("open", "closed"), required=True)
-    dry_run_command = commands.add_parser("dry-run-version")
-    for command in (check_command, next_command, dry_run_command):
+    commands.add_parser("dry-run-version")
+    for command in (check_command, next_command):
         command.add_argument("--main", required=True)
     commands.add_parser("stamp").add_argument("version")
     package_command = commands.add_parser("package")
@@ -589,7 +577,7 @@ def main(arguments, cwd=ROOT):
                 next_prerelease(options.main, options.alpha_checklist, options.beta_checklist, cwd)
             )
         elif options.command == "dry-run-version":
-            print_outputs(dry_run_version(options.main, cwd))
+            print_outputs(dry_run_version(cwd))
         elif options.command == "stamp":
             print_outputs(stamp(options.version, cwd))
         elif options.command == "package":

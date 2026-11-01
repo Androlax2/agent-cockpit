@@ -9,7 +9,7 @@ this file is the policy every tag follows. Releases are cut from the greenfield 
 Issue #96 picked the tools ([decision](decisions/2026-10-31-96-release-tooling.md)): the
 [release](../.github/workflows/release.yml) and [pre-release](../.github/workflows/prerelease.yml)
 workflows with [tools/release.py](../tools/release.py) build, check and publish, git-cliff
-writes the notes, and release-plz joins with the first stable release PR (#101); no
+writes the notes, and release-plz prepares the release PR (#192); no
 cargo-dist. The version source, tag grammar, changelog and channel promises here are the
 contract.
 
@@ -24,14 +24,13 @@ pull request starts it only when it changes the release machinery itself (the wo
   Under `0.x`, as in Cargo, a breaking change raises the minor number (`0.3.2` → `0.4.0`)
   and anything else raises the patch number (`0.3.2` → `0.3.3`).
 - There is one version: `[workspace.package] version` in the root `Cargo.toml`, inherited by
-  every crate (`version.workspace = true`). Nobody edits it by hand: a **release-plz** release
-  PR, from a `release-plz/` branch, bumps it, with the regenerated `CHANGELOG.md` in the same
-  commit.
-- release-plz tags only, and only after its release PR merges; it never creates the GitHub
-  Release (`git_release_enable = false`). The tag push starts the release workflow, which owns
-  the GitHub Release: it creates a draft, attaches every asset, runs report 13's release gate
-  on the tagged commit, and publishes last, so an immutable release never locks before its
-  assets exist.
+  every crate (`version.workspace = true`). Nobody edits it by hand. It stays the bootstrap's
+  `0.1.0` while no stable tag exists: a **release-plz** release PR (#192) may prepare the next
+  version and `CHANGELOG.md`, but merging it tags a stable `vX.Y.Z`, so nobody merges it until
+  Theo decides on a stable release.
+- The release workflow owns the GitHub Release: it creates a draft, attaches every asset, runs
+  report 13's release gate on the tagged commit, and publishes last, so an immutable release
+  never locks before its assets exist.
 - A tag is never moved, reused or re-run; a failed or missing artifact ships with the next
   tag. A gate check that did not run is a named gap that blocks publishing, not a pass.
 
@@ -46,13 +45,11 @@ No other tag shape is a release tag. **No stable `vX.Y.Z` tag and no 1.0 until T
 (#389): no stable release is planned until users have used the betas for a long time, and the
 release workflow refuses every `vX.Y.Z` tag with that reason, whoever made it.
 
-**The base** is the newest `vX.Y.Z` tag, published or not (a stable whose gate failed still
-moves the next version up); before the first stable tag, it is the greenfield bootstrap
-commit `d2d8604` (issue #18).
+**The base** is the greenfield bootstrap commit `d2d8604` (issue #18). A refused `vX.Y.Z` tag
+left on `main` is not a release and never the base.
 
-- **A pre-release tags `main` without a version bump.** `X.Y.Z` is the version the open
-  release PR prepares; before the first stable tag, it is the workspace's current `0.1.0`,
-  and no release PR is needed.
+- **A pre-release tags `main` without a version bump.** `X.Y.Z` is the workspace's current
+  `0.1.0`, and no release PR is needed.
 - **`N` is the commit count since the base**, `git rev-list --count <base>..<commit>`: at
   least 1 and growing with `main`, with at most one pre-release per commit.
 - **Nobody tags by hand.** Theo dispatches the prerelease workflow on `main`; it tags the
@@ -61,14 +58,14 @@ commit `d2d8604` (issue #18).
   Beta 1 checklist (#57) closes, `-beta` after. It refuses:
   - an alpha while the Alpha 1 checklist (#52) is open;
   - a shallow clone;
-  - a commit that is a stable release or already has a pre-release tag;
-  - a version that already has a stable tag, or is not above the previous stable;
+  - a commit that already has a pre-release tag;
+  - a version other than the workspace's `0.1.0`;
   - a tag not above the newest pre-release, or a commit that does not descend from it.
 - **The release workflow checks the tag first.** It refuses a pre-release tag in every case
   above, however the tag was made, and a beta tag while the Beta 1 checklist is open. On a
-  pre-release, the workspace version must still be the base's (`0.1.0` before the first stable
-  tag). A pre-release build stamps its own version into `Cargo.toml`
-  and `Cargo.lock` before compiling, and commits nothing.
+  pre-release, the workspace version must still be the base's `0.1.0`. A pre-release build
+  stamps its own version into `Cargo.toml` and `Cargo.lock` before compiling, and commits
+  nothing.
 
 ## Channels and what each promises
 

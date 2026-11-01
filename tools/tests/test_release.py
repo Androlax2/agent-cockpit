@@ -182,23 +182,6 @@ class CheckTagTests(ReleaseTestCase):
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["notes_range"], "v0.1.0-alpha.2..v0.1.0-alpha.5")
 
-    def test_a_beta_after_a_stable_counts_from_that_stable(self):
-        self.repository.tag("v0.1.0")
-        self.repository.commits(4)
-        self.repository.tag("v0.2.0-beta.4")
-        code, outputs, error = self.check_tag("v0.2.0-beta.4", beta_checklist="closed")
-        self.assertEqual(code, 0, error)
-        self.assertEqual(outputs["version"], "0.2.0-beta.4")
-        self.assertEqual(outputs["notes_range"], "v0.1.0..v0.2.0-beta.4")
-
-    def test_a_pre_release_not_above_the_previous_stable_is_refused(self):
-        self.repository.tag("v0.1.0")
-        self.repository.commits(1)
-        self.repository.tag("v0.1.0-beta.1")
-        code, _outputs, error = self.check_tag("v0.1.0-beta.1", beta_checklist="closed")
-        self.assertEqual(code, 1)
-        self.assertIn("not above the previous stable 0.1.0", error)
-
     def test_a_shallow_clone_is_refused(self):
         self.repository.commits(2)
         self.repository.tag("v0.1.0-alpha.2")
@@ -406,32 +389,30 @@ class NextPrereleaseTests(ReleaseTestCase):
         self.assertEqual(code, 1)
         self.assertIn("v0.1.0-alpha.2 is not above the newest pre-release v0.1.0-beta.1", error)
 
-    def test_after_a_stable_tag_the_release_pr_version_is_required(self):
+    def test_a_refused_stable_tag_left_on_main_is_not_the_base(self):
+        self.repository.commits(2)
         self.repository.tag("v0.1.0")
         self.repository.commits(1)
-        code, _outputs, error = self.next_prerelease(
-            alpha_checklist="closed", beta_checklist="closed"
-        )
-        self.assertEqual(code, 1)
-        self.assertIn("release PR's version (#101)", error)
+        code, outputs, error = self.next_prerelease()
+        self.assertEqual(code, 0, error)
+        self.assertEqual(outputs["tag"], "v0.1.0-alpha.3")
 
 
 class DryRunVersionTests(ReleaseTestCase):
     def test_a_dry_run_version_has_no_release_tag_shape(self):
         self.repository.commits(5)
-        code, outputs, error = self.run_release("dry-run-version", "--main", "main")
+        code, outputs, error = self.run_release("dry-run-version")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["version"], "0.1.0-dev.5")
         self.assertEqual(outputs["notes_range"], f"{self.repository.bootstrap}..HEAD")
         self.assertEqual(outputs["notes_tag"], "v0.1.0-dev.5")
         self.assertIsNone(release.TAG_PATTERN.fullmatch(f"v{outputs['version']}"))
 
-    def test_a_release_shaped_tag_outside_main_is_not_the_dry_run_base(self):
-        self.repository.git("checkout", "--quiet", "-b", "side")
+    def test_a_stable_tag_is_not_the_dry_run_base(self):
         self.repository.commits(2)
         self.repository.tag("v0.3.0")
         self.repository.commits(1)
-        code, outputs, error = self.run_release("dry-run-version", "--main", "main")
+        code, outputs, error = self.run_release("dry-run-version")
         self.assertEqual(code, 0, error)
         self.assertEqual(outputs["version"], "0.1.0-dev.3")
 
@@ -785,6 +766,18 @@ class WorkflowMatrixTests(unittest.TestCase):
         for platform in re.findall(r"\n\s*name: archive-([a-z0-9_-]+)\n", workflow):
             with self.subTest(platform=platform):
                 self.assertIn(platform, release.PLATFORMS)
+
+
+class ChecklistIssueTests(unittest.TestCase):
+    def test_both_workflows_read_the_checklist_issues_release_py_names(self):
+        for workflow in ("prerelease.yml", "release.yml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text()
+            read_issues = re.findall(r"gh issue view (\d+) ", text)
+            with self.subTest(workflow=workflow):
+                self.assertEqual(
+                    read_issues,
+                    [str(release.ALPHA_CHECKLIST_ISSUE), str(release.BETA_CHECKLIST_ISSUE)],
+                )
 
 
 class ChangelogConfigTests(unittest.TestCase):
