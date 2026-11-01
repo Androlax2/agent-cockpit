@@ -379,7 +379,7 @@ impl Handler for Routes {
             }
             (
                 command @ (Command::ManagerOpen { .. }
-                | Command::ManagerFocus
+                | Command::ManagerFocus { .. }
                 | Command::SessionShow { .. }),
                 peer,
             ) => {

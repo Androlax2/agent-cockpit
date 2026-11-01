@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use cockpit_protocol::{Command, ErrorCode, Outcome, ProtocolError, Reply};
+use cockpit_protocol::{Command, ErrorCode, ManagerPaneView, Outcome, ProtocolError, Reply};
 use cockpit_sessions::{SessionId, SessionState, Sessions};
 use cockpit_tmux::{PaneId, PaneState, SessionLaunch, SessionName, Split};
 
@@ -69,7 +69,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Mana
             column,
             viewer,
         } => job(tmux_blocking(move || open(&manager, dir, &column, &viewer))),
-        Command::ManagerFocus => job(tmux_blocking(move || focus_column(&manager))),
+        Command::ManagerFocus { pane } => job(tmux_blocking(move || focus(&manager, pane))),
         Command::SessionShow { session } => {
             job(async move { show(&sessions, manager, &session).await })
         }
@@ -252,13 +252,19 @@ async fn show(
         .map_err(|crate::approvals::Failed(error)| error)
 }
 
-/// Gives the keys to the manager's column, so the next key the owner presses reaches what
-/// the TUI shows there rather than the agent in the viewer (#317).
-fn focus_column(manager: &Manager) -> Result<Reply, ProtocolError> {
+/// Gives the keys to `pane` of the manager: the column, so the next key the owner presses
+/// reaches what the TUI shows there rather than the agent in the viewer (#317), or the viewer
+/// the column took them from (#345). Answers whether the viewer had them just before.
+fn focus(manager: &Manager, pane: ManagerPaneView) -> Result<Reply, ProtocolError> {
     let tmux = manager.tmux()?;
     let panes = whole_manager(tmux)?;
-    tmux.select_pane(&panes.column).map_err(tmux_error)?;
-    Ok(Reply::ManagerFocused)
+    let took_from_viewer = tmux.active_pane(&manager_name()).map_err(tmux_error)? == panes.viewer;
+    let target = match pane {
+        ManagerPaneView::Column => &panes.column,
+        ManagerPaneView::Viewer => &panes.viewer,
+    };
+    tmux.select_pane(target).map_err(tmux_error)?;
+    Ok(Reply::ManagerFocused { took_from_viewer })
 }
 
 /// The manager's column and viewer panes, or why it has none: only reopening the manager

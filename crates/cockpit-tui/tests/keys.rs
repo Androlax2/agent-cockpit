@@ -206,3 +206,86 @@ fn a_daemon_outage_is_logged_once_and_its_status_clears_when_the_daemon_answers(
         screen_text(&app, now)
     );
 }
+
+fn reported_question(
+    app: &mut cockpit_tui::App,
+    state: AgentState,
+    source: cockpit_protocol::QuestionSource,
+    now: Instant,
+) {
+    answer(
+        app,
+        Command::AgentReports,
+        Reply::AgentReports {
+            reports: vec![SessionReport {
+                session: "s00000000000a".to_owned(),
+                state: Some(state),
+                label: None,
+                doing: None,
+                needs_input: Some("Which branch?".to_owned()),
+                outcome: None,
+                question_source: Some(source),
+                covered_question: None,
+                reported_at: 1,
+            }],
+        },
+        now,
+    );
+}
+
+#[test]
+fn an_agent_that_asked_and_still_works_is_marked_apart() {
+    let now = Instant::now();
+    let mut app = three_sessions(now);
+
+    reported_question(
+        &mut app,
+        AgentState::Working,
+        cockpit_protocol::QuestionSource::Agent,
+        now,
+    );
+
+    let screen = screen_text(&app, now);
+    assert!(screen.contains(">? s00000000000a"), "{screen}");
+    assert!(screen.contains("asked you, still working"), "{screen}");
+    assert!(!screen.contains("waiting on you"), "{screen}");
+}
+
+#[test]
+fn a_dialog_open_while_the_agent_works_waits_on_you() {
+    let now = Instant::now();
+    let mut app = three_sessions(now);
+
+    reported_question(
+        &mut app,
+        AgentState::Working,
+        cockpit_protocol::QuestionSource::Dialog,
+        now,
+    );
+
+    let screen = screen_text(&app, now);
+    assert!(screen.contains(">! s00000000000a"), "{screen}");
+    assert!(screen.contains("waiting on you"), "{screen}");
+}
+
+#[test]
+fn n_still_opens_an_agent_that_asked_and_still_works() {
+    let now = Instant::now();
+    let mut app = three_sessions(now);
+    reported_question(
+        &mut app,
+        AgentState::Working,
+        cockpit_protocol::QuestionSource::Agent,
+        now,
+    );
+    press(&mut app, &[Key::Char('j')], now);
+
+    let step = app.key(Key::Char('n'), now);
+
+    assert_eq!(
+        step.send,
+        [Command::SessionShow {
+            session: "s00000000000a".to_owned()
+        }]
+    );
+}

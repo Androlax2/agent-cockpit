@@ -159,6 +159,14 @@ pub struct AppliedSettingView {
     pub before: String,
 }
 
+/// A pane of the manager session: the column the TUI runs in, or the viewer beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ManagerPaneView {
+    Column,
+    Viewer,
+}
+
 /// A provider a session may be started with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderView {

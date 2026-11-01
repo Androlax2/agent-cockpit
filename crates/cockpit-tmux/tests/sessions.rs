@@ -261,6 +261,24 @@ fn selecting_a_pane_gives_it_the_keys() {
 }
 
 #[test]
+fn the_active_pane_is_the_one_with_the_keys() {
+    let fixture = TestServer::new();
+    let (_, left) = fixture.start_shell("cockpit", "sleep 60");
+    let right = fixture
+        .server
+        .split_pane(&left, Split::SideBySide { percent: 70 }, &shell("sleep 60"))
+        .expect("splits");
+    fixture.tmux(&["select-pane", "-t", right.as_str()]);
+
+    let active = fixture
+        .server
+        .active_pane(&SessionName::new("cockpit").expect("valid"))
+        .expect("answers");
+
+    assert_eq!(active, right);
+}
+
+#[test]
 fn the_server_starts_with_cockpits_own_config() {
     let fixture = TestServer::new();
     fixture.start_shell("agent-1", "sleep 30");

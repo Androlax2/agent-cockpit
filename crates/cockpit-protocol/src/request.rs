@@ -8,7 +8,9 @@ use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 use crate::queue::{QueueExplanationView, QueuePlacementView};
 use crate::resources::{ProfileView, ReservationView, ResourceStatusView, VerdictView};
-use crate::sessions::{AppliedSettingView, ProviderView, SessionFailure, SessionView};
+use crate::sessions::{
+    AppliedSettingView, ManagerPaneView, ProviderView, SessionFailure, SessionView,
+};
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
 };
@@ -533,9 +535,12 @@ pub enum Command {
         column: Vec<String>,
         viewer: Vec<String>,
     },
-    /// Give the keys to the manager's column, where the TUI shows what waits on the owner
-    /// (#317): the TUI does not run tmux, the daemon does.
-    ManagerFocus,
+    /// Give the keys to a pane of the manager: the column, where the TUI shows what waits on
+    /// the owner (#317), or back to the viewer the column took them from (#345). The TUI
+    /// does not run tmux, the daemon does.
+    ManagerFocus {
+        pane: ManagerPaneView,
+    },
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -733,8 +738,11 @@ pub enum Reply {
         attach: Vec<String>,
         created: bool,
     },
-    /// The manager's column has the keys.
-    ManagerFocused,
+    /// The pane `manager-focus` named has the keys; `took_from_viewer` says whether the
+    /// viewer had them just before.
+    ManagerFocused {
+        took_from_viewer: bool,
+    },
 }
 
 /// Every frame the daemon sends after the handshake.

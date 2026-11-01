@@ -237,5 +237,6 @@ builds it only when asked and no release installs it.
   exited agent and resume, end, reboot restore and its failure, design links.
 - `tests/manager.rs`: issue #35's frontends verbs: `provider-list`, `manager-open` (the
   manager tmux session with its column and viewer, opened once), `manager-focus` (the column
-  takes the keys back from the viewer, #317), `session-show` (waking an asleep session into
+  takes the keys from the viewer, #317, and gives them back, answering whether the viewer
+  had them, #345), `session-show` (waking an asleep session into
   the viewer, refused before the manager is open), owner only.

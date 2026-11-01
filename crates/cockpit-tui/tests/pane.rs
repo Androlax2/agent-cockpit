@@ -6,7 +6,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{Command, HiddenView, Reply};
+use cockpit_protocol::{Command, HiddenView, ManagerPaneView, Reply};
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
     answer, app_with, folded, guide, hidden, press, queue, run, screen_text, sent, session, typing,
@@ -24,6 +24,19 @@ fn app_asked(now: Instant) -> App {
         now,
     );
     app
+}
+
+fn focus(pane: ManagerPaneView) -> Command {
+    Command::ManagerFocus { pane }
+}
+
+fn focused(took_from_viewer: bool) -> Reply {
+    Reply::ManagerFocused { took_from_viewer }
+}
+
+/// The queue empties: returns what the TUI sends the daemon then.
+fn emptied(app: &mut App, now: Instant) -> Option<Command> {
+    queue(app, Vec::new(), Vec::new(), now)
 }
 
 fn after_grace(now: Instant) -> Instant {
@@ -62,7 +75,10 @@ fn a_request_appearing_asks_the_daemon_once_for_the_keys_the_viewer_may_hold() {
         after_grace(now),
     );
 
-    assert_eq!((appeared, still_shown), (Some(Command::ManagerFocus), None));
+    assert_eq!(
+        (appeared, still_shown),
+        (Some(focus(ManagerPaneView::Column)), None)
+    );
 }
 
 #[test]
@@ -87,8 +103,8 @@ fn the_keys_arriving_from_tmux_start_the_grace_again() {
     let focused_at = after_grace(now);
     answer(
         &mut app,
-        Command::ManagerFocus,
-        Reply::ManagerFocused,
+        focus(ManagerPaneView::Column),
+        focused(true),
         focused_at,
     );
 
@@ -367,4 +383,89 @@ fn while_the_owner_types_question_marks_and_capital_l_are_text_not_help_or_log()
             answer: Some("Login?".to_owned()),
         }]
     );
+}
+
+#[test]
+fn the_keys_taken_from_the_viewer_go_back_to_it_once_the_queue_empties() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+
+    let sent_on_empty = emptied(&mut app, after_grace(now));
+
+    assert_eq!(sent_on_empty, Some(focus(ManagerPaneView::Viewer)));
+}
+
+#[test]
+fn the_keys_the_list_already_had_stay_there_once_the_queue_empties() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    answer(
+        &mut app,
+        focus(ManagerPaneView::Column),
+        focused(false),
+        now,
+    );
+
+    let sent_on_empty = emptied(&mut app, after_grace(now));
+
+    assert_eq!(sent_on_empty, None);
+}
+
+#[test]
+fn the_keys_go_back_to_the_viewer_once_only() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+    emptied(&mut app, after_grace(now));
+
+    let sent_again = emptied(&mut app, after_grace(now));
+
+    assert_eq!(sent_again, None);
+}
+
+#[test]
+fn keys_tmux_moves_after_the_queue_emptied_go_back_to_the_viewer_at_once() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    let sent_on_empty = emptied(&mut app, now);
+
+    let sent_on_reply = answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+
+    assert_eq!(
+        (sent_on_empty, sent_on_reply),
+        (None, Some(focus(ManagerPaneView::Viewer)))
+    );
+}
+
+#[test]
+fn a_second_request_s_focus_does_not_forget_the_viewer_had_the_keys() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+    answer(
+        &mut app,
+        focus(ManagerPaneView::Column),
+        focused(false),
+        now,
+    );
+
+    let sent_on_empty = emptied(&mut app, after_grace(now));
+
+    assert_eq!(sent_on_empty, Some(focus(ManagerPaneView::Viewer)));
+}
+
+#[test]
+fn a_failed_focus_leaves_the_keys_where_they_are_once_the_queue_empties() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    app.answer(
+        &focus(ManagerPaneView::Column),
+        Err("no manager".to_owned()),
+        now,
+    );
+
+    let sent_on_empty = emptied(&mut app, after_grace(now));
+
+    assert_eq!(sent_on_empty, None);
 }

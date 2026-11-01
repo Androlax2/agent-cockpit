@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use cockpit_protocol::{ChangeBatch, Command, Reply};
+use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply};
 
 use crate::board::{Board, FeedError};
 use crate::form::{Form, FormOutcome};
@@ -41,6 +41,17 @@ pub enum Focus {
 pub enum Overlay {
     Help,
     Log,
+}
+
+/// Where tmux's keys were before the pane took them for the column (#345): the TUI gives
+/// them back to the viewer once nothing waits, never to a viewer that did not have them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TakenKeys {
+    #[default]
+    NotTaken,
+    /// `manager-focus` is on its way; its answer says where the keys were.
+    Asking,
+    FromViewer,
 }
 
 /// A change to a session the owner must confirm with `y`.
@@ -94,6 +105,7 @@ pub struct App {
     /// Why the change feed stopped: the sessions and checkouts shown are not current until
     /// a batch applies again.
     pub(crate) feed_problem: Option<String>,
+    taken_keys: TakenKeys,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,9 +443,9 @@ impl App {
                 self.board.set_queue(runs, guides);
                 send = self.follow_queue(now);
             }
-            // tmux moved the keys only now, perhaps long after the pane showed the request:
-            // the first key they bring waits out the grace again.
-            Reply::ManagerFocused => self.pane.focus(now),
+            Reply::ManagerFocused { took_from_viewer } => {
+                send = self.keys_moved(command, took_from_viewer, now);
+            }
             Reply::Providers { providers } => {
                 if let Some(form) = &mut self.form {
                     form.set_agents(providers);
@@ -489,6 +501,9 @@ impl App {
     }
 
     fn failed(&mut self, command: &Command, problem: String) {
+        if is_column_focus(command) && self.taken_keys == TakenKeys::Asking {
+            self.taken_keys = TakenKeys::NotTaken;
+        }
         if let Some(workflows) = &mut self.workflows {
             workflows.failed(command, &problem);
         }
@@ -512,21 +527,61 @@ impl App {
 
     /// The pane follows the queue; it takes focus when it shows a request and gives it back
     /// to the list when nothing waits. Taking focus also asks the daemon for tmux's keys,
-    /// which may be in the viewer, where the owner was typing to an agent (#317).
+    /// which may be in the viewer, where the owner was typing to an agent (#317); once
+    /// nothing waits, keys taken from the viewer go back to it (#345).
     fn follow_queue(&mut self, now: Instant) -> Option<Command> {
         let was_showing = self.pane.shown().is_some();
         self.pane.sync(&self.board, now);
         match (was_showing, self.pane.shown().is_some()) {
             (false, true) => {
                 self.focus = Focus::Pane;
-                Some(Command::ManagerFocus)
+                if self.taken_keys == TakenKeys::NotTaken {
+                    self.taken_keys = TakenKeys::Asking;
+                }
+                Some(Command::ManagerFocus {
+                    pane: ManagerPaneView::Column,
+                })
             }
             (_, false) => {
                 self.focus = Focus::List;
-                None
+                self.give_keys_back()
             }
             _ => None,
         }
+    }
+
+    /// tmux moved the keys `command` asked for. A request's keys came perhaps long after the
+    /// pane showed it: the first key they bring waits out the grace again.
+    fn keys_moved(
+        &mut self,
+        command: &Command,
+        took_from_viewer: bool,
+        now: Instant,
+    ) -> Option<Command> {
+        if !is_column_focus(command) {
+            return None;
+        }
+        if took_from_viewer {
+            self.taken_keys = TakenKeys::FromViewer;
+        } else if self.taken_keys == TakenKeys::Asking {
+            self.taken_keys = TakenKeys::NotTaken;
+        }
+        if self.pane.shown().is_some() {
+            self.pane.focus(now);
+            return None;
+        }
+        // The queue emptied while tmux moved them.
+        self.give_keys_back()
+    }
+
+    fn give_keys_back(&mut self) -> Option<Command> {
+        if self.taken_keys != TakenKeys::FromViewer {
+            return None;
+        }
+        self.taken_keys = TakenKeys::NotTaken;
+        Some(Command::ManagerFocus {
+            pane: ManagerPaneView::Viewer,
+        })
     }
 
     fn note(&mut self, entry: String) {
@@ -535,6 +590,13 @@ impl App {
         }
         self.log.push_back(entry);
     }
+}
+
+fn is_column_focus(command: &Command) -> bool {
+    *command
+        == Command::ManagerFocus {
+            pane: ManagerPaneView::Column,
+        }
 }
 
 /// The command's wire kind, for the status line and the log.

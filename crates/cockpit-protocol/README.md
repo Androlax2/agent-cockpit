@@ -63,8 +63,10 @@ the wire. Report 14 treats this contract as stable from the first release.
    whether it resumes); `manager-open` opens or finds the manager tmux session (`column` and
    `viewer` words, from `dir`) and answers `manager` with the words that attach a terminal;
    `session-show` shows a session in the manager's viewer, waking it when asleep, and
-   answers its `session` view; `manager-focus` gives the keys to the manager's column (the
-   TUI, when its approval pane shows a request, #317) and answers `manager-focused`. Owner
+   answers its `session` view; `manager-focus` gives the keys to the manager pane it names: the
+   `column` (the TUI, when its approval pane shows a request, #317) or back to the `viewer`
+   (#345); it answers `manager-focused`, whose `took_from_viewer` says whether the viewer had
+   them just before. Owner
    socket only.
 9. Workflows (#39): `workflow-presets`, `workflow-list`, `workflow-show`,
    `workflow-packet`, `workflow-complete`, `workflow-release`, `workflow-block` and
