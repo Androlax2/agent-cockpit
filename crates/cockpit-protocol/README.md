@@ -84,6 +84,11 @@ the wire. Report 14 treats this contract as stable from the first release.
     as the last pass explained it (one with `item`); `queue-dispatch` runs a pass now and
     answers `queue-dispatched`, what it placed and ended. Reasons and who acts travel as
     their stable names. Owner socket only.
+12. Instructions (#49): `instruction-catalog` (the topics and when to read each) and
+    `instructions-read` (one `topic`, or the whole manual without one) serve both sockets
+    and answer the running release's `version` and instruction-`manifest` id. `agent-brief`
+    is the agent's: its launch brief, assembled by the daemon from the owners' facts, with
+    the `budget` of context Cockpit adds (always loaded vs read on demand, in bytes).
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are

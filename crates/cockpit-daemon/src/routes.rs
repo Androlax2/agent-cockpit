@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::{
-    Capabilities, Manager, agent, approvals, feed, manager, projects, resources, scheduling,
-    sessions, tasks, verification, workflows,
+    Capabilities, Manager, agent, agent_context, approvals, feed, manager, projects, resources,
+    scheduling, sessions, tasks, verification, workflows,
 };
 
 /// The lane a request waits in. Each lane has its own workers and its own bounded queue,
@@ -185,6 +185,24 @@ impl Handler for Routes {
                 job: Box::pin(agent::reports(Arc::clone(&self.database))),
             },
             (Command::AgentReports, Peer::Agent { .. }) => Route::Answer(owner_only()),
+            // The bundle is the product's own text: anyone the daemon serves may read it.
+            (command @ (Command::InstructionCatalog | Command::InstructionsRead { .. }), _) => {
+                Route::Answer(agent_context::instructions(command))
+            }
+            (Command::AgentBrief { launch_token }, Peer::Agent { connector }) => Route::Run {
+                class: WorkClass::Bulk,
+                job: approvals::job(agent_context::brief(
+                    launch_token,
+                    connector,
+                    Arc::clone(&self.database),
+                    Arc::clone(&self.sessions),
+                )),
+            },
+            (Command::AgentBrief { .. }, Peer::Owner) => Route::Answer(wrong_socket(
+                "a launch brief is a session's; the owner has none",
+                "run `cockpit brief` from a session Cockpit launched",
+                UnblockedBy::Agent,
+            )),
             (
                 command @ (Command::ProjectAdd { .. }
                 | Command::ProjectList

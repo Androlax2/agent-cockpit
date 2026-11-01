@@ -373,6 +373,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-agent-context"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "cockpit-approvals"
 version = "0.1.0"
 dependencies = [
@@ -439,6 +449,7 @@ name = "cockpit-daemon"
 version = "0.1.0"
 dependencies = [
  "cockpit-agent-channel",
+ "cockpit-agent-context",
  "cockpit-approvals",
  "cockpit-authorization",
  "cockpit-claude",

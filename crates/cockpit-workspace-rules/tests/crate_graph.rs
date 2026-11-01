@@ -260,6 +260,13 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: PROVIDER_ADAPTERS,
         allowed: &["cockpit-provider-api"],
     },
+    // #49: what an agent is told is assembled from facts the daemon gathers from their owners
+    // and passes in; the bundle and the brief never read state or grant anything themselves.
+    AllowList {
+        rule: "agent-context -> nothing product-level",
+        from: &["cockpit-agent-context"],
+        allowed: &[],
+    },
     // Producers own what a message or an entity means and depend on messaging, never the
     // reverse; the daemon converts the feed to wire types (#41).
     AllowList {
@@ -684,6 +691,16 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-protocol",
         ),
         (
+            "agent-context -> nothing product-level",
+            "cockpit-agent-context",
+            "cockpit-authorization",
+        ),
+        (
+            "agent-context -> nothing product-level",
+            "cockpit-agent-context",
+            "cockpit-workflows",
+        ),
+        (
             "scheduling -> chief/sessions/wire types",
             "cockpit-scheduling",
             "cockpit-chief",
@@ -729,6 +746,7 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-scheduling", "cockpit-workflows"),
         ("cockpit-scheduling", "cockpit-resource-admission"),
         ("cockpit-daemon", "cockpit-scheduling"),
+        ("cockpit-daemon", "cockpit-agent-context"),
     ] {
         let manifest_path = fixture_workspace(
             &format!("allowed_{source}_to_{target}"),

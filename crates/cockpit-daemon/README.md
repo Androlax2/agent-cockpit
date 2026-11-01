@@ -10,7 +10,8 @@ not share code.
 
 ## Dependency edges
 
-- Depends on: `cockpit-protocol` (wire types and the frame limit), `cockpit-config` (XDG
+- Depends on: `cockpit-protocol` (wire types and the frame limit), `cockpit-agent-context`
+  (the instruction bundle it writes and serves, and each agent's launch brief, #49), `cockpit-config` (XDG
   layout), `cockpit-diagnostics` (its own log), `cockpit-turso` (the state database it opens
   once), `cockpit-authorization` (whose migrations it runs), `cockpit-agent-channel` (who an
   agent socket peer is, and its verbs), `cockpit-processes` (whose executions it reconciles),
@@ -40,7 +41,11 @@ not share code.
 2. Take the instance lock, `daemon.lock` in the socket directory. A second daemon of the same
    user exits 1 with `another cockpit daemon of this user is already running`.
 3. Start logging (`COCKPIT_LOG_LEVEL`, report 12): `$XDG_STATE_HOME/cockpit/logs/daemon`.
-4. Restart contract (report 03): open `state.db` with every capability's migrations
+4. Write the agent instruction bundle under `$XDG_STATE_HOME/cockpit/agent-context`
+   (`cockpit-agent-context`), replacing what an earlier start wrote, and name it to every
+   agent in `COCKPIT_INSTRUCTIONS`. A bundle that cannot be written stops startup: agents
+   would read another release's instructions.
+5. Restart contract (report 03): open `state.db` with every capability's migrations
    (`MIGRATION_SETS`), then reconcile. `cockpit-processes` reattaches each execution it
    positively identifies, releases those observed gone and keeps the rest charged; each
    outcome is logged. New executions use a systemd user scope when this user's manager
@@ -51,11 +56,11 @@ not share code.
    None is repeated. `cockpit-messaging` then turns every delivery a stopped daemon left in
    flight into a retry under the same key, when its receiver deduplicates, or into
    `uncertain`; each is logged.
-5. Open the private tmux server, then restore the sessions (`cockpit-sessions`): each active
+6. Open the private tmux server, then restore the sessions (`cockpit-sessions`): each active
    session whose agent is gone is reopened, each failure logged and left `failed`. A tmux
    that cannot be run or is too old is logged instead, and the sessions are left as they
    are. The sessions' periodic pass (exits, idle sleep, expiry) starts as a supervised worker.
-6. Only then bind `daemon.sock` and `agent/agent.sock` (0600, stale files replaced) and print
+7. Only then bind `daemon.sock` and `agent/agent.sock` (0600, stale files replaced) and print
    `ready <socket>`.
 
 ## Two sockets (report 17)
