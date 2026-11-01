@@ -310,12 +310,12 @@ async fn a_requirement_the_step_does_not_declare_is_refused() {
     let run = fixture.code_change("cockpit").await;
     let session = fixture.session("s1", "cockpit").await;
     fixture.begin(&session, run.id).await.unwrap();
-    let misspelt = Completion {
-        satisfied: vec!["reveiw".to_owned()],
+    let undeclared = Completion {
+        satisfied: vec!["design-match".to_owned()],
         ..completion("Rewrote the form validation")
     };
     assert!(matches!(
-        refusal(fixture.complete(&session, run.id, misspelt).await),
+        refusal(fixture.complete(&session, run.id, undeclared).await),
         Refusal::InvalidRequest {
             field: "satisfied",
             ..

@@ -64,7 +64,7 @@ prose: only the satisfied names the caller passes, or the owner's waiver, count.
 
 ## Task packet
 
-[`packet`] rebuilds, from durable records only, what a session receives: the goal (item
+[`packet()`] rebuilds, from durable records only, what a session receives: the goal (item
 title, notes, kind, status, intent revision then and now), the project as authorized scope,
 the preset, the current step with its requirements, attempt, session and checkpoint, the next
 action, the blocker, the summaries of the items it waited on, and every handoff so far. Grants
