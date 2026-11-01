@@ -7,7 +7,6 @@
 mod real_daemon;
 
 use std::collections::HashSet;
-use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use cockpit_client::{ClientError, Connection};
@@ -98,9 +97,6 @@ fn state_folder(home: &Home, folder: &str) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launch_may_read_the_instruction_bundle_and_the_opencode_plugin() {
     let home = Home::new();
-    let opencode = home.path().join("bin/opencode");
-    std::fs::write(&opencode, "#!/bin/sh\necho '1.19.5'\n").unwrap();
-    std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o755)).unwrap();
     let _daemon = home.start();
 
     let readable = readable_folders(&home).await;
@@ -118,6 +114,7 @@ async fn a_launch_may_read_the_instruction_bundle_and_the_opencode_plugin() {
 #[tokio::test(flavor = "multi_thread")]
 async fn without_opencode_a_launch_is_given_no_plugin_folder() {
     let home = Home::new();
+    std::fs::remove_file(home.path().join("bin/opencode")).unwrap();
     // A folder holding `opencode` (often `/usr/bin`, beside Git and tmux) is replaced by a
     // copy of its links without it.
     let mirrors = tempfile::tempdir().unwrap();
@@ -333,7 +330,16 @@ async fn cockpit_sandbox_show_without_greywall_fails_naming_why() {
     let (root, _) = home.project(&client, "app").await;
 
     let shown = home
-        .cockpit(&["sandbox", "show", root.to_str().unwrap()], &[])
+        .cockpit(
+            &[
+                "sandbox",
+                "show",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
         .await;
 
     assert!(!shown.status.success());

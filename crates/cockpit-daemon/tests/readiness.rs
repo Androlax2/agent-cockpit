@@ -84,6 +84,28 @@ async fn a_host_with_its_programs_reports_them_available_and_exits_0() {
     assert!(next.is_some(), "{report}");
 }
 
+/// #411: one usable provider is enough; one that does not run is listed with how to install
+/// it and the report still passes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_that_does_not_run_is_listed_as_optional_and_exits_0() {
+    let home = Home::new();
+    let codex = home.path().join("bin/codex");
+    std::fs::write(&codex, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _daemon = home.start();
+
+    let doctor = home.cockpit(&["doctor"], &[]).await;
+
+    let report = text(&doctor.stdout);
+    assert!(doctor.status.success(), "{report}{}", text(&doctor.stderr));
+    let (line, next) = requirement(&report, "provider codex");
+    assert!(line.contains("not usable, optional"), "{line}");
+    assert!(
+        next.is_some_and(|next| next.contains("install codex")),
+        "{report}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_without_greywall_blocks_naming_what_to_install() {
     let home = Home::new();
