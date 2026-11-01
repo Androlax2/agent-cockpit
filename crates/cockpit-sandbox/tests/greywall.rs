@@ -229,6 +229,15 @@ fn a_codex_launch_on_macos_mounts_nothing() {
         panic!("{:?}", plan.reach);
     };
     assert!(reason.contains("only on Linux"), "{reason}");
+    let folder_evidence = plan
+        .enforced_by
+        .iter()
+        .find(|(rule, _)| rule.starts_with("folder "))
+        .map(|(_, evidence)| evidence.as_str());
+    assert!(
+        folder_evidence.is_some_and(|evidence| evidence.contains("only on Linux")),
+        "{folder_evidence:?}"
+    );
 }
 
 #[test]

@@ -15,8 +15,9 @@ use cockpit_agent_channel::ProcessIdentity;
 use cockpit_provider_api::{ProviderError, SessionSockets};
 use cockpit_sandbox::ProviderReach;
 
-/// How long connecting may wait: a listener whose queue is full would otherwise hold the
-/// delivery, and `Provider::deliver` blocks for seconds at most.
+/// How long connecting may wait, since `Provider::deliver` blocks for seconds at most. On
+/// Linux a listener whose queue is full refuses at once (`EAGAIN`) rather than holding the
+/// connect; the bound is for any other wait.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sockets accepted only when the listening process descends from the session's agent root,

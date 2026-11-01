@@ -323,11 +323,13 @@ impl Greywall {
                 format!("greywall --profile {}", profile.provider)
             } else if rule.starts_with("folder ") {
                 match &reach {
-                    ProviderReach::Mounted(_) => "greywall --mount".to_owned(),
-                    ProviderReach::Direct | ProviderReach::Unreachable { .. } => format!(
-                        "not mounted: this greywall cannot `{MOUNT_FLAG}`; the daemon refuses \
-                         delivery to the agent"
-                    ),
+                    ProviderReach::Mounted(_) => format!("greywall {MOUNT_FLAG}"),
+                    ProviderReach::Unreachable { reason, .. } => {
+                        format!("not mounted: {reason}; the daemon refuses delivery to the agent")
+                    }
+                    ProviderReach::Direct => {
+                        "not mounted: the provider has no folder to mount".to_owned()
+                    }
                 }
             } else if rule.starts_with("read-write ") || rule.starts_with("desktop socket ") {
                 format!("{filesystem} (--allow-path)")
@@ -394,7 +396,7 @@ impl Greywall {
                 let mut value = OsString::from(&mount.host);
                 value.push(":");
                 value.push(&mount.sandbox);
-                arguments.push("--mount".into());
+                arguments.push(MOUNT_FLAG.into());
                 arguments.push(value);
             }
         }
