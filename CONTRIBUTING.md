@@ -57,6 +57,13 @@ Run focused tests while you work, then the gate for the paths you changed:
 which paths. The pull request's CI is the full gate; a pull request is merged only when
 every check is green.
 
+Arm auto-merge (`gh pr merge <n> --auto --squash`) once the pull request is ready. `main`
+does not require a branch to be up to date, so rebase only when GitHub reports a conflict:
+each push reruns CI. The macOS and WSL 2 jobs run on a pull request only when it touches a
+platform path, and on every push to `main`; a platform failure on `main` is fixed or reverted
+first. GitHub's merge queue is not used:
+[why](docs/decisions/2026-11-01-397-ci-cost.md).
+
 ## Labels
 
 | Label | Meaning |

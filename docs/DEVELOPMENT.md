@@ -126,13 +126,14 @@ only: its CI job was removed on 2026-10-31 (it slowed every greenfield change an
 cutover). JavaScript's default warnings remain visible. The [CI workflow](../.github/workflows/ci.yml)
 splits by changed path ([tools/ci-jobs.py](../tools/ci-jobs.py)): `greenfield` runs
 `make greenfield-ci` for `crates/`, the root manifests, the Makefile and `.github/`; `docs` runs
-`make docs-ci` for `docs/` and any Markdown file. A path no job claims (`apps/`, `config/`,
-`packaging/` included), and a push to `main`, run every job. Each job runs on an
-Ubuntu 26.04 runner with pinned Rust, Node and checker versions, read-only repository
-permissions and immutable action revisions. Linux runtime libraries, fish and Lua come
-from that Ubuntu release. This workflow has not yet been run on GitHub; activation
-requires the normal separately approved push. Local fixture tests do not establish
-live desktop or browser integration coverage.
+`make docs-ci` for `docs/` and any Markdown file; `greenfield-macos` and `greenfield-wsl2`
+run for the crates whose behaviour can differ by OS, the root manifests and `ci.yml`
+(`PLATFORM_CRATES`). A path no job claims (`apps/`, `config/`, `packaging/` included), and a
+push to `main`, run every job. A job the change does not need is skipped, and a skipped
+required check counts as passed. The Linux jobs run on Ubuntu 26.04 runners with pinned Rust,
+Node and checker versions, read-only repository permissions and immutable action revisions.
+Linux runtime libraries, fish and Lua come from that Ubuntu release. Local fixture tests do
+not establish live desktop or browser integration coverage.
 Formatting checks should be read-only; formatting writes remain deliberate commands.
 Tool versions and source selection must match locally and in CI, including extensionless
 scripts and TypeScript integrations.
