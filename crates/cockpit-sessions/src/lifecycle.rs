@@ -197,7 +197,9 @@ impl Sessions {
     pub async fn start(&self, request: StartRequest) -> Result<Session, Error> {
         self.tmux()?;
         let provider = self.provider(request.provider.as_deref())?;
-        let dir = canonical_dir(request.dir).await?;
+        let dir = self
+            .blocking("resolve the directory", move || canonical_dir(request.dir))
+            .await?;
         let (checkout, relative) = self.checkout_containing(&dir).await?;
         let checkout = match &request.clone_branch {
             Some(branch) => {
@@ -336,7 +338,7 @@ impl Sessions {
             store::start_files(&read, launch.number, session.provider.as_str()).await?
         };
         let start_files = self.settings.start_files.clone();
-        blocking(move || {
+        self.blocking("compare the start files", move || {
             Ok(snapshot
                 .changed(&start_files)
                 .into_iter()
@@ -1114,14 +1116,24 @@ impl Sessions {
     ) -> Result<Session, Error> {
         let tmux = self.tmux()?;
         let session = self.get(id).await?;
-        let provider = self.provider(Some(session.provider.as_str()))?;
-        let command = provider.launch(&LaunchRequest {
-            working_dir: &session.working_dir,
-            conversation,
-            first_message,
-            effort: None,
-            remote_control: false,
-        })?;
+        let command = {
+            let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
+            let working_dir = session.working_dir.clone();
+            let conversation = conversation.clone();
+            let first_message = first_message.map(str::to_owned);
+            // Off the async workers and bounded: the contract says it does not block, but
+            // a provider that does would otherwise hold the launch forever (#272).
+            self.blocking("build the provider's command", move || {
+                Ok(provider.launch(&LaunchRequest {
+                    working_dir: &working_dir,
+                    conversation: &conversation,
+                    first_message: first_message.as_deref(),
+                    effort: None,
+                    remote_control: false,
+                })?)
+            })
+            .await?
+        };
         if let Conversation::Resume(requested) = conversation
             && command.conversation.as_ref() != Some(requested)
         {
@@ -1134,7 +1146,10 @@ impl Sessions {
         let start_files = {
             let declared = self.settings.start_files.clone();
             let provider = session.provider.as_str().to_owned();
-            blocking(move || Ok(StartFileSnapshot::capture(&declared, &provider))).await?
+            self.blocking("capture the start files", move || {
+                Ok(StartFileSnapshot::capture(&declared, &provider))
+            })
+            .await?
         };
         // The execution is reserved in the transaction that records the launch, so a crash
         // never leaves one the session does not name (#256).
@@ -1181,15 +1196,21 @@ impl Sessions {
             columns: self.settings.columns,
             rows: self.settings.rows,
         };
-        let opened = blocking(move || {
-            close_if_open(&tmux, &terminal.name)?;
-            tmux.new_session(&terminal).map(drop).map_err(Error::from)
-        })
-        .await;
+        let opened = self
+            .blocking("open the terminal", move || {
+                close_if_open(&tmux, &terminal.name)?;
+                tmux.new_session(&terminal).map(drop).map_err(Error::from)
+            })
+            .await;
         if let Err(error) = opened {
-            self.processes
-                .abandon_hosted(&self.database, execution)
-                .await?;
+            // A timed-out open may still create the terminal and start the agent later.
+            if matches!(error, Error::StepTimedOut { .. }) {
+                self.discard_launch(id, execution).await;
+            } else {
+                self.processes
+                    .abandon_hosted(&self.database, execution)
+                    .await?;
+            }
             return Err(error);
         }
         let confirmed = match self.confirm_agent(&channel_session, execution).await {
@@ -1279,7 +1300,11 @@ impl Sessions {
                 ),
             });
         };
-        let identity = blocking(move || Ok(cockpit_agent_channel::identity_of(pid))).await?;
+        let identity = self
+            .blocking("identify the agent's process", move || {
+                Ok(cockpit_agent_channel::identity_of(pid))
+            })
+            .await?;
         match identity {
             Ok(root) => {
                 let write = self.database.write().await?;
@@ -1307,13 +1332,35 @@ impl Sessions {
         }
         let tmux = self.tmux()?;
         let name = terminal_name(&session.id)?;
-        blocking(move || Ok(tmux.sessions()?.contains(&name))).await
+        self.blocking("list the terminals", move || {
+            Ok(tmux.sessions()?.contains(&name))
+        })
+        .await
     }
 
     async fn close_terminal(&self, id: &SessionId) -> Result<(), Error> {
         let tmux = self.tmux()?;
         let name = terminal_name(id)?;
-        blocking(move || close_if_open(&tmux, &name)).await
+        self.blocking("close the terminal", move || close_if_open(&tmux, &name))
+            .await
+    }
+
+    /// Runs a blocking step off the async workers and waits for it at most the step
+    /// timeout (#272). A step that runs out of it keeps running, since started blocking
+    /// work cannot be aborted (report 03): its caller undoes what it may still do.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        name: &'static str,
+        step: impl FnOnce() -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let timeout = self.settings.step_timeout;
+        match tokio::time::timeout(timeout, tokio::task::spawn_blocking(step)).await {
+            Ok(joined) => joined.map_err(|error| Error::Blocking(error.to_string()))?,
+            Err(_) => Err(Error::StepTimedOut {
+                step: name,
+                after: timeout,
+            }),
+        }
     }
 
     fn tmux(&self) -> Result<Arc<Server>, Error> {
@@ -1492,26 +1539,14 @@ fn close_if_open(tmux: &Server, name: &SessionName) -> Result<(), Error> {
     Ok(())
 }
 
-async fn canonical_dir(dir: PathBuf) -> Result<PathBuf, Error> {
-    blocking(move || {
-        let canonical = dir.canonicalize().map_err(|source| Error::Io {
-            action: "resolve",
-            path: dir.clone(),
-            source,
-        })?;
-        if !canonical.is_dir() {
-            return Err(Error::NotInProject { dir: canonical });
-        }
-        Ok(canonical)
-    })
-    .await
-}
-
-/// Runs a blocking tmux or filesystem step off the async workers and waits for it.
-async fn blocking<T: Send + 'static>(
-    step: impl FnOnce() -> Result<T, Error> + Send + 'static,
-) -> Result<T, Error> {
-    tokio::task::spawn_blocking(step)
-        .await
-        .map_err(|error| Error::Blocking(error.to_string()))?
+fn canonical_dir(dir: PathBuf) -> Result<PathBuf, Error> {
+    let canonical = dir.canonicalize().map_err(|source| Error::Io {
+        action: "resolve",
+        path: dir.clone(),
+        source,
+    })?;
+    if !canonical.is_dir() {
+        return Err(Error::NotInProject { dir: canonical });
+    }
+    Ok(canonical)
 }

@@ -350,6 +350,10 @@ pub struct Settings {
     /// The files agents read only at launch (`cockpit-config`); each launch records their
     /// state, and `restart --all` restarts the sessions whose files changed since.
     pub start_files: Vec<cockpit_config::StartFile>,
+    /// How long one step that waits outside the daemon may take: the provider building its
+    /// command, a tmux call, a file or process read. A step that runs out of it fails, so a
+    /// hung launch ends and the owner can stop its session (#272).
+    pub step_timeout: Duration,
 }
 
 impl Default for Settings {
@@ -366,6 +370,7 @@ impl Default for Settings {
             rows: 50,
             base_environment: Vec::new(),
             start_files: Vec::new(),
+            step_timeout: Duration::from_secs(30),
         }
     }
 }
