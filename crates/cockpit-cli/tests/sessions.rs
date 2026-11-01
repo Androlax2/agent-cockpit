@@ -732,3 +732,32 @@ async fn malformed_grant_arguments_exit_2_before_any_connection() {
         );
     }
 }
+
+#[tokio::test]
+async fn session_send_and_cancel_preserve_the_message_and_acknowledge_delivery() {
+    let id = "s0123456789ab";
+    let message = "hello\nworld ; $(false)";
+    for (args, expected) in [
+        (
+            vec!["session", "send", id, message],
+            Command::SessionSend {
+                session: id.into(),
+                message: message.into(),
+            },
+        ),
+        (
+            vec!["session", "cancel", id],
+            Command::SessionCancel { session: id.into() },
+        ),
+    ] {
+        let home = Home::new();
+        let daemon = scripted_daemon(
+            &home.daemon_socket(),
+            Outcome::Ok(Reply::SessionAction { session: id.into() }),
+        );
+        let output = home.cockpit(home.dir.path(), &args).await;
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(text(&output.stdout), format!("delivered to session {id}\n"));
+        assert_eq!(daemon.await.unwrap(), expected);
+    }
+}

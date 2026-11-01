@@ -287,6 +287,8 @@ pub struct RestartAll {
 /// What a message typed into an agent's terminal is to that agent ([`crate::Sessions::submit`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Addressed {
+    /// The owner may answer the agent's question; terminal dialogs still need their own input.
+    Owner,
     /// Work for an agent at its prompt. Any open question holds it back: the agent would
     /// read it as the answer.
     Work,

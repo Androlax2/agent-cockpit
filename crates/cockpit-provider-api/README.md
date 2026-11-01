@@ -37,7 +37,9 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   directory, and say whether they started a turn, joined the one under way or interrupted it
   ([`Delivered`]; Codex, #407). The agent writes that directory, so the adapter opens a
   socket there only through the caller's [`SessionSockets`] ([`DeliveryTarget`]), which
-  refuses one whose listener is not the session's own process (#442). Both refuse an action
+  refuses one whose listener is not the session's own process (#442). Only the typed
+  `Delivered::Unsupported` result permits terminal fallback; an error never does (#431).
+  Both refuse an action
   whose capability is not reported.
 - **Native endpoints** (#416). [`DeliveryTarget::launch`] carries the command the host retained
   for this launch, never data read back from the agent. OpenCode reads its server's loopback

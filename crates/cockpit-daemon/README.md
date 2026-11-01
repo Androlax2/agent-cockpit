@@ -80,7 +80,8 @@ not share code.
   only when the kernel's listening process descends from the session's agent root (#442).
   A link into a folder the sandbox mounts from the session's own (Codex's, #446) is read as
   that folder's entry, and delivery to a session whose sandbox could not mount it is refused with the
-  plan's typed `ProviderReach::Unreachable` reason. Delivering through it is wired with #431.
+  plan's typed `ProviderReach::Unreachable` reason. Owner `session-send` and `session-cancel`,
+  queued work and coordinator messages use this connector through sessions (#431).
 
 ## Approvals (#34)
 

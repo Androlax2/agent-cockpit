@@ -733,20 +733,21 @@ impl Deliverer for Typist<'_> {
         {
             Ok(()) => Delivery::Received {
                 receipt: format!(
-                    "typed into session {target}'s terminal from session {}",
+                    "delivered to session {target} from session {}",
                     sender.as_str()
                 ),
             },
-            Err(error @ cockpit_sessions::Error::TypingUnconfirmed { .. }) => {
-                Delivery::Failed(Failure::Unacknowledged {
-                    reason: error.to_string(),
-                    retry_at: now(),
-                })
-            }
+            Err(
+                error @ (cockpit_sessions::Error::TypingUnconfirmed { .. }
+                | cockpit_sessions::Error::DeliveryUnconfirmed { .. }),
+            ) => Delivery::Failed(Failure::Unacknowledged {
+                reason: error.to_string(),
+                retry_at: now(),
+            }),
             Err(error @ cockpit_sessions::Error::UnknownSession { .. }) => {
                 rejected(error.to_string())
             }
-            // Nothing was typed: a dialog was open, the agent was between launches, tmux
+            // Nothing was sent: a dialog was open, the agent was between launches, tmux
             // did not answer. The loop tries again.
             Err(error) => not_sent(error.to_string()),
         }

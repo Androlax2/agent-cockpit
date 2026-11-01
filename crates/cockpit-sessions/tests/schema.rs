@@ -75,3 +75,29 @@ fn a_session_id_is_s_and_twelve_lower_case_hex_digits() {
         assert!(SessionId::parse(refused).is_err(), "{refused:?}");
     }
 }
+
+#[tokio::test]
+async fn delivery_context_survives_reopen_and_refuses_incomplete_mounts() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let database = database(&dir).await;
+        let write = database.write().await.unwrap();
+        write.execute("INSERT INTO session_delivery (execution_id, reach, reason) VALUES (1, 'mounted', NULL)", ()).await.unwrap();
+        assert!(write.execute("INSERT INTO session_delivery_mounts (execution_id, host, sandbox) VALUES (1, '', '/tmp/codex-daemon-1')", ()).await.is_err());
+        write.execute("INSERT INTO session_delivery_mounts (execution_id, host, sandbox) VALUES (1, '/private/mount', '/tmp/codex-daemon-1')", ()).await.unwrap();
+        assert!(write.execute("INSERT INTO session_delivery (execution_id, reach, reason) VALUES (2, 'unreachable', NULL)", ()).await.is_err());
+        write.commit().await.unwrap();
+    }
+    let database = database(&dir).await;
+    let read = database.read().await.unwrap();
+    let mut rows = read
+        .query(
+            "SELECT host, sandbox FROM session_delivery_mounts WHERE execution_id = 1",
+            (),
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    assert_eq!(row.get::<String>(0).unwrap(), "/private/mount");
+    assert_eq!(row.get::<String>(1).unwrap(), "/tmp/codex-daemon-1");
+}

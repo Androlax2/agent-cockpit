@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-sessions"
-description = "Agent sessions: provider conversations and their lifecycle (start, restart, sleep and wake, resume, end, reboot restore) with the session and launch identities."
+description = "Agent sessions: provider conversations, message delivery and turn cancellation, and their lifecycle with the session and launch identities."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

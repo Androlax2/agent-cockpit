@@ -1,6 +1,6 @@
 # cockpit-sessions
 
-Agent sessions: provider conversations and their lifecycle (start, restart, sleep and wake, resume, end, reboot restore) with the session and launch identities.
+Agent sessions: provider conversations, message delivery and turn cancellation, and their lifecycle with the session and launch identities.
 
 A session is one provider conversation run by Cockpit in a checkout. Its id (`s` and 12 hex
 digits) names it everywhere: its tmux session, its checkout occupancy, its identity on the
@@ -78,6 +78,14 @@ stopped in the middle of one finishes or repairs it at its next start.
   (`docs/decisions/2026-10-31-31-self-state-grant.md`,
   `docs/decisions/2026-10-31-270-self-run-commands-grant.md`).
   The same move revokes the session's coordinator grants (#410).
+- **Send and cancel** (#431). `submit` and `cancel` require a running session, a known
+  conversation and the action's capability. They call `Provider::deliver` off the async
+  workers; only `Delivered::Unsupported` falls back to provider-selected terminal input.
+  Delivery errors and timeouts are uncertain, never a reason to type the action again.
+  The operation lock stays with the blocking call until it finishes. The launch's socket
+  mapping and process root are recorded with its execution; the daemon supplies the socket
+  connector that checks the listener. A launch predating that record must restart before
+  socket delivery works. Current settings never rewrite a running launch's mapping.
 - **Collaborator messages** (#410). `submit` takes who addresses the agent (`Addressed`): a
   coordinator's message is typed as a collaborator's, never as the owner's.
 - **Exits.** An agent observed gone ends its session with the reason; `resume` reopens it.
@@ -123,7 +131,8 @@ stopped in the middle of one finishes or repairs it at its next start.
 - Must not depend on a provider adapter (`cockpit-claude`, `cockpit-codex`,
   `cockpit-opencode`): `sessions -> provider adapters` in the crate-graph rule.
 - Used by: the daemon, whose `Routes` serve the `session` verbs to the owner and which runs
-  the restore and the periodic pass.
+  the restore and the periodic pass. Its socket verification is injected as a function;
+  `sessions -> daemon` forbids importing daemon wiring.
 
 ## Tests
 
@@ -140,4 +149,8 @@ stopped in the middle of one finishes or repairs it at its next start.
   failure midway through a stop or a launch (#251, #252, #256);
   `restore_stalled_stops.rs`: stalled stops finished together, through the daemon binary
   (#254).
+- `cockpit-daemon/tests/session_messaging.rs`: both transports, refusal, owner-only verbs,
+  dialog handling and a timed-out delivery retaining its operation lock.
+- `cockpit-daemon/tests/codex_messaging.rs`: the real adapter through the mapped socket,
+  missing mount support and the mapping retained across daemon restart (#450).
 - `cockpit-cli/tests/sessions.rs`: each `cockpit session` verb's request and output.

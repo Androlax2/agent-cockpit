@@ -78,6 +78,7 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit approval approve ID --revision REVISION --digest DIGEST
        cockpit approval edit ID --revision REVISION COMMAND
        cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
+       cockpit session send ID MESSAGE | cancel ID
        cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
        cockpit session list [--ended]
        cockpit session restart SESSION|--all

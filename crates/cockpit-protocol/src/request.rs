@@ -306,6 +306,15 @@ pub enum Command {
     SessionResume {
         session: String,
     },
+    /// Owner only: deliver a message to the session's known conversation.
+    SessionSend {
+        session: String,
+        message: String,
+    },
+    /// Owner only: interrupt the current turn without ending the session.
+    SessionCancel {
+        session: String,
+    },
     SessionEnd {
         session: String,
     },
@@ -781,6 +790,10 @@ pub enum Reply {
     ApprovalQueue {
         runs: Vec<RunRequestView>,
         guides: Vec<GuideView>,
+    },
+    /// The provider accepted the send or cancellation action.
+    SessionAction {
+        session: String,
     },
     Session {
         session: Box<SessionView>,

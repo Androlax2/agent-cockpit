@@ -8,6 +8,17 @@ use crate::{SessionId, SessionState, SleepRefusal};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
+    InvalidMessage {
+        reason: &'static str,
+    },
+    UnknownConversation {
+        session: SessionId,
+    },
+    /// A provider call failed or timed out; it may already have sent the action.
+    DeliveryUnconfirmed {
+        session: SessionId,
+        reason: String,
+    },
     InvalidSessionId {
         id: String,
     },
@@ -112,6 +123,14 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::InvalidMessage { reason } => write!(formatter, "invalid message: {reason}"),
+            Error::UnknownConversation { session } => {
+                write!(formatter, "session {session}'s conversation is unknown")
+            }
+            Error::DeliveryUnconfirmed { session, reason } => write!(
+                formatter,
+                "delivery to session {session} was not confirmed; the action may have reached it: {reason}"
+            ),
             Error::InvalidSessionId { id } => write!(
                 formatter,
                 "{id:?} is not a session id: `s` and 12 lower-case hex digits"

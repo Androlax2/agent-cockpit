@@ -30,7 +30,9 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
         Command::SessionList { .. }
         | Command::SessionSandbox { .. }
         | Command::SandboxShow { .. } => WorkClass::Control,
-        Command::SessionEnd { .. } | Command::SessionSleep { .. } => WorkClass::Stop,
+        Command::SessionEnd { .. }
+        | Command::SessionSleep { .. }
+        | Command::SessionCancel { .. } => WorkClass::Stop,
         _ => WorkClass::Bulk,
     };
     let job: crate::Job = match command {
@@ -87,6 +89,18 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
                 deferred,
                 failed,
             })
+        }),
+        Command::SessionSend { session, message } => job(async move {
+            let id = SessionId::parse(&session)?;
+            sessions
+                .submit(&id, &message, cockpit_sessions::Addressed::Owner)
+                .await?;
+            Ok(Reply::SessionAction { session })
+        }),
+        Command::SessionCancel { session } => job(async move {
+            let id = SessionId::parse(&session)?;
+            sessions.cancel(&id).await?;
+            Ok(Reply::SessionAction { session })
         }),
         Command::SessionRestart { session } => one(session, sessions, |sessions, id| async move {
             sessions.restart(&id).await
@@ -359,6 +373,7 @@ fn error_code(error: &Error) -> ErrorCode {
     match error {
         Error::InvalidSessionId { .. }
         | Error::InvalidLink { .. }
+        | Error::InvalidMessage { .. }
         | Error::InvalidValue(_)
         | Error::ProviderNeeded { .. } => ErrorCode::InvalidArgument,
         Error::UnknownSession { .. }
@@ -370,10 +385,12 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::LaunchInProgress { .. }
         | Error::TerminalBusy { .. }
         | Error::StopUnconfirmed { .. } => ErrorCode::Conflict,
-        Error::StepsBusy { .. } => ErrorCode::Busy,
-        Error::Provider(_) | Error::TmuxUnavailable { .. } | Error::Sandbox(_) => {
-            ErrorCode::Refused
-        }
+        Error::StepsBusy { .. } | Error::SessionBusy { .. } => ErrorCode::Busy,
+        Error::UnknownConversation { .. }
+        | Error::DeliveryUnconfirmed { .. }
+        | Error::Provider(_)
+        | Error::TmuxUnavailable { .. }
+        | Error::Sandbox(_) => ErrorCode::Refused,
         Error::Projects(error) => crate::projects::error_code(error),
         _ => ErrorCode::Internal,
     }

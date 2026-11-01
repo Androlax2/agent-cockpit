@@ -303,6 +303,7 @@ impl Instance {
             wiring.providers,
             wiring.sessions,
             options.session_dirs(),
+            session_sockets::connect,
         ));
         sessions.import_desktop_environment(wiring.desktop_environment);
         sessions::restore(&sessions)
