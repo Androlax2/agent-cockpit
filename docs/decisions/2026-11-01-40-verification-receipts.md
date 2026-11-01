@@ -13,12 +13,15 @@ Issue #40. Decided by the worker, implementing reports 06 and 09 as written.
 - **Artifacts are fingerprinted before the run** (`fingerprint`, SHA-256 per file inside the
   checkout, symbolic links resolved and kept inside it). An edit during the run therefore
   makes the receipt stale too: the safe direction.
-- **The newest receipt that applies decides; the newest receipt's reason explains a stale
-  check.** Only the newest `RECEIPTS_LOADED_PER_CHECK` (20) are read: an older match shows
-  as stale, a rerun, never a hidden pass.
+- **Evidence is loaded per exact source; the newest receipt of the current check
+  definition there decides.** Once its artifacts changed it is stale, and an older pass on
+  the same source does not stand in for a newer failure. Loading per source (the newest
+  `RECEIPTS_LOADED_PER_CHECK`, 20) keeps parallel clones' receipts on other heads from
+  pushing this source's out; the newest receipt elsewhere only explains `source-changed`.
 - **A run id makes delivery idempotent.** The same run again returns its receipt; another
   result under the same run id is refused, so evidence is append-only.
-- **Prose claims are kept, never counted.** A check with only claims is `unverified`; a claim
+- **Prose claims are kept, never counted, and bound to a source.** A check with only claims
+  about this source is `unverified`; a claim about another head shows nowhere else; a claim
   after a stale receipt leaves it stale.
 - **`sha2 = "=0.10.9"`**, the pin `cockpit-approvals` already carries
   (`2026-10-31-34-approvals-dependencies.md`), so no new package enters `Cargo.lock`.

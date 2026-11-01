@@ -54,9 +54,9 @@ impl Fixture {
         claimed
     }
 
-    pub async fn evidence(&self, check_names: &[&str]) -> Evidence {
+    pub async fn evidence(&self, source: &Source, check_names: &[&str]) -> Evidence {
         let read = self.database.read().await.unwrap();
-        cockpit_verification::evidence(&read, PROJECT, check_names)
+        cockpit_verification::evidence(&read, PROJECT, source, check_names)
             .await
             .unwrap()
     }
@@ -111,6 +111,7 @@ pub fn claim(check_name: &str) -> NewClaim {
     NewClaim {
         project: PROJECT.to_owned(),
         check_name: check_name.to_owned(),
+        source: clean_source(),
         claimant: "session-7".to_owned(),
         statement: "All tests pass.".to_owned(),
     }

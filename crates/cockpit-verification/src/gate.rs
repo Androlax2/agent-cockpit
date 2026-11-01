@@ -2,40 +2,54 @@
 //! up to. Freshness is computed when asked, never stored, so a receipt cannot be marked
 //! current after its artifact changed.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::artifacts::file_digest;
+use crate::artifacts::Checkout;
 use crate::error::invalid;
 use crate::{
     CheckDefinition, CheckReport, CheckStatus, Claim, GateOutcome, GateReport, Outcome, Receipt,
     Refusal, Source, StaleReason,
 };
 
-/// The receipts and claims of some checks of one project, as [`crate::evidence`] loaded them.
+/// The evidence of some checks of one project on one exact source, as [`crate::evidence`]
+/// loaded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evidence {
+    pub(crate) source: Source,
+    /// Per check: its receipts on this source, newest first.
     pub(crate) receipts: BTreeMap<String, Vec<Receipt>>,
+    /// Per check: its newest receipt on any other source, which explains a stale check.
+    pub(crate) newest_elsewhere: BTreeMap<String, Receipt>,
+    /// Per check: its claims on this source, newest first.
     pub(crate) claims: BTreeMap<String, Vec<Claim>>,
 }
 
+/// Each artifact's digest, read at most once per evaluation.
+type DigestCache = HashMap<String, Result<Option<String>, String>>;
+
 impl Evidence {
-    /// The check's receipts, newest first; at most [`crate::RECEIPTS_LOADED_PER_CHECK`].
+    pub fn source(&self) -> &Source {
+        &self.source
+    }
+
+    /// The check's receipts on this source, newest first; at most
+    /// [`crate::RECEIPTS_LOADED_PER_CHECK`].
     pub fn receipts(&self, check_name: &str) -> &[Receipt] {
         self.receipts.get(check_name).map_or(&[], Vec::as_slice)
     }
 
-    /// The check's claims, newest first.
+    /// The check's claims on this source, newest first; at most
+    /// [`crate::CLAIMS_LOADED_PER_CHECK`].
     pub fn claims(&self, check_name: &str) -> &[Claim] {
         self.claims.get(check_name).map_or(&[], Vec::as_slice)
     }
 
-    /// The outcome of a gate requiring `checks` on the exact result `source` in `checkout`.
+    /// The outcome of a gate requiring `checks` on this evidence's source in `checkout`.
     /// Reads the receipts' artifacts from the checkout, so call it outside a transaction.
     pub fn evaluate(
         &self,
         checks: &[CheckDefinition],
-        source: &Source,
         checkout: &Path,
     ) -> Result<GateReport, Refusal> {
         if checks.is_empty() {
@@ -56,9 +70,11 @@ impl Evidence {
                 ));
             }
         }
+        let checkout = Checkout::open(checkout)?;
+        let mut digests = DigestCache::new();
         let reports: Vec<CheckReport> = checks
             .iter()
-            .map(|check| self.report(check, source, checkout))
+            .map(|check| self.report(check, &checkout, &mut digests))
             .collect();
         Ok(GateReport {
             outcome: gate_outcome(&reports),
@@ -66,76 +82,74 @@ impl Evidence {
         })
     }
 
-    fn report(&self, check: &CheckDefinition, source: &Source, checkout: &Path) -> CheckReport {
+    /// The newest receipt of this exact check on this source decides: once its artifacts
+    /// changed, an older receipt of the same source and check does not stand in for it.
+    fn report(
+        &self,
+        check: &CheckDefinition,
+        checkout: &Checkout,
+        digests: &mut DigestCache,
+    ) -> CheckReport {
         let receipts = self.receipts(&check.name);
-        let mut newest_stale = None;
-        for receipt in receipts {
-            match staleness(receipt, check, source, checkout) {
-                None => {
-                    return CheckReport {
-                        name: check.name.clone(),
-                        status: CheckStatus::Checked(receipt.recorded.outcome),
-                        receipt: Some(receipt.id),
-                    };
-                }
-                Some(reason) => {
-                    newest_stale.get_or_insert(reason);
-                }
-            }
-        }
-        let status = match newest_stale {
-            Some(reason) => CheckStatus::Stale(reason),
-            None if self.claims(&check.name).is_empty() => CheckStatus::Missing,
-            None => CheckStatus::Unverified,
+        let (status, receipt) = match receipts
+            .iter()
+            .find(|receipt| receipt.recorded.check == *check)
+        {
+            Some(receipt) => match changed_artifact(receipt, checkout, digests) {
+                None => (
+                    CheckStatus::Checked(receipt.recorded.outcome),
+                    Some(receipt.id),
+                ),
+                Some(reason) => (CheckStatus::Stale(reason), None),
+            },
+            None if !receipts.is_empty() => (CheckStatus::Stale(StaleReason::CheckChanged), None),
+            None => match self.newest_elsewhere.get(&check.name) {
+                Some(elsewhere) => (
+                    CheckStatus::Stale(StaleReason::SourceChanged {
+                        recorded: elsewhere.recorded.source.clone(),
+                    }),
+                    None,
+                ),
+                None if self.claims(&check.name).is_empty() => (CheckStatus::Missing, None),
+                None => (CheckStatus::Unverified, None),
+            },
         };
         CheckReport {
             name: check.name.clone(),
             status,
-            receipt: None,
+            receipt,
         }
     }
 }
 
-/// Why `receipt` does not apply to `check` on `source`, `None` when it does.
-fn staleness(
+/// Why `receipt`'s artifacts are no longer what it checked, `None` when every one is.
+fn changed_artifact(
     receipt: &Receipt,
-    check: &CheckDefinition,
-    source: &Source,
-    checkout: &Path,
+    checkout: &Checkout,
+    digests: &mut DigestCache,
 ) -> Option<StaleReason> {
-    let recorded = &receipt.recorded;
-    if recorded.check != *check {
-        return Some(StaleReason::CheckChanged);
-    }
-    if recorded.source.head != source.head || recorded.source.dirty != source.dirty {
-        return Some(StaleReason::SourceChanged {
-            recorded: recorded.source.clone(),
-        });
-    }
-    recorded.artifacts.iter().find_map(|artifact| {
+    receipt.recorded.artifacts.iter().find_map(|artifact| {
+        let current = digests
+            .entry(artifact.path.clone())
+            .or_insert_with(|| checkout.digest(&artifact.path));
         let path = artifact.path.clone();
-        match file_digest(checkout, &artifact.path) {
-            Ok(Some(digest)) if digest == artifact.digest => None,
+        match current {
+            Ok(Some(digest)) if *digest == artifact.digest => None,
             Ok(Some(_)) => Some(StaleReason::ArtifactChanged { path }),
             Ok(None) => Some(StaleReason::ArtifactMissing { path }),
-            Err(reason) => Some(StaleReason::ArtifactUnreadable { path, reason }),
+            Err(reason) => Some(StaleReason::ArtifactUnreadable {
+                path,
+                reason: reason.clone(),
+            }),
         }
     })
 }
 
 fn gate_outcome(reports: &[CheckReport]) -> GateOutcome {
-    let has = |outcome| {
-        reports
-            .iter()
-            .any(|report| report.status == CheckStatus::Checked(outcome))
-    };
-    if has(Outcome::Failed) {
-        return GateOutcome::Failed;
-    }
-    let all_passed = reports
-        .iter()
-        .all(|report| report.status == CheckStatus::Checked(Outcome::Passed));
-    if all_passed {
+    let is = |report: &CheckReport, outcome| report.status == CheckStatus::Checked(outcome);
+    if reports.iter().any(|report| is(report, Outcome::Failed)) {
+        GateOutcome::Failed
+    } else if reports.iter().all(|report| is(report, Outcome::Passed)) {
         GateOutcome::Passed
     } else {
         GateOutcome::Open

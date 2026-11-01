@@ -123,6 +123,8 @@ impl Receipt {
 pub struct NewClaim {
     pub project: String,
     pub check_name: String,
+    /// The result the claim is about: it shows only on that exact source.
+    pub source: Source,
     /// Who said it, as the daemon identified them.
     pub claimant: String,
     pub statement: String,
@@ -135,6 +137,7 @@ pub struct ClaimId(pub i64);
 pub struct Claim {
     pub id: ClaimId,
     pub check_name: String,
+    pub source: Source,
     pub claimant: String,
     pub statement: String,
     pub claimed_at: i64,
@@ -167,9 +170,9 @@ pub enum StaleReason {
 pub enum CheckStatus {
     /// A receipt applies; its outcome.
     Checked(Outcome),
-    /// Receipts exist, none applies; why the newest does not.
+    /// Receipts exist, none applies; why not.
     Stale(StaleReason),
-    /// No receipt, only prose claims.
+    /// No receipt on this source, only prose claims about it.
     Unverified,
     /// Neither a receipt nor a claim.
     Missing,

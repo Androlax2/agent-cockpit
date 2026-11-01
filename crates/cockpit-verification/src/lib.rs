@@ -16,8 +16,9 @@ pub use model::{
     NewClaim, NewReceipt, Outcome, Receipt, ReceiptId, Source, StaleReason,
 };
 pub use receipts::{
-    ARTIFACTS_MAX, COMMAND_MAX_CHARS, NAME_MAX_CHARS, OUTPUT_MAX_BYTES, OUTPUT_REFERENCES_MAX,
-    RECEIPTS_LOADED_PER_CHECK, STATEMENT_MAX_CHARS, evidence, record_claim, record_receipt,
+    ARTIFACTS_MAX, CLAIMS_LOADED_PER_CHECK, COMMAND_MAX_CHARS, NAME_MAX_CHARS, OUTPUT_MAX_BYTES,
+    OUTPUT_REFERENCES_MAX, PATH_MAX_CHARS, RECEIPTS_LOADED_PER_CHECK, STATEMENT_MAX_CHARS,
+    evidence, record_claim, record_receipt,
 };
 
 /// The verification tables. Receipts and claims are append-only: evidence is never edited,
@@ -50,7 +51,7 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 UNIQUE (project, run_id)
             );
             CREATE INDEX verification_receipts_by_check
-                ON verification_receipts (project, check_name, id);
+                ON verification_receipts (project, check_name, head, id);
             CREATE TABLE verification_artifacts (
                 receipt INTEGER NOT NULL REFERENCES verification_receipts (id),
                 path TEXT NOT NULL CHECK (path <> ''),
@@ -67,11 +68,14 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project TEXT NOT NULL CHECK (project <> ''),
                 check_name TEXT NOT NULL CHECK (check_name <> ''),
+                head TEXT NOT NULL CHECK (head <> ''),
+                base TEXT CHECK (base <> ''),
+                dirty TEXT CHECK (dirty <> ''),
                 claimant TEXT NOT NULL CHECK (claimant <> ''),
                 statement TEXT NOT NULL CHECK (statement <> ''),
                 claimed_at INTEGER NOT NULL
             );
             CREATE INDEX verification_claims_by_check
-                ON verification_claims (project, check_name, id);",
+                ON verification_claims (project, check_name, head, id);",
     }],
 };

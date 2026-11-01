@@ -26,27 +26,33 @@ The runner's `run_id` makes delivery idempotent: the same run again returns its 
 the same run id with another result is refused (`RunRecordedDifferently`), so evidence is
 never rewritten. Receipts and claims are append-only.
 
-`record_claim` keeps an agent's statement that a check passed with no run behind it. A
-claim is read back for the next agent and the human, and never counts as evidence.
+`record_claim` keeps an agent's statement that a check passed on a source, with no run
+behind it. A claim is read back for the next agent and the human, and never counts as
+evidence.
 
 ## Gates
 
-`evidence` loads the newest `RECEIPTS_LOADED_PER_CHECK` receipts and the claims of the
-checks a gate requires; `Evidence::evaluate` answers, outside any transaction because it
-reads the checkout, where each check stands on an exact result:
+`evidence` loads, for one exact source (head and uncommitted changes), each required
+check's newest `RECEIPTS_LOADED_PER_CHECK` receipts and `CLAIMS_LOADED_PER_CHECK` claims on
+that source, and its newest receipt on any other source. Parallel clones recording the same
+check on other heads therefore never push this source's receipts out. `Evidence::evaluate`
+answers, outside any transaction because it reads the checkout, where each check stands:
 
 | Status | When |
 | --- | --- |
-| `checked(outcome)` | the newest receipt that applies: same check definition, same head and uncommitted changes, every artifact unchanged |
-| `stale(reason)` | receipts exist, none applies: `check-changed`, `source-changed`, `artifact-changed`, `artifact-missing`, `artifact-unreadable` (the newest receipt's reason) |
-| `unverified` | no receipt, only claims |
+| `checked(outcome)` | the newest receipt of this exact check definition on this source, every artifact unchanged |
+| `stale(artifact-changed / -missing / -unreadable)` | that receipt's artifacts changed; an older receipt does not stand in for it |
+| `stale(check-changed)` | receipts on this source ran another definition of the check |
+| `stale(source-changed)` | receipts only on other heads or uncommitted changes |
+| `unverified` | no receipt, only claims about this source |
 | `missing` | nothing |
 
 Freshness is computed at evaluation, never stored, so an edited file makes its receipt
-stale the moment it changes. The gate is `passed` when every required check passed,
-`failed` when one failed, and `open` otherwise; each check that did not pass names its next
-action. An empty gate, a check required twice or one whose evidence was not loaded is
-refused.
+stale the moment it changes; each file is hashed at most once per evaluation. The gate is
+`passed` when every required check passed, `failed` when one failed, and `open`
+otherwise; each check that did not pass names its next action. An empty gate, a check
+required twice, one whose evidence was not loaded, or a checkout that does not resolve is
+refused. Paths are `/`-separated and normalized, so one file has one spelling.
 
 ## Dependency edges
 

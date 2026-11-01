@@ -21,7 +21,7 @@ async fn a_receipt_keeps_what_was_checked() {
     new.output_references = vec!["logs/run-1.log".to_owned()];
     let recorded = fixture.record(new.clone()).await.unwrap();
 
-    let evidence = fixture.evidence(&["test"]).await;
+    let evidence = fixture.evidence(&clean_source(), &["test"]).await;
     let stored = &evidence.receipts("test")[0];
     assert_eq!(stored, &recorded);
     assert_eq!(stored.recorded, new);
@@ -83,7 +83,14 @@ async fn the_same_run_delivered_twice_is_one_receipt() {
     let second = fixture.record(new).await.unwrap();
 
     assert_eq!(first, second);
-    assert_eq!(fixture.evidence(&["test"]).await.receipts("test").len(), 1);
+    assert_eq!(
+        fixture
+            .evidence(&clean_source(), &["test"])
+            .await
+            .receipts("test")
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -129,15 +136,12 @@ async fn receipts_and_claims_survive_a_restart() {
         .await
         .unwrap();
     let read = reopened.read().await.unwrap();
-    let evidence = cockpit_verification::evidence(&read, common::PROJECT, &["test", "lint"])
-        .await
-        .unwrap();
+    let evidence =
+        cockpit_verification::evidence(&read, common::PROJECT, &clean_source(), &["test", "lint"])
+            .await
+            .unwrap();
     let report = evidence
-        .evaluate(
-            &[tests, check("lint")],
-            &clean_source(),
-            &dir.path().join("checkout"),
-        )
+        .evaluate(&[tests, check("lint")], &dir.path().join("checkout"))
         .unwrap();
     assert_eq!(
         report.checks[0].status,
@@ -173,7 +177,7 @@ async fn an_exit_code_contradicting_the_outcome_is_refused() {
 #[tokio::test]
 async fn an_invalid_receipt_is_refused_naming_its_field() {
     type Change = fn(&mut cockpit_verification::NewReceipt);
-    let cases: [(&str, Change); 10] = [
+    let cases: [(&str, Change); 11] = [
         ("project", |new| new.project = String::new()),
         ("run_id", |new| new.run_id = " ".to_owned()),
         ("check.name", |new| new.check.name = String::new()),
@@ -183,6 +187,9 @@ async fn an_invalid_receipt_is_refused_naming_its_field() {
         }),
         ("check.working_directory", |new| {
             new.check.working_directory = "../elsewhere".to_owned()
+        }),
+        ("check.working_directory", |new| {
+            new.check.working_directory = "crates/x/".to_owned()
         }),
         ("check.environment", |new| {
             new.check.environment = String::new()
@@ -277,4 +284,34 @@ async fn an_empty_claim_is_refused() {
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn fingerprinting_refuses_a_path_named_twice_or_a_missing_checkout() {
+    let fixture = Fixture::new().await;
+    fixture.write_file("src/lib.rs", "one\n");
+    let twice =
+        cockpit_verification::fingerprint(&fixture.checkout(), &["src/lib.rs", "src/lib.rs"]);
+    assert!(
+        matches!(
+            twice,
+            Err(Refusal::InvalidRequest {
+                field: "artifacts",
+                ..
+            })
+        ),
+        "{twice:?}"
+    );
+    let nowhere =
+        cockpit_verification::fingerprint(&fixture.dir.path().join("gone"), &["src/lib.rs"]);
+    assert!(
+        matches!(
+            nowhere,
+            Err(Refusal::InvalidRequest {
+                field: "checkout",
+                ..
+            })
+        ),
+        "{nowhere:?}"
+    );
 }
