@@ -5,7 +5,7 @@ mod common;
 
 use std::process::Command;
 
-use cockpit_tmux::{CaptureFrame, CaptureOptions, CaptureStream};
+use cockpit_tmux::{CaptureFrame, CaptureOptions};
 use common::{GENEROUS, TestServer};
 
 fn parent_pid(pid: u32) -> u32 {
@@ -17,14 +17,6 @@ fn parent_pid(pid: u32) -> u32 {
         .trim()
         .parse()
         .expect("a parent pid")
-}
-
-/// The stream's first frame, which names the frame it got instead of a snapshot.
-fn first_frame(stream: &mut CaptureStream) -> CaptureFrame {
-    match stream.next_frame(GENEROUS) {
-        Ok(Some(frame)) => frame,
-        other => panic!("expected a frame within {GENEROUS:?}, got {other:?}"),
-    }
 }
 
 #[test]
@@ -55,10 +47,10 @@ fn a_new_handle_finds_the_sessions_and_observes_them_again() {
             .server
             .capture_stream(&session, CaptureOptions::default())
             .expect("opens");
-        let snapshot = first_frame(&mut first_stream);
+        let first = first_stream.next_frame(GENEROUS);
         assert!(
-            matches!(snapshot, CaptureFrame::Snapshot { .. }),
-            "{snapshot:?}"
+            matches!(first, Ok(Some(CaptureFrame::Snapshot { .. }))),
+            "{first:?}"
         );
     }
 
@@ -70,10 +62,10 @@ fn a_new_handle_finds_the_sessions_and_observes_them_again() {
     let mut stream = restarted
         .capture_stream(&session, CaptureOptions::default())
         .expect("reattaches");
-    let snapshot = first_frame(&mut stream);
+    let first = stream.next_frame(GENEROUS);
     assert!(
-        matches!(snapshot, CaptureFrame::Snapshot { pane: ref p, .. } if *p == pane),
-        "{snapshot:?}"
+        matches!(first, Ok(Some(CaptureFrame::Snapshot { pane: ref p, .. })) if *p == pane),
+        "{first:?}"
     );
     assert!(matches!(
         stream.next_frame(GENEROUS),

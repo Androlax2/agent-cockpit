@@ -1158,7 +1158,7 @@ async fn an_interrupted_restart_whose_relaunch_fails_on_start_is_left_failed() {
         sessions(&client, false).await[0].state,
         SessionStateView::Failed
     );
-    home.still_logged(1).await; // never launched again
+    home.still_logged(1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

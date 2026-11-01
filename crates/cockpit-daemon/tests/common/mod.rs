@@ -275,18 +275,18 @@ pub async fn once_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Ve
 /// for checks that no further launch happened, which a single read right after a reply
 /// could not see.
 pub async fn still_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Vec<T>) -> Vec<T> {
-    once_logged(count, &read).await;
+    let mut logged = once_logged(count, &read).await;
     let settled = std::time::Instant::now() + SETTLE;
     while std::time::Instant::now() < settled {
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let logged = read();
+        logged = read();
         assert_eq!(
             logged.len(),
             count,
             "a further entry was logged: {logged:?}"
         );
     }
-    read()
+    logged
 }
 
 /// What an in-process daemon is wired with in tests: a private tmux server in `dir`, never

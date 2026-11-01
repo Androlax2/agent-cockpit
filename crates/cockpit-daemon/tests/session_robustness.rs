@@ -44,8 +44,12 @@ impl Home {
         common::once_logged(count, || self.logged_launches_of(session)).await
     }
 
-    fn logged_launches_of(&self, session: &str) -> Vec<AgentLaunch> {
+    fn logged_launches(&self) -> Vec<AgentLaunch> {
         FakeProvider::launches(&self.path().join("agent.log"))
+    }
+
+    fn logged_launches_of(&self, session: &str) -> Vec<AgentLaunch> {
+        self.logged_launches()
             .into_iter()
             .filter(|launch| launch.session == session)
             .collect()
@@ -241,8 +245,10 @@ async fn session_reply(client: &Connection, command: Command) -> SessionView {
     }
 }
 
-async fn new_session(client: &Connection, dir: &Path) -> SessionView {
-    session_reply(
+/// A new session of the fake agent in `dir`, once its agent logged the launch: a test may
+/// then read, stop or restart it without racing the agent's first line (#257).
+async fn new_session(home: &Home, client: &Connection, dir: &Path) -> SessionView {
+    let session = session_reply(
         client,
         Command::SessionNew {
             dir: dir.display().to_string(),
@@ -251,7 +257,9 @@ async fn new_session(client: &Connection, dir: &Path) -> SessionView {
             clone: None,
         },
     )
-    .await
+    .await;
+    home.launches_of(&session.id, 1).await;
+    session
 }
 
 async fn listed(client: &Connection, id: &str) -> SessionView {
@@ -307,7 +315,7 @@ async fn resume_is_refused_while_another_session_runs_its_conversation_and_names
         listed(&client, &first.id).await.state,
         SessionStateView::Ended
     );
-    common::still_logged(1, || home.logged_launches_of(&first.id)).await;
+    common::still_logged(2, || home.logged_launches()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -376,8 +384,7 @@ async fn restart_from_a_state_an_error_left_unfinished_relaunches_the_conversati
         let daemon = home.start().await;
         let client = connect(&daemon).await;
         let root = home.project(&client).await;
-        let started = new_session(&client, &root).await;
-        home.launches_of(&started.id, 1).await;
+        let started = new_session(&home, &client, &root).await;
         home.store(
             &format!("UPDATE sessions SET {status} WHERE id = ?1"),
             &started.id,
@@ -410,7 +417,7 @@ async fn restart_of_a_session_whose_agent_died_unnoticed_relaunches_it() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     Process::new("kill")
         .arg(home.launches_of(&started.id, 1).await[0].pid.to_string())
         .status()
@@ -435,7 +442,7 @@ async fn a_session_is_finished_only_once_the_item_it_was_doing_is_done() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     assert!(!started.finished, "a session with no item is not finished");
     let item = home.session_takes_an_item(&client, &started.id).await;
     assert!(!listed(&client, &started.id).await.finished);
@@ -451,7 +458,7 @@ async fn a_session_doing_another_item_after_finishing_one_is_not_finished() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     let first = home.session_takes_an_item(&client, &started.id).await;
     home.session_finishes(&client, &started.id, first).await;
 
@@ -468,7 +475,7 @@ async fn a_restarted_session_is_finished_again_only_once_it_finishes_new_work() 
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     home.finished_a_minute_ago(&client, &started.id).await;
 
     let restarted = session_reply(
@@ -495,7 +502,7 @@ async fn end_finished_keeps_a_session_resumed_after_its_work_was_finished() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     home.finished_a_minute_ago(&client, &started.id).await;
     end(&client, &started.id).await;
     session_reply(
@@ -526,9 +533,9 @@ async fn end_finished_ends_the_finished_sessions_and_keeps_the_others() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let finished = new_session(&client, &root).await;
+    let finished = new_session(&home, &client, &root).await;
     let finished_agent = home.launches_of(&finished.id, 1).await[0].pid;
-    let working = new_session(&client, &root).await;
+    let working = new_session(&home, &client, &root).await;
     let done = home.session_takes_an_item(&client, &finished.id).await;
     home.session_finishes(&client, &finished.id, done).await;
     home.session_takes_an_item(&client, &working.id).await;
@@ -558,8 +565,8 @@ async fn end_finished_with_only_ends_just_the_named_finished_sessions() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let seen = new_session(&client, &root).await;
-    let unseen = new_session(&client, &root).await;
+    let seen = new_session(&home, &client, &root).await;
+    let unseen = new_session(&home, &client, &root).await;
     for session in [&seen, &unseen] {
         let item = home.session_takes_an_item(&client, &session.id).await;
         home.session_finishes(&client, &session.id, item).await;
@@ -590,7 +597,7 @@ async fn an_ended_session_is_never_labelled_finished() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     let item = home.session_takes_an_item(&client, &started.id).await;
     home.session_finishes(&client, &started.id, item).await;
 
@@ -605,7 +612,7 @@ async fn a_failed_session_is_never_labelled_finished() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     let item = home.session_takes_an_item(&client, &started.id).await;
     home.session_finishes(&client, &started.id, item).await;
 
@@ -658,10 +665,8 @@ async fn sharing_one_conversation(
     more: &str,
 ) -> (SessionView, SessionView) {
     let root = home.project(client).await;
-    let first = new_session(client, &root).await;
-    let second = new_session(client, &root).await;
-    home.launches_of(&first.id, 1).await;
-    home.launches_of(&second.id, 1).await;
+    let first = new_session(home, client, &root).await;
+    let second = new_session(home, client, &root).await;
     home.store(
         &format!("UPDATE sessions SET conversation = 'conversation-1'{more} WHERE id = ?1"),
         &second.id,

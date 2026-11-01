@@ -63,6 +63,33 @@ impl Home {
             .expect("the execution starts")
     }
 
+    /// [`Home::launch`] of a wrapped sleeper, once its leader exec'd the sleeper: until then
+    /// it is a `nice`/`chrt` shim that has not applied its setting, which `inspect` reports
+    /// as truly as the kernel shows it (#265: niceness -10, the CI runner's own, on macOS).
+    pub async fn launch_past_its_shims(&self, database: &Database, spec: &LaunchSpec) -> Execution {
+        let execution = self.launch(database, spec).await;
+        let leader = execution
+            .process_group
+            .expect("a launched execution has a leader");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = tokio::process::Command::new("ps")
+                .args(["-o", "comm=", "-p", &leader.to_string()])
+                .output()
+                .await
+                .expect("ps runs");
+            let command = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            if command.rsplit('/').next() == Some("sleep") {
+                return execution;
+            }
+            if std::time::Instant::now() > deadline {
+                self.stop(database, &execution).await;
+                panic!("leader {leader} still runs {command:?}, not the sleeper");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     pub async fn stop(&self, database: &Database, execution: &Execution) {
         let stopped = self
             .supervisor()

@@ -85,7 +85,7 @@ async fn a_niced_execution_on_this_host_shows_the_niceness_it_asked_for() {
         ..Limits::default()
     };
     let execution = home
-        .launch(&database, &backend.wrap(home.sleeper(), &limits))
+        .launch_past_its_shims(&database, &backend.wrap(home.sleeper(), &limits))
         .await;
 
     let report = backend.inspect(&execution, &limits).await;

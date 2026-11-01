@@ -145,6 +145,11 @@ impl Home {
         common::once_logged(count, || self.logged_launches_of(session)).await
     }
 
+    /// The `count` launches of `session`, once no further one came within [`common::SETTLE`].
+    async fn still_launched_of(&self, session: &str, count: usize) -> Vec<AgentLaunch> {
+        common::still_logged(count, || self.logged_launches_of(session)).await
+    }
+
     fn logged_launches_of(&self, session: &str) -> Vec<AgentLaunch> {
         self.logged_launches()
             .into_iter()
@@ -303,8 +308,10 @@ async fn request(client: &Connection, command: Command) -> Result<Reply, ClientE
     client.request(command, Duration::from_secs(60)).await
 }
 
-async fn new_session(client: &Connection, dir: &Path) -> SessionView {
-    match request(
+/// A new session of the fake agent in `dir`, once its agent logged the launch: a test may
+/// then read, stop or restart it without racing the agent's first line (#257).
+async fn new_session(home: &Home, client: &Connection, dir: &Path) -> SessionView {
+    let session = match request(
         client,
         Command::SessionNew {
             dir: dir.display().to_string(),
@@ -317,7 +324,9 @@ async fn new_session(client: &Connection, dir: &Path) -> SessionView {
     {
         Ok(Reply::Session { session }) => *session,
         other => panic!("session-new: {other:?}"),
-    }
+    };
+    home.launches_of(&session.id, 1).await;
+    session
 }
 
 async fn listed(client: &Connection, id: &str) -> SessionView {
@@ -354,19 +363,14 @@ async fn restart_all(client: &Connection) -> RestartedAll {
 
 /// Waits until the session has `count` launches and runs the latest.
 async fn wait_for_launches(home: &Home, client: &Connection, id: &str, count: usize) {
+    home.launches_of(id, count).await;
     let deadline = Instant::now() + GENEROUS;
     loop {
-        let session = listed(client, id).await;
-        if home.logged_launches_of(id).len() == count && session.state == SessionStateView::Running
-        {
+        let state = listed(client, id).await.state;
+        if state == SessionStateView::Running {
             return;
         }
-        assert!(
-            Instant::now() < deadline,
-            "session {id} has {} launches and is {:?}",
-            home.logged_launches_of(id).len(),
-            session.state
-        );
+        assert!(Instant::now() < deadline, "session {id} is {state:?}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -377,7 +381,7 @@ async fn session_list_names_the_start_files_that_changed_since_the_launch() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     assert_eq!(started.changed_start_files, Vec::<String>::new());
 
     home.edit_start_file();
@@ -393,9 +397,9 @@ async fn restart_all_restarts_only_the_sessions_whose_start_files_changed() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let old = new_session(&client, &root).await;
+    let old = new_session(&home, &client, &root).await;
     home.edit_start_file();
-    let current = new_session(&client, &root).await;
+    let current = new_session(&home, &client, &root).await;
     home.report_as_agent(
         &home.launches_of(&old.id, 1).await[0],
         AgentState::Waiting,
@@ -411,7 +415,7 @@ async fn restart_all_restarts_only_the_sessions_whose_start_files_changed() {
     assert_eq!(restarted.launch.unwrap().kind, LaunchKindView::Restart);
     assert_eq!(restarted.changed_start_files, Vec::<String>::new());
     assert_eq!(home.launches_of(&old.id, 2).await[1].mode, "resume");
-    common::still_logged(1, || home.logged_launches_of(&current.id)).await;
+    home.still_launched_of(&current.id, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -420,13 +424,13 @@ async fn restart_all_with_every_start_file_current_restarts_nothing() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
 
     let outcome = restart_all(&client).await;
 
     assert!(outcome.restarted.is_empty());
     assert!(outcome.deferred.is_empty());
-    common::still_logged(1, || home.logged_launches_of(&started.id)).await;
+    home.still_launched_of(&started.id, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -435,7 +439,7 @@ async fn a_busy_session_restarts_once_its_agent_reports_waiting() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     let first_launch = home.launches_of(&started.id, 1).await[0].clone();
     home.report_as_agent(&first_launch, AgentState::Working, true)
         .await;
@@ -447,7 +451,7 @@ async fn a_busy_session_restarts_once_its_agent_reports_waiting() {
     assert_eq!(outcome.deferred.len(), 1);
     assert!(outcome.deferred[0].restart_pending);
     // Periodic passes go by while it works: its turn is not cut.
-    common::still_logged(1, || home.logged_launches_of(&started.id)).await;
+    home.still_launched_of(&started.id, 1).await;
     assert!(listed(&client, &started.id).await.restart_pending);
 
     home.report_as_agent(&first_launch, AgentState::Waiting, false)
@@ -466,14 +470,14 @@ async fn a_session_whose_agent_never_reported_is_deferred_not_restarted() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     home.edit_start_file();
 
     let outcome = restart_all(&client).await;
 
     assert!(outcome.restarted.is_empty());
     assert_eq!(outcome.deferred[0].id, started.id);
-    common::still_logged(1, || home.logged_launches_of(&started.id)).await;
+    home.still_launched_of(&started.id, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -482,8 +486,7 @@ async fn a_wake_path_wakes_an_asleep_session_and_records_its_cause() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
-    home.launches_of(&started.id, 1).await;
+    let started = new_session(&home, &client, &root).await;
     request(
         &client,
         Command::SessionSleep {
@@ -514,7 +517,7 @@ async fn a_wake_path_leaves_a_running_session_as_it_is() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     let id = SessionId::parse(&started.id).unwrap();
 
     let awake = home
@@ -524,7 +527,7 @@ async fn a_wake_path_leaves_a_running_session_as_it_is() {
         .unwrap();
 
     assert_eq!(awake.revision, started.revision);
-    common::still_logged(1, || home.logged_launches_of(&started.id)).await;
+    home.still_launched_of(&started.id, 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -533,7 +536,7 @@ async fn the_owners_wake_records_the_owner_as_its_cause() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     request(
         &client,
         Command::SessionSleep {
@@ -564,7 +567,7 @@ async fn an_ended_session_keeps_no_pending_restart() {
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     home.edit_start_file();
     assert_eq!(restart_all(&client).await.deferred.len(), 1);
 
@@ -588,7 +591,7 @@ async fn a_waiting_report_from_the_previous_launch_does_not_restart_the_new_agen
     let daemon = home.start().await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
-    let started = new_session(&client, &root).await;
+    let started = new_session(&home, &client, &root).await;
     home.report_as_agent(
         &home.launches_of(&started.id, 1).await[0],
         AgentState::Waiting,

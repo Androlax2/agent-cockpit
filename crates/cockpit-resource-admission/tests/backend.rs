@@ -316,9 +316,8 @@ async fn a_niced_execution_reports_the_niceness_the_kernel_shows() {
         ..Limits::default()
     };
     let execution = home
-        .launch(&database, &backend.wrap(home.sleeper(), &limits))
+        .launch_past_its_shims(&database, &backend.wrap(home.sleeper(), &limits))
         .await;
-    until_the_leader_runs_the_sleeper(&execution).await;
 
     let inspected = backend.inspect(&execution, &limits).await;
 
@@ -340,9 +339,8 @@ async fn an_idle_execution_reports_sched_idle_from_the_kernel() {
         ..Limits::default()
     };
     let execution = home
-        .launch(&database, &backend.wrap(home.sleeper(), &limits))
+        .launch_past_its_shims(&database, &backend.wrap(home.sleeper(), &limits))
         .await;
-    until_the_leader_runs_the_sleeper(&execution).await;
 
     let inspected = backend.inspect(&execution, &limits).await;
 
@@ -376,31 +374,6 @@ async fn freezing_a_process_group_stops_it_and_thawing_resumes_it() {
     assert_eq!(frozen, Effective::Value("frozen".to_owned()));
     assert_eq!(thawed, Effective::Value("thawed".to_owned()));
     home.stop(&database, &execution).await;
-}
-
-/// Waits until the execution's leader has exec'd the sleeper: until then it is a shim that
-/// has not applied its setting yet, which `inspect` reports as truly as the kernel shows it
-/// (#265: niceness -10, the CI runner's own, on macOS).
-async fn until_the_leader_runs_the_sleeper(execution: &Execution) {
-    let leader = execution
-        .process_group
-        .expect("a launched execution has a leader");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let output = std::process::Command::new("ps")
-            .args(["-o", "comm=", "-p", &leader.to_string()])
-            .output()
-            .expect("ps runs");
-        let command = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if command.rsplit('/').next() == Some("sleep") {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "leader {leader} still runs {command:?}, not the sleeper"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
 }
 
 /// A signal is delivered asynchronously: the state is read until it shows `wanted`, for at
