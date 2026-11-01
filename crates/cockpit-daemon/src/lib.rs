@@ -3,6 +3,7 @@
 mod agent;
 mod agent_context;
 mod approvals;
+mod bug_report_feed;
 mod bug_reports;
 mod coordination;
 mod error;
@@ -157,6 +158,7 @@ pub struct Daemon {
     accepting_agents: tokio::task::JoinHandle<()>,
     ticking: tokio::task::JoinHandle<()>,
     publishing: tokio::task::JoinHandle<()>,
+    publishing_drafts: tokio::task::JoinHandle<()>,
     retaining: tokio::task::JoinHandle<()>,
     sweeping: tokio::task::JoinHandle<()>,
     dispatching: tokio::task::JoinHandle<()>,
@@ -405,6 +407,12 @@ impl Instance {
                 )
             },
         ));
+        let drafts_database = Arc::clone(&database);
+        let publishing_drafts = tokio::spawn(supervisor::supervise(
+            "bug-report-feed",
+            faults.clone(),
+            move || bug_report_feed::publish_forever(Arc::clone(&drafts_database)),
+        ));
         let ticking = tokio::spawn(supervisor::supervise(
             "sessions-tick",
             faults.clone(),
@@ -442,6 +450,7 @@ impl Instance {
             accepting_agents,
             ticking,
             publishing,
+            publishing_drafts,
             retaining,
             sweeping,
             dispatching,
@@ -561,6 +570,7 @@ impl Drop for Daemon {
         self.accepting_agents.abort();
         self.ticking.abort();
         self.publishing.abort();
+        self.publishing_drafts.abort();
         self.retaining.abort();
         self.sweeping.abort();
         self.dispatching.abort();

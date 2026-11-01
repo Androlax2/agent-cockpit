@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::{App, Confirm, Focus, Overlay};
 use crate::board::Board;
+use crate::bug_form::{BugField, BugForm};
 use crate::form::{Field, Form, Place};
 use crate::pane::{Pane, Shown, Typing};
 
@@ -40,6 +41,10 @@ Approval pane (Tab moves between the list and the pane)
   i                  type a line for a command waiting for input; Enter sends it
   s                  stuck on the guide step: type why, Enter sends it
   Keys are ignored for a moment after a request appears or the pane takes focus.
+Bug reports
+  B                  the bug report drafts waiting for you; review and send them
+                     with cockpit bug-report show ID and send ID
+  b                  report a Cockpit bug (description, optional title and steps)
 Elsewhere
   L                  log of what the TUI did
   ?                  this help;  Esc closes it
@@ -51,6 +56,7 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         let (title, text) = match overlay {
             Overlay::Help => ("Help", HELP.to_owned()),
             Overlay::Log => ("Log", app.log().collect::<Vec<_>>().join("\n")),
+            Overlay::BugReports => ("Bug report drafts", bug_reports_text(app.board())),
         };
         frame.render_widget(
             Paragraph::new(text)
@@ -67,10 +73,11 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         Constraint::Length(1),
     ])
     .areas(area);
-    match (app.form(), app.workflows()) {
-        (Some(form), _) => draw_form(form, frame, main),
-        (None, Some(workflows)) => workflows.draw(frame, main),
-        (None, None) => draw_list(app, frame, main),
+    match (app.form(), app.bug_form(), app.workflows()) {
+        (Some(form), ..) => draw_form(form, frame, main),
+        (None, Some(form), _) => draw_bug_form(form, frame, main),
+        (None, None, Some(workflows)) => workflows.draw(frame, main),
+        (None, None, None) => draw_list(app, frame, main),
     }
     if pane_height > 0 {
         draw_pane(app, frame, pane, now);
@@ -106,6 +113,12 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line<'_>> = Vec::new();
     let mut selected_rows = None;
+    let drafts = board.bug_reports.len();
+    if drafts > 0 {
+        let text = format!("! Bug report drafts ({drafts}): B lists them");
+        push_wrapped(&mut lines, &text, width, CARD_INDENT, bold);
+    }
+    let drafts_rows = lines.len();
     for group in board.groups() {
         let project = group.project.unwrap_or("(no known project)");
         push_wrapped(&mut lines, project, width, "", bold);
@@ -133,7 +146,7 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         let text = format!("Finished ({finished}), folded: X exits them");
         push_wrapped(&mut lines, &text, width, "", bold);
     }
-    if lines.is_empty() {
+    if lines.len() == drafts_rows {
         let text = "No project yet: cockpit project add DIR";
         push_wrapped(&mut lines, text, width, "", Style::default());
     }
@@ -310,6 +323,64 @@ fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("New session")),
+        area,
+    );
+}
+
+/// The drafts, one line each, and how the owner reviews and sends them: in the CLI for now
+/// (#471); the designed view is Beta 3's (#465).
+fn bug_reports_text(board: &Board) -> String {
+    let drafts = board.bug_report_drafts();
+    if drafts.is_empty() {
+        return "No bug report draft waits for you.\n\nEsc, then b reports a Cockpit bug."
+            .to_owned();
+    }
+    let mut lines: Vec<String> = drafts
+        .iter()
+        .map(|draft| {
+            let mut line = format!("{}  {}  {}", draft.id, draft.origin.as_str(), draft.title);
+            if draft.occurrences > 1 {
+                line.push_str(&format!("  ({} times)", draft.occurrences));
+            }
+            if let Some(session) = &draft.session {
+                line.push_str(&format!("  from {session}"));
+            }
+            line
+        })
+        .collect();
+    lines.push(String::new());
+    lines.push("Review one: cockpit bug-report show ID".to_owned());
+    lines.push(
+        "Send it: cockpit bug-report send ID   Drop it: cockpit bug-report discard ID".to_owned(),
+    );
+    lines.join("\n")
+}
+
+fn draw_bug_form(form: &BugForm, frame: &mut Frame<'_>, area: Rect) {
+    let field = |name: BugField, label: &str, value: &str| {
+        let marker = if form.field == name { ">" } else { " " };
+        Line::from(format!("{marker} {label}: {value}"))
+    };
+    let mut lines = vec![
+        field(BugField::Description, "What went wrong", &form.description),
+        field(BugField::Title, "Title (optional)", &form.title),
+        field(BugField::Steps, "Steps (optional)", &form.steps),
+        Line::from(""),
+        Line::from("Tab next field  Enter draft it  Esc cancel"),
+        Line::from("It is a draft: nothing is sent until you run cockpit bug-report send."),
+    ];
+    if form.submitted.is_some() {
+        lines.push(Line::from("Drafting…"));
+    }
+    if let Some(problem) = &form.problem {
+        lines.push(Line::from(format!("Cannot draft: {problem}")));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Report a Cockpit bug"),
+        ),
         area,
     );
 }

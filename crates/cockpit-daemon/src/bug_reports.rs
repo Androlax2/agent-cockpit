@@ -598,7 +598,7 @@ fn filed_view(filed: &Filed) -> BugFiledView {
     }
 }
 
-fn view(report: &Report, with_issue: bool) -> BugReportView {
+pub(crate) fn view(report: &Report, with_issue: bool) -> BugReportView {
     let issue = with_issue.then(|| {
         let issue = cockpit_bug_reports::issue(report);
         BugIssueView {

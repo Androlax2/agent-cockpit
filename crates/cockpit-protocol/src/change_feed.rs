@@ -62,6 +62,8 @@ pub enum EntityKind {
     Session,
     Execution,
     Checkout,
+    /// A bug report draft waiting for the owner (#471); sent and discarded ones are retracted.
+    BugReport,
     /// A kind this version does not know, kept as sent so a client can skip or show it.
     /// Never build one with a known name: it would read back as the known variant.
     #[serde(untagged)]

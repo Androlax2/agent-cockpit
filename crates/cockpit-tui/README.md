@@ -5,7 +5,8 @@ through cockpit-client.
 
 Deliberately basic until M6 (decision 17, report 05): the session list grouped by project,
 open, next needing you, new session (`N`, the one form), restart, exit, the approval pane,
-the workflow view (`F`, #330), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
+the workflow view (`F`, #330), bug report drafts (one needs-you card, the `B` list and the `b`
+form, #471; review and send stay in `cockpit bug-report`), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
 capabilities only; no key reaches them here.
 
 ## Dependency edges
@@ -28,7 +29,7 @@ detaching the terminal leaves everything running.
 
 - **Never waits.** Keys are read on their own thread (presses only, report 05); each request
   runs in its own task on one shared connection; answers update the view as they arrive.
-- **State.** Sessions and checkouts come from the change feed (#199): [`follow_feed`]
+- **State.** Sessions, checkouts and bug report drafts come from the change feed (#199, #471): [`follow_feed`]
   subscribes on a connection of its own and [`Board`] applies each batch whole or refuses it
   whole; the cursor advances only once a batch is applied. A lost feed or a refused batch
   starts again from a snapshot (after 1 s, doubling to 30 s) and shows on the status line,
