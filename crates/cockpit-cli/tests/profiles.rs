@@ -439,3 +439,20 @@ fn doctor_names_the_active_profile_and_every_other_installation_it_sees() {
         "{printed}"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_install_of_profile_next_beside_a_legacy_unit_leaves_that_unit_alone() {
+    let home = Home::new();
+    fs::create_dir_all(home.unit_dir()).unwrap();
+    fs::write(home.unit_dir().join("cockpit.service"), LEGACY_UNIT).unwrap();
+
+    succeeded(&home.cockpit(&["--profile", "next", "daemon", "install"]));
+
+    assert!(home.unit_of("cockpit-next").is_file());
+    assert_eq!(
+        fs::read_to_string(home.unit_dir().join("cockpit.service")).unwrap(),
+        LEGACY_UNIT
+    );
+    assert!(!home.service_manager_log().contains("cockpit.service"));
+}

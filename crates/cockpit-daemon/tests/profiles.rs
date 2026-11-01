@@ -80,9 +80,10 @@ fn assert_cockpit_built(cockpit: &Path) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_of_a_profile_reports_to_its_daemon_and_touches_no_other_profile() {
+async fn an_agent_of_a_profile_reports_to_its_daemon_and_leaves_the_legacy_layout_untouched() {
     assert_cockpit_built(&cockpit_program());
     let home = Home::new();
+    let legacy = legacy_layout(&home);
     // `next` is neither this build's profile nor the default, so the agent's `cockpit` (this
     // build) reaches the `next` daemon only through what its launch carries.
     let _next = home.start_profile("next");
@@ -95,11 +96,46 @@ async fn an_agent_of_a_profile_reports_to_its_daemon_and_touches_no_other_profil
     assert_eq!(
         profile_entries(&home),
         [
+            "config/cockpit",
+            "run/cockpit",
             "run/cockpit-next",
+            "state/cockpit",
             "state/cockpit-next",
             "tmux server cockpit-next",
         ]
     );
+    for (path, text) in legacy {
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            text,
+            "{}",
+            path.display()
+        );
+    }
+}
+
+/// The legacy Cockpit's files in `home` (#134), with what each holds.
+fn legacy_layout(home: &Home) -> Vec<(std::path::PathBuf, &'static str)> {
+    let files = [
+        (
+            "config/cockpit/config.toml",
+            "# the legacy Cockpit's settings\n",
+        ),
+        (
+            "state/cockpit/sessions.json",
+            "{\"sessions\": [\"legacy\"]}\n",
+        ),
+        ("run/cockpit/ipc.sock.lock", "legacy\n"),
+    ];
+    files
+        .into_iter()
+        .map(|(relative, text)| {
+            let path = home.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            (path, text)
+        })
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]
