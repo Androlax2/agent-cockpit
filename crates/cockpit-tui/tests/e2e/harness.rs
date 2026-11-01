@@ -457,17 +457,7 @@ impl Cockpit {
             .stderr(Stdio::null())
             .spawn()
             .expect("a control-mode client starts");
-        let stdout = watcher.stdout.take().expect("stdout is piped");
-        let (writes, written) = mpsc::channel();
-        std::thread::spawn(move || {
-            // Bytes, not lines of text: tmux passes the pane's bytes through unchecked.
-            for line in BufReader::new(stdout).split(b'\n') {
-                let Ok(line) = line else { return };
-                if line.starts_with(b"%output") && writes.send(()).is_err() {
-                    return;
-                }
-            }
-        });
+        let written = announced_writes(watcher.stdout.take().expect("stdout is piped"));
         self.terminal = Some(Terminal {
             socket,
             config,
@@ -705,34 +695,47 @@ impl Cockpit {
         self.private_tmux(&["send-keys", "-t", &target, "Enter"]);
     }
 
-    /// Has `session`'s agent signal tmux channel `channel` at its prompt, and waits until it
-    /// has: everything it was told before has run. The agent names the server's socket by
-    /// path, as it does not share the daemon's tmux directory.
-    pub fn agent_reaches(&self, session: &str, channel: &str) {
-        let socket = self.private_tmux(&["display-message", "-p", "#{socket_path}"]);
-        let mut waiter = self
+    /// Waits until `condition` holds for `session`'s screen as its agent's pane holds it,
+    /// reading it again after each write a `read-only,ignore-size` control-mode client of
+    /// that session announces; returns that screen. The client leaves before this returns,
+    /// and it never sized the window.
+    pub fn wait_for_agent_screen(
+        &self,
+        session: &str,
+        what: &str,
+        condition: impl Fn(&[String]) -> bool,
+    ) -> Vec<String> {
+        let target = format!("={session}:");
+        let mut watcher = self
             .command(Path::new("tmux"))
-            .args(["-L", "cockpit", "wait-for", channel])
-            .stdin(Stdio::null())
+            .args(["-L", "cockpit", "-C", "attach-session", "-t", &target])
+            .args(["-f", "read-only,ignore-size"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
-            .expect("tmux runs");
-        self.agent_does(
-            session,
-            &format!("!tmux -S '{}' wait-for -S {channel}", socket.trim_end()),
-        );
-        // On a timeout the test fails and its Drop kills the server, which ends the waiter.
-        let (exited, exit) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = exited.send(waiter.wait());
-        });
-        let signalled = exit
-            .recv_timeout(GENEROUS)
-            .is_ok_and(|status| status.is_ok_and(|status| status.success()));
-        assert!(
-            signalled,
-            "waited {GENEROUS:?} for {session}'s agent to signal {channel}\n{}",
-            self.daemon_stderr()
-        );
+            .expect("a control-mode client starts");
+        let written = announced_writes(watcher.stdout.take().expect("stdout is piped"));
+        let deadline = Instant::now() + GENEROUS;
+        let outcome = loop {
+            while written.try_recv().is_ok() {}
+            let screen = self.agent_screen(session);
+            if condition(&screen) {
+                break Ok(screen);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if let Err(error) = written.recv_timeout(left) {
+                break Err((error, screen));
+            }
+        };
+        let _ = watcher.kill();
+        let _ = watcher.wait();
+        outcome.unwrap_or_else(|(error, screen)| {
+            panic!(
+                "{error:?} waiting for {session}'s screen: {what}\n{screen:#?}\n{}",
+                self.daemon_stderr()
+            )
+        })
     }
 
     /// `session`'s window size on the daemon's tmux, as `<columns>x<rows>`.
@@ -904,6 +907,21 @@ struct Terminal {
     /// Held open: a control-mode client exits when its input ends.
     _watcher_input: Option<ChildStdin>,
     written: Receiver<()>,
+}
+
+/// One message per `%output` line a control-mode client prints, until it exits.
+fn announced_writes(stdout: std::process::ChildStdout) -> Receiver<()> {
+    let (writes, written) = mpsc::channel();
+    std::thread::spawn(move || {
+        // Bytes, not lines of text: tmux passes the pane's bytes through unchecked.
+        for line in BufReader::new(stdout).split(b'\n') {
+            let Ok(line) = line else { return };
+            if line.starts_with(b"%output") && writes.send(()).is_err() {
+                return;
+            }
+        }
+    });
+    written
 }
 
 /// The manager session's panes, in tmux's order.

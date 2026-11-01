@@ -54,15 +54,16 @@ fn the_viewer_shows_every_line_after_one_wider_than_itself() {
     let session = cockpit.session_from_cli();
     cockpit.wait_for(&session);
     cockpit.agent_does(&session, "!printf 'w%.0s' $(seq 200); echo ' end'");
-    cockpit.agent_reaches(&session, "wide-line-printed");
-    cockpit.press(&["Enter"]);
-    let agent_screen = cockpit.agent_screen(&session);
-    assert!(
-        agent_screen
+    // The keys may reach the agent before its first prompt, so the line may share a row
+    // with `fake> `.
+    let wider_than_the_viewer = "w".repeat(121);
+    cockpit.wait_for_agent_screen(&session, "the wide line, before any viewer", |screen| {
+        screen
             .iter()
-            .any(|row| row.len() > 120 && row.bytes().all(|byte| byte == b'w')),
-        "the agent printed the wide line: {agent_screen:#?}"
-    );
+            .any(|row| row.contains(&wider_than_the_viewer))
+            && screen.last().is_some_and(|row| row.starts_with("fake>"))
+    });
+    cockpit.press(&["Enter"]);
     cockpit.wait_until("the agent's screen, row for row, in the viewer", |screen| {
         let viewer = trimmed_rows(screen.lines().map(|line| {
             line.char_indices()
