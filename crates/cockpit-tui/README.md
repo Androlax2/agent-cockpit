@@ -64,3 +64,16 @@ detaching the terminal leaves everything running.
   and every key counted as a named command.
 - `tests/form.rs`: the `N` form, from a fresh install's one project to `session-new`.
 - `tests/usage.rs`: each key's command reaches the TUI's log by name.
+- `tests/e2e/` (#300): the TUI end to end, the way Playwright drives a browser. A real
+  daemon on a scratch home under `/tmp`, `cockpit tui` attached in a pane of a test-owned
+  tmux server (the owner's terminal), a fake `claude` that reports through the agent channel
+  and runs `!`-prefixed lines as commands. `press`, `type_text`, `screen`, `wait_for`,
+  `click` (the owner's click on the list or the viewer) and `snapshot` (files under
+  `tests/e2e/snapshots/`, recorded with `COCKPIT_E2E_UPDATE=1`). A screen wait reads the
+  screen again after each write a control-mode client reports; a state wait follows the
+  change feed; neither sleeps. Each module is a section of a live acceptance guide
+  (`docs/acceptance/m1.md`, `m1-idle.md`); idle sleep runs on the daemon crate's
+  `cockpit-e2e-daemon` example with a 3-second window. Every later guide adds its sections
+  here, and a finding from a live walk gets a failing test here before its fix. Needs tmux;
+  CI runs it on Linux and macOS, without the modules that need the agent channel
+  (`ask`, `idle`, `needs_you`) until it reads process trees there (#336).

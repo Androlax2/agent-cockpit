@@ -144,6 +144,15 @@ not share code.
   never when the client stopped waiting. Blocking work uses `spawn_blocking` inside the job.
 - The accept loop is a supervised worker: a panic is logged and the loop restarted.
 
+## The binary and the tests' daemon
+
+`src/main.rs` reads the arguments and calls [`serve()`], which loads the owner's
+configuration, finds Claude Code and its hook bridge in the installation's directory, and runs
+the daemon. `examples/cockpit-e2e-daemon.rs` calls the same [`serve()`] with a shorter idle
+window and session tick, so the TUI's end-to-end tests (#300) see a session fall asleep in
+seconds without lowering the configuration's 30-minute floor. It is an example, so Cargo
+builds it only when asked and no release installs it.
+
 ## Tests
 
 - `tests/startup.rs`: the binary on a clean home, the second daemon, private modes, the
