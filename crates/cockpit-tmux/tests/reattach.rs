@@ -4,7 +4,6 @@
 mod common;
 
 use std::process::Command;
-use std::time::Instant;
 
 use cockpit_tmux::{CaptureFrame, CaptureOptions, CaptureStream};
 use common::{GENEROUS, TestServer};
@@ -20,22 +19,11 @@ fn parent_pid(pid: u32) -> u32 {
         .expect("a parent pid")
 }
 
-/// The stream's first frame other than output. The ticking pane can write between the
-/// observer's attach and tmux running the snapshot command, so output may come first; the
-/// snapshot taken after it already shows it.
-fn first_frame_after_output(stream: &mut CaptureStream) -> CaptureFrame {
-    let deadline = Instant::now() + GENEROUS;
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            !left.is_zero(),
-            "only output within {GENEROUS:?}, no other frame"
-        );
-        match stream.next_frame(left) {
-            Ok(Some(CaptureFrame::Output { .. })) => {}
-            Ok(Some(frame)) => return frame,
-            other => panic!("expected a frame within {GENEROUS:?}, got {other:?}"),
-        }
+/// The stream's first frame, which names the frame it got instead of a snapshot.
+fn first_frame(stream: &mut CaptureStream) -> CaptureFrame {
+    match stream.next_frame(GENEROUS) {
+        Ok(Some(frame)) => frame,
+        other => panic!("expected a frame within {GENEROUS:?}, got {other:?}"),
     }
 }
 
@@ -67,10 +55,11 @@ fn a_new_handle_finds_the_sessions_and_observes_them_again() {
             .server
             .capture_stream(&session, CaptureOptions::default())
             .expect("opens");
-        assert!(matches!(
-            first_frame_after_output(&mut first_stream),
-            CaptureFrame::Snapshot { .. }
-        ));
+        let snapshot = first_frame(&mut first_stream);
+        assert!(
+            matches!(snapshot, CaptureFrame::Snapshot { .. }),
+            "{snapshot:?}"
+        );
     }
 
     let restarted = fixture.reopen();
@@ -81,7 +70,7 @@ fn a_new_handle_finds_the_sessions_and_observes_them_again() {
     let mut stream = restarted
         .capture_stream(&session, CaptureOptions::default())
         .expect("reattaches");
-    let snapshot = first_frame_after_output(&mut stream);
+    let snapshot = first_frame(&mut stream);
     assert!(
         matches!(snapshot, CaptureFrame::Snapshot { pane: ref p, .. } if *p == pane),
         "{snapshot:?}"

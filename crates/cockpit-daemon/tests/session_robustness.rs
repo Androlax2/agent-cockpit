@@ -39,8 +39,16 @@ impl Home {
         self.dir.path().canonicalize().unwrap()
     }
 
-    fn launches(&self) -> Vec<AgentLaunch> {
+    /// Every launch of `session` the fake agent logged, once it logged `count`.
+    async fn launches_of(&self, session: &str, count: usize) -> Vec<AgentLaunch> {
+        common::once_logged(count, || self.logged_launches_of(session)).await
+    }
+
+    fn logged_launches_of(&self, session: &str) -> Vec<AgentLaunch> {
         FakeProvider::launches(&self.path().join("agent.log"))
+            .into_iter()
+            .filter(|launch| launch.session == session)
+            .collect()
     }
 
     async fn start(&self) -> Daemon {
@@ -299,7 +307,7 @@ async fn resume_is_refused_while_another_session_runs_its_conversation_and_names
         listed(&client, &first.id).await.state,
         SessionStateView::Ended
     );
-    assert_eq!(home.launches().len(), 2);
+    common::still_logged(1, || home.logged_launches_of(&first.id)).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -328,7 +336,7 @@ async fn resume_is_refused_while_a_failed_session_s_agent_of_its_conversation_is
         "{}",
         refused.message
     );
-    assert!(is_alive(home.launches()[1].pid));
+    assert!(is_alive(home.launches_of(&second.id, 1).await[0].pid));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -349,7 +357,10 @@ async fn resume_reopens_the_conversation_once_the_other_session_holding_it_ended
     .await;
 
     assert_eq!(resumed.state, SessionStateView::Running);
-    assert_eq!(home.launches()[2].conversation, "conversation-1");
+    assert_eq!(
+        home.launches_of(&first.id, 2).await[1].conversation,
+        "conversation-1"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -366,6 +377,7 @@ async fn restart_from_a_state_an_error_left_unfinished_relaunches_the_conversati
         let client = connect(&daemon).await;
         let root = home.project(&client).await;
         let started = new_session(&client, &root).await;
+        home.launches_of(&started.id, 1).await;
         home.store(
             &format!("UPDATE sessions SET {status} WHERE id = ?1"),
             &started.id,
@@ -382,8 +394,7 @@ async fn restart_from_a_state_an_error_left_unfinished_relaunches_the_conversati
 
         assert_eq!(restarted.state, SessionStateView::Running, "{status}");
         assert_eq!(restarted.launch.unwrap().kind, LaunchKindView::Restart);
-        let launches = home.launches();
-        assert_eq!(launches.len(), 2, "{status}");
+        let launches = home.launches_of(&started.id, 2).await;
         assert!(!is_alive(launches[0].pid), "{status}");
         assert_eq!(
             (launches[1].mode.as_str(), launches[1].conversation.as_str()),
@@ -401,7 +412,7 @@ async fn restart_of_a_session_whose_agent_died_unnoticed_relaunches_it() {
     let root = home.project(&client).await;
     let started = new_session(&client, &root).await;
     Process::new("kill")
-        .arg(home.launches()[0].pid.to_string())
+        .arg(home.launches_of(&started.id, 1).await[0].pid.to_string())
         .status()
         .unwrap();
 
@@ -414,8 +425,7 @@ async fn restart_of_a_session_whose_agent_died_unnoticed_relaunches_it() {
     .await;
 
     assert_eq!(restarted.state, SessionStateView::Running);
-    let launches = home.launches();
-    assert_eq!(launches.len(), 2);
+    let launches = home.launches_of(&started.id, 2).await;
     assert!(is_alive(launches[1].pid));
 }
 
@@ -517,6 +527,7 @@ async fn end_finished_ends_the_finished_sessions_and_keeps_the_others() {
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let finished = new_session(&client, &root).await;
+    let finished_agent = home.launches_of(&finished.id, 1).await[0].pid;
     let working = new_session(&client, &root).await;
     let done = home.session_takes_an_item(&client, &finished.id).await;
     home.session_finishes(&client, &finished.id, done).await;
@@ -538,7 +549,7 @@ async fn end_finished_ends_the_finished_sessions_and_keeps_the_others() {
         listed(&client, &working.id).await.state,
         SessionStateView::Running
     );
-    assert!(!is_alive(home.launches()[0].pid));
+    assert!(!is_alive(finished_agent));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -649,6 +660,8 @@ async fn sharing_one_conversation(
     let root = home.project(client).await;
     let first = new_session(client, &root).await;
     let second = new_session(client, &root).await;
+    home.launches_of(&first.id, 1).await;
+    home.launches_of(&second.id, 1).await;
     home.store(
         &format!("UPDATE sessions SET conversation = 'conversation-1'{more} WHERE id = ?1"),
         &second.id,

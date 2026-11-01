@@ -73,27 +73,16 @@ impl Home {
     /// be missing; an agent stopped before it logs never does, so a test waits for a launch
     /// before it stops that agent or restarts the daemon (#231, #235).
     async fn launches(&self, count: usize) -> Vec<AgentLaunch> {
-        let deadline = Instant::now() + GENEROUS;
-        loop {
-            let launches = self.logged_launches();
-            assert!(
-                launches.len() <= count,
-                "expected {count} launches, the agent logged {launches:?}"
-            );
-            if launches.len() == count {
-                return launches;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the agent logged {} of {count} launches",
-                launches.len()
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        common::once_logged(count, || self.logged_launches()).await
     }
 
-    /// The launches logged so far, without waiting: for checks that no further launch
-    /// happened.
+    /// The `count` launches logged, once no further one came within [`common::SETTLE`]: for
+    /// checks that no further launch happened.
+    async fn still_logged(&self, count: usize) -> Vec<AgentLaunch> {
+        common::still_logged(count, || self.logged_launches()).await
+    }
+
+    /// The launches logged so far, without waiting.
     fn logged_launches(&self) -> Vec<AgentLaunch> {
         FakeProvider::launches(&self.agent_log())
     }
@@ -516,7 +505,7 @@ async fn a_directory_in_no_registered_project_is_refused() {
     .await;
 
     assert_eq!(refusal_code(refused), ErrorCode::NotFound);
-    assert!(home.logged_launches().is_empty());
+    home.still_logged(0).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -628,7 +617,7 @@ async fn waking_a_running_session_is_refused_as_a_conflict() {
     .await;
 
     assert_eq!(refusal_code(refused), ErrorCode::Conflict);
-    assert_eq!(home.logged_launches().len(), 1);
+    home.still_logged(1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -820,7 +809,7 @@ async fn without_tmux_the_daemon_starts_and_refuses_new_sessions_naming_tmux() {
     let error = refusal(refused);
     assert_eq!(error.code, ErrorCode::Refused);
     assert!(error.message.contains("tmux"), "{}", error.message);
-    assert!(home.logged_launches().is_empty());
+    home.still_logged(0).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -856,7 +845,7 @@ async fn without_tmux_waking_is_refused_and_the_session_stays_asleep() {
         sessions(&client, false).await[0].state,
         SessionStateView::Asleep
     );
-    assert_eq!(home.logged_launches().len(), 1);
+    home.still_logged(1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -877,7 +866,7 @@ async fn without_tmux_a_running_session_is_left_unrestored_until_tmux_is_back() 
     let left = sessions(&client, false).await;
     assert_eq!(left[0].launch, started.launch);
     assert_eq!(left[0].state, SessionStateView::Running);
-    assert_eq!(home.logged_launches().len(), 1);
+    home.still_logged(1).await;
     assert!(is_alive(first[0].pid));
 }
 
@@ -1091,7 +1080,7 @@ async fn on_daemon_start_a_session_whose_agent_still_runs_keeps_it() {
     let kept = sessions(&client, false).await;
     assert_eq!(kept[0].launch, started.launch);
     assert_eq!(kept[0].state, SessionStateView::Running);
-    assert_eq!(home.logged_launches().len(), 1);
+    home.still_logged(1).await;
     assert!(is_alive(first[0].pid));
 }
 
@@ -1118,7 +1107,7 @@ async fn a_failed_restore_is_reported_and_not_retried() {
         sessions(&client, false).await[0].state,
         SessionStateView::Failed
     );
-    assert_eq!(home.logged_launches().len(), 1);
+    home.still_logged(1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1169,7 +1158,7 @@ async fn an_interrupted_restart_whose_relaunch_fails_on_start_is_left_failed() {
         sessions(&client, false).await[0].state,
         SessionStateView::Failed
     );
-    assert_eq!(home.logged_launches().len(), 1, "never launched again");
+    home.still_logged(1).await; // never launched again
 }
 
 #[tokio::test(flavor = "multi_thread")]

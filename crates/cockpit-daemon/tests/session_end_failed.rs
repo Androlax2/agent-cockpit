@@ -36,8 +36,12 @@ impl Home {
         self.dir.path().canonicalize().unwrap()
     }
 
-    fn launches(&self) -> Vec<AgentLaunch> {
-        FakeProvider::launches(&self.path().join("agent.log"))
+    /// Every launch the fake agent logged, once it logged `count`.
+    async fn launches(&self, count: usize) -> Vec<AgentLaunch> {
+        common::once_logged(count, || {
+            FakeProvider::launches(&self.path().join("agent.log"))
+        })
+        .await
     }
 
     async fn start(&self) -> Daemon {
@@ -195,7 +199,7 @@ async fn session_left_in(assignment: &str) -> LeftBehind {
     )
     .await;
     home.store_state(assignment, &started.id).await;
-    let agent = home.launches()[0].pid;
+    let agent = home.launches(1).await[0].pid;
     assert!(is_alive(agent));
     LeftBehind {
         client,
