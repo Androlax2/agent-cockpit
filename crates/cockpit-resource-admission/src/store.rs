@@ -15,9 +15,10 @@ use crate::{
 
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "resource-admission",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE resource_settings (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE resource_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 profile TEXT NOT NULL CHECK (profile IN ('normal', 'foreground')),
                 queue_paused INTEGER NOT NULL CHECK (queue_paused IN (0, 1)),
@@ -53,7 +54,52 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             );
             CREATE INDEX resource_reservations_occupying
                 ON resource_reservations (id) WHERE state <> 'released';",
-    }],
+        },
+        // #386: a reservation its caller holds and releases, beside the ones an execution's
+        // end releases. Its expiry is never reached.
+        Migration {
+            version: 2,
+            sql: "CREATE TABLE resource_reservations_held (
+                id INTEGER PRIMARY KEY,
+                label TEXT NOT NULL CHECK (label <> ''),
+                workload TEXT NOT NULL CHECK (workload IN
+                    ('agent-turn', 'delivery', 'approval', 'build', 'test', 'container')),
+                cpu_millis INTEGER NOT NULL CHECK (cpu_millis >= 0),
+                memory_mib INTEGER NOT NULL CHECK (memory_mib >= 0),
+                cpu_weight INTEGER CHECK (cpu_weight BETWEEN 1 AND 10000),
+                cpu_quota_percent INTEGER CHECK (cpu_quota_percent > 0),
+                memory_max_mib INTEGER CHECK (memory_max_mib > 0),
+                tasks_max INTEGER CHECK (tasks_max > 0),
+                idle_scheduling INTEGER NOT NULL CHECK (idle_scheduling IN (0, 1)),
+                nice INTEGER CHECK (nice BETWEEN 0 AND 19),
+                required TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('reserved', 'running', 'held', 'released')),
+                execution INTEGER UNIQUE,
+                reserved_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                checkpoint_requested_at INTEGER,
+                released_at INTEGER,
+                released_reason TEXT CHECK (released_reason IN ('expired', 'withdrawn', 'ended')),
+                CHECK ((state = 'released') = (released_reason IS NOT NULL)),
+                CHECK ((state = 'released') = (released_at IS NOT NULL)),
+                CHECK (state <> 'running' OR execution IS NOT NULL),
+                CHECK (state NOT IN ('reserved', 'held') OR execution IS NULL)
+            );
+            INSERT INTO resource_reservations_held (id, label, workload, cpu_millis, memory_mib,
+                    cpu_weight, cpu_quota_percent, memory_max_mib, tasks_max, idle_scheduling,
+                    nice, required, state, execution, reserved_at, expires_at,
+                    checkpoint_requested_at, released_at, released_reason)
+                SELECT id, label, workload, cpu_millis, memory_mib, cpu_weight,
+                    cpu_quota_percent, memory_max_mib, tasks_max, idle_scheduling, nice,
+                    required, state, execution, reserved_at, expires_at,
+                    checkpoint_requested_at, released_at, released_reason
+                FROM resource_reservations;
+            DROP TABLE resource_reservations;
+            ALTER TABLE resource_reservations_held RENAME TO resource_reservations;
+            CREATE INDEX resource_reservations_occupying
+                ON resource_reservations (id) WHERE state <> 'released';",
+        },
+    ],
 };
 
 /// Decides `request` and, when it fits, commits its reservation in `write`, so the decision
@@ -65,12 +111,47 @@ pub async fn admit(
     support: &[ControlSupport],
     now: i64,
 ) -> Result<Admission, Error> {
+    let expires_at =
+        now.saturating_add(i64::try_from(policy.unstarted_expiry.as_secs()).unwrap_or(i64::MAX));
+    reserve(write, request, policy, support, now, "reserved", expires_at).await
+}
+
+/// Decides `request` as [`admit`] does and, when it fits, commits a reservation that charges
+/// the budget until [`release_held`] gives it back: for work no execution of its own
+/// carries, so no observed end can release it (#386). It never expires.
+pub async fn hold(
+    write: &WriteTransaction<'_>,
+    request: &AdmissionRequest,
+    policy: &Policy,
+    support: &[ControlSupport],
+    now: i64,
+) -> Result<Admission, Error> {
+    reserve(write, request, policy, support, now, "held", i64::MAX).await
+}
+
+/// Gives back a reservation [`hold`] took, once its work ended.
+pub async fn release_held(
+    write: &WriteTransaction<'_>,
+    id: ReservationId,
+    now: i64,
+) -> Result<(), Error> {
+    require_state(write, id, "held").await?;
+    release(write, id, "held", ReleaseReason::Ended, now).await
+}
+
+async fn reserve(
+    write: &WriteTransaction<'_>,
+    request: &AdmissionRequest,
+    policy: &Policy,
+    support: &[ControlSupport],
+    now: i64,
+    state: &str,
+    expires_at: i64,
+) -> Result<Admission, Error> {
     if let Verdict::Held(hold) = check(write, request, policy, support, now).await? {
         return Ok(Admission::Held(hold));
     }
     let limits = request.limits;
-    let expires_at =
-        now.saturating_add(i64::try_from(policy.unstarted_expiry.as_secs()).unwrap_or(i64::MAX));
     let next = write
         .prepare("SELECT coalesce(max(id), 0) + 1 FROM resource_reservations")
         .await?
@@ -82,7 +163,7 @@ pub async fn admit(
             "INSERT INTO resource_reservations (id, label, workload, cpu_millis, memory_mib,
                  cpu_weight, cpu_quota_percent, memory_max_mib, tasks_max, idle_scheduling, nice,
                  required, state, reserved_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'reserved', ?13, ?14)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             cockpit_turso::sql::params![
                 id.0,
                 request.label.as_str(),
@@ -96,6 +177,7 @@ pub async fn admit(
                 i64::from(limits.idle_scheduling),
                 limits.nice.map(stored).transpose()?,
                 required_text(&request.required),
+                state,
                 now,
                 expires_at,
             ],
@@ -443,6 +525,7 @@ fn reservation_from_row(row: &Row) -> Result<Reservation, Error> {
         ("running", Some(execution), None) => ReservationState::Running {
             execution: ExecutionId(execution),
         },
+        ("held", None, None) => ReservationState::Held,
         ("released", _, Some(reason)) => ReservationState::Released {
             reason: ReleaseReason::parse(reason)
                 .ok_or_else(|| invalid(format!("release reason {reason:?}")))?,

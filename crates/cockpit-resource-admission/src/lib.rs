@@ -15,6 +15,7 @@ pub use model::{
     Resource, Settings, Swept, Verdict, Workload,
 };
 pub use store::{
-    MIGRATIONS, admit, bind_execution, check, in_use, release_ended, request_checkpoint,
-    reservation, reservations, set_profile, set_queue_paused, settings, sweep, withdraw,
+    MIGRATIONS, admit, bind_execution, check, hold, in_use, release_ended, release_held,
+    request_checkpoint, reservation, reservations, set_profile, set_queue_paused, settings, sweep,
+    withdraw,
 };

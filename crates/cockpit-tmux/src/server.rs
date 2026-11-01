@@ -468,6 +468,40 @@ impl Server {
         client
     }
 
+    /// Types `keys` into `pane`, in order, as one tmux command list: tmux parses the whole
+    /// list before it runs any of it, so a refused list types nothing. Text is typed
+    /// literally (`send-keys -l`), never read as key names.
+    pub fn send_keys(&self, pane: &PaneId, keys: &[Keystroke]) -> Result<(), Error> {
+        let mut arguments = Vec::new();
+        for key in keys {
+            if !arguments.is_empty() {
+                arguments.push(";".into());
+            }
+            arguments.extend(words(&["send-keys", "-t", pane.as_str()]));
+            match key {
+                Keystroke::Text(text) => {
+                    arguments.extend(words(&["-l", "--"]));
+                    arguments.push(literal_argument(text).into());
+                }
+                Keystroke::Enter => arguments.push("Enter".into()),
+                Keystroke::Escape => arguments.push("Escape".into()),
+                Keystroke::Control(letter) if letter.is_ascii_lowercase() => {
+                    arguments.push(format!("C-{letter}").into());
+                }
+                Keystroke::Control(letter) => {
+                    return Err(Error::InvalidArgument {
+                        what: "control key (a lower-case ASCII letter)",
+                        value: letter.to_string(),
+                    });
+                }
+            }
+        }
+        if arguments.is_empty() {
+            return Ok(());
+        }
+        self.run(&arguments).map(drop)
+    }
+
     /// A pane's visible screen plus up to `history_lines` lines above it, with its colors
     /// and attributes as escape sequences. Untrusted display data: never read state from it.
     pub fn capture(&self, pane: &PaneId, history_lines: u32) -> Result<Vec<u8>, Error> {
@@ -489,6 +523,26 @@ impl Server {
                 arguments,
                 output: printed.into_owned(),
             })
+    }
+}
+
+/// One step of what [`Server::send_keys`] types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keystroke<'text> {
+    /// Typed character for character.
+    Text(&'text str),
+    Enter,
+    Escape,
+    /// The control chord of a lower-case ASCII letter, such as Ctrl-X.
+    Control(char),
+}
+
+/// tmux reads an argument ending in `;` as the end of a command, and one ending in `\;` as
+/// a literal `;`, wherever it appears: a text's final `;` is escaped so it is typed.
+fn literal_argument(text: &str) -> String {
+    match text.strip_suffix(';') {
+        Some(rest) => format!("{rest}\\;"),
+        None => text.to_owned(),
     }
 }
 

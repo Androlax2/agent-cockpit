@@ -4,19 +4,23 @@
 //! message, pid, launch token), then sleeps until stopped (`FAKE_AGENT_SLEEP` seconds,
 //! 600 by default). A test may give it more capabilities ([`FakeProvider::reporting`]) and a
 //! program its agent runs, in its own process tree, before it sleeps
-//! ([`FakeProvider::running`]).
+//! ([`FakeProvider::running`]), or have it read the messages typed to it
+//! ([`FakeProvider::reading_messages`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    Capabilities, Capability, Conversation, ConversationId, LaunchCommand, LaunchRequest,
-    Provenance, Provider, ProviderError, ProviderName,
+    Action, Activity, Capabilities, Capability, Conversation, ConversationId, Key, LaunchCommand,
+    LaunchRequest, Provenance, Provider, ProviderError, ProviderName, TerminalInput,
 };
 
 const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s\n' "$COCKPIT_SESSION" "$1" "$2" "${3:-}" "$$" "$COCKPIT_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
 if [ -n "${FAKE_AGENT_RUN:-}" ]; then "$FAKE_AGENT_RUN"; fi
+if [ -n "${FAKE_AGENT_MESSAGES:-}" ]; then
+  while IFS= read -r line; do printf '%s %s\n' "$COCKPIT_SESSION" "$line" >> "$FAKE_AGENT_MESSAGES"; done
+fi
 exec sleep "${FAKE_AGENT_SLEEP:-600}""#;
 
 pub struct FakeProvider {
@@ -26,6 +30,7 @@ pub struct FakeProvider {
     names_conversation: bool,
     reported: Capabilities,
     agent_program: Option<PathBuf>,
+    messages: Option<PathBuf>,
     conversations: AtomicUsize,
 }
 
@@ -41,6 +46,7 @@ impl FakeProvider {
             names_conversation: true,
             reported: Capabilities::none(),
             agent_program: None,
+            messages: None,
             conversations: AtomicUsize::new(logged),
         }
     }
@@ -68,6 +74,25 @@ impl FakeProvider {
     pub fn running(mut self, program: PathBuf) -> FakeProvider {
         self.agent_program = Some(program);
         self
+    }
+
+    /// Reports `submit`, as discovered: a message is typed as its text then Enter, while the
+    /// agent waits or works, and refused while it needs the owner or its activity is unknown.
+    /// Its agent appends each line it reads to `log` as `<session> <line>`
+    /// ([`FakeProvider::messages`]).
+    pub fn reading_messages(mut self, log: PathBuf) -> FakeProvider {
+        self.messages = Some(log);
+        self.reporting(Capability::Submit)
+    }
+
+    /// Every message the fake agents read into `log`, as (session, line), oldest first.
+    pub fn messages(log: &Path) -> Vec<(String, String)> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(session, message)| (session.to_owned(), message.to_owned()))
+            .collect()
     }
 
     /// Every launch the fake agent logged in `log`, oldest first; none when it has none.
@@ -124,12 +149,38 @@ impl Provider for FakeProvider {
         if let Some(program) = &self.agent_program {
             environment.push(("FAKE_AGENT_RUN".into(), program.clone().into()));
         }
+        if let Some(log) = &self.messages {
+            environment.push(("FAKE_AGENT_MESSAGES".into(), log.clone().into()));
+        }
         Ok(LaunchCommand {
             program: "/bin/sh".into(),
             arguments,
             environment,
             conversation: self.names_conversation.then_some(conversation),
         })
+    }
+
+    fn input(
+        &self,
+        action: &Action<'_>,
+        activity: Option<Activity>,
+    ) -> Result<Vec<TerminalInput>, ProviderError> {
+        self.capabilities().require(action.capability())?;
+        let Action::Submit(message) = action else {
+            return Err(ProviderError::unsupported(action.capability()));
+        };
+        match activity {
+            Some(Activity::Waiting | Activity::Working) => Ok(vec![
+                TerminalInput::Text((*message).to_owned()),
+                TerminalInput::Key(Key::Enter),
+            ]),
+            Some(Activity::NeedsYou) => Err(ProviderError {
+                reason: "a dialog is open in its terminal; answer it first".to_owned(),
+            }),
+            None => Err(ProviderError {
+                reason: "its activity is unknown, so a message could answer a dialog".to_owned(),
+            }),
+        }
     }
 }
 

@@ -13,7 +13,14 @@ pub enum Error {
     Workflows(cockpit_workflows::Error),
     Admission(cockpit_resource_admission::Error),
     Authorization(cockpit_authorization::Error),
+    Messaging(cockpit_messaging::Error),
     Database(cockpit_turso::sql::Error),
+    /// Admission held an agent turn the pass had counted room for: the two disagree on what
+    /// is charged, and the pass rolls back rather than place work admission would not.
+    PlanAdmissionMismatch {
+        item: cockpit_tasks::ItemId,
+        hold: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -24,7 +31,13 @@ impl fmt::Display for Error {
             Error::Workflows(error) => write!(formatter, "workflows: {error}"),
             Error::Admission(error) => write!(formatter, "resource admission: {error}"),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
+            Error::Messaging(error) => write!(formatter, "messaging: {error}"),
             Error::Database(error) => write!(formatter, "database: {error}"),
+            Error::PlanAdmissionMismatch { item, hold } => write!(
+                formatter,
+                "the pass found room for item {}, but admission holds it: {hold}",
+                item.0
+            ),
         }
     }
 }
@@ -32,11 +45,12 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::InvalidStoredRow { .. } => None,
+            Error::InvalidStoredRow { .. } | Error::PlanAdmissionMismatch { .. } => None,
             Error::Tasks(source) => Some(source),
             Error::Workflows(source) => Some(source),
             Error::Admission(source) => Some(source),
             Error::Authorization(source) => Some(source),
+            Error::Messaging(source) => Some(source),
             Error::Database(source) => Some(source),
         }
     }
@@ -63,6 +77,12 @@ impl From<cockpit_resource_admission::Error> for Error {
 impl From<cockpit_authorization::Error> for Error {
     fn from(error: cockpit_authorization::Error) -> Error {
         Error::Authorization(error)
+    }
+}
+
+impl From<cockpit_messaging::Error> for Error {
+    fn from(error: cockpit_messaging::Error) -> Error {
+        Error::Messaging(error)
     }
 }
 

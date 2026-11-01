@@ -21,6 +21,10 @@ Rust task that asked for it and a daemon restart (report 03).
 2. `bind_execution` ties it to the `cockpit-processes` execution that started.
 3. `sweep` releases an unstarted reservation past its expiry, and a running one only once
    `cockpit-processes` observed its execution ended. A dropped task releases nothing.
+4. `hold` decides like `admit` but commits a `held` reservation for work no execution of
+   its own carries, such as an agent turn `cockpit-scheduling` placed in a long-lived agent
+   (#386). It never expires and no sweep releases it: its holder calls `release_held` once
+   the work ended. Every decision and `in_use` count it like any other.
 
 Reserved, observed and enforced are separate values: the reservation is what the budget is
 charged; `Backend::inspect` reads what the execution uses and what the kernel enforces.
@@ -76,6 +80,7 @@ backend's reason.
 - `tests/admission.rs`: the budget, the foreground share, pause queue, required controls, and
   reservations that survive a reopen and release only on an observed end, on a real state
   database with real processes.
+- `tests/held.rs`: held reservations charge every decision until their holder releases them.
 - `tests/backend.rs`: the Linux backend through a fake `systemctl` and a fake cgroup tree,
   the shims, and freeze/thaw of a real process group.
 - `tests/host.rs`: this host's own report, run on Linux, macOS and WSL 2 in CI.

@@ -1,5 +1,6 @@
 //! Scheduling at the daemon's socket (#43): `queue-dispatch` places a queued item on an idle
-//! session of its project, and `queue-explain` answers why the rest waits.
+//! session of its project and types it to the session's agent (#385), the placed turn is in
+//! use for resource admission (#386), and `queue-explain` answers why the rest waits.
 //!
 //! The daemon runs in this process with the fake provider, a real state database, real
 //! processes and a private tmux server. Its periodic pass is left at the fixture's hour and
@@ -56,7 +57,8 @@ impl Home {
             let provider = FakeProvider::new(
                 ProviderName::new("fake").unwrap(),
                 self.path().join("agent.log"),
-            );
+            )
+            .reading_messages(self.path().join("messages.log"));
             let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
             wiring.scheduling.idle_window = Duration::ZERO;
             let started = match Instance::acquire(options) {
@@ -150,6 +152,42 @@ impl Home {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// Waits until `session`'s agent has read `count` messages, and answers them.
+    async fn messages_of(&self, session: &str, count: usize) -> Vec<String> {
+        let deadline = Instant::now() + GENEROUS;
+        loop {
+            let read: Vec<String> = FakeProvider::messages(&self.path().join("messages.log"))
+                .into_iter()
+                .filter(|(reader, _)| reader == session)
+                .map(|(_, message)| message)
+                .collect();
+            if read.len() >= count {
+                return read;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{session}'s agent read {read:?}, not {count} messages"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Closes `session`'s terminal behind the daemon's back, so nothing typed reaches it.
+    fn close_terminal_of(&self, session: &str) {
+        let output = Process::new("tmux")
+            .arg("-S")
+            .arg(self.path().join("tmux.sock"))
+            .args(["kill-session", "-t", &format!("={session}")])
+            .env_remove("TMUX")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn kill_every_agent(&self) {
@@ -276,6 +314,102 @@ async fn queue_dispatch_places_a_queued_item_on_the_idle_session_of_its_project(
         panic!("task-show: {shown:?}");
     };
     assert_eq!(task.status, TaskStatusView::Doing);
+}
+
+async fn task_status(client: &Connection, item: i64) -> TaskStatusView {
+    let shown = request(
+        client,
+        Command::TaskShow {
+            launch_token: None,
+            item,
+        },
+    )
+    .await;
+    let Ok(Reply::Task { task }) = shown else {
+        panic!("task-show: {shown:?}");
+    };
+    task.status
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn queue_dispatch_types_the_placed_item_to_its_agent() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let idle = home
+        .session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    let item = queued_item(&client, "Fix the login").await;
+
+    request(&client, Command::QueueDispatch).await.unwrap();
+
+    assert_eq!(
+        home.messages_of(&idle.id, 1).await,
+        [format!(
+            "Cockpit gives you item {item}: read it with `cockpit todo show {item}`, do it, then \
+             finish it with `cockpit todo done {item} --summary '<what you did>'`."
+        )]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_placement_whose_agent_never_receives_it_goes_back_to_the_queue_after_three_tries() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let idle = home
+        .session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    home.close_terminal_of(&idle.id);
+    let item = queued_item(&client, "Fix the login").await;
+
+    let mut statuses = Vec::new();
+    for _ in 0..3 {
+        request(&client, Command::QueueDispatch).await.unwrap();
+        statuses.push(task_status(&client, item).await);
+    }
+
+    assert_eq!(
+        statuses,
+        [
+            TaskStatusView::Doing,
+            TaskStatusView::Doing,
+            TaskStatusView::Todo
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resources_status_counts_the_placed_agent_turn_in_use_as_a_held_reservation() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    let item = queued_item(&client, "Fix the login").await;
+    let dispatched = request(&client, Command::QueueDispatch).await;
+    let Ok(Reply::QueueDispatched { placed, .. }) = dispatched else {
+        panic!("queue-dispatch: {dispatched:?}");
+    };
+
+    let status = request(&client, Command::ResourceStatus).await;
+
+    let Ok(Reply::ResourceStatus { status }) = status else {
+        panic!("resource-status: {status:?}");
+    };
+    assert_eq!(status.in_use, placed[0].demand);
+    assert_eq!(status.reservations.len(), 1, "{:?}", status.reservations);
+    assert_eq!(status.reservations[0].state, "held");
+    assert!(
+        status.reservations[0]
+            .label
+            .starts_with(&format!("agent turn: item {item} on ")),
+        "{:?}",
+        status.reservations[0]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

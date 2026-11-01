@@ -495,6 +495,10 @@ pub enum ReservationState {
     Running {
         execution: ExecutionId,
     },
+    /// Charged until its caller releases it ([`crate::release_held`]): work inside an
+    /// execution no reservation of its own charges, such as an agent turn scheduling placed
+    /// in a long-lived agent (#386). Never expires.
+    Held,
     Released {
         reason: ReleaseReason,
     },
@@ -505,6 +509,7 @@ impl ReservationState {
         match self {
             ReservationState::Reserved { .. } => "reserved",
             ReservationState::Running { .. } => "running",
+            ReservationState::Held => "held",
             ReservationState::Released { .. } => "released",
         }
     }
@@ -516,7 +521,7 @@ pub enum ReleaseReason {
     Expired,
     /// Its caller gave it back before starting.
     Withdrawn,
-    /// Its execution was observed ended.
+    /// Its execution was observed ended, or its holder released it once its work ended.
     Ended,
 }
 

@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use cockpit_authorization::SessionId;
+use cockpit_provider_api::Capability;
 use cockpit_resource_admission::{Capacity, Demand, Hold, Resource};
 use cockpit_tasks::ItemId;
 use cockpit_workflows::StepDefinition;
@@ -45,7 +46,7 @@ pub(crate) struct Context<'a> {
     /// for each demand a turn can have.
     pub(crate) familiar_hold: Option<Hold>,
     pub(crate) unfamiliar_hold: Option<Hold>,
-    /// The budget left after admission's reservations and the active placements.
+    /// The budget left after admission's reservations, the active placements' among them.
     pub(crate) free: Demand,
 }
 
@@ -342,6 +343,10 @@ fn refusal(
         && let Err(refusal) = cockpit_workflows::check_capabilities(step, &candidate.capabilities)
     {
         return Some(refusal.to_string());
+    }
+    // A placement is delivered by typing it to the agent (#385).
+    if let Err(refusal) = candidate.capabilities.require(Capability::Submit) {
+        return Some(format!("its agent cannot be sent work: {refusal}"));
     }
     if let Some(why) = context.unavailable.get(&candidate.session) {
         return Some(why.clone());

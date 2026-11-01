@@ -12,8 +12,11 @@ use cockpit_authorization::{Permission, Scope};
 use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
-use cockpit_provider_api::{Capability, Conversation, LaunchRequest, Provider, ProviderError};
-use cockpit_tmux::{Server, SessionLaunch, SessionName};
+use cockpit_provider_api::{
+    Action, Activity, Capability, Conversation, Key, LaunchRequest, Provider, ProviderError,
+    TerminalInput,
+};
+use cockpit_tmux::{Keystroke, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
 
 use crate::model::{LaunchPurpose, validate_link};
@@ -611,6 +614,76 @@ impl Sessions {
         give_up_on_end(&write, &ended).await?;
         write.commit().await?;
         Ok(ended)
+    }
+
+    /// Types `message` into the running agent's terminal, with the keys its provider gives
+    /// for the agent's activity as its current launch last reported it (#385). Every error
+    /// but [`Error::TypingUnconfirmed`] means nothing was typed. It never waits behind
+    /// another operation on the session: one under way refuses it, so a caller retries.
+    pub async fn submit(&self, id: &SessionId, message: &str) -> Result<(), Error> {
+        let Ok(guard) = Arc::clone(&self.session_lock(id).operation).try_lock_owned() else {
+            return Err(Error::SessionBusy {
+                session: id.clone(),
+            });
+        };
+        let read = self.database.read().await?;
+        let session = store::session(&read, id).await?;
+        let report = crate::reports::latest_report(&read, &authorization_session(id)?).await?;
+        drop(read);
+        let Some(launch) = session
+            .launch
+            .as_ref()
+            .filter(|_| session.state == SessionState::Running)
+        else {
+            return Err(Error::WrongState {
+                session: id.clone(),
+                state: session.state,
+                operation: "type a message to its agent",
+            });
+        };
+        let activity = report
+            .filter(|report| report.launch == Some(launch.number))
+            .and_then(|report| {
+                if report.needs_input.is_some() {
+                    return Some(Activity::NeedsYou);
+                }
+                match report.state? {
+                    AgentState::Working => Some(Activity::Working),
+                    AgentState::Waiting => Some(Activity::Waiting),
+                }
+            });
+        let provider = self.provider(Some(session.provider.as_str()))?;
+        let input = provider.input(&Action::Submit(message), activity)?;
+        let tmux = self.tmux()?;
+        let name = terminal_name(id)?;
+        let session_id = id.clone();
+        self.blocking("type a message to the agent", move || {
+            let _guard = guard;
+            let pane = tmux.active_pane(&name)?;
+            let keys: Vec<Keystroke> = input
+                .iter()
+                .map(|step| match step {
+                    TerminalInput::Text(text) => Keystroke::Text(text),
+                    TerminalInput::Key(Key::Enter) => Keystroke::Enter,
+                    TerminalInput::Key(Key::Escape) => Keystroke::Escape,
+                    TerminalInput::Key(Key::Control(letter)) => Keystroke::Control(*letter),
+                })
+                .collect();
+            tmux.send_keys(&pane, &keys)
+                .map_err(|error| Error::TypingUnconfirmed {
+                    session: session_id,
+                    reason: format!("tmux: {error}"),
+                })
+        })
+        .await
+        .map_err(|error| match error {
+            // The step may still type after its caller stopped waiting for it.
+            Error::StepTimedOut { .. } | Error::Blocking(_) => Error::TypingUnconfirmed {
+                session: id.clone(),
+                reason: error.to_string(),
+            },
+            other => other,
+        })
     }
 
     /// Records a design link (any http or https URL) on the session.

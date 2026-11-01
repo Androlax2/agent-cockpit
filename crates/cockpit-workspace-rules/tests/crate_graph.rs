@@ -739,6 +739,7 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-workflows", "cockpit-provider-api"),
         ("cockpit-scheduling", "cockpit-workflows"),
         ("cockpit-scheduling", "cockpit-resource-admission"),
+        ("cockpit-scheduling", "cockpit-messaging"),
         ("cockpit-daemon", "cockpit-scheduling"),
     ] {
         let manifest_path = fixture_workspace(

@@ -64,7 +64,7 @@ pub struct ReservationView {
     pub id: i64,
     pub label: String,
     pub workload: String,
-    /// `reserved` (not started) or `running`.
+    /// `reserved` (not started), `running`, or `held` (an agent turn scheduling placed, #386).
     pub state: String,
     pub execution: Option<i64>,
     /// What the budget is charged.
