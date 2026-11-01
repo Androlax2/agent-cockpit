@@ -23,4 +23,5 @@ Evidence: `crates/cockpit-tui/tests/pane.rs`
 `a_key_before_the_column_s_keys_arrive_is_ignored`,
 `once_late_keys_arrive_the_first_y_after_the_grace_approves`,
 `a_failed_column_focus_lets_the_pane_take_keys_after_a_grace`,
-`the_pane_reads_first_until_every_column_focus_it_asked_for_is_answered`).
+`the_pane_reads_first_until_every_column_focus_it_asked_for_is_answered`,
+`the_last_column_focus_answer_lets_y_approve_after_its_grace`).

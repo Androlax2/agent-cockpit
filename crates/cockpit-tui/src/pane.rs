@@ -95,8 +95,7 @@ impl Pane {
 
     /// Whether a key now would be ignored.
     pub fn in_grace(&self, now: Instant) -> bool {
-        let is_waiting_for_keys = self.shown.is_some() && self.keys_on_their_way > 0;
-        is_waiting_for_keys || self.accepts_input_at.is_some_and(|ready| now < ready)
+        self.keys_on_their_way > 0 || self.accepts_input_at.is_some_and(|ready| now < ready)
     }
 
     /// Follows the queue after it changed: shows its head, unless the owner is typing into

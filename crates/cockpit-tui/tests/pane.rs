@@ -213,6 +213,30 @@ fn the_pane_reads_first_until_every_column_focus_it_asked_for_is_answered() {
 }
 
 #[test]
+fn the_last_column_focus_answer_lets_y_approve_after_its_grace() {
+    let now = Instant::now();
+    let mut app = app_asking(now);
+    emptied(&mut app, now);
+    queue(
+        &mut app,
+        vec![run(4, SESSION, "make lint")],
+        Vec::new(),
+        now,
+    );
+    answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+    answer(
+        &mut app,
+        focus(ManagerPaneView::Column),
+        focused(false),
+        late(now),
+    );
+
+    let approved = app.key(Key::Char('y'), after_grace(late(now)));
+
+    assert_eq!(approved.used, Some("approval-approve"));
+}
+
+#[test]
 fn y_after_the_grace_approves_the_revision_and_digest_shown() {
     let now = Instant::now();
     let mut app = app_asked(now);
