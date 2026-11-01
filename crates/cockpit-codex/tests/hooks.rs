@@ -202,7 +202,7 @@ fn a_resumed_session_start_names_the_resumed_thread() {
     );
 }
 
-/// Known gap (#408): nothing announces the old thread's end, so the daemon refuses this.
+/// The launch's report ledger adds the old thread's end before this report (#408).
 #[test]
 fn a_session_start_after_clear_names_the_new_thread() {
     assert_eq!(

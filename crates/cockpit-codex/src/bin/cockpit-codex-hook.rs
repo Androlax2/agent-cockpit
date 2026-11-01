@@ -14,7 +14,8 @@
 
 use std::ffi::OsStr;
 use std::io::Read;
-use std::process::{Child, Command, ExitCode, Stdio};
+use std::path::Path;
+use std::process::{Command, ExitCode, Stdio};
 
 use cockpit_codex::hooks;
 
@@ -42,13 +43,27 @@ fn run() -> Result<(), String> {
         .read_to_string(&mut payload)
         .map_err(|error| format!("cannot read the hook payload: {error}"))?;
     let event = hooks::normalize(&payload).map_err(|error| error.to_string())?;
-    let report = hooks::bridge_arguments(&event).map(|report| {
-        let started = start_report(&cockpit, &report);
-        (report, started)
+    let (reported, brief) = std::thread::scope(|scope| {
+        let reporting = scope.spawn(|| {
+            let state = std::env::var_os(cockpit_codex::reports::STATE_VARIABLE);
+            hooks::bridge_arguments(&event).map_or(Ok(()), |report| {
+                cockpit_codex::reports::send(
+                    &cockpit,
+                    state.as_deref().map(Path::new),
+                    &report,
+                    hooks::clears_conversation(&event),
+                )
+            })
+        });
+        // Read while the report runs: both must answer within the hook's one timeout.
+        let brief = hooks::starts_context(&event).then(|| read_brief(&cockpit));
+        (
+            reporting
+                .join()
+                .unwrap_or_else(|_| Err("the report thread panicked".to_owned())),
+            brief,
+        )
     });
-    // Read while the report runs: both must answer within the hook's one timeout.
-    let brief = hooks::starts_context(&event).then(|| read_brief(&cockpit));
-    let reported = report.map_or(Ok(()), |(report, started)| finish_report(&report, started));
     let brief = brief.transpose();
     if let Ok(Some(brief)) = &brief {
         println!("{}", hooks::brief_context(brief));
@@ -62,25 +77,6 @@ fn run() -> Result<(), String> {
     } else {
         Err(failures.join("; "))
     }
-}
-
-fn start_report(cockpit: &OsStr, report: &[String]) -> Result<Child, String> {
-    Command::new(cockpit)
-        .args(report)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("cannot run {}: {error}", cockpit.to_string_lossy()))
-}
-
-fn finish_report(report: &[String], started: Result<Child, String>) -> Result<(), String> {
-    let status = started?
-        .wait()
-        .map_err(|error| format!("`cockpit {}` was lost: {error}", report.join(" ")))?;
-    if !status.success() {
-        return Err(format!("`cockpit {}` failed ({status})", report.join(" ")));
-    }
-    Ok(())
 }
 
 /// What `cockpit brief` prints for this session, which the launch token identifies.
