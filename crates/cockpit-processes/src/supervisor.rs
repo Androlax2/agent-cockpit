@@ -761,10 +761,6 @@ impl Supervisor {
     }
 }
 
-/// `gone`, unless the execution has not confirmed its start and its launcher (whose pid names
-/// the group) still runs. A terminal execution's launcher leads that group only once it is
-/// the session leader: until then its pid is alive in the daemon's group and the group has
-/// no member yet.
 /// The execution `id`, refused unless it is a launch intent still waiting for its launch.
 async fn reserved_execution(database: &Database, id: ExecutionId) -> Result<Execution, Error> {
     let reserved = store::execution(database, id).await?;
@@ -774,6 +770,10 @@ async fn reserved_execution(database: &Database, id: ExecutionId) -> Result<Exec
     Ok(reserved)
 }
 
+/// `gone`, unless the execution has not confirmed its start and its launcher (whose pid names
+/// the group) still runs. A terminal execution's launcher leads that group only once it is
+/// the session leader: until then its pid is alive in the daemon's group and the group has
+/// no member yet.
 fn launching_or(gone: Presence, leader_start: &Option<String>, launcher: Option<i32>) -> Presence {
     let is_launcher_alive = launcher
         .is_some_and(|pid| platform::group_has_members(pid) || platform::process_exists(pid));

@@ -1188,14 +1188,14 @@ impl Sessions {
         .await;
         if let Err(error) = opened {
             self.processes
-                .abandon_hosted(&self.database, hosted.execution)
+                .abandon_hosted(&self.database, execution)
                 .await?;
             return Err(error);
         }
-        let execution = match self.confirm_agent(&channel_session, hosted.execution).await {
+        let confirmed = match self.confirm_agent(&channel_session, execution).await {
             Ok(execution) => execution,
             Err(error) => {
-                self.discard_launch(id, hosted.execution).await;
+                self.discard_launch(id, execution).await;
                 return Err(error);
             }
         };
@@ -1214,7 +1214,7 @@ impl Sessions {
         )
         .await?;
         write.commit().await?;
-        tracing::info!(session = %id, ?kind, execution = execution.id.0, "a session runs");
+        tracing::info!(session = %id, ?kind, execution = confirmed.id.0, "a session runs");
         Ok(running)
     }
 
