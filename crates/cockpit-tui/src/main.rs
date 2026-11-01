@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{Command, Reply};
 use cockpit_tui::{App, FeedEvent, Key, draw, follow_feed, record_usage};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+// Our own crossterm, not ratatui's re-export: only this one has the reader of #356.
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use tokio::sync::mpsc;
 
 /// How often the TUI asks the daemon for what is not on the change feed: projects, the

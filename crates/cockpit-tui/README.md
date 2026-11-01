@@ -13,7 +13,8 @@ capabilities only; no key reaches them here.
 - Depends on: `cockpit-client` and `cockpit-protocol` for the daemon, `cockpit-diagnostics`
   for its own log (#176, the `tui -> client/protocol/diagnostics only` rule of
   `cockpit-workspace-rules/tests/crate_graph.rs`), `ratatui` (with its Crossterm backend),
-  `tokio`, `tracing`, `serde`, `serde_json`.
+  `crossterm` itself for the key reader, with `use-dev-tty` (#356), `tokio`, `tracing`,
+  `serde`, `serde_json`.
 - Used by: nothing; it is a frontend. `cockpit tui` (the CLI) opens the manager session that
   runs it.
 
