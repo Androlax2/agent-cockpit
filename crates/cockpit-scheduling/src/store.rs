@@ -42,7 +42,8 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 memory_mib INTEGER NOT NULL CHECK (memory_mib >= 0),
                 placed_at INTEGER NOT NULL,
                 ended_at INTEGER,
-                ended_reason TEXT CHECK (ended_reason IN ('work-ended', 'session-gone')),
+                ended_reason TEXT CHECK (ended_reason IN ('work-done', 'work-ended',
+                    'session-gone')),
                 CHECK ((run IS NULL) = (position IS NULL)),
                 CHECK ((run IS NULL) = (step IS NULL)),
                 CHECK ((ended_at IS NULL) = (ended_reason IS NULL))
@@ -52,7 +53,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE UNIQUE INDEX scheduling_placements_one_per_item
                 ON scheduling_placements (item) WHERE ended_at IS NULL;
             CREATE INDEX scheduling_placements_finished
-                ON scheduling_placements (project) WHERE ended_reason = 'work-ended';
+                ON scheduling_placements (project) WHERE ended_reason = 'work-done';
+            CREATE TABLE scheduling_idle (
+                session TEXT PRIMARY KEY CHECK (session <> ''),
+                since INTEGER NOT NULL
+            );
             CREATE TABLE scheduling_explanations (
                 item INTEGER PRIMARY KEY,
                 position INTEGER NOT NULL UNIQUE,
@@ -101,9 +106,20 @@ pub async fn dispatch(
     support: &[ControlSupport],
 ) -> Result<Dispatched, Error> {
     let now = inputs.now;
-    let items = cockpit_tasks::list(write, &Actor::Owner, &ListFilter::default()).await?;
-    let runs = cockpit_workflows::runs(write, &Actor::Owner, &RunFilter::default()).await?;
-    let ended = settle(write, &items, &runs, inputs).await?;
+    let mut items = cockpit_tasks::list(write, &Actor::Owner, &ListFilter::default()).await?;
+    let mut runs = cockpit_workflows::runs(write, &Actor::Owner, &RunFilter::default()).await?;
+    let settled = settle(write, &items, &runs, inputs).await?;
+    if settled.handed_back {
+        items = cockpit_tasks::list(write, &Actor::Owner, &ListFilter::default()).await?;
+        runs = cockpit_workflows::runs(write, &Actor::Owner, &RunFilter::default()).await?;
+    }
+    let ended = settled.ended;
+    let candidates = idle_since(write, &inputs.candidates).await?;
+    let inputs = &Inputs {
+        candidates,
+        viewed: inputs.viewed.clone(),
+        now,
+    };
     let (waiting, outside) = units(&items, &runs);
     let since = record_waiting(write, &waiting, now).await?;
     let waiting: Vec<Waiting> = waiting
@@ -429,15 +445,26 @@ async fn unavailable(
     Ok(unavailable)
 }
 
+struct Settled {
+    ended: Vec<PlacementId>,
+    /// Work of a gone session went back to the queue, so the items and runs read before
+    /// changed.
+    handed_back: bool,
+}
+
 /// Ends each active placement whose work is no longer done by its session, or whose session
-/// is gone from the inputs. Its charge is released with it.
+/// is gone from the inputs. Its charge is released with it. Work a gone session still held
+/// goes back to the queue: the item to `todo`, the step to ready, as the owner would.
 async fn settle(
     write: &WriteTransaction<'_>,
     items: &[Item],
     runs: &[Run],
     inputs: &Inputs,
-) -> Result<Vec<PlacementId>, Error> {
-    let mut ended = Vec::new();
+) -> Result<Settled, Error> {
+    let mut settled = Settled {
+        ended: Vec::new(),
+        handed_back: false,
+    };
     for placement in placements(write).await? {
         let is_present = inputs
             .candidates
@@ -459,9 +486,14 @@ async fn settle(
             }),
         };
         let reason = match (is_working, is_present) {
-            (false, _) => "work-ended",
-            (true, false) => "session-gone",
             (true, true) => continue,
+            (true, false) => {
+                hand_back(write, &placement, inputs.now).await?;
+                settled.handed_back = true;
+                "session-gone"
+            }
+            (false, _) if is_done(write, &placement, runs).await? => "work-done",
+            (false, _) => "work-ended",
         };
         write
             .execute(
@@ -470,15 +502,105 @@ async fn settle(
                 (placement.id.0, inputs.now, reason),
             )
             .await?;
-        ended.push(placement.id);
+        settled.ended.push(placement.id);
     }
-    Ok(ended)
+    Ok(settled)
+}
+
+/// Whether the placement's work was finished, not dropped: only finished work makes its
+/// project familiar.
+async fn is_done(
+    connection: &Connection,
+    placement: &Placement,
+    runs: &[Run],
+) -> Result<bool, Error> {
+    Ok(match &placement.unit {
+        Unit::Item => match cockpit_tasks::item(connection, &Actor::Owner, placement.item).await {
+            Ok(item) => item.status == Status::Done,
+            Err(cockpit_tasks::Error::Refused(cockpit_tasks::Refusal::NotFound { .. })) => false,
+            Err(error) => return Err(error.into()),
+        },
+        Unit::Step { run, position, .. } => runs.iter().any(|candidate| {
+            candidate.id == *run
+                && candidate
+                    .steps
+                    .iter()
+                    .any(|step| step.position == *position && step.status == StepStatus::Done)
+        }),
+    })
+}
+
+async fn hand_back(
+    write: &WriteTransaction<'_>,
+    placement: &Placement,
+    now: i64,
+) -> Result<(), Error> {
+    match &placement.unit {
+        Unit::Item => {
+            // Starting the item took it out of the queue; the session's loss is not the
+            // owner's choice to stop it, so it goes back in.
+            cockpit_tasks::reopen(write, &Actor::Owner, placement.item, now).await?;
+            cockpit_tasks::set_queued(write, &Actor::Owner, placement.item, true, now).await?;
+        }
+        Unit::Step { run, .. } => {
+            cockpit_workflows::release(write, &Actor::Owner, *run, None, now).await?;
+        }
+    }
+    Ok(())
+}
+
+/// When each candidate's agent began waiting at its prompt. A report while it waits (a label,
+/// what it does) moves the report's time but not the wait's start, so the first time a pass
+/// saw it waiting is kept until a pass sees it do anything else.
+async fn idle_since(
+    write: &WriteTransaction<'_>,
+    candidates: &[crate::Candidate],
+) -> Result<Vec<crate::Candidate>, Error> {
+    let mut stored = HashMap::new();
+    let mut rows = write
+        .query("SELECT session, since FROM scheduling_idle", ())
+        .await?;
+    while let Some(row) = rows.next().await? {
+        stored.insert(row.get::<String>(0)?, row.get::<i64>(1)?);
+    }
+    drop(rows);
+    let mut adjusted = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let key = candidate.session.as_str();
+        let kept = stored.remove(key);
+        let mut candidate = candidate.clone();
+        match (&mut candidate.presence, kept) {
+            (crate::Presence::Waiting { since }, Some(first)) => *since = first,
+            (crate::Presence::Waiting { since }, None) => {
+                write
+                    .execute(
+                        "INSERT INTO scheduling_idle (session, since) VALUES (?1, ?2)",
+                        (key, *since),
+                    )
+                    .await?;
+            }
+            (_, Some(_)) => forget_idle(write, key).await?,
+            (_, None) => {}
+        }
+        adjusted.push(candidate);
+    }
+    for gone in stored.keys() {
+        forget_idle(write, gone).await?;
+    }
+    Ok(adjusted)
+}
+
+async fn forget_idle(write: &WriteTransaction<'_>, session: &str) -> Result<(), Error> {
+    write
+        .execute("DELETE FROM scheduling_idle WHERE session = ?1", [session])
+        .await?;
+    Ok(())
 }
 
 async fn familiar_projects(connection: &Connection) -> Result<BTreeSet<String>, Error> {
     let mut rows = connection
         .query(
-            "SELECT DISTINCT project FROM scheduling_placements WHERE ended_reason = 'work-ended'",
+            "SELECT DISTINCT project FROM scheduling_placements WHERE ended_reason = 'work-done'",
             (),
         )
         .await?;
@@ -639,7 +761,7 @@ async fn replace_explanations(
         let sessions: Vec<String> = explanation
             .sessions
             .iter()
-            .map(|note| format!("{}\t{}", note.session.as_str(), note.why))
+            .map(|note| format!("{}\t{}", note.session.as_str(), one_line(&note.why)))
             .collect();
         write
             .execute(
@@ -742,6 +864,11 @@ fn explanation_from(row: &Row) -> Result<Explanation, Error> {
         evaluated_at: row.get(19)?,
         next_evaluation_at: row.get(20)?,
     })
+}
+
+/// A note is stored as one `session\twhy` line.
+fn one_line(text: &str) -> String {
+    text.replace(['\t', '\n', '\r'], " ")
 }
 
 fn stored(value: u64) -> i64 {

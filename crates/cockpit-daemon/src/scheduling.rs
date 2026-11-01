@@ -7,17 +7,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use cockpit_protocol::{
-    Command, DemandView, ErrorCode, ProtocolError, QueueExplanationView, QueuePlacementView,
+    Command, ErrorCode, ProtocolError, QueueExplanationView, QueuePlacementView,
     QueueSessionNoteView, QueueStepView, Reply,
 };
 use cockpit_provider_api::Capabilities;
-use cockpit_resource_admission::{Backend, Demand, Policy};
+use cockpit_resource_admission::{Backend, Policy};
 use cockpit_scheduling::{Candidate, Dispatched, Explanation, Inputs, Placement, Presence, Unit};
 use cockpit_sessions::{AgentState, Session, SessionReport, SessionState, Sessions};
 use cockpit_turso::Database;
 
 use crate::Manager;
 use crate::approvals::{Answer, Failed, job, now};
+use crate::resources::demand_view;
 use crate::routes::{Route, WorkClass};
 
 /// What a pass reads besides the state database.
@@ -259,13 +260,6 @@ fn step_view(unit: &Unit) -> Option<QueueStepView> {
             position: *position,
             name: (*name).to_owned(),
         }),
-    }
-}
-
-fn demand_view(demand: Demand) -> DemandView {
-    DemandView {
-        cpu_millis: demand.cpu_millis,
-        memory_mib: demand.memory_mib,
     }
 }
 

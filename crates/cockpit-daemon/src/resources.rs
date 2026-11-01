@@ -340,7 +340,7 @@ fn profile_view(profile: Profile) -> ProfileView {
     }
 }
 
-fn demand_view(demand: Demand) -> DemandView {
+pub(crate) fn demand_view(demand: Demand) -> DemandView {
     DemandView {
         cpu_millis: demand.cpu_millis,
         memory_mib: demand.memory_mib,

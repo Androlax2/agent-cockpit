@@ -241,3 +241,29 @@ async fn a_large_unit_that_waited_thirty_minutes_holds_later_work_behind_it() {
         gathering.why
     );
 }
+
+#[tokio::test]
+async fn work_dropped_before_it_finished_does_not_end_startup_headroom() {
+    let mut fixture = Fixture::with_budget(4).await;
+    fixture.settings.startup_headroom_percent = 50;
+    let session = fixture.session("a-1", "a").await;
+    let first = fixture.queued("a", "first", Priority::NORMAL).await;
+    fixture
+        .dispatch_at(NOW, std::slice::from_ref(&session))
+        .await;
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::reopen(&write, &cockpit_tasks::Actor::Owner, first.id, NOW)
+        .await
+        .unwrap();
+    cockpit_tasks::set_queued(&write, &cockpit_tasks::Actor::Owner, first.id, true, NOW)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let dispatched = fixture.dispatch_at(NOW + 60, &[session]).await;
+
+    assert_eq!(
+        dispatched.placed[0].demand.cpu_millis,
+        TURN.cpu_millis * 3 / 2
+    );
+}

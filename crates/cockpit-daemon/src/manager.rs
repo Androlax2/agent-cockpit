@@ -145,6 +145,11 @@ fn open(
         }
     };
     if created {
+        // A new viewer shows no session yet.
+        *manager
+            .shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let column_pane = tmux
             .new_session(&SessionLaunch {
                 name: name.clone(),

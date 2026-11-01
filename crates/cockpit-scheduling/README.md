@@ -38,7 +38,7 @@ the records it writes commit together. The daemon runs one every 30 seconds and 
    fits holds it with admission's reason. Room is counted against the budget left after
    admission's reservations and the active placements; each placement charges its demand.
 4. **Startup headroom.** A project no placement has finished in yet is unfamiliar: its turns
-   are charged 50 % more until one finishes.
+   are charged 50 % more until one finishes with its work done.
 5. **Gathering.** A unit held for room that has waited 30 minutes gathers capacity: units
    ordered after it that would start are held `behind` it, so released capacity accumulates
    until the large job starts. Units held for another reason do not take capacity and keep
@@ -48,9 +48,11 @@ the records it writes commit together. The daemon runs one every 30 seconds and 
    takes only its role's steps), its provider reports the step's capabilities, it does no
    other item or step and may change its own state, it runs, its current launch's agent
    reported waiting at its prompt and asks nothing, the owner is not viewing it, and the idle
-   window (5 minutes since its turn ended) has passed. The one waiting longest takes it.
+   window (5 minutes since a pass first saw it waiting) has passed. The one waiting longest
+   takes it.
 7. **Place.** A queued item is started by the session (`cockpit-tasks` `start`), a ready
-   step begun by it (`cockpit-workflows` `begin`), and the placement recorded.
+   step begun by it (`cockpit-workflows` `begin`), and the placement recorded. When the
+   session goes, its item returns to the queue and its step to ready.
 
 Roles come from `cockpit-teams`; until it exists no session or step holds one.
 

@@ -19,8 +19,13 @@ workflows.
   a unit held for room for 30 minutes holds the units ordered after it (`behind`) until it
   starts.
 - **Startup headroom is 50 % until a placement finishes in the project.** A project is
-  familiar once one of its placements ended because its work ended; a session that vanished
-  does not count.
+  familiar once one of its placements ended with its work done (`work-done`); work reopened or
+  dropped (`work-ended`) and a session that vanished (`session-gone`) do not count.
+- **A vanished session's work goes back.** Its item returns to `todo` and to the queue, its
+  step to ready, so the next pass places it on another session.
+- **The idle window starts when a pass first saw the agent waiting,** kept in
+  `scheduling_idle`, so a report while it waits (a label, a status) does not restart it.
+  A turn shorter than the pass interval is not seen and keeps the older start.
 - **What waits is the item, or its run's ready agent step.** An item a running workflow
   follows waits as that step, whether or not the item is queued: starting the workflow is
   the owner's choice to have it done. Blocked runs and owner steps are explained, not placed.

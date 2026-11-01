@@ -276,3 +276,90 @@ async fn a_placement_lasts_while_its_session_does_the_work() {
     let read = fixture.database.read().await.unwrap();
     assert_eq!(cockpit_scheduling::placements(&read).await.unwrap(), placed);
 }
+
+#[tokio::test]
+async fn a_report_while_the_agent_waits_does_not_restart_the_idle_window() {
+    let (fixture, item) = one_item().await;
+    let waiting = Candidate {
+        presence: Presence::Waiting { since: NOW - 60 },
+        ..fixture.session("a-1", "a").await
+    };
+    fixture
+        .dispatch_at(NOW, std::slice::from_ref(&waiting))
+        .await;
+    let relabelled = Candidate {
+        presence: Presence::Waiting { since: NOW + 200 },
+        ..waiting
+    };
+
+    let dispatched = fixture.dispatch_at(NOW + 250, &[relabelled]).await;
+
+    assert_eq!(dispatched.placed.len(), 1, "{:?}", dispatched.explanations);
+    assert_eq!(dispatched.placed[0].item, item.id);
+}
+
+#[tokio::test]
+async fn a_turn_seen_by_a_pass_restarts_the_idle_window() {
+    let (fixture, item) = one_item().await;
+    let waiting = Candidate {
+        presence: Presence::Waiting { since: NOW - 60 },
+        ..fixture.session("a-1", "a").await
+    };
+    let working = Candidate {
+        presence: Presence::Working,
+        ..waiting.clone()
+    };
+    fixture
+        .dispatch_at(NOW, std::slice::from_ref(&waiting))
+        .await;
+    fixture.dispatch_at(NOW + 100, &[working]).await;
+    let waiting_again = Candidate {
+        presence: Presence::Waiting { since: NOW + 200 },
+        ..waiting
+    };
+
+    let dispatched = fixture.dispatch_at(NOW + 250, &[waiting_again]).await;
+
+    assert!(dispatched.placed.is_empty());
+    assert_eq!(
+        explanation_of(&dispatched.explanations, item.id).sessions[0].why,
+        "idle window: 250 s left before it gets new work"
+    );
+}
+
+#[tokio::test]
+async fn the_item_of_a_gone_session_goes_back_to_the_queue() {
+    let (fixture, item) = one_item().await;
+    let session = fixture.session("a-1", "a").await;
+    fixture.dispatch_at(NOW, &[session]).await;
+
+    let dispatched = fixture.dispatch_at(NOW + 60, &[]).await;
+
+    let read = fixture.database.read().await.unwrap();
+    let returned = cockpit_tasks::item(&read, &cockpit_tasks::Actor::Owner, item.id)
+        .await
+        .unwrap();
+    assert_eq!(returned.status, Status::Todo);
+    assert_eq!(
+        explanation_of(&dispatched.explanations, item.id).reason,
+        Reason::NoSession
+    );
+}
+
+#[tokio::test]
+async fn the_step_of_a_gone_session_is_ready_again() {
+    let fixture = Fixture::with_budget(4).await;
+    let item = fixture.item("a", "question", Priority::NORMAL).await;
+    let run = fixture.run(item.id, &RESEARCH).await;
+    let session = fixture.session("a-1", "a").await;
+    fixture.dispatch_at(NOW, &[session]).await;
+    let other = fixture.session("a-2", "a").await;
+
+    let dispatched = fixture.dispatch_at(NOW + 60, &[other]).await;
+
+    assert_eq!(dispatched.placed.len(), 1);
+    assert_eq!(dispatched.placed[0].session.as_str(), "a-2");
+    assert!(
+        matches!(dispatched.placed[0].unit, Unit::Step { run: placed, .. } if placed == run.id)
+    );
+}
