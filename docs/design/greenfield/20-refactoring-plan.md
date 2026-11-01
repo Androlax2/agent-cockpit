@@ -27,6 +27,25 @@ cutover.
 | M6 | Designed UI/UX (FigCraft, `design-first`), polish rows | Usability pass on real use; latency targets re-measured |
 | M7 | Plugin runtime (14), FigCraft and desktop plugins | First external plugin runs under declared grants |
 
+### 2026-11-01: milestones are releases
+
+Decided by Theo on 2026-11-01 (#389). The table above keeps its text; the GitHub milestones
+now carry release names, each with a checklist issue (the old gate) and a live acceptance
+walk. Gates are checkpoints, not blockers. No stable release is planned until users have used
+the betas for a long time ([Releasing](../../RELEASING.md#channels-and-what-each-promises)).
+
+| Old | Release milestone | Checklist |
+| --- | --- | --- |
+| M0, M1 | Closed under their old names | #27, #37 |
+| M3 | Alpha 1: first public pre-release, opens the alpha channel | #52 |
+| M2 | Alpha 2: tasks, scheduling, verification, workflows | #46 |
+| M4 | Beta 1: upgrades keep data, Teams and Chief; opens the beta channel | #57 |
+| M5 | Beta 2: cutover | #66 |
+| M6 | Beta 3: designed UI and the whole-codebase audits | #69 |
+| M7 | Plugins, then Desktop app and Native phone apps (research) | #73 (Plugins) |
+
+`Hardening` holds follow-ups no release needs.
+
 ## Order inside a milestone
 
 1. Write the capability's one-sentence ownership and dependency edges; add the CI rule.

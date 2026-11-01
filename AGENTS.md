@@ -22,9 +22,12 @@ metadata. Project guidance supplements the user's global instructions.
 
 ## Greenfield refactor
 
-Issues labelled `greenfield` (milestones M0–M7) build the target architecture under
-`crates/` following the [design reports](docs/design/greenfield/README.md) and the working
-agreement in [issue #17](https://github.com/Androlax2/agent-cockpit/issues/17). Load the
+Issues labelled `greenfield` build the target architecture under `crates/` following the
+[design reports](docs/design/greenfield/README.md) and the working agreement in
+[issue #17](https://github.com/Androlax2/agent-cockpit/issues/17). Milestones are releases
+(Alpha 1, Alpha 2, Beta 1, Beta 2: cutover, Beta 3: designed UI; `Hardening` for follow-ups
+no release needs); [CONTRIBUTING](CONTRIBUTING.md#milestones) says what a release milestone
+means. Load the
 reports' README plus the reports named in your issue, nothing more. The architecture map
 describes the code that exists today under `apps/`, which keeps running until the cutover.
 
