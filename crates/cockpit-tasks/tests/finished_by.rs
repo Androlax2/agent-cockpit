@@ -1,6 +1,7 @@
 //! #157 (decided in #201): an item keeps the session that was doing it when it was
-//! finished, and `session_work` answers, per session, what it is doing and when it last
-//! finished an item (#226: the label counts only work finished since the latest launch).
+//! finished, and `session_work` answers, per session, what it is doing and the commit order
+//! of its latest finish (#226: the label counts only work finished since the latest launch;
+//! #273: ordered by commits, not by the clock).
 //! A session's "finished" label is computed from this, never from its agent's state.
 
 mod common;
@@ -38,6 +39,14 @@ async fn reopen_at(fixture: &Fixture, id: ItemId, at: i64) -> Item {
     reopened
 }
 
+/// The commit order of the session's latest finish.
+async fn latest_finish_of(fixture: &Fixture, session: &str) -> i64 {
+    work_of(fixture, session)
+        .await
+        .and_then(|work| work.last_finished_order)
+        .expect("the session finished an item")
+}
+
 async fn work_of(fixture: &Fixture, session: &str) -> Option<SessionWork> {
     let read = fixture.database.read().await.unwrap();
     cockpit_tasks::session_work(&read)
@@ -56,13 +65,9 @@ async fn a_session_that_finishes_its_item_is_kept_as_its_finisher() {
     let finished = finish(&fixture, &session, item.id).await;
 
     assert_eq!(finished.finished_by, Some(SessionId::new("s1").unwrap()));
-    assert_eq!(
-        work_of(&fixture, "s1").await,
-        Some(SessionWork {
-            doing: 0,
-            last_finished_at: Some(NOW)
-        })
-    );
+    let work = work_of(&fixture, "s1").await.unwrap();
+    assert_eq!(work.doing, 0);
+    assert!(work.last_finished_order.is_some(), "{work:?}");
 }
 
 #[tokio::test]
@@ -112,34 +117,26 @@ async fn a_session_doing_one_item_after_finishing_another_counts_both() {
 
     start(&fixture, &session, second.id).await;
 
-    assert_eq!(
-        work_of(&fixture, "s1").await,
-        Some(SessionWork {
-            doing: 1,
-            last_finished_at: Some(NOW)
-        })
-    );
+    let work = work_of(&fixture, "s1").await.unwrap();
+    assert_eq!(work.doing, 1);
+    assert!(work.last_finished_order.is_some(), "{work:?}");
 }
 
+/// #273: the latest finish is the latest committed, whatever its clock time says.
 #[tokio::test]
-async fn a_session_s_work_keeps_the_time_of_its_latest_finish() {
+async fn a_session_s_work_keeps_the_order_of_its_latest_committed_finish() {
     let fixture = Fixture::new().await;
     let session = fixture.session("s1", "app").await;
-    let later = fixture.owner_adds("app", "Fix the logout").await;
-    let earlier = fixture.owner_adds("app", "Fix the login").await;
-    start(&fixture, &session, later.id).await;
-    finish_at(&fixture, &session, later.id, NOW + 60).await;
-    start(&fixture, &session, earlier.id).await;
+    let first = fixture.owner_adds("app", "Fix the logout").await;
+    let second = fixture.owner_adds("app", "Fix the login").await;
+    start(&fixture, &session, first.id).await;
+    finish_at(&fixture, &session, first.id, NOW + 60).await;
+    let first_finish = latest_finish_of(&fixture, "s1").await;
+    start(&fixture, &session, second.id).await;
 
-    finish_at(&fixture, &session, earlier.id, NOW + 30).await;
+    finish_at(&fixture, &session, second.id, NOW + 30).await;
 
-    assert_eq!(
-        work_of(&fixture, "s1").await,
-        Some(SessionWork {
-            doing: 0,
-            last_finished_at: Some(NOW + 60)
-        })
-    );
+    assert!(latest_finish_of(&fixture, "s1").await > first_finish);
 }
 
 #[tokio::test]
@@ -150,6 +147,7 @@ async fn reopening_the_latest_finish_falls_back_to_the_one_before() {
     let second = fixture.owner_adds("app", "Fix the logout").await;
     start(&fixture, &session, first.id).await;
     finish_at(&fixture, &session, first.id, NOW).await;
+    let first_finish = latest_finish_of(&fixture, "s1").await;
     start(&fixture, &session, second.id).await;
     finish_at(&fixture, &session, second.id, NOW + 60).await;
 
@@ -159,13 +157,13 @@ async fn reopening_the_latest_finish_falls_back_to_the_one_before() {
         work_of(&fixture, "s1").await,
         Some(SessionWork {
             doing: 0,
-            last_finished_at: Some(NOW)
+            last_finished_order: Some(first_finish)
         })
     );
 }
 
 #[tokio::test]
-async fn an_item_done_before_finish_times_were_kept_does_not_count_as_finished_work() {
+async fn an_item_done_before_finish_orders_were_kept_does_not_count_as_finished_work() {
     let fixture = Fixture::new().await;
     let session = fixture.session("s1", "app").await;
     let item = fixture.owner_adds("app", "Fix the login").await;
@@ -173,7 +171,7 @@ async fn an_item_done_before_finish_times_were_kept_does_not_count_as_finished_w
     finish(&fixture, &session, item.id).await;
     let write = fixture.database.write().await.unwrap();
     write
-        .execute("UPDATE tasks_items SET finished_at = NULL", ())
+        .execute("UPDATE tasks_items SET finished_order = NULL", ())
         .await
         .unwrap();
     write.commit().await.unwrap();

@@ -178,9 +178,10 @@ pub struct Item {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionWork {
     pub doing: u32,
-    /// Seconds since the Unix epoch; `None` when it finished none since finish times were
-    /// kept (#226).
-    pub last_finished_at: Option<i64>,
+    /// The commit order of its latest finish ([`cockpit_turso::WriteTransaction::commit_order`]),
+    /// comparable with another capability's commit orders, never with a time (#273); `None`
+    /// when it finished none since finish orders were kept.
+    pub last_finished_order: Option<i64>,
 }
 
 impl Item {

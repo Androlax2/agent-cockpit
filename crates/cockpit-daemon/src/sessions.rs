@@ -187,10 +187,11 @@ pub(crate) async fn task_work(sessions: &Sessions) -> Result<Work, Failed> {
 
 /// The finished label (#157, decided in #201): the task list, never the agent's own state,
 /// says the session's work is done. It is doing no item and finished one since its latest
-/// launch (#226), so a session relaunched to keep working is not finished until it finishes
-/// new work; a finish in the launch's own second does not count. A session mid-launch,
-/// mid-stop, failed or ended is not labelled: the failed one needs the owner, the ended one
-/// has nothing left to exit.
+/// launch made to give it work (#226; #269, decided in #312), so a session relaunched to keep
+/// working is not finished until it finishes new work, while a restore or a start-file
+/// restart keeps the label. Both are ordered by their commits, never by the clock (#273). A
+/// session mid-launch, mid-stop, failed or ended is not labelled: the failed one needs the
+/// owner, the ended one has nothing left to exit.
 fn is_finished(session: &Session, work: &Work) -> bool {
     if matches!(
         session.state,
@@ -201,7 +202,7 @@ fn is_finished(session: &Session, work: &Work) -> bool {
     ) {
         return false;
     }
-    let Some(launch) = &session.launch else {
+    let Some(launch_order) = session.working_launch_order else {
         return false;
     };
     let id = TaskSession::new(session.id.as_str())
@@ -209,8 +210,8 @@ fn is_finished(session: &Session, work: &Work) -> bool {
     work.get(&id).is_some_and(|work| {
         work.doing == 0
             && work
-                .last_finished_at
-                .is_some_and(|finished_at| finished_at > launch.launched_at)
+                .last_finished_order
+                .is_some_and(|finish_order| finish_order > launch_order)
     })
 }
 

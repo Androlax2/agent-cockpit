@@ -104,5 +104,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 3,
             sql: "ALTER TABLE tasks_items ADD COLUMN finished_at INTEGER;",
         },
+        // #273: where a finish lies among the database's commits, so the label orders it
+        // against a launch without the clock's seconds. Items done before it have none.
+        Migration {
+            version: 4,
+            sql: "ALTER TABLE tasks_items ADD COLUMN finished_order INTEGER;",
+        },
     ],
 };

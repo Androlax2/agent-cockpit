@@ -323,15 +323,15 @@ pub async fn session_work(
     for (session, count) in counts_by_session(connection, doing).await? {
         work.entry(session).or_default().doing = count;
     }
-    // Items done before finish times were kept (#226) have none and never count.
-    let finished = "SELECT finished_by, max(finished_at) FROM tasks_items
-        WHERE finished_by IS NOT NULL AND status = 'done' AND finished_at IS NOT NULL
+    // Items done before finish orders were kept (#273) have none and never count.
+    let finished = "SELECT finished_by, max(finished_order) FROM tasks_items
+        WHERE finished_by IS NOT NULL AND status = 'done' AND finished_order IS NOT NULL
         GROUP BY finished_by";
     let mut rows = connection.query(finished, ()).await?;
     while let Some(row) = rows.next().await? {
         work.entry(session_column(&row)?)
             .or_default()
-            .last_finished_at = Some(row.get(1)?);
+            .last_finished_order = Some(row.get(1)?);
     }
     Ok(work)
 }
@@ -547,12 +547,14 @@ pub async fn finish(
         }
     }
     refuse_while_waiting(&item)?;
+    let order = write.commit_order().await?;
     write
         .execute(
             "UPDATE tasks_items SET status = 'done', finished_by = doing_session, finished_at = ?3,
-                doing_session = NULL, is_queued = 0, summary = ?2, state_revision = state_revision + 1, changed_at = ?3
+                finished_order = ?4, doing_session = NULL, is_queued = 0, summary = ?2,
+                state_revision = state_revision + 1, changed_at = ?3
              WHERE id = ?1",
-            (id.0, summary, now),
+            (id.0, summary, now, order),
         )
         .await?;
     required(write, id).await
@@ -571,7 +573,7 @@ pub async fn reopen(
     write
         .execute(
             "UPDATE tasks_items SET status = 'todo', doing_session = NULL, finished_by = NULL,
-                finished_at = NULL, summary = NULL, state_revision = state_revision + 1, changed_at = ?2
+                finished_at = NULL, finished_order = NULL, summary = NULL, state_revision = state_revision + 1, changed_at = ?2
              WHERE id = ?1",
             (id.0, now),
         )

@@ -12,6 +12,7 @@ use cockpit_provider_api::{ConversationId, ProviderName};
 use cockpit_turso::sql::{Connection, Row, Value};
 use cockpit_turso::{Migration, MigrationSet, WriteTransaction};
 
+use crate::model::LaunchPurpose;
 use crate::{Error, Launch, LaunchKind, Session, SessionId, SessionState};
 
 /// A session row is never deleted, so an id is never reused and an old reference reads as
@@ -151,6 +152,17 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 launch_id INTEGER
             );",
         },
+        // #269 (decided in #312) and #273: whether a launch was made to give the session
+        // work, and where it lies among the commits, which the finished label compares a
+        // finish with. Earlier launches count as working ones, except restores, ordered
+        // before every finish that has an order.
+        Migration {
+            version: 7,
+            sql: "ALTER TABLE session_launches ADD COLUMN is_working INTEGER NOT NULL DEFAULT 1
+                CHECK (is_working IN (0, 1));
+            ALTER TABLE session_launches ADD COLUMN commit_order INTEGER NOT NULL DEFAULT 0;
+            UPDATE session_launches SET is_working = 0 WHERE kind = 'restore';",
+        },
     ],
 };
 
@@ -175,7 +187,9 @@ fn optional_text(text: Option<&str>) -> Value {
 const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout, s.working_dir,
     s.conversation, s.design_link, s.state, s.stopping_to, s.reason, s.revision, s.created_at,
     s.changed_at, l.id, l.kind, l.execution_id, l.launched_at,
-    EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id)";
+    EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
+    (SELECT max(w.commit_order) FROM session_launches w
+        WHERE w.session_id = s.id AND w.is_working = 1)";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)";
 
@@ -397,14 +411,24 @@ pub(crate) async fn insert_launch(
     write: &WriteTransaction<'_>,
     id: &SessionId,
     kind: LaunchKind,
+    purpose: LaunchPurpose,
     execution: ExecutionId,
     start_files: &StartFileSnapshot,
 ) -> Result<(), Error> {
+    let order = write.commit_order().await?;
     write
         .execute(
-            "INSERT INTO session_launches (session_id, kind, execution_id, launched_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            (id.as_str(), kind.column(), execution.0, now()),
+            "INSERT INTO session_launches
+                (session_id, kind, execution_id, launched_at, is_working, commit_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (
+                id.as_str(),
+                kind.column(),
+                execution.0,
+                now(),
+                i64::from(purpose == LaunchPurpose::Work),
+                order,
+            ),
         )
         .await?;
     let launch = write.last_insert_rowid();
@@ -649,6 +673,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         }
     };
     let restart_pending = row.get::<i64>(17)? == 1;
+    let working_launch_order = row.get(18)?;
     Ok(Session {
         id,
         provider,
@@ -663,6 +688,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         created_at: row.get(11)?,
         changed_at: row.get(12)?,
         launch,
+        working_launch_order,
         restart_pending,
     })
 }
