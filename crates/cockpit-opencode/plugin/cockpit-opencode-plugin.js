@@ -5,6 +5,9 @@
 // bridge normalizes and reports them; this file only filters, so the per-event rules live in
 // Rust (events.rs) beside their tests.
 //
+// It also adds the session's launch brief (`cockpit brief`, #419) to every system prompt, so
+// the agent sees it without asking and a compaction never drops it.
+//
 // It stays silent unless it runs in the server its launch started: an `opencode` a tool
 // starts inherits the environment, but not the port (COCKPIT_OPENCODE_PORT).
 import { spawn } from "node:child_process"
@@ -18,6 +21,12 @@ const FORWARDED = [
   "message.part.updated",
   "message.updated",
 ]
+
+// How long `cockpit brief` may take before the prompt goes without it.
+const BRIEF_DEADLINE_MS = 10000
+// How long after a failed `cockpit brief` the next model call asks again: the hook runs before
+// every model call of a turn, which must not each wait out a daemon that is down.
+const BRIEF_RETRY_MS = 60000
 
 // OpenCode's loop goes on after an assistant message that finished for these reasons.
 const UNFINISHED = ["tool-calls", "unknown"]
@@ -83,7 +92,44 @@ export const CockpitBridge = async ({ serverUrl }) => {
       }
     })
 
+  // What `cockpit brief` printed, asked once; a failed read (null) is asked again once
+  // BRIEF_RETRY_MS have passed, and the prompts meanwhile go without it rather than wait.
+  let brief
+  let failedAt = -Infinity
+  const readBrief = () =>
+    new Promise((resolve) => {
+      try {
+        const child = spawn(cockpit, ["brief"], { stdio: ["ignore", "pipe", "ignore"] })
+        const timer = setTimeout(() => child.kill("SIGKILL"), BRIEF_DEADLINE_MS)
+        let text = ""
+        child.stdout.setEncoding("utf8")
+        child.stdout.on("data", (chunk) => {
+          text += chunk
+        })
+        child.on("error", () => resolve(null))
+        child.on("close", (code) => {
+          clearTimeout(timer)
+          resolve(code === 0 ? text.trim() : null)
+        })
+      } catch {
+        resolve(null)
+      }
+    })
+
   return {
+    "experimental.chat.system.transform": async (_input, output) => {
+      if (brief === undefined) {
+        if (Date.now() - failedAt < BRIEF_RETRY_MS) return
+        brief = readBrief()
+      }
+      const text = await brief
+      if (text === null) {
+        brief = undefined
+        failedAt = Date.now()
+        return
+      }
+      if (text) output.system.push(text)
+    },
     event: async ({ event }) => {
       if (!isForwarded(event)) return
       const sessionID = event.properties?.sessionID

@@ -229,3 +229,24 @@ fn is_invisible_format(character: char) -> bool {
             | '\u{FEFF}'
     )
 }
+
+/// The `cockpit` arguments that print the session's launch brief (#419).
+pub const BRIEF_ARGUMENTS: [&str; 1] = ["brief"];
+
+/// Whether `event` starts a context the launch brief must be in (#419): every
+/// `SessionStart`, a new conversation, a resume, `/clear` or a compaction alike.
+pub fn starts_context(event: &ProviderEvent) -> bool {
+    event.name == "SessionStart"
+}
+
+/// The hook's answer that adds `brief` to the model's context: Claude Code's
+/// `SessionStart` `additionalContext`.
+pub fn brief_context(brief: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": brief,
+        }
+    })
+    .to_string()
+}

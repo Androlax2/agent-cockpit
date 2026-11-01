@@ -41,3 +41,9 @@ engine. The engine's ID, name and version identify it, and a rootful engine on L
 moves to `cockpit-containers` when that crate exists (#390).
 
 Provider sign-in is `unknown` until the adapters can report it (#443).
+
+A provider the daemon wires but cannot use (not installed, or failing its version) is
+`available` with `not usable, optional` and how to install it, as an unsandboxed owner is: a
+host needs one usable provider, not all of them (#411). `providers` blocks when none is
+usable, and a project's `workflow preset` blocks when no usable provider reports the
+capabilities its steps need.

@@ -105,6 +105,50 @@ fn every_launch_loads_the_hook_bridge_settings() {
     );
 }
 
+/// #419: the agent reaches Cockpit's MCP server without configuring anything.
+#[test]
+fn every_launch_registers_cockpits_mcp_server() {
+    let words = words(
+        &common::claude()
+            .launch(&request(&Conversation::New))
+            .unwrap()
+            .arguments,
+    );
+    let config: serde_json::Value =
+        serde_json::from_str(value_after(&words, "--mcp-config").unwrap()).unwrap();
+
+    assert_eq!(
+        config,
+        serde_json::json!({
+            "mcpServers": {
+                "cockpit": {
+                    "type": "stdio",
+                    "command": "/opt/cockpit/bin/cockpit",
+                    "args": ["mcp"],
+                }
+            }
+        })
+    );
+}
+
+/// `--mcp-config` takes every word up to the next flag, so the first message must not
+/// follow it bare.
+#[test]
+fn the_first_message_is_never_read_as_an_mcp_config() {
+    let conversation = Conversation::New;
+    let request = LaunchRequest {
+        first_message: Some("hello"),
+        ..request(&conversation)
+    };
+    let words = words(&common::claude().launch(&request).unwrap().arguments);
+    let config = words
+        .iter()
+        .position(|word| word == "--mcp-config")
+        .unwrap();
+
+    assert!(words[config + 2].starts_with("--"), "{words:?}");
+}
+
 #[test]
 fn a_bridge_path_with_a_quote_stays_one_shell_word() {
     let mut bridge = common::bridge();
@@ -136,6 +180,7 @@ fn without_its_hook_bridge_a_launch_subscribes_no_hooks() {
     );
 
     assert!(!words.contains(&"--settings".to_owned()), "{words:?}");
+    assert!(!words.contains(&"--mcp-config".to_owned()), "{words:?}");
 }
 
 #[test]

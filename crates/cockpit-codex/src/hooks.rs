@@ -123,7 +123,7 @@ fn json_string(text: &str) -> String {
 }
 
 /// `text` as a TOML basic string.
-fn toml_string(text: &str) -> String {
+pub(crate) fn toml_string(text: &str) -> String {
     let mut quoted = String::with_capacity(text.len() + 2);
     quoted.push('"');
     for character in text.chars() {
@@ -245,4 +245,25 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
         ]);
     }
     Some(arguments)
+}
+
+/// The `cockpit` arguments that print the session's launch brief (#419).
+pub const BRIEF_ARGUMENTS: [&str; 1] = ["brief"];
+
+/// Whether `event` starts a context the launch brief must be in (#419): every
+/// `SessionStart`, a new thread, a resume, `/clear`, a compaction or a fork alike.
+pub fn starts_context(event: &ProviderEvent) -> bool {
+    event.name == "SessionStart"
+}
+
+/// The hook's answer that adds `brief` to the model's context: Codex's `SessionStart`
+/// `additionalContext` (`session-start.command.output` at `rust-v0.161.0`).
+pub fn brief_context(brief: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": brief,
+        }
+    })
+    .to_string()
 }

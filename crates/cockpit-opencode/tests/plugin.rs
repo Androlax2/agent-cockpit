@@ -222,7 +222,112 @@ fn a_bridge_that_cannot_run_never_stops_the_plugin() {
     let (received, stdout) = run_plugin(&events, PORT, &environment, 0);
 
     assert_eq!(received, Vec::<String>::new());
-    assert_eq!(stdout.trim(), "hooks: event");
+    assert_eq!(
+        stdout.trim(),
+        "hooks: experimental.chat.system.transform,event"
+    );
+}
+
+/// Calls the plugin's system transform twice with `cockpit` as the `cockpit` program and
+/// prints each resulting system prompt as JSON, one line each.
+const SYSTEM_DRIVER: &str = r#"
+const [plugin, port, apart] = process.argv.slice(2)
+const { CockpitBridge } = await import(plugin)
+const hooks = await CockpitBridge({ serverUrl: new URL(`http://127.0.0.1:${port}`) })
+const now = Date.now
+let elapsed = 0
+Date.now = () => now() + elapsed
+for (let call = 0; call < 3; call++) {
+  if (call > 0) elapsed += Number(apart)
+  const output = { system: ["OpenCode's own prompt"] }
+  await hooks["experimental.chat.system.transform"]({ sessionID: "ses_1", model: {} }, output)
+  console.log(JSON.stringify(output.system))
+}
+"#;
+
+/// The system prompts three model calls `apart_ms` apart get, with a fake `cockpit` that runs
+/// `brief_body` for `cockpit brief`, and how many times it ran.
+fn system_prompts(brief_body: &str, apart_ms: u64) -> (Vec<String>, usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let plugin = dir.path().join("cockpit-opencode-plugin.mjs");
+    std::fs::write(&plugin, PLUGIN_SOURCE).unwrap();
+    common::script(
+        dir.path(),
+        "cockpit",
+        &format!(
+            "[ \"$1\" = brief ] || exit 9\n\
+             printf '%s' \"$COCKPIT_LAUNCH_TOKEN\" >> \"$(dirname \"$0\")/runs\"\n\
+             echo >> \"$(dirname \"$0\")/runs\"\n{brief_body}"
+        ),
+    );
+    let driver = dir.path().join("driver.mjs");
+    std::fs::write(&driver, SYSTEM_DRIVER).unwrap();
+    let output = Command::new("node")
+        .arg(&driver)
+        .arg(&plugin)
+        .arg(PORT)
+        .arg(apart_ms.to_string())
+        .env(
+            "COCKPIT_OPENCODE_BRIDGE",
+            dir.path().join("cockpit-opencode-bridge"),
+        )
+        .env("COCKPIT_OPENCODE_COCKPIT", dir.path().join("cockpit"))
+        .env("COCKPIT_OPENCODE_PORT", PORT)
+        .env("COCKPIT_LAUNCH_TOKEN", "token-1")
+        .output()
+        .unwrap_or_else(|error| panic!("the plugin tests need Node.js on PATH: {error}"));
+    assert!(output.status.success(), "{output:?}");
+    let runs = std::fs::read_to_string(dir.path().join("runs"))
+        .unwrap_or_default()
+        .lines()
+        .inspect(|token| assert_eq!(*token, "token-1"))
+        .count();
+    let prompts = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    (prompts, runs)
+}
+
+const OWN_PROMPT: &str = r#"["OpenCode's own prompt"]"#;
+
+/// #419: the agent sees its launch brief without asking, in every model call, read once.
+#[test]
+fn every_system_prompt_carries_the_launch_brief_read_once() {
+    let (prompts, runs) = system_prompts("printf '# Cockpit launch brief\\n'", 0);
+
+    assert_eq!(
+        prompts,
+        [r##"["OpenCode's own prompt","# Cockpit launch brief"]"##; 3]
+    );
+    assert_eq!(runs, 1);
+}
+
+/// The hook runs before every model call of a turn: a daemon that is down must not make each
+/// of them wait for `cockpit brief` again.
+#[test]
+fn a_brief_that_cannot_be_read_never_blocks_the_prompt_nor_is_asked_each_call() {
+    let (prompts, runs) = system_prompts("echo 'no daemon' >&2; exit 1", 1_000);
+
+    assert_eq!(prompts, [OWN_PROMPT; 3]);
+    assert_eq!(runs, 1);
+}
+
+#[test]
+fn a_brief_that_cannot_be_read_is_asked_again_a_minute_later() {
+    let (prompts, runs) = system_prompts("exit 1", 61_000);
+
+    assert_eq!(prompts, [OWN_PROMPT; 3]);
+    assert_eq!(runs, 3);
+}
+
+#[test]
+fn an_empty_brief_adds_nothing_and_is_read_once() {
+    let (prompts, runs) = system_prompts("exit 0", 61_000);
+
+    assert_eq!(prompts, [OWN_PROMPT; 3]);
+    assert_eq!(runs, 1);
 }
 
 /// The plugin's list and the adapter's must not drift apart.

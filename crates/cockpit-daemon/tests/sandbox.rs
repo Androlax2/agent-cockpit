@@ -67,6 +67,87 @@ async fn a_launch_runs_the_agent_inside_greywall_as_its_own_proxy_client() {
     );
 }
 
+/// The folders the first launch of a new session may read (`--allow-read-path`).
+async fn readable_folders(home: &Home) -> Vec<String> {
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let session = new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+    let words: Vec<String> = sandbox_launches(home)[0]
+        .split(' ')
+        .map(str::to_owned)
+        .collect();
+    words
+        .windows(2)
+        .filter(|pair| pair[0] == "--allow-read-path")
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
+fn state_folder(home: &Home, folder: &str) -> String {
+    home.state_dir().join(folder).display().to_string()
+}
+
+/// Greywall denies every read it was not told to allow: the instruction bundle the launch
+/// brief points at (#419) and the OpenCode plugin (#415) must be readable.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_may_read_the_instruction_bundle_and_the_opencode_plugin() {
+    let home = Home::new();
+    let _daemon = home.start();
+
+    let readable = readable_folders(&home).await;
+
+    for folder in ["agent-context", "opencode-plugin"] {
+        assert!(
+            readable.contains(&state_folder(&home, folder)),
+            "{folder} is not readable: {readable:?}"
+        );
+    }
+}
+
+/// Without OpenCode the plugin folder is never written; a path that does not exist handed
+/// to the sandbox would fail every other agent's launch.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_opencode_a_launch_is_given_no_plugin_folder() {
+    let home = Home::new();
+    std::fs::remove_file(home.path().join("bin/opencode")).unwrap();
+    // A folder holding `opencode` (often `/usr/bin`, beside Git and tmux) is replaced by a
+    // copy of its links without it.
+    let mirrors = tempfile::tempdir().unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let search = std::iter::once(home.path().join("bin")).chain(
+        std::env::split_paths(&path)
+            .enumerate()
+            .map(|(index, dir)| {
+                if !dir.join("opencode").exists() {
+                    return dir;
+                }
+                let mirror = mirrors.path().join(index.to_string());
+                std::fs::create_dir(&mirror).unwrap();
+                for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                    if entry.file_name() != "opencode" {
+                        std::os::unix::fs::symlink(entry.path(), mirror.join(entry.file_name()))
+                            .unwrap();
+                    }
+                }
+                mirror
+            }),
+    );
+    let search = std::env::join_paths(search).unwrap();
+    let _daemon = home.start_with(&[("PATH", search.to_str().unwrap())]);
+
+    let readable = readable_folders(&home).await;
+
+    assert!(
+        readable.contains(&state_folder(&home, "agent-context")),
+        "{readable:?}"
+    );
+    assert!(
+        !readable.contains(&state_folder(&home, "opencode-plugin")),
+        "{readable:?}"
+    );
+}
+
 /// Git and the project's own files live at the checkout's root: a session started in a
 /// subfolder still gets the whole checkout.
 #[tokio::test(flavor = "multi_thread")]
@@ -245,7 +326,16 @@ async fn cockpit_sandbox_show_without_greywall_fails_naming_why() {
     let (root, _) = home.project(&client, "app").await;
 
     let shown = home
-        .cockpit(&["sandbox", "show", root.to_str().unwrap()], &[])
+        .cockpit(
+            &[
+                "sandbox",
+                "show",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
         .await;
 
     assert!(!shown.status.success());

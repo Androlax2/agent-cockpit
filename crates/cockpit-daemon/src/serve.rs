@@ -1,5 +1,5 @@
 //! What the `cockpit-daemon` binary runs once its arguments are read: the owner's
-//! configuration, the Claude Code adapter, the wiring and the daemon until it stops. The
+//! configuration, the provider adapters, the wiring and the daemon until it stops. The
 //! end-to-end tests' daemon (`examples/cockpit-e2e-daemon.rs`, #300) runs the same with
 //! shorter clocks, so the product's configuration floors never move for a test.
 
@@ -11,6 +11,10 @@ use std::time::Duration;
 use cockpit_provider_api::{Provenance, Provider};
 
 use crate::{Instance, Options, Routes, StartError, Wiring, session_settings};
+
+/// The folder under the state directory the OpenCode plugin is written to at every start;
+/// agents read it, so it holds nothing else.
+const OPENCODE_PLUGIN_DIR: &str = "opencode-plugin";
 
 /// How often the product's sessions pass (exits, idle sleep, expiry) runs.
 pub const SESSION_TICK: Duration = Duration::from_secs(30);
@@ -28,7 +32,9 @@ pub struct Serve {
     pub profile: cockpit_config::Sourced<cockpit_config::Profile>,
     /// Also print the log to stderr.
     pub foreground: bool,
-    /// The installation's directory: `cockpit` and `cockpit-claude-hook` beside the daemon.
+    /// The installation's directory: `cockpit` and the adapters' bridge programs
+    /// (`cockpit-claude-hook`, `cockpit-codex-hook`, `cockpit-codex-session`,
+    /// `cockpit-opencode-bridge`) beside the daemon.
     pub programs_dir: PathBuf,
     /// [`SESSION_TICK`] in the product.
     pub session_tick: Duration,
@@ -96,16 +102,42 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     })?;
     let start_files = config.declared_start_files();
     // Discovery runs programs and may block for seconds, so it comes before the runtime.
+    let plugin_dir = instance.options().state_dir.join(OPENCODE_PLUGIN_DIR);
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
     let mut unavailable_providers = Vec::new();
     match claude_code(&serve.programs_dir) {
         Ok(claude) => providers.push(Arc::new(claude)),
         Err(reason) => unavailable_providers.push(("claude".to_owned(), reason)),
     }
+    match codex(&serve.programs_dir) {
+        Ok(codex) => providers.push(Arc::new(codex)),
+        Err(reason) => unavailable_providers.push(("codex".to_owned(), reason)),
+    }
+    match opencode(&serve.programs_dir, &plugin_dir) {
+        Ok(opencode) => providers.push(Arc::new(opencode)),
+        Err(reason) => unavailable_providers.push(("opencode".to_owned(), reason)),
+    }
+    // The plugin folder exists only once OpenCode was found and its plugin written: a missing
+    // path handed to the sandbox would fail every launch, OpenCode or not.
+    let opencode_plugin_dir = plugin_dir.is_dir().then_some(plugin_dir);
     let sandbox = sandbox(
         instance.options(),
         &environment,
-        &serve.programs_dir,
+        &[
+            Some(serve.programs_dir.clone()),
+            opencode_plugin_dir,
+            // `$COCKPIT_INSTRUCTIONS`, which the launch brief points agents at (#419); the
+            // daemon writes it at its start, before any launch.
+            Some(
+                instance
+                    .options()
+                    .state_dir
+                    .join(crate::agent_context::BUNDLE_DIR),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>(),
         &config,
     );
     let mut sessions = cockpit_sessions::Settings {
@@ -160,12 +192,13 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
 
 /// The sandbox every launch goes through (#61): Greywall and greyproxy as found on the
 /// daemon's `PATH` and checked against the pinned builds, with the paths the daemon's layout
-/// gives every agent and keeps from it. An engine that is missing or of another build is
+/// gives every agent and keeps from it; `bridge_dirs` hold what the adapters' bridges run
+/// and load inside it, and the instruction bundle. An engine that is missing or of another build is
 /// logged; launches are then refused while the owner requires the sandbox.
 fn sandbox(
     options: &Options,
     environment: &cockpit_config::Environment,
-    programs_dir: &Path,
+    bridge_dirs: &[PathBuf],
     config: &cockpit_config::EffectiveConfig,
 ) -> cockpit_sandbox::Sandbox {
     let platform = cockpit_sandbox::Platform::detect();
@@ -226,14 +259,15 @@ fn sandbox(
         platform,
         engine,
         cockpit_sandbox::HostPaths {
-            read_only: vec![
+            read_only: std::iter::once(
                 options
                     .agent_socket_path()
                     .parent()
                     .expect("the agent socket is in its own folder")
                     .to_path_buf(),
-                programs_dir.to_path_buf(),
-            ],
+            )
+            .chain(bridge_dirs.iter().cloned())
+            .collect(),
             denied,
         },
     )
@@ -274,13 +308,100 @@ fn claude_code(programs_dir: &Path) -> Result<cockpit_claude::ClaudeCode, String
     };
     let claude = cockpit_claude::ClaudeCode::discover(&program, bridge)
         .map_err(|error| unavailable(error.to_string()))?;
-    let provenance = match claude.provenance() {
+    log_ready(&claude, &claude.provenance());
+    Ok(claude)
+}
+
+/// The Codex adapter for the `codex` on the daemon's `PATH`, with its session launcher, hook
+/// bridge and the `cockpit` program installed in `programs_dir` (#411). Why not, logged, when
+/// there is none or it does not answer its version: the readiness report names it (#50).
+fn codex(programs_dir: &Path) -> Result<cockpit_codex::Codex, String> {
+    let unavailable = |reason: String| {
+        tracing::warn!("provider codex unavailable: {reason}");
+        reason
+    };
+    let Some(program) =
+        std::env::var_os("PATH").and_then(|path| cockpit_codex::Codex::find_on_path(&path))
+    else {
+        return Err(unavailable("no `codex` on PATH".to_owned()));
+    };
+    let bridge = cockpit_codex::Bridge {
+        session_program: programs_dir.join("cockpit-codex-session"),
+        hook_program: programs_dir.join("cockpit-codex-hook"),
+        cockpit_program: programs_dir.join("cockpit"),
+    };
+    // Without its bridge the adapter launches the TUI alone and reports only `resume`.
+    let bridge = match bridge.check() {
+        Ok(()) => Some(bridge),
+        Err(reason) => {
+            tracing::warn!("provider codex: {reason}, so its activity is not reported");
+            None
+        }
+    };
+    let codex = cockpit_codex::Codex::discover(&program, bridge)
+        .map_err(|error| unavailable(error.to_string()))?;
+    log_ready(&codex, &codex.provenance());
+    Ok(codex)
+}
+
+/// The OpenCode adapter for the `opencode` on the daemon's `PATH`, with its plugin written to
+/// `plugin_dir` and the bridge and `cockpit` programs installed in `programs_dir` (#415). Why
+/// not, logged, when there is none or it does not answer its version: the readiness report
+/// names it (#50).
+fn opencode(programs_dir: &Path, plugin_dir: &Path) -> Result<cockpit_opencode::OpenCode, String> {
+    let unavailable = |reason: String| {
+        tracing::warn!("provider opencode unavailable: {reason}");
+        reason
+    };
+    let Some(program) =
+        std::env::var_os("PATH").and_then(|path| cockpit_opencode::OpenCode::find_on_path(&path))
+    else {
+        return Err(unavailable("no `opencode` on PATH".to_owned()));
+    };
+    // Without its bridge the adapter loads no plugin and reports neither events nor outcomes,
+    // so it offers only `resume`.
+    let bridge = write_opencode_plugin(plugin_dir).and_then(|plugin| {
+        let bridge = cockpit_opencode::Bridge {
+            plugin,
+            bridge_program: programs_dir.join("cockpit-opencode-bridge"),
+            cockpit_program: programs_dir.join("cockpit"),
+        };
+        bridge.check().map(|()| bridge)
+    });
+    let bridge = match bridge {
+        Ok(bridge) => Some(bridge),
+        Err(reason) => {
+            tracing::warn!("provider opencode: {reason}, so its activity is not reported");
+            None
+        }
+    };
+    let opencode = cockpit_opencode::OpenCode::discover(&program, bridge)
+        .map_err(|error| unavailable(error.to_string()))?;
+    log_ready(&opencode, &opencode.provenance());
+    Ok(opencode)
+}
+
+/// Writes this release's OpenCode plugin into `dir`, replacing the file in one rename so an
+/// OpenCode starting meanwhile never loads half of it; its path, or why it could not be.
+fn write_opencode_plugin(dir: &Path) -> Result<PathBuf, String> {
+    let plugin = dir.join("cockpit-opencode-plugin.js");
+    let partial = dir.join("cockpit-opencode-plugin.js.partial");
+    std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::write(&partial, cockpit_opencode::PLUGIN_SOURCE))
+        .and_then(|()| std::fs::rename(&partial, &plugin))
+        .map_err(|error| format!("cannot write its plugin to {}: {error}", plugin.display()))?;
+    Ok(plugin)
+}
+
+/// The `provider <name> ready` line the release's install check and the tests read.
+fn log_ready(provider: &dyn Provider, provenance: &Provenance) {
+    let provenance = match provenance {
         Provenance::Tested { .. } => "tested",
         Provenance::Discovered => "unverified",
     };
     tracing::info!(
-        "provider claude ready version={} provenance={provenance}",
-        claude.version().unwrap_or("unknown")
+        "provider {} ready version={} provenance={provenance}",
+        provider.name(),
+        provider.version().unwrap_or("unknown")
     );
-    Ok(claude)
 }

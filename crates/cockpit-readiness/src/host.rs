@@ -1,6 +1,6 @@
 //! The requirements every host has, project or not.
 
-use cockpit_config::{AgentSandbox, ConfigFile, EffectiveConfig};
+use cockpit_config::{AgentSandbox, ConfigFile, EffectiveConfig, KNOWN_PROVIDERS};
 
 use crate::{ControlFacts, Platform, ProviderFacts, Requirement, SandboxEngine, Status};
 
@@ -115,52 +115,64 @@ fn engine_detail(engine: &SandboxEngine) -> String {
     )
 }
 
-/// One requirement per provider and one for each available provider's sign-in; one in all
-/// when the daemon was wired with none.
+/// One requirement per provider the daemon wires and one for each usable provider's sign-in.
+/// A provider that is not usable is listed with how to install it but does not block, as an
+/// unsandboxed owner is: one usable provider is enough (#411). `providers` blocks when none
+/// is; a project's preset blocks on the capabilities its steps need (`project::preset`).
 pub(crate) fn providers(providers: &[ProviderFacts]) -> Vec<Requirement> {
-    if providers.is_empty() {
-        return vec![Requirement::needs(
+    let mut requirements: Vec<Requirement> = providers.iter().flat_map(provider).collect();
+    if !providers.iter().any(|provider| provider.found.is_ok()) {
+        let detail = if providers.is_empty() {
+            "the daemon was started without an agent provider"
+        } else {
+            "no agent provider is usable, so no session can start"
+        };
+        requirements.push(Requirement::needs(
             "providers",
             Status::MissingPrerequisite,
-            "the daemon was started without an agent provider",
-            format!("install a supported agent (claude) on the daemon's PATH, {RESTART}"),
-        )];
+            detail,
+            format!(
+                "install a supported agent ({}) on the daemon's PATH, {RESTART}",
+                KNOWN_PROVIDERS.join(", ")
+            ),
+        ));
     }
-    providers
-        .iter()
-        .flat_map(|provider| {
-            let name = format!("provider {}", provider.name);
-            match &provider.found {
-                Ok(found) => {
-                    let version = found.version.as_deref().unwrap_or("of an unknown version");
-                    let provenance = if found.tested { "tested" } else { "unverified" };
-                    let detail = format!(
-                        "{version} ({provenance}); reports {}",
-                        listed(&found.capabilities)
-                    );
-                    vec![
-                        Requirement::available(name, detail),
-                        // #443: no adapter reports its sign-in yet.
-                        Requirement::needs(
-                            format!("provider {} sign-in", provider.name),
-                            Status::Unknown,
-                            "Cockpit cannot read this provider's sign-in yet",
-                            format!(
-                                "start {} once in a terminal and sign in if it asks",
-                                provider.name
-                            ),
-                        ),
-                    ]
-                }
-                Err(reason) => vec![Requirement::needs(
-                    name,
-                    Status::MissingPrerequisite,
-                    reason.clone(),
-                    format!("install {} on the daemon's PATH, {RESTART}", provider.name),
-                )],
-            }
-        })
-        .collect()
+    requirements
+}
+
+fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
+    let name = format!("provider {}", provider.name);
+    let found = match &provider.found {
+        Ok(found) => found,
+        Err(reason) => {
+            return vec![
+                Requirement::available(name, format!("not usable, optional: {reason}"))
+                    .with_advice(format!(
+                        "to use it, install {} on the daemon's PATH, {RESTART}",
+                        provider.name
+                    )),
+            ];
+        }
+    };
+    let version = found.version.as_deref().unwrap_or("of an unknown version");
+    let provenance = if found.tested { "tested" } else { "unverified" };
+    let detail = format!(
+        "{version} ({provenance}); reports {}",
+        listed(&found.capabilities)
+    );
+    vec![
+        Requirement::available(name, detail),
+        // #443: no adapter reports its sign-in yet.
+        Requirement::needs(
+            format!("provider {} sign-in", provider.name),
+            Status::Unknown,
+            "Cockpit cannot read this provider's sign-in yet",
+            format!(
+                "start {} once in a terminal and sign in if it asks",
+                provider.name
+            ),
+        ),
+    ]
 }
 
 /// Admission works on every host; the controls it cannot enforce are requested only, which

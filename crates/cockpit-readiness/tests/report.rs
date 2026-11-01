@@ -154,10 +154,10 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
 
     let report = fixture.report(&host, &project);
 
+    // An available requirement may still advise (an unsandboxed owner, an optional provider).
     for requirement in &report.requirements {
-        assert_eq!(
-            requirement.status == Status::Available,
-            requirement.next.is_none(),
+        assert!(
+            requirement.status == Status::Available || requirement.next.is_some(),
             "{requirement:#?}"
         );
     }
@@ -194,13 +194,10 @@ fn a_host_fact_decides_its_requirement_status() {
         ),
         (
             HostFacts {
-                providers: vec![ProviderFacts {
-                    name: "claude".to_owned(),
-                    found: Err("no `claude` on PATH".to_owned()),
-                }],
+                providers: vec![missing("claude")],
                 ..ready_host()
             },
-            "provider claude",
+            "providers",
             Status::MissingPrerequisite,
         ),
         (
@@ -226,6 +223,54 @@ fn a_host_fact_decides_its_requirement_status() {
 
         assert_eq!(requirement(&report, name).status, status, "{report:#?}");
     }
+}
+
+fn missing(name: &str) -> ProviderFacts {
+    ProviderFacts {
+        name: name.to_owned(),
+        found: Err(format!("no `{name}` on PATH")),
+    }
+}
+
+/// #411: a host needs one usable provider, not every provider Cockpit supports.
+#[test]
+fn a_provider_that_is_not_installed_is_listed_with_how_to_install_it_without_blocking() {
+    let mut host = ready_host();
+    host.providers.push(missing("codex"));
+
+    let report = assess(&host, &Ok(owner_only_config()), None);
+
+    let codex = requirement(&report, "provider codex");
+    assert!(codex.detail.contains("no `codex` on PATH"), "{codex:#?}");
+    assert!(
+        codex
+            .next
+            .as_deref()
+            .is_some_and(|next| next.contains("install codex")),
+        "{codex:#?}"
+    );
+    assert!(report.is_ready(), "{report:#?}");
+}
+
+#[test]
+fn a_host_where_no_provider_is_usable_blocks_naming_every_supported_one() {
+    let host = HostFacts {
+        providers: vec![missing("claude"), missing("codex"), missing("opencode")],
+        ..ready_host()
+    };
+
+    let report = assess(&host, &Ok(owner_only_config()), None);
+
+    let providers = requirement(&report, "providers");
+    assert_eq!(providers.status, Status::MissingPrerequisite);
+    assert!(
+        providers
+            .next
+            .as_deref()
+            .is_some_and(|next| next.contains("claude, codex, opencode")),
+        "{providers:#?}"
+    );
+    assert!(!report.is_ready());
 }
 
 fn owner_only_config() -> EffectiveConfig {

@@ -37,6 +37,10 @@ pub const TUI_FLAGS: [&str; 1] = ["--remote"];
 /// `codex app-server --help`.
 pub const SERVER_FLAGS: [&str; 3] = ["--listen", "--enable", "--config"];
 
+/// The name Cockpit's MCP server (`cockpit mcp`) has in every harness a launch registers it
+/// with (#419).
+pub const MCP_SERVER_NAME: &str = "cockpit";
+
 /// The feature that runs hooks; a launch enables it so an owner who turned it off still
 /// gets the session's events.
 pub const HOOKS_FEATURE: &str = "hooks";
@@ -236,8 +240,8 @@ impl Provider for Codex {
     }
 
     /// With the bridge, the session launcher: `cockpit-codex-session --cockpit <cockpit>
-    /// --codex <codex> --socket <session dir>/codex.sock --config <hook>… [--resume <thread
-    /// id>] [--message <first message>]`. It runs Codex's app-server with the hooks and the
+    /// --codex <codex> --socket <session dir>/codex.sock --config <hook>… --config <mcp>…
+    /// [--resume <thread id>] [--message <first message>]`. It runs Codex's app-server with the hooks and the
     /// TUI against it ([`server_arguments`], [`tui_arguments`]). Without the bridge, the TUI
     /// alone: `codex [resume] --no-daemon [-- [<thread id>] [<first message>]]`. A new
     /// conversation's thread id is Codex's own and unknown at launch: the first report names
@@ -302,7 +306,10 @@ fn session_arguments(
         "--socket".into(),
         delivery::socket_path(request.session_dir).into(),
     ];
-    for value in hooks::subscription(&bridge.hook_command()) {
+    for value in hooks::subscription(&bridge.hook_command())
+        .into_iter()
+        .chain(mcp_configs(&bridge.cockpit_program))
+    {
         arguments.extend(["--config".into(), value.into()]);
     }
     if let Some(id) = resumed {
@@ -313,6 +320,39 @@ fn session_arguments(
     }
     arguments
 }
+
+/// The `--config` values that register `cockpit mcp` as the [`MCP_SERVER_NAME`] MCP server
+/// (#419). [`Bridge::check`] refuses a `cockpit` path that is not UTF-8.
+pub fn mcp_configs(cockpit: &Path) -> Vec<String> {
+    vec![
+        format!(
+            "mcp_servers.{MCP_SERVER_NAME}.command={}",
+            hooks::toml_string(&cockpit.to_string_lossy())
+        ),
+        format!("mcp_servers.{MCP_SERVER_NAME}.args=[\"mcp\"]"),
+        format!(
+            "mcp_servers.{MCP_SERVER_NAME}.env_vars=[{}]",
+            MCP_ENVIRONMENT
+                .iter()
+                .map(|variable| format!("\"{variable}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    ]
+}
+
+/// What `cockpit mcp` needs from the launch's environment to reach its session: Codex hands
+/// a stdio MCP server only `HOME`, `PATH` and a few locale variables unless a server names
+/// more (`DEFAULT_ENV_VARS`, codex-rs/rmcp-client at rust-v0.161.0).
+const MCP_ENVIRONMENT: [&str; 7] = [
+    "COCKPIT_LAUNCH_TOKEN",
+    "COCKPIT_AGENT_SOCKET",
+    "COCKPIT_INSTRUCTIONS",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+];
 
 /// `[resume] --no-daemon [-- [<thread id>] [<first message>]]`: every word after `--` is
 /// positional, so neither can be read as a flag.
