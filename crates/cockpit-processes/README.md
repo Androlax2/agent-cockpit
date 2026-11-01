@@ -65,7 +65,9 @@ the execution `launching`. The terminal's other side belongs to the caller: a da
 stops hangs the session up.
 
 `reserve` records a launch intent in the caller's transaction, so a capability commits it
-with its own record of what the execution is for; `launch_reserved` then launches it once.
+with its own record of what the execution is for; `launch_reserved` then launches it once,
+or `prepare_reserved_hosted` answers its host's command (#256), ending it as never started
+when the spec is refused.
 
 Output goes to `stdout` and `stderr` files in `<executions dir>/<database epoch>/<id>/`, not to pipes: a
 pipe whose reader is the daemon would kill the program with `SIGPIPE` after a daemon
@@ -91,6 +93,9 @@ themselves are not size-limited yet.
   running, reservation kept and reconciled) and the restart cases of reconciliation.
 - `tests/hosted.rs`: an execution a host (playing tmux) starts: confirmed as its own
   process group, exactly its environment, no value in its command, abandoned launches.
+- `tests/hosted_reserved.rs`: a hosted execution the caller reserved in its own
+  transaction: run as that execution, ended as never started on a refused spec, refused
+  once no longer reserved.
 - `tests/output.rs`: bounded draining and gap markers for a slow viewer.
 - `tests/terminal.rs`: terminal executions with util-linux `setsid --ctty` as the leader:
   the program leads the session and has the terminal, its exit status, whole-session

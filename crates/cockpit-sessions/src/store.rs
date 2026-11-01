@@ -345,6 +345,29 @@ pub(crate) async fn transition(
     session(write, id).await
 }
 
+/// Whether the session's latest recorded transition went from `from` to `to`.
+pub(crate) async fn latest_transition_is(
+    connection: &Connection,
+    id: &SessionId,
+    from: SessionState,
+    to: SessionState,
+) -> Result<bool, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT from_state, to_state FROM session_transitions
+             WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+            [id.as_str()],
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(false);
+    };
+    // Compared as `record_transition` writes them.
+    let latest_from: Option<String> = row.get(0)?;
+    let latest_to: String = row.get(1)?;
+    Ok(latest_from == Some(from.to_string()) && latest_to == to.to_string())
+}
+
 /// When the session last moved to asleep, if it is asleep now.
 pub(crate) async fn entered_asleep_at(
     connection: &Connection,

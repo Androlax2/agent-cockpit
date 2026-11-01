@@ -533,7 +533,9 @@ impl Sessions {
     /// Reboot restore, run once at daemon start after the processes reconciled and before
     /// requests are accepted. A session that was active and whose agent is gone is reopened
     /// with its conversation, without a key press; a reopen that fails leaves the session
-    /// `failed` with the reason and is not retried. Stops under way are finished.
+    /// `failed` with the reason and is not retried. Stops under way are finished. Only a
+    /// state-database error stops the start: one finishing a stop (#251), or one that kept
+    /// a failure from being recorded.
     pub async fn restore(&self) -> Result<Vec<Restored>, Error> {
         if let Err(error) = self.tmux() {
             // Their agents may still run in a server this daemon cannot reach; a daemon
@@ -545,39 +547,100 @@ impl Sessions {
             let read = self.database.read().await?;
             store::sessions_in(&read, &["launching", "running", "stopping"]).await?
         };
+        self.terminate_stopping_agents(&active).await;
         let mut restored = Vec::new();
-        for session in active {
-            let id = session.id.clone();
-            // Uncontended: restore runs before the daemon accepts requests. A relaunch needs it.
-            let operation = self.lock(&id).await;
-            let outcome = match session.state {
-                SessionState::Stopping { to } => {
-                    // Marked through its stop phase, as `stop` marks a restart.
-                    let _launching = (to == StopTarget::Restart).then(|| operation.launching());
-                    match self.finish_stop(&id, to).await {
-                        Ok(stopped) if to == StopTarget::Restart => {
-                            match self.relaunch(&operation, &stopped).await {
-                                Ok(relaunched) => Restored::StopFinished(id, relaunched.state),
-                                Err(error) => {
-                                    Restored::Failed(id, format!("restore failed: {error}"))
-                                }
-                            }
-                        }
-                        Ok(stopped) => Restored::StopFinished(id, stopped.state),
-                        Err(error) => Restored::StopNotFinished(id, error.to_string()),
-                    }
-                }
-                _ => match self.restore_one(&operation, &session).await {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        self.fail_restore(&session, format!("restore failed: {error}"))
-                            .await?
-                    }
-                },
-            };
-            restored.push(outcome);
+        for session in &active {
+            restored.push(self.restore_session(session).await?);
         }
         Ok(restored)
+    }
+
+    /// Terminates the running agents of the sessions left `stopping`, all at once: an agent
+    /// that ignores SIGTERM waits out the stop's grace, and nothing is accepted until every
+    /// stop is finished (#254). Only the waits overlap; the sessions are then restored one
+    /// by one, so their terminals never race on the tmux server, and a stop this pass could
+    /// not confirm is retried, and reported, there.
+    async fn terminate_stopping_agents(&self, active: &[Session]) {
+        let mut terminating = Vec::new();
+        for session in active {
+            let (SessionState::Stopping { .. }, Some(launch)) = (session.state, &session.launch)
+            else {
+                continue;
+            };
+            let (database, processes, stop) = (
+                Arc::clone(&self.database),
+                self.processes.clone(),
+                self.settings.stop,
+            );
+            let execution = launch.execution;
+            terminating.push(tokio::spawn(async move {
+                let phase = cockpit_processes::execution(&database, execution)
+                    .await?
+                    .phase;
+                // A start never confirmed is released in order, with its terminal (#256).
+                if phase == Phase::Running {
+                    processes.terminate(&database, execution, stop).await?;
+                }
+                Ok::<(), cockpit_processes::Error>(())
+            }));
+        }
+        let mut panic = None;
+        for task in terminating {
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "a stalled stop is retried with its session");
+                }
+                Err(error) if error.is_panic() => panic = Some(error.into_panic()),
+                Err(error) => tracing::warn!(%error, "a stop's termination was cancelled"),
+            }
+        }
+        // Raised once every task is over, so none keeps stopping agents behind it.
+        if let Some(panic) = panic {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    async fn restore_session(&self, session: &Session) -> Result<Restored, Error> {
+        let id = session.id.clone();
+        // Uncontended: restore runs before the daemon accepts requests. A relaunch needs it.
+        let operation = self.lock(&id).await;
+        let SessionState::Stopping { to } = session.state else {
+            return match self.restore_one(&operation, session).await {
+                Ok(outcome) => Ok(outcome),
+                Err(error) => {
+                    self.fail_restore(session, format!("restore failed: {error}"))
+                        .await
+                }
+            };
+        };
+        // Marked through its stop phase, as `stop` marks a restart.
+        let _launching = (to == StopTarget::Restart).then(|| operation.launching());
+        let stopped = match self.finish_stop(&id, to).await {
+            Ok(stopped) => stopped,
+            Err(error) if error.is_database() => return Err(error),
+            Err(error) => return Ok(Restored::StopNotFinished(id, error.to_string())),
+        };
+        if to != StopTarget::Restart {
+            return Ok(Restored::StopFinished(id, stopped.state));
+        }
+        match self.relaunch(&operation, &stopped).await {
+            Ok(relaunched) => Ok(Restored::StopFinished(id, relaunched.state)),
+            Err(error) => self.reopen_failed(&id, error).await,
+        }
+    }
+
+    /// A reopen on restore that failed. The launch leaves the session `failed`, which is
+    /// reported and never retried; one still `launching` could not be recorded failed, so
+    /// the error stops the daemon's start, as a failure `fail_restore` cannot record does.
+    async fn reopen_failed(&self, id: &SessionId, error: Error) -> Result<Restored, Error> {
+        if self.get(id).await?.state != SessionState::Failed {
+            return Err(error);
+        }
+        Ok(Restored::Failed(
+            id.clone(),
+            format!("restore failed: {error}"),
+        ))
     }
 
     async fn restore_one(&self, lock: &Operation, session: &Session) -> Result<Restored, Error> {
@@ -594,6 +657,11 @@ impl Sessions {
                 .fail_restore(session, format!("restore refused: {error}"))
                 .await;
         }
+        let kind = if self.launching_for_restart(session).await? {
+            LaunchKind::Restart
+        } else {
+            LaunchKind::Restore
+        };
         if session.state != SessionState::Launching {
             self.transition(
                 id,
@@ -612,15 +680,28 @@ impl Sessions {
                     .await;
             }
         };
-        Ok(
-            match self
-                .launch(lock, id, LaunchKind::Restore, conversation, None)
-                .await
-            {
-                Ok(_) => Restored::Reopened(id.clone()),
-                Err(error) => Restored::Failed(id.clone(), format!("restore failed: {error}")),
+        match self.launch(lock, id, kind, conversation, None).await {
+            Ok(_) => Ok(Restored::Reopened(id.clone())),
+            Err(error) => self.reopen_failed(id, error).await,
+        }
+    }
+
+    /// Whether a `launching` session is a restart whose stop committed before a crash
+    /// stopped the daemon: its latest transition is that stop's move to launching (#252).
+    async fn launching_for_restart(&self, session: &Session) -> Result<bool, Error> {
+        if session.state != SessionState::Launching {
+            return Ok(false);
+        }
+        let read = self.database.read().await?;
+        store::latest_transition_is(
+            &read,
+            &session.id,
+            SessionState::Stopping {
+                to: StopTarget::Restart,
             },
+            SessionState::Launching,
         )
+        .await
     }
 
     /// Leaves a session restore could not reopen `failed` with `reason`, from whatever
@@ -961,6 +1042,8 @@ impl Sessions {
     /// refused while that agent may still run.
     async fn stop_previous_agent(&self, session: &Session) -> Result<(), Error> {
         if let Some(launch) = &session.launch {
+            self.release_if_never_started(&session.id, launch.execution)
+                .await?;
             let termination = self
                 .processes
                 .terminate(&self.database, launch.execution, self.settings.stop)
@@ -973,6 +1056,29 @@ impl Sessions {
             }
         }
         self.close_terminal(&session.id).await
+    }
+
+    /// Releases the agent's execution if its start was never confirmed and its command never
+    /// ran: a crash after the launch was recorded, before its terminal ran it, leaves one
+    /// (#256), and a stop would wait out the launch timeout and then refuse. The terminal is
+    /// closed first, so it cannot start the command after the check; a command that started
+    /// is left to the stop.
+    async fn release_if_never_started(
+        &self,
+        id: &SessionId,
+        execution: ExecutionId,
+    ) -> Result<(), Error> {
+        let phase = cockpit_processes::execution(&self.database, execution)
+            .await?
+            .phase;
+        if phase != Phase::Launching {
+            return Ok(());
+        }
+        self.close_terminal(id).await?;
+        self.processes
+            .abandon_hosted(&self.database, execution)
+            .await?;
+        Ok(())
     }
 
     /// Launches `conversation` for a session already `launching`. A failure leaves the
@@ -1024,7 +1130,15 @@ impl Sessions {
             }));
         }
         let channel_session = authorization_session(id)?;
-        let token = {
+        // Taken before the agent runs: a file changed between the two reads as changed.
+        let start_files = {
+            let declared = self.settings.start_files.clone();
+            let provider = session.provider.as_str().to_owned();
+            blocking(move || Ok(StartFileSnapshot::capture(&declared, &provider))).await?
+        };
+        // The execution is reserved in the transaction that records the launch, so a crash
+        // never leaves one the session does not name (#256).
+        let (token, execution) = {
             let write = self.database.write().await?;
             let token = cockpit_agent_channel::mint(&write, &channel_session).await?;
             for permission in SELF_PERMISSIONS {
@@ -1036,8 +1150,13 @@ impl Sessions {
                 )
                 .await?;
             }
+            let execution = self
+                .processes
+                .reserve(&write, self.database.epoch())
+                .await?;
+            store::insert_launch(&write, id, kind, execution, &start_files).await?;
             write.commit().await?;
-            token
+            (token, execution)
         };
         let mut environment = self.settings.base_environment.clone();
         environment.extend(command.environment);
@@ -1050,28 +1169,10 @@ impl Sessions {
             environment,
             terminal: None,
         };
-        // Taken before the agent runs: a file changed between the two reads as changed.
-        let start_files = {
-            let declared = self.settings.start_files.clone();
-            let provider = session.provider.as_str().to_owned();
-            blocking(move || Ok(StartFileSnapshot::capture(&declared, &provider))).await?
-        };
         let hosted = self
             .processes
-            .prepare_hosted(&self.database, &spec, &TERMINAL_VARIABLES)
+            .prepare_reserved_hosted(&self.database, execution, &spec, &TERMINAL_VARIABLES)
             .await?;
-        let recorded = async {
-            let write = self.database.write().await?;
-            store::insert_launch(&write, id, kind, hosted.execution, &start_files).await?;
-            write.commit().await?;
-            Ok::<(), Error>(())
-        };
-        if let Err(error) = recorded.await {
-            self.processes
-                .abandon_hosted(&self.database, hosted.execution)
-                .await?;
-            return Err(error);
-        }
         let terminal = SessionLaunch {
             name: terminal_name(id)?,
             working_dir: session.working_dir.clone(),
@@ -1087,14 +1188,14 @@ impl Sessions {
         .await;
         if let Err(error) = opened {
             self.processes
-                .abandon_hosted(&self.database, hosted.execution)
+                .abandon_hosted(&self.database, execution)
                 .await?;
             return Err(error);
         }
-        let execution = match self.confirm_agent(&channel_session, hosted.execution).await {
+        let confirmed = match self.confirm_agent(&channel_session, execution).await {
             Ok(execution) => execution,
             Err(error) => {
-                self.discard_launch(id, hosted.execution).await;
+                self.discard_launch(id, execution).await;
                 return Err(error);
             }
         };
@@ -1113,7 +1214,7 @@ impl Sessions {
         )
         .await?;
         write.commit().await?;
-        tracing::info!(session = %id, ?kind, execution = execution.id.0, "a session runs");
+        tracing::info!(session = %id, ?kind, execution = confirmed.id.0, "a session runs");
         Ok(running)
     }
 
