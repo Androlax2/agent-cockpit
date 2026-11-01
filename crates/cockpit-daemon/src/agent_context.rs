@@ -3,6 +3,7 @@
 //! from their owners here (the agent channel identifies the sender, sessions name its
 //! workspace, workflows its step, authorization its grants); the crate only words them.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cockpit_agent_context::{Grants, LaunchFacts, WorkflowFacts};
@@ -18,13 +19,17 @@ use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::approvals::{Answer, Failed, Sender};
 
-/// Where the daemon writes the bundle, under its state directory.
-pub(crate) const BUNDLE_DIR: &str = "agent-context";
+/// Where the daemon writes the bundle (`$COCKPIT_INSTRUCTIONS`) under `state_dir`.
+pub(crate) fn bundle_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("agent-context")
+}
 
-/// The folder Claude Code launches add with `--add-dir`, under the state directory: the
-/// bundle is written again in its `.claude/skills`, where Claude Code looks for skills (#419).
-/// A copy, not a link: Claude Code's documentation does not say it follows one.
-pub(crate) const CLAUDE_SKILLS_DIR: &str = "claude-skills";
+/// The folder Claude Code launches add with `--add-dir`, under `state_dir`: the bundle is
+/// written again in its `.claude/skills`, where Claude Code looks for skills (#419). A copy,
+/// not a link: Claude Code's documentation does not say it follows one.
+pub(crate) fn claude_skills_root(state_dir: &Path) -> PathBuf {
+    state_dir.join("claude-skills")
+}
 
 /// `instruction-catalog` and `instructions-read`: answered at once from the binary, needing
 /// neither the database nor the sender's identity.

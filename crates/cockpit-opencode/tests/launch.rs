@@ -286,7 +286,9 @@ fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
 
 #[test]
 fn a_launch_without_the_bridge_loads_no_plugin() {
-    let opencode = OpenCode::new("/usr/bin/opencode".into(), None, None);
+    // Instruction skills alone never touch the owner's inline configuration.
+    let opencode = OpenCode::new("/usr/bin/opencode".into(), None, None)
+        .with_instruction_skills("/state/agent-context".into());
 
     let launch = opencode.launch(&request(&Conversation::New)).unwrap();
 

@@ -229,7 +229,8 @@ impl OpenCode {
         }
     }
 
-    /// Every launch adds `folder`, the instruction bundle, to OpenCode's `skills.paths`.
+    /// Every launch with the bridge adds `folder`, the instruction bundle, to OpenCode's
+    /// `skills.paths`.
     pub fn with_instruction_skills(mut self, folder: PathBuf) -> OpenCode {
         self.instruction_skills = Some(folder);
         self
@@ -353,16 +354,16 @@ impl Provider for OpenCode {
             ("OPENCODE_SERVER_PASSWORD".into(), new_password()?.into()),
             ("OPENCODE_SERVER_USERNAME".into(), SERVER_USERNAME.into()),
         ];
-        if self.bridge.is_some() || self.instruction_skills.is_some() {
-            let owner = std::env::var_os("OPENCODE_CONFIG_CONTENT");
-            environment.push((
-                "OPENCODE_CONFIG_CONTENT".into(),
-                self.inline_config(owner.as_deref())?.into(),
-            ));
-        }
+        // Only with the bridge, like `cockpit mcp` (#419): a launch without it leaves the
+        // owner's inline configuration as it is, so a shape Cockpit cannot join never stops it.
         if let Some(bridge) = &self.bridge {
+            let owner = std::env::var_os("OPENCODE_CONFIG_CONTENT");
             let [bridge_variable, cockpit_variable, port_variable] = PLUGIN_VARIABLES;
             environment.extend([
+                (
+                    "OPENCODE_CONFIG_CONTENT".into(),
+                    self.inline_config(owner.as_deref())?.into(),
+                ),
                 (bridge_variable.into(), bridge.bridge_program.clone().into()),
                 (
                     cockpit_variable.into(),

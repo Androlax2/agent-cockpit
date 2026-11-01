@@ -104,14 +104,9 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     // Discovery runs programs and may block for seconds, so it comes before the runtime.
     let plugin_dir = instance.options().state_dir.join(OPENCODE_PLUGIN_DIR);
     // Both written at the daemon's start, before any launch (#419).
-    let bundle_dir = instance
-        .options()
-        .state_dir
-        .join(crate::agent_context::BUNDLE_DIR);
-    let claude_skills_root = instance
-        .options()
-        .state_dir
-        .join(crate::agent_context::CLAUDE_SKILLS_DIR);
+    let bundle_dir = crate::agent_context::bundle_dir(&instance.options().state_dir);
+    let claude_skills_root =
+        crate::agent_context::claude_skills_root(&instance.options().state_dir);
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
     let mut unavailable_providers = Vec::new();
     match claude_code(&serve.programs_dir) {
