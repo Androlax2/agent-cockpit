@@ -688,3 +688,41 @@ async fn the_queue_keeps_the_asks_of_sessions_that_may_still_ask() {
     let read = fixture.database.read().await.unwrap();
     assert_eq!(open_runs(&read, NOW).await.unwrap(), [kept]);
 }
+
+#[tokio::test]
+async fn an_ask_stays_out_of_the_queue_when_its_session_is_granted_again() {
+    let fixture = Fixture::new().await;
+    fixture.asked(&session("s1"), "ls").await;
+    fixture.revoke_all(&session("s1")).await;
+    fixture.grant(&session("s1")).await;
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(open_runs(&read, NOW).await.unwrap(), []);
+}
+
+#[tokio::test]
+async fn an_ask_cannot_be_approved_once_its_session_is_granted_again() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    fixture.revoke_all(&session("s1")).await;
+    fixture.grant(&session("s1")).await;
+
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(
+        refusal(approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE).await),
+        Refusal::AskerMayNotAsk
+    );
+}
+
+#[tokio::test]
+async fn a_stale_approval_of_an_ask_whose_session_may_no_longer_ask_names_the_session() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(
+        refusal(approve_run(&write, run.id, 2, &run.digest(), AFTER_GRACE).await),
+        Refusal::AskerMayNotAsk
+    );
+}

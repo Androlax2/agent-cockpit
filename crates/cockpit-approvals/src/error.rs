@@ -20,9 +20,9 @@ pub enum Refusal {
     DigestMismatch,
     /// Nobody waited for the request any more, so it can no longer be decided.
     Expired,
-    /// The session that asked may no longer ask the owner (`cockpit-authorization` refuses
-    /// it `run-commands`: it ended, failed or lost the grant), so its request can no longer be
-    /// approved or answered (#285).
+    /// The `run-commands` grant the request was asked under no longer covers its session (it
+    /// ended, failed or lost the grant, even if granted again since), so the request can no
+    /// longer be approved, edited or answered (#285).
     AskerMayNotAsk,
     /// The request was decided already; a decision is taken once.
     AlreadyDecided { state: &'static str },
@@ -76,7 +76,7 @@ impl Refusal {
             ),
             Refusal::AskerMayNotAsk => (
                 UnblockedBy::Owner,
-                "nothing to run: decline the request, or let it expire".to_owned(),
+                "nothing to do: nobody waits for the request, and it expires by itself".to_owned(),
             ),
             Refusal::AlreadyDecided { .. } => (
                 UnblockedBy::Owner,

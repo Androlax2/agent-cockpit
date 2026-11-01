@@ -22,7 +22,7 @@ use crate::rows::{
     refreshed_expiry, session_from, state_at, still_asking,
 };
 use crate::runs::{
-    REASON_MAX_CHARS, RunAsk, RunId, asker_may_still_ask, insert_run, may_ask, may_still_ask,
+    REASON_MAX_CHARS, RunAsk, RunId, asker_may_still_ask, asking_grant, insert_run, may_still_ask,
     validate_command,
 };
 use crate::{Error, Refusal};
@@ -36,7 +36,7 @@ const KIND: &str = "guide";
 
 /// The columns `guide_from` reads, in its order.
 const GUIDE_COLUMNS: &str = "id, session, title, cwd, project, project_root, state,
-        current_step, stuck_note, asked_at, expires_at";
+        current_step, stuck_note, asked_at, expires_at, asking_grant";
 
 /// The columns `step_from` reads, in its order, after the guide's id.
 const STEP_COLUMNS: &str = "guide, section, text, open, copy, ask, run, answer, run_request";
@@ -130,6 +130,8 @@ pub struct GuideRequest {
     pub stuck_note: Option<String>,
     pub asked_at: i64,
     pub expires_at: i64,
+    /// The `run-commands` grant the session asked under (#285).
+    pub(crate) asking_grant: Option<i64>,
 }
 
 impl GuideRequest {
@@ -269,7 +271,7 @@ pub async fn ask_guide(
     project: Option<Project>,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    may_ask(write, session).await?;
+    let grant = asking_grant(write, session).await?;
     let id = next_id(write, TABLE).await?;
     let cwd_text = cwd.to_str().ok_or_else(|| invalid("cwd", "is not UTF-8"))?;
     let project_root = project
@@ -285,8 +287,8 @@ pub async fn ask_guide(
         write,
         &format!(
             "INSERT INTO approvals_guides (id, session, title, cwd, project, project_root,
-                state, current_step, step_count, asked_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'asking', 0, ?7, ?8, ?9)
+                state, current_step, step_count, asked_at, expires_at, asking_grant)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'asking', 0, ?7, ?8, ?9, ?10)
              RETURNING {GUIDE_COLUMNS}"
         ),
         (
@@ -299,6 +301,7 @@ pub async fn ask_guide(
             i64::try_from(guide.steps.len()).expect("at most GUIDE_MAX_STEPS"),
             now,
             now + EXPIRES_AFTER_SECONDS,
+            grant,
         ),
         now,
     )
@@ -365,7 +368,14 @@ pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideR
         guide.steps = steps
             .remove(&guide.id.0)
             .ok_or_else(|| invalid_row(TABLE, format!("guide {} has no steps", guide.id.0)))?;
-        if may_still_ask(connection, &mut verdicts, &guide.session).await? {
+        if may_still_ask(
+            connection,
+            &mut verdicts,
+            &guide.session,
+            guide.asking_grant,
+        )
+        .await?
+        {
             open.push(guide);
         }
     }
@@ -476,8 +486,9 @@ pub async fn answer_step(
     answer: Option<String>,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let mut guide = asking_at(write, id, step, now).await?;
-    asker_may_still_ask(write, &guide.session).await?;
+    let guide = asking(write, id, now).await?;
+    asker_may_still_ask(write, &guide.session, guide.asking_grant).await?;
+    let mut guide = at_step(guide, step)?;
     let shown = &guide.steps[step].step;
     let answer = answer.map(|answer| checked_answer(&answer)).transpose()?;
     if shown.ask.is_some() && answer.is_none() {
@@ -491,7 +502,11 @@ pub async fn answer_step(
                 reason: run_reason(&guide, step),
                 project: guide.project.clone(),
             };
-            Some(insert_run(write, &guide.session, &ask, now).await?.id)
+            Some(
+                insert_run(write, &guide.session, &ask, guide.asking_grant, now)
+                    .await?
+                    .id,
+            )
         }
         None => None,
     };
@@ -528,7 +543,7 @@ pub async fn report_stuck(
     note: &str,
     now: i64,
 ) -> Result<GuideRequest, Error> {
-    let guide = asking_at(write, id, step, now).await?;
+    let guide = at_step(asking(write, id, now).await?, step)?;
     let note = checked_answer(note).map_err(|_| {
         invalid(
             "note",
@@ -640,19 +655,12 @@ async fn asking(
     Ok(guide)
 }
 
-/// The guide if it still asks and `step` is the step it shows now.
-async fn asking_at(
-    write: &WriteTransaction<'_>,
-    id: GuideId,
-    step: usize,
-    now: i64,
-) -> Result<GuideRequest, Error> {
-    let guide = asking(write, id, now).await?;
+/// The guide if `step` is the step it shows now.
+fn at_step(guide: GuideRequest, step: usize) -> Result<GuideRequest, Refusal> {
     if guide.current_step != step {
         return Err(Refusal::StaleStep {
             current: guide.current_step,
-        }
-        .into());
+        });
     }
     Ok(guide)
 }
@@ -676,6 +684,7 @@ fn guide_from(row: &Row, now: i64) -> Result<GuideRequest, Error> {
         stuck_note: row.get(8)?,
         asked_at: row.get(9)?,
         expires_at,
+        asking_grant: row.get(11)?,
     })
 }
 

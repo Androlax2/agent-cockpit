@@ -472,3 +472,27 @@ async fn a_guide_whose_session_may_no_longer_ask_can_still_be_closed() {
     let closed = close_guide(&write, guide.id, NOW).await.unwrap();
     assert_eq!(closed.state, GuideState::Closed);
 }
+
+#[tokio::test]
+async fn a_guide_stays_out_of_the_queue_when_its_session_is_granted_again() {
+    let fixture = Fixture::new().await;
+    fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+    fixture.grant(&session("s1")).await;
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(open_guides(&read, NOW).await.unwrap(), []);
+}
+
+#[tokio::test]
+async fn a_stale_answer_to_a_guide_whose_session_may_no_longer_ask_names_the_session() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(
+        refusal(answer_step(&write, guide.id, 1, None, NOW).await),
+        Refusal::AskerMayNotAsk
+    );
+}
