@@ -5,7 +5,7 @@ personal, terminal-first agent orchestrator distributed to other users.
 Written for agents and humans: one topic per file, decisions first, sources last.
 
 Audience rule: read `README.md` plus the file for your topic; do not load all files.
-Each file is under 120 lines, except the coverage map (16), which is a checklist.
+Each file is under 120 lines, except the coverage map (16) and portability inventory (21), which are checklists.
 
 ## Status legend
 
@@ -37,6 +37,7 @@ Each file is under 120 lines, except the coverage map (16), which is a checklist
 | 18 | [usage-quota-and-accounts](18-usage-quota-and-accounts.md) | Plan windows, cost, time, digest; account routing simplified | decided |
 | 19 | [desktop-and-remote-clients](19-desktop-and-remote-clients.md) | `cockpit-notify`, desktop extras out of the daemon, phone client | proposed |
 | 20 | [refactoring-plan](20-refactoring-plan.md) | Milestones M0–M7, parity gates, cutover | proposed |
+| 21 | [portability-inventory](21-portability-inventory.md) | Host assumptions, evidence, decisions and follow-up ownership | proposed |
 
 ## Decision register (short form)
 
