@@ -1,6 +1,7 @@
 //! `cockpit tui`: asks the daemon for the manager session (a column running `cockpit-tui`
-//! and a viewer beside it) and attaches this terminal to it. The CLI resolves the socket so
-//! the TUI needs no configuration of its own (crate graph: tui -> client/protocol only).
+//! and a viewer beside it) and attaches this terminal to it. The CLI resolves the socket, the
+//! profile and its state directory so the TUI needs no configuration of its own (crate graph:
+//! tui -> client/protocol/diagnostics only).
 
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
@@ -38,6 +39,13 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
 fn manager_open() -> Result<Command, ExitCode> {
     let tui = tui_binary().map_err(|problem| fail(&problem))?;
     let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
+    let environment = crate::profile::environment();
+    let home = environment
+        .home_dir()
+        .map_err(|error| fail(&error.to_string()))?;
+    let state_dir = cockpit_config::Layout::resolve(&environment, &home)
+        .state_dir
+        .value;
     let dir = std::env::current_dir()
         .map_err(|error| fail(&format!("cannot read the working directory: {error}")))?;
     Ok(Command::ManagerOpen {
@@ -47,6 +55,10 @@ fn manager_open() -> Result<Command, ExitCode> {
             "--column".to_owned(),
             "--socket".to_owned(),
             utf8(&socket)?,
+            "--profile".to_owned(),
+            environment.profile.value.name().to_owned(),
+            "--state-dir".to_owned(),
+            utf8(&state_dir)?,
         ],
         viewer: vec![tui, "--viewer".to_owned()],
     })

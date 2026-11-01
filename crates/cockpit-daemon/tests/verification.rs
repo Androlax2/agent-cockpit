@@ -45,7 +45,7 @@ async fn started() -> Verification {
 async fn started_with(is_trusted: bool) -> Verification {
     let cwd = WORKING_DIRECTORY.lock().await;
     let home = TestHome::new();
-    let config = home.home().join("config/cockpit");
+    let config = home.home().join("config").join(common::BUILD_PROFILE_DIR);
     std::fs::create_dir_all(&config).unwrap();
     let root = committed_repository(home.home(), "app");
     if is_trusted {

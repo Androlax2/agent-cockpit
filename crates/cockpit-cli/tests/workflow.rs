@@ -159,7 +159,7 @@ impl Sandbox {
     }
 
     fn agent_socket(&self) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit/agent/agent.sock");
+        let path = self.dir.path().join("run/cockpit-dev/agent/agent.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)

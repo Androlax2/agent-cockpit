@@ -15,7 +15,7 @@ use cockpit_turso::Database;
 use common::{GENEROUS, TestHome};
 
 fn state_dir(home: &TestHome) -> PathBuf {
-    home.state_home().join("cockpit")
+    home.state_home().join(common::BUILD_PROFILE_DIR)
 }
 
 async fn open_database(home: &TestHome) -> Database {

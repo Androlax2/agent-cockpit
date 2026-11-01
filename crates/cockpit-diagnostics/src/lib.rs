@@ -39,7 +39,7 @@ const DROP_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 /// What [`start`] needs; [`Options::new`] fills in the report-12 defaults.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// The process's own directory, usually from [`log_dir`]; created 0700 when missing.
+    /// The process's own directory, usually from [`log_dir_in`]; created 0700 when missing.
     pub log_dir: PathBuf,
     /// The level the process starts with and every override reverts to.
     pub directives: Directives,
@@ -147,23 +147,10 @@ impl Drop for Diagnostics {
     }
 }
 
-/// `$XDG_STATE_HOME/cockpit/logs/<process>`, falling back to `$HOME/.local/state`.
-pub fn log_dir(process: &str) -> Result<PathBuf, Error> {
-    let state_home = match std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
-        Some(state_home) => PathBuf::from(state_home),
-        None => {
-            let home = std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .ok_or(Error::NoStateDirectory)?;
-            Path::new(&home).join(".local/state")
-        }
-    };
-    log_dir_in(&state_home, process)
-}
-
-/// [`log_dir`] under an explicit state directory. `process` names one long-lived process
-/// (`daemon`, `tui`): each gets its own `cockpit.log`.
-pub fn log_dir_in(state_home: &Path, process: &str) -> Result<PathBuf, Error> {
+/// `<state dir>/logs/<process>`. `state_dir` is the active profile's own state directory
+/// (`$XDG_STATE_HOME/cockpit-<name>`, #196), which configuration resolves; `process` names one
+/// long-lived process (`daemon`, `tui`): each gets its own `cockpit.log`.
+pub fn log_dir_in(state_dir: &Path, process: &str) -> Result<PathBuf, Error> {
     error::check_plain_name("process", process)?;
-    Ok(state_home.join("cockpit/logs").join(process))
+    Ok(state_dir.join("logs").join(process))
 }

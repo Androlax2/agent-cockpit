@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-config"
-description = "Owns the effective configuration and where each value came from: XDG layout, owner settings, precedence, provenance and start-file change detection."
+description = "Owns the effective configuration and where each value came from: the profile, XDG layout, owner settings, precedence, provenance and start-file change detection."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

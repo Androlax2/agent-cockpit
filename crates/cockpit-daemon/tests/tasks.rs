@@ -35,7 +35,7 @@ struct Tasks {
 async fn started(projects: &[&str], config: &str) -> Tasks {
     let cwd = WORKING_DIRECTORY.lock().await;
     let home = TestHome::new();
-    let config_dir = home.home().join("config/cockpit");
+    let config_dir = home.home().join("config").join(common::BUILD_PROFILE_DIR);
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), config).unwrap();
     let database = home.open_state().await;
@@ -91,7 +91,11 @@ impl Tasks {
     /// broken one, but tasks read it again on each filing.
     fn break_owner_config(&self) {
         std::fs::write(
-            self.home.home().join("config/cockpit/config.toml"),
+            self.home
+                .home()
+                .join("config")
+                .join(common::BUILD_PROFILE_DIR)
+                .join("config.toml"),
             "[tasks]\ncross_project_open_max = -1\n",
         )
         .unwrap();

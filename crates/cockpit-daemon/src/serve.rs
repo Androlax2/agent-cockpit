@@ -24,6 +24,8 @@ const AGENT_BASE_VARIABLES: &[&str] = &[
 
 /// How [`serve`] runs.
 pub struct Serve {
+    /// The profile whose files, sockets, lock and tmux server this daemon owns (#196).
+    pub profile: cockpit_config::Sourced<cockpit_config::Profile>,
     /// Also print the log to stderr.
     pub foreground: bool,
     /// The installation's directory: `cockpit` and `cockpit-claude-hook` beside the daemon.
@@ -44,26 +46,42 @@ pub fn own_program() -> Result<PathBuf, StartError> {
     })
 }
 
+/// The profile this daemon program serves: `--profile` (`flag`), else `$COCKPIT_PROFILE`, else
+/// its build's own (`cockpit` for a release, `dev` otherwise).
+pub fn own_profile(
+    flag: Option<&str>,
+) -> Result<cockpit_config::Sourced<cockpit_config::Profile>, StartError> {
+    let variable = std::env::var_os(cockpit_config::PROFILE_VARIABLE);
+    let choice = cockpit_config::ProfileChoice {
+        flag,
+        variable: variable.as_deref(),
+        command_name: None,
+    };
+    cockpit_config::resolve_profile(choice, cockpit_config::Build::of_program(&own_program()?))
+        .map_err(StartError::Config)
+}
+
 /// Runs the daemon in this process until it stops; prints `ready <socket>` once it accepts.
 pub fn serve(serve: Serve) -> Result<(), StartError> {
-    let environment = cockpit_config::Environment::from_process();
+    let profile = serve.profile.value.clone();
+    let environment = cockpit_config::Environment::from_process(serve.profile);
     let options = Options::from_environment(&environment)?;
     // The lock comes first, so a second daemon reports that one is running instead of
     // failing on the log or database lock behind it.
     let instance = Instance::acquire(options)?;
-    let state_home = instance
-        .options()
-        .state_dir
-        .parent()
-        .expect("the state directory is <state home>/cockpit");
     let mut log_options = cockpit_diagnostics::Options::new(
-        cockpit_diagnostics::log_dir_in(state_home, "daemon")?,
+        cockpit_diagnostics::log_dir_in(&instance.options().state_dir, "daemon")?,
         cockpit_diagnostics::Directives::from_env()?,
     );
     log_options.foreground = serve.foreground;
     let diagnostics = cockpit_diagnostics::start(log_options)?;
     tracing::dispatcher::set_global_default(diagnostics.dispatch().clone())
         .expect("nothing installed a subscriber before startup");
+    tracing::info!(
+        profile = %profile,
+        source = %environment.profile.source,
+        "the daemon serves its profile"
+    );
     let run_settings =
         crate::run_settings(std::env::vars_os().collect()).map_err(|source| StartError::Io {
             action: "find the daemon's own program",
@@ -95,7 +113,8 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             .chain(
                 environment
                     .layout_variables()
-                    .map(|(name, value)| (name.into(), value.clone())),
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), value)),
             )
             .collect(),
         start_files,
@@ -111,7 +130,9 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         let wiring = Wiring {
             tmux: cockpit_tmux::ServerSpec {
                 tmux: "tmux".into(),
-                socket: cockpit_tmux::Socket::cockpit(),
+                // Each profile its own server, so a `dev` daemon never sees the installed
+                // one's sessions (#196).
+                socket: cockpit_tmux::Socket::Named(profile.qualified_name()),
                 config_path: instance.options().state_dir.join("tmux.conf"),
             },
             git: cockpit_projects::Git::from_path(),

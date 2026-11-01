@@ -26,7 +26,7 @@ impl Home {
 
     /// Where the daemon puts a socket, `relative` to its socket directory.
     fn socket(&self, relative: &str) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit").join(relative);
+        let path = self.dir.path().join("run/cockpit-dev").join(relative);
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)

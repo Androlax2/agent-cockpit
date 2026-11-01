@@ -1,16 +1,12 @@
 //! `cockpit version [--all]`: this binary's version and source revision; `--all` adds the
-//! release bundle's manifest installed beside it (report 13, #96). The running daemon, each
-//! session's bundle and the schema compatibility join `--all` with #64.
+//! active profile and build (#196) and the release bundle's manifest installed beside it
+//! (report 13, #96). The running daemon, each session's bundle and the schema compatibility
+//! join `--all` with #64.
 
 use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
 use std::process::ExitCode;
-
-/// Where a bundle puts its manifest under the prefix holding `bin/cockpit`: the same for the
-/// unpacked archive and an install under `/usr` or `/opt/cockpit` (`tools/release.py`).
-const MANIFEST_IN_PREFIX: &str = "share/cockpit/manifest.json";
 
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     let shows_all = match arguments {
@@ -22,7 +18,12 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     if !shows_all {
         return Ok(ExitCode::SUCCESS);
     }
-    let manifest_path = match installed_manifest_path() {
+    let profile = crate::profile::active();
+    outln!("profile {} ({})", profile.value, profile.source);
+    outln!("build {}", crate::profile::build().as_str());
+    let manifest_path = match crate::profile::this_program().and_then(|program| {
+        cockpit_config::release_manifest(&program).map_err(|error| error.to_string())
+    }) {
         Ok(path) => path,
         Err(problem) => {
             eprintln!("cockpit: cannot locate this binary's bundle: {problem}");
@@ -53,15 +54,4 @@ fn revision() -> String {
         Some(revision) => format!("revision {revision}"),
         None => "revision unknown: not a release build".to_string(),
     }
-}
-
-/// Resolves symlinks first, so `/usr/local/bin/cockpit -> /opt/cockpit/bin/cockpit` finds
-/// `/opt/cockpit/share/`.
-fn installed_manifest_path() -> std::io::Result<PathBuf> {
-    let binary = std::env::current_exe()?.canonicalize()?;
-    let prefix = binary
-        .parent()
-        .and_then(|binary_dir| binary_dir.parent())
-        .ok_or_else(|| std::io::Error::other(format!("{} has no prefix", binary.display())))?;
-    Ok(prefix.join(MANIFEST_IN_PREFIX))
 }

@@ -30,7 +30,7 @@ impl Home {
     }
 
     fn daemon_socket(&self) -> PathBuf {
-        let path = self.runtime_dir().join("cockpit/daemon.sock");
+        let path = self.runtime_dir().join("cockpit-dev/daemon.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)

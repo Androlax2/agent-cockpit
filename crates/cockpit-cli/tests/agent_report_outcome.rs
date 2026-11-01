@@ -18,7 +18,7 @@ fn runtime_dir(home: &Path) -> PathBuf {
 }
 
 fn socket(home: &Path, relative: &str) -> PathBuf {
-    let path = runtime_dir(home).join("cockpit").join(relative);
+    let path = runtime_dir(home).join("cockpit-dev").join(relative);
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

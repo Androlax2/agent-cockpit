@@ -34,7 +34,7 @@ pub use instance::{Instance, Options};
 pub use lanes::LaneLimits;
 pub use manager::Manager;
 pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusal};
-pub use serve::{SESSION_TICK, Serve, own_program, serve};
+pub use serve::{SESSION_TICK, Serve, own_profile, own_program, serve};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.

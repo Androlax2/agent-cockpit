@@ -24,8 +24,9 @@ the capability crates whose verbs must work without the daemon, listed in
 | `cockpit ask guide [--cwd DIR]` (steps on standard input), `--wait ID` (agent socket) | no | `cockpit-approvals` |
 | `cockpit approval list`, `show ID`, `approve ID --revision R --digest D`, `decline ID`, `edit ID --revision R COMMAND`, `input ID` (the line typed comes from standard input) | no | `cockpit-approvals` |
 | `cockpit guide show ID`, `answer ID STEP [ANSWER]`, `stuck ID STEP NOTE`, `close ID` | no | `cockpit-approvals` |
-| `cockpit doctor [--project DIR]`: one line per requirement with its status (report 09) and a `next:` line when it is not available; exits 1 only when one is `missing-prerequisite` or `unsupported` (#50) | partly: without a daemon it reads the configuration and names the daemon as missing | `cockpit-readiness`, served by the daemon |
-| `cockpit version [--all]`: version and source revision; `--all` adds the release bundle's manifest (#96) | yes | `cockpit-cli` |
+| `cockpit doctor [--project DIR]`: the active profile, its directories, daemon, tmux server and unit, and every other installation seen (#196, #134); then one line per requirement with its status (report 09) and a `next:` line when it is not available; exits 1 only when one is `missing-prerequisite` or `unsupported` (#50) | partly: without a daemon it reads the configuration and names the daemon as missing | `cockpit-cli` for the installations, `cockpit-readiness`, served by the daemon, for the requirements |
+| `cockpit version [--all]`: version and source revision; `--all` adds the profile, the build and the release bundle's manifest (#96, #196) | yes | `cockpit-cli` |
+| `cockpit daemon install`: the active profile's daemon as a systemd user unit or launchd agent, started now; refuses the default profile beside a legacy Cockpit (#134) | yes | `cockpit-cli` |
 | `cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]`, `list [--ended]`, `restart ID\|--all`, `sleep\|wake\|resume\|end ID`, `end --finished` (every session the task list says finished, #157), `link ID URL` | no | `cockpit-sessions` |
 | `cockpit session show ID` (in the manager's viewer, waking it when asleep) | no | the daemon's manager session |
 | `cockpit provider list` (the names `--agent` takes, whether each resumes and reports `events`) | no | the daemon's wiring |
@@ -43,6 +44,13 @@ the capability crates whose verbs must work without the daemon, listed in
 `cockpit todo` (and `docs`, `brief`, `mcp`, `--skill`) picks its socket from `COCKPIT_LAUNCH_TOKEN`: a launched session's verbs go to
 the agent socket, where the daemon identifies it; without the token they are the owner's.
 `show` ends with `next:`, what has to happen for the item to move.
+
+Every verb serves one profile (#196): `--profile NAME` before the verb, else the command's name
+(`cockpit-next` is profile `next`), else `$COCKPIT_PROFILE`, else the build's own: `cockpit` for a
+release bundle, `dev` for any other build. A development build reaches `cockpit` only through
+`--profile cockpit`; an inherited `COCKPIT_PROFILE=cockpit` is ignored, and `config show` and
+`doctor` say so. The profile names every directory (`cockpit-<name>`), the socket and the tmux
+server.
 
 Usage errors exit 2; configuration errors exit 1 with the file and line at fault. A daemon
 verb's refusal exits 1 as `cockpit: <code>: <message>`.

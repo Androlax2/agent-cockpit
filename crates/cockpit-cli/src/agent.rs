@@ -178,7 +178,7 @@ pub(crate) fn launch_token() -> Option<String> {
 
 /// The daemon's socket directory, or exit 1 when the environment cannot place it.
 pub(crate) fn socket_dir() -> Result<PathBuf, ExitCode> {
-    let environment = cockpit_config::Environment::from_process();
+    let environment = crate::profile::environment();
     environment
         .home_dir()
         .and_then(|home| cockpit_config::Layout::resolve(&environment, &home).socket_dir())

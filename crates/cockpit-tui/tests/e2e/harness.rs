@@ -195,9 +195,9 @@ impl Cockpit {
         // The owner's one opt-out of the sandbox (#61): these tests drive the TUI, not the
         // sandbox, and must not depend on whether the host has Greywall (CI does not; a
         // developer's would sandbox the fake agent for real).
-        std::fs::create_dir(root.join("config/cockpit")).unwrap();
+        std::fs::create_dir(root.join("config/cockpit-dev")).unwrap();
         std::fs::write(
-            root.join("config/cockpit/config.toml"),
+            root.join("config/cockpit-dev/config.toml"),
             "[agents]\nsandbox = \"off\"\n",
         )
         .unwrap();
@@ -323,7 +323,7 @@ impl Cockpit {
         };
         let mut report = read(&self.root.join("daemon.stderr"));
         for process in ["daemon", "tui"] {
-            let logs = self.root.join("state/cockpit/logs").join(process);
+            let logs = self.root.join("state/cockpit-dev/logs").join(process);
             for entry in std::fs::read_dir(&logs).into_iter().flatten().flatten() {
                 let text = read(&entry.path());
                 let lines: Vec<&str> = text.lines().collect();
@@ -344,7 +344,7 @@ impl Cockpit {
     fn agent_panes(&self) -> String {
         let private_tmux = |arguments: &[&str]| {
             self.command(Path::new("tmux"))
-                .args(["-L", "cockpit"])
+                .args(["-L", "cockpit-dev"])
                 .args(arguments)
                 .output()
                 .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -716,7 +716,7 @@ impl Cockpit {
     fn private_tmux(&self, arguments: &[&str]) -> String {
         let output = self
             .command(Path::new("tmux"))
-            .args(["-L", "cockpit"])
+            .args(["-L", "cockpit-dev"])
             .args(arguments)
             .output()
             .expect("tmux runs");
@@ -766,7 +766,7 @@ impl Cockpit {
         let target = format!("={session}:");
         let mut watcher = self
             .command(Path::new("tmux"))
-            .args(["-L", "cockpit", "-C", "attach-session", "-t", &target])
+            .args(["-L", "cockpit-dev", "-C", "attach-session", "-t", &target])
             .args(["-f", "read-only,ignore-size"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -951,7 +951,7 @@ impl Drop for Cockpit {
         // The agents run in the daemon's tmux server, which outlives the daemon by design.
         let _ = self
             .command(Path::new("tmux"))
-            .args(["-L", "cockpit", "kill-server"])
+            .args(["-L", "cockpit-dev", "kill-server"])
             .output();
     }
 }

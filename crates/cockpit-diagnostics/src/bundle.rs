@@ -23,7 +23,7 @@ const TAR_BLOCK: u64 = 512;
 
 #[derive(Debug, Clone)]
 pub struct BundleRequest {
-    /// Per-process log directories, as [`crate::log_dir`] returns them.
+    /// Per-process log directories, as [`crate::log_dir_in`] returns them.
     pub log_dirs: Vec<PathBuf>,
     /// Leaves out log files last written before this time (`--since`).
     pub since: Option<SystemTime>,

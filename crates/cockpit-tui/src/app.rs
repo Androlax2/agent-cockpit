@@ -105,6 +105,9 @@ pub struct App {
     /// Why the change feed stopped: the sessions and checkouts shown are not current until
     /// a batch applies again.
     pub(crate) feed_problem: Option<String>,
+    /// The daemon's profile (#196), in the list's title so a `dev` TUI never passes for the
+    /// installed one's.
+    pub(crate) profile: Option<String>,
     taken_keys: TakenKeys,
 }
 
@@ -118,6 +121,14 @@ pub(crate) struct Failure {
 impl App {
     pub fn new() -> App {
         App::default()
+    }
+
+    /// An app whose list's title names `profile`.
+    pub fn for_profile(profile: String) -> App {
+        App {
+            profile: Some(profile),
+            ..App::default()
+        }
     }
 
     /// What the runtime asks the daemon on every refresh. Sessions and checkouts are not

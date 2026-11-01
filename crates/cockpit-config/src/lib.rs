@@ -7,6 +7,7 @@
 //! requirements, owner settings grant.
 
 mod layout;
+mod profile;
 mod show;
 mod start_files;
 
@@ -19,6 +20,10 @@ use serde::Deserialize;
 use toml::Spanned;
 
 pub use layout::{AGENT_SOCKET, AGENT_SOCKET_DIR, DAEMON_SOCKET, Environment, Layout};
+pub use profile::{
+    Build, DEFAULT_PROFILE, DEVELOPMENT_PROFILE, MANIFEST_IN_PREFIX, PROFILE_VARIABLE, Profile,
+    ProfileChoice, release_manifest, resolve_profile,
+};
 pub use show::{SessionSettings, render};
 pub use start_files::{FileState, KNOWN_PROVIDERS, RecordedFile, StartFile, StartFileSnapshot};
 
@@ -47,6 +52,14 @@ pub enum Source {
         line: usize,
     },
     CommandLine,
+    /// A command-line flag other than `--set`, such as `--profile`.
+    Flag(&'static str),
+    /// The name the program was started as: `cockpit-next` selects profile `next`.
+    CommandName,
+    /// What a build outside a release bundle runs, with the variable it ignored if any.
+    DevelopmentBuild {
+        ignored: Option<&'static str>,
+    },
 }
 
 impl fmt::Display for Source {
@@ -69,6 +82,18 @@ impl fmt::Display for Source {
                 write!(formatter, "project config {}:{line}", path.display())
             }
             Self::CommandLine => write!(formatter, "command line --set"),
+            Self::Flag(flag) => write!(formatter, "command line {flag}"),
+            Self::CommandName => write!(formatter, "command name"),
+            Self::DevelopmentBuild { ignored: None } => {
+                write!(formatter, "development build default")
+            }
+            Self::DevelopmentBuild {
+                ignored: Some(variable),
+            } => write!(
+                formatter,
+                "development build default; ${variable} ignored: a development build reaches \
+                 the default profile only with --profile cockpit"
+            ),
         }
     }
 }

@@ -77,7 +77,7 @@ fn the_socket_and_its_directories_are_private_to_the_user() {
     assert_eq!(
         [
             mode(&home.socket_dir()),
-            mode(&home.state_home().join("cockpit")),
+            mode(&home.state_home().join(common::BUILD_PROFILE_DIR)),
             mode(&home.socket_path()),
         ],
         [0o700, 0o700, 0o600]

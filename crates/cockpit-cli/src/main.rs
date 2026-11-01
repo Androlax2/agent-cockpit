@@ -1,6 +1,7 @@
 //! `cockpit`: the command-line frontend. Verbs that must work without the daemon (report 09)
 //! call their capability crate directly; that list is fixed in report 02 (#77). Every other
-//! verb goes to the daemon through `cockpit-client`.
+//! verb goes to the daemon through `cockpit-client`. `--profile NAME` before the verb selects
+//! the profile (#196, [`profile`]).
 #![deny(
     clippy::print_stdout,
     reason = "`print!` panics on a closed stdout (#275): write through `out!`/`outln!`"
@@ -25,10 +26,13 @@ mod approvals;
 mod ask;
 mod check;
 mod daemon;
+mod daemon_install;
 mod desktop_session;
 mod doctor;
+mod installations;
 mod instructions;
 mod mcp;
+mod profile;
 mod projects;
 mod queue;
 mod resources;
@@ -43,7 +47,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE]...
+const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
+       cockpit config show [--project DIR] [--set KEY=VALUE]...
        cockpit config reload
        cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
        cockpit agent reports
@@ -75,6 +80,7 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit doctor [--project DIR]
        cockpit tui
        cockpit version [--all]
+       cockpit daemon install
        cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...
        cockpit todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]
        cockpit todo blocked TITLE --why TEXT [--notes TEXT]
@@ -104,8 +110,25 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit mcp";
 
 fn main() -> ExitCode {
+    let mut all_arguments = std::env::args_os();
+    let command_name = all_arguments.next();
     // OsString: a project path need not be UTF-8.
-    let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut arguments: Vec<OsString> = all_arguments.collect();
+    let flag = match arguments.first().and_then(|word| word.to_str()) {
+        Some("--profile") => match arguments.get(1).map(|name| name.to_str()) {
+            Some(Some(name)) => Some(name.to_owned()),
+            Some(None) => return usage_error(Some("--profile: not UTF-8".to_owned())),
+            None => return usage_error(Some("--profile needs a name".to_owned())),
+        },
+        _ => None,
+    };
+    if flag.is_some() {
+        arguments.drain(..2);
+    }
+    if let Err(problem) = profile::select(flag.as_deref(), command_name.as_deref()) {
+        eprintln!("cockpit: {problem}");
+        return ExitCode::from(2);
+    }
     let verb: Vec<Option<&str>> = arguments.iter().take(2).map(|word| word.to_str()).collect();
     match verb[..] {
         [Some("--skill"), ..] => instructions::skill(&arguments[1..])
@@ -148,6 +171,8 @@ fn main() -> ExitCode {
             Ok(command) => sessions::run(command),
             Err(problem) => usage_error(Some(problem)),
         },
+        [Some("daemon"), Some("install")] => daemon_install::run(&arguments[2..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
         [Some("version"), ..] => {
             version::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }
@@ -291,11 +316,7 @@ fn config_show(flags: &[OsString]) -> ExitCode {
         }
     }
 
-    match cockpit_config::load(
-        &cockpit_config::Environment::from_process(),
-        project_dir.as_deref(),
-        &overrides,
-    ) {
+    match cockpit_config::load(&profile::environment(), project_dir.as_deref(), &overrides) {
         Ok(config) => {
             out!("{}", cockpit_config::render(&config));
             // The daemon read the file at its start (#354); stdout stays the values alone.
