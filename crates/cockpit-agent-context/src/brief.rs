@@ -11,6 +11,9 @@ use crate::bundle::{VERSION, document, manual};
 /// harness's own instructions are not part of it.
 pub const BRIEF_TARGET_BYTES: usize = 2048;
 
+/// Grants named one by one; the rest are counted, so many grants cannot outgrow the target.
+const LISTED_GRANTS: usize = 6;
+
 /// What the session's owners say about it when the brief is asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchFacts {
@@ -101,10 +104,14 @@ pub fn brief(facts: &LaunchFacts) -> String {
              `cockpit workflow begin ID` takes a ready one.\n",
         ),
     }
-    let held = if facts.grants.held.is_empty() {
-        "none".to_owned()
-    } else {
-        facts.grants.held.join("; ")
+    let held = match facts.grants.held.len() {
+        0 => "none".to_owned(),
+        count if count <= LISTED_GRANTS => facts.grants.held.join("; "),
+        count => format!(
+            "{}; and {} more",
+            facts.grants.held[..LISTED_GRANTS].join("; "),
+            count - LISTED_GRANTS
+        ),
     };
     let _ = writeln!(
         text,

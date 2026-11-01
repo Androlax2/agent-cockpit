@@ -164,12 +164,12 @@ impl Home {
         self.path().join("asks.log")
     }
 
-    /// What the [`ENVIRONMENT_PROJECT`] agent wrote, once it wrote all of it.
     /// What the [`ONBOARD_PROJECT`] agent read, written whole once it is done.
     pub fn onboard_log(&self) -> PathBuf {
         self.path().join("onboard.log")
     }
 
+    /// What the [`ENVIRONMENT_PROJECT`] agent wrote, once it wrote all of it.
     pub fn environment_log(&self) -> PathBuf {
         self.path().join("environment.log")
     }

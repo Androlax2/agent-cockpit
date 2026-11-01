@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::bundle::documents;
@@ -117,14 +118,26 @@ fn check_or_create(path: &Path) -> Result<(), WriteError> {
 }
 
 /// Writes `bytes` beside `path` and renames it over: a symbolic link at `path` is replaced
-/// itself, its target never written.
+/// itself, its target never written. The temporary file is created new (`O_EXCL`, which
+/// never follows a link), after removing whatever already holds its name.
 fn replace(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
     let file_name = path
         .file_name()
         .expect("a bundle path names a file")
         .to_string_lossy();
     let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
-    fs::write(&temporary, bytes).map_err(io("write", &temporary))?;
+    match fs::remove_file(&temporary) {
+        Err(error) if error.kind() != ErrorKind::NotFound => {
+            return Err(io("remove", &temporary)(error));
+        }
+        _ => {}
+    }
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(bytes))
+        .map_err(io("write", &temporary))?;
     fs::rename(&temporary, path).map_err(|error| {
         let _ = fs::remove_file(&temporary);
         io("replace", path)(error)

@@ -373,18 +373,26 @@ impl Sender {
         let Some(cwd) = self.cwd().await else {
             return Ok(None);
         };
-        let checkouts = cockpit_projects::checkouts(connection, None)
-            .await
-            .map_err(|error| internal(&error))?;
-        Ok(checkouts
-            .into_iter()
-            .filter(|checkout| cwd.starts_with(&checkout.path))
-            .max_by_key(|checkout| checkout.path.components().count())
-            .map(|checkout| Project {
-                name: checkout.project.as_str().to_owned(),
-                root: checkout.path,
-            }))
+        project_at(connection, &cwd).await
     }
+}
+
+/// The project whose checkout holds `path`, the deepest one when checkouts nest.
+pub(crate) async fn project_at(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<Option<Project>, Failed> {
+    let checkouts = cockpit_projects::checkouts(connection, None)
+        .await
+        .map_err(|error| internal(&error))?;
+    Ok(checkouts
+        .into_iter()
+        .filter(|checkout| path.starts_with(&checkout.path))
+        .max_by_key(|checkout| checkout.path.components().count())
+        .map(|checkout| Project {
+            name: checkout.project.as_str().to_owned(),
+            root: checkout.path,
+        }))
 }
 
 /// The route for one of the owner's decisions; `routes.rs` sends only those here, from the
