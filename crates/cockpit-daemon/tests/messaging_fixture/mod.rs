@@ -65,6 +65,19 @@ impl Home {
             .await
             .unwrap()
     }
+    pub async fn stop(&self, daemon: Daemon) {
+        let database = Arc::downgrade(self.database.lock().unwrap().as_ref().unwrap());
+        drop(daemon);
+        self.database.lock().unwrap().take();
+        let deadline = Instant::now() + GENEROUS;
+        while database.upgrade().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "the old daemon kept its database"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     pub async fn project(&self, client: &Connection) -> PathBuf {
         let root = self.path().join("project");
         std::fs::create_dir_all(&root).unwrap();

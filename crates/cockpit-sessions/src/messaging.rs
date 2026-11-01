@@ -64,6 +64,8 @@ impl Sessions {
                 session: id.clone(),
             })?;
         let report = crate::reports::latest_report(&read, &authorization_session(id)?).await?;
+        let provider_launch =
+            crate::delivery_context::read_launch(&read, launch.execution.0).await?;
         let sockets = crate::delivery_context::Sockets {
             context: crate::delivery_context::read(&read, launch.execution.0).await?,
             connect: self.connect_socket,
@@ -97,6 +99,7 @@ impl Sessions {
             let _guard = guard;
             let action = message.as_deref().map_or(Action::Cancel, Action::Submit);
             let target = DeliveryTarget {
+                launch: provider_launch.as_ref(),
                 session_dir: &session_dir,
                 sockets: &sockets,
             };

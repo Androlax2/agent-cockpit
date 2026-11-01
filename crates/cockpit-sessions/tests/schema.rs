@@ -82,10 +82,10 @@ async fn delivery_context_survives_reopen_and_refuses_incomplete_mounts() {
     {
         let database = database(&dir).await;
         let write = database.write().await.unwrap();
-        write.execute("INSERT INTO session_delivery (execution_id, reach, reason) VALUES (1, 'mounted', NULL)", ()).await.unwrap();
+        write.execute("INSERT INTO session_delivery (execution_id, provider_program, reach, reason) VALUES (1, X'2F61', 'mounted', NULL)", ()).await.unwrap();
         assert!(write.execute("INSERT INTO session_delivery_mounts (execution_id, host, sandbox) VALUES (1, '', '/tmp/codex-daemon-1')", ()).await.is_err());
         write.execute("INSERT INTO session_delivery_mounts (execution_id, host, sandbox) VALUES (1, '/private/mount', '/tmp/codex-daemon-1')", ()).await.unwrap();
-        assert!(write.execute("INSERT INTO session_delivery (execution_id, reach, reason) VALUES (2, 'unreachable', NULL)", ()).await.is_err());
+        assert!(write.execute("INSERT INTO session_delivery (execution_id, provider_program, reach, reason) VALUES (2, X'2F61', 'unreachable', NULL)", ()).await.is_err());
         write.commit().await.unwrap();
     }
     let database = database(&dir).await;
@@ -100,4 +100,80 @@ async fn delivery_context_survives_reopen_and_refuses_incomplete_mounts() {
     let row = rows.next().await.unwrap().unwrap();
     assert_eq!(row.get::<String>(0).unwrap(), "/private/mount");
     assert_eq!(row.get::<String>(1).unwrap(), "/tmp/codex-daemon-1");
+}
+
+#[tokio::test]
+async fn delivery_launch_keeps_opaque_words_and_order_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let database = database(&dir).await;
+        let write = database.write().await.unwrap();
+        assert!(
+            write
+                .execute(
+                    "INSERT INTO session_delivery (execution_id, reach) VALUES (1, 'direct')",
+                    ()
+                )
+                .await
+                .is_err()
+        );
+        write.execute("INSERT INTO session_delivery (execution_id, provider_program, reach) VALUES (1, X'2FFF', 'direct')", ()).await.unwrap();
+        write.execute("INSERT INTO session_delivery_arguments (execution_id, position, value) VALUES (1, 1, X''), (1, 0, X'FF')", ()).await.unwrap();
+        write.execute("INSERT INTO session_delivery_environment (execution_id, position, name, value) VALUES (1, 0, X'41', X'FE')", ()).await.unwrap();
+        assert!(write.execute("INSERT INTO session_delivery_arguments (execution_id, position, value) VALUES (1, 0, X'01')", ()).await.is_err());
+        write.commit().await.unwrap();
+    }
+    let database = database(&dir).await;
+    let read = database.read().await.unwrap();
+    let mut rows = read
+        .query(
+            "SELECT provider_program FROM session_delivery WHERE execution_id = 1",
+            (),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<Vec<u8>>(0)
+            .unwrap(),
+        vec![b'/', 0xff]
+    );
+    let mut rows = read
+        .query(
+            "SELECT value FROM session_delivery_arguments WHERE execution_id = 1 ORDER BY position",
+            (),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<Vec<u8>>(0)
+            .unwrap(),
+        vec![0xff]
+    );
+    assert!(
+        rows.next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<Vec<u8>>(0)
+            .unwrap()
+            .is_empty()
+    );
+    let mut rows = read
+        .query(
+            "SELECT name, value FROM session_delivery_environment WHERE execution_id = 1",
+            (),
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    assert_eq!(row.get::<Vec<u8>>(0).unwrap(), vec![b'A']);
+    assert_eq!(row.get::<Vec<u8>>(1).unwrap(), vec![0xfe]);
 }

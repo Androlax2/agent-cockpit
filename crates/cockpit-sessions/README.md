@@ -83,11 +83,13 @@ stopped in the middle of one finishes or repairs it at its next start.
   workers; only `Delivered::Unsupported` falls back to provider-selected terminal input.
   Delivery errors and timeouts are uncertain, never a reason to type the action again.
   The operation lock stays with the blocking call until it finishes. The launch's socket
-  mapping and process root are recorded with its execution; the daemon supplies the socket
-  connector that checks the listener. A launch predating that record must restart before
-  socket delivery works. Current settings never rewrite a running launch's mapping.
+  mapping, process root and original provider command are recorded with its execution; the
+  daemon supplies the socket connector that checks the listener. OpenCode receives its
+  original port and password from that host-owned command, including after daemon restart
+  (#416). A launch predating that record must restart before endpoint delivery works.
+  Current settings never rewrite a running launch's mapping or endpoint.
 - **Collaborator messages** (#410). `submit` takes who addresses the agent (`Addressed`): a
-  coordinator's message is typed as a collaborator's, never as the owner's.
+  coordinator's message is delivered as a collaborator's, never as the owner's.
 - **Exits.** An agent observed gone ends its session with the reason; `resume` reopens it.
 - **Stops are confirmed.** A stop whose termination `cockpit-processes` cannot confirm puts
   the session back to `running` with the reason and answers an error; it is never recorded
@@ -153,4 +155,6 @@ stopped in the middle of one finishes or repairs it at its next start.
   dialog handling and a timed-out delivery retaining its operation lock.
 - `cockpit-daemon/tests/codex_messaging.rs`: the real adapter through the mapped socket,
   missing mount support and the mapping retained across daemon restart (#450).
+- `cockpit-daemon/tests/opencode_messaging.rs`: the real adapter's owner send/cancel with
+  the launch's authenticated endpoint retained across daemon restart (#416).
 - `cockpit-cli/tests/sessions.rs`: each `cockpit session` verb's request and output.

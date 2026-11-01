@@ -1351,6 +1351,7 @@ impl Sessions {
             })
             .await?
         };
+        let delivery_launch = command.clone();
         let mut environment = self.launch_environment();
         environment.extend(command.environment);
         environment.push(("COCKPIT_SESSION".into(), id.as_str().into()));
@@ -1406,7 +1407,8 @@ impl Sessions {
                 .map_or(cockpit_sandbox::ProviderReach::Direct, |plan| {
                     plan.reach.clone()
                 });
-            crate::delivery_context::record_reach(&write, execution.0, &reach).await?;
+            crate::delivery_context::record_launch(&write, execution.0, &reach, &delivery_launch)
+                .await?;
             write.commit().await?;
             (token, execution)
         };

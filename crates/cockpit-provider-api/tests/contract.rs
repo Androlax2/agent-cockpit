@@ -188,6 +188,7 @@ fn unsupported_delivery_is_explicit_and_does_not_open_a_socket() {
     let outcome = provider.deliver(
         &Action::Submit("hello"),
         &DeliveryTarget {
+            launch: None,
             session_dir: Path::new("/session"),
             sockets: &NoSockets,
         },
@@ -205,6 +206,7 @@ fn unsupported_delivery_is_explicit_and_does_not_open_a_socket() {
             .deliver(
                 &Action::Submit("hello"),
                 &DeliveryTarget {
+                    launch: None,
                     session_dir: Path::new("/session"),
                     sockets: &NoSockets
                 },

@@ -155,17 +155,7 @@ async fn owner_send_and_cancel_reach_the_mapped_codex_socket_after_daemon_restar
         .await
         .unwrap();
     drop(client);
-    let database = Arc::downgrade(home.database.lock().unwrap().as_ref().unwrap());
-    drop(daemon);
-    home.database.lock().unwrap().take();
-    let deadline = Instant::now() + GENEROUS;
-    while database.upgrade().is_some() {
-        assert!(
-            Instant::now() < deadline,
-            "the old daemon kept its database"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    home.stop(daemon).await;
     // The next daemon sees an engine without --mount. The running launch retains its mapping.
     let _daemon = home.start_wired(wiring(&home, false)).await;
     let client = home.connect().await;
@@ -338,6 +328,14 @@ async fn unsandboxed_codex_delivery_uses_the_direct_socket_and_old_context_is_re
     // An agent launched before the migration has no delivery row. Never guess its mapping.
     let database = home.database.lock().unwrap().clone().unwrap();
     let write = database.write().await.unwrap();
+    write
+        .execute("DELETE FROM session_delivery_arguments", ())
+        .await
+        .unwrap();
+    write
+        .execute("DELETE FROM session_delivery_environment", ())
+        .await
+        .unwrap();
     write
         .execute("DELETE FROM session_delivery", ())
         .await
