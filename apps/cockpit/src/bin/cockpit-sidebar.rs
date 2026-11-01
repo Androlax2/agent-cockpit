@@ -157,8 +157,7 @@ fn run() -> io::Result<()> {
             screen.draw(&mut app);
         }
         if let Some(key) = screen.next_key(Some(app::VIEW_CHECK_INTERVAL)) {
-            app.handle(key, &mut screen);
-            app.redraw();
+            app.handle_queued_keys(key, &mut screen);
             screen.draw(&mut app);
         }
         if app.collect_manager() {

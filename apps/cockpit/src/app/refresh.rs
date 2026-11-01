@@ -23,6 +23,9 @@ pub fn take_background_changed() -> bool {
 
 pub const SAFETY_INTERVAL: Duration = Duration::from_secs(5);
 const CHANGE_INTERVAL: Duration = Duration::from_millis(250);
+/// A watched file changed: 15-20 working sessions rewrite their statuslines several times a
+/// second, and each full refresh holds the input loop, so arrow keys waited behind them.
+const DIRTY_COOLDOWN: Duration = Duration::from_millis(1500);
 
 #[derive(Default)]
 pub struct Changes {
@@ -309,7 +312,7 @@ impl Schedule {
         };
         if elapsed.is_none_or(|elapsed| elapsed >= interval)
             || changes.immediate
-            || (self.dirty && elapsed.is_some_and(|elapsed| elapsed >= CHANGE_INTERVAL))
+            || (self.dirty && elapsed.is_some_and(|elapsed| elapsed >= DIRTY_COOLDOWN))
         {
             self.last_full = Some(now);
             self.dirty = false;
@@ -426,8 +429,9 @@ mod tests {
             },
             true
         ));
-        assert!(schedule.due(Duration::from_millis(250), Changes::default(), true));
-        assert!(!schedule.due(Duration::from_millis(500), Changes::default(), true));
+        assert!(!schedule.due(Duration::from_millis(1499), Changes::default(), true));
+        assert!(schedule.due(Duration::from_millis(1500), Changes::default(), true));
+        assert!(!schedule.due(Duration::from_millis(1750), Changes::default(), true));
     }
 
     #[test]
@@ -461,7 +465,8 @@ mod tests {
             },
             true
         ));
-        assert!(schedule.due(Duration::from_millis(650), Changes::default(), true));
+        assert!(!schedule.due(Duration::from_millis(1800), Changes::default(), true));
+        assert!(schedule.due(Duration::from_millis(1900), Changes::default(), true));
     }
 
     #[test]

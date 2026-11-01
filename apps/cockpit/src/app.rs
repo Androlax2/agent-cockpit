@@ -8036,6 +8036,27 @@ impl App {
         }
     }
 
+    /// `first`, then the arrow keys queued behind it, then one redraw: keys that piled up while a
+    /// refresh held the loop cost one redraw, not one each. Any other key is handled after a
+    /// redraw and ends the pass.
+    pub fn handle_queued_keys(&mut self, first: Key, screen: &mut dyn Screen) {
+        let is_navigation =
+            |key: &Key| matches!(key, Key::Up | Key::Down | Key::PageUp | Key::PageDown);
+        let mut next = Some(first);
+        while let Some(key) = next.take() {
+            let was_navigation = is_navigation(&key);
+            self.handle(key, screen);
+            if !was_navigation {
+                break;
+            }
+            next = screen.next_key(Some(Duration::ZERO));
+            if next.as_ref().is_some_and(|key| !is_navigation(key)) {
+                self.redraw();
+            }
+        }
+        self.redraw();
+    }
+
     pub fn handle(&mut self, key: Key, screen: &mut dyn Screen) {
         if key == Key::Resize {
             return;

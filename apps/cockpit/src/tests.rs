@@ -19045,6 +19045,40 @@ fn a_key_press_redraws_without_asking_tmux_or_pgrep() {
 }
 
 #[test]
+fn arrow_keys_queued_behind_a_refresh_are_all_handled_in_one_pass() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([
+        session(SESSION_A, "waiting", "runway", "/r/runway", 100),
+        session(SESSION_B, "waiting", "homelab", "/r/homelab", 100),
+        session(
+            "cccccccc-0000-4000-8000-000000000000",
+            "waiting",
+            "dotfiles",
+            "/r/dotfiles",
+            100
+        )
+    ]));
+    let mut app = fixture.app();
+    let mut screen = FakeScreen::answering(&[Key::Down]);
+    app.handle_queued_keys(Key::Down, &mut screen);
+    assert_eq!(app.panels[1].selected, 2);
+    assert!(screen.keys.is_empty());
+}
+
+#[test]
+fn a_queued_key_that_is_not_an_arrow_waits_for_the_next_pass() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([
+        session(SESSION_A, "waiting", "runway", "/r/runway", 100),
+        session(SESSION_B, "waiting", "homelab", "/r/homelab", 100)
+    ]));
+    let mut app = fixture.app();
+    let mut screen = FakeScreen::answering(&[Key::Down]);
+    app.handle_queued_keys(Key::Tab, &mut screen);
+    assert_eq!(screen.keys.len(), 1);
+}
+
+#[test]
 fn enter_opens_the_session_without_waiting_and_shows_a_failure_once_it_ends() {
     // Performance 2: open took 42 ms (up to 500) with the column frozen.
     let fixture = Fixture::new();
