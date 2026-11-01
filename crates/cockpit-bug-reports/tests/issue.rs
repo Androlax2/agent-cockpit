@@ -81,6 +81,28 @@ fn a_long_description_is_cut_to_fit_the_url_with_a_pointer_to_the_full_text() {
 }
 
 #[test]
+fn a_bundle_listing_too_long_for_the_url_gives_way_to_its_file_name() {
+    let mut many_logs = report();
+    many_logs.bundle = Bundle::Written {
+        path: "/home/someone/.local/state/cockpit/bug-reports/3.tar".to_owned(),
+        contents: "1024\tcockpit-support-bundle/logs/daemon/cockpit.log.1\n".repeat(400),
+    };
+
+    let issue = issue(&many_logs);
+
+    assert!(
+        issue.new_issue_url.len() <= URL_MAX_BYTES,
+        "{}",
+        issue.new_issue_url.len()
+    );
+    assert!(issue.new_issue_url.contains("To%20attach%3A%203.tar"));
+    assert!(
+        issue.body.contains("cockpit.log.1"),
+        "the body keeps the listing"
+    );
+}
+
+#[test]
 fn a_specific_fingerprint_comes_with_a_search_for_an_existing_issue() {
     let issue = issue(&report());
 

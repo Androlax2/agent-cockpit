@@ -61,7 +61,7 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit bug-report new DESCRIPTION [--title TEXT] [--steps TEXT]
        cockpit bug-report list [--all] | show ID | discard ID
        cockpit bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]
-       cockpit bug-report send ID [--gh | --print] [--anyway]
+       cockpit bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL
        cockpit project add DIR [--name NAME]
        cockpit project list
        cockpit checkout list [PROJECT]

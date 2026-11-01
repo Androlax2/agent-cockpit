@@ -5,6 +5,7 @@
 
 use std::ffi::OsString;
 use std::process::{ExitCode, Stdio};
+use std::time::Duration;
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
@@ -12,8 +13,12 @@ use cockpit_protocol::{
     Reply,
 };
 
-use crate::agent::{agent_socket, exchange, launch_token};
+use crate::agent::{agent_socket, exchange_within, launch_token};
 use crate::daemon::{CONTROL_DEADLINE, fail, failed, request, unexpected, utf8_words};
+
+/// A new draft waits in the daemon's bulk lane, then writes a support bundle from the logs:
+/// a client that gave up sooner would report a failure for a draft the daemon still files.
+const DRAFT_DEADLINE: Duration = Duration::from_secs(120);
 
 /// The kinds a session reports; the daemon observes panics, stalls and crashes itself.
 const AGENT_KINDS: [BugKindView; 4] = [
@@ -31,13 +36,16 @@ pub(crate) fn agent_report(arguments: &[OsString]) -> Result<ExitCode, String> {
         Ok(socket) => socket,
         Err(code) => return Ok(code),
     };
-    Ok(match exchange(&socket, command) {
+    Ok(match exchange_within(&socket, command, DRAFT_DEADLINE) {
         Ok(Reply::BugReportFiled { report, filed }) => {
             let what = match filed {
                 BugFiledView::Created => "opened bug report draft",
                 BugFiledView::Merged => "added to today's bug report draft",
                 BugFiledView::AlreadyHandled => {
-                    "the owner already handled today's report of this bug; nothing opened, see draft"
+                    outln!(
+                        "the owner already sent or discarded today's report of this bug; nothing was opened"
+                    );
+                    return Ok(ExitCode::SUCCESS);
                 }
             };
             outln!("{what} {report}; the owner reviews it before anything is sent");
@@ -124,7 +132,7 @@ pub enum Verb {
     Send(Send),
 }
 
-/// `send ID [--gh] [--print] [--anyway]`.
+/// `send ID [--gh | --print] [--anyway]`; `send ID --filed URL` is a [`Verb::Daemon`].
 #[derive(Debug)]
 pub struct Send {
     report: i64,
@@ -181,6 +189,12 @@ pub fn parse(arguments: &[OsString]) -> Result<Verb, String> {
 }
 
 fn parse_send(report: &str, flags: &[&str]) -> Result<Verb, String> {
+    if let ["--filed", issue_url] = flags {
+        return Ok(Verb::Daemon(Command::BugReportSent {
+            report: report_id(report)?,
+            issue_url: Some((*issue_url).to_owned()),
+        }));
+    }
     let mut send = Send {
         report: report_id(report)?,
         is_gh: false,
@@ -192,6 +206,7 @@ fn parse_send(report: &str, flags: &[&str]) -> Result<Verb, String> {
             "--gh" => &mut send.is_gh,
             "--print" => &mut send.is_print_only,
             "--anyway" => &mut send.is_anyway,
+            "--filed" => return Err("--filed URL comes alone: send ID --filed URL".to_owned()),
             _ => return Err(format!("unknown argument {flag}")),
         };
         if std::mem::replace(field, true) {
@@ -241,7 +256,11 @@ pub fn run(verb: Verb) -> ExitCode {
         Verb::Daemon(command) => command,
         Verb::Send(send) => return send_report(&send),
     };
-    let reply = match request(command, CONTROL_DEADLINE) {
+    let deadline = match command {
+        Command::BugReportNew { .. } => DRAFT_DEADLINE,
+        _ => CONTROL_DEADLINE,
+    };
+    let reply = match request(command, deadline) {
         Ok(reply) => reply,
         Err(code) => return code,
     };
@@ -318,9 +337,11 @@ fn bundle_text(bundle: &BugBundleView) -> String {
     }
 }
 
-/// Shows the fingerprint, offers an existing issue instead of a duplicate, then opens the
-/// prefilled issue (or files it with `gh`) and records the draft as sent. One connection:
-/// the draft read is the draft sent.
+/// Shows the fingerprint, offers an existing issue instead of a duplicate, then files the
+/// issue with `gh` and records the draft sent, or opens the prefilled issue for the owner to
+/// submit. A browser or a printed URL proves nothing was filed, so the draft stays a draft
+/// until the owner records the issue with `send ID --filed URL`. One connection: the draft
+/// read is the draft sent.
 fn send_report(send: &Send) -> ExitCode {
     let socket = match crate::agent::socket_dir() {
         Ok(dir) => dir.join(cockpit_config::DAEMON_SOCKET),
@@ -362,23 +383,33 @@ fn send_report(send: &Send) -> ExitCode {
             return fail("the daemon sent the draft without its issue");
         };
         outln!("fingerprint: {}", report.fingerprint);
-        if !send.is_anyway && offers_existing_issue(issue) {
+        if !send.is_anyway && offers_existing_issue(issue, report.id) {
             return ExitCode::SUCCESS;
         }
-        let issue_url = if send.is_gh {
-            match gh_create(issue) {
-                Ok(url) => Some(url),
-                Err(problem) => return fail(&problem),
-            }
-        } else {
+        let bundle = match &report.bundle {
+            BugBundleView::Written { path, .. } => Some(path),
+            _ => None,
+        };
+        if !send.is_gh {
             open_in_browser(&issue.new_issue_url, send.is_print_only);
-            None
+            if let Some(path) = bundle {
+                outln!("attach the support bundle to the issue: {path}");
+            }
+            outln!(
+                "once submitted, record it: cockpit bug-report send {} --filed ISSUE_URL",
+                report.id
+            );
+            return ExitCode::SUCCESS;
+        }
+        let issue_url = match gh_create(issue) {
+            Ok(url) => url,
+            Err(problem) => return fail(&problem),
         };
         let sent = connection
             .request(
                 Command::BugReportSent {
                     report: report.id,
-                    issue_url: issue_url.clone(),
+                    issue_url: Some(issue_url.clone()),
                 },
                 CONTROL_DEADLINE,
             )
@@ -388,10 +419,8 @@ fn send_report(send: &Send) -> ExitCode {
             Ok(reply) => return unexpected(&reply),
             Err(error) => return failed(&error),
         }
-        if let Some(url) = &issue_url {
-            outln!("filed {url}");
-        }
-        if let BugBundleView::Written { path, .. } = &report.bundle {
+        outln!("filed {issue_url}");
+        if let Some(path) = bundle {
             outln!("attach the support bundle to the issue: {path}");
         }
         outln!("bug report {} marked sent", report.id);
@@ -401,7 +430,7 @@ fn send_report(send: &Send) -> ExitCode {
 
 /// Whether an issue with the draft's fingerprint exists, found with the owner's `gh`; prints
 /// them. Without `gh`, prints the search to check by hand and goes on.
-fn offers_existing_issue(issue: &BugIssueView) -> bool {
+fn offers_existing_issue(issue: &BugIssueView, report: i64) -> bool {
     let Some(query) = &issue.search_query else {
         return false;
     };
@@ -436,7 +465,8 @@ fn offers_existing_issue(issue: &BugIssueView) -> bool {
     }
     outln!("an issue with this fingerprint exists; add to it instead of filing a duplicate:");
     out!("{listed}");
-    outln!("to file a new one anyway: cockpit bug-report send <id> --anyway");
+    outln!("once added there, record it: cockpit bug-report send {report} --filed ISSUE_URL");
+    outln!("to file a new one anyway: cockpit bug-report send {report} --anyway");
     true
 }
 

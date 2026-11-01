@@ -1010,13 +1010,16 @@ pub fn decode_request_with_kind(frame: &str) -> Result<(Request, String), Reques
                 "the command kind is not a string".to_owned(),
             )),
         },
-        Ok(request) => {
-            let kind = value["command"]["kind"]
-                .as_str()
-                .expect("a decoded command has a string kind")
-                .to_owned();
-            Ok((request, kind))
-        }
+        // Serde also decodes a tagged enum from a sequence (`["ping"]`); only the object form
+        // is the protocol, and only it names its kind.
+        Ok(request) => match value["command"]["kind"].as_str() {
+            Some(kind) => Ok((request, kind.to_owned())),
+            None => Err(rejection(
+                id,
+                ErrorCode::InvalidRequest,
+                "the command is not an object with a `kind`".to_owned(),
+            )),
+        },
         Err(error) => Err(rejection(
             id,
             ErrorCode::InvalidRequest,

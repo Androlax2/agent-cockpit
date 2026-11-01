@@ -281,11 +281,11 @@ async fn list_prints_one_line_per_draft() {
 }
 
 #[tokio::test]
-async fn send_opens_the_drafts_issue_url_in_the_browser_and_records_it_sent() {
+async fn send_opens_the_drafts_issue_url_in_the_browser_and_leaves_it_a_draft() {
     let home = Home::new();
     home.stand_in("xdg-open", "exit 0");
     home.stand_in("gh", "exit 0");
-    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown(), sent(None)]);
+    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown()]);
 
     let output = home.cockpit(&["bug-report", "send", "7"], &[]).await;
 
@@ -307,15 +307,15 @@ async fn send_opens_the_drafts_issue_url_in_the_browser_and_records_it_sent() {
         )),
         "{printed}"
     );
+    assert!(
+        printed
+            .contains("once submitted, record it: cockpit bug-report send 7 --filed ISSUE_URL\n"),
+        "{printed}"
+    );
     assert_eq!(
         daemon.await.unwrap(),
-        vec![
-            Command::BugReportShow { report: 7 },
-            Command::BugReportSent {
-                report: 7,
-                issue_url: None,
-            },
-        ]
+        vec![Command::BugReportShow { report: 7 }],
+        "a browser proves nothing was filed: the draft stays a draft"
     );
 }
 
@@ -323,7 +323,7 @@ async fn send_opens_the_drafts_issue_url_in_the_browser_and_records_it_sent() {
 async fn send_print_prints_the_url_and_opens_nothing() {
     let home = Home::new();
     home.stand_in("xdg-open", "exit 0");
-    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown(), sent(None)]);
+    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![shown()]);
 
     let output = home
         .cockpit(&["bug-report", "send", "7", "--print"], &[])
@@ -336,7 +336,7 @@ async fn send_print_prints_the_url_and_opens_nothing() {
         text(&output.stdout)
     );
     assert_eq!(home.ran("xdg-open"), "");
-    assert_eq!(daemon.await.unwrap().len(), 2);
+    assert_eq!(daemon.await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -403,6 +403,31 @@ async fn send_with_gh_files_the_issue_with_the_owners_login_and_records_its_url(
                 issue_url: Some(filed.to_owned()),
             },
         ]
+    );
+}
+
+#[tokio::test]
+async fn send_filed_records_the_issue_the_owner_submitted() {
+    let home = Home::new();
+    let filed = "https://github.com/Androlax2/agent-cockpit/issues/43";
+    let daemon = scripted_daemon(&home.socket("daemon.sock"), sent(Some(filed)));
+
+    let output = home
+        .cockpit(&["bug-report", "send", "7", "--filed", filed], &[])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stdout).contains(&format!("Filed as {filed}\n")),
+        "{}",
+        text(&output.stdout)
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::BugReportSent {
+            report: 7,
+            issue_url: Some(filed.to_owned()),
+        }
     );
 }
 

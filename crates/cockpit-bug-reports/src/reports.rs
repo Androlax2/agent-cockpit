@@ -61,7 +61,9 @@ pub async fn file(
         && let Some(today) = limited_today(write, &fingerprint, day).await?
     {
         return match today.status {
-            Status::Draft => Ok(Filed::Merged(merge(write, today, &description, now).await?)),
+            Status::Draft => Ok(Filed::Merged(
+                merge(write, today, &description, &steps, now).await?,
+            )),
             Status::Sent | Status::Discarded => Ok(Filed::AlreadyHandled(today)),
         };
     }
@@ -273,30 +275,50 @@ async fn limited_today(
     }
 }
 
-/// One more occurrence of `today`. A description it does not hold yet is added while the
-/// draft stays within its bound, so the owner reads what each repeat said.
+/// One more occurrence of `today`. A description no occurrence gave yet is added while the
+/// draft stays within its bound, so the owner reads what each repeat said; the first steps
+/// given fill a draft that had none.
 async fn merge(
     write: &WriteTransaction<'_>,
     today: Report,
     description: &str,
+    steps: &str,
     now: i64,
 ) -> Result<Report, Error> {
     let occurrence = today.occurrences + 1;
     let mut merged = today.description.clone();
-    if !merged.contains(description) {
-        let addition = format!("\n\nAlso reported (occurrence {occurrence}):\n{description}");
+    if !occurrences(&merged).any(|said| said == description) {
+        let addition = format!("{ALSO_REPORTED}{occurrence}):\n{description}");
         if merged.chars().count() + addition.chars().count() <= MERGED_DESCRIPTION_MAX_CHARS {
             merged.push_str(&addition);
         }
     }
+    let steps = if today.steps.is_empty() {
+        steps
+    } else {
+        today.steps.as_str()
+    };
     write
         .execute(
-            "UPDATE bug_reports SET occurrences = ?2, description = ?3, changed_at = ?4
+            "UPDATE bug_reports SET occurrences = ?2, description = ?3, steps = ?4,
+                 changed_at = ?5
              WHERE id = ?1",
-            params![today.id.0, occurrence, merged.as_str(), now],
+            params![today.id.0, occurrence, merged.as_str(), steps, now],
         )
         .await?;
     required(write, today.id).await
+}
+
+/// Opens each repeat's addition to a merged description; its occurrence number follows.
+const ALSO_REPORTED: &str = "\n\nAlso reported (occurrence ";
+
+/// What each occurrence said in a merged description, the first one's first.
+fn occurrences(merged: &str) -> impl Iterator<Item = &str> {
+    let mut parts = merged.split(ALSO_REPORTED);
+    let first = parts.next();
+    first
+        .into_iter()
+        .chain(parts.map(|part| part.split_once("):\n").map_or(part, |(_, said)| said)))
 }
 
 async fn check_session_limit(

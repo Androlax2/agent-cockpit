@@ -2,7 +2,7 @@
 //! the report the owner reviews.
 use cockpit_protocol::{
     BugBundleView, BugFiledView, BugKindView, BugOriginView, BugReportView, BugStatusView, Command,
-    Reply, decode_request,
+    Reply, decode_request, decode_request_with_kind,
 };
 use serde_json::json;
 
@@ -144,4 +144,18 @@ fn a_report_view_carries_its_bundle_state() {
         serde_json::from_value::<BugReportView>(wire).unwrap(),
         report
     );
+}
+
+/// Serde decodes a tagged enum from a sequence too; the daemon names a request's lane work by
+/// its kind, so a command with no `kind` field is refused, never decoded without one.
+#[test]
+fn a_command_sent_as_a_sequence_is_refused_with_its_id() {
+    let rejection = decode_request_with_kind(r#"{"id": 1, "command": ["bug-report-show", 5]}"#)
+        .expect_err("a sequence names no kind");
+
+    assert_eq!(
+        rejection.error.code,
+        cockpit_protocol::ErrorCode::InvalidRequest
+    );
+    assert!(rejection.id.is_some());
 }

@@ -86,6 +86,47 @@ async fn a_repeat_that_says_something_new_adds_its_description_to_the_draft() {
 }
 
 #[tokio::test]
+async fn a_repeat_whose_words_are_part_of_an_earlier_report_is_still_added() {
+    let fixture = Fixture::new().await;
+    created(
+        fixture
+            .file(agent("s1", "todo add timed out while the daemon restarted"))
+            .await
+            .unwrap(),
+    );
+
+    let filed = fixture
+        .file(agent("s2", "todo add timed out"))
+        .await
+        .unwrap();
+
+    assert!(
+        filed
+            .report()
+            .description
+            .ends_with("Also reported (occurrence 2):\ntodo add timed out"),
+        "{}",
+        filed.report().description
+    );
+}
+
+#[tokio::test]
+async fn a_repeat_gives_its_steps_to_a_draft_that_had_none() {
+    let fixture = Fixture::new().await;
+    created(fixture.file(agent("s1", "todo add hung")).await.unwrap());
+
+    let filed = fixture
+        .file(cockpit_bug_reports::NewReport {
+            steps: "1. cockpit todo add x".to_owned(),
+            ..agent("s2", "todo add hung")
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(filed.report().steps, "1. cockpit todo add x");
+}
+
+#[tokio::test]
 async fn another_component_is_another_bug() {
     let fixture = Fixture::new().await;
     let first = created(fixture.file(agent("s1", "broken")).await.unwrap());

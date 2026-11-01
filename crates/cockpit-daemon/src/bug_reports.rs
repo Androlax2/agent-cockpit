@@ -69,6 +69,17 @@ pub(crate) enum Fault {
     Crash,
 }
 
+impl Fault {
+    /// An `internal` answer to a bug report command: it most likely failed on the database
+    /// a draft about it would be filed in, so filing one would fail the same way.
+    fn is_filing_a_report(&self) -> bool {
+        let Fault::Internal { command } = self else {
+            return false;
+        };
+        command == "agent-report-bug" || command.starts_with("bug-report-")
+    }
+}
+
 /// Where faults go. Reporting never blocks the caller: a full queue drops the fault.
 #[derive(Clone, Debug)]
 pub(crate) struct Faults(Option<mpsc::Sender<Fault>>);
@@ -189,6 +200,9 @@ fn detected(
     internal: &mut HashMap<String, VecDeque<Instant>>,
     at: Instant,
 ) -> Option<NewReport> {
+    if fault.is_filing_a_report() {
+        return None;
+    }
     let (kind, component, description) = match fault {
         Fault::RequestPanic { command } => (
             Kind::Panic,
@@ -437,12 +451,31 @@ async fn with_bundle(context: &Context, filed: Filed) -> Result<Filed, Failed> {
             "a bug report draft goes without its bundle"
         );
     }
-    let write = context.database.write().await?;
-    let report = cockpit_bug_reports::attach_bundle(&write, id, &bundle, now())
+    // The draft is committed already: failing here would tell its sender nothing was filed.
+    // It stays, its bundle pending, and the file written for it goes.
+    match attach(context, id, &bundle).await {
+        Ok(attached) => Ok(Filed::Created(attached)),
+        Err(problem) => {
+            tracing::warn!(report = id.0, %problem, "a bug report draft's bundle was not recorded");
+            if let Bundle::Written { path, .. } = &bundle {
+                remove_bundle(Path::new(path)).await;
+            }
+            Ok(Filed::Created(report))
+        }
+    }
+}
+
+async fn attach(context: &Context, id: ReportId, bundle: &Bundle) -> Result<Report, String> {
+    let write = context
+        .database
+        .write()
         .await
-        .map_err(failed)?;
-    write.commit().await?;
-    Ok(Filed::Created(report))
+        .map_err(|error| error.to_string())?;
+    let report = cockpit_bug_reports::attach_bundle(&write, id, bundle, now())
+        .await
+        .map_err(|error| error.to_string())?;
+    write.commit().await.map_err(|error| error.to_string())?;
+    Ok(report)
 }
 
 /// Writes the draft's support bundle: Cockpit's own logs (report 12 keeps prompts, agent
@@ -621,6 +654,24 @@ fn view(report: &Report, with_issue: bool) -> BugReportView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bug_report_commands_internal_answers_open_no_draft() {
+        let mut internal = HashMap::new();
+        let start = Instant::now();
+
+        let drafted = (0..INTERNAL_REPEATS).filter_map(|_| {
+            detected(
+                Fault::Internal {
+                    command: "bug-report-new".to_owned(),
+                },
+                &mut internal,
+                start,
+            )
+        });
+
+        assert_eq!(drafted.count(), 0);
+    }
 
     #[test]
     fn repeated_internal_answers_open_a_draft_at_the_third_within_the_window() {

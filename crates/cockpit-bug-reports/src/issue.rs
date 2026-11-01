@@ -60,22 +60,25 @@ pub fn issue(report: &Report) -> Issue {
     );
     let mut is_truncated = false;
     let mut url = new_issue_url(&report.title, &fields);
-    // Only the free text shrinks: the environment, fingerprint and bundle stay whole.
+    // The free text shrinks first, the longer of the two each pass; then the bundle's listing
+    // gives way to its file name. The environment and fingerprint stay whole.
     while url.len() > URL_MAX_BYTES {
-        let longest = if fields[0].len() >= fields[1].len() {
-            0
+        let kept = |field: &String| field.strip_suffix(&marker).unwrap_or(field).to_owned();
+        let shrinkable = [0, 1]
+            .into_iter()
+            .filter(|&index| !kept(&fields[index]).is_empty())
+            .max_by_key(|&index| kept(&fields[index]).len());
+        if let Some(index) = shrinkable {
+            let text = kept(&fields[index]);
+            let chars = text.chars().count();
+            fields[index] = text.chars().take(chars * 9 / 10).collect::<String>() + &marker;
+        } else if let Some(cut) = listing_cut(report)
+            && fields[4] != cut
+        {
+            fields[4] = cut;
         } else {
-            1
-        };
-        let kept = fields[longest]
-            .strip_suffix(&marker)
-            .unwrap_or(&fields[longest])
-            .to_owned();
-        let kept_chars = kept.chars().count();
-        if kept_chars == 0 {
             break;
         }
-        fields[longest] = kept.chars().take(kept_chars * 9 / 10).collect::<String>() + &marker;
         is_truncated = true;
         url = new_issue_url(&report.title, &fields);
     }
@@ -136,6 +139,18 @@ fn bundle_field(report: &Report) -> String {
         Bundle::Pending => "Not written yet.".to_owned(),
         Bundle::Failed { problem } => format!("None: {problem}"),
     }
+}
+
+/// The bundle field once its listing no longer fits the URL; `None` without a bundle.
+fn listing_cut(report: &Report) -> Option<String> {
+    let Bundle::Written { path, .. } = &report.bundle else {
+        return None;
+    };
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    Some(format!(
+        "To attach: {file_name}\n\n[listing cut to fit the URL: `cockpit bug-report show {}` prints it]",
+        report.id.0
+    ))
 }
 
 /// Percent-encodes everything but RFC 3986's unreserved characters.

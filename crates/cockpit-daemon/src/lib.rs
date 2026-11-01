@@ -302,8 +302,12 @@ impl Instance {
             &provider_facts,
         ));
         let (faults, fault_receiver) = bug_reports::Faults::channel();
-        // Marked once the start can no longer fail on durable state, so a start refused for
-        // a broken database is not taken for a crash at the next one.
+        let socket_path = options.socket_path();
+        let agent_socket_path = options.agent_socket_path();
+        let listener = Arc::new(server::bind(&socket_path)?);
+        let agent_listener = Arc::new(server::bind(&agent_socket_path)?);
+        // Marked after the last step that can fail, so a refused start is not taken for a
+        // crash at the next one: from here on only a `Daemon`, whose drop clears it, exists.
         let crashed = bug_reports::mark_running(&options.state_dir).map_err(StartError::io(
             "mark the daemon running in",
             &options.state_dir,
@@ -312,10 +316,6 @@ impl Instance {
             tracing::warn!("the last run did not stop cleanly; opening a bug report draft");
             faults.report(bug_reports::Fault::Crash);
         }
-        let socket_path = options.socket_path();
-        let agent_socket_path = options.agent_socket_path();
-        let listener = Arc::new(server::bind(&socket_path)?);
-        let agent_listener = Arc::new(server::bind(&agent_socket_path)?);
         let limits = options.limits;
         let messages_queued = Arc::new(tokio::sync::Notify::new());
         let delivered = coordination::Context {
