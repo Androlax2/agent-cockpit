@@ -3,7 +3,8 @@
 
 use cockpit_provider_api::fake::FakeProvider;
 use cockpit_provider_api::{
-    Capability, Conversation, ConversationId, LaunchRequest, Provider, ProviderName,
+    Action, Activity, Capability, Conversation, ConversationId, Key, LaunchRequest, Provider,
+    ProviderName, TerminalInput,
 };
 
 fn request(conversation: &Conversation) -> LaunchRequest<'_> {
@@ -97,5 +98,37 @@ fn the_fake_agent_logs_its_launch_and_the_log_reads_back() {
             launch.token.as_str()
         ),
         ("s000000000001", "new", "conversation-1", "hello", "token-1")
+    );
+}
+
+#[test]
+fn a_fake_reading_messages_types_one_while_its_agent_waits_and_refuses_one_under_a_dialog() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = fake(&dir).reading_messages(dir.path().join("messages.log"));
+
+    assert!(fake.capabilities().supports(Capability::Submit));
+    assert_eq!(
+        fake.input(&Action::Submit("do item 3"), Some(Activity::Waiting))
+            .unwrap(),
+        vec![
+            TerminalInput::Text("do item 3".to_owned()),
+            TerminalInput::Key(Key::Enter)
+        ]
+    );
+    assert!(
+        fake.input(&Action::Submit("do item 3"), Some(Activity::NeedsYou))
+            .is_err()
+    );
+}
+
+#[test]
+fn the_fake_without_submit_refuses_a_message() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let refused = fake(&dir).input(&Action::Submit("do item 3"), Some(Activity::Waiting));
+
+    assert_eq!(
+        refused.unwrap_err().reason,
+        "it does not report the `submit` capability"
     );
 }

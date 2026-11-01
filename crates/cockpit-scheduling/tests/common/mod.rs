@@ -28,9 +28,10 @@ pub struct Fixture {
     pub policy: Policy,
 }
 
-pub fn migrations() -> [cockpit_turso::MigrationSet; 5] {
+pub fn migrations() -> [cockpit_turso::MigrationSet; 6] {
     [
         cockpit_authorization::MIGRATIONS,
+        cockpit_messaging::MIGRATIONS,
         cockpit_tasks::MIGRATIONS,
         cockpit_resource_admission::MIGRATIONS,
         cockpit_workflows::MIGRATIONS,
@@ -200,13 +201,14 @@ pub fn agent(session: &str, project: &str) -> Actor {
     }
 }
 
-/// A session at its prompt since an hour before [`NOW`], without a grant.
+/// A session at its prompt since an hour before [`NOW`], without a grant, whose provider
+/// types messages to it.
 pub fn idle(id: &str, project: &str) -> Candidate {
     Candidate {
         session: SessionId::new(id).unwrap(),
         project: Some(project.to_owned()),
         role: None,
-        capabilities: observed(),
+        capabilities: observed().with(Capability::Submit, Provenance::Discovered),
         presence: Presence::Waiting { since: NOW - 3600 },
     }
 }

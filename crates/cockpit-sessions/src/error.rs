@@ -95,6 +95,16 @@ pub enum Error {
     TerminalBusy {
         session: SessionId,
     },
+    /// Another operation on the session is under way; a message is not typed meanwhile.
+    SessionBusy {
+        session: SessionId,
+    },
+    /// Typing into the agent's terminal failed or was not seen to finish: the keys may have
+    /// reached it, in part or whole.
+    TypingUnconfirmed {
+        session: SessionId,
+        reason: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -182,6 +192,15 @@ impl fmt::Display for Error {
                 formatter,
                 "session {session}'s terminal cannot be opened: an earlier step on it timed \
                  out and has not returned yet; retry once tmux answers"
+            ),
+            Error::SessionBusy { session } => write!(
+                formatter,
+                "session {session} is busy with another operation; retry once it finishes"
+            ),
+            Error::TypingUnconfirmed { session, reason } => write!(
+                formatter,
+                "typing into session {session}'s terminal was not confirmed, so the agent may \
+                 have received the message: {reason}"
             ),
         }
     }

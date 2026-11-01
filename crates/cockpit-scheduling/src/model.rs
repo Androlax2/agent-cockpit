@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cockpit_authorization::SessionId;
 use cockpit_provider_api::Capabilities;
-use cockpit_resource_admission::Demand;
+use cockpit_resource_admission::{Demand, ReservationId};
 use cockpit_tasks::ItemId;
 use cockpit_workflows::RunId;
 
@@ -276,6 +276,31 @@ pub struct Placement {
     pub session: SessionId,
     pub demand: Demand,
     pub placed_at: i64,
+    /// The admission reservation that charges it (#386); `None` for a placement made before
+    /// placements held one, which the pass charges itself.
+    pub reservation: Option<ReservationId>,
+}
+
+impl Placement {
+    /// The one line typed to the session's agent to give it the work (#385): where to read
+    /// it and how to report it done. The work itself is read from its durable records, so
+    /// the line stays short and never goes stale.
+    pub fn brief(&self) -> String {
+        match &self.unit {
+            Unit::Item => format!(
+                "Cockpit gives you item {item}: read it with `cockpit todo show {item}`, do it, \
+                 then finish it with `cockpit todo done {item} --summary '<what you did>'`.",
+                item = self.item.0
+            ),
+            Unit::Step { run, name, .. } => format!(
+                "Cockpit gives you step `{name}` of workflow run {run} (item {item}): read its \
+                 task packet with `cockpit workflow packet {run}` and hand the step off as it \
+                 says.",
+                run = run.0,
+                item = self.item.0
+            ),
+        }
+    }
 }
 
 /// What one pass did.

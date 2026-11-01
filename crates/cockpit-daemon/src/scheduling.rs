@@ -1,11 +1,14 @@
 //! Runs `cockpit-scheduling`'s pass (#43): every `interval` and on `cockpit queue dispatch`,
-//! over the sessions as this daemon sees them, and answers `cockpit queue explain` from the
-//! records the last pass wrote. This file gathers the inputs and maps to the wire; the rules
-//! live in the scheduling crate.
+//! over the sessions as this daemon sees them, then types each placement to its session's
+//! agent (#385), and answers `cockpit queue explain` from the records the last pass wrote.
+//! This file gathers the inputs, delivers and maps to the wire; the rules live in the
+//! scheduling crate.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::sync::Arc;
 
+use cockpit_messaging::{Claim, Deliverer, Delivery, DeliveryState, Failure};
 use cockpit_protocol::{
     Command, ErrorCode, ProtocolError, QueueExplanationView, QueuePlacementView,
     QueueSessionNoteView, QueueStepView, Reply,
@@ -86,7 +89,178 @@ async fn pass(context: &Context) -> Result<Dispatched, Failed> {
             "placed waiting work on a session"
         );
     }
+    // The placements are committed whatever delivery does: one that is not delivered now is
+    // retried by the next pass, or ends `delivery-failed` and its work goes back.
+    if let Err(error) = deliver(context).await {
+        tracing::error!(%error, "delivering placed work to the agents failed");
+    }
     Ok(dispatched)
+}
+
+/// The outbox deliveries a pass makes at most: one per session is the most it places.
+const DELIVERIES_PER_PASS: usize = 64;
+
+/// Delivers every due envelope, then ends the placement of each delivery that failed for
+/// good, so its work goes back to the queue.
+async fn deliver(context: &Context) -> Result<(), DeliveryError> {
+    let delivered = cockpit_messaging::deliver_due(
+        &context.database,
+        &Typist { context },
+        now(),
+        DELIVERIES_PER_PASS,
+    )
+    .await?;
+    for (id, state) in delivered {
+        let read = context.database.read().await?;
+        let Some(envelope) = cockpit_messaging::envelope(&read, id).await? else {
+            continue;
+        };
+        drop(read);
+        let Some(placement) = cockpit_scheduling::placement_of_delivery(&envelope.effect_key)
+            .filter(|_| envelope.producer == cockpit_scheduling::DELIVERY_PRODUCER)
+        else {
+            continue;
+        };
+        match state {
+            DeliveryState::Received => tracing::info!(
+                placement = placement.0,
+                session = envelope.destination.as_str(),
+                "delivered placed work to its agent"
+            ),
+            DeliveryState::Failed | DeliveryState::Expired => {
+                let write = context.database.write().await?;
+                let ended = cockpit_scheduling::delivery_failed(&write, placement, now()).await?;
+                write.commit().await?;
+                if ended {
+                    tracing::warn!(
+                        placement = placement.0,
+                        session = envelope.destination.as_str(),
+                        reason = envelope.note.as_deref().unwrap_or(""),
+                        "placed work could not be delivered; it goes back to the queue"
+                    );
+                }
+            }
+            DeliveryState::Uncertain => tracing::warn!(
+                placement = placement.0,
+                session = envelope.destination.as_str(),
+                reason = envelope.note.as_deref().unwrap_or(""),
+                "placed work may or may not have reached its agent; the placement stays"
+            ),
+            DeliveryState::Queued | DeliveryState::Submitting | DeliveryState::Superseded => {}
+        }
+    }
+    Ok(())
+}
+
+/// Types a placement's line to its session's agent.
+struct Typist<'context> {
+    context: &'context Context,
+}
+
+impl Deliverer for Typist<'_> {
+    fn deliver(&self, claim: &Claim) -> impl Future<Output = Delivery> + Send {
+        let context = self.context;
+        async move {
+            let rejected = |reason: String| Delivery::Failed(Failure::Rejected { reason });
+            // Scheduling is the outbox's only producer so far; one added later wires its
+            // own delivery here rather than having its envelopes typed to an agent.
+            if claim.producer != cockpit_scheduling::DELIVERY_PRODUCER {
+                return rejected(format!(
+                    "the daemon delivers nothing for {}",
+                    claim.producer
+                ));
+            }
+            let Some(placement) = cockpit_scheduling::placement_of_delivery(&claim.effect_key)
+            else {
+                return rejected(format!("{:?} names no placement", claim.effect_key));
+            };
+            match is_active(context, placement).await {
+                Ok(true) => {}
+                Ok(false) => return rejected("its placement ended before delivery".to_owned()),
+                Err(error) => {
+                    return Delivery::Failed(Failure::NotSent {
+                        reason: error.to_string(),
+                        retry_at: retry_at(),
+                    });
+                }
+            }
+            let session = match cockpit_sessions::SessionId::parse(&claim.destination) {
+                Ok(session) => session,
+                Err(error) => return rejected(error.to_string()),
+            };
+            match context.sessions.submit(&session, &claim.payload).await {
+                Ok(()) => Delivery::Received {
+                    receipt: format!("typed into session {session}'s terminal"),
+                },
+                Err(error @ cockpit_sessions::Error::TypingUnconfirmed { .. }) => {
+                    Delivery::Failed(Failure::Unacknowledged {
+                        reason: error.to_string(),
+                        retry_at: retry_at(),
+                    })
+                }
+                Err(error @ cockpit_sessions::Error::UnknownSession { .. }) => {
+                    rejected(error.to_string())
+                }
+                // Nothing was typed: the agent was busy with a dialog, the session was
+                // between launches, tmux did not answer. A later pass tries again.
+                Err(error) => Delivery::Failed(Failure::NotSent {
+                    reason: error.to_string(),
+                    retry_at: retry_at(),
+                }),
+            }
+        }
+    }
+}
+
+async fn is_active(
+    context: &Context,
+    placement: cockpit_scheduling::PlacementId,
+) -> Result<bool, DeliveryError> {
+    let read = context.database.read().await?;
+    Ok(cockpit_scheduling::active_placement(&read, placement)
+        .await?
+        .is_some())
+}
+
+/// Due at once: delivery runs only after a pass, so the next pass tries it again.
+fn retry_at() -> i64 {
+    now()
+}
+
+/// What stopped delivery; logged, since the pass it follows has committed.
+#[derive(Debug)]
+enum DeliveryError {
+    Database(cockpit_turso::Error),
+    Messaging(cockpit_messaging::Error),
+    Scheduling(cockpit_scheduling::Error),
+}
+
+impl std::fmt::Display for DeliveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeliveryError::Database(error) => write!(formatter, "database: {error}"),
+            DeliveryError::Messaging(error) => write!(formatter, "messaging: {error}"),
+            DeliveryError::Scheduling(error) => write!(formatter, "scheduling: {error}"),
+        }
+    }
+}
+
+impl From<cockpit_turso::Error> for DeliveryError {
+    fn from(error: cockpit_turso::Error) -> DeliveryError {
+        DeliveryError::Database(error)
+    }
+}
+
+impl From<cockpit_messaging::Error> for DeliveryError {
+    fn from(error: cockpit_messaging::Error) -> DeliveryError {
+        DeliveryError::Messaging(error)
+    }
+}
+
+impl From<cockpit_scheduling::Error> for DeliveryError {
+    fn from(error: cockpit_scheduling::Error) -> DeliveryError {
+        DeliveryError::Scheduling(error)
+    }
 }
 
 /// The sessions that could take work: every session not ended, with its project, provider

@@ -287,6 +287,10 @@ async fn reservation_view(
         ReservationState::Reserved { .. } | ReservationState::Released { .. } => resources
             .backend
             .unknown_report(&limits, "the work has not started"),
+        ReservationState::Held => resources.backend.unknown_report(
+            &limits,
+            "it runs inside a session's agent, which has no execution of its own to inspect",
+        ),
     };
     let execution = match reservation.state {
         ReservationState::Running { execution } => Some(execution.0),

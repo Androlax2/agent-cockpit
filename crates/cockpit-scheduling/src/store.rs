@@ -5,8 +5,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use cockpit_authorization::{Permission, Scope, SessionId};
+use cockpit_messaging::{Coalescing, Envelope, Redelivery};
 use cockpit_resource_admission::{
-    AdmissionRequest, ControlSupport, Demand, Hold, Limits, Policy, Verdict, Workload,
+    Admission, AdmissionRequest, ControlSupport, Demand, Hold, Limits, Policy, ReservationId,
+    Verdict, Workload,
 };
 use cockpit_tasks::{Item, ItemId, ListFilter, Status};
 use cockpit_turso::sql::{Connection, Row};
@@ -21,11 +23,12 @@ use crate::{
 
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "scheduling",
-    migrations: &[Migration {
-        version: 1,
-        // A unit names its item (and run) without foreign keys: they belong to tasks and
-        // workflows, which may delete them; a pass drops what is gone.
-        sql: "CREATE TABLE scheduling_waiting (
+    migrations: &[
+        Migration {
+            version: 1,
+            // A unit names its item (and run) without foreign keys: they belong to tasks and
+            // workflows, which may delete them; a pass drops what is gone.
+            sql: "CREATE TABLE scheduling_waiting (
                 unit TEXT PRIMARY KEY CHECK (unit <> ''),
                 item INTEGER NOT NULL,
                 since INTEGER NOT NULL
@@ -87,8 +90,69 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 CHECK ((run IS NULL) = (step IS NULL)),
                 CHECK ((reason = 'behind') = (behind IS NOT NULL))
             );",
-    }],
+        },
+        // #385: a placement whose delivery to its agent failed ends `delivery-failed`.
+        // #386: it holds an admission reservation, released when it ends; one made before
+        // has none and the pass still charges it itself.
+        Migration {
+            version: 2,
+            sql: "CREATE TABLE scheduling_placements_delivered (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item INTEGER NOT NULL,
+                run INTEGER,
+                position INTEGER CHECK (position >= 1),
+                step TEXT CHECK (step <> ''),
+                project TEXT NOT NULL CHECK (project <> ''),
+                session TEXT NOT NULL CHECK (session <> ''),
+                cpu_millis INTEGER NOT NULL CHECK (cpu_millis >= 0),
+                memory_mib INTEGER NOT NULL CHECK (memory_mib >= 0),
+                placed_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                ended_reason TEXT CHECK (ended_reason IN ('work-done', 'work-ended',
+                    'session-gone', 'delivery-failed')),
+                reservation INTEGER UNIQUE,
+                CHECK ((run IS NULL) = (position IS NULL)),
+                CHECK ((run IS NULL) = (step IS NULL)),
+                CHECK ((ended_at IS NULL) = (ended_reason IS NULL))
+            );
+            INSERT INTO scheduling_placements_delivered (id, item, run, position, step,
+                    project, session, cpu_millis, memory_mib, placed_at, ended_at,
+                    ended_reason)
+                SELECT id, item, run, position, step, project, session, cpu_millis,
+                    memory_mib, placed_at, ended_at, ended_reason
+                FROM scheduling_placements;
+            DROP TABLE scheduling_placements;
+            ALTER TABLE scheduling_placements_delivered RENAME TO scheduling_placements;
+            CREATE UNIQUE INDEX scheduling_placements_one_per_session
+                ON scheduling_placements (session) WHERE ended_at IS NULL;
+            CREATE UNIQUE INDEX scheduling_placements_one_per_item
+                ON scheduling_placements (item) WHERE ended_at IS NULL;
+            CREATE INDEX scheduling_placements_finished
+                ON scheduling_placements (project) WHERE ended_reason = 'work-done';",
+        },
+    ],
 };
+
+/// The producer of a placement's delivery envelope in `cockpit-messaging`'s outbox.
+pub const DELIVERY_PRODUCER: &str = "scheduling";
+
+/// Attempts at typing a placement to its agent before it ends `delivery-failed`.
+const DELIVERY_ATTEMPTS: u32 = 3;
+
+/// The effect key of `placement`'s delivery: one per placement, so a pass that enqueues it
+/// again finds it there.
+pub fn delivery_key(placement: PlacementId) -> String {
+    format!("placement-{}", placement.0)
+}
+
+/// The placement a delivery's effect key names; `None` for a key no placement made.
+pub fn placement_of_delivery(effect_key: &str) -> Option<PlacementId> {
+    effect_key
+        .strip_prefix("placement-")?
+        .parse()
+        .ok()
+        .map(PlacementId)
+}
 
 /// One deterministic pass (report 10, "routine dispatch"): ends the placements whose work
 /// ended, places what can start now on the sessions that can take it, project by project,
@@ -131,16 +195,20 @@ pub async fn dispatch(
         .collect();
     let active = placements(write).await?;
     let mut placed_by_project: BTreeMap<String, u32> = BTreeMap::new();
-    let mut placed_demand = Demand::default();
+    // A placement's admission reservation charges it; only one placed before they did has
+    // to be charged here.
+    let mut unreserved_demand = Demand::default();
     for placement in &active {
         *placed_by_project
             .entry(placement.project.clone())
             .or_default() += 1;
-        placed_demand.cpu_millis += placement.demand.cpu_millis;
-        placed_demand.memory_mib += placement.demand.memory_mib;
+        if placement.reservation.is_none() {
+            unreserved_demand.cpu_millis += placement.demand.cpu_millis;
+            unreserved_demand.memory_mib += placement.demand.memory_mib;
+        }
     }
     let in_use = cockpit_resource_admission::in_use(write, now).await?;
-    let free = plan::minus(plan::minus(policy.budget, in_use.all), placed_demand);
+    let free = plan::minus(plan::minus(policy.budget, in_use.all), unreserved_demand);
     let familiar = familiar_projects(write).await?;
     let turn = settings.turn_demand;
     let unfamiliar = plan::with_headroom(turn, settings.startup_headroom_percent);
@@ -162,7 +230,7 @@ pub async fn dispatch(
     );
     let mut placed = Vec::with_capacity(plan.placements.len());
     for planned in plan.placements {
-        placed.push(place(write, planned, &inputs.candidates, now).await?);
+        placed.push(place(write, planned, &inputs.candidates, policy, support, now).await?);
     }
     let mut explanations = plan.explanations;
     explanations.extend(
@@ -179,7 +247,7 @@ pub async fn dispatch(
 }
 
 /// What admission holds an agent turn of `demand` for, room aside: the pass counts room
-/// itself, with the placements admission does not see.
+/// itself, so one pass places several turns against the same budget.
 async fn admission_hold(
     connection: &Connection,
     demand: Demand,
@@ -470,22 +538,7 @@ async fn settle(
             .candidates
             .iter()
             .any(|candidate| candidate.session == placement.session);
-        let is_working = match &placement.unit {
-            Unit::Item => items.iter().any(|item| {
-                item.id == placement.item
-                    && item.status == Status::Doing
-                    && item.doing_session.as_ref() == Some(&placement.session)
-            }),
-            Unit::Step { run, position, .. } => runs.iter().any(|candidate| {
-                candidate.id == *run
-                    && candidate.steps.iter().any(|step| {
-                        step.position == *position
-                            && step.status == StepStatus::Active
-                            && step.session.as_ref() == Some(&placement.session)
-                    })
-            }),
-        };
-        let reason = match (is_working, is_present) {
+        let reason = match (is_working(&placement, items, runs), is_present) {
             (true, true) => continue,
             (true, false) => {
                 hand_back(write, &placement, inputs.now).await?;
@@ -495,16 +548,69 @@ async fn settle(
             (false, _) if is_done(write, &placement, runs).await? => "work-done",
             (false, _) => "work-ended",
         };
-        write
-            .execute(
-                "UPDATE scheduling_placements SET ended_at = ?2, ended_reason = ?3
-                 WHERE id = ?1 AND ended_at IS NULL",
-                (placement.id.0, inputs.now, reason),
-            )
-            .await?;
+        end(write, &placement, reason, inputs.now).await?;
         settled.ended.push(placement.id);
     }
     Ok(settled)
+}
+
+/// Ends `placement` for `reason` and gives back its admission reservation.
+async fn end(
+    write: &WriteTransaction<'_>,
+    placement: &Placement,
+    reason: &str,
+    now: i64,
+) -> Result<(), Error> {
+    write
+        .execute(
+            "UPDATE scheduling_placements SET ended_at = ?2, ended_reason = ?3
+             WHERE id = ?1 AND ended_at IS NULL",
+            (placement.id.0, now, reason),
+        )
+        .await?;
+    if let Some(reservation) = placement.reservation {
+        cockpit_resource_admission::release_held(write, reservation, now).await?;
+    }
+    Ok(())
+}
+
+/// The placement's delivery to its agent failed for good (#385): it ends `delivery-failed`
+/// and its work goes back to the queue, as a vanished session's does, so a later pass places
+/// it again. Answers `false`, changing nothing, when the placement already ended.
+pub async fn delivery_failed(
+    write: &WriteTransaction<'_>,
+    placement: PlacementId,
+    now: i64,
+) -> Result<bool, Error> {
+    let Some(placement) = active_placement(write, placement).await? else {
+        return Ok(false);
+    };
+    let items = cockpit_tasks::list(write, &Actor::Owner, &ListFilter::default()).await?;
+    let runs = cockpit_workflows::runs(write, &Actor::Owner, &RunFilter::default()).await?;
+    if is_working(&placement, &items, &runs) {
+        hand_back(write, &placement, now).await?;
+    }
+    end(write, &placement, "delivery-failed", now).await?;
+    Ok(true)
+}
+
+/// Whether the placement's session still does its work.
+fn is_working(placement: &Placement, items: &[Item], runs: &[Run]) -> bool {
+    match &placement.unit {
+        Unit::Item => items.iter().any(|item| {
+            item.id == placement.item
+                && item.status == Status::Doing
+                && item.doing_session.as_ref() == Some(&placement.session)
+        }),
+        Unit::Step { run, position, .. } => runs.iter().any(|candidate| {
+            candidate.id == *run
+                && candidate.steps.iter().any(|step| {
+                    step.position == *position
+                        && step.status == StepStatus::Active
+                        && step.session.as_ref() == Some(&placement.session)
+                })
+        }),
+    }
 }
 
 /// Whether the placement's work was finished, not dropped: only finished work makes its
@@ -611,11 +717,15 @@ async fn familiar_projects(connection: &Connection) -> Result<BTreeSet<String>, 
     Ok(projects)
 }
 
-/// Takes the planned work for its session and records the placement.
+/// Takes the planned work for its session, holds its agent turn's admission reservation,
+/// records the placement and enqueues its delivery to the agent: all in `write`, so a
+/// placement is never recorded without the intent to deliver it.
 async fn place(
     write: &WriteTransaction<'_>,
     planned: plan::Planned,
     candidates: &[crate::Candidate],
+    policy: &Policy,
+    support: &[ControlSupport],
     now: i64,
 ) -> Result<Placement, Error> {
     let plan::Planned {
@@ -646,11 +756,33 @@ async fn place(
             (Some(run.0), Some(i64::from(*position)), Some(*name))
         }
     };
+    let request = AdmissionRequest {
+        label: format!(
+            "agent turn: item {} on {}",
+            waiting.item.0,
+            session.as_str()
+        ),
+        workload: Workload::AgentTurn,
+        demand,
+        limits: Limits::default(),
+        required: Vec::new(),
+    };
+    let reservation =
+        match cockpit_resource_admission::hold(write, &request, policy, support, now).await? {
+            Admission::Admitted(reservation) => reservation,
+            // The plan counted room from the same reservations in the same transaction.
+            Admission::Held(hold) => {
+                return Err(Error::PlanAdmissionMismatch {
+                    item: waiting.item,
+                    hold: hold.to_string(),
+                });
+            }
+        };
     let row = write
         .prepare(
             "INSERT INTO scheduling_placements (item, run, position, step, project, session,
-                 cpu_millis, memory_mib, placed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 cpu_millis, memory_mib, placed_at, reservation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              RETURNING id",
         )
         .await?
@@ -664,9 +796,10 @@ async fn place(
             stored(demand.cpu_millis),
             stored(demand.memory_mib),
             now,
+            reservation.0,
         ])
         .await?;
-    Ok(Placement {
+    let placement = Placement {
         id: PlacementId(row.get(0)?),
         item: waiting.item,
         unit: waiting.unit,
@@ -674,16 +807,55 @@ async fn place(
         session,
         demand,
         placed_at: now,
-    })
+        reservation: Some(reservation),
+    };
+    cockpit_messaging::enqueue(
+        write,
+        &Envelope {
+            effect_key: delivery_key(placement.id),
+            producer: DELIVERY_PRODUCER.to_owned(),
+            destination: placement.session.as_str().to_owned(),
+            payload: placement.brief(),
+            // Typing the work twice would start it twice.
+            redelivery: Redelivery::Never,
+            coalescing: Coalescing::Never,
+            max_attempts: DELIVERY_ATTEMPTS,
+            expires_at: None,
+        },
+        now,
+    )
+    .await?;
+    Ok(placement)
 }
+
+/// The placement `id` while it is active.
+pub async fn active_placement(
+    connection: &Connection,
+    id: PlacementId,
+) -> Result<Option<Placement>, Error> {
+    let mut rows = connection
+        .query(
+            &format!("SELECT {PLACEMENT_COLUMNS} FROM scheduling_placements WHERE id = ?1 AND ended_at IS NULL"),
+            [id.0],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => Ok(Some(placement_from(&row)?)),
+        None => Ok(None),
+    }
+}
+
+const PLACEMENT_COLUMNS: &str = "id, item, run, position, step, project, session, cpu_millis,
+    memory_mib, placed_at, reservation";
 
 /// Every active placement, oldest first.
 pub async fn placements(connection: &Connection) -> Result<Vec<Placement>, Error> {
     let mut rows = connection
         .query(
-            "SELECT id, item, run, position, step, project, session, cpu_millis, memory_mib,
-                 placed_at
-             FROM scheduling_placements WHERE ended_at IS NULL ORDER BY id",
+            &format!(
+                "SELECT {PLACEMENT_COLUMNS} FROM scheduling_placements WHERE ended_at IS NULL
+                 ORDER BY id"
+            ),
             (),
         )
         .await?;
@@ -711,6 +883,7 @@ fn placement_from(row: &Row) -> Result<Placement, Error> {
             memory_mib: loaded(row.get(8)?).map_err(invalid)?,
         },
         placed_at: row.get(9)?,
+        reservation: row.get::<Option<i64>>(10)?.map(ReservationId),
     })
 }
 

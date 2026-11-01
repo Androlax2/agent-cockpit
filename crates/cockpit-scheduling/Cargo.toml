@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 # Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
 cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
+cockpit-messaging = { path = "../cockpit-messaging", version = "0.1.0" }
 cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0" }
 cockpit-resource-admission = { path = "../cockpit-resource-admission", version = "0.1.0" }
 cockpit-tasks = { path = "../cockpit-tasks", version = "0.1.0" }

@@ -363,3 +363,22 @@ async fn the_step_of_a_gone_session_is_ready_again() {
         matches!(dispatched.placed[0].unit, Unit::Step { run: placed, .. } if placed == run.id)
     );
 }
+
+#[tokio::test]
+async fn a_session_whose_provider_cannot_type_to_its_agent_gets_no_work() {
+    let fixture = Fixture::with_budget(4).await;
+    let item = fixture.queued("a", "Fix the login", Priority::NORMAL).await;
+    let session = Candidate {
+        capabilities: Capabilities::none(),
+        ..fixture.session("a-1", "a").await
+    };
+
+    let dispatched = fixture.dispatch_at(NOW, &[session]).await;
+
+    assert!(dispatched.placed.is_empty());
+    let explanation = explanation_of(&dispatched.explanations, item.id);
+    assert_eq!(
+        explanation.sessions[0].why,
+        "its agent cannot be sent work: it does not report the `submit` capability"
+    );
+}
