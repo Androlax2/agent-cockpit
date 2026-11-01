@@ -66,13 +66,16 @@ pub enum Command {
         session: String,
         text: String,
     },
-    /// Agent socket only (#410): start a session in `dir` (absolute), with `prompt` as its
-    /// first message, in a new clone on `clone` when given. Needs `start-sessions`; waits in
-    /// the `ask run` queue unless the grant says otherwise.
+    /// Agent socket only (#410): start a session in `dir` (absolute), running `agent`, with
+    /// `prompt` as its first message, in a new clone on `clone` when given. `agent` is
+    /// required once the daemon wires more than one. Needs `start-sessions`; waits in the
+    /// `ask run` queue unless the grant says otherwise.
     AgentStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         launch_token: Option<String>,
         dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

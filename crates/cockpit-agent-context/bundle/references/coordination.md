@@ -30,7 +30,8 @@ audited with your session and the other one.
   doing-now and open question. Never their terminal or transcript.
 - `cockpit agent message SESSION TEXT` (`message-sessions`): one line, typed at that
   session's next prompt with your session named. Refused while it has a dialog open.
-- `cockpit agent start DIR [--prompt TEXT] [--clone BRANCH]` (`start-sessions`): waits for
+- `cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]` (`start-sessions`):
+  `--agent` names the agent to run when Cockpit has more than one; waits for
   the owner's approval like `cockpit ask run` unless the grant says otherwise, and is capped
   per hour; `cockpit ask run --wait ID` goes on waiting.
 

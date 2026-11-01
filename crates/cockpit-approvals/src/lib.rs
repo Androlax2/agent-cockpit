@@ -139,5 +139,10 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             ALTER TABLE approvals_runs ADD COLUMN start_prompt TEXT;
             ALTER TABLE approvals_runs ADD COLUMN start_clone TEXT CHECK (start_clone <> '');",
         },
+        // A start names its agent once the daemon wires more than one (#453, #469).
+        Migration {
+            version: 6,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN start_agent TEXT CHECK (start_agent <> '');",
+        },
     ],
 };

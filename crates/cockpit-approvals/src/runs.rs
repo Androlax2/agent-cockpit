@@ -41,7 +41,7 @@ const KIND: &str = "run request";
 const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, project,
         project_root, reason, state, asked_at, expires_at, exit_code, output,
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
-        kind, start_prompt, start_clone";
+        kind, start_prompt, start_clone, start_agent";
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -154,6 +154,8 @@ pub struct StartSession {
     pub prompt: Option<String>,
     /// Start it in a new clone on this branch instead of in the directory itself.
     pub clone: Option<String>,
+    /// The agent to run, required once the daemon wires more than one.
+    pub agent: Option<String>,
 }
 
 /// What a coordinator session asks to start (#410). `dir` is canonical, like
@@ -297,13 +299,15 @@ pub async fn ask_start(
     let run = insert_run(write, session, &run_ask, Some(asked_under.value()), now).await?;
     stored_run(
         write,
-        "UPDATE approvals_runs SET kind = ?2, start_prompt = ?3, start_clone = ?4
+        "UPDATE approvals_runs SET kind = ?2, start_prompt = ?3, start_clone = ?4,
+             start_agent = ?5
          WHERE id = ?1",
         (
             run.id.0,
             START_KIND,
             ask.start.prompt.clone(),
             ask.start.clone.clone(),
+            ask.start.agent.clone(),
         ),
         now,
     )
@@ -340,6 +344,14 @@ pub fn validate_start(dir: &Path, start: &StartSession) -> Result<String, Refusa
             "must be a branch name, without spaces or control characters",
         ));
     }
+    if let Some(agent) = &start.agent
+        && (agent.is_empty() || agent.chars().any(|c| c.is_control() || c.is_whitespace()))
+    {
+        return Err(invalid(
+            "agent",
+            "must be an agent name, without spaces or control characters",
+        ));
+    }
     let command = start_command(dir, start)?;
     validate_command("start", &command)?;
     Ok(command)
@@ -349,6 +361,9 @@ pub fn validate_start(dir: &Path, start: &StartSession) -> Result<String, Refusa
 /// value quoted for a POSIX shell. The digest an approval binds covers it, and so every field.
 fn start_command(dir: &Path, start: &StartSession) -> Result<String, Refusal> {
     let mut command = format!("cockpit session new {}", shell_quoted(text_of(dir)?));
+    if let Some(agent) = &start.agent {
+        command.push_str(&format!(" --agent {}", shell_quoted(agent)));
+    }
     if let Some(prompt) = &start.prompt {
         command.push_str(&format!(" --prompt {}", shell_quoted(prompt)));
     }
@@ -861,7 +876,7 @@ pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted
     let mut rows = connection
         .query(
             "SELECT id, revision, command, cwd, state, execution, kind, start_prompt,
-                 start_clone
+                 start_clone, start_agent
              FROM approvals_runs
              WHERE state IN ('approved', 'running') ORDER BY id",
             (),
@@ -1086,15 +1101,20 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
     })
 }
 
-/// The start request read from `kind, start_prompt, start_clone` at `first`; `None` for a
-/// command.
+/// The start request read from `kind, start_prompt, start_clone, start_agent` at `first`;
+/// `None` for a command.
 fn start_from(row: &Row, first: usize) -> Result<Option<StartSession>, Error> {
     let kind: String = row.get(first)?;
     let prompt: Option<String> = row.get(first + 1)?;
     let clone: Option<String> = row.get(first + 2)?;
+    let agent: Option<String> = row.get(first + 3)?;
     match kind.as_str() {
-        START_KIND => Ok(Some(StartSession { prompt, clone })),
-        "command" if prompt.is_none() && clone.is_none() => Ok(None),
+        START_KIND => Ok(Some(StartSession {
+            prompt,
+            clone,
+            agent,
+        })),
+        "command" if prompt.is_none() && clone.is_none() && agent.is_none() => Ok(None),
         "command" => Err(invalid_row(TABLE, "a command with start fields".to_owned())),
         other => Err(invalid_row(TABLE, format!("kind {other:?}"))),
     }

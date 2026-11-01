@@ -55,7 +55,7 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit agent reports
        cockpit agent sessions [--watch]
        cockpit agent message SESSION TEXT
-       cockpit agent start DIR [--prompt TEXT] [--clone BRANCH]
+       cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
        cockpit project add DIR [--name NAME]
        cockpit project list
        cockpit checkout list [PROJECT]
