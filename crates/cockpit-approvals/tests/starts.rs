@@ -6,7 +6,7 @@ mod common;
 
 use cockpit_approvals::{
     Error, Refusal, RunRequest, RunState, StartAsk, StartSession, approve_run, ask_start, edit_run,
-    finish_start, interrupted_runs, open_runs, reconcile_run, run_request,
+    finish_start, interrupted_runs, open_runs, reconcile_run, run_request, validate_start,
 };
 use cockpit_authorization::{Permission, Scope, SessionId};
 use common::{Fixture, NOW, session};
@@ -235,4 +235,18 @@ async fn a_start_prompt_and_branch_are_validated_before_filing() {
             "{refused:?}"
         );
     }
+}
+
+#[test]
+fn a_start_whose_command_outgrows_the_limit_is_refused_with_or_without_confirmation() {
+    // Within the prompt's character limit, but each quote shows as four bytes.
+    let quotes = "'".repeat(4000);
+    let long_dir = std::path::PathBuf::from(format!("/{}", "d".repeat(500)));
+
+    let refused = validate_start(&long_dir, &start(Some(&quotes), None));
+
+    assert!(
+        matches!(&refused, Err(Refusal::InvalidRequest { field, .. }) if *field == "start"),
+        "{refused:?}"
+    );
 }

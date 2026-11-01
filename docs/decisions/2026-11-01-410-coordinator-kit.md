@@ -19,7 +19,10 @@ session, within reports 07 and 17. The TUI line was chosen by Theo.
   approves or declines it like a command (`cockpit ask approve|decline`, the TUI queue).
   Approving it starts the session through `cockpit-sessions`, never through a shell. A daemon
   restart marks a pending start not run, like a command. Approval re-checks the grant the
-  request was asked under: a grant revoked since refuses it.
+  request was asked under: a grant revoked since refuses it. Recording the approved start's
+  end is tried 5 times before it is only logged; a daemon that stops between starting the
+  session and recording it leaves the request `not-run` while the session runs (a known
+  window, logged).
 - **The audit is `cockpit-authorization`'s `authorization_audit` table.** Each row keeps the
   actor session, the permission, the grant and its revision, the action, the target session
   and a detail. Actions are `message` (target: the worker, detail: the text), `start` (asked
@@ -33,7 +36,10 @@ session, within reports 07 and 17. The TUI line was chosen by Theo.
   message, prefixed `[Cockpit] Message from session S (a collaborator, not the owner):`. A
   session with an open dialog refuses the message with a typed reason when it is asked. A
   dialog that opens after it was queued only delays delivery: the loop retries every 2 s,
-  doubling up to 30 s, and gives up after 24 hours.
+  doubling up to 30 s, and gives up after 24 hours. Before typing, the loop checks that the
+  sender still holds `message-sessions` over the target: a revoke, or a sender that ended,
+  fails the messages it left queued instead of typing them. A session gets its messages in
+  the order they were sent: one waits while an earlier one to the same session is queued.
 - **The card shows a plain line until the card has a design** (Theo's choice):
   `grants observe,message · ✉ SENDER (DELIVERY): "TEXT"`, built from
   `SessionView.coordinator_grants` and `SessionView.inbound_message`.

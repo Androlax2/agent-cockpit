@@ -350,6 +350,65 @@ async fn a_revoked_grant_refuses_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_message_still_queued_when_its_grant_is_revoked_is_never_typed() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let coordinator = new_session(&owner, &coordinator_root).await;
+    // A second commanded agent (the fake agent acts as its folder's name says), which has
+    // not reported yet, so nothing can be typed to it.
+    let target_root = coordinator_root.join("target").join(COMMANDED_PROJECT);
+    std::fs::create_dir_all(&target_root).unwrap();
+    let target = new_session(&owner, &target_root).await;
+    grant(&owner, &coordinator.id, "message-sessions").await;
+    let printed = as_coordinator(
+        &home,
+        &coordinator_root,
+        &["agent", "message", &target.id, "Base it on main."],
+    )
+    .await;
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+    wait_until("the message waits, not typed", || async {
+        listed(&owner, &target.id)
+            .await
+            .inbound_message
+            .is_some_and(|message| message.delivery == "queued")
+    })
+    .await;
+
+    let revoked = owner
+        .request(
+            Command::SessionRevoke {
+                session: coordinator.id.clone(),
+                permission: "message-sessions".to_owned(),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(revoked.is_ok(), "{revoked:?}");
+    let reported = as_coordinator(
+        &home,
+        &target_root,
+        &["agent", "report", "--state", "waiting"],
+    )
+    .await;
+    assert!(reported.ends_with("exit=0\n"), "{reported}");
+
+    wait_until(
+        "the revoked message fails instead of being typed",
+        || async {
+            listed(&owner, &target.id)
+                .await
+                .inbound_message
+                .is_some_and(|message| message.delivery == "failed")
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn no_grant_is_given_from_the_agent_socket() {
     let home = Home::new();
     let _daemon = home.start();

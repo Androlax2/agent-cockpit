@@ -9,7 +9,6 @@
 //! path sessions have until provider delivery (#431): the agent reads it at its next prompt.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,6 +52,8 @@ const FIRST_RETRY: Duration = Duration::from_secs(2);
 const LONGEST_RETRY: Duration = Duration::from_secs(30);
 /// Audit entries `session-grants` shows.
 const AUDIT_SHOWN: u32 = 20;
+/// How many times an approved start's end is recorded before it is only logged.
+const FINISH_ATTEMPTS: u32 = 5;
 
 /// What the coordinator commands and the delivery loop share.
 #[derive(Clone)]
@@ -195,10 +196,9 @@ async fn message(
 ) -> Answer {
     check_message_text(&text)?;
     let target_id = SessionId::parse(&target)?;
-    let target_session = context.sessions.get(&target_id).await?;
-    refuse_if_over(&target_session)?;
-    let write = context.database.write().await?;
-    let coordinator = sender.identify(&write, launch_token).await?;
+    let target_holder = holder(&target)?;
+    // Whether the target exists, or is over, is for a sender holding the grant to learn.
+    let coordinator = identified(&context.database, sender, launch_token.clone()).await?;
     if coordinator.as_str() == target {
         return Err(refused(
             ErrorCode::InvalidArgument,
@@ -207,7 +207,21 @@ async fn message(
             UnblockedBy::Agent,
         ));
     }
-    let target_holder = holder(&target)?;
+    {
+        let read = context.database.read().await?;
+        let decision = cockpit_authorization::evaluate(
+            &read,
+            &Actor::Session(coordinator.clone()),
+            Permission::MessageSessions,
+            &Scope::Session(target_holder.clone()),
+        )
+        .await?;
+        granted(&coordinator, decision.outcome)?;
+    }
+    let target_session = context.sessions.get(&target_id).await?;
+    refuse_if_over(&target_session)?;
+    let write = context.database.write().await?;
+    let coordinator = sender.identify(&write, launch_token).await?;
     let decision = cockpit_authorization::evaluate(
         &write,
         &Actor::Session(coordinator.clone()),
@@ -281,7 +295,7 @@ async fn start(
     start: StartSession,
 ) -> Answer {
     let dir = cockpit_approvals::resolve_cwd(dir)?;
-    cockpit_approvals::validate_start(&start)?;
+    cockpit_approvals::validate_start(&dir, &start)?;
     let write = context.database.write().await?;
     let coordinator = sender.identify(&write, launch_token).await?;
     let at = now();
@@ -340,18 +354,34 @@ async fn start(
     cockpit_authorization::record_audit(&write, &audit).await?;
     write.commit().await?;
     let started = context.sessions.start(start_request(dir, start)).await?;
-    record_started(&context.database, &coordinator, grant, &started).await?;
     tracing::info!(
         from = coordinator.as_str(),
         session = %started.id,
         "a coordinator started a session without confirmation"
     );
-    let inputs = crate::sessions::card_inputs(&context.sessions).await?;
-    Ok(Reply::AgentStarted {
-        session: Box::new(
-            crate::sessions::current_view(&context.sessions, &started, &inputs).await?,
-        ),
-    })
+    // The session runs: from here an error must not read as a start that did not happen,
+    // or the agent would start another.
+    if let Err(Failed(error)) =
+        record_started(&context.database, &coordinator, grant, &started).await
+    {
+        tracing::error!(session = %started.id, ?error, "a start's `started` entry was not audited");
+    }
+    let view = async {
+        let inputs = crate::sessions::card_inputs(&context.sessions).await?;
+        Ok::<_, Failed>(crate::sessions::current_view(&context.sessions, &started, &inputs).await?)
+    };
+    match view.await {
+        Ok(view) => Ok(Reply::AgentStarted {
+            session: Box::new(view),
+        }),
+        Err(Failed(error)) => Err(Failed(ProtocolError::new(
+            ErrorCode::Internal,
+            format!(
+                "session {} started, but its view could not be read: {}",
+                started.id, error.message
+            ),
+        ))),
+    }
 }
 
 /// Carries out a start request the owner approved: starts the session, then finishes the
@@ -374,10 +404,15 @@ pub(crate) async fn start_approved(
     {
         Ok(started) => {
             tracing::info!(request, session = %started.id, "an approved start began");
-            if let Err(Failed(error)) =
-                finish_approved(&database, &approved, &asker, asked_under, &started).await
+            let grant = finish_approved(&database, &approved, asked_under, &started).await;
+            if let Some(grant) = grant
+                && let Err(Failed(error)) = record_started(&database, &asker, grant, &started).await
             {
-                tracing::error!(request, ?error, "an approved start's end was not recorded");
+                tracing::error!(
+                    request,
+                    ?error,
+                    "an approved start's `started` entry was not audited"
+                );
             }
         }
         Err(error) => {
@@ -388,13 +423,49 @@ pub(crate) async fn start_approved(
     }
 }
 
+/// Records the approved request as finished with the session it started, trying again
+/// while the database refuses: a request left `approved` would read as never run after a
+/// restart, while its session runs. Returns the grant it was asked under.
 async fn finish_approved(
     database: &Database,
     approved: &Approved,
-    asker: &Holder,
     asked_under: Option<i64>,
     started: &Session,
-) -> Result<(), Failed> {
+) -> Option<GrantId> {
+    let request = approved.id.0;
+    let mut wait = FIRST_RETRY;
+    for attempt in 1..=FINISH_ATTEMPTS {
+        match try_finish_approved(database, approved, asked_under, started).await {
+            Ok(grant) => return Some(grant),
+            Err(Failed(error)) if attempt < FINISH_ATTEMPTS => {
+                tracing::warn!(
+                    request,
+                    attempt,
+                    ?error,
+                    "an approved start's end was not recorded; trying again"
+                );
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(LONGEST_RETRY);
+            }
+            Err(Failed(error)) => {
+                tracing::error!(
+                    request,
+                    session = %started.id,
+                    ?error,
+                    "an approved start's end was not recorded; its session runs"
+                );
+            }
+        }
+    }
+    None
+}
+
+async fn try_finish_approved(
+    database: &Database,
+    approved: &Approved,
+    asked_under: Option<i64>,
+    started: &Session,
+) -> Result<GrantId, Failed> {
     let grant = match asked_under {
         Some(id) => {
             let read = database.read().await?;
@@ -406,7 +477,7 @@ async fn finish_approved(
     let write = database.write().await?;
     cockpit_approvals::finish_start(&write, approved, started.id.as_str(), now()).await?;
     write.commit().await?;
-    record_started(database, asker, grant.id, started).await
+    Ok(grant.id)
 }
 
 fn start_request(dir: PathBuf, start: StartSession) -> StartRequest {
@@ -556,6 +627,7 @@ pub(crate) async fn deliver_forever(context: Context) {
     loop {
         retry = match deliver(&context).await {
             Ok(Pass::Settled) => None,
+            Ok(Pass::Full) => continue,
             Ok(Pass::Delivered) => Some(FIRST_RETRY),
             Ok(Pass::Waiting) => Some(longer(retry)),
             Err(error) => {
@@ -583,6 +655,8 @@ fn longer(retry: Option<Duration>) -> Duration {
 enum Pass {
     /// Nothing is queued.
     Settled,
+    /// A full pass, each message delivered: more are due now.
+    Full,
     /// Some were delivered and some still wait.
     Delivered,
     /// Some still wait, and none could be delivered.
@@ -594,6 +668,7 @@ async fn deliver(context: &Context) -> Result<Pass, cockpit_messaging::Error> {
         &context.database,
         PRODUCER,
         &Typist {
+            database: &context.database,
             sessions: &context.sessions,
         },
         now(),
@@ -602,12 +677,12 @@ async fn deliver(context: &Context) -> Result<Pass, cockpit_messaging::Error> {
     .await?;
     // Every message is due once queued, and a retry is due at once: a pass that claims none
     // finds none queued, and a full pass may have left more.
-    let is_waiting = delivered.len() == DELIVERIES_PER_PASS
-        || delivered
-            .iter()
-            .any(|(_, state)| *state == DeliveryState::Queued);
+    let is_full = delivered.len() == DELIVERIES_PER_PASS;
+    let is_waiting = delivered
+        .iter()
+        .any(|(_, state)| *state == DeliveryState::Queued);
     if !is_waiting {
-        return Ok(Pass::Settled);
+        return Ok(if is_full { Pass::Full } else { Pass::Settled });
     }
     let has_delivered = delivered
         .iter()
@@ -619,58 +694,124 @@ async fn deliver(context: &Context) -> Result<Pass, cockpit_messaging::Error> {
     })
 }
 
-/// Types a message line to its target's agent.
+/// Types a message line to its target's agent, under the grant its sender still holds.
 struct Typist<'context> {
+    database: &'context Database,
     sessions: &'context Sessions,
 }
 
 impl Deliverer for Typist<'_> {
-    fn deliver(&self, claim: &Claim) -> impl Future<Output = Delivery> + Send {
-        let sessions = self.sessions;
-        async move {
-            let rejected = |reason: String| Delivery::Failed(Failure::Rejected { reason });
-            let not_sent = |reason: String| {
-                Delivery::Failed(Failure::NotSent {
-                    reason,
+    async fn deliver(&self, claim: &Claim) -> Delivery {
+        let rejected = |reason: String| Delivery::Failed(Failure::Rejected { reason });
+        let sender = match self.check(claim).await {
+            Ok(sender) => sender,
+            Err(delivery) => return delivery,
+        };
+        let target = match SessionId::parse(&claim.destination) {
+            Ok(target) => target,
+            Err(error) => return rejected(error.to_string()),
+        };
+        match self.sessions.get(&target).await {
+            Ok(session) if is_over(&session) => {
+                return rejected(format!("session {target} ended before delivery"));
+            }
+            Ok(_) => {}
+            Err(error @ cockpit_sessions::Error::UnknownSession { .. }) => {
+                return rejected(error.to_string());
+            }
+            Err(error) => return not_sent(error.to_string()),
+        }
+        match self
+            .sessions
+            .submit(&target, &claim.payload, Addressed::Collaborator)
+            .await
+        {
+            Ok(()) => Delivery::Received {
+                receipt: format!(
+                    "typed into session {target}'s terminal from session {}",
+                    sender.as_str()
+                ),
+            },
+            Err(error @ cockpit_sessions::Error::TypingUnconfirmed { .. }) => {
+                Delivery::Failed(Failure::Unacknowledged {
+                    reason: error.to_string(),
                     retry_at: now(),
                 })
-            };
-            let target = match SessionId::parse(&claim.destination) {
-                Ok(target) => target,
-                Err(error) => return rejected(error.to_string()),
-            };
-            match sessions.get(&target).await {
-                Ok(session) if is_over(&session) => {
-                    return rejected(format!("session {target} ended before delivery"));
-                }
-                Ok(_) => {}
-                Err(error @ cockpit_sessions::Error::UnknownSession { .. }) => {
-                    return rejected(error.to_string());
-                }
-                Err(error) => return not_sent(error.to_string()),
             }
-            match sessions
-                .submit(&target, &claim.payload, Addressed::Collaborator)
-                .await
-            {
-                Ok(()) => Delivery::Received {
-                    receipt: format!("typed into session {target}'s terminal"),
-                },
-                Err(error @ cockpit_sessions::Error::TypingUnconfirmed { .. }) => {
-                    Delivery::Failed(Failure::Unacknowledged {
-                        reason: error.to_string(),
-                        retry_at: now(),
-                    })
-                }
-                Err(error @ cockpit_sessions::Error::UnknownSession { .. }) => {
-                    rejected(error.to_string())
-                }
-                // Nothing was typed: a dialog was open, the agent was between launches, tmux
-                // did not answer. The loop tries again.
-                Err(error) => not_sent(error.to_string()),
+            Err(error @ cockpit_sessions::Error::UnknownSession { .. }) => {
+                rejected(error.to_string())
             }
+            // Nothing was typed: a dialog was open, the agent was between launches, tmux
+            // did not answer. The loop tries again.
+            Err(error) => not_sent(error.to_string()),
         }
     }
+}
+
+impl Typist<'_> {
+    /// The message's sender, once nothing sent before it to the same session still waits
+    /// (a session reads its messages in the order they were sent) and the sender still
+    /// holds `message-sessions` over it (a revoked grant, or a sender that ended, stops the
+    /// messages it queued).
+    async fn check(&self, claim: &Claim) -> Result<Holder, Delivery> {
+        let rejected = |reason: String| Delivery::Failed(Failure::Rejected { reason });
+        let Some(entry) = claim
+            .effect_key
+            .strip_prefix("coordinator-message:")
+            .and_then(|id| id.parse::<i64>().ok())
+        else {
+            return Err(rejected(format!(
+                "{} names no audited message",
+                claim.effect_key
+            )));
+        };
+        let target = holder(&claim.destination).map_err(|Failed(error)| rejected(error.message))?;
+        let read = self
+            .database
+            .read()
+            .await
+            .map_err(|error| not_sent(error.to_string()))?;
+        if cockpit_messaging::has_earlier_queued(&read, claim)
+            .await
+            .map_err(|error| not_sent(error.to_string()))?
+        {
+            return Err(not_sent(format!(
+                "an earlier message to session {} waits",
+                claim.destination
+            )));
+        }
+        let Some(entry) = cockpit_authorization::audit_entry(&read, entry)
+            .await
+            .map_err(|error| not_sent(error.to_string()))?
+        else {
+            tracing::error!(entry, "a queued coordinator message has no audit entry");
+            return Err(rejected(format!("audit entry {entry} is missing")));
+        };
+        let sender = entry.audit.actor;
+        let decision = cockpit_authorization::evaluate(
+            &read,
+            &Actor::Session(sender.clone()),
+            Permission::MessageSessions,
+            &Scope::Session(target),
+        )
+        .await
+        .map_err(|error| not_sent(error.to_string()))?;
+        match decision.outcome {
+            Outcome::Allowed(_) => Ok(sender),
+            Outcome::Refused(_) => Err(rejected(format!(
+                "session {} no longer holds message-sessions",
+                sender.as_str()
+            ))),
+        }
+    }
+}
+
+/// Nothing was typed; the loop tries again.
+fn not_sent(reason: String) -> Delivery {
+    Delivery::Failed(Failure::NotSent {
+        reason,
+        retry_at: now(),
+    })
 }
 
 /// What session cards show of the coordinator kit, read once per answer.
@@ -704,15 +845,17 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
     for entry in
         cockpit_authorization::latest_audits_by_target(connection, AuditedAction::Message).await?
     {
+        // A card note never stops session control: an inconsistent entry is logged and left
+        // off the card.
         let key = message_key(entry.id);
-        let envelope = cockpit_messaging::envelope_by_key(connection, &key)
-            .await?
-            .ok_or_else(|| internal(&format!("message {key} was audited but never queued")))?;
+        let Some(envelope) = cockpit_messaging::envelope_by_key(connection, &key).await? else {
+            tracing::error!(key, "a coordinator message was audited but never queued");
+            continue;
+        };
         let audit = entry.audit;
         let (Some(target), Some(text)) = (audit.target, audit.detail) else {
-            return Err(internal(&format!(
-                "message {key}'s audit names no target or text"
-            )));
+            tracing::error!(key, "a coordinator message's audit names no target or text");
+            continue;
         };
         notes.inbound.insert(
             target.as_str().to_owned(),

@@ -568,6 +568,24 @@ async fn set_ended(
     Ok(())
 }
 
+/// Whether an envelope `claim`'s producer queued to the same destination before it still
+/// waits: a producer that keeps each destination's order holds the later one back.
+pub async fn has_earlier_queued(connection: &Connection, claim: &Claim) -> Result<bool, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT 1 FROM messaging_envelopes
+             WHERE producer = ?1 AND destination = ?2 AND id < ?3 AND state = 'queued'
+             LIMIT 1",
+            (
+                claim.producer.as_str(),
+                claim.destination.as_str(),
+                claim.id.0,
+            ),
+        )
+        .await?;
+    Ok(rows.next().await?.is_some())
+}
+
 /// The envelope of `effect_key`, in whatever state it is.
 pub async fn envelope_by_key(
     connection: &Connection,

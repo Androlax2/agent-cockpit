@@ -27,6 +27,8 @@ inbox per feature. It moves effects and state; it decides nothing about them.
 6. Only `Coalescing::ReplaceableObservation` envelopes coalesce: a newer one for the same
    destination and slot marks the one still `queued` `superseded`. Decisions, approvals,
    outcomes and ownership transitions use `Coalescing::Never` and are all delivered.
+7. A producer that keeps each destination's order asks `has_earlier_queued` before it
+   delivers a claim, and reports a held one `NotSent` (#410).
 
 States: `queued → submitting → received | uncertain | failed | expired`, and `superseded`.
 

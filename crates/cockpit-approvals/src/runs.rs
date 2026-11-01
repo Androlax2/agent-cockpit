@@ -287,9 +287,7 @@ pub async fn ask_start(
     now: i64,
 ) -> Result<RunRequest, Error> {
     validate_reason(&ask.reason)?;
-    validate_start(&ask.start)?;
-    let command = start_command(&ask.dir, &ask.start)?;
-    validate_command("start", &command)?;
+    let command = validate_start(&ask.dir, &ask.start)?;
     let run_ask = RunAsk {
         command,
         cwd: ask.dir,
@@ -312,9 +310,10 @@ pub async fn ask_start(
     .await
 }
 
-/// The checks [`ask_start`] makes on a start's prompt and branch, for a start the owner's
-/// grant lets go without confirmation (#410).
-pub fn validate_start(start: &StartSession) -> Result<(), Refusal> {
+/// The checks [`ask_start`] makes on a start in `dir`, also made on a start the owner's
+/// grant lets go without confirmation, so both refuse the same starts (#410). Returns how
+/// the owner reads it.
+pub fn validate_start(dir: &Path, start: &StartSession) -> Result<String, Refusal> {
     if let Some(prompt) = &start.prompt {
         if prompt.trim().is_empty() {
             return Err(invalid(
@@ -341,7 +340,9 @@ pub fn validate_start(start: &StartSession) -> Result<(), Refusal> {
             "must be a branch name, without spaces or control characters",
         ));
     }
-    Ok(())
+    let command = start_command(dir, start)?;
+    validate_command("start", &command)?;
+    Ok(command)
 }
 
 /// How the owner reads a start request: the `cockpit session new` that does the same, each

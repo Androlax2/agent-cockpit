@@ -5,8 +5,9 @@ mod common;
 
 use cockpit_authorization::{
     Actor, Audit, AuditedAction, Basis, Error, Outcome, Permission, Refusal, Scope, StartAllowance,
-    StartTerms, active_coordinator_grants, active_grants, audit_of, evaluate, grant_start_sessions,
-    latest_audit_on, latest_audits_by_target, record_audit, revoke, start_allowance, stored_grant,
+    StartTerms, active_coordinator_grants, active_grants, audit_entry, audit_of, evaluate,
+    grant_start_sessions, latest_audit_on, latest_audits_by_target, record_audit, revoke,
+    start_allowance, stored_grant,
 };
 use cockpit_turso::Database;
 use common::{grant, open, session};
@@ -458,4 +459,36 @@ async fn a_stored_grant_is_read_back_after_its_revocation_and_none_when_never_st
 
     assert_eq!(revoked, Some(given));
     assert_eq!(never_stored, None);
+}
+
+#[tokio::test]
+async fn an_audit_entry_is_read_back_by_its_id() {
+    let database = open("audit-entry").await;
+    let given = grant(
+        &database,
+        &session("coordinator"),
+        Permission::MessageSessions,
+        &Scope::Owner,
+    )
+    .await;
+    let message = Audit {
+        actor: session("coordinator"),
+        permission: Permission::MessageSessions,
+        grant: given.id,
+        revision: given.granted_at,
+        action: AuditedAction::Message,
+        target: Some(session("worker")),
+        detail: Some("rebase".to_owned()),
+        at: NOW,
+    };
+    let write = database.write().await.unwrap();
+    let id = record_audit(&write, &message).await.unwrap();
+    write.commit().await.unwrap();
+    let read = database.read().await.unwrap();
+
+    let found = audit_entry(&read, id).await.unwrap();
+    let missing = audit_entry(&read, id + 1).await.unwrap();
+
+    assert_eq!(found.map(|entry| entry.audit), Some(message));
+    assert_eq!(missing, None);
 }

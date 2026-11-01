@@ -422,6 +422,21 @@ pub async fn latest_audit_on(
     }
 }
 
+/// The entry recorded as `id`, if any: what a queued effect reads back of the action it
+/// carries out (#410).
+pub async fn audit_entry(connection: &Connection, id: i64) -> Result<Option<AuditEntry>, Error> {
+    let mut rows = connection
+        .query(
+            &format!("SELECT {AUDIT_COLUMNS} FROM authorization_audit WHERE id = ?1"),
+            [id],
+        )
+        .await?;
+    match rows.next().await? {
+        Some(row) => Ok(Some(audit_from_row(&row)?)),
+        None => Ok(None),
+    }
+}
+
 /// For each session some entry of `action` targets, the newest such entry.
 pub async fn latest_audits_by_target(
     connection: &Connection,

@@ -274,14 +274,14 @@ async fn end_finished(sessions: Arc<Sessions>, only: Option<Vec<String>>) -> Ans
         .filter(|session| {
             only.as_ref()
                 .is_none_or(|only| only.iter().any(|id| id == session.id.as_str()))
-                && is_finished(session, &inputs)
+                && is_finished(session, &inputs.items)
         })
         .collect();
     let mut ended = Vec::new();
     let mut failed = Vec::new();
     for session in candidates {
         let current = sessions.get(&session.id).await?;
-        if !is_finished(&current, &card_inputs(&sessions).await?) {
+        if !is_finished(&current, &task_work(&sessions).await?) {
             continue;
         }
         match sessions.end(&session.id).await {
@@ -311,6 +311,12 @@ pub(crate) async fn card_inputs(sessions: &Sessions) -> Result<CardInputs, Faile
     })
 }
 
+/// Each session's items alone: what the finished label needs.
+async fn task_work(sessions: &Sessions) -> Result<HashMap<TaskSession, SessionWork>, Failed> {
+    let read = sessions.database().read().await.map_err(Error::from)?;
+    Ok(cockpit_tasks::session_work(&read).await?)
+}
+
 /// The finished label (#157, decided in #201): the task list, never the agent's own state,
 /// says the session's work is done. It is doing no item and finished one since its latest
 /// launch made to give it work (#226; #269, decided in #312), so a session relaunched to keep
@@ -318,7 +324,7 @@ pub(crate) async fn card_inputs(sessions: &Sessions) -> Result<CardInputs, Faile
 /// restart keeps the label. Both are ordered by their commits, never by the clock (#273). A
 /// session mid-launch, mid-stop, failed or ended is not labelled: the failed one needs the
 /// owner, the ended one has nothing left to exit.
-fn is_finished(session: &Session, inputs: &CardInputs) -> bool {
+fn is_finished(session: &Session, items: &HashMap<TaskSession, SessionWork>) -> bool {
     if matches!(
         session.state,
         SessionState::Launching
@@ -333,7 +339,7 @@ fn is_finished(session: &Session, inputs: &CardInputs) -> bool {
     };
     let id = TaskSession::new(session.id.as_str())
         .expect("a session id is never empty, so it is a valid task-list session id");
-    inputs.items.get(&id).is_some_and(|work| {
+    items.get(&id).is_some_and(|work| {
         work.doing == 0
             && work
                 .last_finished_order
@@ -522,7 +528,7 @@ fn session_view(
         }),
         changed_start_files,
         restart_pending: session.restart_pending,
-        finished: is_finished(session, inputs),
+        finished: is_finished(session, &inputs.items),
         coordinator_grants: inputs.coordination.grants_of(session.id.as_str()),
         inbound_message: inputs.coordination.inbound_message_of(session.id.as_str()),
     }

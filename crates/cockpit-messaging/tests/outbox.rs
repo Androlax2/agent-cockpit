@@ -579,3 +579,40 @@ async fn a_worker_claims_only_its_own_producers_envelopes() {
         DeliveryState::Queued
     );
 }
+
+#[tokio::test]
+async fn an_earlier_queued_envelope_to_the_same_destination_holds_a_later_one() {
+    let fixture = Fixture::new().await;
+    let database = &fixture.database;
+    enqueue(database, &envelope("first", "s1", "A")).await;
+    enqueue(database, &envelope("other", "s2", "C")).await;
+    enqueue(database, &envelope("second", "s1", "B")).await;
+    let claims = claim(database, NOW).await;
+    let [first, other, second] = claims.as_slice() else {
+        panic!("{claims:?}");
+    };
+    record(
+        database,
+        first,
+        Delivery::Failed(Failure::NotSent {
+            reason: "busy".to_owned(),
+            retry_at: NOW,
+        }),
+    )
+    .await;
+    let read = database.read().await.unwrap();
+
+    let is_second_held = cockpit_messaging::has_earlier_queued(&read, second)
+        .await
+        .unwrap();
+    let is_other_held = cockpit_messaging::has_earlier_queued(&read, other)
+        .await
+        .unwrap();
+    let is_first_held = cockpit_messaging::has_earlier_queued(&read, first)
+        .await
+        .unwrap();
+
+    assert!(is_second_held);
+    assert!(!is_other_held);
+    assert!(!is_first_held);
+}

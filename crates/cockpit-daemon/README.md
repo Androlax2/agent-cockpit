@@ -103,7 +103,7 @@ not share code.
   `session-grants`) on `daemon.sock` only.
 - A message is audited and queued in the `cockpit-messaging` outbox in one transaction. A
   supervised loop (`coordinator-messages`) types it at the target's next prompt as a
-  collaborator's message, retrying while its agent cannot take input (a dialog, no report
+  collaborator's message, while its sender still holds the grant and in the order sent, retrying while its agent cannot take input (a dialog, no report
   yet), for at most 24 hours. Provider-native delivery is #431.
 - A start that needs confirmation joins the `ask run` queue; approving it starts the session
   and records it. One without confirmation starts at once, within the grant's hourly cap.
