@@ -245,6 +245,22 @@ fn a_split_leaves_focus_on_the_pane_it_split() {
 }
 
 #[test]
+fn selecting_a_pane_gives_it_the_keys() {
+    let fixture = TestServer::new();
+    let (_, left) = fixture.start_shell("cockpit", "sleep 60");
+    let right = fixture
+        .server
+        .split_pane(&left, Split::SideBySide { percent: 70 }, &shell("sleep 60"))
+        .expect("splits");
+    fixture.tmux(&["select-pane", "-t", right.as_str()]);
+
+    fixture.server.select_pane(&left).expect("selects");
+
+    let active = fixture.tmux(&["display-message", "-p", "-t", "=cockpit:", "#{pane_id}"]);
+    assert_eq!(active.trim(), left.as_str());
+}
+
+#[test]
 fn the_server_starts_with_cockpits_own_config() {
     let fixture = TestServer::new();
     fixture.start_shell("agent-1", "sleep 30");

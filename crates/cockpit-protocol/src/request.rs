@@ -478,6 +478,9 @@ pub enum Command {
         column: Vec<String>,
         viewer: Vec<String>,
     },
+    /// Give the keys to the manager's column, where the TUI shows what waits on the owner
+    /// (#317): the TUI does not run tmux, the daemon does.
+    ManagerFocus,
     /// A kind this version does not know. Read only: `decode_request` refuses it as
     /// `unknown-command`, and serializing it fails.
     #[serde(other, skip_serializing)]
@@ -642,6 +645,8 @@ pub enum Reply {
         attach: Vec<String>,
         created: bool,
     },
+    /// The manager's column has the keys.
+    ManagerFocused,
 }
 
 /// Every frame the daemon sends after the handshake.

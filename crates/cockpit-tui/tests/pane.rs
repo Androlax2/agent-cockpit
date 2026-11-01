@@ -45,6 +45,30 @@ fn a_request_appearing_takes_focus_and_its_keys_are_ignored_for_the_grace() {
 }
 
 #[test]
+fn a_request_appearing_asks_the_daemon_once_for_the_keys_the_viewer_may_hold() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session(SESSION, 1, 1)], now);
+
+    let appeared = queue(
+        &mut app,
+        vec![run(3, SESSION, "make test")],
+        Vec::new(),
+        now,
+    );
+    let still_shown = queue(
+        &mut app,
+        vec![run(3, SESSION, "make test")],
+        Vec::new(),
+        after_grace(now),
+    );
+
+    assert_eq!(
+        (appeared, still_shown),
+        (vec![Command::ManagerFocus], Vec::new())
+    );
+}
+
+#[test]
 fn y_after_the_grace_approves_the_revision_and_digest_shown() {
     let now = Instant::now();
     let mut app = app_asked(now);

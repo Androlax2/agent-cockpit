@@ -12,11 +12,10 @@ const RUN_KEYS: &str = "y approve   x decline   m more";
 const HOST_COMMAND: &str = r#"!cockpit ask run --reason "acceptance check" 'printf "hello from the host\nGITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n"'"#;
 
 /// The agent asks to run `command` (with its `!`); waits for the pane to show it past its
-/// grace and gives the keys to the list, as the owner's click does (#317).
+/// grace. The pane has the keys then, without a click (#317).
 fn asked(cockpit: &Cockpit, command: &str) {
     cockpit.tell_agent(command);
     cockpit.wait_for(RUN_KEYS);
-    cockpit.click(ManagerPane::List);
 }
 
 /// Presses `y` on the shown run and returns the screen with its exit. The TUI's 1 s grace
@@ -86,6 +85,18 @@ fn x_declines_and_the_agent_gets_exit_125() {
 }
 
 #[test]
+fn the_pane_takes_the_keys_from_the_viewer_the_owner_typed_in() {
+    let cockpit = Cockpit::start();
+    cockpit.shown_session();
+    cockpit.tell_agent(r#"!cockpit ask run --reason "focus check" 'echo should not run'"#);
+    cockpit.wait_for(RUN_KEYS);
+
+    cockpit.press(&["x"]);
+
+    cockpit.wait_for("exit 125");
+}
+
+#[test]
 fn a_guide_shows_one_step_at_a_time_and_the_agent_gets_the_answer() {
     let cockpit = Cockpit::start();
     cockpit.shown_session();
@@ -93,7 +104,6 @@ fn a_guide_shows_one_step_at_a_time_and_the_agent_gets_the_answer() {
         r"!printf '# Pane guide\n## One\n1. Look at the sky\n   ask: What colour is it?\n2. Press y\n' | cockpit ask guide",
     );
     cockpit.wait_for("y answer   s stuck   x close");
-    cockpit.click(ManagerPane::List);
     let screen = cockpit.wait_for("Step 1 of 2: Look at the sky");
     assert!(!screen.contains("Step 2 of 2"), "{screen}");
     cockpit.press(&["y"]);

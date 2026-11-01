@@ -347,7 +347,12 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => resources::route(command, self.resources.clone()),
             },
-            (command @ (Command::ManagerOpen { .. } | Command::SessionShow { .. }), peer) => {
+            (
+                command @ (Command::ManagerOpen { .. }
+                | Command::ManagerFocus
+                | Command::SessionShow { .. }),
+                peer,
+            ) => {
                 match peer {
                     // The manager and its viewer are the owner's screen.
                     Peer::Agent { .. } => Route::Answer(owner_only()),

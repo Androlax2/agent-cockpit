@@ -48,8 +48,8 @@ impl Manager {
     }
 }
 
-/// `manager-open` and `session-show`; `routes.rs` sends only those here. Both run tmux, so
-/// they take the bulk lane.
+/// `manager-open`, `manager-focus` and `session-show`; `routes.rs` sends only those here.
+/// Each runs tmux, so they take the bulk lane.
 pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Manager>) -> Route {
     let job = match command {
         Command::ManagerOpen {
@@ -57,6 +57,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>, manager: Arc<Mana
             column,
             viewer,
         } => job(tmux_blocking(move || open(&manager, dir, &column, &viewer))),
+        Command::ManagerFocus => job(tmux_blocking(move || focus_column(&manager))),
         Command::SessionShow { session } => {
             job(async move { show(&sessions, manager, &session).await })
         }
@@ -167,6 +168,7 @@ enum ManagerState {
     Absent,
     /// Its column runs and its viewer pane is there.
     Whole {
+        column: PaneId,
         viewer: PaneId,
     },
     Broken,
@@ -182,6 +184,7 @@ fn manager_state(
     let panes = tmux.panes(name).map_err(tmux_error)?;
     Ok(match panes.as_slice() {
         [column, viewer, ..] if column.state == PaneState::Running => ManagerState::Whole {
+            column: column.id.clone(),
             viewer: viewer.id.clone(),
         },
         _ => ManagerState::Broken,
@@ -202,7 +205,7 @@ async fn show(
         .map_err(|error| crate::sessions::protocol_error(&error))?;
     let viewer = {
         let manager = Arc::clone(&manager);
-        tmux_blocking(move || viewer_pane(manager.tmux()?)).await?
+        tmux_blocking(move || Ok(whole_manager(manager.tmux()?)?.1)).await?
     };
     if shown.state == SessionState::Asleep {
         shown = sessions
@@ -223,11 +226,20 @@ async fn show(
         .map_err(|crate::approvals::Failed(error)| error)
 }
 
-/// The manager's viewer pane, or why it cannot show a session: only reopening the manager
+/// Gives the keys to the manager's column, so the next key the owner presses reaches what
+/// the TUI shows there rather than the agent in the viewer (#317).
+fn focus_column(manager: &Manager) -> Result<Reply, ProtocolError> {
+    let tmux = manager.tmux()?;
+    let (column, _) = whole_manager(tmux)?;
+    tmux.select_pane(&column).map_err(tmux_error)?;
+    Ok(Reply::ManagerFocused)
+}
+
+/// The manager's column and viewer panes, or why it has none: only reopening the manager
 /// mends a broken one.
-fn viewer_pane(tmux: &cockpit_tmux::Server) -> Result<PaneId, ProtocolError> {
+fn whole_manager(tmux: &cockpit_tmux::Server) -> Result<(PaneId, PaneId), ProtocolError> {
     match manager_state(tmux, &manager_name())? {
-        ManagerState::Whole { viewer } => Ok(viewer),
+        ManagerState::Whole { column, viewer } => Ok((column, viewer)),
         ManagerState::Absent => Err(ProtocolError::new(
             ErrorCode::NotFound,
             "no manager session is open: run `cockpit tui`",

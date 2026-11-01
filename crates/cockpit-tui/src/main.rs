@@ -133,7 +133,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
                     if sent.is_refresh {
                         unanswered_refreshes -= 1;
                     }
-                    app.answer(&sent.command, answer, Instant::now());
+                    for command in app.answer(&sent.command, answer, Instant::now()) {
+                        send(&requests, command, false)?;
+                    }
                 }
             },
         }

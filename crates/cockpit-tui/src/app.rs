@@ -349,12 +349,22 @@ impl App {
         }
     }
 
-    /// The daemon's answer to `command`, which the runtime sent for this app.
-    pub fn answer(&mut self, command: &Command, answer: Result<Reply, String>, now: Instant) {
+    /// The daemon's answer to `command`, which the runtime sent for this app; returns what
+    /// to send the daemon next.
+    pub fn answer(
+        &mut self,
+        command: &Command,
+        answer: Result<Reply, String>,
+        now: Instant,
+    ) -> Vec<Command> {
         let reply = match answer {
             Ok(reply) => reply,
-            Err(problem) => return self.failed(command, problem),
+            Err(problem) => {
+                self.failed(command, problem);
+                return Vec::new();
+            }
         };
+        let mut send = Vec::new();
         if self
             .failure
             .as_ref()
@@ -367,8 +377,9 @@ impl App {
             Reply::AgentReports { reports } => self.board.set_reports(reports),
             Reply::ApprovalQueue { runs, guides } => {
                 self.board.set_queue(runs, guides);
-                self.follow_queue(now);
+                send.extend(self.follow_queue(now));
             }
+            Reply::ManagerFocused => {}
             Reply::Providers { providers } => {
                 if let Some(form) = &mut self.form {
                     form.set_agents(providers);
@@ -420,6 +431,7 @@ impl App {
             other => self.note(format!("unexpected answer {other:?}")),
         }
         self.keep_selection();
+        send
     }
 
     fn failed(&mut self, command: &Command, problem: String) {
@@ -442,15 +454,20 @@ impl App {
     }
 
     /// The pane follows the queue; it takes focus when it shows a request and gives it back
-    /// to the list when nothing waits.
-    fn follow_queue(&mut self, now: Instant) {
+    /// to the list when nothing waits. Taking focus also asks the daemon for tmux's keys,
+    /// which may be in the viewer, where the owner was typing to an agent (#317).
+    fn follow_queue(&mut self, now: Instant) -> Option<Command> {
         let was_showing = self.pane.shown().is_some();
         self.pane.sync(&self.board, now);
         match (was_showing, self.pane.shown().is_some()) {
-            (false, true) => self.focus = Focus::Pane,
+            (false, true) => {
+                self.focus = Focus::Pane;
+                return Some(Command::ManagerFocus);
+            }
             (_, false) => self.focus = Focus::List,
             _ => {}
         }
+        None
     }
 
     fn note(&mut self, entry: String) {
