@@ -607,15 +607,24 @@ class GateTests(unittest.TestCase):
         cases = [
             ({"off": True, "hold": True}, True, True, "off"),
             ({"hold": True}, True, True, "held"),
-            ({}, True, True, "gaming"),
+            ({}, True, True, "memory"),
+            ({}, True, False, "gaming"),
             ({}, False, True, "memory"),
             ({}, False, False, "clear"),
         ]
         for manual, protecting, memory_hold, expected in cases:
-            with self.subTest(expected):
+            with self.subTest(manual=manual, protecting=protecting, memory_hold=memory_hold):
                 self.assertEqual(
                     guard.gate_state(manual, protecting, memory_hold, memory(10), 0)[0], expected
                 )
+
+    def test_low_memory_during_a_game_still_holds_new_jobs(self):
+        service = self.make_guard()
+        self.game_open = True
+        self.sample = memory(1)
+        service.tick()
+        self.assertEqual(self.written()["state"], "memory")
+        self.assertFalse(self.admitted())
 
     def test_the_guard_publishes_clear_gaming_and_memory_that_agent_build_reads(self):
         service = self.make_guard()
@@ -625,7 +634,7 @@ class GateTests(unittest.TestCase):
         self.game_open = True
         service.tick()
         self.assertEqual(self.written()["state"], "gaming")
-        self.assertFalse(self.admitted())
+        self.assertTrue(self.admitted(), "a game alone pins new jobs, it does not hold them")
         self.game_open = False
         service.tick()
         self.now += 30
@@ -695,7 +704,7 @@ class GateTests(unittest.TestCase):
 
     def test_a_running_guard_keeps_a_release_until_it_expires(self):
         service = self.make_guard()
-        self.game_open = True
+        self.sample = memory(1)
         service.tick()
         self.manual("release", "10")
         service.tick()
@@ -735,7 +744,7 @@ class GateTests(unittest.TestCase):
         self.assertFalse(self.admitted())
 
     def test_a_release_from_an_earlier_boot_counts_only_once_the_guard_republishes_it(self):
-        self.game_open = True
+        self.sample = memory(1)
         self.manual("release", "120")
         gate = self.written() | {"boot_id": "earlier-boot"}
         self.gate.write_text(json.dumps(gate))

@@ -8778,3 +8778,13 @@ fn the_daemon_runs_the_chief_pass_on_its_own_slower_timer() {
     assert!(!daemon.contains("tick_queues"));
     assert!(CHIEF_TICK_INTERVAL_S >= 5);
 }
+
+#[test]
+fn the_game_guards_first_answer_is_logged_even_when_it_protects() {
+    let protects: Option<String> = None;
+    let refuses = Some("the game guard status is stale".to_string());
+    assert!(game_guard_log_line(None, &protects).is_some_and(|line| line.contains("may continue")));
+    assert!(game_guard_log_line(None, &refuses).is_some_and(|line| line.contains("stale")));
+    assert_eq!(game_guard_log_line(Some(&protects), &protects), None);
+    assert!(game_guard_log_line(Some(&protects), &refuses).is_some());
+}

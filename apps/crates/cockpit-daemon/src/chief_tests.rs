@@ -2471,6 +2471,7 @@ fn chief_normal_enable_requires_recorded_host_live_queued_admission_proof() {
 #[test]
 fn chief_legacy_automatic_claim_rechecks_host_capacity_instead_of_sidebar_snapshot() {
     let mut bench = team_bench();
+    turn_on_todo_queue();
     let directory = bench.registry.sessions[SESSION_B].cwd.clone();
     let entry = bench.registry.sessions.get_mut(SESSION_B).unwrap();
     entry.state = "waiting".into();
@@ -2530,6 +2531,7 @@ fn chief_legacy_automatic_claim_rechecks_host_capacity_instead_of_sidebar_snapsh
 #[test]
 fn chief_legacy_queue_can_reserve_a_host_sleep_note_but_chief_workers_remain_unavailable() {
     let mut bench = team_bench();
+    turn_on_todo_queue();
     let entry = bench.registry.sessions.remove(SESSION_B).unwrap();
     let id = cockpit::todo::TodoList::load().add("project-a", &entry.cwd, "legacy wake");
     let notes = cockpit::paths::asleep_dir();
@@ -3013,6 +3015,7 @@ fn chief_and_legacy_readiness_scope_host_requests_to_the_protected_owner() {
             "unresolved-related",
         ] {
             let mut bench = team_bench();
+            turn_on_todo_queue();
             let project = bench.fixture.root.join("home/IdeaProjects/project-b");
             fs::create_dir_all(project.join(".git")).unwrap();
             let directory = project.to_string_lossy().into_owned();
@@ -4932,6 +4935,7 @@ fn idle_message_worker(bench: &mut Bench) {
 #[test]
 fn a_chief_todo_gift_is_delivered_natively_to_its_exact_runtime_not_a_fresh_session() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     idle_message_worker(&mut bench);
     let todo = project_todo(&bench, "aa919cfe", json!({}), false);
     chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
@@ -4980,6 +4984,7 @@ fn a_chief_todo_gift_is_delivered_natively_to_its_exact_runtime_not_a_fresh_sess
 fn expired_or_disabled_or_restarted_gifts_do_not_block_ordinary_queued_work() {
     for obsolete in ["expired", "disabled", "restarted"] {
         let mut bench = admitted_chief_bench();
+        turn_on_todo_queue();
         idle_message_worker(&mut bench);
         let todo = project_todo(&bench, "aa919cfe", json!({}), true);
         chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
@@ -5031,6 +5036,7 @@ fn expired_or_disabled_or_restarted_gifts_do_not_block_ordinary_queued_work() {
 fn expired_or_restarted_todo_gifts_never_reach_the_native_inbox() {
     for obsolete in ["expired", "restarted"] {
         let mut bench = admitted_chief_bench();
+        turn_on_todo_queue();
         idle_message_worker(&mut bench);
         let todo = project_todo(&bench, "aa919cfe", json!({}), false);
         chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
@@ -5068,6 +5074,7 @@ fn expired_or_restarted_todo_gifts_never_reach_the_native_inbox() {
 fn an_invalidated_todo_gift_is_retired_without_reopening_work_or_blocking_messages() {
     for invalidation in ["done", "waiting", "deleted"] {
         let mut bench = admitted_chief_bench();
+        turn_on_todo_queue();
         idle_message_worker(&mut bench);
         let todo = project_todo(&bench, "aa919cfe", json!({}), false);
         chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
@@ -5102,6 +5109,7 @@ fn an_invalidated_todo_gift_is_retired_without_reopening_work_or_blocking_messag
 #[test]
 fn a_designer_never_takes_a_coding_todo_gift() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     idle_message_worker(&mut bench);
     let todo = project_todo(&bench, "aa919cfe", json!({}), false);
     chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
@@ -5122,6 +5130,7 @@ fn a_designer_never_takes_a_coding_todo_gift() {
 #[test]
 fn a_qa_session_never_takes_a_todo_gift_even_for_its_teams_task() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     idle_message_worker(&mut bench);
     let todo = project_todo(&bench, "aa919cfe", json!({}), false);
     chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
@@ -5150,6 +5159,7 @@ fn a_qa_session_never_takes_a_todo_gift_even_for_its_teams_task() {
 #[test]
 fn a_todo_gift_cannot_claim_while_theos_todo_mutation_holds_the_lock() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     idle_message_worker(&mut bench);
     let todo = project_todo(&bench, "aa919cfe", json!({}), false);
     chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
@@ -5637,6 +5647,7 @@ fn a_todo_gift_still_waits_for_theos_q_for_chief_filed_work() {
 #[test]
 fn a_queued_handed_todo_gets_no_fresh_session_while_its_project_runs_and_the_refusal_says_why() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
     let refusal = reserve_fresh_session(&mut bench, &todo).unwrap_err();
     assert_eq!(refusal.code, ErrorCode::Conflict);
@@ -5652,6 +5663,7 @@ fn a_queued_handed_todo_gets_no_fresh_session_while_its_project_runs_and_the_ref
 #[test]
 fn the_chief_can_start_a_fresh_session_for_a_queued_handed_todo_while_its_project_runs() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
     let requested = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
     assert_eq!(requested["state"], "requested");
@@ -5667,6 +5679,7 @@ fn the_chief_can_start_a_fresh_session_for_a_queued_handed_todo_while_its_projec
 #[test]
 fn a_started_chief_request_does_not_start_a_second_session() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
     chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
     reserve_fresh_session(&mut bench, &todo).unwrap();
@@ -5687,6 +5700,7 @@ fn the_chief_can_start_a_session_for_todos_theo_or_another_project_filed_queued_
         ),
     ] {
         let mut bench = admitted_chief_bench();
+        turn_on_todo_queue();
         let todo = project_todo(&bench, "bb919cfe", fields.clone(), is_queued);
         chief_starts_session(&mut bench, 20, &todo, "project-a")
             .unwrap_or_else(|error| panic!("{fields} queued {is_queued}: {}", error.message));
@@ -5757,6 +5771,7 @@ fn the_chief_cannot_start_a_session_for_a_todo_its_own_project_filed_until_theo_
 #[test]
 fn the_chief_can_start_a_session_for_a_todo_its_own_project_filed_once_theo_queued_it() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     let todo = project_todo(
         &bench,
         "bb919cfe",
@@ -5769,11 +5784,7 @@ fn the_chief_can_start_a_session_for_a_todo_its_own_project_filed_once_theo_queu
 }
 
 fn set_chief_dispatches_own_todos(value: &str) {
-    fs::write(
-        cockpit::paths::settings(),
-        json!({"chief-dispatches-own-todos": value}).to_string(),
-    )
-    .unwrap();
+    write_setting("chief-dispatches-own-todos", json!(value));
 }
 
 /// The audit lines of today with this event name.
@@ -5798,6 +5809,7 @@ fn coordination_policies(bench: &Bench, kind: &str) -> Vec<serde_json::Value> {
 #[test]
 fn the_chief_starts_a_session_for_a_todo_it_filed_while_theos_dispatch_policy_is_on() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     set_chief_dispatches_own_todos("on");
     let todo = project_todo(
         &bench,
@@ -5933,6 +5945,7 @@ fn the_dispatch_policy_never_starts_the_chiefs_own_todos_that_wait_or_are_for_th
 #[test]
 fn the_dispatch_policy_lets_the_chief_give_its_own_todo_to_a_live_session() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     idle_message_worker(&mut bench);
     set_chief_dispatches_own_todos("on");
     let todo = project_todo(
@@ -5964,6 +5977,7 @@ fn the_dispatch_policy_lets_the_chief_give_its_own_todo_to_a_live_session() {
 #[test]
 fn turning_the_dispatch_policy_off_retires_a_gift_of_the_chiefs_own_todo_before_delivery() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     idle_message_worker(&mut bench);
     set_chief_dispatches_own_todos("on");
     let todo = project_todo(
@@ -6041,11 +6055,7 @@ fn earlier_session_starts(bench: &Bench, count: usize, is_theo_queued: bool) {
 }
 
 fn set_chief_starts_per_hour(value: &str) {
-    fs::write(
-        cockpit::paths::settings(),
-        json!({"chief-starts-per-hour": value}).to_string(),
-    )
-    .unwrap();
+    write_setting("chief-starts-per-hour", json!(value));
 }
 
 #[test]
@@ -6126,6 +6136,7 @@ fn a_theo_queued_mark_on_a_todo_out_of_the_queue_still_counts_against_the_cap() 
 #[test]
 fn an_expired_chief_request_no_longer_starts_a_session() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
     chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
     bench
@@ -6148,6 +6159,7 @@ fn an_expired_chief_request_no_longer_starts_a_session() {
 #[test]
 fn a_chief_request_still_waits_for_the_other_queue_checks() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
     chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
     bench.registry.chief_focus.as_mut().unwrap().3 -= 31_000;
@@ -6228,6 +6240,7 @@ fn a_routine_chief_message_raises_no_banner_but_keeps_its_audit_and_delivery_rec
 #[test]
 fn a_chief_started_session_raises_no_banner_but_keeps_its_audit_record() {
     let mut bench = admitted_chief_bench();
+    turn_on_todo_queue();
     let todo = handed_todo(&bench, "aa919cfe", "a cockpit-chief session (ses_e82b)");
     let requested = chief_starts_session(&mut bench, 20, &todo, "project-a").unwrap();
     reserve_fresh_session(&mut bench, &todo).unwrap();
@@ -6309,12 +6322,25 @@ fn the_active_chiefs_blocked_reports_keep_the_ordinary_daily_request_bound() {
     assert!(error.contains("too many retained todo requests"), "{error}");
 }
 
+/// Sets one setting and keeps the others: a test may turn the todo queue on and set a Chief policy.
+fn write_setting(name: &str, value: Value) {
+    let path = cockpit::paths::settings();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut settings: serde_json::Map<String, Value> = fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default();
+    settings.insert(name.into(), value);
+    fs::write(path, Value::Object(settings).to_string()).unwrap();
+}
+
+/// The todo queue is off unless settings.json turns it on (cockpit::settings::OFF_UNLESS_TURNED_ON).
+fn turn_on_todo_queue() {
+    write_setting("todo-queue", json!(true));
+}
+
 fn set_chief_turns_while_gaming(value: &str) {
-    fs::write(
-        cockpit::paths::settings(),
-        json!({"chief-turns-while-gaming": value}).to_string(),
-    )
-    .unwrap();
+    write_setting("chief-turns-while-gaming", json!(value));
 }
 
 /// A game window focused, as the cockpit's focus report or the daemon's own hyprctl check sees it.
@@ -6394,6 +6420,7 @@ fn a_guarded_game_still_holds_every_other_chief_message_blocker() {
 fn a_todo_gift_still_waits_during_a_game_while_the_guard_holds_heavy_jobs() {
     for signal in ["focus", "daemon"] {
         let mut bench = admitted_chief_bench();
+        turn_on_todo_queue();
         idle_message_worker(&mut bench);
         let todo = project_todo(&bench, "aa919cfe", json!({}), false);
         chief_gives_todo(&mut bench, &todo, MESSAGE_WORKER).unwrap();
@@ -6408,6 +6435,7 @@ fn a_todo_gift_still_waits_during_a_game_while_the_guard_holds_heavy_jobs() {
 fn queued_todo_work_still_waits_during_a_game_while_the_guard_holds_heavy_jobs() {
     for signal in ["focus", "daemon"] {
         let mut bench = team_bench();
+        turn_on_todo_queue();
         let directory = bench.registry.sessions[SESSION_B].cwd.clone();
         let entry = bench.registry.sessions.get_mut(SESSION_B).unwrap();
         entry.state = "waiting".into();

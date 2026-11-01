@@ -3218,8 +3218,8 @@ pub struct RealSystem {
     gaming_cache: GameSignals,
     /// Where the guard's admission status lives; the account's home does not change while we run.
     game_guard_gate: Result<std::path::PathBuf, String>,
-    /// Why the game guard last did not hold heavy jobs (None: it did), so the log shows each change once.
-    game_guard_refusal: Option<String>,
+    /// The game guard's last answer (None: not asked yet), so the log shows the first one and each change.
+    game_guard_refusal: Option<Option<String>>,
     /// When khal was last asked, and its answer so far: khal runs on a thread of its own, never on
     /// the GTK loop (it takes a few hundred ms to start; security audit 2026-10-19, performance 4).
     meeting_cache: (
@@ -3770,6 +3770,21 @@ pub fn claude_panes() -> HashSet<String> {
     claude_panes_in(&Proc)
 }
 
+/// The line to log for the game guard's answer: its first one, then only changes. Logging only
+/// changes from an assumed "protects" left a game where agent turns could continue with no line.
+pub fn game_guard_log_line(
+    last: Option<&Option<String>>,
+    refusal: &Option<String>,
+) -> Option<String> {
+    if last == Some(refusal) {
+        return None;
+    }
+    Some(match refusal {
+        None => "game guard protects the game: agent turns may continue during it".into(),
+        Some(why) => format!("game guard not protecting: agent turns wait during games ({why})"),
+    })
+}
+
 /// Game mode on, or a game's window focused.
 pub fn is_game(submap: &str, window_class: &str) -> bool {
     submap == "gamemode" || GAME_CLASS.is_match(window_class)
@@ -3923,18 +3938,11 @@ impl System for RealSystem {
             Err(why) => Err(why.clone()),
         }
         .err();
-        if refusal != self.game_guard_refusal {
-            log(&match &refusal {
-                None => {
-                    "game guard holds heavy jobs: agent turns may continue during the game".into()
-                }
-                Some(why) => format!(
-                    "game guard not holding heavy jobs: agent turns wait during games ({why})"
-                ),
-            });
+        if let Some(line) = game_guard_log_line(self.game_guard_refusal.as_ref(), &refusal) {
+            log(&line);
         }
         let holds = refusal.is_none();
-        self.game_guard_refusal = refusal;
+        self.game_guard_refusal = Some(refusal);
         holds
     }
 

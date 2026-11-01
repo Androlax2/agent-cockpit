@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run background build tools at the lowest CPU priority, below interactive work.
 
-A new heavy job first passes the admission gate (todo d021dc46): while the host's game guard says a
-game is open, memory is low or Theo holds jobs, it waits and says why, then starts unchanged. Its
+A new heavy job first passes the admission gate (todo d021dc46): while the host's game guard says
+memory is low or Theo holds jobs, it waits and says why, then starts unchanged. An open game alone
+does not hold it: the guard pins it to two cores at idle priority instead. Its
 exit status is the tool's own. Work started inside an admitted job never waits again: the job
 carries AGENT_BUILD_ADMITTED=<pid>:<start time> of the admitted process, and it counts only while
 that process is one of the caller's ancestors (priority alone proves nothing). A missing, stale or
@@ -30,8 +31,10 @@ GATE_POLL_S = 2
 WAIT_REPORT_EVERY_S = 60
 RELEASE_SPACING_S = 10
 HELD_EXIT = 75
-RUNNING_STATES = {"clear"}
-HOLDING_STATES = {"gaming", "memory", "held"}
+# "gaming" runs: holding every build and test for the whole game stalled the agent turns Option C
+# let continue; the guard's pinning to two cores at idle priority covers the game instead.
+RUNNING_STATES = {"clear", "gaming"}
+HOLDING_STATES = {"memory", "held"}
 ADMITTED_ENV = "AGENT_BUILD_ADMITTED"
 MAX_ANCESTORS = 64
 # Whole invocations that never load the machine. They skip the gate but admit nothing below them.

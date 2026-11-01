@@ -899,6 +899,23 @@ impl Fixture {
         path
     }
 
+    /// Turns on settings that are off unless turned on (settings::OFF_UNLESS_TURNED_ON), keeping
+    /// the rest of settings.json: tests of those features say so where they start.
+    fn turn_on(&self, names: &[&str]) {
+        let path = self.path("state/cockpit/settings.json");
+        let mut settings: serde_json::Map<String, Value> = fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
+            .unwrap_or_default();
+        for name in names {
+            settings.insert((*name).to_string(), Value::Bool(true));
+        }
+        self.write(
+            "state/cockpit/settings.json",
+            &Value::Object(settings).to_string(),
+        );
+    }
+
     fn snapshot(&self, sessions: Value) {
         self.write(
             "run/cockpit.json",
@@ -2460,6 +2477,7 @@ fn continuity_deferral_boundary_is_exactly_twenty_minutes() {
 #[test]
 fn continuity_deferred_questions_still_block_automatic_queue_work() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let mut question = continuity_question_row(SESSION_A, "Which provider?");
     question["state"] = json!("waiting");
     question["since"] = json!(util::now_secs() - 600);
@@ -3246,7 +3264,7 @@ fn settings_sections_have_a_blank_line_between_groups() {
 #[test]
 fn settings_distinguish_selected_values_enabled_and_disabled_toggles_by_color() {
     let fixture = Fixture::new();
-    fixture.write("state/cockpit/settings.json", r#"{"default-agent":"opencode","opencode-model":"openai/gpt-6.1-sol","opencode-effort":"medium","todo-queue":false}"#);
+    fixture.write("state/cockpit/settings.json", r#"{"default-agent":"opencode","opencode-model":"openai/gpt-6.1-sol","opencode-effort":"medium","todo-queue":false,"error-handoff":true}"#);
     let mut app = fixture.app();
     app.handle(Key::Char('S'), &mut FakeScreen::default());
     let buffer = render(&mut app, 60, 40);
@@ -4847,6 +4865,7 @@ fn dispatch_sleep_expires_week_old_notes() {
 #[test]
 fn the_queue_gives_an_asleep_session_its_todo() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let now = util::now_secs();
     asleep_note(&fixture, SESSION_A, now - 7200, now - 3600);
     let mut app = fixture.app();
@@ -8362,6 +8381,7 @@ fn a_linked_session_shows_its_team_role() {
 fn qa_sessions_do_not_receive_queued_todos() {
     for is_linked in [true, false] {
         let fixture = Fixture::new();
+        fixture.turn_on(&["todo-queue"]);
         fixture.snapshot(json!([session(
             SESSION_B,
             "waiting",
@@ -13596,6 +13616,7 @@ fn automatic_error_reports_do_not_interrupt_a_qa_review() {
 }
 
 fn reporter(fixture: &Fixture) -> ErrorReporter {
+    fixture.turn_on(&["error-handoff"]);
     fixture.write(
         "state/cockpit/log",
         "2026-10-18T10:00:00+02:00 ERROR manager: logged before the column started\n",
@@ -13652,8 +13673,8 @@ fn a_new_error_starts_an_agent_cockpit_session_with_the_log_before_it() {
 #[test]
 fn an_error_starts_no_session_while_error_handoff_is_off_and_is_not_sent_later() {
     let fixture = Fixture::new();
-    fixture.write("state/cockpit/settings.json", r#"{"error-handoff": false}"#);
     let mut reporter = reporter(&fixture);
+    fixture.write("state/cockpit/settings.json", r#"{"error-handoff": false}"#);
     append_log(
         &fixture,
         &["2026-10-18T13:00:01+02:00 ERROR manager: it broke"],
@@ -13942,6 +13963,7 @@ fn the_design_action_refuses_a_link_that_is_not_a_canvas() {
 
 fn queue_fixture(state: &str, idle_s: i64) -> (Fixture, App) {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let since = util::now() as i64 - idle_s;
     fixture.snapshot(json!([session(
         SESSION_A,
@@ -14404,6 +14426,7 @@ fn an_unreachable_team_host_blocks_queue_sends() {
 #[test]
 fn an_enabled_chief_keeps_the_todo_queue_sending() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     team_host(&fixture, json!({"members":[]}), vec![]);
     fixture.snapshot(json!([session(
         SESSION_A,
@@ -14508,6 +14531,7 @@ fn two_queued_items(fixture: &Fixture) -> (App, String, String) {
 #[test]
 fn an_item_the_host_refuses_does_not_hold_back_the_next_queued_item() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (mut app, first, second) = two_queued_items(&fixture);
     queue_host_refusing(
         &fixture,
@@ -14527,6 +14551,7 @@ fn an_item_the_host_refuses_does_not_hold_back_the_next_queued_item() {
 #[test]
 fn a_session_the_host_finds_not_ready_is_offered_no_further_item() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (mut app, first, second) = two_queued_items(&fixture);
     let requests = queue_host_refusing(
         &fixture,
@@ -14549,6 +14574,7 @@ fn a_session_the_host_finds_not_ready_is_offered_no_further_item() {
 #[test]
 fn the_todo_queue_never_offers_work_to_the_chief_session() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     fixture.snapshot(json!([session(
         SESSION_A,
         "waiting",
@@ -14716,6 +14742,7 @@ fn a_session_gets_one_queued_item_at_a_time() {
 #[test]
 fn four_parallel_sessions_each_receive_a_different_queued_item() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let since = util::now() as i64 - 600;
     let session_ids = [
         SESSION_A,
@@ -14791,6 +14818,7 @@ fn queued_items_created_in_a_parallel_clone_are_shared_with_the_project() {
         "home/IdeaProjects/.parallel/runway/second",
     ] {
         let fixture = Fixture::new();
+        fixture.turn_on(&["todo-queue"]);
         let item_checkout = "home/IdeaProjects/.parallel/runway/first";
         fixture.write(
             &format!("{item_checkout}/.git/HEAD"),
@@ -14834,6 +14862,7 @@ fn queued_items_created_in_a_parallel_clone_are_shared_with_the_project() {
 #[test]
 fn a_parallel_session_receives_queued_issues_from_the_projects_checkout() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let cwd = fixture.path("home/IdeaProjects/.parallel/runway/first");
     fixture.snapshot(json!([session(
         SESSION_A,
@@ -14915,6 +14944,7 @@ fn a_done_item_leaves_the_queue() {
 #[test]
 fn a_session_borrowing_a_projects_name_gets_none_of_its_queue() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let since = util::now() as i64 - 600;
     fixture.snapshot(json!([session(
         SESSION_A,
@@ -15843,6 +15873,7 @@ fn marking_a_blocked_report_done_in_the_todo_panel_tells_its_session() {
 #[test]
 fn the_agent_cockpit_session_gets_a_blocked_report_framed_as_data() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     report_blocked(
         &fixture,
         "opusline",
@@ -16827,6 +16858,7 @@ fn a_summary_is_refused_on_anything_but_done() {
 #[test]
 fn an_item_from_another_project_reaches_its_session_framed_as_a_request() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
     let since = util::now() as i64 - 600;
     fixture.snapshot(json!([session(
@@ -16855,6 +16887,7 @@ fn an_item_from_another_project_reaches_its_session_framed_as_a_request() {
 #[test]
 fn handed_work_starts_a_session_when_none_runs_in_its_project() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
     file_in_greyproxy(&greywall, "Accept a per-client secret", json!({}));
     let mut app = fixture.app();
@@ -16880,6 +16913,7 @@ fn handed_work_starts_a_session_when_none_runs_in_its_project() {
 fn handed_work_starts_a_fresh_session_even_when_the_project_has_sessions() {
     for state in ["working", "waiting"] {
         let fixture = Fixture::new();
+        fixture.turn_on(&["todo-queue"]);
         let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
         fixture.snapshot(json!([session(
             SESSION_B,
@@ -16913,6 +16947,7 @@ fn handed_work_starts_a_fresh_session_even_when_the_project_has_sessions() {
 #[test]
 fn handed_work_does_not_wait_for_the_ordinary_queue_check() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     file_in_greyproxy(&greywall, "Unblock now", json!({}));
     let mut app = fixture.app();
@@ -16931,6 +16966,7 @@ fn handed_work_does_not_wait_for_the_ordinary_queue_check() {
 #[test]
 fn handed_work_starts_each_item_once_after_the_previous_launch_has_a_known_worker() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     for title in ["First handoff", "Second handoff"] {
         file_in_greyproxy(&greywall, title, json!({}));
@@ -17008,6 +17044,7 @@ fn reserve_requests(requests: &HostRequests) -> usize {
 #[test]
 fn a_refused_handed_item_is_not_asked_for_again_on_every_tick() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     file_in_greyproxy(&greywall, "Refused handoff", json!({}));
     let requests = refusing_scheduler(&fixture);
@@ -17030,6 +17067,7 @@ fn a_refused_handed_item_is_not_asked_for_again_on_every_tick() {
 #[test]
 fn handed_items_of_a_project_the_host_finds_not_ready_cost_one_reservation_per_check() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     for title in ["First handoff", "Second handoff", "Third handoff"] {
         file_in_greyproxy(&greywall, title, json!({}));
@@ -17052,6 +17090,7 @@ fn handed_items_of_a_project_the_host_finds_not_ready_cost_one_reservation_per_c
 #[test]
 fn an_item_the_chief_asked_for_is_still_offered_after_ordinary_handed_work_is_refused() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     for title in ["Ordinary handoff", "Second ordinary handoff", "Chief asked"] {
         file_in_greyproxy(&greywall, title, json!({}));
@@ -17081,6 +17120,7 @@ fn an_item_the_chief_asked_for_is_still_offered_after_ordinary_handed_work_is_re
 #[test]
 fn a_project_with_a_pending_launch_is_offered_once_per_check_across_its_idle_sessions() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let idle_since = util::now_secs() - 600;
     fixture.snapshot(json!([
         session(SESSION_A, "waiting", "runway", "/r/runway", idle_since),
@@ -17103,6 +17143,7 @@ fn a_project_with_a_pending_launch_is_offered_once_per_check_across_its_idle_ses
 #[test]
 fn a_pending_launch_found_for_handed_work_spares_the_projects_idle_sessions_that_check() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, greyproxy) = greywall_and_greyproxy(&fixture);
     fixture.snapshot(json!([session(
         SESSION_B,
@@ -17128,6 +17169,7 @@ fn a_pending_launch_found_for_handed_work_spares_the_projects_idle_sessions_that
 #[test]
 fn a_session_already_holding_reserved_work_is_offered_no_further_item() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (mut app, _, second) = two_queued_items(&fixture);
     let requests =
         scheduler_refusing_with(&fixture, "the session already holds reserved work (legacy)");
@@ -17139,6 +17181,7 @@ fn a_session_already_holding_reserved_work_is_offered_no_further_item() {
 #[test]
 fn ticks_with_nothing_to_start_ask_the_daemon_for_no_snapshot() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     file_in_greyproxy(&greywall, "Refused handoff", json!({}));
     let requests = refusing_scheduler(&fixture);
@@ -17164,6 +17207,7 @@ fn ticks_with_nothing_to_start_ask_the_daemon_for_no_snapshot() {
 #[test]
 fn a_refused_handed_item_is_asked_for_again_at_the_next_queue_check() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     file_in_greyproxy(&greywall, "Refused handoff", json!({}));
     let requests = refusing_scheduler(&fixture);
@@ -17202,6 +17246,7 @@ fn handed_work_preserves_queue_off_and_gaming_pauses() {
 #[test]
 fn handed_work_waits_for_its_dependencies_before_starting() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (greywall, _) = greywall_and_greyproxy(&fixture);
     let mut app = fixture.app();
     app.gaming = || false;
@@ -17234,6 +17279,7 @@ fn handed_work_waits_for_its_dependencies_before_starting() {
 #[test]
 fn handed_blocker_report_starts_a_session_without_an_existing_one() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     fs::create_dir_all(crate::paths::cockpit_work()).unwrap();
     report_blocked(&fixture, "opusline", "Run the tests");
     let mut app = fixture.app();
@@ -17281,6 +17327,7 @@ fn chief_asks_for_a_session(id: &str, created_at_ms: i64) {
 #[test]
 fn a_todo_the_chief_asked_for_starts_a_session_even_when_nobody_queued_it() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (_, greyproxy) = greywall_and_greyproxy(&fixture);
     let mut app = fixture.app();
     app.gaming = || false;
@@ -17305,6 +17352,7 @@ fn a_todo_the_chief_asked_for_starts_a_session_even_when_nobody_queued_it() {
 #[test]
 fn a_lapsed_chief_request_starts_no_session() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     let (_, greyproxy) = greywall_and_greyproxy(&fixture);
     let mut app = fixture.app();
     app.gaming = || false;
@@ -18545,6 +18593,7 @@ fn external_sessions_keep_queued_prompts_pending_without_dispatching_them() {
 #[test]
 fn external_sessions_do_not_receive_automatic_todo_assignments() {
     let fixture = Fixture::new();
+    fixture.turn_on(&["todo-queue"]);
     fixture.snapshot(json!([external_session(
         OPENCODE_SESSION,
         "waiting",
@@ -21156,4 +21205,33 @@ fn session_details_say_why_with_the_project_and_the_todo_the_session_works_on() 
         crate::app::color(crate::app::FG_DARK),
         "the task reads quieter"
     );
+}
+
+#[test]
+fn the_four_unwanted_features_are_off_without_a_setting_and_others_stay_on() {
+    let fixture = Fixture::new();
+    for settings_file in [None, Some("{}"), Some("not json")] {
+        if let Some(content) = settings_file {
+            fixture.write("state/cockpit/settings.json", content);
+        }
+        for name in crate::settings::OFF_UNLESS_TURNED_ON {
+            assert!(
+                !crate::settings::is_on(name),
+                "{name} with {settings_file:?}"
+            );
+        }
+        assert!(crate::settings::is_on("phone-on-lock"), "{settings_file:?}");
+    }
+}
+
+#[test]
+fn an_unwanted_feature_runs_only_when_settings_say_true() {
+    let fixture = Fixture::new();
+    for name in crate::settings::OFF_UNLESS_TURNED_ON {
+        fixture.write(
+            "state/cockpit/settings.json",
+            &format!(r#"{{"{name}": true}}"#),
+        );
+        assert!(crate::settings::is_on(name), "{name}");
+    }
 }

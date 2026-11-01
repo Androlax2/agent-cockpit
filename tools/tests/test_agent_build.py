@@ -266,7 +266,6 @@ class AdmissionTests(unittest.TestCase):
     def test_held_statuses_make_a_new_job_wait_before_it_runs(self):
         stale = time.time() - 120
         cases = {
-            "a game is open": lambda: write_gate(self.home, "gaming"),
             "memory is low": lambda: write_gate(self.home, "memory"),
             "Theo holds jobs": lambda: write_gate(self.home, "held"),
             "the status is missing": lambda: None,
@@ -285,7 +284,7 @@ class AdmissionTests(unittest.TestCase):
                 self.home, "clear", updated_at=time.time() + 3600
             ),
             "a release is too far ahead": lambda: write_gate(
-                self.home, "gaming", manual_release_until=time.time() + 3 * 86400
+                self.home, "held", manual_release_until=time.time() + 3 * 86400
             ),
             "the status is a symbolic link": self.plant_symlinked_gate,
         }
@@ -302,18 +301,26 @@ class AdmissionTests(unittest.TestCase):
                 self.assertIn("nothing has run yet", said)
                 self.assertIn("cockpit-game-guard release", said)
 
+    def test_an_open_game_starts_a_new_job_at_once(self):
+        # During a game the guard pins agent builds to two cores at idle priority; holding them
+        # too stalled every agent turn that ran a build or a test (make typos waited 120 s).
+        write_gate(self.home, "gaming")
+        output, errors = self.start().communicate(timeout=10)
+        self.assertEqual(output, "ran\n", errors)
+        self.assertNotIn("waits", errors)
+
     def plant_symlinked_gate(self):
         real = write_gate(self.home, "clear").rename(self.home / "real-gate.json")
         (self.home / ".cache/agent-shims/heavy-gate.json").symlink_to(real)
 
     def test_a_held_job_starts_when_the_hold_ends_and_keeps_its_exit_status(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         job = self.start()
         said = self.assert_waits(job)
         write_gate(self.home, "clear")
         output, errors = job.communicate(timeout=30)
         self.assertEqual((job.returncode, output), (9, "ran\n"), errors)
-        self.assertIn("test gaming", said + errors)
+        self.assertIn("test held", said + errors)
         self.assertIn("starts after", errors)
 
     def test_a_held_job_starts_once_a_malformed_status_is_replaced_by_clear(self):
@@ -327,7 +334,7 @@ class AdmissionTests(unittest.TestCase):
     def test_theos_release_starts_jobs_even_with_a_stale_status(self):
         write_gate(
             self.home,
-            "gaming",
+            "held",
             updated_at=time.time() - 600,
             manual_release_until=time.time() + 600,
         )
@@ -335,7 +342,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(output, "ran\n", errors)
 
     def test_an_expired_release_holds_again(self):
-        write_gate(self.home, "gaming", manual_release_until=time.time() - 1)
+        write_gate(self.home, "held", manual_release_until=time.time() - 1)
         self.assert_waits(self.start())
 
     def test_admission_off_starts_jobs_with_a_warning(self):
@@ -345,14 +352,14 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("admission is off", errors)
 
     def test_a_job_inside_an_admitted_job_never_waits(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         admitted = self.environment | {"AGENT_BUILD_ADMITTED": marker_of_this_process()}
         output, errors = self.start(environment=admitted).communicate(timeout=10)
         self.assertEqual(output, "ran\n", errors)
         self.assertNotIn("waits", errors)
 
     def test_a_marker_that_is_not_an_ancestor_or_has_another_start_time_waits(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         pid, _, start = marker_of_this_process().partition(":")
         for name, marker in {
             "wrong start time": f"{pid}:{int(start) + 1}",
@@ -367,7 +374,7 @@ class AdmissionTests(unittest.TestCase):
                 job.communicate(timeout=10)
 
     def test_a_cheap_call_and_its_children_are_not_admitted(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         tools = self.home / "tools"
         tools.mkdir()
         fake_make = tools / "make"
@@ -382,7 +389,7 @@ class AdmissionTests(unittest.TestCase):
         self.assert_waits(job)
 
     def test_mixed_cheap_and_heavy_goals_wait(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         for arguments in (["make", "help", "test"], [sys.executable, "--version", "-c", "pass"]):
             with self.subTest(arguments):
                 tools = self.home / "mixed"
@@ -401,7 +408,7 @@ class AdmissionTests(unittest.TestCase):
                 job.communicate(timeout=10)
 
     def test_scheduling_priority_alone_never_counts_as_admitted(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
 
         def as_idle_job():
             os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
@@ -431,7 +438,7 @@ class AdmissionTests(unittest.TestCase):
                 job.communicate(timeout=10)
 
     def test_a_forged_clear_status_under_home_cannot_admit_while_the_account_status_holds(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         write_gate(self.other_home, "clear")
         self.assert_waits(self.start())
 
@@ -458,7 +465,7 @@ class AdmissionTests(unittest.TestCase):
         write_shim(shims, "cargo", self.home)
         environment = self.environment | {"PATH": f"{shims}:{tools}:{self.environment['PATH']}"}
         cases = {
-            "forged clear under HOME, account gaming": ("gaming", "clear", True),
+            "forged clear under HOME, account held": ("held", "clear", True),
             "forged held under HOME, account clear": ("clear", "held", False),
         }
         for name, (account, forged, waits) in cases.items():
@@ -490,7 +497,7 @@ class AdmissionTests(unittest.TestCase):
         ticket = self.other_home / ".cache/cockpit/test-lock/admission.lock"
         ticket.parent.mkdir(parents=True)
         ticket.write_text(f"{time.time() + 5}\n")
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         job = self.start()
         self.assert_waits(job)
         write_gate(self.home, "clear")
@@ -500,7 +507,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 8, "a ticket under HOME delayed the job")
 
     def test_asking_a_tool_for_its_version_never_waits(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         job = self.start(sys.executable, "--version")
         output, errors = job.communicate(timeout=10)
         self.assertEqual(job.returncode, 0, errors)
@@ -522,7 +529,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(len(slept), 1)
         self.assertGreater(slept[0], agent_build.RELEASE_SPACING_S - 1)
 
-    def test_a_job_whose_turn_comes_during_a_new_game_waits_again(self):
+    def test_a_job_whose_turn_comes_during_a_new_hold_waits_again(self):
         decisions = iter([False, True])
         waits = []
         originals = (
@@ -547,7 +554,7 @@ class AdmissionTests(unittest.TestCase):
                 agent_build.admission,
                 agent_build.read_gate,
             ) = originals
-        self.assertEqual(len(waits), 2, "after its turn the job saw a game and waited again")
+        self.assertEqual(len(waits), 2, "after its turn the job saw a new hold and waited again")
 
     def test_waiting_jobs_say_why_once_a_minute_not_on_every_poll(self):
         gates = iter(
@@ -555,8 +562,8 @@ class AdmissionTests(unittest.TestCase):
                 (
                     {
                         "version": 1,
-                        "state": "gaming",
-                        "reason": "a game is open",
+                        "state": "held",
+                        "reason": "Theo holds new heavy jobs",
                         "since": 0,
                         "updated_at": 0,
                         "boot_id": BOOT_ID,

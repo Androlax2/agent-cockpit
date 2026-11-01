@@ -1,7 +1,7 @@
 //! Reads the admission status the host's game guard publishes (`publish_gate` in
 //! config/bin/.local/bin/cockpit-game-guard), with the checks agent-build's `read_gate` makes. The
-//! daemon lets agent turns continue during a game only while that guard holds new heavy jobs: any
-//! doubt about the file means it does not.
+//! daemon lets agent turns continue during a game only while that guard protects it (pins new heavy
+//! jobs for a game, or holds them by Theo's hold): any doubt about the file means it does not.
 
 use serde_json::Value;
 use std::ffi::{CStr, OsStr};
@@ -21,8 +21,9 @@ pub fn gate_path() -> Result<PathBuf, String> {
     Ok(account_home()?.join(".cache/agent-shims/heavy-gate.json"))
 }
 
-/// Ok when the guard, alive this boot, holds new heavy jobs: for an open game, or by Theo's
-/// `cockpit-game-guard hold`, which takes precedence over it in the status; otherwise why not.
+/// Ok when the guard, alive this boot, protects the game: it pins new heavy jobs for an open game,
+/// or holds them by Theo's `cockpit-game-guard hold`, which takes precedence in the status;
+/// otherwise why not.
 pub fn holds_heavy_jobs_for_game(
     path: &Path,
     now_s: f64,

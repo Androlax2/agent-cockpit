@@ -1,5 +1,5 @@
 //! Theo's on/off choices, kept by `cockpit setting` in settings.json. A setting missing
-//! from the file is on: what the setup did before it had settings.
+//! from the file is on (what the setup did before it had settings), except OFF_UNLESS_TURNED_ON.
 
 use crate::paths;
 use crate::util::read_json;
@@ -185,8 +185,18 @@ pub fn load_models(directory: &str) -> Result<Vec<ModelChoice>, String> {
     Ok(models)
 }
 
+/// Features Theo does not want running in this Cockpit (2026-11-01): off when settings.json does
+/// not say true, so a reset, a lost or broken file, or a restart cannot start them again. Keep in
+/// step with OFF_UNLESS_TURNED_ON in config/bin/.local/bin/cockpit.
+pub const OFF_UNLESS_TURNED_ON: [&str; 4] = [
+    "todo-queue",
+    "error-handoff",
+    "freeze-while-gaming",
+    "daily-digest",
+];
+
 pub fn is_on(name: &str) -> bool {
     read_json(&paths::settings())
         .and_then(|settings| settings.get(name)?.as_bool())
-        .unwrap_or(true)
+        .unwrap_or(!OFF_UNLESS_TURNED_ON.contains(&name))
 }

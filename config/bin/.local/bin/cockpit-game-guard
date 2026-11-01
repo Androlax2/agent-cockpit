@@ -14,7 +14,8 @@ affinity changes, each thread's original set is recorded with its start time, an
 restored when the game ends, on stop, and on the next start after a crash.
 
 Step 2 (admission): it also writes ~/.cache/agent-shims/heavy-gate.json every 5 s, which
-agent-build reads before a new heavy job starts: gaming while a game is open, memory while memory
+agent-build reads before a new heavy job starts: gaming while a game is open (jobs still start,
+pinned), memory while memory
 is low (hold under 3 GiB available or memory PSI some avg10 >= 5 %; release only after 60 s at
 >= 5 GiB and PSI avg60 < 1 %), held while Theo holds jobs, otherwise clear. A crashed guard leaves
 the status stale, which holds new jobs until Theo releases them (his choice, policy C). Theo's host
@@ -507,15 +508,16 @@ def memory_reason(sample):
 
 
 def gate_state(manual, protecting, memory_hold, sample, now):
-    """(state, reason) for the gate; Theo's off and hold come first."""
+    """(state, reason) for the gate; Theo's off and hold come first. Low memory comes before an
+    open game: "gaming" lets new jobs start (pinned), so it must not hide a memory hold."""
     if manual.get("off"):
         return "off", "admission is off (cockpit-game-guard off)"
     if manual.get("hold"):
         return "held", "Theo holds new heavy jobs (cockpit-game-guard hold)"
-    if protecting:
-        return "gaming", "a game is open; new heavy jobs wait until 30 s after it closes"
     if memory_hold:
         return "memory", memory_reason(sample)
+    if protecting:
+        return "gaming", "a game is open; new heavy jobs start pinned to two cores at idle priority"
     return "clear", ""
 
 

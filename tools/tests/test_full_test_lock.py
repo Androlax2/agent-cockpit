@@ -186,7 +186,7 @@ class FullTestLockTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "keep me\n")
 
     def test_a_fresh_run_waits_for_admission_without_holding_the_lock(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         started = self.root / "command-started"
         waiting = self.start(
             "/clones/gaming",
@@ -203,7 +203,7 @@ class FullTestLockTests(unittest.TestCase):
         output, errors = waiting.communicate(timeout=30)
         self.assertEqual((waiting.returncode, output), (0, "ran\n"), errors)
         self.assertIn("waits", errors)
-        self.assertIn("test gaming", errors)
+        self.assertIn("test held", errors)
 
     def test_a_run_queued_for_the_lock_checks_admission_again_and_gives_the_lock_back(self):
         holding, release = self.start_holder("/clones/first")
@@ -215,11 +215,11 @@ class FullTestLockTests(unittest.TestCase):
         self.addCleanup(lambda: queued.poll() is None and queued.kill())
         time.sleep(0.5)
         self.assertIsNone(queued.poll(), "the second run did not queue for the lock")
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         release.touch()
         self.assertEqual(holding.wait(10), 0)
         time.sleep(1)
-        self.assertIsNone(queued.poll(), "the queued run started although a game began")
+        self.assertIsNone(queued.poll(), "the queued run started although jobs are held")
         self.assertFalse(started.exists())
         self.assertTrue(self.lock_is_free(), "the queued run kept the lock while held")
         write_gate(self.home, "clear")
@@ -228,7 +228,7 @@ class FullTestLockTests(unittest.TestCase):
         self.assertIn("gave the lock back and waits again", errors)
 
     def test_a_run_inside_an_admitted_job_does_not_wait(self):
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         running = self.start(
             "/clones/nested", "import sys; print('ran'); sys.exit(5)", admitted=True
         )
@@ -249,7 +249,7 @@ class FullTestLockTests(unittest.TestCase):
         running = self.start("/clones/admitted", script)
         self.addCleanup(lambda: running.poll() is None and running.kill())
         self.wait_for(started.exists)
-        write_gate(self.home, "gaming")
+        write_gate(self.home, "held")
         go.touch()
         output, errors = running.communicate(timeout=10)
         self.assertEqual((running.returncode, output), (0, "nested ran\n"), errors)

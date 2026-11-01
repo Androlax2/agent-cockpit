@@ -80,7 +80,9 @@
 #   cockpit setting <name> [on|off]
 #                                show or change a setting (the sidebar's S): phone-on-lock,
 #                                todo-queue, error-handoff, freeze-while-gaming, idle-lock, daily-digest,
-#                                idle-sleep (off: idle sessions stay running); idle-sleep-after <minutes>
+#                                idle-sleep (off: idle sessions stay running); todo-queue, error-handoff,
+#                                freeze-while-gaming and daily-digest are off unless turned on;
+#                                idle-sleep-after <minutes>
 #                                (30 or more, default 60) is how long a session idles before it sleeps
 #                                chief-starts-per-hour <1-60> (default 6) caps the sessions the Chief may ask
 #                                for in an hour; todos you queued with Q do not count
@@ -88,7 +90,7 @@
 #                                give todos it filed itself without your Q (still capped, logged and audited)
 #                                chief-turns-while-gaming on|off (default on): on lets Chief messages, answers
 #                                and the Chief's wake reach idle sessions during a game while
-#                                cockpit-game-guard holds new heavy jobs; todos and the queue still wait
+#                                cockpit-game-guard protects it (pins or holds new heavy jobs); todos and the queue still wait
 #   cockpit remote <id>          toggle Remote Control for one session (the remote action of the sidebar's : list)
 #   cockpit restore <dir> <id> […]
 #                                resume those sessions one after the other (the sidebar's B after a reboot)
@@ -1061,14 +1063,24 @@ launch_setting() { # name [value]
     printf '%s: %s\n' "$name" "$value"
 }
 
+# Features Theo does not want running in this Cockpit (2026-11-01): off unless settings.json says
+# true, so a reset, a lost or broken file, or a restart cannot start them again. Keep in step with
+# OFF_UNLESS_TURNED_ON in apps/cockpit/src/settings.rs.
+OFF_UNLESS_TURNED_ON=(todo-queue error-handoff freeze-while-gaming daily-digest)
+
 setting_is_on() { # name
-    [[ -f $SETTINGS_FILE ]] || return 0
-    local value
-    if ! value=$(jq -r --arg name "$1" '.[$name] | if . == null then true else . end' "$SETTINGS_FILE" 2>/dev/null); then
-        log_event WARN manager "$SETTINGS_FILE is not valid JSON: $1 taken as on"
-        return 0
+    local fallback=true value
+    [[ " ${OFF_UNLESS_TURNED_ON[*]} " == *" $1 "* ]] && fallback=false
+    if [[ ! -f $SETTINGS_FILE ]]; then
+        [[ $fallback == true ]]
+        return
     fi
-    [[ $value != false ]]
+    if ! value=$(jq -r --arg name "$1" --argjson fallback "$fallback" '.[$name] | if . == null then $fallback else . end' "$SETTINGS_FILE" 2>/dev/null); then
+        log_event WARN manager "$SETTINGS_FILE is not valid JSON: $1 taken as $([[ $fallback == true ]] && echo on || echo off)"
+        [[ $fallback == true ]]
+        return
+    fi
+    if [[ $fallback == true ]]; then [[ $value != false ]]; else [[ $value == true ]]; fi
 }
 
 setting() { # name [on|off]

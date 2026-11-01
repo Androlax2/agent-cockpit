@@ -3812,6 +3812,7 @@ fn show_elsewhere_hides_the_bar_and_opens_the_window() {
 fn the_first_show_of_the_day_opens_the_digest_once() {
     let manager = Manager::new();
     manager.sandbox.shim("pkill", "");
+    manager.run(&["setting", "daily-digest", "on"], &[]);
     manager.run(&["show"], &[("SHIM_WS", "2")]);
     manager.run(&["show"], &[("SHIM_WS", "2")]);
     let digests = manager
@@ -3939,6 +3940,38 @@ fn a_setting_is_on_until_turned_off() {
         stdout(&manager.run(&["setting", "phone-on-lock"], &[])).trim(),
         "phone-on-lock: off"
     );
+}
+
+#[test]
+fn the_four_unwanted_features_read_off_until_turned_on() {
+    let manager = Manager::new();
+    let file = manager.sandbox.state.join("cockpit/settings.json");
+    for name in [
+        "todo-queue",
+        "error-handoff",
+        "freeze-while-gaming",
+        "daily-digest",
+    ] {
+        let _ = fs::remove_file(&file);
+        assert_eq!(
+            stdout(&manager.run(&["setting", name], &[])).trim(),
+            format!("{name}: off"),
+            "without a settings file"
+        );
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "not json").unwrap();
+        assert_eq!(
+            stdout(&manager.run(&["setting", name], &[])).trim(),
+            format!("{name}: off"),
+            "with a broken settings file"
+        );
+        fs::write(&file, "{}").unwrap();
+        manager.run(&["setting", name, "on"], &[]);
+        assert_eq!(
+            stdout(&manager.run(&["setting", name], &[])).trim(),
+            format!("{name}: on")
+        );
+    }
 }
 
 #[test]
