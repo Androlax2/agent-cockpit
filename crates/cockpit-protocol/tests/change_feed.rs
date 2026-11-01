@@ -109,6 +109,7 @@ fn every_known_entity_kind_has_its_published_name() {
         (EntityKind::Session, "session"),
         (EntityKind::Execution, "execution"),
         (EntityKind::Checkout, "checkout"),
+        (EntityKind::BugReport, "bug-report"),
     ];
 
     for (kind, name) in published {

@@ -8,6 +8,7 @@ use std::time::Instant;
 use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply};
 
 use crate::board::{Board, FeedError};
+use crate::bug_form::BugForm;
 use crate::form::{Form, FormOutcome};
 use crate::pane::{Pane, PaneOutcome};
 use crate::workflows::{Workflows, WorkflowsOutcome};
@@ -41,6 +42,8 @@ pub enum Focus {
 pub enum Overlay {
     Help,
     Log,
+    /// The bug report drafts waiting for the owner (#471).
+    BugReports,
 }
 
 /// Where tmux's keys were before the pane took them for the column (#345): the TUI gives
@@ -94,6 +97,7 @@ pub struct App {
     pub(crate) focus: Focus,
     pub(crate) pane: Pane,
     pub(crate) form: Option<Form>,
+    pub(crate) bug_form: Option<BugForm>,
     pub(crate) workflows: Option<Workflows>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) confirm: Option<Confirm>,
@@ -173,6 +177,10 @@ impl App {
         self.form.as_ref()
     }
 
+    pub fn bug_form(&self) -> Option<&BugForm> {
+        self.bug_form.as_ref()
+    }
+
     pub fn overlay(&self) -> Option<Overlay> {
         self.overlay
     }
@@ -224,6 +232,16 @@ impl App {
                     Step::used("new-session-cancel")
                 }
                 FormOutcome::Submit(command) => Step::sending("new-session", command),
+            };
+        }
+        if let Some(form) = &mut self.bug_form {
+            return match form.key(key) {
+                FormOutcome::Editing => Step::used("bug-report-form-edit"),
+                FormOutcome::Cancelled => {
+                    self.bug_form = None;
+                    Step::used("bug-report-cancel")
+                }
+                FormOutcome::Submit(command) => Step::sending("bug-report-new", command),
             };
         }
         // The approval pane keeps its keys while the view is open, and Tab moves to it.
@@ -315,6 +333,11 @@ impl App {
                 self.form = Some(Form::new(roots));
                 Step::sending("new-session-form", Command::ProviderList)
             }
+            Key::Char('B') => self.open(Overlay::BugReports),
+            Key::Char('b') => {
+                self.bug_form = Some(BugForm::new());
+                Step::used("bug-report-form")
+            }
             Key::Char('F') => {
                 let (workflows, command) = Workflows::open();
                 self.workflows = Some(workflows);
@@ -350,6 +373,7 @@ impl App {
         Step::used(match overlay {
             Overlay::Help => "help",
             Overlay::Log => "log-view",
+            Overlay::BugReports => "bug-reports",
         })
     }
 
@@ -497,6 +521,20 @@ impl App {
                     ));
                 }
             }
+            Reply::BugReport { report } => {
+                if self
+                    .bug_form
+                    .as_ref()
+                    .is_some_and(|form| form.submitted.as_ref() == Some(command))
+                {
+                    self.bug_form = None;
+                }
+                self.note(format!(
+                    "drafted bug report {id}: review and send it with `cockpit bug-report show {id}`",
+                    id = report.id
+                ));
+                self.failure = None;
+            }
             Reply::RunRequest { request } => {
                 self.note(format!("request {} is {:?}", request.id, request.state));
                 self.failure = None;
@@ -522,6 +560,12 @@ impl App {
             workflows.failed(command, &problem);
         }
         if let Some(form) = &mut self.form
+            && form.submitted.as_ref() == Some(command)
+        {
+            form.submitted = None;
+            form.problem = Some(problem.clone());
+        }
+        if let Some(form) = &mut self.bug_form
             && form.submitted.as_ref() == Some(command)
         {
             form.submitted = None;
@@ -607,6 +651,7 @@ impl App {
     /// a form, a confirmation, the workflow view or an overlay is open.
     fn give_keys_back(&mut self) -> Option<Command> {
         let is_owner_in_column = self.form.is_some()
+            || self.bug_form.is_some()
             || self.confirm.is_some()
             || self.workflows.is_some()
             || self.overlay.is_some();

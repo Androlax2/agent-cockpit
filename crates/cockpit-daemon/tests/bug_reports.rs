@@ -14,11 +14,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cockpit_agent_channel::{LaunchToken, ProcessIdentity, identity_of};
-use cockpit_client::Connection;
+use cockpit_client::{Connection, Subscription};
 use cockpit_daemon::{Daemon, Handler, Instance, Limits, Options, Peer, Route, Routes, WorkClass};
 use cockpit_protocol::{
-    BugBundleView, BugFiledView, BugKindView, BugOriginView, BugReportView, BugStatusView, Command,
-    ErrorCode, Reply, UnblockedBy, Welcome,
+    BugBundleView, BugFiledView, BugKindView, BugOriginView, BugReportView, BugStatusView, Change,
+    Command, EntityKind, ErrorCode, Reply, UnblockedBy, Welcome,
 };
 use cockpit_provider_api::ProviderName;
 use cockpit_provider_api::fake::FakeProvider;
@@ -205,6 +205,46 @@ async fn show_hands_the_owner_the_issue_and_discard_removes_the_bundle() {
     };
     assert!(!Path::new(path).exists(), "{path} is left behind");
     assert_eq!(drafts(&owner).await, Vec::new());
+}
+
+/// Applies batches until the `bug-report` entity `id` is in the state `expected` (`None`:
+/// retracted); panics when it never is.
+async fn until_published(feed: &mut Subscription, id: i64, expected: Option<&BugReportView>) {
+    let deadline = Instant::now() + GENEROUS;
+    let mut published: Option<Option<BugReportView>> = None;
+    while published.as_ref().map(Option::as_ref) != Some(expected) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let pending = tokio::time::timeout(left, feed.next_batch())
+            .await
+            .unwrap_or_else(|_| panic!("draft {id} never reached {expected:?}: {published:?}"))
+            .expect("the feed continues");
+        for event in &pending.batch().changes {
+            if event.entity.kind != EntityKind::BugReport || event.entity.id != id.to_string() {
+                continue;
+            }
+            published = Some(match &event.change {
+                Change::Upsert { state } => {
+                    Some(serde_json::from_value(state.clone().into()).unwrap())
+                }
+                Change::Tombstone => None,
+            });
+        }
+        pending.applied();
+    }
+}
+
+#[tokio::test]
+async fn a_draft_reaches_a_subscriber_and_leaves_the_feed_once_discarded() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let mut feed = Subscription::new(home.socket_path(), None, GENEROUS);
+
+    let draft = report(&owner, new_draft("the board froze")).await;
+    until_published(&mut feed, draft.id, Some(&draft)).await;
+    report(&owner, Command::BugReportDiscard { report: draft.id }).await;
+
+    until_published(&mut feed, draft.id, None).await;
 }
 
 #[tokio::test]

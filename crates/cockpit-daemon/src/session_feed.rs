@@ -183,7 +183,7 @@ async fn checkout_states(
 
 /// Makes the published entities of `kind` exactly `states`, leaving the ids in `kept` as
 /// they are. Returns whether anything changed.
-async fn replace(
+pub(crate) async fn replace(
     write: &WriteTransaction<'_>,
     kind: &str,
     states: &States,
@@ -204,7 +204,7 @@ async fn replace(
     Ok(has_changed)
 }
 
-fn state_of(view: &impl serde::Serialize) -> Map<String, Value> {
+pub(crate) fn state_of(view: &impl serde::Serialize) -> Map<String, Value> {
     match serde_json::to_value(view) {
         Ok(Value::Object(state)) => state,
         other => panic!("a wire view serializes to a JSON object, not {other:?}"),

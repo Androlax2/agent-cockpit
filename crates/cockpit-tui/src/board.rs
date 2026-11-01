@@ -1,14 +1,14 @@
 //! What the TUI knows of the daemon's state: projects, checkouts, sessions, the agents'
-//! reports and the approval queue. It changes only by applying a change-feed batch or a
+//! reports, the approval queue and the bug report drafts. It changes only by applying a change-feed batch or a
 //! reply as a whole; nothing here waits on the daemon.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cockpit_protocol::{
-    AgentState, Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition, GuideStateView,
-    GuideView, ProjectView, QuestionSource, RunRequestView, RunStateView, SessionReport,
-    SessionStateView, SessionView,
+    AgentState, BugReportView, Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition,
+    GuideStateView, GuideView, ProjectView, QuestionSource, RunRequestView, RunStateView,
+    SessionReport, SessionStateView, SessionView,
 };
 
 /// The daemon's state as last applied.
@@ -22,6 +22,8 @@ pub struct Board {
     pub(crate) reports: BTreeMap<String, SessionReport>,
     pub(crate) runs: Vec<RunRequestView>,
     pub(crate) guides: Vec<GuideView>,
+    /// The bug report drafts waiting for the owner, by id (#471).
+    pub(crate) bug_reports: BTreeMap<i64, BugReportView>,
 }
 
 /// A change the TUI cannot read: the batch is refused whole, never applied in part.
@@ -52,8 +54,8 @@ pub struct ProjectGroup<'board> {
 }
 
 impl Board {
-    /// Applies `batch` whole: sessions and checkouts change, other entity kinds are not
-    /// shown by the basic TUI. A snapshot replaces what the feed carries.
+    /// Applies `batch` whole: sessions, checkouts and bug report drafts change, other entity
+    /// kinds are not shown by the basic TUI. A snapshot replaces what the feed carries.
     pub fn apply(&mut self, batch: &ChangeBatch) -> Result<(), FeedError> {
         // Every change is decoded before any is applied: only decoding can fail.
         let mut edits = Vec::with_capacity(batch.changes.len());
@@ -79,6 +81,16 @@ impl Board {
                         .parse()
                         .map_err(|_| refused("a checkout id is a number".to_owned()))?,
                 ),
+                (EntityKind::BugReport, Change::Upsert { state }) => {
+                    Edit::PutBugReport(decode(state).map_err(refused)?)
+                }
+                (EntityKind::BugReport, Change::Tombstone) => Edit::RemoveBugReport(
+                    event
+                        .entity
+                        .id
+                        .parse()
+                        .map_err(|_| refused("a bug report id is a number".to_owned()))?,
+                ),
                 _ => continue,
             });
         }
@@ -86,6 +98,7 @@ impl Board {
             self.retracted
                 .extend(std::mem::take(&mut self.sessions).into_keys());
             self.checkouts.clear();
+            self.bug_reports.clear();
         }
         // The feed is the truth: its states replace whatever a command answered.
         for edit in edits {
@@ -103,6 +116,12 @@ impl Board {
                 }
                 Edit::RemoveCheckout(id) => {
                     self.checkouts.remove(&id);
+                }
+                Edit::PutBugReport(report) => {
+                    self.bug_reports.insert(report.id, report);
+                }
+                Edit::RemoveBugReport(id) => {
+                    self.bug_reports.remove(&id);
                 }
             }
         }
@@ -233,6 +252,11 @@ impl Board {
             })
     }
 
+    /// The bug report drafts waiting for the owner, oldest first.
+    pub fn bug_report_drafts(&self) -> Vec<&BugReportView> {
+        self.bug_reports.values().collect()
+    }
+
     pub fn report(&self, session: &str) -> Option<&SessionReport> {
         self.reports.get(session)
     }
@@ -250,6 +274,8 @@ enum Edit {
     RemoveSession(String),
     PutCheckout(CheckoutView),
     RemoveCheckout(i64),
+    PutBugReport(BugReportView),
+    RemoveBugReport(i64),
 }
 
 fn decode<View: serde::de::DeserializeOwned>(
