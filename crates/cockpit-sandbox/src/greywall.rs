@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::{Platform, Profile, Refusal, SecretHandling};
+use crate::{EndpointKind, Platform, Profile, Refusal, SecretHandling};
 
 /// The greywall fork build the release pins (`packages/greywall/build.sh` builds the same
 /// commit until the release bundle takes over, #61): an installed binary of another commit
@@ -24,6 +24,9 @@ pub const GREYPROXY_PROGRAM: &str = "greyproxy";
 /// The engine's reviewed profiles for the providers' own folders and hosts. A provider
 /// without one is refused rather than run under a profile written for another agent.
 const ENGINE_PROFILES: &[&str] = &["claude", "codex", "opencode"];
+
+/// The capability `greywall --version` reports when its filtered session-bus proxy can run.
+const BUS_PROXY_CAPABILITY: &str = "xdg-dbus-proxy";
 
 /// How long `greywall --version` and `greyproxy --version` may take.
 const VERSION_DEADLINE: Duration = Duration::from_secs(10);
@@ -284,6 +287,7 @@ impl Greywall {
                 }
             }
         }
+        self.check_bus(profile)?;
         let settings_path = self.settings_dir.join(format!("{}.json", client.as_str()));
         let mut arguments: Vec<OsString> = vec![
             "--settings".into(),
@@ -303,8 +307,15 @@ impl Greywall {
                 format!("checked: {}", self.engine())
             } else if rule.starts_with("provider ") {
                 format!("greywall --profile {}", profile.provider)
-            } else if rule.starts_with("read-write ") {
+            } else if rule.starts_with("read-write ") && rule.ends_with("shared with the daemon)") {
+                format!("{filesystem} (--allow-path, the host's own folder)")
+            } else if rule.starts_with("read-write ") || rule.starts_with("desktop socket ") {
                 format!("{filesystem} (--allow-path)")
+            } else if rule.starts_with("desktop file ") {
+                format!("{filesystem} (--allow-read-path)")
+            } else if rule.starts_with("desktop bus ") {
+                "greywall's xdg-dbus-proxy in its place, org.freedesktop.Notifications only"
+                    .to_owned()
             } else if rule.starts_with("read-only ") {
                 format!("{filesystem} (--allow-read-path)")
             } else if rule == "read everything else: denied" {
@@ -327,21 +338,35 @@ impl Greywall {
                         "the environment holds none of the desktop variables".to_owned()
                     }
                     cockpit_config::DesktopSession::Shared => {
-                        match self.capability("D-Bus isolated") {
-                            Some(found) if found.available => {
-                                "display variables passed; session bus proxied by greywall"
-                                    .to_owned()
-                            }
-                            _ => "display and session bus variables passed".to_owned(),
-                        }
+                        "the desktop variables passed; each endpoint they name is its own rule"
+                            .to_owned()
                     }
                 }
             };
             enforced_by.push((rule, by));
         }
-        arguments.push("--allow-path".into());
-        arguments.push(profile.working_dir.clone().into());
-        for path in &profile.read_only {
+        let read_write = [&profile.working_dir, &profile.session_dir]
+            .into_iter()
+            .chain(&profile.provider_folders)
+            .chain(
+                profile
+                    .desktop_endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.kind == EndpointKind::Socket)
+                    .map(|endpoint| &endpoint.path),
+            );
+        for path in read_write {
+            arguments.push("--allow-path".into());
+            arguments.push(path.clone().into());
+        }
+        let read_only = profile.read_only.iter().chain(
+            profile
+                .desktop_endpoints
+                .iter()
+                .filter(|endpoint| endpoint.kind == EndpointKind::File)
+                .map(|endpoint| &endpoint.path),
+        );
+        for path in read_only {
             arguments.push("--allow-read-path".into());
             arguments.push(path.clone().into());
         }
@@ -380,7 +405,51 @@ impl Greywall {
             settings_path,
             settings: format!("{settings:#}\n"),
             enforced_by,
+            provider_folders: profile.provider_folders.clone(),
+            owner_uid: profile.owner_uid,
         })
+    }
+
+    /// A shared session bus reaches the agent only through greywall's filtered proxy, which
+    /// it mounts where the owner's bus is under systemd, `/run/user/<uid>/bus`: the owner's
+    /// own bus starts programs outside the sandbox and is never mounted.
+    fn check_bus(&self, profile: &Profile) -> Result<(), Refusal> {
+        let Some(bus) = profile
+            .desktop_endpoints
+            .iter()
+            .find(|endpoint| endpoint.kind == EndpointKind::Bus)
+        else {
+            return Ok(());
+        };
+        let rule = format!("desktop bus {} for {}", bus.path.display(), bus.variable);
+        if self.platform == Platform::MacOs {
+            return Err(Refusal::new(
+                rule,
+                "greywall proxies the session bus only on Linux; withhold the desktop session \
+                 or unset DBUS_SESSION_BUS_ADDRESS",
+            ));
+        }
+        if !self
+            .capability(BUS_PROXY_CAPABILITY)
+            .is_some_and(|found| found.available)
+        {
+            return Err(Refusal::new(
+                rule,
+                "greywall reports no xdg-dbus-proxy on this host, so the session bus could \
+                 only be the owner's own; install xdg-dbus-proxy or withhold the desktop session",
+            ));
+        }
+        let proxied = PathBuf::from(format!("/run/user/{}/bus", profile.owner_uid));
+        if bus.path != proxied {
+            return Err(Refusal::new(
+                rule,
+                format!(
+                    "greywall's filtered proxy takes the place of {} only",
+                    proxied.display()
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -396,6 +465,11 @@ pub struct Plan {
     pub settings: String,
     /// Each profile rule with what enforces it.
     pub enforced_by: Vec<(String, String)>,
+    /// The provider's folders on the host the agent writes, which must exist before Greywall
+    /// mounts them ([`Plan::create_provider_folders`]).
+    pub provider_folders: Vec<PathBuf>,
+    /// Who must own them.
+    pub owner_uid: u32,
 }
 
 impl Plan {
@@ -429,6 +503,19 @@ impl Plan {
         file.sync_all()?;
         std::fs::rename(&staged, &self.settings_path)?;
         self.remove_earlier_settings(dir);
+        Ok(())
+    }
+
+    /// Creates each provider folder owner-only, or checks the one there is a real folder of
+    /// the owner nobody else may open: it is on the shared `/tmp`, where another user could
+    /// have made it first to reach the agent's sockets. Greywall mounts only folders that
+    /// exist.
+    /// The folder that could not be made ready, with why.
+    pub fn create_provider_folders(&self) -> Result<(), (PathBuf, std::io::Error)> {
+        for folder in &self.provider_folders {
+            create_private_folder(folder, self.owner_uid)
+                .map_err(|error| (folder.clone(), error))?;
+        }
         Ok(())
     }
 
@@ -466,6 +553,24 @@ impl Plan {
                 tracing::debug!(%error, file = name, "an earlier sandbox settings file stays");
             }
         }
+    }
+}
+
+fn create_private_folder(folder: &Path, owner_uid: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    match std::fs::DirBuilder::new().mode(0o700).create(folder) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let found = std::fs::symlink_metadata(folder)?;
+    let is_private = found.is_dir() && found.uid() == owner_uid && found.mode() & 0o077 == 0;
+    if is_private {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "it is not a folder of user {owner_uid} that only it may open"
+        )))
     }
 }
 

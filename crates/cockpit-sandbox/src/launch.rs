@@ -12,13 +12,15 @@ use crate::{
 };
 
 /// What the daemon's own layout asks of every profile.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HostPaths {
     /// Folders every agent reaches read-only: the agent socket's folder, the bridge programs.
     pub read_only: Vec<PathBuf>,
     /// Cockpit's own files no agent reads: the host-only socket, the state database, the
     /// logs, the owner's configuration.
     pub denied: Vec<PathBuf>,
+    /// The user the daemon runs as, and its agents with it.
+    pub owner_uid: u32,
 }
 
 /// The sandbox launches go through: the engine the daemon detected at its start (or why
@@ -37,6 +39,9 @@ pub struct LaunchRequest {
     pub provider: String,
     /// The checkout the agent works in, whole: read and write.
     pub working_dir: PathBuf,
+    /// The session's private directory, where its provider keeps what reaches the running
+    /// agent: read and write.
+    pub session_dir: PathBuf,
     pub environment: Vec<(OsString, OsString)>,
     /// Secrets the environment holds, and how each crosses into the sandbox.
     pub secrets: Vec<Secret>,
@@ -68,7 +73,13 @@ impl Sandbox {
 
     /// No engine on this host: every sandboxed launch is refused with `reason`.
     pub fn unavailable(reason: impl Into<String>) -> Sandbox {
-        Sandbox::new(Platform::detect(), Err(reason.into()), HostPaths::default())
+        // Without an engine no profile is built, so the host paths are never read.
+        let host = HostPaths {
+            read_only: Vec::new(),
+            denied: Vec::new(),
+            owner_uid: u32::MAX,
+        };
+        Sandbox::new(Platform::detect(), Err(reason.into()), host)
     }
 
     /// The host's platform, as the daemon detected it.
@@ -101,6 +112,8 @@ impl Sandbox {
             ProfileRequest {
                 provider: request.provider.clone(),
                 working_dir: request.working_dir.clone(),
+                session_dir: request.session_dir.clone(),
+                owner_uid: self.host.owner_uid,
                 read_only: self.host.read_only.clone(),
                 denied: self.host.denied.clone(),
                 allow_hosts: Vec::new(),

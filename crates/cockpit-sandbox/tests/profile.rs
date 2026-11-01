@@ -5,8 +5,8 @@ mod common;
 
 use std::path::PathBuf;
 
-use cockpit_sandbox::{DesktopSession, Platform, Profile, ProfileRequest, Refusal};
-use common::{profile_request, wsl2};
+use cockpit_sandbox::{DesktopSession, EndpointKind, Platform, Profile, ProfileRequest, Refusal};
+use common::{SESSION_DIR, profile_request, wsl2};
 
 fn refusal(request: ProfileRequest, platform: &Platform) -> Refusal {
     Profile::build(request, platform).expect_err("the profile is refused")
@@ -191,4 +191,206 @@ fn files_that_run_outside_the_sandbox_are_denied_writing() {
         let rule = format!("deny write {denied}");
         assert!(rules.contains(&rule), "{rule} missing from {rules:#?}");
     }
+}
+
+/// A provider keeps what reaches the running agent in the session's directory, such as
+/// Codex's app-server socket (#437).
+#[test]
+fn the_sessions_own_directory_is_granted_read_write() {
+    let profile = Profile::build(profile_request("/home/owner/app"), &Platform::Linux).unwrap();
+
+    assert!(
+        profile.rules().contains(&format!(
+            "read-write {SESSION_DIR} (the session's directory)"
+        )),
+        "{:#?}",
+        profile.rules()
+    );
+}
+
+#[test]
+fn a_session_directory_inside_a_denied_folder_is_refused() {
+    let mut request = profile_request("/home/owner/app");
+    request.denied = vec![PathBuf::from("/run/user/1000/cockpit/sessions")];
+
+    let refused = refusal(request, &Platform::Linux);
+
+    assert_eq!(refused.rule, format!("read-write {SESSION_DIR}"));
+}
+
+/// Codex 0.161.0 puts its socket's real file in `/tmp/codex-daemon-<uid>/` and the daemon
+/// reaches it there from outside the sandbox (#437).
+#[test]
+fn a_codex_agent_writes_codexs_socket_folder_on_the_host() {
+    let mut request = profile_request("/home/owner/app");
+    request.provider = "codex".to_owned();
+
+    let profile = Profile::build(request, &Platform::Linux).unwrap();
+
+    assert_eq!(
+        profile.provider_folders,
+        vec![PathBuf::from("/tmp/codex-daemon-1000")]
+    );
+    assert!(profile.rules().contains(
+        &"read-write /tmp/codex-daemon-1000 (codex's folder on the host, shared with the daemon)"
+            .to_owned()
+    ));
+}
+
+#[test]
+fn other_providers_share_no_folder_with_the_daemon() {
+    let profile = Profile::build(profile_request("/home/owner/app"), &Platform::Linux).unwrap();
+
+    assert!(profile.provider_folders.is_empty());
+}
+
+fn shared_desktop(variables: &[(&str, &str)]) -> ProfileRequest {
+    let mut request = profile_request("/home/owner/app");
+    request.desktop = DesktopSession::Shared;
+    request.environment.extend(
+        variables
+            .iter()
+            .map(|(name, value)| ((*name).into(), (*value).into())),
+    );
+    request
+}
+
+/// A shared desktop session reaches each socket and file its variables name, and the
+/// evidence names each one (#435).
+#[test]
+fn a_shared_desktop_reaches_exactly_the_endpoints_its_variables_name() {
+    let request = shared_desktop(&[
+        ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ("DISPLAY", ":1.0"),
+        ("WAYLAND_DISPLAY", "wayland-1"),
+        ("XAUTHORITY", "/run/user/1000/xauth_abc"),
+        (
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/run/user/1000/bus,guid=42",
+        ),
+    ]);
+
+    let profile = Profile::build(request, &Platform::Linux).unwrap();
+
+    let endpoints: Vec<(&str, PathBuf, EndpointKind)> = profile
+        .desktop_endpoints
+        .iter()
+        .map(|endpoint| (endpoint.variable, endpoint.path.clone(), endpoint.kind))
+        .collect();
+    assert_eq!(
+        endpoints,
+        [
+            ("DISPLAY", "/tmp/.X11-unix/X1".into(), EndpointKind::Socket),
+            (
+                "WAYLAND_DISPLAY",
+                "/run/user/1000/wayland-1".into(),
+                EndpointKind::Socket
+            ),
+            (
+                "XAUTHORITY",
+                "/run/user/1000/xauth_abc".into(),
+                EndpointKind::File
+            ),
+            (
+                "DBUS_SESSION_BUS_ADDRESS",
+                "/run/user/1000/bus".into(),
+                EndpointKind::Bus
+            ),
+        ]
+    );
+    let rules = profile.rules();
+    for expected in [
+        "desktop socket /tmp/.X11-unix/X1 for DISPLAY",
+        "desktop socket /run/user/1000/wayland-1 for WAYLAND_DISPLAY",
+        "desktop file /run/user/1000/xauth_abc for XAUTHORITY",
+        "desktop bus /run/user/1000/bus for DBUS_SESSION_BUS_ADDRESS",
+    ] {
+        assert!(
+            rules.iter().any(|rule| rule == expected),
+            "{expected} missing from {rules:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_withheld_desktop_session_reaches_no_endpoint() {
+    let profile = Profile::build(profile_request("/home/owner/app"), &Platform::Linux).unwrap();
+
+    assert!(profile.desktop_endpoints.is_empty());
+}
+
+#[test]
+fn an_absolute_wayland_socket_and_an_xquartz_display_are_their_own_paths() {
+    let request = shared_desktop(&[
+        (
+            "DISPLAY",
+            "/private/tmp/com.apple.launchd.abc/org.xquartz:0",
+        ),
+        ("WAYLAND_DISPLAY", "/run/user/1000/wayland-0"),
+    ]);
+
+    let profile = Profile::build(request, &Platform::MacOs).unwrap();
+
+    let paths: Vec<PathBuf> = profile
+        .desktop_endpoints
+        .iter()
+        .map(|endpoint| endpoint.path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            PathBuf::from("/private/tmp/com.apple.launchd.abc/org.xquartz:0"),
+            PathBuf::from("/run/user/1000/wayland-0"),
+        ]
+    );
+}
+
+/// Each variable whose endpoint the sandbox cannot reach as named refuses the launch, naming
+/// the variable and its value, instead of passing a variable that leads nowhere.
+#[test]
+fn a_desktop_endpoint_the_sandbox_cannot_reach_is_refused() {
+    for (variables, rule) in [
+        (
+            vec![("DISPLAY", "remote.example.com:0")],
+            "desktop DISPLAY=remote.example.com:0",
+        ),
+        (vec![("DISPLAY", "0")], "desktop DISPLAY=0"),
+        (
+            vec![("WAYLAND_DISPLAY", "wayland-1")],
+            "desktop WAYLAND_DISPLAY=wayland-1",
+        ),
+        (
+            vec![
+                ("XDG_RUNTIME_DIR", "/run/user/1000"),
+                ("WAYLAND_DISPLAY", "../../etc/x"),
+            ],
+            "desktop WAYLAND_DISPLAY=/run/user/1000/../../etc/x",
+        ),
+        (
+            vec![("XAUTHORITY", ".Xauthority")],
+            "desktop XAUTHORITY=.Xauthority",
+        ),
+        (
+            vec![("DBUS_SESSION_BUS_ADDRESS", "unix:abstract=/tmp/dbus-1")],
+            "desktop DBUS_SESSION_BUS_ADDRESS=unix:abstract=/tmp/dbus-1",
+        ),
+        (
+            vec![("DBUS_SESSION_BUS_ADDRESS", "tcp:host=localhost,port=1")],
+            "desktop DBUS_SESSION_BUS_ADDRESS=tcp:host=localhost,port=1",
+        ),
+    ] {
+        let refused = refusal(shared_desktop(&variables), &Platform::Linux);
+
+        assert_eq!(refused.rule, rule, "{refused}");
+    }
+}
+
+#[test]
+fn a_desktop_endpoint_inside_a_denied_folder_is_refused() {
+    let mut request = shared_desktop(&[("XAUTHORITY", "/home/owner/.local/state/cockpit/x")]);
+    request.denied = vec![PathBuf::from("/home/owner/.local/state/cockpit")];
+
+    let refused = refusal(request, &Platform::Linux);
+
+    assert_eq!(refused.rule, "desktop /home/owner/.local/state/cockpit/x");
 }

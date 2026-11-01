@@ -16,6 +16,6 @@ pub use greywall::{
 pub use launch::{HostPaths, LaunchRequest, Prepared, Sandbox};
 pub use platform::Platform;
 pub use profile::{
-    BASELINE_DENIED_READ, BASELINE_DENIED_WRITE, DESKTOP_VARIABLES, Profile, ProfileRequest,
-    Refusal, Secret, SecretHandling,
+    BASELINE_DENIED_READ, BASELINE_DENIED_WRITE, DESKTOP_VARIABLES, DesktopEndpoint, EndpointKind,
+    Profile, ProfileRequest, Refusal, Secret, SecretHandling,
 };

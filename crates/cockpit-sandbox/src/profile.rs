@@ -67,6 +67,14 @@ pub const DESKTOP_VARIABLES: [&str; 4] = [
 /// WSL2's variable naming the interop socket that starts Windows programs.
 const WSL_INTEROP_VARIABLE: &str = "WSL_INTEROP";
 
+/// The folder Codex 0.161.0 puts its app-server socket's real file in, leaving only a link
+/// at the path it is given (#437): `<this>-<uid>` on the host's `/tmp`, which the daemon
+/// reaches from outside the sandbox.
+const CODEX_SOCKET_FOLDER_PREFIX: &str = "/tmp/codex-daemon-";
+
+/// Where X11 clients find display `:N`'s socket.
+const X11_SOCKET_DIR: &str = "/tmp/.X11-unix";
+
 /// How one environment variable that holds a secret crosses into the sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretHandling {
@@ -91,6 +99,13 @@ pub struct ProfileRequest {
     pub provider: String,
     /// The checkout folder the agent works in: read and write.
     pub working_dir: PathBuf,
+    /// The session's private directory (`sessions/<id>` in the daemon's socket folder), where
+    /// its provider keeps what reaches the running agent, such as Codex's app-server socket:
+    /// read and write.
+    pub session_dir: PathBuf,
+    /// The user the daemon and its agents run as; names Codex's socket folder and the
+    /// session bus a shared desktop session reaches.
+    pub owner_uid: u32,
     /// Folders the agent must reach read-only: the agent socket's folder, the bridge
     /// programs.
     pub read_only: Vec<PathBuf>,
@@ -109,6 +124,12 @@ pub struct Profile {
     pub platform: Platform,
     pub provider: String,
     pub working_dir: PathBuf,
+    pub session_dir: PathBuf,
+    pub owner_uid: u32,
+    /// Folders the provider's own program shares with the daemon on the host, read and
+    /// write: Codex's socket folder. Created owner-only before the launch
+    /// ([`crate::Plan::create_provider_folders`]).
+    pub provider_folders: Vec<PathBuf>,
     pub read_only: Vec<PathBuf>,
     pub denied: Vec<PathBuf>,
     pub denied_read_patterns: Vec<String>,
@@ -117,6 +138,29 @@ pub struct Profile {
     pub environment: Vec<(OsString, OsString)>,
     pub secrets: Vec<Secret>,
     pub desktop: DesktopSession,
+    /// What the shared desktop session's variables name, each one reachable on its own;
+    /// empty when the session is withheld.
+    pub desktop_endpoints: Vec<DesktopEndpoint>,
+}
+
+/// One socket or file a desktop variable names, which a shared desktop session reaches
+/// inside the sandbox (#435). Nothing else of the runtime directory or `/tmp` is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopEndpoint {
+    pub variable: &'static str,
+    pub path: PathBuf,
+    pub kind: EndpointKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointKind {
+    /// A display server's socket (`DISPLAY`, `WAYLAND_DISPLAY`): connecting writes to it.
+    Socket,
+    /// A file read only (`XAUTHORITY`).
+    File,
+    /// The session bus (`DBUS_SESSION_BUS_ADDRESS`): never the owner's own bus, which
+    /// starts programs outside the sandbox, but the engine's filtered proxy at this path.
+    Bus,
 }
 
 /// Why a profile cannot be enforced: the rule, and what the platform or request lacks.
@@ -176,14 +220,24 @@ impl Profile {
             environment.retain(|(name, _)| name != WSL_INTEROP_VARIABLE);
         }
         check_absolute(&request.working_dir, "read-write")?;
+        check_absolute(&request.session_dir, "read-write")?;
         for path in request.read_only.iter() {
             check_absolute(path, "read-only")?;
         }
+        let provider_folders = provider_folders(&request.provider, request.owner_uid);
+        let desktop_endpoints = match request.desktop {
+            DesktopSession::Shared => desktop_endpoints(&environment)?,
+            DesktopSession::Withheld => Vec::new(),
+        };
         for path in &denied {
             check_absolute(path, "denied")?;
             refuse_masked(&request.working_dir, path, "read-write")?;
+            refuse_masked(&request.session_dir, path, "read-write")?;
             for allowed in &request.read_only {
                 refuse_masked(allowed, path, "read-only")?;
+            }
+            for endpoint in &desktop_endpoints {
+                refuse_masked(&endpoint.path, path, "desktop")?;
             }
         }
         for host in &request.allow_hosts {
@@ -209,6 +263,9 @@ impl Profile {
             platform: platform.clone(),
             provider: request.provider,
             working_dir: request.working_dir,
+            session_dir: request.session_dir,
+            owner_uid: request.owner_uid,
+            provider_folders,
             read_only: request.read_only,
             denied,
             denied_read_patterns: BASELINE_DENIED_READ
@@ -223,6 +280,7 @@ impl Profile {
             environment,
             secrets: request.secrets,
             desktop: request.desktop,
+            desktop_endpoints,
         })
     }
 
@@ -233,7 +291,18 @@ impl Profile {
             format!("platform {}", self.platform),
             format!("provider {}", self.provider),
             format!("read-write {}", self.working_dir.display()),
+            format!(
+                "read-write {} (the session's directory)",
+                self.session_dir.display()
+            ),
         ];
+        rules.extend(self.provider_folders.iter().map(|folder| {
+            format!(
+                "read-write {} ({}'s folder on the host, shared with the daemon)",
+                folder.display(),
+                self.provider
+            )
+        }));
         rules.extend(
             self.read_only
                 .iter()
@@ -266,8 +335,156 @@ impl Profile {
             SecretHandling::PassThrough => format!("secret {} passed through", secret.variable),
         }));
         rules.push(format!("desktop session {}", self.desktop.as_str()));
+        rules.extend(self.desktop_endpoints.iter().map(|endpoint| {
+            let kind = match endpoint.kind {
+                EndpointKind::Socket => "socket",
+                EndpointKind::File => "file",
+                EndpointKind::Bus => "bus",
+            };
+            format!(
+                "desktop {kind} {} for {}",
+                endpoint.path.display(),
+                endpoint.variable
+            )
+        }));
         rules
     }
+}
+
+/// What `provider`'s own program shares with the daemon on the host, beyond the session's
+/// directory.
+fn provider_folders(provider: &str, owner_uid: u32) -> Vec<PathBuf> {
+    match provider {
+        "codex" => vec![PathBuf::from(format!(
+            "{CODEX_SOCKET_FOLDER_PREFIX}{owner_uid}"
+        ))],
+        _ => Vec::new(),
+    }
+}
+
+/// The last value `environment` gives `name`, as a later entry overrides an earlier one.
+fn variable<'environment>(
+    environment: &'environment [(OsString, OsString)],
+    name: &str,
+) -> Option<&'environment OsString> {
+    environment
+        .iter()
+        .rev()
+        .find(|(variable, _)| variable == name)
+        .map(|(_, value)| value)
+}
+
+/// The sockets and files the shared desktop variables in `environment` name, or the first
+/// one the sandbox cannot reach as named.
+fn desktop_endpoints(
+    environment: &[(OsString, OsString)],
+) -> Result<Vec<DesktopEndpoint>, Refusal> {
+    let mut endpoints = Vec::new();
+    let text = |name: &str| {
+        variable(environment, name)
+            .map(|value| {
+                value.to_str().ok_or_else(|| {
+                    Refusal::new(format!("desktop {name}"), "the value is not UTF-8")
+                })
+            })
+            .transpose()
+    };
+    let refused = |name: &str, value: &str, reason: &str| {
+        Refusal::new(format!("desktop {name}={value}"), reason)
+    };
+    if let Some(display) = text("DISPLAY")? {
+        let path = x11_socket(display).map_err(|reason| refused("DISPLAY", display, reason))?;
+        endpoints.push(endpoint("DISPLAY", path, EndpointKind::Socket)?);
+    }
+    if let Some(wayland) = text("WAYLAND_DISPLAY")? {
+        let path = if Path::new(wayland).is_absolute() {
+            PathBuf::from(wayland)
+        } else {
+            let runtime_dir = text("XDG_RUNTIME_DIR")?
+                .filter(|dir| Path::new(dir).is_absolute())
+                .ok_or_else(|| {
+                    refused(
+                        "WAYLAND_DISPLAY",
+                        wayland,
+                        "it names a socket in XDG_RUNTIME_DIR, which the environment does not \
+                         give as an absolute path",
+                    )
+                })?;
+            Path::new(runtime_dir).join(wayland)
+        };
+        endpoints.push(endpoint("WAYLAND_DISPLAY", path, EndpointKind::Socket)?);
+    }
+    if let Some(xauthority) = text("XAUTHORITY")? {
+        endpoints.push(endpoint(
+            "XAUTHORITY",
+            PathBuf::from(xauthority),
+            EndpointKind::File,
+        )?);
+    }
+    if let Some(bus) = text("DBUS_SESSION_BUS_ADDRESS")? {
+        let path =
+            bus_socket(bus).map_err(|reason| refused("DBUS_SESSION_BUS_ADDRESS", bus, reason))?;
+        endpoints.push(endpoint(
+            "DBUS_SESSION_BUS_ADDRESS",
+            path,
+            EndpointKind::Bus,
+        )?);
+    }
+    Ok(endpoints)
+}
+
+/// An endpoint at an absolute path with no `..`, which could leave the folder it names.
+fn endpoint(
+    variable: &'static str,
+    path: PathBuf,
+    kind: EndpointKind,
+) -> Result<DesktopEndpoint, Refusal> {
+    let is_plain = path.is_absolute()
+        && path
+            .components()
+            .all(|component| !matches!(component, std::path::Component::ParentDir));
+    if !is_plain {
+        return Err(Refusal::new(
+            format!("desktop {variable}={}", path.display()),
+            "the sandbox reaches a desktop endpoint only at an absolute path without `..`",
+        ));
+    }
+    Ok(DesktopEndpoint {
+        variable,
+        path,
+        kind,
+    })
+}
+
+/// `DISPLAY`'s socket: `:N`, `:N.S` and `unix:N` are `/tmp/.X11-unix/XN`; an absolute path
+/// (XQuartz's launchd socket) is the socket itself.
+fn x11_socket(display: &str) -> Result<PathBuf, &'static str> {
+    if display.starts_with('/') {
+        return Ok(PathBuf::from(display));
+    }
+    let (host, screen) = display
+        .rsplit_once(':')
+        .ok_or("a display is `[host]:number[.screen]`")?;
+    if !(host.is_empty() || host == "unix") {
+        return Err("a display on another host is reached over the network, not a local socket");
+    }
+    let number = screen.split_once('.').map_or(screen, |(number, _)| number);
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("a display is `[host]:number[.screen]`");
+    }
+    Ok(Path::new(X11_SOCKET_DIR).join(format!("X{number}")))
+}
+
+/// The session bus's socket: `unix:path=<socket>[,<key>=<value>...]`. An abstract socket,
+/// TCP or a launched program are not a path the sandbox can reach.
+fn bus_socket(address: &str) -> Result<PathBuf, &'static str> {
+    let first = address.split(';').next().unwrap_or_default();
+    first
+        .strip_prefix("unix:")
+        .and_then(|keys| keys.split(',').find_map(|pair| pair.strip_prefix("path=")))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .ok_or("only a `unix:path=` bus is reached inside the sandbox")
 }
 
 fn check_provider(provider: &str) -> Result<(), Refusal> {

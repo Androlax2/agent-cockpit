@@ -6,7 +6,10 @@ pub mod app_server;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use std::os::unix::net::UnixStream;
+
 use cockpit_codex::{Bridge, CONFORMANCE_VERSION, Codex};
+use cockpit_provider_api::{DeliveryTarget, ProviderError, SessionSockets};
 
 pub fn bridge() -> Bridge {
     Bridge {
@@ -50,4 +53,34 @@ pub fn words(arguments: &[std::ffi::OsString]) -> Vec<String> {
         .iter()
         .map(|argument| argument.to_str().unwrap().to_owned())
         .collect()
+}
+
+/// Connects to whatever listens at the path: the daemon's peer check is the daemon's to
+/// test (#442); these tests drive the adapter's protocol.
+pub struct UncheckedSockets;
+
+impl SessionSockets for UncheckedSockets {
+    fn connect(&self, socket: &Path) -> Result<UnixStream, ProviderError> {
+        UnixStream::connect(socket).map_err(|error| ProviderError {
+            reason: format!("cannot reach {}: {error}", socket.display()),
+        })
+    }
+}
+
+/// Refuses every socket, the way the daemon's check refuses one Cockpit did not launch.
+pub struct RefusingSockets;
+
+impl SessionSockets for RefusingSockets {
+    fn connect(&self, socket: &Path) -> Result<UnixStream, ProviderError> {
+        Err(ProviderError {
+            reason: format!("{} is not the session's app-server", socket.display()),
+        })
+    }
+}
+
+pub fn target(session_dir: &Path) -> DeliveryTarget<'_> {
+    DeliveryTarget {
+        session_dir,
+        sockets: &UncheckedSockets,
+    }
 }

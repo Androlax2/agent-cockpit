@@ -75,6 +75,10 @@ not share code.
 - Each socket has its own connection limit. Agent requests run in the bulk lane, so
   sandboxed senders never take the owner's control capacity. They do share the bulk lane
   with the owner's bulk work: a flood of agent reports can make it answer `busy`.
+- A provider's socket in the session's directory (Codex's `codex.sock`) is the agent's to
+  replace, so the daemon never trusts its path: `SessionTreeSockets` opens it and keeps it
+  only when the kernel's listening process descends from the session's agent root (#442).
+  Delivering through it is wired with #411.
 
 ## Approvals (#34)
 

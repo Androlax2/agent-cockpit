@@ -21,7 +21,7 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   ([`LaunchCommand::conversation`]); a session whose conversation is unknown cannot be
   resumed, restarted or put to sleep. A resumed launch keeps the conversation it was asked
   for. Each launch gets the session's private directory ([`LaunchRequest::session_dir`]),
-  made before the launch, reachable by the agent and the daemon (inside the sandbox with
+  made before the launch, reachable by the agent and the daemon (granted inside the sandbox,
   #437), and short enough to hold a unix socket.
 - **Actions.** A provider performs submit, cancel and compact one of two ways. Terminal
   actions ([`Provider::input`]) become text and keys for the agent's terminal, decided from
@@ -29,7 +29,10 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   typing into an open dialog. Delivered actions ([`Provider::deliver`]) are performed by the
   adapter itself in a named conversation, through what the launch left in the session's
   directory, and say whether they started a turn, joined the one under way or interrupted it
-  ([`Delivered`]; Codex, #407). Both refuse an action whose capability is not reported.
+  ([`Delivered`]; Codex, #407). The agent writes that directory, so the adapter opens a
+  socket there only through the caller's [`SessionSockets`] ([`DeliveryTarget`]), which
+  refuses one whose listener is not the session's own process (#442). Both refuse an action
+  whose capability is not reported.
 - **Events.** Adapters map their harness's events onto [`EventKind`] and keep the raw event
   beside it; unknown events stay raw. Acceptance of a prompt is not completion: completion
   arrives as a turn-end event.

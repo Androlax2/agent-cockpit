@@ -71,6 +71,10 @@ pub const COMMANDED_PROJECT: &str = "commanded";
 pub const QUESTION_PROJECT: &str = "question";
 /// What the [`QUESTION_PROJECT`] agent asks.
 pub const ASKED_QUESTION: &str = "Which branch should I base the fix on?";
+/// A project of this name runs an agent that writes `probe` into its session's directory
+/// when the stand-in Greywall lets it write there (`--allow-path`), as Codex's launcher writes
+/// its app-server socket there (#437).
+pub const SESSION_DIR_PROJECT: &str = "session-dir";
 /// What the [`ASK_RUN_PROJECT`] agent asks to run.
 pub const ASKED_COMMAND: &str = "echo asked from the agent";
 /// The guide the [`ASK_GUIDE_PROJECT`] agent hands the owner, one step.
@@ -78,7 +82,8 @@ pub const ASKED_GUIDE: &str = "# Asked from the agent\nLook at the panel\n";
 
 /// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
 /// [`STALL_PROJECT`], [`REPORT_PROJECT`], [`ENVIRONMENT_PROJECT`], [`ASK_RUN_PROJECT`],
-/// [`ASK_GUIDE_PROJECT`], [`ONBOARD_PROJECT`]); anything else sleeps. `--version` answers
+/// [`ASK_GUIDE_PROJECT`], [`SESSION_DIR_PROJECT`], [`ONBOARD_PROJECT`]); anything else
+/// sleeps. `--version` answers
 /// the version the adapter's conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
@@ -114,6 +119,12 @@ case "${PWD##*/}" in
       >> '@REPORT_LOG@' 2>&1
     while IFS= read -r line; do printf '%s\n' "$line" >> inbox.log; done
     exec sleep 3600 ;;
+  @SESSION_DIR@) IFS=:
+    for dir in $FAKE_GREYWALL_WRITABLE; do
+      case "$dir" in */sessions/"$COCKPIT_SESSION") printf 'written\n' > "$dir/probe" ;; esac
+    done
+    unset IFS
+    exec sleep 3600 ;;
   @ONBOARD@) { '@COCKPIT@' brief; '@COCKPIT@' docs; for topic in workflow checks approvals; do
       '@COCKPIT@' docs "$topic"; done
     test -r "$COCKPIT_INSTRUCTIONS/cockpit/SKILL.md" && echo 'skill readable on disk'
@@ -125,18 +136,25 @@ esac
 
 /// A stand-in Greywall (#61): `--version` answers as the pinned build on a host with every
 /// capability; a launch appends its arguments to `@LOG@`, one line, then runs the agent
-/// after `--` unsandboxed, so the agents above behave as they do without it.
+/// after `--` unsandboxed, so the agents above behave as they do without it. The folders it
+/// was asked to make writable (`--allow-path`) are in `FAKE_GREYWALL_WRITABLE`, `:`-separated.
 const FAKE_GREYWALL: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then
   printf 'greywall - stand-in\n  Version: 0.3.7+dotfiles\n  Commit:  @COMMIT@\n'
   printf 'Checking system capabilities:\n'
-  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated'; do
+  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated' \
+      xdg-dbus-proxy; do
     printf '  \342\234\223 %s\n' "$capability"
   done
   exit 0
 fi
 printf '%s\n' "$*" >> '@LOG@'
-while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+writable=
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+  if [ "$1" = --allow-path ]; then writable="$writable:$2"; fi
+  shift
+done
+export FAKE_GREYWALL_WRITABLE="$writable"
 shift
 exec "$@"
 "#;
@@ -194,6 +212,7 @@ impl Home {
                 .replace("@COMMANDED@", COMMANDED_PROJECT)
                 .replace("@QUESTION@", QUESTION_PROJECT)
                 .replace("@ASKED_QUESTION_TEXT@", ASKED_QUESTION)
+                .replace("@SESSION_DIR@", SESSION_DIR_PROJECT)
                 .replace("@ONBOARD@", ONBOARD_PROJECT)
                 .replace("@ONBOARD_LOG@", &utf8(&home.onboard_log())),
         )
@@ -266,6 +285,19 @@ impl Home {
             .join("run")
             .join(profile_dir)
             .join(cockpit_config::DAEMON_SOCKET)
+    }
+
+    /// The directory of session `id`, which its launch creates.
+    pub fn session_dir(&self, id: &str) -> PathBuf {
+        self.path().join("run/cockpit/sessions").join(id)
+    }
+
+    /// `DBUS_SESSION_BUS_ADDRESS` as systemd sets it for the user running the tests: the
+    /// only bus greywall's filtered proxy takes the place of (#435).
+    pub fn owner_bus(&self) -> String {
+        use std::os::unix::fs::MetadataExt;
+        let uid = std::fs::metadata(self.path()).unwrap().uid();
+        format!("unix:path=/run/user/{uid}/bus")
     }
 
     pub fn agent_socket_path(&self) -> PathBuf {

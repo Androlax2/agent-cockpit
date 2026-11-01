@@ -6,7 +6,7 @@ mod common;
 use std::path::PathBuf;
 
 use cockpit_codex::Codex;
-use cockpit_provider_api::{Action, ConversationId, Delivered, Provider};
+use cockpit_provider_api::{Action, ConversationId, Delivered, DeliveryTarget, Provider};
 use common::app_server::{Answer, FakeAppServer, last_turn};
 use serde_json::{Value, json};
 
@@ -61,7 +61,11 @@ fn a_message_to_an_idle_conversation_starts_a_turn_on_its_thread() {
     let (dir, server) = session(last_turn_is("completed"));
 
     let delivered = common::codex()
-        .deliver(&Action::Submit("fix the build"), dir.path(), &thread())
+        .deliver(
+            &Action::Submit("fix the build"),
+            &common::target(dir.path()),
+            &thread(),
+        )
         .unwrap();
 
     assert_eq!(delivered, Delivered::StartedTurn);
@@ -76,7 +80,11 @@ fn a_message_while_a_turn_is_under_way_joins_that_turn() {
     let (dir, server) = session(last_turn_is("inProgress"));
 
     let delivered = common::codex()
-        .deliver(&Action::Submit("also the docs"), dir.path(), &thread())
+        .deliver(
+            &Action::Submit("also the docs"),
+            &common::target(dir.path()),
+            &thread(),
+        )
         .unwrap();
 
     assert_eq!(delivered, Delivered::JoinedTurn);
@@ -109,7 +117,11 @@ fn a_message_whose_turn_ended_meanwhile_starts_a_new_turn() {
     });
 
     let delivered = common::codex()
-        .deliver(&Action::Submit("next"), dir.path(), &thread())
+        .deliver(
+            &Action::Submit("next"),
+            &common::target(dir.path()),
+            &thread(),
+        )
         .unwrap();
 
     assert_eq!(delivered, Delivered::StartedTurn);
@@ -135,7 +147,11 @@ fn a_steer_refused_while_its_turn_still_runs_fails_with_codexs_reason() {
     });
 
     let refused = common::codex()
-        .deliver(&Action::Submit("next"), dir.path(), &thread())
+        .deliver(
+            &Action::Submit("next"),
+            &common::target(dir.path()),
+            &thread(),
+        )
         .unwrap_err();
 
     assert_eq!(refused.reason, "`turn/steer` failed: input is too long");
@@ -150,7 +166,11 @@ fn a_refused_message_fails_with_codexs_reason() {
     });
 
     let refused = common::codex()
-        .deliver(&Action::Submit("hello"), dir.path(), &thread())
+        .deliver(
+            &Action::Submit("hello"),
+            &common::target(dir.path()),
+            &thread(),
+        )
         .unwrap_err();
 
     assert_eq!(refused.reason, "`turn/start` failed: thread not found");
@@ -166,7 +186,11 @@ fn a_first_message_starts_a_turn_without_listing_turns() {
     });
 
     let delivered = common::codex()
-        .deliver(&Action::Submit("hello"), dir.path(), &thread())
+        .deliver(
+            &Action::Submit("hello"),
+            &common::target(dir.path()),
+            &thread(),
+        )
         .unwrap();
 
     assert_eq!(delivered, Delivered::StartedTurn);
@@ -178,7 +202,7 @@ fn a_cancel_interrupts_the_turn_under_way() {
     let (dir, server) = session(last_turn_is("inProgress"));
 
     let delivered = common::codex()
-        .deliver(&Action::Cancel, dir.path(), &thread())
+        .deliver(&Action::Cancel, &common::target(dir.path()), &thread())
         .unwrap();
 
     assert_eq!(delivered, Delivered::Interrupted);
@@ -205,7 +229,7 @@ fn a_turn_listing_refused_for_a_moment_is_retried() {
     });
 
     let delivered = common::codex()
-        .deliver(&Action::Cancel, dir.path(), &thread())
+        .deliver(&Action::Cancel, &common::target(dir.path()), &thread())
         .unwrap();
 
     assert_eq!(delivered, Delivered::Interrupted);
@@ -225,7 +249,7 @@ fn a_cancel_without_a_turn_under_way_is_refused() {
     let (dir, server) = session(last_turn_is("completed"));
 
     let refused = common::codex()
-        .deliver(&Action::Cancel, dir.path(), &thread())
+        .deliver(&Action::Cancel, &common::target(dir.path()), &thread())
         .unwrap_err();
 
     assert_eq!(
@@ -240,18 +264,43 @@ fn a_session_without_its_app_server_fails_naming_the_socket() {
     let dir = tempfile::tempdir().unwrap();
 
     let refused = common::codex()
-        .deliver(&Action::Submit("hello"), dir.path(), &thread())
+        .deliver(
+            &Action::Submit("hello"),
+            &common::target(dir.path()),
+            &thread(),
+        )
         .unwrap_err();
 
     let socket = dir.path().join("codex.sock");
     assert!(
-        refused.reason.starts_with(&format!(
-            "cannot reach Codex's app-server at {}",
-            socket.display()
-        )),
+        refused
+            .reason
+            .starts_with(&format!("cannot reach {}", socket.display())),
         "{}",
         refused.reason
     );
+}
+
+#[test]
+fn a_socket_the_daemon_refuses_is_never_spoken_to() {
+    let (dir, server) = session(last_turn_is("completed"));
+    let target = DeliveryTarget {
+        session_dir: dir.path(),
+        sockets: &common::RefusingSockets,
+    };
+
+    let refused = common::codex()
+        .deliver(&Action::Submit("hello"), &target, &thread())
+        .unwrap_err();
+
+    assert_eq!(
+        refused.reason,
+        format!(
+            "{} is not the session's app-server",
+            dir.path().join("codex.sock").display()
+        )
+    );
+    assert!(server.methods().is_empty());
 }
 
 #[test]
@@ -259,7 +308,7 @@ fn compact_is_refused_naming_its_capability() {
     let (dir, server) = session(last_turn_is("completed"));
 
     let refused = common::codex()
-        .deliver(&Action::Compact, dir.path(), &thread())
+        .deliver(&Action::Compact, &common::target(dir.path()), &thread())
         .unwrap_err();
 
     assert_eq!(
@@ -275,7 +324,11 @@ fn without_the_bridge_nothing_is_delivered() {
     let codex = Codex::new(PathBuf::from("/usr/bin/codex"), None, None);
 
     let refused = codex
-        .deliver(&Action::Submit("hello"), dir.path(), &thread())
+        .deliver(
+            &Action::Submit("hello"),
+            &common::target(dir.path()),
+            &thread(),
+        )
         .unwrap_err();
 
     assert_eq!(refused.reason, "it does not report the `submit` capability");

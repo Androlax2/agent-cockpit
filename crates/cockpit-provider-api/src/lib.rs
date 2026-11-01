@@ -8,6 +8,7 @@ mod terminal;
 
 use std::ffi::OsString;
 use std::fmt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 pub use capabilities::{Availability, Capabilities, Capability, Provenance};
@@ -147,6 +148,33 @@ pub struct LaunchCommand {
     pub conversation: Option<ConversationId>,
 }
 
+/// The running session a delivery reaches ([`Provider::deliver`]).
+#[derive(Clone, Copy)]
+pub struct DeliveryTarget<'target> {
+    /// The session's own directory ([`LaunchRequest::session_dir`]). Its agent writes it, so
+    /// whatever is found there, a socket or a link to one, is the agent's word.
+    pub session_dir: &'target Path,
+    /// How the caller opens a socket there.
+    pub sockets: &'target dyn SessionSockets,
+}
+
+impl fmt::Debug for DeliveryTarget<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeliveryTarget")
+            .field("session_dir", &self.session_dir)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Opens sockets in a session's directory for the caller, who runs outside the sandbox (#442).
+pub trait SessionSockets: Send + Sync {
+    /// A connection to `socket`, only when the process listening on it is one of the
+    /// session's own: the agent may have replaced the socket with a link to any socket the
+    /// caller can reach, such as the daemon's own or an unsandboxed agent's.
+    fn connect(&self, socket: &Path) -> Result<UnixStream, ProviderError>;
+}
+
 /// An agent provider's adapter.
 pub trait Provider: Send + Sync + 'static {
     fn name(&self) -> &ProviderName;
@@ -176,17 +204,18 @@ pub trait Provider: Send + Sync + 'static {
     }
 
     /// Performs `action` in the running `conversation` itself, through the harness's own
-    /// interface reached in the session's `session_dir`, instead of typing into its terminal
-    /// ([`Provider::input`]). Blocks for a few seconds at most, so callers run it off their
-    /// async workers. Refuses an action whose capability it does not report; the default
-    /// performs none, and callers use [`Provider::input`].
+    /// interface reached in the session's directory, instead of typing into its terminal
+    /// ([`Provider::input`]). Every socket it reaches there is opened through
+    /// [`DeliveryTarget::sockets`], never by its path alone. Blocks for a few seconds at
+    /// most, so callers run it off their async workers. Refuses an action whose capability
+    /// it does not report; the default performs none, and callers use [`Provider::input`].
     fn deliver(
         &self,
         action: &Action<'_>,
-        session_dir: &Path,
+        target: &DeliveryTarget<'_>,
         conversation: &ConversationId,
     ) -> Result<Delivered, ProviderError> {
-        let _ = (session_dir, conversation);
+        let _ = (target, conversation);
         Err(ProviderError::unsupported(action.capability()))
     }
 

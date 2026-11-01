@@ -17,6 +17,7 @@ mod scheduling;
 mod serve;
 mod server;
 mod session_feed;
+mod session_sockets;
 mod sessions;
 mod supervisor;
 mod tasks;
@@ -37,6 +38,7 @@ pub use manager::Manager;
 pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusal};
 pub use serve::{SESSION_TICK, Serve, own_profile, own_program, serve};
 pub use server::Limits;
+pub use session_sockets::SessionTreeSockets;
 
 /// Every capability's migrations, in the order the daemon applies them.
 pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 13] = [

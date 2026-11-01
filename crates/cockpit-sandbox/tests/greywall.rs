@@ -9,12 +9,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use cockpit_sandbox::{
-    ClientIdentity, EngineBuild, Greywall, GreywallPrograms, PINNED_GREYPROXY_COMMIT,
-    PINNED_GREYWALL_COMMIT, Platform, Profile, parse_greyproxy_version, parse_greywall_version,
+    ClientIdentity, DesktopSession, EngineBuild, Greywall, GreywallPrograms,
+    PINNED_GREYPROXY_COMMIT, PINNED_GREYWALL_COMMIT, Plan, Platform, Profile, ProfileRequest,
+    Refusal, parse_greyproxy_version, parse_greywall_version,
 };
 use common::{
-    capabilities, engine_with, linux_engine, pinned_greyproxy, pinned_greywall, profile_request,
-    programs,
+    LINUX_CAPABILITIES, SESSION_DIR, capabilities, engine_with, linux_engine, pinned_greyproxy,
+    pinned_greywall, profile_request, programs,
 };
 
 const GREYWALL_VERSION_OUTPUT: &str = "greywall - lightweight, container-free sandbox
@@ -239,6 +240,8 @@ fn the_plan_runs_the_agent_under_greywall_as_a_proxy_client_of_its_own() {
             client.as_str(),
             "--allow-path",
             "/home/owner/app",
+            "--allow-path",
+            SESSION_DIR,
             "--allow-read-path",
             "/run/user/1000/cockpit/agent",
             "--ignore-secret",
@@ -390,4 +393,246 @@ fn detect_gives_up_on_a_program_that_leaves_its_output_open() {
 
     assert!(reason.contains("did not answer within"), "{reason}");
     assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}
+
+fn words(plan: &Plan) -> Vec<String> {
+    plan.arguments
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The values after each `flag` in `plan`'s arguments.
+fn values_of(plan: &Plan, flag: &str) -> Vec<String> {
+    let words = words(plan);
+    words
+        .windows(2)
+        .filter(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
+fn plan_on_linux(request: ProfileRequest) -> Result<Plan, Refusal> {
+    let settings = tempfile::tempdir().unwrap();
+    let profile = Profile::build(request, &Platform::Linux)?;
+    linux_engine(settings.path()).plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
+}
+
+/// Greywall's private `/tmp` would hide Codex's socket folder from the daemon; the folder
+/// is the host's, mounted over it (#437).
+#[test]
+fn a_codex_launch_mounts_the_session_directory_and_codexs_socket_folder() {
+    let mut request = profile_request("/home/owner/app");
+    request.provider = "codex".to_owned();
+
+    let plan = plan_on_linux(request).unwrap();
+
+    assert_eq!(
+        values_of(&plan, "--allow-path"),
+        ["/home/owner/app", SESSION_DIR, "/tmp/codex-daemon-1000"]
+    );
+    assert_eq!(plan.provider_folders, [Path::new("/tmp/codex-daemon-1000")]);
+    assert!(plan.enforced_by.contains(&(
+        "read-write /tmp/codex-daemon-1000 (codex's folder on the host, shared with the daemon)"
+            .to_owned(),
+        "greywall bubblewrap+Landlock (--allow-path, the host's own folder)".to_owned()
+    )));
+}
+
+fn shared_desktop(variables: &[(&str, &str)]) -> ProfileRequest {
+    let mut request = profile_request("/home/owner/app");
+    request.desktop = DesktopSession::Shared;
+    request.environment.extend(
+        variables
+            .iter()
+            .map(|(name, value)| ((*name).into(), (*value).into())),
+    );
+    request
+}
+
+const FULL_DESKTOP: [(&str, &str); 5] = [
+    ("XDG_RUNTIME_DIR", "/run/user/1000"),
+    ("DISPLAY", ":0"),
+    ("WAYLAND_DISPLAY", "wayland-1"),
+    ("XAUTHORITY", "/run/user/1000/xauth_abc"),
+    ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+];
+
+/// #435's acceptance: a shared desktop launch mounts the named display endpoints and nothing
+/// else of `$XDG_RUNTIME_DIR` beyond Cockpit's own folders; the bus is greywall's filtered
+/// proxy, never mounted from the host.
+#[test]
+fn a_shared_desktop_launch_mounts_the_named_display_endpoints_and_nothing_else_of_the_runtime_dir()
+{
+    let plan = plan_on_linux(shared_desktop(&FULL_DESKTOP)).unwrap();
+
+    let mounted: Vec<String> = values_of(&plan, "--allow-path")
+        .into_iter()
+        .chain(values_of(&plan, "--allow-read-path"))
+        .filter(|path| path.starts_with("/run/user/1000/") || path.starts_with("/tmp/"))
+        .collect();
+    assert_eq!(
+        mounted,
+        [
+            SESSION_DIR,
+            "/tmp/.X11-unix/X0",
+            "/run/user/1000/wayland-1",
+            "/run/user/1000/cockpit/agent",
+            "/run/user/1000/xauth_abc",
+        ]
+    );
+    assert!(plan.environment.contains(&(
+        "DBUS_SESSION_BUS_ADDRESS".into(),
+        "unix:path=/run/user/1000/bus".into()
+    )));
+}
+
+#[test]
+fn the_evidence_names_each_desktop_endpoint_and_how_it_is_reached() {
+    let plan = plan_on_linux(shared_desktop(&FULL_DESKTOP)).unwrap();
+
+    for (rule, enforced_by) in [
+        (
+            "desktop socket /tmp/.X11-unix/X0 for DISPLAY",
+            "greywall bubblewrap+Landlock (--allow-path)",
+        ),
+        (
+            "desktop socket /run/user/1000/wayland-1 for WAYLAND_DISPLAY",
+            "greywall bubblewrap+Landlock (--allow-path)",
+        ),
+        (
+            "desktop file /run/user/1000/xauth_abc for XAUTHORITY",
+            "greywall bubblewrap+Landlock (--allow-read-path)",
+        ),
+        (
+            "desktop bus /run/user/1000/bus for DBUS_SESSION_BUS_ADDRESS",
+            "greywall's xdg-dbus-proxy in its place, org.freedesktop.Notifications only",
+        ),
+    ] {
+        assert!(
+            plan.enforced_by
+                .contains(&(rule.to_owned(), enforced_by.to_owned())),
+            "{rule} <- {enforced_by} missing from {:#?}",
+            plan.enforced_by
+        );
+    }
+}
+
+/// The owner's own bus starts programs outside the sandbox: without greywall's filtered
+/// proxy the bus is refused, never mounted.
+#[test]
+fn a_shared_bus_without_greywalls_proxy_is_refused() {
+    let settings = tempfile::tempdir().unwrap();
+    let available: Vec<&str> = LINUX_CAPABILITIES
+        .into_iter()
+        .filter(|name| *name != "xdg-dbus-proxy")
+        .collect();
+    let engine = engine_with(
+        Platform::Linux,
+        capabilities(&available, &["xdg-dbus-proxy"]),
+        settings.path(),
+    );
+    let profile = Profile::build(shared_desktop(&FULL_DESKTOP), &Platform::Linux).unwrap();
+
+    let refused = engine
+        .plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
+        .unwrap_err();
+
+    assert_eq!(
+        refused.rule,
+        "desktop bus /run/user/1000/bus for DBUS_SESSION_BUS_ADDRESS"
+    );
+    assert!(refused.reason.contains("xdg-dbus-proxy"), "{refused}");
+}
+
+/// Greywall mounts its proxy at `/run/user/<uid>/bus`; a bus elsewhere would leave the
+/// variable pointing at nothing.
+#[test]
+fn a_shared_bus_other_than_the_owners_runtime_bus_is_refused() {
+    let refused = plan_on_linux(shared_desktop(&[(
+        "DBUS_SESSION_BUS_ADDRESS",
+        "unix:path=/tmp/dbus-session",
+    )]))
+    .unwrap_err();
+
+    assert_eq!(
+        refused.rule,
+        "desktop bus /tmp/dbus-session for DBUS_SESSION_BUS_ADDRESS"
+    );
+    assert!(refused.reason.contains("/run/user/1000/bus"), "{refused}");
+}
+
+#[test]
+fn a_shared_bus_on_macos_is_refused() {
+    let settings = tempfile::tempdir().unwrap();
+    let engine = engine_with(Platform::MacOs, Vec::new(), settings.path());
+    let request = shared_desktop(&[("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")]);
+    let profile = Profile::build(request, &Platform::MacOs).unwrap();
+
+    let refused = engine
+        .plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
+        .unwrap_err();
+
+    assert!(refused.reason.contains("only on Linux"), "{refused}");
+}
+
+fn plan_with_folder(folder: &Path, owner_uid: u32) -> Plan {
+    let settings = tempfile::tempdir().unwrap();
+    let profile = Profile::build(profile_request("/home/owner/app"), &Platform::Linux).unwrap();
+    let mut plan = linux_engine(settings.path())
+        .plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
+        .unwrap();
+    plan.provider_folders = vec![folder.to_owned()];
+    plan.owner_uid = owner_uid;
+    plan
+}
+
+fn own_uid(dir: &Path) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(dir).unwrap().uid()
+}
+
+#[test]
+fn a_missing_provider_folder_is_created_owner_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let folder = tmp.path().join("codex-daemon-1000");
+
+    plan_with_folder(&folder, own_uid(tmp.path()))
+        .create_provider_folders()
+        .unwrap();
+
+    let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+}
+
+/// The folder is on the shared `/tmp`: one another user made first, or one others may open,
+/// would hand them the agent's sockets.
+#[test]
+fn a_provider_folder_others_may_open_or_own_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let owner = own_uid(tmp.path());
+    let open = tmp.path().join("open");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+    let private = tmp.path().join("private");
+    std::fs::create_dir(&private).unwrap();
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    for (folder, owner_uid) in [(&open, owner), (&link, owner), (&private, owner + 1)] {
+        let (failed, error) = plan_with_folder(folder, owner_uid)
+            .create_provider_folders()
+            .unwrap_err();
+
+        assert_eq!(&failed, folder);
+        assert!(
+            error.to_string().contains("only it may open"),
+            "{}: {error}",
+            folder.display()
+        );
+    }
+    assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
 }

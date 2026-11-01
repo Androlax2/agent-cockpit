@@ -1373,6 +1373,7 @@ impl Sessions {
         let command = {
             let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
             let working_dir = session.working_dir.clone();
+            let session_dir = session_dir.clone();
             let conversation = conversation.clone();
             let first_message = first_message.map(str::to_owned);
             // Off the async workers and bounded: the contract says it does not block, but
@@ -1417,6 +1418,7 @@ impl Sessions {
             id.as_str(),
             session.provider.as_str(),
             checkout.path,
+            session_dir,
             environment,
             command.program,
             command.arguments,
@@ -1431,7 +1433,13 @@ impl Sessions {
                     action: "write the sandbox settings",
                     path: plan.settings_path.clone(),
                     source,
-                })
+                })?;
+                plan.create_provider_folders()
+                    .map_err(|(path, source)| Error::Io {
+                        action: "prepare the provider's folder for the sandbox",
+                        path,
+                        source,
+                    })
             })
             .await?;
         }
@@ -1527,13 +1535,19 @@ impl Sessions {
         environment
     }
 
-    /// How `program` runs for a launch of `provider` in `checkout_root`: through the sandbox,
-    /// or unchanged only by the owner's `agents.sandbox = "off"`.
+    /// How `program` runs for a launch of `provider` in `checkout_root`, with the session's
+    /// own `session_dir`: through the sandbox, or unchanged only by the owner's
+    /// `agents.sandbox = "off"`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one launch's facts, each passed straight into the sandbox's request"
+    )]
     fn prepare_sandbox(
         &self,
         session: &str,
         provider: &str,
         checkout_root: PathBuf,
+        session_dir: PathBuf,
         environment: Vec<(OsString, OsString)>,
         program: PathBuf,
         arguments: Vec<OsString>,
@@ -1546,6 +1560,7 @@ impl Sessions {
                     session: session.to_owned(),
                     provider: provider.to_owned(),
                     working_dir: checkout_root,
+                    session_dir,
                     environment,
                     secrets: vec![cockpit_sandbox::Secret {
                         // The agent presents it on the local agent socket, never in an HTTP
@@ -1578,6 +1593,7 @@ impl Sessions {
             DRY_RUN_SESSION,
             &provider,
             checkout.path,
+            self.session_dirs.join(DRY_RUN_SESSION),
             self.launch_environment(),
             PathBuf::from("<agent>"),
             Vec::new(),

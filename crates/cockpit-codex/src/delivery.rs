@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use cockpit_provider_api::{Action, ConversationId, Delivered, ProviderError};
+use cockpit_provider_api::{Action, ConversationId, Delivered, ProviderError, SessionSockets};
 use serde_json::{Value, json};
 
 use crate::app_server::{AppServer, RpcError};
@@ -25,9 +25,12 @@ pub fn socket_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SOCKET_FILE)
 }
 
-/// Performs `action` in `conversation` through the app-server listening on `socket`.
+/// Performs `action` in `conversation` through the app-server listening on `socket`, opened
+/// by `sockets` only: the agent writes the session's directory, and Codex leaves a link there
+/// into its own folder, so the path alone never says who listens (#442).
 pub fn deliver(
     socket: &Path,
+    sockets: &dyn SessionSockets,
     action: &Action<'_>,
     conversation: &ConversationId,
 ) -> Result<Delivered, ProviderError> {
@@ -35,7 +38,10 @@ pub fn deliver(
     let failed = |error: RpcError| ProviderError {
         reason: error.reason,
     };
-    let connect = || AppServer::connect(socket, "cockpit", CALL_TIMEOUT).map_err(failed);
+    let connect = || {
+        let stream = sockets.connect(socket)?;
+        AppServer::over(stream, "cockpit", CALL_TIMEOUT).map_err(failed)
+    };
     match action {
         Action::Submit(message) => submit(&mut connect()?, thread, message).map_err(failed),
         Action::Cancel => {

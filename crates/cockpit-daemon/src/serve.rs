@@ -121,7 +121,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     // path handed to the sandbox would fail every launch, OpenCode or not.
     let opencode_plugin_dir = plugin_dir.is_dir().then_some(plugin_dir);
     let sandbox = sandbox(
-        instance.options(),
+        &instance,
         &environment,
         &[
             Some(serve.programs_dir.clone()),
@@ -196,11 +196,12 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
 /// and load inside it, and the instruction bundle. An engine that is missing or of another build is
 /// logged; launches are then refused while the owner requires the sandbox.
 fn sandbox(
-    options: &Options,
+    instance: &Instance,
     environment: &cockpit_config::Environment,
     bridge_dirs: &[PathBuf],
     config: &cockpit_config::EffectiveConfig,
 ) -> cockpit_sandbox::Sandbox {
+    let options = instance.options();
     let platform = cockpit_sandbox::Platform::detect();
     let settings_dir = options.state_dir.join("sandbox");
     let engine = cockpit_sandbox::GreywallPrograms::on_path(std::env::var_os("PATH").as_ref())
@@ -269,6 +270,7 @@ fn sandbox(
             .chain(bridge_dirs.iter().cloned())
             .collect(),
             denied,
+            owner_uid: instance.owner_uid,
         },
     )
 }
