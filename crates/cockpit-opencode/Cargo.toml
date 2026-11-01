@@ -1,0 +1,22 @@
+[package]
+name = "cockpit-opencode"
+description = "The OpenCode provider adapter: its launch words with a standalone server per session, capabilities pinned to a tested version, terminal actions, the server's native commands, inbox delivery and variants, and the in-sandbox plugin bridge."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cockpit-opencode-bridge"
+path = "src/bin/cockpit-opencode-bridge.rs"
+
+[dependencies]
+# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
+cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0" }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

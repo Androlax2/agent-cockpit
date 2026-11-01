@@ -1,0 +1,1 @@
+{"id":"evt_e3b0c44200000004","type":"session.status","properties":{"sessionID":"ses_1c4f2e8a3ffeJ7qkR2mWbXzD0v","status":{"type":"retry","attempt":1,"message":"Rate limited","next":1793527205000}}}
