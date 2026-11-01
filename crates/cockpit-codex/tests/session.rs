@@ -17,30 +17,54 @@ const THREAD: &str = "01a1981e-525b-75f2-902e-1e2e6d337eea";
 const HELPER_THREAD: &str = "01a1981e-6eb4-70d3-a4a5-f74762d56dd3";
 const OTHER_THREAD: &str = "01a1981e-7a10-7c11-b0a2-0d1e2f3a4b5c";
 
-/// The fake `codex`: as `app-server`, it records its words and pid and sleeps; as the TUI,
-/// it records its words and exits 3 once the test creates `tui.exit`.
+/// The fake `codex`: as `app-server`, it records its words and pid and runs; as the TUI,
+/// it records its words and exits 3 once the test creates `tui.exit`. Both also end once
+/// the test's directory is gone or after 600 seconds, whichever comes first, so a test
+/// killed before it cleans up leaks them for 10 minutes at most.
 const FAKE_CODEX: &str = r#"if [ "$1" = app-server ]; then
   printf '%s\n' "$@" > "$FAKE_DIR/server.args"
   echo $$ > "$FAKE_DIR/server.pid.partial" && mv "$FAKE_DIR/server.pid.partial" "$FAKE_DIR/server.pid"
-  exec sleep 600
+  ticks=0
+  while [ -d "$FAKE_DIR" ] && [ $ticks -lt 6000 ]; do sleep 0.1; ticks=$((ticks + 1)); done
+  exit 0
 fi
 printf '%s\n' "$@" > "$FAKE_DIR/tui.args"
-while [ ! -e "$FAKE_DIR/tui.exit" ]; do sleep 0.05; done
+ticks=0
+while [ ! -e "$FAKE_DIR/tui.exit" ]; do
+  [ -d "$FAKE_DIR" ] && [ $ticks -lt 6000 ] || exit 4
+  sleep 0.1; ticks=$((ticks + 1))
+done
 exit 3"#;
 
 /// A fake `codex` whose app-server ignores `SIGTERM` and runs a child that does too, as a
 /// wrapper that does not pass the signal on would leave it.
 const FAKE_CODEX_IGNORING_TERM: &str = r#"if [ "$1" = app-server ]; then
   trap '' TERM
-  sleep 600 &
+  sh -c 'ticks=0; while [ -d "$FAKE_DIR" ] && [ $ticks -lt 6000 ]; do sleep 0.1; ticks=$((ticks + 1)); done' "$FAKE_DIR/server-child" &
   echo $! > "$FAKE_DIR/server-child.pid"
   echo $$ > "$FAKE_DIR/server.pid.partial" && mv "$FAKE_DIR/server.pid.partial" "$FAKE_DIR/server.pid"
   wait
   exit 0
 fi
 touch "$FAKE_DIR/tui.args"
-while [ ! -e "$FAKE_DIR/tui.exit" ]; do sleep 0.05; done
+ticks=0
+while [ ! -e "$FAKE_DIR/tui.exit" ]; do
+  [ -d "$FAKE_DIR" ] && [ $ticks -lt 6000 ] || exit 4
+  sleep 0.1; ticks=$((ticks + 1))
+done
 exit 3"#;
+
+/// A fake `codex` whose TUI never exits on `tui.exit`, so its launcher hangs.
+const FAKE_CODEX_STUCK_TUI: &str = r#"if [ "$1" = app-server ]; then
+  echo $$ > "$FAKE_DIR/server.pid.partial" && mv "$FAKE_DIR/server.pid.partial" "$FAKE_DIR/server.pid"
+  ticks=0
+  while [ -d "$FAKE_DIR" ] && [ $ticks -lt 6000 ]; do sleep 0.1; ticks=$((ticks + 1)); done
+  exit 0
+fi
+touch "$FAKE_DIR/tui.args"
+ticks=0
+while [ -d "$FAKE_DIR" ] && [ $ticks -lt 6000 ]; do sleep 0.1; ticks=$((ticks + 1)); done
+exit 4"#;
 
 const FAKE_COCKPIT: &str = r#"printf '%s\n' "$@" >> "$FAKE_DIR/reports""#;
 
@@ -106,16 +130,49 @@ impl Launcher {
             String::from_utf8_lossy(&output.stderr).into_owned(),
         )
     }
+
+    /// Lets the fake TUI exit and waits up to `deadline` for the launcher to stop its
+    /// app-server, so neither outlives the test; a launcher that hangs is killed, then every
+    /// process that still names the test's directory.
+    fn stop_within(&mut self, deadline: Duration) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = std::fs::write(self.path("tui.exit"), "");
+        let ends_at = Instant::now() + deadline;
+        while Instant::now() < ends_at {
+            if let Ok(Some(_)) = child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        kill_processes_naming(self.dir.path());
+    }
 }
+
+/// How long a dropped launcher gets to stop its app-server: beyond the launcher's own
+/// `SIGTERM` grace period.
+const LAUNCHER_EXIT_DEADLINE: Duration = Duration::from_secs(10);
 
 impl Drop for Launcher {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = std::fs::write(self.path("tui.exit"), "");
-            let _ = child.kill();
-            let _ = child.wait();
+        self.stop_within(LAUNCHER_EXIT_DEADLINE);
+    }
+}
+
+/// Kills every running process whose command line names `dir`: only the test's fakes do,
+/// so a recycled pid is never hit. Linux only; elsewhere the fakes end on their own.
+fn kill_processes_naming(dir: &Path) {
+    #[cfg(target_os = "linux")]
+    for (pid, _) in processes_naming(dir) {
+        if let Some(pid) = rustix::process::Pid::from_raw(pid) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = dir;
 }
 
 fn wait_for_file(path: &Path) {
@@ -325,6 +382,64 @@ fn an_app_server_that_exits_at_start_fails_the_launch_pointing_at_its_log() {
     assert!(stderr.contains("codex-app-server.log"), "{stderr}");
     let log = std::fs::read_to_string(launcher.path("codex-app-server.log")).unwrap();
     assert!(log.contains("no auth"), "{log}");
+}
+
+/// The running processes (not zombies) whose command line names `dir`, from Linux's `/proc`.
+#[cfg(target_os = "linux")]
+fn processes_naming(dir: &Path) -> Vec<(i32, String)> {
+    let needle = dir.to_string_lossy().into_owned();
+    std::fs::read_dir("/proc")
+        .expect("/proc lists the processes")
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().into_string().ok()?.parse::<i32>().ok()?;
+            let command_line = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let command_line = String::from_utf8_lossy(&command_line).replace('\0', " ");
+            (command_line.contains(&needle) && is_running(&pid.to_string()))
+                .then_some((pid, command_line))
+        })
+        .collect()
+}
+
+/// A launcher stopped in the middle of its session leaves no fake TUI or app-server behind.
+/// Checked while the test's directory still exists, before the fakes would end by
+/// themselves.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stopped_launcher_leaves_no_fake_process_behind() {
+    let mut launcher = Launcher::start(FAKE_CODEX, &[]);
+    let _server = launcher.serve(|_, _| Ok(json!({})));
+    launcher.lines("tui.args");
+    assert!(
+        !processes_naming(launcher.dir.path()).is_empty(),
+        "the fakes never ran"
+    );
+
+    launcher.stop_within(LAUNCHER_EXIT_DEADLINE);
+
+    assert_no_process_names(launcher.dir.path());
+}
+
+/// A launcher that hangs past its deadline is killed with every fake it started.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_launcher_that_hangs_is_killed_with_every_fake_it_started() {
+    let mut launcher = Launcher::start(FAKE_CODEX_STUCK_TUI, &[]);
+    let _server = launcher.serve(|_, _| Ok(json!({})));
+    launcher.lines("tui.args");
+
+    launcher.stop_within(Duration::from_secs(1));
+
+    assert_no_process_names(launcher.dir.path());
+}
+
+#[cfg(target_os = "linux")]
+fn assert_no_process_names(dir: &Path) {
+    let ends_at = Instant::now() + Duration::from_secs(1);
+    while !processes_naming(dir).is_empty() && Instant::now() < ends_at {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(processes_naming(dir), Vec::<(i32, String)>::new());
 }
 
 #[test]
