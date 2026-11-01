@@ -9,9 +9,7 @@ use cockpit_turso::{Migration, MigrationSet};
 
 pub use answers::{AnswersDirectory, AnswersError, ProjectKey};
 pub use error::{Error, Refusal, Unblock, UnblockedBy};
-pub use launch::{
-    LaunchToken, PeerAncestry, awaits_root, identify, identify_bound, mint, record_root,
-};
+pub use launch::{LaunchToken, PeerAncestry, identify, identify_bound, mint, record_root};
 pub use process::{ProcessError, ProcessIdentity, ancestry, ancestry_of, identity_of};
 
 /// The channel's tables. A launch is pending (`token` set, `bound_at` unset) until a report

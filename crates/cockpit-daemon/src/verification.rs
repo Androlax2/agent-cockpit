@@ -223,8 +223,7 @@ impl Agent {
         connector: Result<ProcessIdentity, ProcessError>,
         launch_token: Option<String>,
     ) -> Result<Agent, Failed> {
-        let sender =
-            Sender::once_launched(connector, &context.database, launch_token.as_deref()).await?;
+        let sender = Sender::read(connector).await;
         let read = context.database.read().await?;
         let bound = sender
             .identify_bound(&read, launch_token.as_deref())

@@ -20,7 +20,11 @@ stopped in the middle of one finishes or repairs it at its next start.
   as any execution's. It gets the daemon's base environment, the owner's desktop session
   variables as last imported unless the owner withholds them (`DesktopSession`, #305, #307),
   its provider's variables, `COCKPIT_SESSION` and a one-use `COCKPIT_LAUNCH_TOKEN`, and only
-  `TERM` and `COLORTERM` from tmux.
+  `TERM` and `COLORTERM` from tmux. The pane's program waits until the launch recorded its
+  root (the agent's process identity) and released it, so the agent's first request is
+  identified (#316). The owner's `config reload` replaces the desktop session choice, the
+  idle window and the asleep expiry for later launches and passes
+  (`Sessions::apply_owner_settings`, #354).
 - **Restart, sleep, wake and resume** relaunch the same conversation, so each needs a
   provider with the `resume` capability that named the conversation; otherwise they are
   refused before anything stops.

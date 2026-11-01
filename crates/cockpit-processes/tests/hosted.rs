@@ -30,6 +30,25 @@ fn host(
     (pid, std::thread::spawn(move || drop(child.wait())))
 }
 
+/// [`host`], then the start confirmation and the release the launcher gives a hosted program.
+async fn host_released(
+    supervisor: &cockpit_processes::Supervisor,
+    database: &cockpit_turso::Database,
+    launch: &cockpit_processes::HostedLaunch,
+    working_dir: &std::path::Path,
+) -> std::thread::JoinHandle<()> {
+    let (_, reaper) = host(&launch.command, working_dir);
+    supervisor
+        .confirm_hosted(database, launch.execution)
+        .await
+        .unwrap();
+    supervisor
+        .release_hosted(database, launch.execution)
+        .await
+        .unwrap();
+    reaper
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hosted_program_is_confirmed_running_as_its_own_process_group() {
     let home = Home::new();
@@ -70,7 +89,7 @@ async fn a_hosted_program_gets_its_specs_environment_and_only_the_named_host_var
         .await
         .unwrap();
 
-    let (_, reaper) = host(&launch.command, home.path());
+    let reaper = host_released(&supervisor, &database, &launch, home.path()).await;
     reaper.join().unwrap();
 
     let environment = std::fs::read_to_string(&printed).unwrap();
@@ -104,7 +123,7 @@ async fn a_hosted_programs_environment_values_never_appear_in_its_command() {
         .command
         .iter()
         .any(|word| word.to_string_lossy().contains("token"));
-    let (_, reaper) = host(&launch.command, home.path());
+    let reaper = host_released(&supervisor, &database, &launch, home.path()).await;
     reaper.join().unwrap();
 
     assert!(!words_hold_it, "{:?}", launch.command);
@@ -113,6 +132,74 @@ async fn a_hosted_programs_environment_values_never_appear_in_its_command() {
         environment.contains(&format!("LAUNCH_SECRET={secret}")),
         "{environment}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confirmed_hosted_program_runs_only_once_released() {
+    let home = Home::new();
+    let database = home.open_database().await;
+    let supervisor = home.process_group_supervisor();
+    let ran = home.path().join("ran");
+    let launch = supervisor
+        .prepare_hosted(
+            &database,
+            &shell(&home, &format!("touch {}", ran.display())),
+            &[],
+        )
+        .await
+        .unwrap();
+    let (_, reaper) = host(&launch.command, home.path());
+    supervisor
+        .confirm_hosted(&database, launch.execution)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let ran_before_release = ran.exists();
+    supervisor
+        .release_hosted(&database, launch.execution)
+        .await
+        .unwrap();
+    reaper.join().unwrap();
+
+    assert!(!ran_before_release, "the program ran before its release");
+    assert!(ran.exists(), "the released program did not run");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosted_program_never_released_gives_up_without_running() {
+    let home = Home::new();
+    let database = home.open_database().await;
+    let mut supervisor = home.process_group_supervisor();
+    supervisor.release_window = std::time::Duration::from_millis(200);
+    let ran = home.path().join("ran");
+    let launch = supervisor
+        .prepare_hosted(
+            &database,
+            &shell(&home, &format!("touch {}", ran.display())),
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut child = Command::new(&launch.command[0])
+        .args(&launch.command[1..])
+        .current_dir(home.path())
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    supervisor
+        .confirm_hosted(&database, launch.execution)
+        .await
+        .unwrap();
+
+    let status = tokio::task::spawn_blocking(move || child.wait().unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(status.code(), Some(126));
+    assert!(!ran.exists(), "the program ran without its release");
 }
 
 #[tokio::test(flavor = "multi_thread")]

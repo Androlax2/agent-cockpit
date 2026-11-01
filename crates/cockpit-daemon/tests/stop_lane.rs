@@ -523,7 +523,10 @@ async fn ending_a_restarting_session_answers_conflict_while_its_old_agent_waits_
         Ok(Reply::Session { session }) => session.id,
         other => panic!("session-new: {other:?}"),
     };
-    let old_agent = FakeProvider::launches(&home.path().join("agent.log"))[0].pid;
+    // The agent logs from its own shell once its launch released it (#316), after the reply.
+    let old_agent =
+        common::once_logged(1, || FakeProvider::launches(&home.path().join("agent.log"))).await[0]
+            .pid;
     let _restarting = {
         let client = Arc::clone(&client);
         let session = id.clone();

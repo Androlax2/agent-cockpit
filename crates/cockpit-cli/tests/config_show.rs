@@ -534,6 +534,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
             format!(
                 "cockpit: {problem}\n\
                  usage: cockpit config show [--project DIR] [--set KEY=VALUE]...\n       \
+                 cockpit config reload\n       \
                  cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] \
                  [--needs-input QUESTION | --dialog QUESTION] [--prompt] \
                  [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] \
@@ -623,4 +624,19 @@ fn an_unknown_verb_prints_usage_and_exits_2() {
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");
         assert!(String::from_utf8_lossy(&output.stderr).starts_with("usage: cockpit "));
     }
+}
+
+#[test]
+fn show_tells_the_owner_a_running_daemon_applies_session_settings_after_config_reload() {
+    let home = Home::clean();
+
+    let output = home.show(&[]);
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("agents.desktop_session")
+            && stderr.contains("after `cockpit config reload`"),
+        "{stderr}"
+    );
 }

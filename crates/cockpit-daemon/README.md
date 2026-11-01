@@ -184,8 +184,13 @@ builds it only when asked and no release installs it.
 - `tests/agent_channel.rs`: issue #32's acceptance on the binary's sockets: a launched
   agent's report, leaked tokens, payload-claimed sessions, a nested agent with its parent's
   grants, refusals with their unblock, restart.
-- `tests/launch_root_wait.rs`: issue #279: an agent's report or `ask-check` sent before the
-  launcher recorded its launch's process tree is held until it is, then answered.
+- `tests/launch_root_order.rs`: issue #316: launched agents' first reports land without a
+  retry, and a request whose launch has no root is refused at once, never held.
+- `tests/config_reload.rs`: issue #354: `cockpit config reload` applies the owner's changed
+  session settings to later launches, refuses an invalid file and keeps the settings in
+  force, and is the owner's alone.
+- `tests/hook_bridge.rs`: issue #203: `cockpit provider list` shows Claude reports `events`
+  through the hook bridge installed beside the daemon.
 - `tests/agent_asks.rs`: issue #286: a daemon-launched agent's own `cockpit ask run` and
   `cockpit ask guide`, through the real CLI and agent socket, reach the owner's queue and
   get the owner's answer back as their exit code.

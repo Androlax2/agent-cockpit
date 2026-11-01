@@ -54,12 +54,7 @@ pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
         match peer {
             Peer::Owner => owner(command, &context).await,
             Peer::Agent { connector } => {
-                let sender = Sender::once_launched(
-                    connector,
-                    &context.database,
-                    launch_token(&command).as_deref(),
-                )
-                .await?;
+                let sender = Sender::read(connector).await;
                 agent(command, sender, &context).await
             }
         }

@@ -104,7 +104,12 @@ pub fn run(command: Command) -> ExitCode {
             } else {
                 "no-resume"
             };
-            outln!("{}\t{resume}", provider.name);
+            let events = if provider.events {
+                "events"
+            } else {
+                "no-events"
+            };
+            outln!("{}\t{resume}\t{events}", provider.name);
         }),
         Reply::RestartedAll {
             restarted,

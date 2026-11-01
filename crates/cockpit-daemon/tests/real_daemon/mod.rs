@@ -31,7 +31,7 @@ const SETTLED_WITHIN: Duration = Duration::from_secs(30);
 pub const FLOOD_PROJECT: &str = "flood";
 /// A project of this name runs an agent that ignores `SIGTERM` and never ends on its own.
 pub const STALL_PROJECT: &str = "stall";
-/// A project of this name runs an agent that reports once through the `cockpit` built beside
+/// A project of this name, or a name it begins, runs an agent that reports once through the `cockpit` built beside
 /// the daemon, as the Claude hook bridge does, as soon as it starts, appending its output to
 /// [`Home::report_log`].
 pub const REPORT_PROJECT: &str = "report";
@@ -64,7 +64,7 @@ printf '%s pid=%s\n' "$COCKPIT_SESSION" "$$" >> '@LOG@'
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
   @STALL@) trap '' TERM; while :; do sleep 1; done ;;
-  @REPORT@) '@COCKPIT@' agent report --state working --label '@LABEL@' >> '@REPORT_LOG@' 2>&1
+  @REPORT@*) '@COCKPIT@' agent report --state working --label '@LABEL@' >> '@REPORT_LOG@' 2>&1
     exec sleep 3600 ;;
   @ASK_RUN@) '@COCKPIT@' ask run --reason 'proves the agent socket' '@ASKED_COMMAND@' \
       2>> '@ASK_LOG@'
@@ -293,6 +293,21 @@ impl Home {
         Connection::open(&self.socket_path(), GENEROUS)
             .await
             .expect("the daemon accepts the handshake")
+    }
+
+    /// Starts a session of the [`ENVIRONMENT_PROJECT`] agent and returns what it wrote.
+    pub async fn environment_of_a_launched_agent(&self) -> String {
+        let client = self.connect().await;
+        let (root, _) = self.project(&client, ENVIRONMENT_PROJECT).await;
+        new_session(&client, &root).await;
+        let deadline = Instant::now() + GENEROUS;
+        loop {
+            if let Ok(written) = std::fs::read_to_string(self.environment_log()) {
+                return written;
+            }
+            assert!(Instant::now() < deadline, "the agent wrote no environment");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// A Git repository at `projects/<name>` registered through the daemon; returns its

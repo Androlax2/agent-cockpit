@@ -14,6 +14,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | Verb | Works without the daemon | Owner |
 | --- | --- | --- |
 | `cockpit config show [--project DIR] [--set KEY=VALUE]...` | yes | `cockpit-config` |
+| `cockpit config reload` (a running daemon applies the owner's changed session settings, #354) | no | `cockpit-sessions` |
 | `cockpit project add DIR [--name NAME]`, `cockpit project list` | no | `cockpit-projects` |
 | `cockpit checkout list [PROJECT]` | no | `cockpit-projects` |
 | `cockpit checkout clone PROJECT BRANCH`, `cockpit checkout review PROJECT PULL_REQUEST` | no | `cockpit-projects` |
@@ -26,7 +27,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `cockpit version [--all]`: version and source revision; `--all` adds the release bundle's manifest (#96) | yes | `cockpit-cli` |
 | `cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]`, `list [--ended]`, `restart ID\|--all`, `sleep\|wake\|resume\|end ID`, `end --finished` (every session the task list says finished, #157), `link ID URL` | no | `cockpit-sessions` |
 | `cockpit session show ID` (in the manager's viewer, waking it when asleep) | no | the daemon's manager session |
-| `cockpit provider list` (the names `--agent` takes, and whether each resumes) | no | the daemon's wiring |
+| `cockpit provider list` (the names `--agent` takes, whether each resumes and reports `events`) | no | the daemon's wiring |
 | `cockpit tui` (opens the manager session with the `cockpit-tui` installed beside `cockpit`, then attaches to it) | no | the daemon's manager session |
 | `cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...`, `list [--project P] [--all]`, `show ID`, `start ID`, `done ID [--summary TEXT]`, `delete ID` (agent socket in a launched session, else the owner's) | no | `cockpit-tasks` |
 | `cockpit todo propose TITLE --why TEXT [--project P]`, `blocked TITLE --why TEXT` (agent socket) | no | `cockpit-tasks` |

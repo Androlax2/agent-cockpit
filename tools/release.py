@@ -51,6 +51,12 @@ MANIFEST_PATH = "share/cockpit/manifest.json"
 MANIFEST_SCHEMA = 1
 # How long verify-install waits for `cockpit version --all` and for the daemon's ready line.
 COMMAND_TIMEOUT_SECONDS = 60
+# The `claude` verify-install puts first on the daemon's PATH: it answers only `--version`,
+# which is all the daemon runs of it at its start.
+STAND_IN_CLAUDE = """#!/bin/sh
+if [ "$1" = --version ]; then echo '0.0.0 (Claude Code stand-in)'; exit 0; fi
+exit 1
+"""
 # Alpha notes carry the known gaps (RELEASING.md, Changelog); #97 writes the file.
 KNOWN_GAPS = "docs/KNOWN-GAPS.md"
 
@@ -446,6 +452,13 @@ def verify_install(root, revision):
     home = tempfile.mkdtemp(prefix="cockpit-home-", dir="/tmp")
     environment = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     refuse_wrong_version_output(root, manifest, manifest_text, revision, environment)
+    # A stand-in Claude Code, so the daemon checks the hook bridge it ships (#203).
+    stand_in_dir = Path(home) / "stand-in-bin"
+    stand_in_dir.mkdir()
+    stand_in = stand_in_dir / "claude"
+    stand_in.write_text(STAND_IN_CLAUDE)
+    stand_in.chmod(0o755)
+    environment = {**environment, "PATH": f"{stand_in_dir}:{environment['PATH']}"}
     refuse_daemon_not_ready(root, environment)
     return {"version": manifest["version"], "files": str(len(manifest["contents"]))}
 
@@ -517,7 +530,9 @@ def refuse_wrong_version_output(root, manifest, manifest_text, revision, environ
 
 
 def refuse_daemon_not_ready(root, environment):
-    """cockpit-daemon prints `ready <socket>` once it accepts requests on a clean home."""
+    """cockpit-daemon prints `ready <socket>` once it accepts requests on a clean home, and
+    `cockpit provider list` then shows that Claude Code reports events: the daemon found and
+    ran the hook bridge beside it (#203)."""
     # Its own process group, so a helper it started dies with it; stderr goes to a file, so
     # a chatty daemon never blocks on a full pipe.
     with tempfile.TemporaryFile(mode="w+") as stderr_file:
@@ -533,6 +548,14 @@ def refuse_daemon_not_ready(root, environment):
         deadline.start()
         try:
             first_line = daemon.stdout.readline()
+            deadline.cancel()
+            listed = None
+            if first_line.startswith("ready "):
+                try:
+                    listed = run_bounded([str(root / "bin/cockpit"), "provider", "list"], environment)
+                except Refusal as timed_out:
+                    # Raised once the daemon's log is read, which says why it hung.
+                    listed = timed_out
         finally:
             deadline.cancel()
             stop_group(daemon)
@@ -541,6 +564,38 @@ def refuse_daemon_not_ready(root, environment):
         stderr = stderr_file.read()
     if not first_line.startswith("ready "):
         raise Refusal(f"cockpit-daemon did not print `ready <socket>`: {first_line!r} {stderr!r}")
+    if isinstance(listed, Refusal):
+        raise Refusal(f"{listed}; daemon log {stderr!r}")
+    code, stdout, listed_stderr = listed
+    if code != 0 or "claude\tresume\tevents" not in stdout.splitlines():
+        raise Refusal(
+            "the daemon did not find a runnable Claude hook bridge: cockpit provider list "
+            f"exit {code}, printed {stdout!r} {listed_stderr!r}; daemon log {stderr!r}"
+        )
+
+
+def run_bounded(command, environment):
+    """Exit code, stdout and stderr of `command`, in its own group killed after the timeout."""
+    with (
+        tempfile.TemporaryFile(mode="w+") as stdout_file,
+        tempfile.TemporaryFile(mode="w+") as stderr_file,
+    ):
+        process = subprocess.Popen(
+            command,
+            env=environment,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            start_new_session=True,
+        )
+        try:
+            process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as timeout:
+            raise Refusal(f"{' '.join(command[1:])} did not finish in {timeout.timeout}s") from timeout
+        finally:
+            stop_group(process)
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        return process.returncode, stdout_file.read(), stderr_file.read()
 
 
 def gate_gaps(channel):

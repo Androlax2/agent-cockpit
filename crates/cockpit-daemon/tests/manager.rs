@@ -182,11 +182,13 @@ async fn the_provider_list_names_each_wired_provider_and_whether_it_resumes() {
             providers: vec![
                 ProviderView {
                     name: "fake".to_owned(),
-                    resume: true
+                    resume: true,
+                    events: false
                 },
                 ProviderView {
                     name: "plain".to_owned(),
-                    resume: false
+                    resume: false,
+                    events: false
                 },
             ]
         }

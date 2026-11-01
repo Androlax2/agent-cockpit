@@ -71,6 +71,10 @@ pub struct Sessions {
     /// not until its caller stops waiting (report 03: "cancellation has two facts"), so hung
     /// steps cannot take the whole blocking pool (#325).
     blocking_permits: Arc<tokio::sync::Semaphore>,
+    /// The owner's session settings in force: `settings`' at start, then each
+    /// [`Sessions::apply_owner_settings`] (#354). Read once per use, so one launch or one
+    /// pass sees one value.
+    owner_settings: Mutex<cockpit_config::SessionSettings>,
 }
 
 /// A session's operation lock, and whether a launch holds it. A stop never
@@ -155,6 +159,7 @@ impl Sessions {
             git,
             providers,
             desktop_environment: Mutex::new(Vec::new()),
+            owner_settings: Mutex::new(settings.owner),
             settings,
             operations: Mutex::new(HashMap::new()),
         }
@@ -172,7 +177,32 @@ impl Sessions {
 
     /// Whether launched agents get the owner's desktop session variables (#305).
     pub fn desktop_session(&self) -> crate::DesktopSession {
-        self.settings.desktop_session
+        self.owner_settings().desktop_session
+    }
+
+    /// The owner's session settings in force now.
+    pub fn owner_settings(&self) -> cockpit_config::SessionSettings {
+        *self
+            .owner_settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Replaces the owner's session settings for every later launch and sessions pass, and
+    /// returns the ones they replace (#354). Running agents keep the environment they
+    /// started with; a sleeping session's expiry and an idle one's window count with the
+    /// new values from the next pass.
+    pub fn apply_owner_settings(
+        &self,
+        settings: cockpit_config::SessionSettings,
+    ) -> cockpit_config::SessionSettings {
+        std::mem::replace(
+            &mut *self
+                .owner_settings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            settings,
+        )
     }
 
     /// The state database the sessions live in, for the daemon's views that join them with
@@ -863,7 +893,8 @@ impl Sessions {
                 Err(error) => report.errors.push((id, error.to_string())),
             }
         }
-        let expiry = i64::try_from(self.settings.asleep_expiry.as_secs()).unwrap_or(i64::MAX);
+        let expiry =
+            i64::try_from(self.owner_settings().asleep_expiry.as_secs()).unwrap_or(i64::MAX);
         for session in asleep {
             let _operation = self.lock(&session.id).await;
             match self.expire_if_due(&session.id, expiry).await {
@@ -979,7 +1010,8 @@ impl Sessions {
             return Some(refusal);
         }
         let agent_report = agent_report?;
-        let window = i64::try_from(self.settings.idle_sleep_after.as_secs()).unwrap_or(i64::MAX);
+        let window =
+            i64::try_from(self.owner_settings().idle_sleep_after.as_secs()).unwrap_or(i64::MAX);
         let remaining = agent_report.reported_at.saturating_add(window) - store::now();
         if remaining > 0 {
             return Some(SleepRefusal::Idle { remaining });
@@ -1283,7 +1315,7 @@ impl Sessions {
             (token, execution)
         };
         let mut environment = self.settings.base_environment.clone();
-        if self.settings.desktop_session == crate::DesktopSession::Shared {
+        if self.desktop_session() == crate::DesktopSession::Shared {
             environment.extend(
                 self.desktop_environment
                     .lock()
@@ -1363,6 +1395,10 @@ impl Sessions {
             .confirm_hosted(&self.database, execution)
             .await?;
         self.record_agent_root(session, execution.process_group)
+            .await?;
+        // Only now may the agent run: its first request finds its root recorded (#316).
+        self.processes
+            .release_hosted(&self.database, execution.id)
             .await?;
         Ok(execution)
     }

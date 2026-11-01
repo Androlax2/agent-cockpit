@@ -19,7 +19,7 @@ use serde::Deserialize;
 use toml::Spanned;
 
 pub use layout::{AGENT_SOCKET, AGENT_SOCKET_DIR, DAEMON_SOCKET, Environment, Layout};
-pub use show::render;
+pub use show::{SessionSettings, render};
 pub use start_files::{FileState, KNOWN_PROVIDERS, RecordedFile, StartFile, StartFileSnapshot};
 
 /// Where the project's own configuration lives, relative to the project directory.

@@ -70,10 +70,21 @@ async fn launches_with_a_bus_in_the_supervisor() {
         .prepare_hosted(&database, &bus_probe(&home, &seen.join("hosted")), &[])
         .await
         .unwrap();
-    let status = Command::new(&hosted.command[0])
+    let mut host = Command::new(&hosted.command[0])
         .args(&hosted.command[1..])
         .current_dir(home.path())
-        .status()
+        .spawn()
+        .unwrap();
+    supervisor
+        .confirm_hosted(&database, hosted.execution)
+        .await
+        .unwrap();
+    supervisor
+        .release_hosted(&database, hosted.execution)
+        .await
+        .unwrap();
+    let status = tokio::task::spawn_blocking(move || host.wait().unwrap())
+        .await
         .unwrap();
 
     assert!(status.success());

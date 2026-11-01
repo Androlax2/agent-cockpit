@@ -1,10 +1,14 @@
 //! `config show`: every effective value with its source, one `key = value  # source` per line.
 
 use std::path::Path;
+use std::time::Duration;
 
 use toml::{Table, Value};
 
-use crate::{ASLEEP_EXPIRY_DAYS, ConfigFile, EffectiveConfig, IDLE_SLEEP_AFTER_MINUTES, Source};
+use crate::{
+    ASLEEP_EXPIRY_DAYS, ConfigFile, DesktopSession, EffectiveConfig, IDLE_SLEEP_AFTER_MINUTES,
+    Source,
+};
 
 const UNSET: &str = "<unset>";
 
@@ -71,21 +75,19 @@ pub fn render(config: &EffectiveConfig) -> String {
         &config.tasks_cross_project_open_max.value.to_string(),
         &config.tasks_cross_project_open_max.source,
     ));
-    for (bound, setting) in [
-        (&IDLE_SLEEP_AFTER_MINUTES, &config.idle_sleep_after),
-        (&ASLEEP_EXPIRY_DAYS, &config.asleep_expiry),
-    ] {
-        lines.push(line(
-            bound.key,
-            &bound.count(setting.value).to_string(),
-            &setting.source,
-        ));
-    }
-    lines.push(line(
-        "agents.desktop_session",
-        &Value::from(config.agents_desktop_session.value.as_str()).to_string(),
+    let session_settings = SessionSettings {
+        idle_sleep_after: config.idle_sleep_after.value,
+        asleep_expiry: config.asleep_expiry.value,
+        desktop_session: config.agents_desktop_session.value,
+    };
+    let sources = [
+        &config.idle_sleep_after.source,
+        &config.asleep_expiry.source,
         &config.agents_desktop_session.source,
-    ));
+    ];
+    for ((key, value), source) in session_settings.rendered().into_iter().zip(sources) {
+        lines.push(line(key, &value, source));
+    }
     for start_file in &config.start_files {
         let mut fields = Table::new();
         fields.insert("path".to_string(), path_toml(&start_file.value.path));
@@ -127,6 +129,37 @@ pub fn render(config: &EffectiveConfig) -> String {
         ));
     }
     lines.join("\n") + "\n"
+}
+
+/// The owner settings a running daemon holds from its start until `cockpit config reload`
+/// (#354), the others it reads at each use or only at its start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionSettings {
+    pub idle_sleep_after: Duration,
+    pub asleep_expiry: Duration,
+    pub desktop_session: DesktopSession,
+}
+
+impl SessionSettings {
+    /// Each setting's key and value as the owner's file writes them, in `config show`'s order.
+    pub fn rendered(&self) -> [(&'static str, String); 3] {
+        [
+            (
+                IDLE_SLEEP_AFTER_MINUTES.key,
+                IDLE_SLEEP_AFTER_MINUTES
+                    .count(self.idle_sleep_after)
+                    .to_string(),
+            ),
+            (
+                ASLEEP_EXPIRY_DAYS.key,
+                ASLEEP_EXPIRY_DAYS.count(self.asleep_expiry).to_string(),
+            ),
+            (
+                "agents.desktop_session",
+                Value::from(self.desktop_session.as_str()).to_string(),
+            ),
+        ]
+    }
 }
 
 fn line(key: &str, value: &str, source: &Source) -> String {

@@ -78,10 +78,19 @@ pub struct Wiring {
 /// (report 09); everything else keeps the product's values.
 pub fn session_settings(config: &cockpit_config::EffectiveConfig) -> cockpit_sessions::Settings {
     cockpit_sessions::Settings {
+        owner: owner_session_settings(config),
+        ..cockpit_sessions::Settings::default()
+    }
+}
+
+/// The owner's settings a running daemon holds until `config reload` (#354).
+fn owner_session_settings(
+    config: &cockpit_config::EffectiveConfig,
+) -> cockpit_config::SessionSettings {
+    cockpit_config::SessionSettings {
         idle_sleep_after: config.idle_sleep_after.value,
         asleep_expiry: config.asleep_expiry.value,
         desktop_session: config.agents_desktop_session.value,
-        ..cockpit_sessions::Settings::default()
     }
 }
 
@@ -145,11 +154,14 @@ impl Instance {
             cockpit_turso::Database::open(&options.database_path(), &MIGRATION_SETS).await?,
         );
         tracing::info!(epoch = database.epoch(), "opened the state database");
-        let processes = cockpit_processes::Supervisor::detect(
+        let mut processes = cockpit_processes::Supervisor::detect(
             options.executions_dir(),
             cockpit_processes::SystemdTools::from_path(),
         )
         .await;
+        // An agent's program waits from its start through the launch's confirm and the step
+        // that records its root; a launch slower than that has already failed (#316).
+        processes.release_window = processes.launch_timeout + 2 * wiring.sessions.step_timeout;
         tracing::info!(
             containment = ?processes.launch_containment(),
             "new executions use this containment"
@@ -186,6 +198,9 @@ impl Instance {
                 resume: provider
                     .capabilities()
                     .supports(cockpit_provider_api::Capability::Resume),
+                events: provider
+                    .capabilities()
+                    .supports(cockpit_provider_api::Capability::Events),
             })
             .collect();
         // Opened once: the sessions and the manager share the handle, so one config write and

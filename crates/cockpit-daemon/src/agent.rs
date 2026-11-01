@@ -9,7 +9,7 @@ use cockpit_provider_api::TurnOutcome;
 use cockpit_sessions::{AgentState, Error, QuestionSource, Report, SessionReport};
 use cockpit_turso::Database;
 
-use crate::approvals::{Failed, Sender};
+use crate::approvals::Sender;
 use crate::routes::refusal;
 
 /// Identifies the sender from its process tree, then records its report in one write
@@ -21,10 +21,7 @@ pub(crate) async fn report(
     report: cockpit_protocol::AgentReport,
 ) -> Outcome {
     let peer_pid = connector.as_ref().ok().map(|process| process.pid);
-    let sender = match Sender::once_launched(connector, &database, launch_token.as_deref()).await {
-        Ok(sender) => sender,
-        Err(Failed(error)) => return Outcome::Error(error),
-    };
+    let sender = Sender::read(connector).await;
     let write = match database.write().await {
         Ok(write) => write,
         Err(error) => return internal(&error),

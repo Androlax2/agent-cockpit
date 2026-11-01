@@ -95,7 +95,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     };
     if let Some(window) = serve.idle_sleep_after {
         tracing::warn!(?window, "the idle window is overridden for a test");
-        sessions.idle_sleep_after = window;
+        sessions.owner.idle_sleep_after = window;
     }
     let runtime = tokio::runtime::Runtime::new().map_err(StartError::Runtime)?;
     runtime.block_on(async {
@@ -150,20 +150,14 @@ fn claude_code(programs_dir: &Path) -> Option<cockpit_claude::ClaudeCode> {
         hook_program: programs_dir.join("cockpit-claude-hook"),
         cockpit_program: programs_dir.join("cockpit"),
     };
-    let missing: Vec<String> = [&bridge.hook_program, &bridge.cockpit_program]
-        .into_iter()
-        .filter(|program| !program.is_file())
-        .map(|program| program.display().to_string())
-        .collect();
-    // Without its bridge the adapter subscribes no hooks and does not report `events`.
-    let bridge = if missing.is_empty() {
-        Some(bridge)
-    } else {
-        tracing::warn!(
-            "provider claude: {} missing, so its activity is not reported",
-            missing.join(" and ")
-        );
-        None
+    // Without its bridge the adapter subscribes no hooks and does not report `events`, which
+    // `cockpit provider list` shows (#203).
+    let bridge = match bridge.check() {
+        Ok(()) => Some(bridge),
+        Err(reason) => {
+            tracing::warn!("provider claude: {reason}, so its activity is not reported");
+            None
+        }
     };
     let claude = match cockpit_claude::ClaudeCode::discover(&program, bridge) {
         Ok(claude) => claude,

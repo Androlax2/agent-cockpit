@@ -150,6 +150,15 @@ pub struct SessionFailure {
     pub error: ProtocolError,
 }
 
+/// One owner setting a running daemon applies, after a `config-reload` (#354): its key in
+/// the owner's file and its value as that file writes it (TOML), before and after.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedSettingView {
+    pub key: String,
+    pub value: String,
+    pub before: String,
+}
+
 /// A provider a session may be started with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderView {
@@ -157,4 +166,7 @@ pub struct ProviderView {
     pub name: String,
     /// It can reopen a conversation it started: restart, sleep and resume work.
     pub resume: bool,
+    /// It reports its agents' activity (state, questions, outcomes) to Cockpit: for Claude
+    /// Code, the daemon found a hook bridge that runs (#203).
+    pub events: bool,
 }
