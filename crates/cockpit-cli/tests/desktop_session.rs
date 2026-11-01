@@ -76,3 +76,21 @@ async fn import_into_a_daemon_that_withholds_the_desktop_session_says_so_and_suc
         text(&output.stderr)
     );
 }
+
+#[tokio::test]
+async fn import_from_a_shell_without_a_desktop_session_warns_that_agents_get_none() {
+    let (output, sent) = import(&[], false).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("no desktop session variable is set here"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert_eq!(
+        sent,
+        Command::DesktopSessionImport {
+            variables: Default::default(),
+        }
+    );
+}

@@ -15,6 +15,8 @@ Issue #307. Decided by Theo in #342 (option A), 2026-11-01.
 - **In memory, not in the database:** a restarted daemon starts again from its own
   environment, and the next login's import refreshes it; a stored value would outlive the
   session it named.
+- **An import with none of the four set warns** on stderr and is recorded: from a TTY or
+  SSH login it is more likely a mistake, but an agent with no display is a legitimate state.
 - **A withholding owner still records it,** and the CLI says on stderr that agents are kept
   off it, exiting 0, so a login script does not fail on the owner's own opt-out (#305).
 - **The dotfiles run it at each login and compositor start** (report 19's integration

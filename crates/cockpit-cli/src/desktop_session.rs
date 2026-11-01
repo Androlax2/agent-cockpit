@@ -8,36 +8,34 @@ use std::process::ExitCode;
 
 use cockpit_protocol::{Command, DESKTOP_SESSION_VARIABLES, Reply};
 
-use crate::daemon::{CONTROL_DEADLINE, request, unexpected, utf8_words};
+use crate::daemon::{CONTROL_DEADLINE, fail, request, unexpected, utf8_words};
 
-/// The `desktop-session` verb's command, from this process's environment.
-pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
+/// The `desktop-session` verbs; only `import` exists.
+pub fn parse(arguments: &[OsString]) -> Result<(), String> {
     match utf8_words(arguments)?.as_slice() {
-        ["import"] => Ok(Command::DesktopSessionImport {
-            variables: own_variables()?,
-        }),
+        ["import"] => Ok(()),
         _ => Err("unknown desktop-session arguments".to_owned()),
     }
 }
 
-/// The desktop session variables this process has; an unset one stays out, so later
-/// agents get it unset too.
-fn own_variables() -> Result<BTreeMap<String, String>, String> {
-    let mut variables = BTreeMap::new();
-    for name in DESKTOP_SESSION_VARIABLES {
-        let Some(value) = std::env::var_os(name) else {
-            continue;
-        };
-        let value = value
-            .into_string()
-            .map_err(|_| format!("${name} is not UTF-8"))?;
-        variables.insert(name.to_owned(), value);
+/// Sends this process's desktop session variables; an unset one stays out, so later agents
+/// get it unset too.
+pub fn import() -> ExitCode {
+    let variables = match own_variables() {
+        Ok(variables) => variables,
+        Err(problem) => return fail(&problem),
+    };
+    // Legitimate (an agent then gets no display), but from a TTY or SSH login it is more
+    // likely a mistake, and it replaces a live session's values.
+    if variables.is_empty() {
+        eprintln!(
+            "cockpit: no desktop session variable is set here; agents launched from now on get none"
+        );
     }
-    Ok(variables)
-}
-
-pub fn run(command: Command) -> ExitCode {
-    match request(command, CONTROL_DEADLINE) {
+    match request(
+        Command::DesktopSessionImport { variables },
+        CONTROL_DEADLINE,
+    ) {
         Ok(Reply::DesktopSessionImported { withheld: false }) => ExitCode::SUCCESS,
         // Recorded all the same: a login script must not fail because the owner opted out.
         Ok(Reply::DesktopSessionImported { withheld: true }) => {
@@ -49,4 +47,18 @@ pub fn run(command: Command) -> ExitCode {
         Ok(other) => unexpected(&other),
         Err(code) => code,
     }
+}
+
+fn own_variables() -> Result<BTreeMap<String, String>, String> {
+    let mut variables = BTreeMap::new();
+    for name in DESKTOP_SESSION_VARIABLES {
+        let Some(value) = std::env::var_os(name) else {
+            continue;
+        };
+        let value = value
+            .into_string()
+            .map_err(|_| format!("${name} is not UTF-8, so it cannot be imported"))?;
+        variables.insert(name.to_owned(), value);
+    }
+    Ok(variables)
 }

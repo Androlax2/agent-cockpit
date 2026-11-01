@@ -121,7 +121,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
 
 /// Records the owner's desktop session variables for later launches (#307). A name outside
 /// [`DESKTOP_SESSION_VARIABLES`] is refused, so the import cannot add other variables to
-/// every agent.
+/// every agent, and so is a value with a NUL byte, which no launch could pass on.
 pub(crate) fn import_desktop_session(
     variables: std::collections::BTreeMap<String, String>,
     sessions: Arc<Sessions>,
@@ -136,6 +136,15 @@ pub(crate) fn import_desktop_session(
                 "{unknown} is not a desktop session variable; the import takes {}",
                 DESKTOP_SESSION_VARIABLES.join(", ")
             ),
+        ));
+    }
+    if let Some(name) = variables
+        .iter()
+        .find_map(|(name, value)| value.contains('\0').then_some(name))
+    {
+        return Route::Answer(refusal(
+            ErrorCode::InvalidArgument,
+            &format!("{name} holds a NUL byte"),
         ));
     }
     Route::Run {

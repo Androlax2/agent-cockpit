@@ -9,6 +9,11 @@ Issue #305. Decided by Theo in #341 (option A), 2026-11-01.
   `cockpit_protocol::DESKTOP_SESSION_VARIABLES`. Proof:
   `crates/cockpit-daemon/tests/agent_environment.rs`
   `an_owner_who_withholds_the_desktop_session_launches_agents_without_any_of_it`.
+- **Under a systemd scope too.** `systemd-run --user` reaches the manager through the
+  daemon's `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR`, and with `--scope` its program
+  inherited them; `cockpit-processes` now drops, after `systemd-run`, those the spec does
+  not set, so a program gets exactly its spec's environment. Proof:
+  `crates/cockpit-processes/tests/scope_environment.rs`.
 - **Selected today by the owner setting `agents.desktop_session = "shared" | "withheld"`,**
   default `shared` as #303 decided; later by a sandbox profile (#61) through the same value.
   Owner-only: a project file that sets `[agents]` fails, like `[sessions]`.

@@ -140,18 +140,23 @@ async fn an_agent_may_not_import_a_desktop_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_import_naming_another_variable_is_refused() {
+async fn an_import_of_another_variable_or_a_nul_byte_is_refused_with_its_name() {
     let home = Home::new();
     let _daemon = home.start();
     let client = home.connect().await;
 
-    let refused = client.request(display_import("LD_PRELOAD"), GENEROUS).await;
+    for (name, value) in [("LD_PRELOAD", ":9"), ("DISPLAY", ":9\0x")] {
+        let import = Command::DesktopSessionImport {
+            variables: [(name.to_owned(), value.to_owned())].into(),
+        };
+        let refused = client.request(import, GENEROUS).await;
 
-    assert!(
-        matches!(&refused, Err(ClientError::Daemon(error))
-            if error.code == ErrorCode::InvalidArgument && error.message.contains("LD_PRELOAD")),
-        "{refused:?}"
-    );
+        assert!(
+            matches!(&refused, Err(ClientError::Daemon(error))
+                if error.code == ErrorCode::InvalidArgument && error.message.contains(name)),
+            "{name}: {refused:?}"
+        );
+    }
 }
 
 /// An import that sets `name` alone.

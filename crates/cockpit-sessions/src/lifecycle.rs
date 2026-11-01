@@ -116,15 +116,17 @@ impl Sessions {
         tmux: Result<Arc<Server>, String>,
         git: Git,
         providers: Vec<Arc<dyn Provider>>,
-        settings: Settings,
+        mut settings: Settings,
     ) -> Sessions {
+        // Moved out, so the start's values cannot be read after an import replaced them.
+        let desktop_environment = std::mem::take(&mut settings.desktop_environment);
         Sessions {
             database,
             processes,
             tmux,
             git,
             providers,
-            desktop_environment: Mutex::new(settings.desktop_environment.clone()),
+            desktop_environment: Mutex::new(desktop_environment),
             settings,
             operations: Mutex::new(HashMap::new()),
         }

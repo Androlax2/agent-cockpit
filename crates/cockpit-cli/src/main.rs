@@ -141,7 +141,7 @@ fn main() -> ExitCode {
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("desktop-session"), ..] => match desktop_session::parse(&arguments[1..]) {
-            Ok(command) => desktop_session::run(command),
+            Ok(()) => desktop_session::import(),
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("tui"), ..] => {

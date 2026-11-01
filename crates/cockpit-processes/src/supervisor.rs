@@ -243,6 +243,7 @@ impl Supervisor {
         let (mut command, program) = match containment {
             Containment::SystemdScope { unit } => {
                 let mut command = self.systemd.scope_launcher(unit, takes_expand_environment);
+                command.args(scope_variables_unset(&spec.environment));
                 command.args(&launcher);
                 (command, self.systemd.systemd_run.clone())
             }
@@ -377,6 +378,7 @@ impl Supervisor {
                 self.systemd
                     .scope_launcher_words(unit, takes_expand_environment),
             );
+            command.extend(scope_variables_unset(&spec.environment));
         }
         command.extend(["/bin/sh", "-c", LAUNCH_SCRIPT, "cockpit-launch"].map(OsString::from));
         command.push(dir.join(LEADER_FILE).into_os_string());
@@ -802,6 +804,22 @@ fn scope_manager_variables(environment: &[(OsString, OsString)]) -> Vec<(OsStrin
         .filter(|name| !environment.iter().any(|(set, _)| set == name))
         .filter_map(|name| Some((name.into(), std::env::var_os(name)?)))
         .collect()
+}
+
+/// The words that drop, after `systemd-run`, the [`scope_manager_variables`] it alone needed:
+/// the program gets exactly `environment`, so a spec that leaves out the session bus keeps
+/// its program off it (#305). Empty when the spec sets them all.
+fn scope_variables_unset(environment: &[(OsString, OsString)]) -> Vec<OsString> {
+    let added = scope_manager_variables(environment);
+    if added.is_empty() {
+        return Vec::new();
+    }
+    let mut words = vec![OsString::from("/usr/bin/env")];
+    for (name, _) in added {
+        words.push("-u".into());
+        words.push(name);
+    }
+    words
 }
 
 /// The host's shell step of a hosted command. It reads the environment file (its first
