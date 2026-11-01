@@ -588,10 +588,12 @@ impl App {
     }
 
     /// Keys taken from the viewer go back to it, unless the owner is typing in the column:
-    /// a form, a confirmation or an overlay is open.
+    /// a form, a confirmation, the workflow view or an overlay is open.
     fn give_keys_back(&mut self) -> Option<Command> {
-        let is_owner_in_column =
-            self.form.is_some() || self.confirm.is_some() || self.overlay.is_some();
+        let is_owner_in_column = self.form.is_some()
+            || self.confirm.is_some()
+            || self.workflows.is_some()
+            || self.overlay.is_some();
         if is_owner_in_column {
             self.keep_keys();
         }

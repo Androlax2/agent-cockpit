@@ -505,3 +505,15 @@ fn keys_arriving_after_the_queue_emptied_stay_while_the_form_is_open() {
 
     assert_eq!(sent_on_reply, None);
 }
+
+#[test]
+fn keys_arriving_after_the_queue_emptied_stay_while_the_workflow_view_is_open() {
+    let now = Instant::now();
+    let mut app = app_asked(now);
+    emptied(&mut app, now);
+    app.key(Key::Char('F'), now);
+
+    let sent_on_reply = answer(&mut app, focus(ManagerPaneView::Column), focused(true), now);
+
+    assert_eq!(sent_on_reply, None);
+}

@@ -10,7 +10,8 @@ owner did not have in the viewer.
   from the viewer and asks for `viewer` once the queue empties, including when tmux's answer
   arrives after the queue emptied (`crates/cockpit-tui/src/app.rs`, `TakenKeys`).
 - **Keys the owner uses in the column stay there:** when the owner tabbed to the list, or a
-  form, confirmation, help or log is open as the queue empties, nothing goes back.
+  form, confirmation, the workflow view, help or log is open as the queue empties, nothing
+  goes back.
 - **Keys the list already had stay in the list.** An owner who clicked the list before the
   request keeps typing to the list after it (`e2e ask::the_keys_stay_in_the_list_the_owner_had_them_in_once_the_pane_empties`).
 - **Rejected:** always giving the keys to the viewer on empty (moves keys the owner put in
