@@ -316,7 +316,7 @@ async fn a_niced_execution_reports_the_niceness_the_kernel_shows() {
         ..Limits::default()
     };
     let execution = home
-        .launch(&database, &backend.wrap(home.sleeper(), &limits))
+        .launch_past_its_shims(&database, &backend.wrap(home.sleeper(), &limits))
         .await;
 
     let inspected = backend.inspect(&execution, &limits).await;
@@ -339,7 +339,7 @@ async fn an_idle_execution_reports_sched_idle_from_the_kernel() {
         ..Limits::default()
     };
     let execution = home
-        .launch(&database, &backend.wrap(home.sleeper(), &limits))
+        .launch_past_its_shims(&database, &backend.wrap(home.sleeper(), &limits))
         .await;
 
     let inspected = backend.inspect(&execution, &limits).await;

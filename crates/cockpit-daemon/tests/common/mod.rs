@@ -242,6 +242,53 @@ impl Drop for RunningDaemon {
     }
 }
 
+/// How long a check that something did not happen keeps looking: a fake agent the daemon
+/// launched by mistake has logged well within it.
+pub const SETTLE: Duration = Duration::from_millis(500);
+
+/// What `read` returns once it holds `count` entries, for a log a fake agent writes from its
+/// own shell after tmux starts it: the daemon's reply about a launch can arrive before the
+/// agent's line, and an agent stopped before it writes never does, so a test waits for a
+/// launch before it reads it or stops that agent (#231, #235, #257). Panics on more than
+/// `count`, or when [`GENEROUS`] runs out first.
+pub async fn once_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Vec<T>) -> Vec<T> {
+    let deadline = std::time::Instant::now() + GENEROUS;
+    loop {
+        let logged = read();
+        assert!(
+            logged.len() <= count,
+            "expected {count} entries, the agent logged {logged:?}"
+        );
+        if logged.len() == count {
+            return logged;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent logged {} of {count} entries: {logged:?}",
+            logged.len()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// What `read` returns once it holds `count` entries and still holds them [`SETTLE`] later:
+/// for checks that no further launch happened, which a single read right after a reply
+/// could not see.
+pub async fn still_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> Vec<T>) -> Vec<T> {
+    let mut logged = once_logged(count, &read).await;
+    let settled = std::time::Instant::now() + SETTLE;
+    while std::time::Instant::now() < settled {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        logged = read();
+        assert_eq!(
+            logged.len(),
+            count,
+            "a further entry was logged: {logged:?}"
+        );
+    }
+    logged
+}
+
 /// What an in-process daemon is wired with in tests: a private tmux server in `dir`, never
 /// the user's, `providers`, and a home of its own in `dir/home`.
 pub fn wiring_in(
