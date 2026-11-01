@@ -442,10 +442,10 @@ async fn run_of(
     }
 }
 
-/// The request `id` as the owner and its asking session read it. One the owner may no
-/// longer decide ([`may_still_ask`]) reads as expired, as [`open_runs`] leaves it out: a
-/// poll neither keeps it alive nor leaves the agent waiting (#285), and the owner's view
-/// offers no approval (#347).
+/// The request `id` as the owner and its asking session read it. One whose asking grant no
+/// longer covers its session reads as expired, as [`open_runs`] leaves it out: a poll
+/// neither keeps it alive nor leaves the agent waiting (#285), and the owner's view offers
+/// no approval (#347).
 pub async fn shown_run(
     connection: &Connection,
     id: RunId,

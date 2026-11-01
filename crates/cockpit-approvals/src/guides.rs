@@ -463,8 +463,8 @@ async fn guide_of(
     }
 }
 
-/// The guide `id` as the owner and its asking session read it. One the owner may no longer
-/// answer ([`may_still_ask`]) reads as expired, as [`open_guides`] leaves it out: a poll
+/// The guide `id` as the owner and its asking session read it. One whose asking grant no
+/// longer covers its session reads as expired, as [`open_guides`] leaves it out: a poll
 /// neither keeps it alive nor leaves the agent waiting (#285), and the owner's view offers
 /// no answer (#347).
 pub async fn shown_guide(
