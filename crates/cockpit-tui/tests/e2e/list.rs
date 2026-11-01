@@ -5,6 +5,7 @@ use crate::harness::Cockpit;
 
 /// A label and a doing that together are longer than the list is wide, so the card's
 /// details line wraps.
+#[cfg(target_os = "linux")]
 const LABEL_AND_DOING: &str = r#"!cockpit agent report --label "plan review" --doing "reading every report before it changes the card layout""#;
 
 /// Rows the owner's terminal keeps: the list's border and the status line leave five rows of
@@ -35,6 +36,8 @@ fn the_list_scrolls_to_keep_the_selected_card_on_screen() {
     });
 }
 
+// The agent's report needs the agent channel, which reads process trees on Linux only (#336).
+#[cfg(target_os = "linux")]
 #[test]
 fn a_wrapped_details_line_stays_under_the_card_s_indent() {
     let cockpit = Cockpit::start();
