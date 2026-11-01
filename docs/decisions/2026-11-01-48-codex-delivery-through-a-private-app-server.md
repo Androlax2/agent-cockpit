@@ -10,8 +10,8 @@ Codex 0.161.0 with a fresh `CODEX_HOME`.
   environment, so hooks keep the launch token. The hooks and their launch-scoped trust go on
   the server, which is where Codex runs them. When the TUI exits, the launcher sends the
   server `SIGTERM` (Codex's npm wrapper passes it on; end of input does not stop it), then
-  `SIGKILL` after 5 seconds. The server stays in the session's process group, so stopping
-  the session stops it too.
+  `SIGKILL` after 5 seconds, to the wrapper's descendants too (read from `/proc` on Linux).
+  The server stays in the session's process group, so stopping the session stops it too.
 - **The provider contract gains `LaunchRequest::session_dir` and `Provider::deliver`.** The
   session's directory is `sessions/<id>` in the daemon's socket directory, made 0700 by
   `cockpit-sessions` before each launch. `deliver` takes the conversation as well as the
@@ -44,5 +44,8 @@ Codex 0.161.0 with a fresh `CODEX_HOME`.
   change what Codex loads for it.
 - **Known limits.** Codex puts the socket's real file in `/tmp/codex-daemon-<uid>/` and leaves
   a symbolic link at the path given, so a sandbox around the agent must share that directory
-  with the daemon. Approval requests from the server go to the TUI, as without the bridge;
-  that path was not exercised without a signed-in account.
+  with the daemon. Approval requests from the server are left to the TUI, which answers
+  them; whether Codex also sends a turn started by `deliver` its approvals on Cockpit's
+  short-lived connection was not measured without a signed-in account (#436). One delivery
+  makes up to seven calls of at most 5 seconds each, plus 2 seconds of listing retries, so a
+  stalled server holds it for about half a minute.

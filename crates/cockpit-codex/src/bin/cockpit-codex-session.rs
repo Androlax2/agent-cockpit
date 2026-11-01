@@ -119,8 +119,12 @@ impl Options {
 
 fn run(options: &Options) -> Result<ExitCode, String> {
     let log_path = options.socket.with_file_name(LOG_FILE);
-    let log = File::create(&log_path)
-        .map_err(|error| format!("cannot create {}: {error}", log_path.display()))?;
+    // Appended to, so a restart keeps the output of the launch before it.
+    let log = File::options()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| format!("cannot open {}: {error}", log_path.display()))?;
     let log = Arc::new(Mutex::new(log));
     let mut server = start_server(options, &log)?;
     if let Err(reason) = wait_until_listening(&options.socket, &mut server) {
@@ -207,10 +211,7 @@ fn watch_in_background(options: &Options, log: Arc<Mutex<File>>) {
             Ok(server) => server,
             Err(error) => return note(format!("failed turns are not reported: {error}")),
         };
-        if let Err(error) = server.set_timeout(None) {
-            return note(format!("failed turns are not reported: {error}"));
-        }
-        let ended = cockpit_codex::turns::watch_failures(&mut server, |report| {
+        let ended = cockpit_codex::turns::watch_failures(&mut server, CALL_TIMEOUT, |report| {
             let status = Command::new(&cockpit)
                 .args(&report)
                 .stdin(Stdio::null())
@@ -228,7 +229,8 @@ fn watch_in_background(options: &Options, log: Arc<Mutex<File>>) {
 }
 
 /// Stops the app-server: `SIGTERM`, which Codex's npm wrapper passes to the server it runs,
-/// then `SIGKILL` after a grace period.
+/// then `SIGKILL` after a grace period, to the wrapper's descendants as well, which would
+/// otherwise outlive it with the launch token.
 fn stop(mut server: Child) {
     let pid = rustix::process::Pid::from_child(&server);
     let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
@@ -239,6 +241,34 @@ fn stop(mut server: Child) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    for descendant in descendants(server.id()) {
+        if let Some(pid) = rustix::process::Pid::from_raw(descendant) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        }
+    }
     let _ = server.kill();
     let _ = server.wait();
+}
+
+/// The processes below `pid`, from Linux's `/proc`; none where it cannot be read, such as on
+/// macOS, where only the wrapper is killed.
+fn descendants(pid: u32) -> Vec<i32> {
+    let mut found = Vec::new();
+    let mut parents = vec![pid.to_string()];
+    while let Some(parent) = parents.pop() {
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{parent}/task")) else {
+            continue;
+        };
+        for task in tasks.flatten() {
+            let children =
+                std::fs::read_to_string(task.path().join("children")).unwrap_or_default();
+            for child in children.split_whitespace() {
+                if let Ok(child_pid) = child.parse::<i32>() {
+                    found.push(child_pid);
+                    parents.push(child.to_owned());
+                }
+            }
+        }
+    }
+    found
 }

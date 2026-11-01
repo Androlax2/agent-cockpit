@@ -126,6 +126,23 @@ fn a_message_whose_turn_ended_meanwhile_starts_a_new_turn() {
 }
 
 #[test]
+fn a_steer_refused_while_its_turn_still_runs_fails_with_codexs_reason() {
+    let (dir, server) = session(|method, _| match method {
+        "thread/read" => thread_status("inProgress"),
+        "thread/turns/list" => last_turn(TURN, "inProgress"),
+        "turn/steer" => Err("input is too long".to_owned()),
+        _ => Ok(json!({})),
+    });
+
+    let refused = common::codex()
+        .deliver(&Action::Submit("next"), dir.path(), &thread())
+        .unwrap_err();
+
+    assert_eq!(refused.reason, "`turn/steer` failed: input is too long");
+    assert!(!server.methods().contains(&"turn/start".to_owned()));
+}
+
+#[test]
 fn a_refused_message_fails_with_codexs_reason() {
     let (dir, _server) = session(|method, _| match method {
         "thread/read" => thread_status("completed"),

@@ -17,8 +17,8 @@ provider and nothing above the contract sees a Codex type (#48).
   [resume] --remote unix://<socket> [-- [<thread id>] [<first message>]]` (`tui_arguments`).
   Both run in the session's terminal with the launch's environment, so hooks keep the launch
   token; the server's working directory is the conversation's. When the TUI exits, the
-  launcher stops the server (`SIGTERM`, which Codex's npm wrapper passes on, then `SIGKILL`)
-  and exits with the TUI's status. The server's output goes to `codex-app-server.log` beside
+  launcher stops the server (`SIGTERM`, which Codex's npm wrapper passes on, then `SIGKILL`
+  to the wrapper and its descendants) and exits with the TUI's status. The server's output goes to `codex-app-server.log` beside
   the socket. A private server per session, never Codex's shared one: the shared server
   runs hooks with whichever launch's token started it (as #184 for Claude Code).
 - **Launch without the bridge.** `codex [resume] --no-daemon`, with the thread id and the
@@ -43,8 +43,9 @@ provider and nothing above the contract sees a Codex type (#48).
   answer their name and version for `Bridge::check`.
 - **Failed turns** (`turns`). A failed turn sends no hook. It leaves its thread
   `systemError`, which the app-server announces to every connection; the launcher's watcher
-  then reads the thread's last turn and reports `waiting --outcome failed --outcome-reason
-  <Codex's error kind>`, or `--outcome quota-stopped` for `usageLimitExceeded`. A helper
+  then reads the thread's last turn and reports it once, `waiting --outcome failed
+  --outcome-reason <Codex's error kind>`, or `--outcome quota-stopped` for
+  `usageLimitExceeded`. A helper
   thread's (ephemeral) or a subagent's failure is not the conversation's and is not reported.
 - **Delivery** (`delivery`, `Provider::deliver`). Over the session's socket (WebSocket
   JSON-RPC, `app_server`): a message starts a turn (`turn/start`) when the thread is not
@@ -56,7 +57,8 @@ provider and nothing above the contract sees a Codex type (#48).
 - **Known gaps.** After `/clear`, Codex starts a new thread and sends no `SessionEnd` for the
   old one (measured), so the bridge cannot announce `--conversation-ends`, and the daemon
   refuses the new thread's reports (#408). The socket's real file is Codex's, under
-  `/tmp/codex-daemon-<uid>/`, which the session's sandbox and the daemon must share.
+  `/tmp/codex-daemon-<uid>/`, which the session's sandbox and the daemon must share. Where
+  the approval requests of a delivered turn go is unmeasured (#436).
 
 ## Dependency edges
 

@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 const THREAD: &str = "01a1981e-525b-75f2-902e-1e2e6d337eea";
 const HELPER_THREAD: &str = "01a1981e-6eb4-70d3-a4a5-f74762d56dd3";
+const OTHER_THREAD: &str = "01a1981e-7a10-7c11-b0a2-0d1e2f3a4b5c";
 
 /// The fake `codex`: as `app-server`, it records its words and pid and sleeps; as the TUI,
 /// it records its words and exits 3 once the test creates `tui.exit`.
@@ -24,6 +25,20 @@ const FAKE_CODEX: &str = r#"if [ "$1" = app-server ]; then
   exec sleep 600
 fi
 printf '%s\n' "$@" > "$FAKE_DIR/tui.args"
+while [ ! -e "$FAKE_DIR/tui.exit" ]; do sleep 0.05; done
+exit 3"#;
+
+/// A fake `codex` whose app-server ignores `SIGTERM` and runs a child that does too, as a
+/// wrapper that does not pass the signal on would leave it.
+const FAKE_CODEX_IGNORING_TERM: &str = r#"if [ "$1" = app-server ]; then
+  trap '' TERM
+  sleep 600 &
+  echo $! > "$FAKE_DIR/server-child.pid"
+  echo $$ > "$FAKE_DIR/server.pid.partial" && mv "$FAKE_DIR/server.pid.partial" "$FAKE_DIR/server.pid"
+  wait
+  exit 0
+fi
+touch "$FAKE_DIR/tui.args"
 while [ ! -e "$FAKE_DIR/tui.exit" ]; do sleep 0.05; done
 exit 3"#;
 
@@ -115,6 +130,22 @@ fn wait_for_file(path: &Path) {
     }
 }
 
+/// Whether `pid` runs: it exists and is not a zombie.
+fn is_running(pid: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| !rest.starts_with('Z'))
+    })
+}
+
+fn wait_until(condition: impl Fn() -> bool) {
+    let ends_at = Instant::now() + Duration::from_secs(20);
+    while !condition() {
+        assert!(Instant::now() < ends_at, "the condition never held");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Answers for a session whose conversation is [`THREAD`] and whose other loaded thread is
 /// an ephemeral helper; each one's last turn failed on a refused key.
 fn failing_threads(method: &str, params: &Value) -> Answer {
@@ -189,6 +220,20 @@ fn when_the_tui_exits_the_launcher_stops_the_app_server_and_exits_with_its_statu
 }
 
 #[test]
+fn an_app_server_that_ignores_sigterm_is_killed_with_everything_it_started() {
+    let mut launcher = Launcher::start(FAKE_CODEX_IGNORING_TERM, &[]);
+    let _server = launcher.serve(|_, _| Ok(json!({})));
+    launcher.lines("tui.args");
+    let child_pid = launcher.lines("server-child.pid")[0].clone();
+
+    let (status, _) = launcher.finish();
+
+    assert_eq!(status.code(), Some(3));
+    // Orphaned by the kill, it lingers as a zombie until its new parent reaps it.
+    wait_until(|| !is_running(&child_pid));
+}
+
+#[test]
 fn a_failed_turn_of_the_conversation_is_reported_with_its_outcome() {
     let launcher = Launcher::start(FAKE_CODEX, &[]);
     let server = launcher.serve(failing_threads);
@@ -225,6 +270,25 @@ fn a_helper_threads_failure_is_not_reported() {
     let reports = launcher.lines("reports");
     assert_eq!(reports.last().map(String::as_str), Some(THREAD));
     assert!(!reports.contains(&HELPER_THREAD.to_owned()), "{reports:?}");
+}
+
+#[test]
+fn a_failed_turn_announced_twice_is_reported_once() {
+    let launcher = Launcher::start(FAKE_CODEX, &[]);
+    let server = launcher.serve(failing_threads);
+    server.wait_for_connections(1);
+
+    server.notify("thread/status/changed", system_error(THREAD));
+    server.notify("thread/status/changed", system_error(THREAD));
+    server.notify("thread/status/changed", system_error(OTHER_THREAD));
+    wait_until(|| launcher.lines("reports").contains(&OTHER_THREAD.to_owned()));
+
+    let reports = launcher.lines("reports");
+    assert_eq!(
+        reports.iter().filter(|word| *word == THREAD).count(),
+        1,
+        "{reports:?}"
+    );
 }
 
 #[test]

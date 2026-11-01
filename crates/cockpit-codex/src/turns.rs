@@ -6,6 +6,9 @@
 //! its turn then reads `failed`, with the error's kind (`codexErrorInfo`). An interrupted
 //! or completed turn leaves the thread `idle`, and its hook reports it.
 
+use std::collections::HashMap;
+use std::time::Duration;
+
 use cockpit_provider_api::{ConversationId, TurnOutcome};
 use serde_json::{Value, json};
 
@@ -67,10 +70,19 @@ pub fn outcome_report(thread: &ConversationId, outcome: &TurnOutcome) -> Vec<Str
 }
 
 /// Follows `server`'s notifications and passes `report` the arguments of each failed turn
-/// of a conversation thread; a helper thread's (ephemeral) or a subagent's is not the
-/// conversation's turn. Returns when the connection ends, with why.
-pub fn watch_failures(server: &mut AppServer, mut report: impl FnMut(Vec<String>)) -> RpcError {
+/// of a conversation thread, once per turn; a helper thread's (ephemeral) or a subagent's is
+/// not the conversation's turn. It waits for notifications without a limit, but each call
+/// it makes may take `call_timeout`. Returns when the connection ends, with why.
+pub fn watch_failures(
+    server: &mut AppServer,
+    call_timeout: Duration,
+    mut report: impl FnMut(Vec<String>),
+) -> RpcError {
+    let mut reported_turns: HashMap<String, String> = HashMap::new();
     loop {
+        if let Err(error) = server.set_timeout(None) {
+            return error;
+        }
         let notification = match server.next_notification() {
             Ok(notification) => notification,
             Err(error) => return error,
@@ -82,19 +94,39 @@ pub fn watch_failures(server: &mut AppServer, mut report: impl FnMut(Vec<String>
         let Some(thread) = thread.filter(|_| is_system_error) else {
             continue;
         };
+        if let Err(error) = server.set_timeout(Some(call_timeout)) {
+            return error;
+        }
         match failed_conversation_turn(server, thread) {
-            Ok(Some((thread, outcome))) => report(outcome_report(&thread, &outcome)),
+            Ok(Some(failed)) => {
+                // Codex may announce `systemError` again for the same failed turn.
+                if let Some(turn) = failed.turn {
+                    if reported_turns.get(thread) == Some(&turn) {
+                        continue;
+                    }
+                    reported_turns.insert(thread.to_owned(), turn);
+                }
+                report(outcome_report(&failed.conversation, &failed.outcome));
+            }
             Ok(None) => {}
             Err(error) => return error,
         }
     }
 }
 
-/// The thread and outcome when `thread` is a conversation whose last turn failed.
+/// A conversation's turn that failed.
+struct FailedTurn {
+    conversation: ConversationId,
+    /// Its id; a turn without one is reported each time it is announced.
+    turn: Option<String>,
+    outcome: TurnOutcome,
+}
+
+/// The failed turn when `thread` is a conversation whose last turn failed.
 fn failed_conversation_turn(
     server: &mut AppServer,
     thread: &str,
-) -> Result<Option<(ConversationId, TurnOutcome)>, RpcError> {
+) -> Result<Option<FailedTurn>, RpcError> {
     let Ok(conversation) = ConversationId::new(thread) else {
         return Ok(None);
     };
@@ -106,8 +138,16 @@ fn failed_conversation_turn(
     if is_ephemeral || is_subagent {
         return Ok(None);
     }
-    let outcome = last_turn(server, thread)?
-        .as_ref()
-        .and_then(failure_outcome);
-    Ok(outcome.map(|outcome| (conversation, outcome)))
+    let Some(last) = last_turn(server, thread)? else {
+        return Ok(None);
+    };
+    let Some(outcome) = failure_outcome(&last) else {
+        return Ok(None);
+    };
+    let turn = last.get("id").and_then(Value::as_str).map(str::to_owned);
+    Ok(Some(FailedTurn {
+        conversation,
+        turn,
+        outcome,
+    }))
 }

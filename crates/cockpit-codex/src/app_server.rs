@@ -98,7 +98,10 @@ impl AppServer {
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or("no message");
-                return Err(RpcError::new(format!("`{method}` failed: {reason}")));
+                return Err(RpcError {
+                    reason: format!("`{method}` failed: {reason}"),
+                    is_refusal: true,
+                });
             }
             return Ok(message.get("result").cloned().unwrap_or(Value::Null));
         }
@@ -288,12 +291,15 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpcError {
     pub reason: String,
+    /// The server answered the call with an error, so the connection still works.
+    pub is_refusal: bool,
 }
 
 impl RpcError {
     fn new(reason: impl Into<String>) -> RpcError {
         RpcError {
             reason: reason.into(),
+            is_refusal: false,
         }
     }
 }

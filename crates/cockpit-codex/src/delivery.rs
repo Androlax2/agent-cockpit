@@ -35,13 +35,11 @@ pub fn deliver(
     let failed = |error: RpcError| ProviderError {
         reason: error.reason,
     };
+    let connect = || AppServer::connect(socket, "cockpit", CALL_TIMEOUT).map_err(failed);
     match action {
-        Action::Submit(message) => {
-            let mut server = AppServer::connect(socket, "cockpit", CALL_TIMEOUT).map_err(failed)?;
-            submit(&mut server, thread, message).map_err(failed)
-        }
+        Action::Submit(message) => submit(&mut connect()?, thread, message).map_err(failed),
         Action::Cancel => {
-            let mut server = AppServer::connect(socket, "cockpit", CALL_TIMEOUT).map_err(failed)?;
+            let mut server = connect()?;
             let Some(turn) = turn_under_way(&mut server, thread).map_err(failed)? else {
                 return Err(ProviderError {
                     reason: format!("no turn is under way in conversation {thread}"),
@@ -67,12 +65,13 @@ fn submit(server: &mut AppServer, thread: &str, message: &str) -> Result<Deliver
             "turn/steer",
             json!({"threadId": thread, "expectedTurnId": turn, "input": input}),
         );
-        if steered.is_ok() {
+        let Err(steer_error) = steered else {
             return Ok(Delivered::JoinedTurn);
-        }
-        // The turn ended between the two calls; a turn under way again is an error.
-        if turn_under_way(server, thread)?.is_some() {
-            return steered.map(|_| Delivered::JoinedTurn);
+        };
+        // Only a turn that ended between the two calls starts a new one; otherwise the
+        // steer's own reason is the answer.
+        if !matches!(turn_under_way(server, thread), Ok(None)) {
+            return Err(steer_error);
         }
     }
     server.call("turn/start", json!({"threadId": thread, "input": input}))?;
@@ -94,7 +93,7 @@ fn turn_under_way(server: &mut AppServer, thread: &str) -> Result<Option<String>
 
 /// The thread's most recent turn, if it has one. For a moment after a thread's first message,
 /// Codex refuses to list its turns (measured on 0.161.0: about 100 ms), so a refusal is
-/// retried for up to [`LIST_RETRY`].
+/// retried for up to [`LIST_RETRY`]; a broken connection is not.
 pub(crate) fn last_turn(server: &mut AppServer, thread: &str) -> Result<Option<Value>, RpcError> {
     let ends_at = Instant::now() + LIST_RETRY;
     let page = loop {
@@ -104,7 +103,9 @@ pub(crate) fn last_turn(server: &mut AppServer, thread: &str) -> Result<Option<V
         );
         match listed {
             Ok(page) => break page,
-            Err(_) if Instant::now() < ends_at => std::thread::sleep(LIST_RETRY_PAUSE),
+            Err(error) if error.is_refusal && Instant::now() < ends_at => {
+                std::thread::sleep(LIST_RETRY_PAUSE);
+            }
             Err(error) => return Err(error),
         }
     };

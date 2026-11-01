@@ -342,8 +342,7 @@ fn a_failed_turn_is_followed_to_its_outcome() {
     let (sender, reports) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut watcher = AppServer::connect(&socket, "watcher", Duration::from_secs(30)).unwrap();
-        watcher.set_timeout(None).unwrap();
-        cockpit_codex::turns::watch_failures(&mut watcher, |report| {
+        cockpit_codex::turns::watch_failures(&mut watcher, Duration::from_secs(30), |report| {
             let _ = sender.send(report);
         });
     });
