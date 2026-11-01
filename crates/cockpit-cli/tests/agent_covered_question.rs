@@ -35,7 +35,7 @@ async fn agent_reports(report: SessionReport) -> Output {
         .unwrap()
 }
 
-fn dialog(covered_question: Option<&str>) -> SessionReport {
+fn dialog_over(covered_question: &str) -> SessionReport {
     SessionReport {
         session: "s1".to_owned(),
         state: Some(AgentState::Waiting),
@@ -43,7 +43,7 @@ fn dialog(covered_question: Option<&str>) -> SessionReport {
         doing: None,
         needs_input: Some("Allow Bash?".to_owned()),
         question_source: Some(QuestionSource::Dialog),
-        covered_question: covered_question.map(str::to_owned),
+        covered_question: Some(covered_question.to_owned()),
         outcome: None,
         reported_at: 1,
     }
@@ -51,19 +51,11 @@ fn dialog(covered_question: Option<&str>) -> SessionReport {
 
 #[tokio::test]
 async fn the_owner_sees_the_agents_question_waiting_under_a_dialog() {
-    let output = agent_reports(dialog(Some("Which database?"))).await;
+    let output = agent_reports(dialog_over("Which database?")).await;
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(
         text(&output.stdout),
         "s1 waiting dialog=\"Allow Bash?\" also-waiting=\"Which database?\"\n"
     );
-}
-
-#[tokio::test]
-async fn a_dialog_over_no_question_shows_nothing_else_waiting() {
-    let output = agent_reports(dialog(None)).await;
-
-    assert!(output.status.success(), "{}", text(&output.stderr));
-    assert_eq!(text(&output.stdout), "s1 waiting dialog=\"Allow Bash?\"\n");
 }

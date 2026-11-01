@@ -49,7 +49,8 @@ pub enum QuestionSource {
     Agent,
     /// The provider bridge saw a dialog (permission, elicitation): open until a report says
     /// what the agent does (a state or a turn's outcome), which means the dialog was
-    /// answered; a stateless label or doing-now may come from a subagent meanwhile (#216).
+    /// answered, or a new launch or conversation; a stateless label or doing-now may come
+    /// from a subagent meanwhile (#216).
     Dialog,
 }
 

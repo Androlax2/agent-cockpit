@@ -105,10 +105,15 @@ fn failed_turn() -> Report {
     }
 }
 
-/// `before` from conversation `c-1`, then `/clear`: `c-1` ends and `c-2` starts.
-async fn cleared_after(dir: &std::path::Path, before: Report) -> SessionReport {
+/// Each of `before` from conversation `c-1`, then `/clear`: `c-1` ends and `c-2` starts.
+async fn cleared_after(
+    dir: &std::path::Path,
+    before: impl IntoIterator<Item = Report>,
+) -> SessionReport {
     let database = session_in(dir, Some("c-1")).await;
-    send(&database, from("c-1", before)).await.unwrap();
+    for sent in before {
+        send(&database, from("c-1", sent)).await.unwrap();
+    }
     send(&database, ending("c-1")).await.unwrap();
     send(&database, from("c-2", waiting())).await.unwrap()
 }
@@ -117,7 +122,7 @@ async fn cleared_after(dir: &std::path::Path, before: Report) -> SessionReport {
 async fn a_new_conversation_clears_the_agents_question() {
     let dir = tempfile::tempdir().unwrap();
 
-    let started = cleared_after(dir.path(), own_question("Which database?")).await;
+    let started = cleared_after(dir.path(), [own_question("Which database?")]).await;
 
     assert_eq!(started.needs_input, None);
     assert_eq!(started.question_source, None);
@@ -127,7 +132,7 @@ async fn a_new_conversation_clears_the_agents_question() {
 async fn a_new_conversation_clears_the_last_turns_outcome() {
     let dir = tempfile::tempdir().unwrap();
 
-    let started = cleared_after(dir.path(), failed_turn()).await;
+    let started = cleared_after(dir.path(), [failed_turn()]).await;
 
     assert_eq!(started.outcome, None);
     assert_eq!(started.state, Some(AgentState::Waiting));
@@ -136,16 +141,9 @@ async fn a_new_conversation_clears_the_last_turns_outcome() {
 #[tokio::test]
 async fn a_new_conversation_clears_a_dialog_and_the_question_beneath_it() {
     let dir = tempfile::tempdir().unwrap();
-    let database = session_in(dir.path(), Some("c-1")).await;
-    send(&database, from("c-1", own_question("Which database?")))
-        .await
-        .unwrap();
-    send(&database, from("c-1", dialog("Allow Bash?")))
-        .await
-        .unwrap();
-    send(&database, ending("c-1")).await.unwrap();
+    let before = [own_question("Which database?"), dialog("Allow Bash?")];
 
-    let started = send(&database, from("c-2", waiting())).await.unwrap();
+    let started = cleared_after(dir.path(), before).await;
 
     assert_eq!(
         (started.needs_input, started.covered_question),
@@ -161,7 +159,7 @@ async fn a_new_conversation_keeps_the_sessions_label() {
         ..own_question("Which database?")
     };
 
-    let started = cleared_after(dir.path(), labelled).await;
+    let started = cleared_after(dir.path(), [labelled]).await;
 
     assert_eq!(started.label.as_deref(), Some("Ship the parser"));
 }

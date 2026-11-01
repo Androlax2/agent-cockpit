@@ -51,7 +51,7 @@ pub enum QuestionSource {
     /// The agent's own question: open until a new prompt, a new launch or a new conversation.
     Agent,
     /// A dialog the provider bridge saw: open until a report says what the agent does (a
-    /// state or a turn's outcome) or a new conversation starts.
+    /// state or a turn's outcome), a new launch or a new conversation.
     Dialog,
 }
 

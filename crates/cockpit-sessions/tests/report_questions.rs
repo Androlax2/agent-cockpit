@@ -71,8 +71,8 @@ fn label(text: &str) -> Report {
     }
 }
 
-/// The reports the bridge and the agent send after a question, other than a new prompt.
-/// Reports that say what the agent does; a stateless one leaves a dialog open (#216).
+/// Reports after a question that say what the agent does, other than a new prompt; a
+/// stateless one leaves a dialog open (#216).
 fn later_reports() -> [Report; 3] {
     [
         state(AgentState::Working),

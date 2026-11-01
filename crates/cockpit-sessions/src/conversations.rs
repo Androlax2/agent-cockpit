@@ -24,29 +24,28 @@ pub(crate) async fn check(
     is_ending: bool,
 ) -> Result<bool, Error> {
     let id = crate::SessionId::parse(session.as_str())?;
-    let Some(current) = store::session(write, &id).await?.conversation else {
+    match store::session(write, &id).await?.conversation {
         // A provider that never named its conversation is named by its first report.
-        store::change_conversation(write, &id, reported).await?;
-        record_end(write, session, launch, reported, is_ending).await?;
-        return Ok(false);
-    };
-    if *reported == current {
-        record_end(write, session, launch, reported, is_ending).await?;
-        return Ok(false);
+        None => store::change_conversation(write, &id, reported).await?,
+        Some(current) if *reported == current => {}
+        Some(current) => {
+            if !is_ending && announced_end(write, session, launch, &current).await? {
+                clear_end(write, session).await?;
+                store::change_conversation(write, &id, reported).await?;
+                return Ok(true);
+            }
+            return Err(refused(invalid(
+                "conversation",
+                format!(
+                    "{reported} is not session {}'s conversation ({current}), which announced \
+                     no change; a report of another conversation never moves this session",
+                    session.as_str()
+                ),
+            )));
+        }
     }
-    if !is_ending && announced_end(write, session, launch, &current).await? {
-        clear_end(write, session).await?;
-        store::change_conversation(write, &id, reported).await?;
-        return Ok(true);
-    }
-    Err(refused(invalid(
-        "conversation",
-        format!(
-            "{reported} is not session {}'s conversation ({current}), which announced no \
-             change; a report of another conversation never moves this session",
-            session.as_str()
-        ),
-    )))
+    record_end(write, session, launch, reported, is_ending).await?;
+    Ok(false)
 }
 
 /// A report of the current conversation closes any change it announced, and opens one when
