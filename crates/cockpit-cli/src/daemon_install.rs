@@ -14,7 +14,7 @@ use std::process::{Command, ExitCode};
 use cockpit_config::Profile;
 
 use crate::daemon::fail;
-use crate::installations::{Legacy, ServiceManager};
+use crate::installations::{Legacy, ServiceManager, profile_of_unit};
 
 const DAEMON_PROGRAM: &str = "cockpit-daemon";
 
@@ -36,7 +36,12 @@ fn install() -> Result<ExitCode, String> {
     let environment = crate::profile::environment();
     let manager = ServiceManager::of_this_platform();
     let unit_dir = manager.unit_dir(&environment)?;
+    // Canonical: the daemon and the profile's command sit beside the installed program, not
+    // beside a link to it on `PATH`.
     let program = crate::profile::this_program()?;
+    let program = program
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", program.display()))?;
     if profile.is_default() {
         let legacy = Legacy::find(&unit_dir, std::env::var_os("PATH").as_deref(), &program);
         if legacy.is_found() {
@@ -56,24 +61,25 @@ fn install() -> Result<ExitCode, String> {
             daemon.display()
         ));
     }
+    let unit = unit_dir.join(manager.unit_file_name(profile));
+    refuse_a_foreign_unit(&unit, profile)?;
     if !profile.is_default() {
         link_command(&program, profile)?;
     }
-    let unit = unit_dir.join(manager.unit_file_name(profile));
-    let path_variable = std::env::var_os("PATH").unwrap_or_default();
+    let variables = unit_variables()?;
     let text = match manager {
-        ServiceManager::Systemd => systemd_unit(profile, &daemon, &path_variable)?,
-        ServiceManager::Launchd => launchd_agent(profile, &daemon, &path_variable)?,
+        ServiceManager::Systemd => systemd_unit(profile, &daemon, &variables)?,
+        ServiceManager::Launchd => launchd_agent(profile, &daemon, &variables)?,
     };
     write_unit(&unit_dir, &unit, &text)?;
     outln!("wrote {}", unit.display());
     match manager {
         ServiceManager::Systemd => {
+            let unit_name = profile.systemd_unit();
             service_manager("systemctl", &["--user", "daemon-reload"])?;
-            service_manager(
-                "systemctl",
-                &["--user", "enable", "--now", &profile.systemd_unit()],
-            )?;
+            service_manager("systemctl", &["--user", "enable", &unit_name])?;
+            // `restart`, not `enable --now`: a reinstall must replace a running daemon.
+            service_manager("systemctl", &["--user", "restart", &unit_name])?;
         }
         ServiceManager::Launchd => {
             // The file was just written by this user: its owner is the user's launchd domain.
@@ -85,7 +91,7 @@ fn install() -> Result<ExitCode, String> {
             let _ = Command::new("launchctl")
                 .args(["bootout", &format!("{domain}/{}", profile.launchd_label())])
                 .status();
-            service_manager("launchctl", &["bootstrap", &domain, &utf8(&unit)?])?;
+            bootstrap(&domain, &utf8(&unit)?)?;
         }
     }
     outln!(
@@ -122,15 +128,18 @@ fn link_command(program: &Path, profile: &Profile) -> Result<(), String> {
 fn systemd_unit(
     profile: &Profile,
     daemon: &Path,
-    path_variable: &OsString,
+    variables: &[(&str, String)],
 ) -> Result<String, String> {
     let daemon = systemd_quoted(&utf8(daemon)?);
-    let path_assignment = systemd_quoted(&format!(
-        "PATH={}",
-        path_variable
-            .to_str()
-            .ok_or("PATH is not UTF-8: the unit cannot carry it")?
-    ));
+    let environment: String = variables
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "Environment={}\n",
+                systemd_quoted(&format!("{name}={value}"))
+            )
+        })
+        .collect();
     let name = profile.name();
     let marker = ServiceManager::marker(profile);
     Ok(format!(
@@ -141,7 +150,7 @@ fn systemd_unit(
          \n\
          [Service]\n\
          Type=simple\n\
-         Environment={path_assignment}\n\
+         {environment}\
          ExecStart={daemon} --profile {name}\n\
          Restart=on-failure\n\
          \n\
@@ -162,15 +171,19 @@ fn systemd_quoted(word: &str) -> String {
 fn launchd_agent(
     profile: &Profile,
     daemon: &Path,
-    path_variable: &OsString,
+    variables: &[(&str, String)],
 ) -> Result<String, String> {
     let label = xml_escaped(&profile.launchd_label());
     let daemon = xml_escaped(&utf8(daemon)?);
-    let path_variable = xml_escaped(
-        path_variable
-            .to_str()
-            .ok_or("PATH is not UTF-8: the agent cannot carry it")?,
-    );
+    let environment: String = variables
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "\t\t<key>{name}</key>\n\t\t<string>{}</string>\n",
+                xml_escaped(value)
+            )
+        })
+        .collect();
     let name = xml_escaped(profile.name());
     let marker = ServiceManager::marker(profile);
     Ok(format!(
@@ -191,8 +204,7 @@ fn launchd_agent(
          \t</array>\n\
          \t<key>EnvironmentVariables</key>\n\
          \t<dict>\n\
-         \t\t<key>PATH</key>\n\
-         \t\t<string>{path_variable}</string>\n\
+         {environment}\
          \t</dict>\n\
          \t<key>RunAtLoad</key>\n\
          \t<true/>\n\
@@ -211,6 +223,57 @@ fn xml_escaped(text: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// The variables the daemon must see as this command does: `PATH` for the agents it launches,
+/// and the XDG bases this command resolved the profile's directories from, so `doctor` and the
+/// daemon agree on them. A service manager's own environment has none of the shell's.
+fn unit_variables() -> Result<Vec<(&'static str, String)>, String> {
+    let mut variables = Vec::new();
+    for name in [
+        "PATH",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+    ] {
+        let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let value = value
+            .into_string()
+            .map_err(|_| format!("{name} is not UTF-8: the unit cannot carry it"))?;
+        variables.push((name, value));
+    }
+    Ok(variables)
+}
+
+/// An existing unit of this name is replaced only when `cockpit daemon install` wrote it for
+/// this profile: the legacy Cockpit's `cockpit-remote.service` and its kind stay untouched.
+fn refuse_a_foreign_unit(unit: &Path, profile: &Profile) -> Result<(), String> {
+    if !unit.exists() {
+        return Ok(());
+    }
+    if profile_of_unit(unit)?.as_ref() == Some(profile) {
+        return Ok(());
+    }
+    Err(format!(
+        "{} exists and was not written by `cockpit daemon install` for profile {profile}: \
+         remove it or choose another profile",
+        unit.display()
+    ))
+}
+
+/// `launchctl bootout` returns before the old job is gone, so the first bootstraps of a
+/// reinstall can fail while it unloads; tried a few times before the failure is reported.
+fn bootstrap(domain: &str, plist: &str) -> Result<(), String> {
+    const ATTEMPTS: u32 = 5;
+    for _ in 1..ATTEMPTS {
+        if service_manager("launchctl", &["bootstrap", domain, plist]).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    service_manager("launchctl", &["bootstrap", domain, plist])
 }
 
 /// Written beside, then renamed over the unit, so a service manager never reads half a file.

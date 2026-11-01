@@ -45,8 +45,8 @@ the capability crates whose verbs must work without the daemon, listed in
 the agent socket, where the daemon identifies it; without the token they are the owner's.
 `show` ends with `next:`, what has to happen for the item to move.
 
-Every verb serves one profile (#196): `--profile NAME` before the verb, else `$COCKPIT_PROFILE`,
-else the command's name (`cockpit-next` is profile `next`), else the build's own: `cockpit` for a
+Every verb serves one profile (#196): `--profile NAME` before the verb, else the command's name
+(`cockpit-next` is profile `next`), else `$COCKPIT_PROFILE`, else the build's own: `cockpit` for a
 release bundle, `dev` for any other build. A development build reaches `cockpit` only through
 `--profile cockpit`; an inherited `COCKPIT_PROFILE=cockpit` is ignored, and `config show` and
 `doctor` say so. The profile names every directory (`cockpit-<name>`), the socket and the tmux

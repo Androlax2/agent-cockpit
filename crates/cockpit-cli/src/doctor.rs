@@ -155,7 +155,7 @@ fn print_installations() -> Result<(), String> {
     let layout = cockpit_config::Layout::resolve(&environment, &home);
     let manager = ServiceManager::of_this_platform();
     let unit_dir = manager.unit_dir(&environment)?;
-    let units = installed_units(&unit_dir);
+    let units = installed_units(&unit_dir)?;
 
     outln!("profile {} ({})", profile.value, profile.source);
     outln!("build {}", crate::profile::build().as_str());

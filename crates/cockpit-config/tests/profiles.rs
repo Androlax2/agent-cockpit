@@ -27,7 +27,7 @@ fn without_a_choice_a_release_runs_the_default_profile_and_any_other_build_runs_
 }
 
 #[test]
-fn the_flag_beats_the_variable_which_beats_the_command_name() {
+fn the_flag_beats_the_command_name_which_beats_the_inherited_variable() {
     let cases: [(ProfileChoice<'_>, &str, Source); 3] = [
         (
             ProfileChoice {
@@ -41,20 +41,20 @@ fn the_flag_beats_the_variable_which_beats_the_command_name() {
         (
             ProfileChoice {
                 flag: None,
-                variable: Some(OsStr::new("next")),
-                command_name: Some(OsStr::new("/opt/bin/cockpit-other")),
-            },
-            "next",
-            Source::Environment("COCKPIT_PROFILE"),
-        ),
-        (
-            ProfileChoice {
-                flag: None,
-                variable: None,
+                variable: Some(OsStr::new("cockpit")),
                 command_name: Some(OsStr::new("/opt/bin/cockpit-next")),
             },
             "next",
             Source::CommandName,
+        ),
+        (
+            ProfileChoice {
+                flag: None,
+                variable: Some(OsStr::new("next")),
+                command_name: Some(OsStr::new("/opt/bin/cockpit")),
+            },
+            "next",
+            Source::Environment("COCKPIT_PROFILE"),
         ),
     ];
     for build in [Build::Release, Build::Development] {

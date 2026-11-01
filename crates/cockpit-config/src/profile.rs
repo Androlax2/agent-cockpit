@@ -164,14 +164,15 @@ pub fn release_manifest(program: &Path) -> std::io::Result<PathBuf> {
 pub struct ProfileChoice<'a> {
     /// `--profile NAME`.
     pub flag: Option<&'a str>,
-    /// `$COCKPIT_PROFILE`.
-    pub variable: Option<&'a OsStr>,
     /// The name the program was started as (`argv[0]`): `cockpit-next` selects `next`.
     pub command_name: Option<&'a OsStr>,
+    /// `$COCKPIT_PROFILE`.
+    pub variable: Option<&'a OsStr>,
 }
 
-/// The profile `choice` selects, in its order, then the build's own: `cockpit` for a release,
-/// `dev` otherwise. A development build reaches the default profile only through `--profile
+/// The profile `choice` selects, then the build's own: `cockpit` for a release, `dev`
+/// otherwise. The command name beats the variable: every launched agent inherits
+/// `$COCKPIT_PROFILE`, and `cockpit-next` typed in one must still reach `next`. A development build reaches the default profile only through `--profile
 /// cockpit`: `$COCKPIT_PROFILE=cockpit`, which every agent of the installed Cockpit inherits,
 /// is ignored there, so a test build run by such an agent stays on `dev`.
 pub fn resolve_profile(
@@ -187,6 +188,9 @@ pub fn resolve_profile(
         Build::Release => Profile::default_profile(),
         Build::Development => Profile(DEVELOPMENT_PROFILE.to_owned()),
     };
+    if let Some(profile) = choice.command_name.and_then(Profile::of_command_name) {
+        return Ok(Sourced::new(profile, Source::CommandName));
+    }
     if let Some(variable) = choice.variable.filter(|value| !value.is_empty()) {
         let source = Source::Environment(PROFILE_VARIABLE);
         let name = variable
@@ -202,9 +206,6 @@ pub fn resolve_profile(
             ));
         }
         return Ok(Sourced::new(profile, source));
-    }
-    if let Some(profile) = choice.command_name.and_then(Profile::of_command_name) {
-        return Ok(Sourced::new(profile, Source::CommandName));
     }
     Ok(match build {
         Build::Release => Sourced::new(build_default(), Source::ProductDefault),

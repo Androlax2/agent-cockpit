@@ -176,7 +176,8 @@ fn each_way_of_choosing_a_profile_places_the_directories_under_it() {
         Choice {
             program: &next,
             arguments: &["config", "show"],
-            variables: &[],
+            // What every agent of the installed Cockpit inherits.
+            variables: &[("COCKPIT_PROFILE", "cockpit")],
             profile: "next",
             source: "command name",
         },
@@ -287,9 +288,17 @@ fn daemon_install_writes_the_profiles_unit_and_starts_it() {
             unit.contains(&format!("Environment=\"PATH={}\"\n", home.bin().display())),
             "{unit}"
         );
+        assert!(
+            unit.contains(&format!(
+                "Environment=\"XDG_STATE_HOME={}/state\"\n",
+                home.path().display()
+            )),
+            "{unit}"
+        );
         assert_eq!(
             home.service_manager_log(),
-            "systemctl --user daemon-reload\nsystemctl --user enable --now cockpit-dev.service\n"
+            "systemctl --user daemon-reload\nsystemctl --user enable cockpit-dev.service\n\
+             systemctl --user restart cockpit-dev.service\n"
         );
     }
     assert!(
@@ -455,4 +464,39 @@ fn daemon_install_of_profile_next_beside_a_legacy_unit_leaves_that_unit_alone() 
         LEGACY_UNIT
     );
     assert!(!home.service_manager_log().contains("cockpit.service"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_install_refuses_to_replace_a_unit_it_did_not_write() {
+    let home = Home::new();
+    fs::create_dir_all(home.unit_dir()).unwrap();
+    let remote = "[Unit]\nDescription=the legacy Cockpit's remote access\n";
+    fs::write(home.unit_dir().join("cockpit-remote.service"), remote).unwrap();
+
+    let output = home.cockpit(&["--profile", "remote", "daemon", "install"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("was not written by `cockpit daemon install` for profile remote"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(home.unit_dir().join("cockpit-remote.service")).unwrap(),
+        remote
+    );
+    assert!(!home.bin().join("cockpit-remote").exists());
+    assert_eq!(home.service_manager_log(), "");
+}
+
+#[test]
+fn daemon_install_again_replaces_its_own_unit_and_restarts_it() {
+    let home = Home::new();
+    succeeded(&home.cockpit(&["--profile", "next", "daemon", "install"]));
+
+    succeeded(&home.cockpit(&["--profile", "next", "daemon", "install"]));
+
+    assert!(home.unit_of("cockpit-next").is_file());
 }

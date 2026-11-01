@@ -1,5 +1,5 @@
-//! The profile this `cockpit` serves (#196): `--profile NAME` before the verb, else
-//! `$COCKPIT_PROFILE`, else the command's name (`cockpit-next`), else its build's own.
+//! The profile this `cockpit` serves (#196): `--profile NAME` before the verb, else the
+//! command's name (`cockpit-next`), else `$COCKPIT_PROFILE`, else its build's own.
 //! Selected once in `main`, before any verb runs, and read by every verb that places a file or
 //! reaches the daemon, so no verb can resolve another profile than the one `doctor` shows.
 

@@ -4,6 +4,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
+use std::io::ErrorKind;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -65,21 +66,48 @@ pub(crate) struct InstalledUnit {
     pub(crate) profile: Profile,
 }
 
-/// Every unit in `unit_dir` that names its profile, in file-name order.
-pub(crate) fn installed_units(unit_dir: &Path) -> Vec<InstalledUnit> {
-    let Ok(entries) = fs::read_dir(unit_dir) else {
-        return Vec::new();
+/// Every unit in `unit_dir` that names its profile, in file-name order. Only files named like
+/// a Cockpit unit are read; a missing directory holds none, any other error is the caller's.
+pub(crate) fn installed_units(unit_dir: &Path) -> Result<Vec<InstalledUnit>, String> {
+    let entries = match fs::read_dir(unit_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("{}: {error}", unit_dir.display())),
     };
-    let mut units: Vec<InstalledUnit> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter_map(|path| {
-            let profile = profile_marked_in(&fs::read_to_string(&path).ok()?)?;
-            Some(InstalledUnit { path, profile })
-        })
-        .collect();
+    let mut units = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|error| format!("{}: {error}", unit_dir.display()))?
+            .path();
+        let is_cockpit_unit = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| {
+                UNIT_NAME_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+            });
+        if !is_cockpit_unit {
+            continue;
+        }
+        if let Some(profile) = profile_of_unit(&path)? {
+            units.push(InstalledUnit { path, profile });
+        }
+    }
     units.sort_by(|left, right| left.path.cmp(&right.path));
-    units
+    Ok(units)
+}
+
+/// What every unit file `cockpit daemon install` writes is named after.
+const UNIT_NAME_PREFIXES: [&str; 2] = ["cockpit", "io.github.androlax2.cockpit"];
+
+/// The profile `unit`'s marker line names; `None` when the file is missing or has none.
+pub(crate) fn profile_of_unit(unit: &Path) -> Result<Option<Profile>, String> {
+    match fs::read_to_string(unit) {
+        Ok(text) => Ok(profile_marked_in(&text)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{}: {error}", unit.display())),
+    }
 }
 
 fn profile_marked_in(unit: &str) -> Option<Profile> {
