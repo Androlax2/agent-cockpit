@@ -6,6 +6,7 @@ pub use sign_in::SIGN_IN_CONFORMANCE_VERSION;
 pub mod app_server;
 pub mod delivery;
 pub mod hooks;
+pub mod reports;
 pub mod turns;
 
 use std::ffi::{OsStr, OsString};

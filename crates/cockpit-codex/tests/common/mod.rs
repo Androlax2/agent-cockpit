@@ -80,6 +80,7 @@ impl SessionSockets for RefusingSockets {
 
 pub fn target(session_dir: &Path) -> DeliveryTarget<'_> {
     DeliveryTarget {
+        launch: None,
         session_dir,
         sockets: &UncheckedSockets,
     }

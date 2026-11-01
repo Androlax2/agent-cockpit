@@ -1,6 +1,8 @@
 //! A session's server API against a fake OpenCode server on the loopback interface: it
 //! answers each request with what OpenCode 1.19.5 answers, and records what it was sent.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener};
 use std::sync::{Arc, Mutex};
@@ -8,7 +10,11 @@ use std::time::Duration;
 
 use cockpit_opencode::server::REQUEST_DEADLINE;
 use cockpit_opencode::{Invocation, NativeCommand, Server};
-use cockpit_provider_api::ConversationId;
+use cockpit_provider_api::{
+    Action, Conversation, ConversationId, Delivered, DeliveryTarget, LaunchCommand, LaunchRequest,
+    Provider, ProviderError, SessionSockets,
+};
+use std::path::Path;
 
 const PASSWORD: &str = "5f0c2d1e9a8b7c6d5e4f3a2b1c0d9e8f";
 const SESSION: &str = "ses_1c4f2e8a3ffeJ7qkR2mWbXzD0v";
@@ -381,4 +387,255 @@ fn the_password_never_shows_in_debug_output() {
     let shown = format!("{:?}", Server::new(4096, PASSWORD.to_owned()));
 
     assert!(!shown.contains(PASSWORD), "{shown}");
+}
+
+struct NoSockets;
+impl SessionSockets for NoSockets {
+    fn connect(&self, _: &Path) -> Result<std::os::unix::net::UnixStream, ProviderError> {
+        panic!("OpenCode uses its launch's authenticated HTTP server");
+    }
+}
+
+fn launch_for(fake: &FakeServer) -> LaunchCommand {
+    let mut launch = common::opencode()
+        .launch(&LaunchRequest {
+            working_dir: Path::new("/work"),
+            session_dir: Path::new("/unused"),
+            conversation: &Conversation::New,
+            first_message: None,
+            effort: None,
+            remote_control: false,
+        })
+        .unwrap();
+    let port = launch
+        .arguments
+        .iter()
+        .position(|word| word == "--port")
+        .unwrap()
+        + 1;
+    launch.arguments[port] = fake.port.to_string().into();
+    launch
+        .environment
+        .iter_mut()
+        .find(|(key, _)| key == "OPENCODE_SERVER_PASSWORD")
+        .unwrap()
+        .1 = PASSWORD.into();
+    launch
+}
+
+fn target(launch: Option<&LaunchCommand>) -> DeliveryTarget<'_> {
+    DeliveryTarget {
+        launch,
+        session_dir: Path::new("/unused"),
+        sockets: &NoSockets,
+    }
+}
+
+#[test]
+fn the_provider_delivers_literal_inbox_text_and_cancels_through_the_launch_server() {
+    let fake = FakeServer::answering(vec![(204, "", String::new()), ok("true")]);
+    let launch = launch_for(&fake);
+    let opencode = common::opencode();
+    let provider: &dyn Provider = &opencode;
+    assert_eq!(
+        provider
+            .deliver(
+                &Action::Submit("/compact @you\nnext line"),
+                &target(Some(&launch)),
+                &session()
+            )
+            .unwrap(),
+        Delivered::Accepted
+    );
+    assert_eq!(
+        provider
+            .deliver(&Action::Cancel, &target(Some(&launch)), &session())
+            .unwrap(),
+        Delivered::Interrupted
+    );
+    let requests = fake.received();
+    assert_eq!(requests[0].path, format!("/session/{SESSION}/prompt_async"));
+    assert_eq!(
+        json(&requests[0].body),
+        serde_json::json!({"parts":[{"type":"text","text":"/compact @you\nnext line"}]})
+    );
+    assert_eq!(requests[1].path, format!("/session/{SESSION}/abort"));
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.authorization.as_deref()
+                == Some("Basic b3BlbmNvZGU6NWYwYzJkMWU5YThiN2M2ZDVlNGYzYTJiMWMwZDllOGY="))
+    );
+    assert!(!format!("{:?}", target(Some(&launch))).contains(PASSWORD));
+}
+
+#[test]
+fn the_provider_lists_commands_with_their_source_and_invokes_one() {
+    let fake = FakeServer::answering(vec![
+        ok(r#"[{"name":"review","description":"Review changes","source":"skill"}]"#),
+        ok(r#"{"info":{"id":"msg_reply"}}"#),
+    ]);
+    let launch = launch_for(&fake);
+    let opencode = common::opencode();
+    let provider: &dyn Provider = &opencode;
+    let commands = provider.commands(&target(Some(&launch))).unwrap();
+    assert_eq!(commands[0].name, "review");
+    assert_eq!(commands[0].description.as_deref(), Some("Review changes"));
+    assert_eq!(commands[0].source.as_deref(), Some("skill"));
+    assert_eq!(
+        provider
+            .invoke_command(
+                &target(Some(&launch)),
+                &session(),
+                "review",
+                "src/parser.rs"
+            )
+            .unwrap()
+            .message,
+        "msg_reply"
+    );
+    let requests = fake.received();
+    assert_eq!(requests[0].path, "/command");
+    assert_eq!(requests[1].path, format!("/session/{SESSION}/command"));
+    assert_eq!(
+        json(&requests[1].body),
+        serde_json::json!({"command":"review","arguments":"src/parser.rs"})
+    );
+}
+
+#[test]
+fn the_provider_refuses_missing_launch_metadata_and_unsupported_actions() {
+    let provider = common::opencode();
+    assert!(
+        provider
+            .deliver(&Action::Submit("hi"), &target(None), &session())
+            .unwrap_err()
+            .reason
+            .contains("launch")
+    );
+    assert!(
+        provider
+            .commands(&target(None))
+            .unwrap_err()
+            .reason
+            .contains("launch")
+    );
+    assert_eq!(
+        provider
+            .deliver(&Action::Compact, &target(None), &session())
+            .unwrap_err(),
+        ProviderError::unsupported(cockpit_provider_api::Capability::Compact)
+    );
+}
+
+#[test]
+fn the_provider_preserves_server_refusals_and_does_not_claim_a_refused_cancel() {
+    let fake = FakeServer::answering(vec![(401, "", String::new()), ok("false")]);
+    let launch = launch_for(&fake);
+    let provider = common::opencode();
+    assert!(
+        provider
+            .deliver(&Action::Submit("hi"), &target(Some(&launch)), &session())
+            .unwrap_err()
+            .reason
+            .contains("password")
+    );
+    assert!(
+        provider
+            .deliver(&Action::Cancel, &target(Some(&launch)), &session())
+            .is_err()
+    );
+}
+
+#[test]
+fn the_provider_rejects_malformed_requests_before_connecting() {
+    let fake = FakeServer::answering(vec![]);
+    let launch = launch_for(&fake);
+    let provider = common::opencode();
+    let target = target(Some(&launch));
+    let escaping = ConversationId::new("ses_x/../../config").unwrap();
+    for action in [Action::Submit("hi"), Action::Cancel] {
+        assert!(
+            provider
+                .deliver(&action, &target, &escaping)
+                .unwrap_err()
+                .reason
+                .contains("session id")
+        );
+    }
+    assert!(
+        provider
+            .deliver(&Action::Submit("  "), &target, &session())
+            .unwrap_err()
+            .reason
+            .contains("empty message")
+    );
+    assert!(
+        provider
+            .invoke_command(&target, &session(), "two words", "")
+            .unwrap_err()
+            .reason
+            .contains("command name")
+    );
+    assert!(fake.received().is_empty());
+}
+
+#[test]
+fn the_provider_without_a_bridge_refuses_every_server_operation() {
+    use cockpit_provider_api::Capability;
+    let provider = cockpit_opencode::OpenCode::new("/unused".into(), None, None);
+    for action in [Action::Submit("hi"), Action::Cancel] {
+        assert_eq!(
+            provider
+                .deliver(&action, &target(None), &session())
+                .unwrap_err(),
+            ProviderError::unsupported(action.capability())
+        );
+    }
+    assert_eq!(
+        provider.commands(&target(None)).unwrap_err(),
+        ProviderError::unsupported(Capability::Commands)
+    );
+    assert_eq!(
+        provider
+            .invoke_command(&target(None), &session(), "review", "")
+            .unwrap_err(),
+        ProviderError::unsupported(Capability::Commands)
+    );
+}
+
+#[test]
+fn a_malformed_launch_never_supplies_a_delivery_endpoint() {
+    let fake = FakeServer::answering(vec![]);
+    let valid = launch_for(&fake);
+    for (field, value) in [
+        ("--port", "0"),
+        ("--hostname", "elsewhere"),
+        ("OPENCODE_SERVER_PASSWORD", ""),
+        ("OPENCODE_SERVER_USERNAME", "other"),
+    ] {
+        let mut launch = valid.clone();
+        if field.starts_with("--") {
+            let index = launch
+                .arguments
+                .iter()
+                .position(|word| word == field)
+                .unwrap()
+                + 1;
+            launch.arguments[index] = value.into();
+        } else {
+            launch
+                .environment
+                .iter_mut()
+                .find(|(key, _)| key == field)
+                .unwrap()
+                .1 = value.into();
+        }
+        let error = common::opencode()
+            .commands(&target(Some(&launch)))
+            .unwrap_err();
+        assert!(error.reason.contains("launch"));
+        assert!(!error.reason.contains(PASSWORD));
+    }
+    assert!(fake.received().is_empty());
 }

@@ -58,6 +58,7 @@ impl FakeCockpit {
 fn run_hook(cockpit: &Path, payload: &str, token: Option<&str>) -> Output {
     let mut hook = Command::new(env!("CARGO_BIN_EXE_cockpit-codex-hook"));
     hook.arg(cockpit)
+        .env_remove("COCKPIT_CODEX_REPORT_STATE")
         .env_remove("COCKPIT_LAUNCH_TOKEN")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

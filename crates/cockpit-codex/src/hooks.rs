@@ -250,6 +250,13 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
 /// The `cockpit` arguments that print the session's launch brief (#419).
 pub const BRIEF_ARGUMENTS: [&str; 1] = ["brief"];
 
+/// Only the measured `/clear` start can replace the launch's previous conversation.
+pub fn clears_conversation(event: &ProviderEvent) -> bool {
+    matches!(event.kind, EventKind::Started { .. })
+        && serde_json::from_str::<serde_json::Value>(&event.raw)
+            .is_ok_and(|payload| payload["source"] == "clear")
+}
+
 /// Whether `event` starts a context the launch brief must be in (#419): every
 /// `SessionStart`, a new thread, a resume, `/clear`, a compaction or a fork alike.
 pub fn starts_context(event: &ProviderEvent) -> bool {

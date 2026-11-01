@@ -126,12 +126,13 @@ fn run(options: &Options) -> Result<ExitCode, String> {
         .open(&log_path)
         .map_err(|error| format!("cannot open {}: {error}", log_path.display()))?;
     let log = Arc::new(Mutex::new(log));
-    let mut server = start_server(options, &log)?;
+    let reports = cockpit_codex::reports::LaunchReports::new(&options.socket)?;
+    let mut server = start_server(options, &log, reports.path())?;
     if let Err(reason) = wait_until_listening(&options.socket, &mut server) {
         stop(server);
         return Err(format!("{reason}; its output is in {}", log_path.display()));
     }
-    watch_in_background(options, Arc::clone(&log));
+    watch_in_background(options, Arc::clone(&log), reports.path().to_owned());
     let tui = Command::new(&options.codex)
         .args(cockpit_codex::tui_arguments(
             &options.socket,
@@ -148,7 +149,11 @@ fn run(options: &Options) -> Result<ExitCode, String> {
 }
 
 /// The app-server, after a stale socket of an earlier launch of this session is removed.
-fn start_server(options: &Options, log: &Arc<Mutex<File>>) -> Result<Child, String> {
+fn start_server(
+    options: &Options,
+    log: &Arc<Mutex<File>>,
+    reports: &Path,
+) -> Result<Child, String> {
     if options.socket.symlink_metadata().is_ok() {
         std::fs::remove_file(&options.socket).map_err(|error| {
             format!(
@@ -165,6 +170,7 @@ fn start_server(options: &Options, log: &Arc<Mutex<File>>) -> Result<Child, Stri
             .map_err(|error| format!("cannot share the log: {error}"))
     };
     Command::new(&options.codex)
+        .env(cockpit_codex::reports::STATE_VARIABLE, reports)
         .args(cockpit_codex::server_arguments(
             &options.socket,
             &options.configs,
@@ -197,7 +203,7 @@ fn wait_until_listening(socket: &Path, server: &mut Child) -> Result<(), String>
 }
 
 /// Reports each failed turn until the connection ends; why it ended goes to the log.
-fn watch_in_background(options: &Options, log: Arc<Mutex<File>>) {
+fn watch_in_background(options: &Options, log: Arc<Mutex<File>>, reports: PathBuf) {
     let socket = options.socket.clone();
     let cockpit = options.cockpit.clone();
     std::thread::spawn(move || {
@@ -212,16 +218,10 @@ fn watch_in_background(options: &Options, log: Arc<Mutex<File>>) {
             Err(error) => return note(format!("failed turns are not reported: {error}")),
         };
         let ended = cockpit_codex::turns::watch_failures(&mut server, CALL_TIMEOUT, |report| {
-            let status = Command::new(&cockpit)
-                .args(&report)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            match status {
-                Ok(status) if status.success() => {}
-                Ok(status) => note(format!("`cockpit {}` failed ({status})", report.join(" "))),
-                Err(error) => note(format!("cannot run {}: {error}", cockpit.display())),
+            if let Err(error) =
+                cockpit_codex::reports::send(cockpit.as_os_str(), Some(&reports), &report, false)
+            {
+                note(error);
             }
         });
         note(format!("stopped following failed turns: {ended}"));

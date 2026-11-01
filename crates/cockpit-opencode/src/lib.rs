@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cockpit_provider_api::{
-    Action, Activity, Capabilities, Capability, Conversation, Key, LaunchCommand, LaunchRequest,
-    Provenance, Provider, ProviderError, ProviderName, TerminalInput,
+    Action, Activity, Capabilities, Capability, CommandResult, Conversation, ConversationId,
+    Delivered, DeliveryTarget, Key, LaunchCommand, LaunchRequest, Provenance, Provider,
+    ProviderError, ProviderName, TerminalInput,
 };
 
 pub use server::{Invocation, NativeCommand, Server, ServerError};
@@ -321,6 +322,7 @@ impl Provider for OpenCode {
             Capability::Cancel,
             Capability::Events,
             Capability::Outcome,
+            Capability::Commands,
         ]);
         let provenance = self.provenance();
         [Capability::Resume]
@@ -391,6 +393,7 @@ impl Provider for OpenCode {
         action: &Action<'_>,
         activity: Option<Activity>,
     ) -> Result<Vec<TerminalInput>, ProviderError> {
+        self.capabilities().require(action.capability())?;
         let refused = |reason: &str| ProviderError {
             reason: reason.to_owned(),
         };
@@ -423,6 +426,55 @@ impl Provider for OpenCode {
             }
         }
     }
+
+    fn deliver(
+        &self,
+        action: &Action<'_>,
+        target: &DeliveryTarget<'_>,
+        conversation: &ConversationId,
+    ) -> Result<Delivered, ProviderError> {
+        self.capabilities().require(action.capability())?;
+        let server = launch_server(target)?;
+        match action {
+            Action::Submit(message) => {
+                server.deliver(conversation, message, None)?;
+                Ok(Delivered::Accepted)
+            }
+            Action::Cancel => {
+                server.abort(conversation)?;
+                Ok(Delivered::Interrupted)
+            }
+            Action::Compact => Err(ProviderError::unsupported(Capability::Compact)),
+        }
+    }
+
+    fn commands(&self, target: &DeliveryTarget<'_>) -> Result<Vec<NativeCommand>, ProviderError> {
+        self.capabilities().require(Capability::Commands)?;
+        Ok(launch_server(target)?.commands()?)
+    }
+
+    fn invoke_command(
+        &self,
+        target: &DeliveryTarget<'_>,
+        conversation: &ConversationId,
+        command: &str,
+        arguments: &str,
+    ) -> Result<CommandResult, ProviderError> {
+        self.capabilities().require(Capability::Commands)?;
+        Ok(launch_server(target)?.invoke_command(
+            conversation,
+            command,
+            arguments,
+            None,
+            server::REQUEST_DEADLINE,
+        )?)
+    }
+}
+
+fn launch_server(target: &DeliveryTarget<'_>) -> Result<Server, ProviderError> {
+    target.launch.and_then(Server::from_launch).ok_or_else(|| ProviderError {
+        reason: "OpenCode delivery needs its host-retained launch with the server's port and password".to_owned(),
+    })
 }
 
 /// Why typing `message` into the TUI's prompt would not submit it as written, if it would

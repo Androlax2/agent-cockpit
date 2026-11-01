@@ -1,6 +1,6 @@
 # cockpit-provider-api
 
-The contract every agent provider adapter implements: identity, sign-in and capabilities with provenance, launch and resume, terminal actions and normalized events.
+The contract every agent provider adapter implements: identity, sign-in and capabilities with provenance, launch and resume, terminal and delivered actions, native commands and normalized events.
 
 A provider is an agent program (Claude Code, Codex, OpenCode) seen through its adapter.
 `cockpit-sessions` owns the session and its lifecycle; it asks the provider for the command
@@ -19,7 +19,7 @@ Nothing above this contract is keyed on a provider's name, only on its reported
 - **Capabilities with provenance** (report 08). Each reported [`Capability`] is `tested`
   against the exact harness version running, or `discovered` (shown as unverified); one not
   reported is unavailable. Resume, submit, events, cancel, outcome, effort, compact, remote
-  control and screen reading have contract behavior; commands, evidence and billing are
+  control, commands and screen reading have contract behavior; evidence and billing are
   named so a capability report can show them, and get their methods with their first caller.
 - **Launch.** A launch refuses a request that needs a capability the provider does not
   report ([`LaunchRequest::needed_capabilities`]): a resumed conversation, an effort level,
@@ -39,6 +39,16 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   socket there only through the caller's [`SessionSockets`] ([`DeliveryTarget`]), which
   refuses one whose listener is not the session's own process (#442). Both refuse an action
   whose capability is not reported.
+- **Native endpoints** (#416). [`DeliveryTarget::launch`] carries the command the host retained
+  for this launch, never data read back from the agent. OpenCode reads its server's loopback
+  port and password from it. Missing metadata refuses delivery; it is not permission to type
+  into a terminal. [`Delivered::Accepted`] records an accepted or queued message without
+  claiming a turn started. The daemon's calls and launch retention belong to #431.
+- **Native commands.** [`Provider::commands`] returns names, descriptions and the harness's
+  source labels; [`Provider::invoke_command`] runs one in a named conversation. Both require
+  `commands` and default to unsupported. The capability carries tested/discovered provenance.
+  Commands are explicit operations, never inferred from submitted text; a reply is not proof
+  of task completion. A timed-out invocation may already have been accepted by the harness.
 - **Events.** Adapters map their harness's events onto [`EventKind`] and keep the raw event
   beside it; unknown events stay raw. Acceptance of a prompt is not completion: completion
   arrives as a turn-end event.

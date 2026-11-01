@@ -64,9 +64,14 @@ provider and nothing above the contract sees a Codex type (#48).
   The socket is opened only through the caller's `SessionSockets`, never by its path: the
   agent writes the session's directory, so `codex.sock` names whatever the agent linked there
   (#442). The daemon's check is `cockpit-daemon`'s `SessionTreeSockets`.
-- **Known gaps.** After `/clear`, Codex starts a new thread and sends no `SessionEnd` for the
-  old one (measured), so the bridge cannot announce `--conversation-ends`, and the daemon
-  refuses the new thread's reports (#408). The socket's real file is Codex's, under
+- **Conversation changes** (#408). The launcher creates a private, fresh report ledger for
+  its hooks and failed-turn watcher. They serialize reports under its file lock. A root
+  `SessionStart` with `source: clear` announces the recorded thread's `--conversation-ends`
+  before reporting the new thread. A successful end retires the old thread even if the
+  successor report fails, so late reports cannot consume the pending handoff. A retry or
+  later prompt can finish it. The daemon still authenticates
+  every report and checks its conversation. In-session resume/fork behavior is unmeasured.
+- **Known gaps.** The socket's real file is Codex's, under
   `/tmp/codex-daemon-<uid>/` whatever `TMPDIR` says, beside the owner's own Codex's: the
   sandbox shows a folder of the session's own there, through a greywall fork feature, and
   without it the daemon refuses delivery naming that feature (#446). Where the approval
@@ -88,6 +93,8 @@ provider and nothing above the contract sees a Codex type (#48).
   `tests/fixtures/codex-0.161.0/`, and the reports they become.
 - `tests/trust.rs`: the subscription's `--config` values and the trust hash.
 - `tests/bridge.rs`: the hook bridge as a process against a fake `cockpit`.
+- `tests/clear.rs`: repeated clears, duplicate and late hooks, failed handoff retries and
+  launch isolation against a channel double enforcing conversation changes.
 - `tests/bridge_check.rs`: `Bridge::check` passes the built programs and refuses one that
   cannot run or is another program.
 - `tests/delivery.rs`: submit, steer and cancel against a fake app-server

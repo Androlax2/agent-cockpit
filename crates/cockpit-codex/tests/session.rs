@@ -22,6 +22,7 @@ const OTHER_THREAD: &str = "01a1981e-7a10-7c11-b0a2-0d1e2f3a4b5c";
 /// the test's directory is gone or after 600 seconds, whichever comes first, so a test
 /// killed before it cleans up leaks them for 10 minutes at most.
 const FAKE_CODEX: &str = r#"if [ "$1" = app-server ]; then
+  printf '%s' "$COCKPIT_CODEX_REPORT_STATE" > "$FAKE_DIR/report-state-path"
   printf '%s\n' "$@" > "$FAKE_DIR/server.args"
   echo $$ > "$FAKE_DIR/server.pid.partial" && mv "$FAKE_DIR/server.pid.partial" "$FAKE_DIR/server.pid"
   ticks=0
@@ -242,6 +243,22 @@ fn the_app_server_runs_on_the_socket_with_the_hooks_of_the_launch() {
             &["hooks.Stop=[]".to_owned()]
         ))
     );
+}
+
+#[test]
+fn the_launchers_report_state_is_private_and_removed_when_the_tui_exits() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut launcher = Launcher::start(FAKE_CODEX, &[]);
+    let _server = launcher.serve(|_, _| Ok(json!({})));
+    launcher.lines("tui.args");
+    let path = PathBuf::from(launcher.lines("report-state-path")[0].clone());
+    assert_eq!(path.parent(), Some(launcher.dir.path()));
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    launcher.finish();
+    assert!(!path.exists());
 }
 
 #[test]

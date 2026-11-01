@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod capabilities;
+mod commands;
 mod events;
 #[cfg(feature = "fake")]
 pub mod fake;
@@ -13,6 +14,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 pub use capabilities::{Availability, Capabilities, Capability, Provenance};
+pub use commands::{CommandResult, NativeCommand};
 pub use events::{
     Activity, Confidence, EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
 };
@@ -153,6 +155,9 @@ pub struct LaunchCommand {
 /// The running session a delivery reaches ([`Provider::deliver`]).
 #[derive(Clone, Copy)]
 pub struct DeliveryTarget<'target> {
+    /// The command retained by the host for this launch, when delivery needs its endpoint
+    /// or credentials. Never reconstruct it from agent-writable files or agent reports.
+    pub launch: Option<&'target LaunchCommand>,
     /// The session's own directory ([`LaunchRequest::session_dir`]). Its agent writes it, so
     /// whatever is found there, a socket or a link to one, is the agent's word.
     pub session_dir: &'target Path,
@@ -229,6 +234,28 @@ pub trait Provider: Send + Sync + 'static {
     ) -> Result<Delivered, ProviderError> {
         let _ = (target, conversation);
         Err(ProviderError::unsupported(action.capability()))
+    }
+
+    /// Lists native commands from this launch's endpoint. Requires `commands`; the
+    /// capability carries the adapter's tested/discovered provenance, while each result
+    /// keeps the harness's source label. Blocks for a few seconds; use an off-worker call.
+    fn commands(&self, target: &DeliveryTarget<'_>) -> Result<Vec<NativeCommand>, ProviderError> {
+        let _ = target;
+        Err(ProviderError::unsupported(Capability::Commands))
+    }
+
+    /// Runs a native command in the named conversation. Requires `commands`. A reply is
+    /// not proof the task completed. Blocks for a bounded wait, including the harness's
+    /// reply; a failed wait does not prove the harness did not accept the command.
+    fn invoke_command(
+        &self,
+        target: &DeliveryTarget<'_>,
+        conversation: &ConversationId,
+        command: &str,
+        arguments: &str,
+    ) -> Result<CommandResult, ProviderError> {
+        let _ = (target, conversation, command, arguments);
+        Err(ProviderError::unsupported(Capability::Commands))
     }
 
     /// The agent's activity read from the end of its terminal, for when no event says it
