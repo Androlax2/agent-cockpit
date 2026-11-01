@@ -57,10 +57,12 @@ impl TestHome {
         }
     }
 
-    /// A home with nothing in it and only `HOME` in the environment.
+    /// A home with nothing in it and only `HOME` in the environment. Under `/tmp`: without
+    /// `XDG_RUNTIME_DIR` the agent socket is `<home>/.local/state/cockpit-dev/run/agent/agent.sock`,
+    /// which under macOS's `/var/folders/…/T` exceeds the 104-byte socket path limit.
     pub fn bare() -> TestHome {
         TestHome {
-            root: tempfile::tempdir().expect("a temporary home"),
+            root: tempfile::tempdir_in("/tmp").expect("a temporary home"),
             runtime_base: None,
             sets_xdg_dirs: false,
             log_level: None,
