@@ -90,8 +90,6 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
                     .map(|(name, value)| (name.into(), value.clone())),
             )
             .collect(),
-        // The start's values until the owner imports fresher ones (#307).
-        desktop_environment: own_variables(&cockpit_protocol::DESKTOP_SESSION_VARIABLES).collect(),
         start_files,
         ..session_settings(&config)
     };
@@ -110,6 +108,9 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             git: cockpit_projects::Git::from_path(),
             providers,
             sessions,
+            // The start's values until the owner imports fresher ones (#307).
+            desktop_environment: own_variables(&cockpit_protocol::DESKTOP_SESSION_VARIABLES)
+                .collect(),
             session_tick: serve.session_tick,
             run_settings,
             environment: environment.clone(),

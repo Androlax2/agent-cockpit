@@ -131,7 +131,7 @@ async fn an_agent_may_not_import_a_desktop_session() {
         .await
         .unwrap();
 
-    let refused = agent.request(display_import("DISPLAY"), GENEROUS).await;
+    let refused = agent.request(import_of("DISPLAY", ":9"), GENEROUS).await;
 
     assert!(
         matches!(&refused, Err(ClientError::Daemon(error)) if error.code == ErrorCode::NotAuthorized),
@@ -146,10 +146,7 @@ async fn an_import_of_another_variable_or_a_nul_byte_is_refused_with_its_name() 
     let client = home.connect().await;
 
     for (name, value) in [("LD_PRELOAD", ":9"), ("DISPLAY", ":9\0x")] {
-        let import = Command::DesktopSessionImport {
-            variables: [(name.to_owned(), value.to_owned())].into(),
-        };
-        let refused = client.request(import, GENEROUS).await;
+        let refused = client.request(import_of(name, value), GENEROUS).await;
 
         assert!(
             matches!(&refused, Err(ClientError::Daemon(error))
@@ -159,10 +156,10 @@ async fn an_import_of_another_variable_or_a_nul_byte_is_refused_with_its_name() 
     }
 }
 
-/// An import that sets `name` alone.
-fn display_import(name: &str) -> Command {
+/// An import that sets `name` to `value`, and nothing else.
+fn import_of(name: &str, value: &str) -> Command {
     Command::DesktopSessionImport {
-        variables: [(name.to_owned(), ":9".to_owned())].into(),
+        variables: [(name.to_owned(), value.to_owned())].into(),
     }
 }
 

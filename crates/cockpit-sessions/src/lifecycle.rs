@@ -64,8 +64,8 @@ pub struct Sessions {
     /// the periodic pass never acts on a launch an owner operation just replaced. Entries
     /// stay for the daemon's life: one per session ever touched.
     operations: Mutex<HashMap<SessionId, Arc<SessionLock>>>,
-    /// The owner's desktop session variables the next launch gets: the settings' until the
-    /// owner imports others (#307).
+    /// The owner's desktop session variables the next launch gets: none until the daemon
+    /// imports its start's, then each owner import (#307).
     desktop_environment: Mutex<Vec<(OsString, OsString)>>,
 }
 
@@ -116,17 +116,15 @@ impl Sessions {
         tmux: Result<Arc<Server>, String>,
         git: Git,
         providers: Vec<Arc<dyn Provider>>,
-        mut settings: Settings,
+        settings: Settings,
     ) -> Sessions {
-        // Moved out, so the start's values cannot be read after an import replaced them.
-        let desktop_environment = std::mem::take(&mut settings.desktop_environment);
         Sessions {
             database,
             processes,
             tmux,
             git,
             providers,
-            desktop_environment: Mutex::new(desktop_environment),
+            desktop_environment: Mutex::new(Vec::new()),
             settings,
             operations: Mutex::new(HashMap::new()),
         }

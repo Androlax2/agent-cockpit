@@ -1,5 +1,6 @@
 //! The systemd user manager as a containment: one transient scope per execution.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::platform::host_command;
@@ -51,13 +52,21 @@ impl SystemdTools {
     }
 
     /// `systemd-run` set up to put the program it execs into `unit` before it runs.
+    /// `scope_only` are the variables the caller gives `systemd-run` alone, to reach the
+    /// manager: they are unset again before the program, which gets exactly its spec's
+    /// environment (#305).
     pub(crate) fn scope_launcher(
         &self,
         unit: &str,
         takes_expand_environment: bool,
+        scope_only: &[(OsString, OsString)],
     ) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.systemd_run);
-        command.args(Self::scope_arguments(unit, takes_expand_environment));
+        command.args(Self::scope_arguments(
+            unit,
+            takes_expand_environment,
+            scope_only,
+        ));
         command
     }
 
@@ -66,27 +75,38 @@ impl SystemdTools {
         &self,
         unit: &str,
         takes_expand_environment: bool,
-    ) -> Vec<std::ffi::OsString> {
+        scope_only: &[(OsString, OsString)],
+    ) -> Vec<OsString> {
         let mut words = vec![self.systemd_run.clone().into_os_string()];
-        words.extend(
-            Self::scope_arguments(unit, takes_expand_environment)
-                .into_iter()
-                .map(std::ffi::OsString::from),
-        );
+        words.extend(Self::scope_arguments(
+            unit,
+            takes_expand_environment,
+            scope_only,
+        ));
         words
     }
 
     /// `--expand-environment=no` where `systemd-run` takes it: from systemd 258 a scope
     /// rewrites `$` in the command it runs (`$$` becomes `$`), which breaks the launch
     /// script.
-    fn scope_arguments(unit: &str, takes_expand_environment: bool) -> Vec<String> {
-        let mut arguments: Vec<String> = ["--user", "--scope", "--collect", "--quiet"]
-            .map(str::to_owned)
+    fn scope_arguments(
+        unit: &str,
+        takes_expand_environment: bool,
+        scope_only: &[(OsString, OsString)],
+    ) -> Vec<OsString> {
+        let mut arguments: Vec<OsString> = ["--user", "--scope", "--collect", "--quiet"]
+            .map(OsString::from)
             .into();
         if takes_expand_environment {
-            arguments.push("--expand-environment=no".to_owned());
+            arguments.push("--expand-environment=no".into());
         }
-        arguments.extend([format!("--unit={unit}"), "--".to_owned()]);
+        arguments.extend([format!("--unit={unit}").into(), "--".into()]);
+        if !scope_only.is_empty() {
+            arguments.push("/usr/bin/env".into());
+            for (name, _) in scope_only {
+                arguments.extend(["-u".into(), name.clone()]);
+            }
+        }
         arguments
     }
 
