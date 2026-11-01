@@ -142,3 +142,16 @@ fn the_budget_separates_what_is_always_loaded_from_what_is_read_on_demand() {
     );
     assert!(budget.always_loaded_bytes() < budget.on_demand_bytes);
 }
+
+#[test]
+fn many_grants_keep_the_brief_within_the_target_and_say_how_many_are_left_out() {
+    let mut facts = facts();
+    facts.grants.held = (0..40)
+        .map(|task| format!("change-state over task t-{task:08x}"))
+        .collect();
+
+    let text = brief(&facts);
+
+    assert!(text.len() <= BRIEF_TARGET_BYTES, "{} bytes", text.len());
+    assert!(text.contains("and 34 more"), "{text}");
+}

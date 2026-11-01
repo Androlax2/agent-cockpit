@@ -209,6 +209,23 @@ fn an_mcp_tool_call_the_daemon_refuses_is_a_tool_error() {
 }
 
 #[test]
+fn reading_an_unknown_mcp_resource_is_resource_not_found() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+    let mut server = McpServer::start(&home);
+
+    let unknown_topic = server.call(
+        1,
+        "resources/read",
+        json!({"uri": "cockpit://instructions/teleport"}),
+    );
+    let foreign = server.call(2, "resources/read", json!({"uri": "file:///etc/hosts"}));
+
+    assert_eq!(unknown_topic["error"]["code"], -32002);
+    assert_eq!(foreign["error"]["code"], -32002);
+}
+
+#[test]
 fn an_unreadable_mcp_line_is_a_parse_error_and_the_server_keeps_serving() {
     let home = TestHome::new();
     let _daemon = home.start();

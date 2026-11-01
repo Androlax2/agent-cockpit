@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 const AGENT_SOCKET: &str = "BRIEF_AGENT_SOCKET";
 const AGENT_WORKFLOW: &str = "BRIEF_AGENT_WORKFLOW";
 const AGENT_ANSWER: &str = "BRIEF_AGENT_ANSWER";
+const AGENT_BRIEF_FROM: &str = "BRIEF_AGENT_FROM";
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Answer {
@@ -98,12 +99,25 @@ impl Home {
 
     /// The next launched agent begins `workflow` when given one, then asks for its brief.
     fn arm_helper(&self, daemon: &Daemon, workflow: Option<i64>) {
+        self.arm_helper_asking_from(daemon, workflow, None);
+    }
+
+    /// As [`Home::arm_helper`], the brief asked from `directory` when given one.
+    fn arm_helper_asking_from(
+        &self,
+        daemon: &Daemon,
+        workflow: Option<i64>,
+        directory: Option<&Path>,
+    ) {
         let _ = std::fs::remove_file(self.answer_path());
         let workflow = workflow
             .map(|id| format!("{AGENT_WORKFLOW}={id} "))
             .unwrap_or_default();
+        let directory = directory
+            .map(|path| format!("{AGENT_BRIEF_FROM}='{}' ", path.display()))
+            .unwrap_or_default();
         let script = format!(
-            "#!/bin/sh\nexec /usr/bin/env {AGENT_SOCKET}='{}' {workflow}{AGENT_ANSWER}='{}' '{}' \
+            "#!/bin/sh\nexec /usr/bin/env {AGENT_SOCKET}='{}' {workflow}{directory}{AGENT_ANSWER}='{}' '{}' \
              --exact brief_agent --nocapture >'{}' 2>&1\n",
             daemon.agent_socket_path().display(),
             self.answer_path().display(),
@@ -303,6 +317,28 @@ async fn a_session_doing_a_step_is_briefed_with_its_task_workspace_and_grants() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_brief_asked_from_outside_the_checkout_still_names_the_sessions_project_and_step() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let owner = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&owner).await;
+    let run = started_code_change(&owner).await;
+    home.arm_helper_asking_from(&daemon, Some(run), Some(&home.path()));
+
+    let session = launched(&owner, &root).await;
+    let seen = home.seen().await;
+
+    let (brief, _, _) = brief_of(&seen);
+    assert!(
+        brief.contains(&format!("Session {session} · project app"))
+            && brief.contains(&format!("workflow {run}, step implement")),
+        "{brief}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_session_without_a_step_is_told_where_to_find_one() {
     let home = Home::new();
     let daemon = home.start().await;
@@ -380,6 +416,9 @@ async fn brief_agent() {
         )),
         Err(_) => None,
     };
+    if let Some(directory) = std::env::var_os(AGENT_BRIEF_FROM) {
+        std::env::set_current_dir(directory).unwrap();
+    }
     // Sent again, as `cockpit brief` does: a bound launch is known by its tree.
     let brief = answered(
         agent

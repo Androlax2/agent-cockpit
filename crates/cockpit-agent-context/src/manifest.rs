@@ -2,6 +2,8 @@
 //! content hash, trust decision, precedence and what it supersedes (report 08). A hash is
 //! identity, not trust: these packets are trusted because the product ships them.
 
+use std::sync::LazyLock;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -56,8 +58,15 @@ pub struct Manifest {
     pub entries: Vec<ManifestEntry>,
 }
 
+/// The bundle is fixed per binary, so it is hashed once.
+static MANIFEST: LazyLock<Manifest> = LazyLock::new(computed);
+
 /// The manifest of the bundle in this binary.
 pub fn manifest() -> Manifest {
+    MANIFEST.clone()
+}
+
+fn computed() -> Manifest {
     let entries: Vec<ManifestEntry> = documents()
         .iter()
         .map(|document| ManifestEntry {

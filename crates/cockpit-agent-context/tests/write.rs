@@ -143,3 +143,24 @@ fn a_symbolic_link_in_place_of_a_file_is_replaced_not_followed() {
             .is_symlink()
     );
 }
+
+#[test]
+fn a_link_planted_at_the_temporary_name_is_never_written_through() {
+    let dir = tempfile::tempdir().unwrap();
+    write_bundle(dir.path()).unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let target = elsewhere.path().join("bashrc");
+    fs::write(&target, "keep me").unwrap();
+    let planted = dir
+        .path()
+        .join(format!("cockpit/.SKILL.md.{}.tmp", std::process::id()));
+    symlink(&target, &planted).unwrap();
+
+    write_bundle(dir.path()).unwrap();
+
+    assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("cockpit/SKILL.md")).unwrap(),
+        documents()[0].file_text()
+    );
+}
