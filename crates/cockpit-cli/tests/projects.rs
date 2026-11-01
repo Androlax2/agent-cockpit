@@ -692,7 +692,7 @@ fn a_claim_with_an_unreadable_owner_config_is_refused_before_it_is_recorded() {
     let _daemon = home.start();
     let root = home.project("app");
     let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
-    let config = home.home().join("config/cockpit/config.toml");
+    let config = home.home().join("config/cockpit-dev/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(&config, "[projects\n").unwrap();
 

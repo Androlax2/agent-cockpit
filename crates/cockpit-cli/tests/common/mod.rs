@@ -132,7 +132,7 @@ impl TestHome {
     }
 
     pub fn trust(&self, root: &Path) {
-        let config = self.home().join("config/cockpit");
+        let config = self.home().join("config/cockpit-dev");
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(
             config.join("config.toml"),

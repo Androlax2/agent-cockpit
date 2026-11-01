@@ -25,7 +25,7 @@ impl Home {
     }
 
     fn daemon_socket(&self) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit/daemon.sock");
+        let path = self.dir.path().join("run/cockpit-dev/daemon.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -199,6 +199,10 @@ async fn tui_opens_the_manager_with_the_tui_beside_cockpit_and_attaches_to_it() 
                 "--column".to_owned(),
                 "--socket".to_owned(),
                 path_text(&socket),
+                "--profile".to_owned(),
+                "dev".to_owned(),
+                "--state-dir".to_owned(),
+                path_text(&home.dir.path().join(".local/state/cockpit-dev")),
             ],
             viewer: vec![tui, "--viewer".to_owned()],
         }

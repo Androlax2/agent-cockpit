@@ -19,7 +19,7 @@ use cockpit_resource_admission::{
 use common::{GENEROUS, TestHome};
 
 fn state_dir(home: &TestHome) -> PathBuf {
-    home.state_home().join("cockpit")
+    home.state_home().join(common::BUILD_PROFILE_DIR)
 }
 
 /// The supervisor a daemon on this home uses, with process-group containment.

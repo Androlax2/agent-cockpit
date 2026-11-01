@@ -76,6 +76,7 @@ pub(crate) fn instructions(command: Command) -> Outcome {
 
 /// `agent-brief`: the sender's launch brief from what its owners say now.
 pub(crate) async fn brief(
+    profile: String,
     launch_token: Option<String>,
     connector: Result<ProcessIdentity, ProcessError>,
     database: Arc<Database>,
@@ -84,7 +85,7 @@ pub(crate) async fn brief(
     let sender = Sender::read(connector).await;
     let session = identify(&sender, &database, launch_token).await?;
     let read = database.read().await?;
-    let facts = facts(&read, &sessions, session).await?;
+    let facts = facts(&read, &sessions, session, profile).await?;
     let brief = cockpit_agent_context::brief(&facts);
     let budget = cockpit_agent_context::context_budget(&brief);
     Ok(Reply::AgentBrief {
@@ -123,6 +124,7 @@ async fn facts(
     read: &Connection,
     sessions: &cockpit_sessions::Sessions,
     session: cockpit_authorization::SessionId,
+    profile: String,
 ) -> Result<LaunchFacts, Failed> {
     let id = cockpit_sessions::SessionId::parse(session.as_str())?;
     let working_dir = sessions.get(&id).await?.working_dir;
@@ -162,6 +164,7 @@ async fn facts(
         grants,
         workflow,
         manifest_id: cockpit_agent_context::manifest().id,
+        profile,
     })
 }
 

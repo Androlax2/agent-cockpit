@@ -1,12 +1,13 @@
 //! `cockpit-tui`: the two panes of the manager tmux session that `cockpit tui` opens.
 //!
-//! - `--column --socket PATH`: the TUI itself, talking to the daemon at `PATH`.
+//! - `--column --socket PATH --profile NAME --state-dir DIR`: the TUI itself, talking to the
+//!   daemon at `PATH`, naming its profile and logging under that profile's state directory.
 //! - `--viewer`: what the viewer pane shows until a session is opened in it.
 //!
 //! Input never waits on the daemon (report 05): keys are read on their own thread, every
 //! request runs in its own task, and answers come back to the loop as they arrive.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -26,14 +27,27 @@ const REDRAW: Duration = Duration::from_millis(200);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
-const USAGE: &str = "usage: cockpit-tui --column --socket PATH | --viewer
+const USAGE: &str =
+    "usage: cockpit-tui --column --socket PATH --profile NAME --state-dir DIR | --viewer
 Start it with `cockpit tui`, which opens the manager session.";
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     match words.as_slice() {
-        ["--column", "--socket", socket] => match column(PathBuf::from(socket)) {
+        [
+            "--column",
+            "--socket",
+            socket,
+            "--profile",
+            profile,
+            "--state-dir",
+            state_dir,
+        ] => match column(
+            PathBuf::from(socket),
+            (*profile).to_owned(),
+            Path::new(state_dir),
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(problem) => {
                 eprintln!("cockpit-tui: {problem}");
@@ -67,8 +81,9 @@ struct Sent {
     is_refresh: bool,
 }
 
-fn column(socket: PathBuf) -> Result<(), String> {
-    let log_dir = cockpit_diagnostics::log_dir("tui").map_err(|error| error.to_string())?;
+fn column(socket: PathBuf, profile: String, state_dir: &Path) -> Result<(), String> {
+    let log_dir =
+        cockpit_diagnostics::log_dir_in(state_dir, "tui").map_err(|error| error.to_string())?;
     let directives =
         cockpit_diagnostics::Directives::from_env().map_err(|error| error.to_string())?;
     let diagnostics =
@@ -76,13 +91,13 @@ fn column(socket: PathBuf) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     tracing::dispatcher::set_global_default(diagnostics.dispatch().clone())
         .map_err(|error| error.to_string())?;
-    tracing::info!(socket = %socket.display(), "the TUI started");
+    tracing::info!(socket = %socket.display(), %profile, "the TUI started");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start the runtime: {error}"))?;
     let mut terminal = ratatui::init();
-    let outcome = runtime.block_on(run(&mut terminal, socket));
+    let outcome = runtime.block_on(run(&mut terminal, socket, profile));
     ratatui::restore();
     if let Err(problem) = &outcome {
         tracing::error!(problem, "the TUI stopped");
@@ -90,7 +105,11 @@ fn column(socket: PathBuf) -> Result<(), String> {
     outcome
 }
 
-async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result<(), String> {
+async fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    socket: PathBuf,
+    profile: String,
+) -> Result<(), String> {
     let (inputs, mut received) = mpsc::channel::<Input>(256);
     let reader = inputs.clone();
     std::thread::spawn(move || read_keys(&reader));
@@ -98,7 +117,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, socket: PathBuf) -> Result
     let (feed_events, mut feed) = mpsc::channel::<FeedEvent>(1);
     tokio::spawn(follow_feed(socket.clone(), feed_events));
     tokio::spawn(serve(socket, pending, inputs));
-    let mut app = App::new();
+    let mut app = App::for_profile(profile);
     // A refresh is sent only once the last one is answered, so a slow daemon gets no pile.
     let mut unanswered_refreshes = 0_usize;
     let mut refresh = tokio::time::interval(REFRESH);

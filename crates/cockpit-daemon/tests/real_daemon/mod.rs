@@ -17,6 +17,14 @@ use std::time::{Duration, Instant};
 use cockpit_client::Connection;
 use cockpit_protocol::{Command, Reply, SessionStateView, SessionView};
 
+/// The profile directory of a daemon this test build runs without `--profile`: a build
+/// outside a release bundle runs profile `dev` (#196).
+pub const BUILD_PROFILE_DIR: &str = "cockpit-dev";
+
+/// Every profile directory a test here runs a daemon under, whose tmux servers the home
+/// stops when dropped.
+const PROFILE_DIRS: [&str; 3] = ["cockpit", BUILD_PROFILE_DIR, "cockpit-next"];
+
 /// Long enough never to fire in a passing test, short enough to fail a hung one.
 pub const GENEROUS: Duration = Duration::from_secs(10);
 /// How long a test waits after a start for a launch the daemon should not make; the fake
@@ -219,21 +227,33 @@ impl Home {
     }
 
     pub fn socket_path(&self) -> PathBuf {
+        self.socket_path_of(BUILD_PROFILE_DIR)
+    }
+
+    /// The host-only socket of the daemon of the profile whose directory is `profile_dir`.
+    pub fn socket_path_of(&self, profile_dir: &str) -> PathBuf {
         self.path()
-            .join("run/cockpit")
+            .join("run")
+            .join(profile_dir)
             .join(cockpit_config::DAEMON_SOCKET)
     }
 
     pub fn agent_socket_path(&self) -> PathBuf {
         self.path()
-            .join("run/cockpit")
+            .join("run")
+            .join(BUILD_PROFILE_DIR)
             .join(cockpit_config::AGENT_SOCKET_DIR)
             .join(cockpit_config::AGENT_SOCKET)
     }
 
+    /// The build profile's state directory.
+    pub fn state_dir(&self) -> PathBuf {
+        self.path().join("state").join(BUILD_PROFILE_DIR)
+    }
+
     /// Writes the owner's `config.toml`, which the next daemon start reads.
     pub fn write_owner_config(&self, contents: &str) {
-        let dir = self.path().join("config/cockpit");
+        let dir = self.path().join("config").join(BUILD_PROFILE_DIR);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.toml"), contents).unwrap();
     }
@@ -313,7 +333,15 @@ impl Home {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
         search.extend(std::env::split_paths(&path));
-        self.spawn(search, extra)
+        self.spawn(search, extra, None)
+    }
+
+    /// [`Home::start`] with `--profile profile`; it is ready on that profile's socket.
+    pub fn start_profile(&self, profile: &str) -> Daemon {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut search = vec![self.path().join("bin")];
+        search.extend(std::env::split_paths(&path));
+        self.spawn(search, &[], Some(profile))
     }
 
     /// [`Home::start`] on a host without Greywall: neither stand-in, and no folder of the
@@ -328,11 +356,23 @@ impl Home {
             std::env::split_paths(&path)
                 .filter(|dir| !dir.join("greywall").exists() && !dir.join("greyproxy").exists()),
         );
-        self.spawn(search, &[])
+        self.spawn(search, &[], None)
     }
 
-    fn spawn(&self, search: Vec<PathBuf>, extra: &[(&str, &str)]) -> Daemon {
+    fn spawn(&self, search: Vec<PathBuf>, extra: &[(&str, &str)], profile: Option<&str>) -> Daemon {
+        let profile_dir = match profile {
+            None => BUILD_PROFILE_DIR.to_owned(),
+            Some(profile) => cockpit_config::Profile::parse(profile)
+                .expect("a profile name")
+                .qualified_name(),
+        };
         let mut child = Process::new(env!("CARGO_BIN_EXE_cockpit-daemon"))
+            .args(
+                profile
+                    .map(|profile| ["--profile", profile])
+                    .into_iter()
+                    .flatten(),
+            )
             .env_clear()
             .env("HOME", self.path())
             .env("XDG_RUNTIME_DIR", self.path().join("run"))
@@ -361,7 +401,7 @@ impl Home {
         });
         let line = ready.recv_timeout(SETTLED_WITHIN).unwrap_or_default();
         let daemon = Daemon { child };
-        if line.trim() != format!("ready {}", self.socket_path().display()) {
+        if line.trim() != format!("ready {}", self.socket_path_of(&profile_dir).display()) {
             drop(daemon);
             let stderr = std::fs::read_to_string(self.stderr_log()).unwrap_or_default();
             panic!("the daemon did not report ready: stdout {line:?}, stderr {stderr:?}");
@@ -370,7 +410,12 @@ impl Home {
     }
 
     pub async fn connect(&self) -> Connection {
-        Connection::open(&self.socket_path(), GENEROUS)
+        self.connect_to(BUILD_PROFILE_DIR).await
+    }
+
+    /// Connects to the daemon of the profile whose directory is `profile_dir`.
+    pub async fn connect_to(&self, profile_dir: &str) -> Connection {
+        Connection::open(&self.socket_path_of(profile_dir), GENEROUS)
             .await
             .expect("the daemon accepts the handshake")
     }
@@ -418,11 +463,13 @@ impl Home {
 impl Drop for Home {
     /// The agents live in the private tmux server, which outlives every daemon.
     fn drop(&mut self) {
-        let _ = Process::new("tmux")
-            .env_remove("TMUX")
-            .env("TMUX_TMPDIR", self.path().join("tmux"))
-            .args(["-L", "cockpit", "kill-server"])
-            .output();
+        for profile_dir in PROFILE_DIRS {
+            let _ = Process::new("tmux")
+                .env_remove("TMUX")
+                .env("TMUX_TMPDIR", self.path().join("tmux"))
+                .args(["-L", profile_dir, "kill-server"])
+                .output();
+        }
     }
 }
 

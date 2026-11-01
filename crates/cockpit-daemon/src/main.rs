@@ -1,12 +1,15 @@
-//! `cockpit-daemon`: this user's one Cockpit daemon (report 03). `--foreground` also prints
-//! the log to stderr. It prints `ready <socket>` on stdout once it accepts requests.
+//! `cockpit-daemon`: this user's one Cockpit daemon per profile (report 03, #196).
+//! `--foreground` also prints the log to stderr; `--profile NAME` selects the profile, as
+//! `$COCKPIT_PROFILE` does. It prints `ready <socket>` on stdout once it accepts requests.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use cockpit_daemon::{RUN_LEADER_FLAG, SESSION_TICK, Serve, StartError, own_program, serve};
+use cockpit_daemon::{
+    RUN_LEADER_FLAG, SESSION_TICK, Serve, StartError, own_profile, own_program, serve,
+};
 
-const USAGE: &str = "usage: cockpit-daemon [--foreground]";
+const USAGE: &str = "usage: cockpit-daemon [--foreground] [--profile NAME]";
 
 fn main() -> ExitCode {
     let mut raw_arguments = std::env::args_os().skip(1);
@@ -15,15 +18,11 @@ fn main() -> ExitCode {
         return cockpit_processes::run_session_leader(&raw_arguments.collect::<Vec<_>>());
     }
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let foreground = match arguments.as_slice() {
-        [] => false,
-        [flag] if flag == "--foreground" => true,
-        _ => {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        }
+    let Some(arguments) = parse(&arguments) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
     };
-    match run(foreground) {
+    match run(arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("cockpit-daemon: {error}");
@@ -32,9 +31,34 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(foreground: bool) -> Result<(), StartError> {
+struct Arguments<'a> {
+    foreground: bool,
+    profile: Option<&'a str>,
+}
+
+/// Each flag at most once, in any order.
+fn parse(words: &[String]) -> Option<Arguments<'_>> {
+    let mut arguments = Arguments {
+        foreground: false,
+        profile: None,
+    };
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--foreground" if !arguments.foreground => arguments.foreground = true,
+            "--profile" if arguments.profile.is_none() => {
+                arguments.profile = Some(words.next()?.as_str());
+            }
+            _ => return None,
+        }
+    }
+    Some(arguments)
+}
+
+fn run(arguments: Arguments<'_>) -> Result<(), StartError> {
     serve(Serve {
-        foreground,
+        profile: own_profile(arguments.profile)?,
+        foreground: arguments.foreground,
         programs_dir: programs_dir()?,
         session_tick: SESSION_TICK,
         idle_sleep_after: None,

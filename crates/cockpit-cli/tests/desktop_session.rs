@@ -16,7 +16,7 @@ use scripted::{scripted_daemon, text};
 async fn import(variables: &[(&str, &str)], withheld: bool) -> (Output, Command) {
     let home = tempfile::tempdir().unwrap();
     let runtime_dir: PathBuf = home.path().join("run");
-    let socket = runtime_dir.join("cockpit/daemon.sock");
+    let socket = runtime_dir.join("cockpit-dev/daemon.sock");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

@@ -137,11 +137,13 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         let text = "No project yet: cockpit project add DIR";
         push_wrapped(&mut lines, text, width, "", Style::default());
     }
-    let title = if app.focus() == Focus::List {
-        "Sessions *"
-    } else {
-        "Sessions"
+    let mut title = match &app.profile {
+        Some(profile) => format!("Sessions · profile {profile}"),
+        None => "Sessions".to_owned(),
     };
+    if app.focus() == Focus::List {
+        title.push_str(" *");
+    }
     let height = usize::from(area.height.saturating_sub(2));
     let offset = selected_rows.map_or(0, |rows| scroll_to_show(&rows, height));
     frame.render_widget(

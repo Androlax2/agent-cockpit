@@ -16,7 +16,7 @@ fn runtime_dir(home: &Path) -> PathBuf {
 }
 
 fn agent_socket(home: &Path) -> PathBuf {
-    let path = runtime_dir(home).join("cockpit/agent/agent.sock");
+    let path = runtime_dir(home).join("cockpit-dev/agent/agent.sock");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

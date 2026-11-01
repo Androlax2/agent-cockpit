@@ -20,7 +20,7 @@ const STARTED_WITHIN: Duration = Duration::from_secs(10);
 /// Rewrites every session's stored state while no daemon runs.
 async fn leave_every_session_stopping(home: &Home) {
     let database = cockpit_turso::Database::open(
-        &home.path().join("state/cockpit/state.db"),
+        &home.state_dir().join("state.db"),
         &cockpit_daemon::MIGRATION_SETS,
     )
     .await

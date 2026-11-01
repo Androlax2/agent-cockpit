@@ -25,6 +25,9 @@ pub struct LaunchFacts {
     /// The step the session is doing, if any.
     pub workflow: Option<WorkflowFacts>,
     pub manifest_id: String,
+    /// The profile of the daemon that launched the session (#196): its `cockpit` reaches
+    /// that daemon alone.
+    pub profile: String,
 }
 
 /// A reference to the session's grants: they are evaluated at every mediated action, so the
@@ -64,13 +67,15 @@ More:
 
 pub fn brief(facts: &LaunchFacts) -> String {
     let mut text = format!(
-        "# Cockpit launch brief\n\nSession {}{} · Cockpit {VERSION} · instructions {}\n\n",
+        "# Cockpit launch brief\n\nSession {}{} · Cockpit {VERSION} · profile {} · \
+         instructions {}\n\n",
         facts.session,
         facts
             .project
             .as_ref()
             .map(|project| format!(" · project {project}"))
             .unwrap_or_default(),
+        facts.profile,
         facts.manifest_id
     );
     text.push_str(INVARIANTS);

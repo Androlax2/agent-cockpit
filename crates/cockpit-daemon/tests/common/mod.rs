@@ -21,6 +21,10 @@ pub fn is_alive(pid: i32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| !stat.contains(") Z "))
 }
 
+/// The profile directory of a daemon this test build runs without `--profile`: a build
+/// outside a release bundle runs profile `dev` (#196).
+pub const BUILD_PROFILE_DIR: &str = "cockpit-dev";
+
 /// Long enough never to fire in a passing test, short enough to fail a hung one quickly.
 pub const GENEROUS: Duration = Duration::from_secs(10);
 
@@ -78,8 +82,8 @@ impl TestHome {
 
     pub fn socket_dir(&self) -> PathBuf {
         match &self.runtime_base {
-            Some(base) => base.join("cockpit"),
-            None => self.state_home().join("cockpit/run"),
+            Some(base) => base.join(BUILD_PROFILE_DIR),
+            None => self.state_home().join(BUILD_PROFILE_DIR).join("run"),
         }
     }
 
@@ -95,7 +99,7 @@ impl TestHome {
 
     /// The state database the daemon opens, for a test to prepare while no daemon runs.
     pub async fn open_state(&self) -> cockpit_turso::Database {
-        let state_dir = self.state_home().join("cockpit");
+        let state_dir = self.state_home().join(BUILD_PROFILE_DIR);
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -107,7 +111,9 @@ impl TestHome {
     }
 
     pub fn log_file(&self) -> PathBuf {
-        self.state_home().join("cockpit/logs/daemon/cockpit.log")
+        self.state_home()
+            .join(BUILD_PROFILE_DIR)
+            .join("logs/daemon/cockpit.log")
     }
 
     fn command(&self) -> Command {

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use cockpit_daemon::{RUN_LEADER_FLAG, Serve, StartError, own_program, serve};
+use cockpit_daemon::{RUN_LEADER_FLAG, Serve, StartError, own_profile, own_program, serve};
 
 const USAGE: &str = "usage: cockpit-e2e-daemon --idle-sleep-after-s N --session-tick-ms N";
 
@@ -59,6 +59,7 @@ fn run(idle_sleep_after: Duration, session_tick: Duration) -> Result<(), StartEr
         .expect("Cargo builds examples in <profile>/examples/")
         .to_path_buf();
     serve(Serve {
+        profile: own_profile(None)?,
         foreground: false,
         programs_dir,
         session_tick,

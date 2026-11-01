@@ -133,10 +133,10 @@ fn the_default_limits_are_four_files_of_four_mebibytes_for_seven_days() {
 }
 
 #[test]
-fn the_log_directory_is_per_process_under_the_xdg_state_home() {
-    let state_home = Path::new("/state");
-    let log_dir = cockpit_diagnostics::log_dir_in(state_home, "daemon").unwrap();
-    assert_eq!(log_dir, Path::new("/state/cockpit/logs/daemon"));
+fn the_log_directory_is_per_process_under_the_profiles_state_directory() {
+    let state_dir = Path::new("/state/cockpit-dev");
+    let log_dir = cockpit_diagnostics::log_dir_in(state_dir, "daemon").unwrap();
+    assert_eq!(log_dir, Path::new("/state/cockpit-dev/logs/daemon"));
 }
 
 #[test]

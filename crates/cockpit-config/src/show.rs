@@ -22,6 +22,14 @@ pub fn render(config: &EffectiveConfig) -> String {
     .into_iter()
     .map(|(key, dir)| line(key, &path_toml(&dir.value).to_string(), &dir.source))
     .collect();
+    lines.insert(
+        0,
+        line(
+            "profile",
+            &Value::from(layout.profile.value.name()).to_string(),
+            &layout.profile.source,
+        ),
+    );
     lines.push(line(
         "paths.runtime_dir",
         &layout

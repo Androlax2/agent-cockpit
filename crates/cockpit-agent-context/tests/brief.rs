@@ -24,6 +24,7 @@ fn facts() -> LaunchFacts {
             has_checkpoint: true,
         }),
         manifest_id: manifest().id,
+        profile: "dev".to_owned(),
     }
 }
 
@@ -40,7 +41,7 @@ fn the_brief_states_the_invariants_before_any_dynamic_field() {
 }
 
 #[test]
-fn the_brief_names_the_session_its_task_step_and_checkpoint() {
+fn the_brief_names_the_session_its_profile_task_step_and_checkpoint() {
     let text = brief(&facts());
 
     for expected in [
@@ -53,6 +54,7 @@ fn the_brief_names_the_session_its_task_step_and_checkpoint() {
         "`cockpit workflow packet 3`",
         "revision 12",
         "change-state over session s-7",
+        "profile dev",
         &manifest().id,
     ] {
         assert!(text.contains(expected), "missing {expected:?} in\n{text}");

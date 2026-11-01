@@ -1,4 +1,5 @@
-//! `cockpit config show` driven as a process with an isolated home and environment.
+//! `cockpit config show` driven as a process with an isolated home and environment, for the
+//! default profile's layout (`--profile cockpit`: this test build would run `dev`, #196).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,7 +39,7 @@ impl Home {
 
     fn show_with_env(&self, arguments: &[&str], variables: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_cockpit"))
-            .args(["config", "show"])
+            .args(["--profile", "cockpit", "config", "show"])
             .args(arguments)
             .env_clear()
             .env("HOME", self.path())
@@ -533,7 +534,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
             stderr,
             format!(
                 "cockpit: {problem}\n\
-                 usage: cockpit config show [--project DIR] [--set KEY=VALUE]...\n       \
+                 usage: cockpit [--profile NAME] VERB ...\n       \
+                 cockpit config show [--project DIR] [--set KEY=VALUE]...\n       \
                  cockpit config reload\n       \
                  cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] \
                  [--needs-input QUESTION | --dialog QUESTION] [--prompt] \
@@ -568,6 +570,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit doctor [--project DIR]\n       \
                  cockpit tui\n       \
                  cockpit version [--all]\n       \
+                 cockpit doctor\n       \
+                 cockpit daemon install\n       \
                  cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \
                  [--priority 1-6] [--after ID]...\n       \
                  cockpit todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]\n       \

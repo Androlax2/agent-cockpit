@@ -32,8 +32,6 @@ pub enum Error {
     LogDirInUse {
         path: PathBuf,
     },
-    /// Neither `XDG_STATE_HOME` nor `HOME` is set.
-    NoStateDirectory,
     Io {
         action: &'static str,
         path: PathBuf,
@@ -79,7 +77,6 @@ impl fmt::Display for Error {
                 "another process already logs to {}; give each process its own name",
                 path.display()
             ),
-            Self::NoStateDirectory => write!(formatter, "neither XDG_STATE_HOME nor HOME is set"),
             Self::Io {
                 action,
                 path,

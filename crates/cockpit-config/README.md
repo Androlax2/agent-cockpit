@@ -1,7 +1,7 @@
 # cockpit-config
 
-Owns the effective configuration and where each value came from: XDG layout, owner settings,
-precedence, provenance and start-file change detection. Design:
+Owns the effective configuration and where each value came from: the profile, XDG layout, owner
+settings, precedence, provenance and start-file change detection. Design:
 [report 09](../../docs/design/greenfield/09-project-setup-readiness.md).
 
 **Depends on:** no product crate (only `serde` and `toml`).

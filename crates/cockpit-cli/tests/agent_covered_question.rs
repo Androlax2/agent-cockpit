@@ -12,7 +12,7 @@ use scripted::{scripted_daemon, text};
 
 async fn agent_reports(report: SessionReport) -> Output {
     let home = tempfile::tempdir().unwrap();
-    let socket = home.path().join("run/cockpit/daemon.sock");
+    let socket = home.path().join("run/cockpit-dev/daemon.sock");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
