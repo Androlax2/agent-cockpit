@@ -370,7 +370,7 @@ fn provider_step(requirements: &[RequirementView], available: &[&str]) -> Step {
 }
 
 /// Done once one available provider is signed in, since a session needs only one; else open
-/// while one needs a sign-in, and `unknown` (#443: no adapter reports it yet) names how to
+/// while one needs a sign-in, and `unknown` names how to
 /// check by hand without holding the setup.
 fn sign_in_step(requirements: &[RequirementView], available: &[&str]) -> Step {
     let sign_ins: Vec<&RequirementView> = available

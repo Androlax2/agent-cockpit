@@ -700,6 +700,11 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-protocol",
         ),
         (
+            "readiness -> config only",
+            "cockpit-readiness",
+            "cockpit-provider-api",
+        ),
+        (
             "messaging -> the database only",
             "cockpit-messaging",
             "cockpit-teams",
@@ -804,6 +809,7 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-authorization", "cockpit-turso"),
         ("cockpit-daemon", "cockpit-claude"),
         ("cockpit-claude", "cockpit-provider-api"),
+        ("cockpit-readiness", "cockpit-config"),
         ("cockpit-codex", "cockpit-provider-api"),
         ("cockpit-daemon", "cockpit-opencode"),
         ("cockpit-opencode", "cockpit-provider-api"),

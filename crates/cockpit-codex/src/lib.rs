@@ -1,5 +1,8 @@
 #![doc = include_str!("../README.md")]
 
+mod sign_in;
+pub use sign_in::SIGN_IN_CONFORMANCE_VERSION;
+
 pub mod app_server;
 pub mod delivery;
 pub mod hooks;
@@ -215,6 +218,10 @@ impl Codex {
 impl Provider for Codex {
     fn name(&self) -> &ProviderName {
         &self.name
+    }
+
+    fn sign_in(&self) -> cockpit_provider_api::SignIn {
+        self.sign_in_within(Duration::from_secs(10))
     }
 
     fn version(&self) -> Option<&str> {

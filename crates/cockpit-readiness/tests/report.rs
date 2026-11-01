@@ -24,6 +24,11 @@ fn ready_host() -> HostFacts {
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
             found: Ok(ProviderFound {
+                sign_in: cockpit_readiness::SignInFacts {
+                    signed_in: None,
+                    detail: "not probed".to_owned(),
+                    next: "check sign-in".to_owned(),
+                },
                 version: Some("2.1.316".to_owned()),
                 tested: true,
                 capabilities: vec!["resume".to_owned(), "events".to_owned()],
@@ -444,6 +449,11 @@ fn a_preset_needs_a_provider_that_reports_its_steps_capabilities() {
             providers: vec![ProviderFacts {
                 name: "claude".to_owned(),
                 found: Ok(ProviderFound {
+                    sign_in: cockpit_readiness::SignInFacts {
+                        signed_in: None,
+                        detail: "not probed".to_owned(),
+                        next: "check sign-in".to_owned(),
+                    },
                     version: None,
                     tested: false,
                     capabilities: capabilities.iter().map(|name| name.to_string()).collect(),
@@ -638,4 +648,35 @@ fn a_docker_engine_is_identified_and_its_isolation_reported() {
 #[should_panic(expected = "an available requirement has no next action to need")]
 fn an_available_requirement_cannot_be_built_as_needing_something() {
     Requirement::needs("x", Status::Available, "fine", "nothing");
+}
+
+#[test]
+fn sign_in_facts_choose_the_status_and_keep_the_providers_next_step() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    for (signed_in, status) in [
+        (Some(true), Status::Available),
+        (Some(false), Status::NeedsAuthorization),
+        (None, Status::Unknown),
+    ] {
+        let mut host = ready_host();
+        let found = host.providers[0].found.as_mut().unwrap();
+        found.sign_in = cockpit_readiness::SignInFacts {
+            signed_in,
+            detail: "provider evidence (unverified)".to_owned(),
+            next: "provider-specific next step".to_owned(),
+        };
+        let report = assess(&host, &fixture.config(), None);
+        let fact = requirement(&report, "provider claude sign-in");
+        assert_eq!(fact.status, status);
+        assert_eq!(fact.detail, "provider evidence (unverified)");
+        assert_eq!(
+            fact.next.as_deref(),
+            if signed_in == Some(true) {
+                None
+            } else {
+                Some("provider-specific next step")
+            }
+        );
+    }
 }

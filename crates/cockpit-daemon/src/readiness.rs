@@ -9,7 +9,7 @@ use std::sync::Arc;
 use cockpit_protocol::{ErrorCode, Outcome, ReadinessStatusView, Reply, RequirementView};
 use cockpit_readiness::{
     CheckoutFacts, ControlFacts, HostFacts, PresetFacts, ProjectFacts, ProjectNeeds, ProviderFacts,
-    ProviderFound, Report, SandboxEngine, Status, Trust,
+    ProviderFound, Report, SandboxEngine, SignInFacts, Status, Trust,
 };
 use cockpit_resource_admission::{Availability, Backend};
 
@@ -27,6 +27,7 @@ pub(crate) struct Context {
     pub(crate) tmux: Result<String, String>,
     /// Every provider the start tried, wired or not.
     pub(crate) providers: Vec<ProviderFacts>,
+    pub(crate) sign_in_providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
     /// Read on each request, so a changed configuration shows at once.
     pub(crate) environment: cockpit_config::Environment,
 }
@@ -51,11 +52,17 @@ pub(crate) fn provider_found(provider: &dyn cockpit_provider_api::Provider) -> P
                 .into_iter()
                 .map(|(capability, _)| capability.as_str().to_owned())
                 .collect(),
+            // Startup diagnostics do not probe authentication. Readiness refreshes it
+            // on its bulk worker for every request, so a login needs no daemon restart.
+            sign_in: sign_in_fact(cockpit_provider_api::SignIn::unknown(
+                "sign-in has not been probed",
+                "run `cockpit doctor`",
+            )),
         }),
     }
 }
 
-/// Docker is probed in the request, so the work runs in the bulk lane.
+/// Sign-in and Docker are probed in the request, so the work runs in the bulk lane.
 pub(crate) fn route(project: Option<String>, context: Context) -> Route {
     let project = match project.map(PathBuf::from) {
         Some(dir) if !dir.is_absolute() => {
@@ -103,7 +110,23 @@ pub(crate) fn route(project: Option<String>, context: Context) -> Route {
 }
 
 async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, String> {
-    let host = host_facts(&context);
+    let mut host = host_facts(&context);
+    let providers = context.sign_in_providers.clone();
+    host.providers = tokio::task::spawn_blocking(move || {
+        let mut facts = host.providers;
+        for provider in providers {
+            if let Some(found) = facts
+                .iter_mut()
+                .find(|fact| fact.name == provider.name().as_str())
+                .and_then(|fact| fact.found.as_mut().ok())
+            {
+                found.sign_in = sign_in_fact(provider.sign_in());
+            }
+        }
+        facts
+    })
+    .await
+    .map_err(|error| error.to_string())?;
     let (dir, checkout) = match &project {
         Some(dir) => {
             let (dir, checkout) = checkout_of(dir, &context.database).await?;
@@ -146,6 +169,24 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
         docker,
     };
     Ok(cockpit_readiness::assess(&host, &config, Some(&project)))
+}
+
+fn sign_in_fact(fact: cockpit_provider_api::SignIn) -> SignInFacts {
+    use cockpit_provider_api::{Provenance, SignInStatus};
+    let provenance = match fact.provenance {
+        Provenance::Tested { version } => format!("tested on {version}"),
+        Provenance::Discovered => "unverified".to_owned(),
+    };
+    let (signed_in, detail, next) = match fact.status {
+        SignInStatus::SignedIn => (Some(true), "signed in".to_owned(), String::new()),
+        SignInStatus::NotSignedIn { next } => (Some(false), "not signed in".to_owned(), next),
+        SignInStatus::Unknown { reason, next } => (None, reason, next),
+    };
+    SignInFacts {
+        signed_in,
+        detail: format!("{detail} ({provenance})"),
+        next,
+    }
 }
 
 fn host_facts(context: &Context) -> HostFacts {

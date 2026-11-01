@@ -1,5 +1,7 @@
 #![doc = include_str!("../README.md")]
 
+mod sign_in;
+
 pub mod hooks;
 mod screen;
 
@@ -245,6 +247,10 @@ impl ClaudeCode {
 impl Provider for ClaudeCode {
     fn name(&self) -> &ProviderName {
         &self.name
+    }
+
+    fn sign_in(&self) -> cockpit_provider_api::SignIn {
+        self.sign_in_within(Duration::from_secs(10))
     }
 
     fn version(&self) -> Option<&str> {

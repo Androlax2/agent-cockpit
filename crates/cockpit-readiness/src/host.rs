@@ -162,16 +162,22 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
     );
     vec![
         Requirement::available(name, detail),
-        // #443: no adapter reports its sign-in yet.
-        Requirement::needs(
-            format!("provider {} sign-in", provider.name),
-            Status::Unknown,
-            "Cockpit cannot read this provider's sign-in yet",
-            format!(
-                "start {} once in a terminal and sign in if it asks",
-                provider.name
+        match found.sign_in.signed_in {
+            Some(true) => Requirement::available(
+                format!("provider {} sign-in", provider.name),
+                &found.sign_in.detail,
             ),
-        ),
+            signed_in => Requirement::needs(
+                format!("provider {} sign-in", provider.name),
+                if signed_in == Some(false) {
+                    Status::NeedsAuthorization
+                } else {
+                    Status::Unknown
+                },
+                &found.sign_in.detail,
+                &found.sign_in.next,
+            ),
+        },
     ]
 }
 

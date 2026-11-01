@@ -7,6 +7,11 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 
 ## Rules
 
+- **Sign-in.** `claude auth status` supplies JSON `loggedIn` plus exit 0/1. The probe has
+  a ten-second deadline and a 64 KiB limit per output stream. Malformed or failed probes
+  stay unknown; no raw output reaches readiness. `tests/sign_in_conformance.rs` proved
+  signed-out and placeholder API-key states on 2.1.316 in an isolated Linux home.
+
 - **Capabilities with provenance.** Resume, submit, events, outcome, cancel, effort,
   compact, remote control and screen reading are `tested` only when the running Claude Code
   is `CONFORMANCE_VERSION`; on any other or unknown version they are `discovered`
