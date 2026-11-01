@@ -11,9 +11,11 @@ through, for every agent.
 - **Never invented.** A variable the daemon lacks stays unset in the agent; the daemon does
   not guess `:0`, `wayland-0` or `$XDG_RUNTIME_DIR/bus`. A daemon started as a user unit
   without the graphical session's environment gives its agents no display, and the fix is
-  the unit's environment (`systemctl --user import-environment`), not a default here.
+  the unit's environment (`systemctl --user import-environment`) and a daemon restart, not a
+  default here. Values are read once at daemon start; a fresher source is #307.
 - **Every agent, no opt-out yet.** The desktop session is the owner's own; a sandbox profile
-  that must keep an agent off it removes these variables there (report 11).
+  that must keep an agent off it (the session bus can start units outside containment) needs
+  a named opt-out first: #305 (report 11).
 - **Rejected: sending notifications through the daemon instead.** The daemon has no desktop
   dependencies (decision register 11), and the failing calls are the agent's own tools,
   which read these variables directly.
