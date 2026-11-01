@@ -216,27 +216,41 @@ async fn an_ask_guide_of_a_session_that_ended_leaves_the_owners_queue() {
     );
 }
 
+/// The owner's `ApprovalShow` of a run its session asked before it ended.
+async fn shown_after_ending(home: &Home, owner: &Connection) -> RunRequestView {
+    let (_, asked) = ended_after_asking(home, owner, ASK_RUN_PROJECT).await;
+    let run = asked.run.expect("the agent asked to run a command");
+    match owner
+        .request(Command::ApprovalShow { request: run.id }, GENEROUS)
+        .await
+    {
+        Ok(Reply::RunRequest { request }) => *request,
+        other => panic!("approval-show answered {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn an_ask_run_of_a_session_that_ended_shows_as_expired_without_build_files() {
+async fn an_ask_run_of_a_session_that_ended_shows_as_expired() {
     assert_the_cli_is_built();
     let home = Home::new();
     let _daemon = home.start();
     let owner = home.connect().await;
-    let (_, asked) = ended_after_asking(&home, &owner, ASK_RUN_PROJECT).await;
-    let run = asked.run.expect("the agent asked to run a command");
 
-    let shown = match owner
-        .request(Command::ApprovalShow { request: run.id }, GENEROUS)
-        .await
-    {
-        Ok(Reply::RunRequest { request }) => request,
-        other => panic!("approval-show answered {other:?}"),
-    };
+    let shown = shown_after_ending(&home, &owner).await;
 
-    assert_eq!(
-        (shown.state, shown.changed_build_files),
-        (RunStateView::Expired, None)
-    );
+    assert_eq!(shown.state, RunStateView::Expired);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ask_run_of_a_session_that_ended_shows_no_changed_build_files() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+
+    let shown = shown_after_ending(&home, &owner).await;
+
+    assert_eq!(shown.changed_build_files, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]

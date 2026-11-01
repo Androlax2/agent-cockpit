@@ -7,15 +7,15 @@
 
 mod common;
 
-use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 use cockpit_agent_channel::identity_of;
 use cockpit_approvals::RunAsk;
 use cockpit_authorization::{Permission, Scope, SessionId};
 use cockpit_client::Connection;
 use cockpit_protocol::{Command, Reply};
-use common::{GENEROUS, TestHome};
+use common::{GENEROUS, TestHome, unix_now};
 
 const POLLS: u32 = 500;
 const QUEUE_READS: u32 = 200;
@@ -114,19 +114,15 @@ async fn measure_status_polls_and_the_owner_queue() {
     );
 }
 
-/// The asks one queue holds in every #348 layout: the same rows, spread over more sessions.
-const ASKS_RUNS: usize = 40;
-const ASKS_GUIDES: usize = 40;
+/// The run requests and guides every #348 layout files: the same rows, spread over more
+/// sessions, so only the per-session authorization reads differ between layouts.
+const LAYOUT_RUNS: usize = 40;
+const LAYOUT_GUIDES: usize = 40;
 
-fn unix_now() -> i64 {
-    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    i64::try_from(elapsed.as_secs()).unwrap()
-}
-
-/// Files [`ASKS_RUNS`] run requests and [`ASKS_GUIDES`] guides spread evenly over `sessions`
+/// Files [`LAYOUT_RUNS`] run requests and [`LAYOUT_GUIDES`] guides spread evenly over `sessions`
 /// sessions, each granted `run-commands`, then revokes the grant of the first `ended` of
 /// them, as ending a session does. Written while no daemon runs.
-async fn asked_by_sessions(home: &TestHome, cwd: &PathBuf, sessions: usize, ended: usize) {
+async fn asked_by_sessions(home: &TestHome, cwd: &Path, sessions: usize, ended: usize) {
     let database = home.open_state().await;
     let write = database.write().await.unwrap();
     let now = unix_now();
@@ -141,11 +137,11 @@ async fn asked_by_sessions(home: &TestHome, cwd: &PathBuf, sessions: usize, ende
                 .unwrap(),
         );
     }
-    for ask in 0..ASKS_RUNS {
+    for ask in 0..LAYOUT_RUNS {
         let session = &grants[ask % sessions].holder;
         let run = RunAsk {
             command: "true".to_owned(),
-            cwd: cwd.clone(),
+            cwd: cwd.to_path_buf(),
             reason: "Measures the queue.".to_owned(),
             project: None,
         };
@@ -153,9 +149,9 @@ async fn asked_by_sessions(home: &TestHome, cwd: &PathBuf, sessions: usize, ende
             .await
             .unwrap();
     }
-    for ask in 0..ASKS_GUIDES {
+    for ask in 0..LAYOUT_GUIDES {
         let session = &grants[ask % sessions].holder;
-        cockpit_approvals::ask_guide(&write, session, &guide, cwd.clone(), None, now)
+        cockpit_approvals::ask_guide(&write, session, &guide, cwd.to_path_buf(), None, now)
             .await
             .unwrap();
     }
@@ -187,9 +183,10 @@ async fn measure_the_owner_queue_with_many_sessions_asking() {
         let queue = timed(QUEUE_READS, &owner, || Command::ApprovalQueue).await;
         daemon.kill();
 
+        let steps = cockpit_approvals::parse_guide(GUIDE).unwrap().steps.len();
         println!(
-            "{sessions} sessions asking ({ended} ended), {ASKS_RUNS} runs + {ASKS_GUIDES} guides \
-             x 5 steps: queue shows {} runs + {} guides in {queue:?}/read",
+            "{sessions} sessions asking ({ended} ended), {LAYOUT_RUNS} runs + {LAYOUT_GUIDES} guides \
+             x {steps} steps: queue shows {} runs + {} guides in {queue:?}/read",
             runs.len(),
             guides.len()
         );
