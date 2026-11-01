@@ -84,4 +84,5 @@ jobs:
         env:
           TAG: ${{ steps.next.outputs.tag }}
           REVISION: ${{ steps.next.outputs.revision }}
-        run: echo "dry run: would tag $REVISION as $TAG"
+        run: |
+          echo "dry run: would tag $REVISION as $TAG"
