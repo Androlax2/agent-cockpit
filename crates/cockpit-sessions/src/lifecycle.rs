@@ -678,8 +678,8 @@ impl Sessions {
         } else {
             LaunchKind::Restore
         };
-        // A session left `launching` was in a launch a crash interrupted; who asked for it
-        // is not kept, so it counts as a working launch: the safe direction (#269).
+        // A session left `launching` was in a launch a crash interrupted: a working one
+        // ([`LaunchPurpose`]).
         let purpose = if session.state == SessionState::Launching {
             LaunchPurpose::Work
         } else {
@@ -691,10 +691,6 @@ impl Sessions {
                 "restore",
             )
             .await?;
-        }
-        let purpose = if was_launching {
-            LaunchPurpose::Work
-        } else {
             LaunchPurpose::Upkeep
         };
         let conversation = match self.resumable(session) {
@@ -1310,8 +1306,9 @@ impl Sessions {
         Ok(execution)
     }
 
-    /// Undoes a launch whose terminal opened but whose agent could not be confirmed:
-    /// closing the terminal hangs up the pane, then the execution is released or stopped.
+    /// Undoes a launch whose terminal opened, or whose open timed out and may still open
+    /// it, but whose agent could not be confirmed: closing the terminal hangs up the pane,
+    /// then the execution is released or stopped.
     /// Best effort, since the launch already failed; what remains is logged.
     async fn discard_launch(&self, id: &SessionId, execution: ExecutionId) {
         if let Err(error) = self.close_terminal(id).await {

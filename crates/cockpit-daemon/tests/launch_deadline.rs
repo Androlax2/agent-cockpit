@@ -75,7 +75,7 @@ impl Home {
         let tmux = home.root.join("hanging-tmux");
         std::fs::write(
             &tmux,
-            "#!/bin/sh\nfor word; do [ \"$word\" = new-session ] && exec sleep 1; done\nexec tmux \"$@\"\n",
+            "#!/bin/sh\nfor word; do [ \"$word\" = new-session ] && exec sleep 3; done\nexec tmux \"$@\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&tmux, std::os::unix::fs::PermissionsExt::from_mode(0o755))
