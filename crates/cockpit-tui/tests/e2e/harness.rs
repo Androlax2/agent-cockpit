@@ -699,14 +699,97 @@ impl Cockpit {
 
     /// Types `line` at the prompt of `session`'s agent without the viewer, as if the agent
     /// decided to run it on its own: for a session the owner is not looking at.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "only the Linux-only ask tests use it (#336)")
-    )]
     pub fn agent_does(&self, session: &str, line: &str) {
         let target = format!("={session}:");
         self.private_tmux(&["send-keys", "-t", &target, "-l", "--", line]);
         self.private_tmux(&["send-keys", "-t", &target, "Enter"]);
+    }
+
+    /// Has `session`'s agent signal tmux channel `channel` at its prompt, and waits until it
+    /// has: everything it was told before has run. The agent names the server's socket by
+    /// path, as it does not share the daemon's tmux directory.
+    pub fn agent_reaches(&self, session: &str, channel: &str) {
+        let socket = self.private_tmux(&["display-message", "-p", "#{socket_path}"]);
+        let mut waiter = self
+            .command(Path::new("tmux"))
+            .args(["-L", "cockpit", "wait-for", channel])
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("tmux runs");
+        self.agent_does(
+            session,
+            &format!("!tmux -S '{}' wait-for -S {channel}", socket.trim_end()),
+        );
+        // On a timeout the test fails and its Drop kills the server, which ends the waiter.
+        let (exited, exit) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = exited.send(waiter.wait());
+        });
+        let signalled = exit
+            .recv_timeout(GENEROUS)
+            .is_ok_and(|status| status.is_ok_and(|status| status.success()));
+        assert!(
+            signalled,
+            "waited {GENEROUS:?} for {session}'s agent to signal {channel}\n{}",
+            self.daemon_stderr()
+        );
+    }
+
+    /// `session`'s window size on the daemon's tmux, as `<columns>x<rows>`.
+    pub fn agent_window_size(&self, session: &str) -> String {
+        self.private_tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={session}:"),
+            "#{window_width}x#{window_height}",
+        ])
+        .trim_end()
+        .to_owned()
+    }
+
+    /// The manager's viewer pane size, as `<columns>x<rows>`.
+    pub fn viewer_size(&self) -> String {
+        let sizes = self.private_tmux(&[
+            "list-panes",
+            "-t",
+            "=cockpit:",
+            "-F",
+            "#{pane_width}x#{pane_height}",
+        ]);
+        sizes
+            .lines()
+            .nth(ManagerPane::Viewer as usize)
+            .unwrap_or_else(|| panic!("the manager has no viewer: {sizes:?}"))
+            .to_owned()
+    }
+
+    /// Resizes the owner's terminal, as dragging its window does.
+    pub fn resize_terminal(&self, columns: u16, rows: u16) {
+        let terminal = self.terminal();
+        let (columns, rows) = (columns.to_string(), rows.to_string());
+        self.terminal_tmux(
+            terminal,
+            &[
+                "resize-window",
+                "-t",
+                "=owner:",
+                "-x",
+                &columns,
+                "-y",
+                &rows,
+            ],
+        )
+        .unwrap_or_else(|problem| panic!("cannot resize the terminal: {problem}"));
+    }
+
+    /// `session`'s screen as its agent's own pane holds it, trailing spaces and empty rows
+    /// cut: what the viewer must show.
+    pub fn agent_screen(&self, session: &str) -> Vec<String> {
+        trimmed_rows(
+            self.private_tmux(&["capture-pane", "-p", "-t", &format!("={session}:")])
+                .lines(),
+        )
     }
 
     /// How many times the fake agent of `session` was launched, as its log counts them.
@@ -834,6 +917,15 @@ pub enum ManagerPane {
 const UTF8_LOCALE: &str = "en_US.UTF-8";
 #[cfg(not(target_os = "macos"))]
 const UTF8_LOCALE: &str = "C.UTF-8";
+
+/// `rows` with trailing spaces cut and the empty rows at the end dropped.
+pub fn trimmed_rows<'a>(rows: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut rows: Vec<String> = rows.map(|row| row.trim_end().to_owned()).collect();
+    while rows.last().is_some_and(String::is_empty) {
+        rows.pop();
+    }
+    rows
+}
 
 /// Session ids (`s` and 12 hex digits) in the order `text` shows them, each once.
 pub fn session_ids(text: &str) -> Vec<String> {
