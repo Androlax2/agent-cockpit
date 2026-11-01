@@ -570,7 +570,6 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit doctor [--project DIR]\n       \
                  cockpit tui\n       \
                  cockpit version [--all]\n       \
-                 cockpit doctor\n       \
                  cockpit daemon install\n       \
                  cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \
                  [--priority 1-6] [--after ID]...\n       \

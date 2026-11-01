@@ -417,8 +417,12 @@ fn doctor_names_the_active_profile_and_every_other_installation_it_sees() {
     fs::write(legacy_bin.join("cockpit"), "#!/bin/sh\n").unwrap();
     let path = format!("{}:{}", home.bin().display(), legacy_bin.display());
 
-    let printed =
-        succeeded(&home.run(&home.bin().join("cockpit"), &["doctor"], &[("PATH", &path)]));
+    let output = home.run(&home.bin().join("cockpit"), &["doctor"], &[("PATH", &path)]);
+
+    // Exit 1: this profile's daemon is not running, which the readiness report after the
+    // installations names as the missing prerequisite (#50).
+    assert_eq!(output.status.code(), Some(1));
+    let printed = String::from_utf8(output.stdout).unwrap();
 
     let root = home.path();
     let root = root.display();
@@ -440,12 +444,16 @@ fn doctor_names_the_active_profile_and_every_other_installation_it_sees() {
     let lines: Vec<String> = printed.lines().map(str::to_owned).collect();
     assert_eq!(lines[..expected_head.len()], expected_head, "{printed}");
     assert_eq!(
-        lines[expected_head.len()..],
-        [format!(
+        lines[expected_head.len()],
+        format!(
             "- legacy cockpit: command {}/cockpit on PATH",
             legacy_bin.display()
-        )],
+        ),
         "{printed}"
+    );
+    assert!(
+        lines[expected_head.len() + 1].contains("  config: "),
+        "the readiness report follows the installations: {printed}"
     );
 }
 
