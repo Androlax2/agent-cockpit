@@ -339,8 +339,9 @@ impl Cockpit {
             + &self.agent_panes()
     }
 
-    /// Each window of the daemon's tmux with its size and its pane's history: what the
-    /// agents printed, whether or not the viewer shows it. Never panics, as it reports one.
+    /// Each pane of the daemon's tmux with its size and its history: what the agents
+    /// printed, and what the viewer pane holds, whether or not the owner's terminal shows
+    /// it. Never panics, as it reports one.
     fn agent_panes(&self) -> String {
         let private_tmux = |arguments: &[&str]| {
             self.command(Path::new("tmux"))
@@ -350,17 +351,18 @@ impl Cockpit {
                 .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
                 .unwrap_or_else(|error| format!("tmux did not run: {error}\n"))
         };
-        let windows = private_tmux(&[
-            "list-windows",
+        let panes = private_tmux(&[
+            "list-panes",
             "-a",
             "-F",
-            "#{session_name}:#{window_index} #{window_width}x#{window_height}",
+            "#{pane_id} #{session_name}:#{window_index}.#{pane_index} #{pane_width}x#{pane_height} \
+             window #{window_width}x#{window_height}",
         ]);
-        let mut report = format!("\n--- the daemon's windows ---\n{windows}");
-        for window in windows.lines() {
-            let target = window.split(' ').next().unwrap_or_default();
-            let history = private_tmux(&["capture-pane", "-p", "-S", "-60", "-t", target]);
-            report += &format!("--- {target} ---\n{}\n", history.trim_end());
+        let mut report = format!("\n--- the daemon's panes ---\n{panes}");
+        for pane in panes.lines() {
+            let id = pane.split(' ').next().unwrap_or_default();
+            let history = private_tmux(&["capture-pane", "-p", "-S", "-60", "-t", id]);
+            report += &format!("--- {pane} ---\n{}\n", history.trim_end());
         }
         report
     }
@@ -738,16 +740,28 @@ impl Cockpit {
         session
     }
 
-    /// Sends a line to the agent shown in the viewer, as the owner types into it.
+    /// Sends a line to the agent shown in the viewer, as the owner types into it once the
+    /// viewer shows the agent's prompt.
     pub fn tell_agent(&self, line: &str) {
+        self.wait_until("the viewer shows the agent's prompt", |screen| {
+            viewer_rows(screen)
+                .last()
+                .is_some_and(|row| row == FAKE_PROMPT)
+        });
         self.click(ManagerPane::Viewer);
         self.type_text(line);
         self.press(&["Enter"]);
     }
 
     /// Types `line` at the prompt of `session`'s agent without the viewer, as if the agent
-    /// decided to run it on its own: for a session the owner is not looking at.
+    /// decided to run it on its own: for a session the owner is not looking at. Waits for
+    /// the prompt first: typed before it, the tty echoes the line into the agent's reply,
+    /// and a row that wide leaves the screen for the history once the viewer narrows the
+    /// window (#403, #405).
     pub fn agent_does(&self, session: &str, line: &str) {
+        self.wait_for_agent_screen(session, "the agent's prompt", |screen| {
+            screen.last().is_some_and(|row| row == FAKE_PROMPT)
+        });
         let target = format!("={session}:");
         self.private_tmux(&["send-keys", "-t", &target, "-l", "--", line]);
         self.private_tmux(&["send-keys", "-t", &target, "Enter"]);
@@ -967,19 +981,28 @@ struct Terminal {
     written: Receiver<()>,
 }
 
-/// One message per `%output` line a control-mode client prints, until it exits.
+/// One message per `%output` line a control-mode client prints, until it exits. Returns
+/// once the client has attached (`%session-changed`): a write before that is announced to
+/// nobody, and a screen read before it could miss that write and wait for one that never
+/// comes.
 fn announced_writes(stdout: std::process::ChildStdout) -> Receiver<()> {
     let (writes, written) = mpsc::channel();
+    let (attaching, attached) = mpsc::channel();
     std::thread::spawn(move || {
         // Bytes, not lines of text: tmux passes the pane's bytes through unchecked.
         for line in BufReader::new(stdout).split(b'\n') {
             let Ok(line) = line else { return };
-            if line.starts_with(b"%output") && writes.send(()).is_err() {
+            if line.starts_with(b"%session-changed") {
+                let _ = attaching.send(());
+            } else if line.starts_with(b"%output") && writes.send(()).is_err() {
                 return;
             }
         }
     });
-    written
+    match attached.recv_timeout(GENEROUS) {
+        Ok(()) => written,
+        Err(error) => panic!("the control-mode client did not attach: {error:?}"),
+    }
 }
 
 /// The manager session's panes, in tmux's order.
@@ -993,6 +1016,21 @@ pub enum ManagerPane {
 const UTF8_LOCALE: &str = "en_US.UTF-8";
 #[cfg(not(target_os = "macos"))]
 const UTF8_LOCALE: &str = "C.UTF-8";
+
+/// The fake agent's prompt as a screen row shows it, its trailing space cut.
+const FAKE_PROMPT: &str = "fake>";
+
+/// Where the viewer starts on the owner's screen: after the list's 39 columns and the border.
+const VIEWER_COLUMN: usize = 40;
+
+/// The viewer's part of the owner's `screen`, as [`trimmed_rows`] cuts it.
+pub fn viewer_rows(screen: &str) -> Vec<String> {
+    trimmed_rows(screen.lines().map(|line| {
+        line.char_indices()
+            .nth(VIEWER_COLUMN)
+            .map_or("", |(start, _)| &line[start..])
+    }))
+}
 
 /// `rows` with trailing spaces cut and the empty rows at the end dropped.
 pub fn trimmed_rows<'a>(rows: impl Iterator<Item = &'a str>) -> Vec<String> {

@@ -3,7 +3,7 @@
 
 use cockpit_protocol::SessionStateView;
 
-use crate::harness::{Cockpit, FIRST_MESSAGE, PROJECT, session_ids, trimmed_rows};
+use crate::harness::{Cockpit, FIRST_MESSAGE, PROJECT, session_ids, viewer_rows};
 
 /// Opens the form and waits for the daemon's agents in it.
 fn open_form(cockpit: &Cockpit) {
@@ -42,9 +42,6 @@ fn enter_shows_the_selected_agent_in_the_viewer() {
     cockpit.shown_session();
 }
 
-/// Where the viewer starts on the owner's screen: after the list's 39 columns and the border.
-const VIEWER_COLUMN: usize = 40;
-
 /// #338: the window shrinks from the size it started with to the viewer's as the viewer
 /// attaches, and tmux rewraps a line wider than the viewer into two rows. The agent printed
 /// it before anyone viewed the session; the viewer must still show its screen row for row.
@@ -54,8 +51,6 @@ fn the_viewer_shows_every_line_after_one_wider_than_itself() {
     let session = cockpit.session_from_cli();
     cockpit.wait_for(&session);
     cockpit.agent_does(&session, "!printf 'w%.0s' $(seq 200); echo ' end'");
-    // The keys may reach the agent before its first prompt, so the line may share a row
-    // with `fake> `.
     let wider_than_the_viewer = "w".repeat(121);
     cockpit.wait_for_agent_screen(&session, "the wide line, before any viewer", |screen| {
         screen
@@ -65,12 +60,7 @@ fn the_viewer_shows_every_line_after_one_wider_than_itself() {
     });
     cockpit.press(&["Enter"]);
     cockpit.wait_until("the agent's screen, row for row, in the viewer", |screen| {
-        let viewer = trimmed_rows(screen.lines().map(|line| {
-            line.char_indices()
-                .nth(VIEWER_COLUMN)
-                .map_or("", |(start, _)| &line[start..])
-        }));
-        viewer == cockpit.agent_screen(&session)
+        viewer_rows(screen) == cockpit.agent_screen(&session)
     });
 }
 
@@ -94,8 +84,17 @@ fn the_shown_agent_follows_the_terminal_when_it_is_resized() {
 fn the_form_starts_a_session_in_a_new_clone_on_a_branch() {
     let cockpit = Cockpit::start();
     open_form(&cockpit);
-    cockpit.press(&["Tab", "Tab", "Tab", "Right", "Tab"]);
-    cockpit.wait_for("Branch:");
+    // One key at a time, each once the form shows the one before took (#402).
+    for (key, field) in [
+        ("Tab", "> Agent: claude"),
+        ("Tab", "> First message:"),
+        ("Tab", "> Where: in place"),
+        ("Right", "> Where: new clone"),
+        ("Tab", "> Branch:"),
+    ] {
+        cockpit.press(&[key]);
+        cockpit.wait_for(field);
+    }
     cockpit.type_text("accept-clone");
     cockpit.press(&["Enter"]);
     let session = first_card(&cockpit);
