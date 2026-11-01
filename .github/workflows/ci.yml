@@ -79,7 +79,7 @@ jobs:
 
   # The daemon's startup tests on macOS, clean-home start included (M0 gate, #27); the full
   # greenfield gate stays on Linux. Plain cargo: the Makefile's agent-build runner is Linux-only.
-  # Pull requests run it only for platform paths (tools/ci-jobs.py); main always does (#397).
+  # Pull requests run it only when a crate it builds changes (tools/ci-jobs.py); main always does.
   greenfield-macos:
     needs: changes
     if: needs.changes.outputs.platform == 'true'
@@ -123,7 +123,7 @@ jobs:
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
   # match tools/tests/fixtures/ci-install-action-linux.json (test_ci_bootstrap.py). No build
   # cache, on purpose: docs/decisions/2026-10-31-127-platform-build-cache.md. Pull requests run
-  # it only for platform paths (tools/ci-jobs.py); main always does (#397).
+  # it only when a crate it builds changes (tools/ci-jobs.py); main always does (#397).
   greenfield-wsl2:
     needs: changes
     if: needs.changes.outputs.platform == 'true'

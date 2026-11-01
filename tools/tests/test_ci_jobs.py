@@ -7,14 +7,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools/ci-jobs.py"
 EVERY_JOB = {"greenfield", "platform", "docs"}
-PLATFORM_CFG = re.compile(r"#!?\[cfg\([^\]]*\b(target_os|target_family|unix|windows)\b")
 
 
-def platform_crates():
+def ci_jobs_module():
     spec = importlib.util.spec_from_file_location("ci_jobs", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return set(module.PLATFORM_CRATES)
+    return module
 
 
 def selected_jobs(*arguments, changed_paths=()):
@@ -34,7 +33,7 @@ class CiJobSelectionTests(unittest.TestCase):
         cases = {
             "crates/cockpit-workspace-rules/src/lib.rs": {"greenfield"},
             "crates/cockpit-workspace-rules/README.md": {"greenfield", "docs"},
-            "crates/cockpit-tasks/src/lib.rs": {"greenfield"},
+            "crates/cockpit-tasks/src/lib.rs": {"greenfield", "platform"},
             "crates/cockpit-daemon/src/main.rs": {"greenfield", "platform"},
             "crates/cockpit-tui/tests/e2e/harness.rs": {"greenfield", "platform"},
             ".agents/rules/rust.md": {"docs"},
@@ -80,19 +79,27 @@ class CiJobSelectionTests(unittest.TestCase):
     def test_an_empty_change_set_runs_every_job(self):
         self.assertEqual(selected_jobs(), EVERY_JOB)
 
-    def test_every_crate_with_a_platform_cfg_runs_the_platform_jobs(self):
-        listed = platform_crates()
-        for crate in sorted((ROOT / "crates").iterdir()):
-            sources = [*crate.glob("src/**/*.rs"), *crate.glob("tests/**/*.rs")]
-            if any(PLATFORM_CFG.search(source.read_text()) for source in sources):
-                with self.subTest(crate=crate.name):
-                    self.assertIn(crate.name, listed)
+    def test_every_dependency_of_a_platform_root_runs_the_platform_jobs(self):
+        ci_jobs = ci_jobs_module()
+        for root in ci_jobs.PLATFORM_ROOTS:
+            for dependency in ci_jobs.path_dependencies(root):
+                with self.subTest(root=root, dependency=dependency):
+                    self.assertEqual(
+                        selected_jobs(changed_paths=[f"crates/{dependency}/src/lib.rs"]),
+                        {"greenfield", "platform"},
+                    )
 
-    def test_every_crate_a_platform_job_tests_runs_the_platform_jobs(self):
+    def test_every_crate_a_platform_job_tests_is_a_platform_root(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         tested = set(re.findall(r"cargo nextest run [^\n]*?-p (cockpit-[a-z-]+)", workflow))
         self.assertTrue(tested, "expected the platform jobs' cargo nextest runs")
-        self.assertLessEqual(tested, platform_crates())
+        self.assertLessEqual(tested, set(ci_jobs_module().PLATFORM_ROOTS))
+
+    def test_every_program_the_tui_harness_builds_is_a_platform_root(self):
+        harness = (ROOT / "crates/cockpit-tui/tests/e2e/harness.rs").read_text()
+        built = set(re.findall(r'"--package",\s*"(cockpit-[a-z-]+)"', harness))
+        self.assertTrue(built, "expected the harness's cargo build packages")
+        self.assertLessEqual(built, set(ci_jobs_module().PLATFORM_ROOTS))
 
 
 if __name__ == "__main__":

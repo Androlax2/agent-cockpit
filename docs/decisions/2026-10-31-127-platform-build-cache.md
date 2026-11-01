@@ -38,4 +38,4 @@ durations of the five green `main` runs before this change (41209922817 to 41215
   merges, the first one that can restore a saved cache; the result is recorded on #127.
 
 Regression test: `tools/tests/test_ci_bootstrap.py`
-(`test_macos_job_restores_the_pinned_rust_cache_saved_only_on_main`).
+(`test_cached_jobs_restore_the_pinned_rust_cache_saved_only_on_main`, which covers the Linux job too since #397).

@@ -127,8 +127,8 @@ cutover). JavaScript's default warnings remain visible. The [CI workflow](../.gi
 splits by changed path ([tools/ci-jobs.py](../tools/ci-jobs.py)): `greenfield` runs
 `make greenfield-ci` for `crates/`, the root manifests, the Makefile and `.github/`; `docs` runs
 `make docs-ci` for `docs/` and any Markdown file; `greenfield-macos` and `greenfield-wsl2`
-run for the crates whose behaviour can differ by OS, the root manifests and `ci.yml`
-(`PLATFORM_CRATES`). A path no job claims (`apps/`, `config/`, `packaging/` included), and a
+run for the crates they build (`PLATFORM_ROOTS` and their dependencies), the root manifests
+and `ci.yml`. A path no job claims (`apps/`, `config/`, `packaging/` included), and a
 push to `main`, run every job. A job the change does not need is skipped, and a skipped
 required check counts as passed. The Linux jobs run on Ubuntu 26.04 runners with pinned Rust,
 Node and checker versions, read-only repository permissions and immutable action revisions.
