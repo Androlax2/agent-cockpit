@@ -72,7 +72,8 @@ fn label(text: &str) -> Report {
 }
 
 /// The reports the bridge and the agent send after a question, other than a new prompt.
-fn later_reports() -> [Report; 4] {
+/// Reports that say what the agent does; a stateless one leaves a dialog open (#216).
+fn later_reports() -> [Report; 3] {
     [
         state(AgentState::Working),
         state(AgentState::Waiting),
@@ -81,7 +82,6 @@ fn later_reports() -> [Report; 4] {
             outcome: Some(TurnOutcome::Completed),
             ..Report::default()
         },
-        label("Agent channel issue"),
     ]
 }
 
@@ -225,35 +225,6 @@ async fn a_report_mixing_questions_or_a_prompt_is_refused_naming_its_field() {
             other => panic!("{sent:?}: expected an invalid request, got {other:?}"),
         }
     }
-}
-
-#[tokio::test]
-async fn a_dialog_cleared_by_a_report_without_a_state_leaves_the_session_working() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = reporting_session(dir.path()).await;
-    send(&database, dialog("Allow Bash?")).await.unwrap();
-
-    let recorded = send(&database, label("Agent channel issue")).await.unwrap();
-
-    assert_eq!(recorded.state, Some(AgentState::Working));
-}
-
-#[tokio::test]
-async fn a_dialog_answered_without_a_state_clears_the_ended_turns_outcome() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = reporting_session(dir.path()).await;
-    let turn_ended = Report {
-        state: Some(AgentState::Waiting),
-        outcome: Some(TurnOutcome::Completed),
-        ..Report::default()
-    };
-    send(&database, turn_ended).await.unwrap();
-    send(&database, dialog("Allow Bash?")).await.unwrap();
-
-    let recorded = send(&database, label("Agent channel issue")).await.unwrap();
-
-    assert_eq!(recorded.state, Some(AgentState::Working));
-    assert_eq!(recorded.outcome, None);
 }
 
 #[tokio::test]

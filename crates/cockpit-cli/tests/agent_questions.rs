@@ -57,6 +57,7 @@ fn dialog_report() -> SessionReport {
         doing: None,
         needs_input: Some("Allow Bash?".to_owned()),
         question_source: Some(QuestionSource::Dialog),
+        covered_question: None,
         outcome: None,
         reported_at: 1,
     }

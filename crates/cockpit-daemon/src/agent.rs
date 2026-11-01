@@ -138,6 +138,7 @@ fn to_wire(report: SessionReport) -> cockpit_protocol::SessionReport {
             QuestionSource::Agent => cockpit_protocol::QuestionSource::Agent,
             QuestionSource::Dialog => cockpit_protocol::QuestionSource::Dialog,
         }),
+        covered_question: report.covered_question,
         reported_at: report.reported_at,
     }
 }

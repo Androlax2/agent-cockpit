@@ -102,7 +102,8 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
 
 /// The `cockpit` arguments that report `event` on the agent channel; `None` for an event
 /// that proves no activity. A dialog's question goes as `--dialog`, which the next report
-/// clears; a submitted prompt adds `--prompt`, which clears the agent's own question (#200).
+/// with a state clears; a submitted prompt adds `--prompt`, which clears the agent's own
+/// question (#200).
 pub fn report_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let activity = event.observation()?.activity;
     let mut arguments: Vec<String> = ["agent", "report", "--state"]
