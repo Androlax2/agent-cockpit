@@ -634,6 +634,16 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-sessions",
         ),
         (
+            "provider adapters -> provider-api only",
+            "cockpit-codex",
+            "cockpit-sessions",
+        ),
+        (
+            "provider adapters -> provider-api only",
+            "cockpit-codex",
+            "cockpit-claude",
+        ),
+        (
             "messaging -> the database only",
             "cockpit-messaging",
             "cockpit-protocol",
@@ -723,6 +733,7 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-authorization", "cockpit-turso"),
         ("cockpit-daemon", "cockpit-claude"),
         ("cockpit-claude", "cockpit-provider-api"),
+        ("cockpit-codex", "cockpit-provider-api"),
         ("cockpit-messaging", "cockpit-turso"),
         ("cockpit-workflows", "cockpit-tasks"),
         ("cockpit-workflows", "cockpit-provider-api"),

@@ -426,6 +426,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-codex"
+version = "0.1.0"
+dependencies = [
+ "cockpit-provider-api",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "cockpit-config"
 version = "0.1.0"
 dependencies = [
