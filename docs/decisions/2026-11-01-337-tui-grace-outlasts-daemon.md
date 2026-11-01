@@ -9,6 +9,9 @@ Issue #337. Decided by the worker: the issue offers two options and recommends n
   key accepted 2 s after showing reaches the daemon past its grace. A `y` pressed once the
   hint "Read it first" goes away is never refused, and the e2e approval test no longer
   presses `y` again after a refusal.
+- **It assumes the wall clock does not step back** during the grace: the TUI counts on
+  `Instant`, the daemon on wall-clock seconds. After such a step the daemon refuses and the
+  owner presses `y` again, as before; the e2e test checks the value against the real daemon.
 - **Rejected:** keeping the hint until the request's `revised_at` plus the daemon's grace
   (option B). It compares the daemon's wall clock with the TUI's, couples the TUI to the
   daemon's constant, and saves at most one second of reading time on a pane meant to be read.

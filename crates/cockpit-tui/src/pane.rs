@@ -3,7 +3,9 @@
 //!
 //! - Approving is `y` only: no navigation key (`j`, `k`, arrows, Enter) approves.
 //! - Input is ignored for [`INPUT_GRACE`] after the pane shows a request (a new one or a new
-//!   revision) or takes focus. The daemon's own grace refusal is the backstop.
+//!   revision) or takes focus, and for [`INPUT_GRACE`] after each key it ignored: an owner
+//!   still typing to an agent when the pane took tmux's keys approves nothing (#317). The
+//!   daemon's own grace refusal is the backstop.
 //! - While the owner types into the pane, the request shown stays, whatever arrives.
 
 use std::time::{Duration, Instant};
@@ -123,6 +125,7 @@ impl Pane {
             return PaneOutcome::NotMine;
         };
         if self.in_grace(now) {
+            self.accepts_input_at = Some(now + INPUT_GRACE);
             return PaneOutcome::IgnoredInGrace;
         }
         if let Some(typing) = self.typing {

@@ -11,6 +11,11 @@ Issue #317. Decided by the worker: the issue offers three ways and leaves the pi
 - **Only on that transition**, as the TUI's own focus: a later head of the queue, or a request
   shown while the owner deliberately clicked the viewer, leaves tmux's focus where the owner
   put it. A failed `manager-focus` shows on the status line like any failed command.
+- **The grace starts again on each key it ignored and when `manager-focused` arrives**
+  (`crates/cockpit-tui/src/pane.rs`). An owner still typing to the agent when the keys move
+  would otherwise reach a `y` in their sentence once the grace ended; and the daemon may move
+  the keys well after the pane showed the request. The keys typed into the pane meanwhile are
+  lost to the agent: the price of taking the keys at all.
 - **Rejected:** the daemon selecting the column when its approval queue becomes non-empty.
   It would move the keys up to a refresh (1 s) before the TUI shows the request, so a key
   typed for the agent could reach the session list (`r`, then `y`, restarts a session).

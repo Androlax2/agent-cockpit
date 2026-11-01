@@ -379,7 +379,9 @@ impl App {
                 self.board.set_queue(runs, guides);
                 send.extend(self.follow_queue(now));
             }
-            Reply::ManagerFocused => {}
+            // tmux moved the keys only now, perhaps long after the pane showed the request:
+            // the first key they bring waits out the grace again.
+            Reply::ManagerFocused => self.pane.focus(now),
             Reply::Providers { providers } => {
                 if let Some(form) = &mut self.form {
                     form.set_agents(providers);

@@ -45,8 +45,9 @@ detaching the terminal leaves everything running.
   for tmux's keys (`manager-focus`), so the next key reaches the pane, not the agent in the
   viewer (#317).
 - `y` approves the request shown, naming its revision and digest; no navigation key does.
-- Input is ignored for [`INPUT_GRACE`] after the pane shows a request (or a new revision) or
-  takes focus; the daemon refuses an approval within its own grace as the backstop.
+- Input is ignored for [`INPUT_GRACE`] after the pane shows a request (or a new revision),
+  takes focus (in the TUI, or tmux's keys arriving) or ignored a key; the daemon refuses an
+  approval within its own grace as the backstop.
 - While the owner types into the pane (a line for a waiting command, a guide answer or
   note), the request shown stays whatever arrives.
 - Warnings (each escaped kind, non-ASCII characters, the timeout hint, changed build files,
