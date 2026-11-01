@@ -49,6 +49,14 @@ impl FakeTmux {
         self.directory.path().join("tmux.conf")
     }
 
+    /// [`Server::open`], then the recorded calls forgotten: the tests below check what a
+    /// command runs, not the config [`Server::open`] applies.
+    fn open(&self) -> Server {
+        let server = Server::open(self.spec(Socket::cockpit())).expect("opens");
+        fs::remove_file(self.directory.path().join("calls")).expect("open ran tmux");
+        server
+    }
+
     /// Each recorded call's arguments.
     fn calls(&self) -> Vec<Vec<String>> {
         fs::read_to_string(self.directory.path().join("calls"))
@@ -139,6 +147,26 @@ fn opening_writes_cockpits_own_config_private_to_the_user() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
+#[test]
+fn opening_applies_the_config_to_a_running_server() {
+    let fake = FakeTmux::printing_version("tmux 3.4");
+
+    Server::open(fake.spec(Socket::cockpit())).expect("opens");
+
+    let config = fake.config_path().display().to_string();
+    assert_eq!(
+        fake.calls(),
+        [[
+            "-f",
+            config.as_str(),
+            "-L",
+            "cockpit",
+            "source-file",
+            config.as_str()
+        ]]
+    );
+}
+
 fn launch(name: &str, working_dir: &Path) -> SessionLaunch {
     SessionLaunch {
         name: SessionName::new(name).expect("a valid name"),
@@ -153,7 +181,7 @@ fn launch(name: &str, working_dir: &Path) -> SessionLaunch {
 #[test]
 fn every_command_uses_the_private_cockpit_server_and_its_config() {
     let fake = FakeTmux::printing_version("tmux 3.4");
-    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+    let server = fake.open();
 
     server
         .new_session(&launch("agent-1", fake.directory.path()))
@@ -168,7 +196,7 @@ fn every_command_uses_the_private_cockpit_server_and_its_config() {
 #[test]
 fn a_new_session_runs_its_command_without_tmux_variables_with_its_environment() {
     let fake = FakeTmux::printing_version("tmux 3.4");
-    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+    let server = fake.open();
 
     server
         .new_session(&launch("agent-1", fake.directory.path()))
@@ -206,7 +234,7 @@ fn a_new_session_runs_its_command_without_tmux_variables_with_its_environment() 
 #[test]
 fn sessions_are_targeted_by_exact_name_never_by_prefix() {
     let fake = FakeTmux::printing_version("tmux 3.4");
-    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+    let server = fake.open();
     let session = SessionName::new("agent-1").expect("a valid name");
 
     let _ = server.close_session(&session);
@@ -242,7 +270,7 @@ fn a_session_name_tmux_would_read_as_a_target_is_refused() {
 #[test]
 fn an_environment_name_that_is_not_a_shell_name_is_refused() {
     let fake = FakeTmux::printing_version("tmux 3.4");
-    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+    let server = fake.open();
     let mut bad_launch = launch("agent-1", fake.directory.path());
     bad_launch.environment = vec![("A=B".to_string(), "x".into())];
 
@@ -255,7 +283,7 @@ fn an_environment_name_that_is_not_a_shell_name_is_refused() {
 #[test]
 fn a_session_in_a_missing_directory_is_refused_before_tmux_runs() {
     let fake = FakeTmux::printing_version("tmux 3.4");
-    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+    let server = fake.open();
 
     let error = server
         .new_session(&launch(
@@ -272,7 +300,7 @@ fn a_session_in_a_missing_directory_is_refused_before_tmux_runs() {
 fn an_exited_pane_has_no_pid_even_where_tmux_still_prints_the_old_one() {
     // Some tmux releases (CI's Ubuntu tmux; not 3.8) still print the ended process's pid.
     let fake = FakeTmux::printing("tmux 3.4", "%3 4242 1 7");
-    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+    let server = fake.open();
 
     let panes = server
         .panes(&SessionName::new("agent-1").expect("valid"))
@@ -286,7 +314,7 @@ fn an_exited_pane_has_no_pid_even_where_tmux_still_prints_the_old_one() {
 #[test]
 fn the_attach_command_names_the_private_server_and_the_exact_session() {
     let fake = FakeTmux::printing_version("tmux 3.4");
-    let server = Server::open(fake.spec(Socket::cockpit())).expect("opens");
+    let server = fake.open();
 
     let attach = server.attach_command(&SessionName::new("cockpit").unwrap());
 

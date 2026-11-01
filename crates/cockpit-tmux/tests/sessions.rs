@@ -283,6 +283,43 @@ fn the_server_shows_no_status_bar() {
 }
 
 #[test]
+fn opening_applies_the_config_to_a_server_started_with_an_older_one() {
+    let fixture = TestServer::new();
+    let older_config = fixture.home.path().join("older.conf");
+    fs::write(&older_config, "set-option -g status on\n").expect("writable");
+    let older_config = older_config.to_str().expect("a UTF-8 path");
+    fixture.tmux(&[
+        "-f",
+        older_config,
+        "new-session",
+        "-d",
+        "-s",
+        "agent-1",
+        "sleep 30",
+    ]);
+    assert_eq!(
+        fixture.tmux(&["show-options", "-gv", "status"]).trim(),
+        "on"
+    );
+
+    fixture.reopen();
+
+    assert_eq!(
+        fixture.tmux(&["show-options", "-gv", "status"]).trim(),
+        "off"
+    );
+}
+
+#[test]
+fn opening_starts_no_server() {
+    let fixture = TestServer::new();
+
+    fixture.reopen();
+
+    assert_eq!(fixture.server.server_pid().expect("asks"), None);
+}
+
+#[test]
 fn a_session_cockpit_did_not_name_is_left_out_of_the_list() {
     let fixture = TestServer::new();
     fixture.start_shell("agent-1", "sleep 30");

@@ -11,7 +11,8 @@ use crate::names::{PaneId, SessionName};
 use crate::version::{TmuxVersion, check_version};
 
 /// Cockpit's own tmux configuration, passed with `-f` so the user's `~/.tmux.conf` never
-/// applies. tmux reads it only when a command starts the server.
+/// applies. tmux reads it when a command starts the server, and [`Server::open`] applies it
+/// again to a server already running. Every option is global and safe to set live.
 pub const CONFIG: &str = "\
 # Cockpit's private tmux server (cockpit-tmux). The user's ~/.tmux.conf is never read.
 # Keep a pane that exited, with its last output and exit status, until Cockpit closes it.
@@ -106,12 +107,31 @@ pub struct Server {
 }
 
 impl Server {
-    /// Checks the tmux version (the readiness check) and writes [`CONFIG`]. Starts nothing:
-    /// the first session starts the server, and an already running one is reused as is.
+    /// Checks the tmux version (the readiness check), writes [`CONFIG`] and applies it to
+    /// the server if one already runs, so every option [`CONFIG`] sets takes effect on the
+    /// sessions it holds (an option removed from it stays set until the server exits).
+    /// Starts nothing: the first session starts the server.
+    /// Why: `docs/decisions/2026-11-01-308-tmux-config-on-a-running-server.md`.
     pub fn open(spec: ServerSpec) -> Result<Server, Error> {
         let version = check_version(&spec.tmux)?;
         write_private_file(&spec.config_path, CONFIG)?;
-        Ok(Server { spec, version })
+        let server = Server { spec, version };
+        server.apply_config_to_running_server()?;
+        Ok(server)
+    }
+
+    /// `source-file` starts no server. An exiting one is left alone: the next server reads
+    /// the new file as it starts.
+    fn apply_config_to_running_server(&self) -> Result<(), Error> {
+        let arguments = vec![
+            OsString::from("source-file"),
+            self.spec.config_path.clone().into_os_string(),
+        ];
+        match self.run_if_server(&arguments) {
+            Ok(_) => Ok(()),
+            Err(error) if is_exiting_server(&error) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn version(&self) -> TmuxVersion {
@@ -178,7 +198,10 @@ impl Server {
     }
 
     /// Creates a detached session running `launch.command`, starting the server if needed,
-    /// and returns the id of its one pane. Fails if the name is taken.
+    /// and returns the id of its one pane. Fails if the name is taken. When it reaches a
+    /// server another caller's close just emptied, it waits until that server has exited
+    /// and tries again, for up to `SERVER_EXIT_WAIT`: the exiting server created nothing.
+    /// Why: `docs/decisions/2026-11-01-202-tmux-new-session-on-an-exiting-server.md`.
     pub fn new_session(&self, launch: &SessionLaunch) -> Result<PaneId, Error> {
         // tmux starts the pane in $HOME, and still succeeds, when the directory is missing.
         if !launch.working_dir.is_dir() {
@@ -208,7 +231,15 @@ impl Server {
         }
         arguments.push("--".into());
         arguments.extend(pane_command(&launch.command)?);
-        self.run_for_pane_id(&arguments)
+        let deadline = Instant::now() + SERVER_EXIT_WAIT;
+        loop {
+            match self.run_for_pane_id(&arguments) {
+                Err(error) if is_exiting_server(&error) && Instant::now() < deadline => {
+                    self.wait_until_server_holds_a_session_or_exited()?;
+                }
+                created => return created,
+            }
+        }
     }
 
     /// Every session on the server whose name a [`SessionName`] admits, sorted by name;
@@ -354,10 +385,61 @@ impl Server {
     /// Nested attach: replaces whatever runs in the `viewer` pane with a tmux client of
     /// this server attached to `session`. The client names the socket itself; like every
     /// pane command it runs without `TMUX`, which is how tmux allows the nesting.
+    ///
+    /// The session's window takes the viewer's size first: resized as the client attaches,
+    /// tmux rewraps a line wider than the viewer and the client draws a screen that lost
+    /// lines. `window-size` is unset again so the window follows the viewer afterwards.
+    /// Why: `docs/decisions/2026-11-01-338-tmux-viewer-sized-before-attach.md`.
     pub fn show_in_viewer(&self, viewer: &PaneId, session: &SessionName) -> Result<(), Error> {
-        let mut arguments = words(&["respawn-pane", "-k", "-t", viewer.as_str(), "--"]);
+        let (columns, rows) = self.pane_size(viewer)?;
+        let (columns, rows) = (columns.to_string(), rows.to_string());
+        let window = session.target();
+        let mut arguments = words(&[
+            "resize-window",
+            "-t",
+            &window,
+            "-x",
+            &columns,
+            "-y",
+            &rows,
+            ";",
+            "set-option",
+            "-w",
+            "-u",
+            "-t",
+            &window,
+            "window-size",
+            ";",
+            "respawn-pane",
+            "-k",
+            "-t",
+            viewer.as_str(),
+            "--",
+        ]);
         arguments.extend(pane_command(&self.attach_command(session))?);
         self.run(&arguments).map(drop)
+    }
+
+    /// A pane's width and height.
+    fn pane_size(&self, pane: &PaneId) -> Result<(u16, u16), Error> {
+        let arguments = words(&[
+            "display-message",
+            "-p",
+            "-t",
+            pane.as_str(),
+            "#{pane_width} #{pane_height}",
+        ]);
+        let printed = self.run(&arguments)?;
+        let printed = String::from_utf8_lossy(&printed);
+        let number = |word: &str| word.parse::<u16>().ok().filter(|number| *number > 0);
+        printed
+            .trim_end()
+            .split_once(' ')
+            .and_then(|(columns, rows)| Some((number(columns)?, number(rows)?)))
+            .ok_or_else(|| Error::UnexpectedOutput {
+                arguments,
+                output: printed.into_owned(),
+            })
     }
 
     /// The words of a tmux client of this server attached to `session`, for a terminal to
@@ -489,6 +571,12 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
 fn is_no_server(error: &Error) -> bool {
     matches!(error, Error::CommandFailed { stderr, .. }
         if stderr.starts_with("no server running") || stderr.starts_with("error connecting to"))
+}
+
+/// tmux's messages for a server that closed the connection as it exits: it ran nothing.
+fn is_exiting_server(error: &Error) -> bool {
+    matches!(error, Error::CommandFailed { stderr, .. }
+        if stderr.starts_with("server exited unexpectedly") || stderr.starts_with("lost server"))
 }
 
 /// Writes `contents` to `path` with mode 0600, replacing it atomically.

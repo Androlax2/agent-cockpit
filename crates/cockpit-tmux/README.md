@@ -19,7 +19,8 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
 
 - **Readiness.** [`Server::open`] runs `tmux -V` and refuses anything older than tmux 3.2
   ([`MINIMUM_VERSION`]) or a version it cannot read (`tmux master`), naming the binary. It
-  writes [`CONFIG`] (mode 0600) and starts nothing.
+  writes [`CONFIG`] (mode 0600), applies it to a server already running (`source-file`, so
+  an upgrade's config reaches the sessions it holds; #308) and starts nothing.
 - **Private server.** Every command is `tmux -f <Cockpit's config> -L cockpit` ([`Socket`];
   tests use `-S` in a temporary directory). The user's `~/.tmux.conf` never applies, and the
   caller's `TMUX`/`TMUX_PANE` are removed so a daemon started inside tmux cannot reach it.
@@ -29,12 +30,14 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   a shell, and it runs with `TMUX` and `TMUX_PANE` unset; a pane opened by hand gets the
   same (`default-command`). That removes the inherited pointer to this server, not the
   socket: keeping an agent from naming it is the sandbox's job. Sessions with names Cockpit
-  would not choose are not listed. An exited pane stays, with its exit status and its last
-  screen in its history, until its owner closes it (`remain-on-exit`); this observation
-  proves nothing about the work.
-- **Viewer and approvals.** [`Server::show_in_viewer`] respawns the viewer pane as a nested
-  client attached to an agent session; [`Server::attach_command`] is the same command, for
-  a frontend that attaches a terminal to the manager session.
+  would not choose are not listed. A `new-session` that reaches a server another caller's
+  close just emptied waits for that server's exit and tries again (#202). An exited
+  pane stays, with its exit status and its last screen in its history, until its owner
+  closes it (`remain-on-exit`); this observation proves nothing about the work.
+- **Viewer and approvals.** [`Server::show_in_viewer`] gives the agent session's window the
+  viewer pane's size, then respawns the viewer pane as a nested client attached to it
+  (#338); [`Server::attach_command`] is the same command, for a frontend that attaches a
+  terminal to the manager session.
   [`Server::split_approval_pane`] splits a focused pane under the viewer.
 - **Observation.** [`Server::observe`] attaches a `read-only,ignore-size` control-mode client
   (`-C`; `-CC` needs a terminal) and returns once tmux has attached it. Its reader thread

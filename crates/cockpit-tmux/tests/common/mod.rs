@@ -63,9 +63,18 @@ impl TestServer {
 
     /// A detached session running `sh -c script` in the temporary directory.
     pub fn start_shell(&self, name: &str, script: &str) -> (SessionName, PaneId) {
+        self.start_shell_through(&self.server, name, script)
+    }
+
+    /// [`TestServer::start_shell`] through another handle on this server.
+    pub fn start_shell_through(
+        &self,
+        server: &Server,
+        name: &str,
+        script: &str,
+    ) -> (SessionName, PaneId) {
         let name = SessionName::new(name).expect("a valid name");
-        let pane = self
-            .server
+        let pane = server
             .new_session(&SessionLaunch {
                 name: name.clone(),
                 working_dir: self.home.path().to_path_buf(),

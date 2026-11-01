@@ -457,17 +457,7 @@ impl Cockpit {
             .stderr(Stdio::null())
             .spawn()
             .expect("a control-mode client starts");
-        let stdout = watcher.stdout.take().expect("stdout is piped");
-        let (writes, written) = mpsc::channel();
-        std::thread::spawn(move || {
-            // Bytes, not lines of text: tmux passes the pane's bytes through unchecked.
-            for line in BufReader::new(stdout).split(b'\n') {
-                let Ok(line) = line else { return };
-                if line.starts_with(b"%output") && writes.send(()).is_err() {
-                    return;
-                }
-            }
-        });
+        let written = announced_writes(watcher.stdout.take().expect("stdout is piped"));
         self.terminal = Some(Terminal {
             socket,
             config,
@@ -699,14 +689,110 @@ impl Cockpit {
 
     /// Types `line` at the prompt of `session`'s agent without the viewer, as if the agent
     /// decided to run it on its own: for a session the owner is not looking at.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(dead_code, reason = "only the Linux-only ask tests use it (#336)")
-    )]
     pub fn agent_does(&self, session: &str, line: &str) {
         let target = format!("={session}:");
         self.private_tmux(&["send-keys", "-t", &target, "-l", "--", line]);
         self.private_tmux(&["send-keys", "-t", &target, "Enter"]);
+    }
+
+    /// Waits until `condition` holds for `session`'s screen as its agent's pane holds it,
+    /// reading it again after each write a `read-only,ignore-size` control-mode client of
+    /// that session announces; returns that screen. The client leaves before this returns,
+    /// and it never sized the window.
+    pub fn wait_for_agent_screen(
+        &self,
+        session: &str,
+        what: &str,
+        condition: impl Fn(&[String]) -> bool,
+    ) -> Vec<String> {
+        let target = format!("={session}:");
+        let mut watcher = self
+            .command(Path::new("tmux"))
+            .args(["-L", "cockpit", "-C", "attach-session", "-t", &target])
+            .args(["-f", "read-only,ignore-size"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("a control-mode client starts");
+        let written = announced_writes(watcher.stdout.take().expect("stdout is piped"));
+        let deadline = Instant::now() + GENEROUS;
+        let outcome = loop {
+            while written.try_recv().is_ok() {}
+            let screen = self.agent_screen(session);
+            if condition(&screen) {
+                break Ok(screen);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if let Err(error) = written.recv_timeout(left) {
+                break Err((error, screen));
+            }
+        };
+        let _ = watcher.kill();
+        let _ = watcher.wait();
+        outcome.unwrap_or_else(|(error, screen)| {
+            panic!(
+                "{error:?} waiting for {session}'s screen: {what}\n{screen:#?}\n{}",
+                self.daemon_stderr()
+            )
+        })
+    }
+
+    /// `session`'s window size on the daemon's tmux, as `<columns>x<rows>`.
+    pub fn agent_window_size(&self, session: &str) -> String {
+        self.private_tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={session}:"),
+            "#{window_width}x#{window_height}",
+        ])
+        .trim_end()
+        .to_owned()
+    }
+
+    /// The manager's viewer pane size, as `<columns>x<rows>`.
+    pub fn viewer_size(&self) -> String {
+        let sizes = self.private_tmux(&[
+            "list-panes",
+            "-t",
+            "=cockpit:",
+            "-F",
+            "#{pane_width}x#{pane_height}",
+        ]);
+        sizes
+            .lines()
+            .nth(ManagerPane::Viewer as usize)
+            .unwrap_or_else(|| panic!("the manager has no viewer: {sizes:?}"))
+            .to_owned()
+    }
+
+    /// Resizes the owner's terminal, as dragging its window does.
+    pub fn resize_terminal(&self, columns: u16, rows: u16) {
+        let terminal = self.terminal();
+        let (columns, rows) = (columns.to_string(), rows.to_string());
+        self.terminal_tmux(
+            terminal,
+            &[
+                "resize-window",
+                "-t",
+                "=owner:",
+                "-x",
+                &columns,
+                "-y",
+                &rows,
+            ],
+        )
+        .unwrap_or_else(|problem| panic!("cannot resize the terminal: {problem}"));
+    }
+
+    /// `session`'s screen as its agent's own pane holds it, trailing spaces and empty rows
+    /// cut: what the viewer must show.
+    pub fn agent_screen(&self, session: &str) -> Vec<String> {
+        trimmed_rows(
+            self.private_tmux(&["capture-pane", "-p", "-t", &format!("={session}:")])
+                .lines(),
+        )
     }
 
     /// How many times the fake agent of `session` was launched, as its log counts them.
@@ -823,6 +909,21 @@ struct Terminal {
     written: Receiver<()>,
 }
 
+/// One message per `%output` line a control-mode client prints, until it exits.
+fn announced_writes(stdout: std::process::ChildStdout) -> Receiver<()> {
+    let (writes, written) = mpsc::channel();
+    std::thread::spawn(move || {
+        // Bytes, not lines of text: tmux passes the pane's bytes through unchecked.
+        for line in BufReader::new(stdout).split(b'\n') {
+            let Ok(line) = line else { return };
+            if line.starts_with(b"%output") && writes.send(()).is_err() {
+                return;
+            }
+        }
+    });
+    written
+}
+
 /// The manager session's panes, in tmux's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ManagerPane {
@@ -834,6 +935,15 @@ pub enum ManagerPane {
 const UTF8_LOCALE: &str = "en_US.UTF-8";
 #[cfg(not(target_os = "macos"))]
 const UTF8_LOCALE: &str = "C.UTF-8";
+
+/// `rows` with trailing spaces cut and the empty rows at the end dropped.
+pub fn trimmed_rows<'a>(rows: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut rows: Vec<String> = rows.map(|row| row.trim_end().to_owned()).collect();
+    while rows.last().is_some_and(String::is_empty) {
+        rows.pop();
+    }
+    rows
+}
 
 /// Session ids (`s` and 12 hex digits) in the order `text` shows them, each once.
 pub fn session_ids(text: &str) -> Vec<String> {

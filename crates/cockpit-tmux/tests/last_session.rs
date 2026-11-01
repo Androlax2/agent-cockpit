@@ -1,5 +1,6 @@
 //! Closing a server's last session and opening the next one at once, on real private tmux
-//! servers: the close waits until the emptied server has exited (issue #197).
+//! servers: the close waits until the emptied server has exited (issue #197), and another
+//! caller's `new-session` that reaches the exiting server tries again once it is gone (#202).
 
 mod common;
 
@@ -19,6 +20,32 @@ fn restarting_the_only_session_never_reaches_an_exiting_server() {
                 for _ in 0..RESTARTS_PER_SERVER {
                     fixture.server.close_session(&name).expect("closes");
                     fixture.start_shell("only", "sleep 30");
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn a_session_opened_while_another_caller_empties_the_server_always_starts() {
+    std::thread::scope(|scope| {
+        for _ in 0..PARALLEL_SERVERS {
+            scope.spawn(|| {
+                let fixture = TestServer::new();
+                let other_caller = fixture.reopen();
+                let (only, _) = fixture.start_shell("only", "sleep 30");
+                for _ in 0..RESTARTS_PER_SERVER {
+                    std::thread::scope(|round| {
+                        round.spawn(|| {
+                            fixture.server.close_session(&only).expect("closes");
+                            fixture.start_shell("only", "sleep 30");
+                        });
+                        round.spawn(|| {
+                            let (second, _) =
+                                fixture.start_shell_through(&other_caller, "second", "sleep 30");
+                            other_caller.close_session(&second).expect("closes");
+                        });
+                    });
                 }
             });
         }
