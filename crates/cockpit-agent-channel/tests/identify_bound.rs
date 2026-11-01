@@ -1,6 +1,5 @@
 //! Issue #174: a status poll identifies its sender in a read transaction, so it never waits
 //! for the writer. Real processes on a real state database.
-#![cfg(target_os = "linux")]
 
 mod common;
 
