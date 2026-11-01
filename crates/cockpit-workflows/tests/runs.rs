@@ -717,3 +717,80 @@ async fn a_session_lists_only_its_projects_workflows_whatever_project_it_names()
     assert!(listed.iter().all(|run| run.id != other.id), "{listed:?}");
     assert!(listed.is_empty());
 }
+
+/// #333: finishing or deleting the item outside the run leaves the run running, with nothing
+/// for scheduling to place. (Only a proposal can be declined, and a run follows an open item.)
+#[tokio::test]
+async fn a_run_whose_item_closed_outside_it_offers_no_ready_step() {
+    for is_deleted in [false, true] {
+        let fixture = Fixture::new().await;
+        let run = fixture.code_change("cockpit").await;
+        let write = fixture.database.write().await.unwrap();
+        if is_deleted {
+            cockpit_tasks::delete(&write, &Actor::Owner, run.item)
+                .await
+                .unwrap();
+        } else {
+            cockpit_tasks::finish(&write, &Actor::Owner, run.item, Some("by hand"), NOW)
+                .await
+                .unwrap();
+        }
+        write.commit().await.unwrap();
+
+        let read = fixture.database.read().await.unwrap();
+        assert_eq!(
+            cockpit_workflows::ready_steps(&read).await.unwrap(),
+            [],
+            "deleted: {is_deleted}"
+        );
+        assert_eq!(
+            fixture.run(run.id).await.status,
+            RunStatus::Running,
+            "deleted: {is_deleted}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_reopened_item_offers_its_runs_step_again() {
+    let fixture = Fixture::new().await;
+    let run = fixture.code_change("cockpit").await;
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::finish(&write, &Actor::Owner, run.item, Some("too early"), NOW)
+        .await
+        .unwrap();
+    cockpit_tasks::reopen(&write, &Actor::Owner, run.item, NOW)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    let ready = cockpit_workflows::ready_steps(&read).await.unwrap();
+
+    assert_eq!(
+        ready
+            .iter()
+            .map(|step| (step.run, step.position))
+            .collect::<Vec<_>>(),
+        [(run.id, 1)]
+    );
+}
+
+#[tokio::test]
+async fn the_packet_of_a_run_whose_item_was_deleted_answers_without_a_goal() {
+    let fixture = Fixture::new().await;
+    let run = fixture.code_change("cockpit").await;
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::delete(&write, &Actor::Owner, run.item)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let packet = fixture.packet(&Actor::Owner, run.id).await;
+
+    assert_eq!(
+        (packet.item, packet.goal, packet.run_status),
+        (run.item, None, RunStatus::Running)
+    );
+    assert_eq!(packet.step.map(|step| step.position), Some(1));
+}

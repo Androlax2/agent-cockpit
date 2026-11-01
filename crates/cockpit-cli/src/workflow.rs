@@ -238,24 +238,31 @@ fn step_line(step: &WorkflowStepView) -> String {
 
 /// What a session needs to work its step: goal, scope, step, what came before, what is next.
 fn packet_text(packet: &WorkflowPacketView) -> String {
-    let goal = &packet.goal;
     let mut text = format!(
-        "workflow {} ({} v{}, {})\nproject: {}\ngoal: item {} {} ({}, {})\n",
+        "workflow {} ({} v{}, {})\nproject: {}\n",
         packet.workflow,
         packet.preset,
         packet.preset_version,
         packet.status.as_str(),
         packet.project,
-        goal.item,
-        goal.title,
-        goal.kind.as_str(),
-        goal.item_status.as_str()
     );
-    if goal.intent_changed {
-        text.push_str(&format!(
-            "intent changed: revision {} since the workflow started on {}\n",
-            goal.intent_revision, goal.started_on_intent
-        ));
+    match &packet.goal {
+        Some(goal) => {
+            text.push_str(&format!(
+                "goal: item {} {} ({}, {})\n",
+                packet.item,
+                goal.title,
+                goal.kind.as_str(),
+                goal.item_status.as_str()
+            ));
+            if goal.intent_changed {
+                text.push_str(&format!(
+                    "intent changed: revision {} since the workflow started on {}\n",
+                    goal.intent_revision, goal.started_on_intent
+                ));
+            }
+        }
+        None => text.push_str(&format!("goal: item {} was deleted\n", packet.item)),
     }
     if let Some(step) = &packet.step {
         text.push_str(&step_line(step));
@@ -292,7 +299,7 @@ fn packet_text(packet: &WorkflowPacketView) -> String {
         }
     }
     text.push_str(&format!("next: {}\n", next(&packet.next)));
-    if !goal.notes.is_empty() {
+    if let Some(goal) = packet.goal.as_ref().filter(|goal| !goal.notes.is_empty()) {
         text.push_str(&format!("notes:\n{}\n", goal.notes));
     }
     text

@@ -14,7 +14,11 @@ pub struct Packet {
     pub run: RunId,
     pub run_status: RunStatus,
     pub preset: &'static Preset,
-    pub goal: Goal,
+    /// The item the run follows.
+    pub item: ItemId,
+    /// What the item asks for now; `None` once the item was deleted. The run stays readable,
+    /// so the owner sees what it did and cancels it.
+    pub goal: Option<Goal>,
     /// The project the run's sessions work in: the authorized scope of its steps.
     pub project: String,
     /// The current step and who holds it; `None` once the run is delivered or cancelled.
@@ -31,7 +35,6 @@ pub struct Packet {
 /// What the task asks for, as it stands now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Goal {
-    pub item: ItemId,
     pub title: String,
     pub notes: String,
     pub kind: Kind,
@@ -55,28 +58,34 @@ pub async fn packet(connection: &Connection, actor: &Actor, id: RunId) -> Result
     let task = task_of(connection, &run).await?;
     let handoffs = handoffs_of(connection, &run).await?;
     let step = run.current_step().cloned();
+    let (goal, decisions) = match task {
+        Some(task) => (
+            Some(Goal {
+                title: task.title,
+                notes: task.notes,
+                kind: task.kind,
+                item_status: task.status,
+                started_on_intent: run.intent_revision,
+                intent_revision: task.intent_revision,
+            }),
+            task.waits
+                .into_iter()
+                .filter(|wait| wait.summary.is_some())
+                .collect(),
+        ),
+        None => (None, Vec::new()),
+    };
     Ok(Packet {
         run: run.id,
         run_status: run.status,
         preset: run.preset,
-        goal: Goal {
-            item: task.id,
-            title: task.title,
-            notes: task.notes,
-            kind: task.kind,
-            item_status: task.status,
-            started_on_intent: run.intent_revision,
-            intent_revision: task.intent_revision,
-        },
+        item: run.item,
+        goal,
         project: run.project.clone(),
         step,
         next_action: run.next_action(),
         blocked: run.blocked.clone(),
-        decisions: task
-            .waits
-            .into_iter()
-            .filter(|wait| wait.summary.is_some())
-            .collect(),
+        decisions,
         handoffs,
     })
 }

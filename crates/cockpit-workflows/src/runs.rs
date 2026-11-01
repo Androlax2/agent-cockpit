@@ -143,8 +143,10 @@ pub async fn runs(
     Ok(runs)
 }
 
-/// Every ready agent step of a running, unblocked run, oldest run first: what scheduling
-/// consumes. Owner steps and blocked runs wait on the owner, not on placement.
+/// Every ready agent step of a running, unblocked run whose item is still open, oldest run
+/// first: what scheduling consumes. Owner steps and blocked runs wait on the owner, not on
+/// placement. A run whose item was finished, declined or deleted outside it keeps running
+/// (reopening the item resumes it at its checkpoint) but offers no step.
 pub async fn ready_steps(connection: &Connection) -> Result<Vec<ReadyStep>, Error> {
     let mut rows = connection
         .query(
@@ -162,6 +164,9 @@ pub async fn ready_steps(connection: &Connection) -> Result<Vec<ReadyStep>, Erro
     }
     let mut steps = Vec::new();
     for mut run in ready {
+        if !is_item_open(connection, run.item).await? {
+            continue;
+        }
         run.steps = steps_of(connection, run.id, run.preset).await?;
         let Some(step) = run.current_step() else {
             continue;
@@ -609,11 +614,16 @@ async fn task_item(connection: &Connection, item: ItemId) -> Result<cockpit_task
     }
 }
 
+/// The run's item, or `None` once it was deleted.
 pub(crate) async fn task_of(
     connection: &Connection,
     run: &Run,
-) -> Result<cockpit_tasks::Item, Error> {
-    task_item(connection, run.item).await
+) -> Result<Option<cockpit_tasks::Item>, Error> {
+    match task_item(connection, run.item).await {
+        Ok(task) => Ok(Some(task)),
+        Err(Error::Refused(Refusal::ItemNotFound { .. })) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 async fn running_run_of(connection: &Connection, item: ItemId) -> Result<Option<RunId>, Error> {
@@ -661,14 +671,10 @@ async fn touch(write: &WriteTransaction<'_>, id: RunId, now: i64) -> Result<(), 
     Ok(())
 }
 
-/// A run the actor may act on, still running.
 /// An item a run may still work on: one that is to do or being done.
 async fn open_item(connection: &Connection, item: ItemId) -> Result<cockpit_tasks::Item, Error> {
     let task = task_item(connection, item).await?;
-    if !matches!(
-        task.status,
-        cockpit_tasks::Status::Todo | cockpit_tasks::Status::Doing
-    ) {
+    if !is_open(task.status) {
         return Err(Refusal::ItemNotOpen {
             item,
             status: task.status.as_str(),
@@ -676,6 +682,22 @@ async fn open_item(connection: &Connection, item: ItemId) -> Result<cockpit_task
         .into());
     }
     Ok(task)
+}
+
+fn is_open(status: cockpit_tasks::Status) -> bool {
+    matches!(
+        status,
+        cockpit_tasks::Status::Todo | cockpit_tasks::Status::Doing
+    )
+}
+
+/// Whether the item still exists and is open; a deleted one is not.
+async fn is_item_open(connection: &Connection, item: ItemId) -> Result<bool, Error> {
+    match task_item(connection, item).await {
+        Ok(task) => Ok(is_open(task.status)),
+        Err(Error::Refused(Refusal::ItemNotFound { .. })) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// A running run no blocker holds: the only kind whose step may be begun or completed.

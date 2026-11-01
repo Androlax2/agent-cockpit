@@ -75,8 +75,9 @@ async fn the_packet_carries_the_goal_scope_and_step() {
     let session = fixture.session("s1", "cockpit").await;
     fixture.begin(&session, run.id).await.unwrap();
     let packet = fixture.packet(&session, run.id).await;
-    assert_eq!(packet.goal.title, "Fix the login form");
-    assert_eq!(packet.goal.notes, "Notes for Fix the login form.");
+    let goal = packet.goal.expect("the item still exists");
+    assert_eq!(goal.title, "Fix the login form");
+    assert_eq!(goal.notes, "Notes for Fix the login form.");
     assert_eq!(packet.project, "cockpit");
     let step = packet.step.unwrap();
     assert_eq!(step.definition.name, "implement");
@@ -96,6 +97,7 @@ async fn the_packet_says_when_the_items_intent_changed_since_the_run_started() {
             .packet(&Actor::Owner, run.id)
             .await
             .goal
+            .expect("the item still exists")
             .is_intent_changed()
     );
     let write = fixture.database.write().await.unwrap();
@@ -118,6 +120,7 @@ async fn the_packet_says_when_the_items_intent_changed_since_the_run_started() {
             .packet(&Actor::Owner, run.id)
             .await
             .goal
+            .expect("the item still exists")
             .is_intent_changed()
     );
 }
