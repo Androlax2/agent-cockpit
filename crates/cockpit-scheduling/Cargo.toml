@@ -1,0 +1,23 @@
+[package]
+name = "cockpit-scheduling"
+description = "Owns what runs where and why it waits: which waiting work is eligible, which session takes it, project-then-task fairness with aging, deterministic dispatch, and an explanation record per waiting item."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
+cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
+cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0" }
+cockpit-resource-admission = { path = "../cockpit-resource-admission", version = "0.1.0" }
+cockpit-tasks = { path = "../cockpit-tasks", version = "0.1.0" }
+cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+cockpit-workflows = { path = "../cockpit-workflows", version = "0.1.0" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
