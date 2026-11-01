@@ -371,7 +371,7 @@ fn priority_of(level: i64) -> Result<Priority, Failed> {
     })
 }
 
-fn refused(code: ErrorCode, message: String, action: &str, by: UnblockedBy) -> Failed {
+pub(crate) fn refused(code: ErrorCode, message: String, action: &str, by: UnblockedBy) -> Failed {
     Failed(ProtocolError {
         code,
         message,
@@ -408,15 +408,15 @@ impl From<Refusal> for Failed {
             Refusal::NoBlockerProject | Refusal::NoProject => ErrorCode::Refused,
         };
         let (by, action) = refusal.unblock();
-        refused(
-            code,
-            refusal.to_string(),
-            &action,
-            match by {
-                cockpit_tasks::UnblockedBy::Owner => UnblockedBy::Owner,
-                cockpit_tasks::UnblockedBy::Agent => UnblockedBy::Agent,
-            },
-        )
+        refused(code, refusal.to_string(), &action, unblocked_by(by))
+    }
+}
+
+/// Who lifts a refusal, on the wire; workflows answers with the same type.
+pub(crate) fn unblocked_by(by: cockpit_tasks::UnblockedBy) -> UnblockedBy {
+    match by {
+        cockpit_tasks::UnblockedBy::Owner => UnblockedBy::Owner,
+        cockpit_tasks::UnblockedBy::Agent => UnblockedBy::Agent,
     }
 }
 
@@ -482,7 +482,7 @@ fn task_view(item: Item) -> TaskView {
     }
 }
 
-fn kind_view(kind: Kind) -> TaskKindView {
+pub(crate) fn kind_view(kind: Kind) -> TaskKindView {
     match kind {
         Kind::Task => TaskKindView::Task,
         Kind::Feature => TaskKindView::Feature,
@@ -493,7 +493,7 @@ fn kind_view(kind: Kind) -> TaskKindView {
     }
 }
 
-fn status_view(status: Status) -> TaskStatusView {
+pub(crate) fn status_view(status: Status) -> TaskStatusView {
     match status {
         Status::Proposed => TaskStatusView::Proposed,
         Status::Todo => TaskStatusView::Todo,

@@ -455,6 +455,7 @@ dependencies = [
  "cockpit-tasks",
  "cockpit-tmux",
  "cockpit-turso",
+ "cockpit-workflows",
  "serde",
  "serde_json",
  "tempfile",
@@ -591,6 +592,18 @@ version = "0.1.0"
 dependencies = [
  "cockpit-turso",
  "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "cockpit-workflows"
+version = "0.1.0"
+dependencies = [
+ "cockpit-authorization",
+ "cockpit-provider-api",
+ "cockpit-tasks",
+ "cockpit-turso",
  "tempfile",
  "tokio",
 ]

@@ -64,6 +64,13 @@ the wire. Report 14 treats this contract as stable from the first release.
    `viewer` words, from `dir`) and answers `manager` with the words that attach a terminal;
    `session-show` shows a session in the manager's viewer, waking it when asleep, and
    answers its `session` view. Owner socket only.
+9. Workflows (#39): `workflow-presets`, `workflow-list`, `workflow-show`,
+   `workflow-packet`, `workflow-complete`, `workflow-release`, `workflow-block` and
+   `workflow-unblock` serve both sockets; `workflow-begin` and `workflow-checkpoint` are the
+   agent's; `workflow-start` and `workflow-cancel` the owner's. A `WorkflowView` carries
+   `next`, what has to happen for the run to move; `workflow-packet` answers the task packet
+   rebuilt from durable records. A completion has no field claiming a requirement passed:
+   `waive` names the owner's waivers, and verification reports what passed (#40).
 
 Forward compatibility: unknown object fields are ignored; capabilities, refusal reasons,
 error codes and entity kinds keep unknown values in an `Unknown` variant. Change kinds are

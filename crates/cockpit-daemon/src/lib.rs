@@ -15,6 +15,7 @@ mod session_feed;
 mod sessions;
 mod supervisor;
 mod tasks;
+mod workflows;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,7 +32,7 @@ pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusa
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 9] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 10] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
@@ -41,6 +42,7 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 9] = [
     cockpit_messaging::MIGRATIONS,
     cockpit_tasks::MIGRATIONS,
     cockpit_resource_admission::MIGRATIONS,
+    cockpit_workflows::MIGRATIONS,
 ];
 
 /// How often expired and ended reservations are released.
@@ -90,6 +92,10 @@ pub struct Capabilities {
     pub manager: Arc<Manager>,
     /// The providers sessions may launch, as `provider-list` answers them.
     pub providers: Vec<cockpit_protocol::ProviderView>,
+    /// What each provider reports it can do, by name: a workflow step checks it before a
+    /// session begins it.
+    pub provider_capabilities:
+        std::collections::BTreeMap<String, cockpit_provider_api::Capabilities>,
 }
 
 /// A started daemon: it accepts requests until dropped or the process exits.
@@ -156,6 +162,11 @@ impl Instance {
         );
         let stopper = processes.clone();
         let sweeper = processes.clone();
+        let provider_capabilities = wiring
+            .providers
+            .iter()
+            .map(|provider| (provider.name().as_str().to_owned(), provider.capabilities()))
+            .collect();
         let providers = wiring
             .providers
             .iter()
@@ -212,6 +223,7 @@ impl Instance {
                 processes: stopper,
                 manager,
                 providers,
+                provider_capabilities,
             }),
         });
         let published_database = Arc::clone(&database);
