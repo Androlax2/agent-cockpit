@@ -12,8 +12,10 @@ Issue #269. Decided by Theo's coordinator in #312 (option A).
   alone cannot tell: `restart` covers the owner's restart and the start-file restarts.
   `Session::working_launch_order` is the latest working launch's commit order (#273); the
   daemon compares the latest finish with it.
-- **A restart a crash interrupted counts as working when the next daemon finishes it.** Who
-  asked for it is not stored; dropping the label is the safe direction (`X` skips the session).
+- **A launch or restart a crash interrupted counts as working when the next daemon finishes
+  it.** Who asked for it is not stored, so a session left `launching` or stopping to restart
+  drops the label, the safe direction (`X` skips the session); an interrupted `restart --all`
+  loses the label too. Only a session found running with its agent gone restores as upkeep.
 - **Launches recorded before the migration count as working, restores excepted.**
 - **Rejected:** B, skipping only `restore`, and C, accepting the loss, in #312.
 

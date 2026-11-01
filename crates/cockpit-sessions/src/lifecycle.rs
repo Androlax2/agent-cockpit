@@ -678,8 +678,8 @@ impl Sessions {
         } else {
             LaunchKind::Restore
         };
-        // A session left `launching` was in a launch a crash interrupted: a working one
-        // ([`LaunchPurpose`]).
+        // A session left `launching` was in a launch a crash interrupted; who asked for it
+        // is not kept, so it counts as a working launch: the safe direction (#269).
         let purpose = if session.state == SessionState::Launching {
             LaunchPurpose::Work
         } else {
@@ -1000,9 +1000,9 @@ impl Sessions {
         to: StopTarget,
         operation: &'static str,
     ) -> Result<Session, Error> {
-        debug_assert!(
+        assert!(
             to != StopTarget::Restart,
-            "a restart goes through restart_from"
+            "a restart goes through restart_from, which relaunches it"
         );
         self.transition(id, from, SessionState::Stopping { to }, None, operation)
             .await?;

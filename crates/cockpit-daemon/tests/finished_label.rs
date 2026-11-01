@@ -470,3 +470,34 @@ async fn a_woken_session_loses_its_finished_label() {
 
     assert!(!woken.finished, "{woken:?}");
 }
+
+/// A launch a crash interrupted (here a wake, left `launching`) is reopened on daemon start;
+/// who asked for it is not kept, so it drops the label, the safe direction.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_a_crash_interrupted_drops_the_finished_label_when_restored() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let finished = home.finished_session(&client, &root).await;
+    let database = home.database();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE sessions SET state = 'launching' WHERE id = ?1",
+            [finished.id.as_str()],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(database);
+    drop(client);
+    home.reboot(daemon);
+
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+
+    let restored = listed(&client, &finished.id).await;
+    assert_eq!(restored.state, SessionStateView::Running, "{restored:?}");
+    assert!(!restored.finished, "{restored:?}");
+}

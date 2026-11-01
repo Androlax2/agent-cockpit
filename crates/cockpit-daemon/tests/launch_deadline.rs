@@ -52,6 +52,8 @@ struct Home {
     _dir: tempfile::TempDir,
     root: PathBuf,
     is_closed: Arc<AtomicBool>,
+    /// The tmux the daemon runs: the real one unless a test hangs it.
+    tmux: PathBuf,
 }
 
 impl Home {
@@ -61,7 +63,25 @@ impl Home {
             root: dir.path().canonicalize().unwrap(),
             _dir: dir,
             is_closed: Arc::new(AtomicBool::new(true)),
+            tmux: PathBuf::from("tmux"),
         }
+    }
+
+    /// A home whose provider answers at once and whose tmux never answers `new-session`, as
+    /// a hung tmux server would hold a terminal open.
+    fn with_a_tmux_that_hangs_opening_a_terminal() -> Home {
+        let mut home = Home::new();
+        home.is_closed.store(false, Ordering::SeqCst);
+        let tmux = home.root.join("hanging-tmux");
+        std::fs::write(
+            &tmux,
+            "#!/bin/sh\nfor word; do [ \"$word\" = new-session ] && exec sleep 5; done\nexec tmux \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tmux, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        home.tmux = tmux;
+        home
     }
 
     async fn start(&self) -> Daemon {
@@ -76,6 +96,7 @@ impl Home {
             })],
         );
         wiring.sessions.step_timeout = STEP_TIMEOUT;
+        wiring.tmux.tmux = self.tmux.clone();
         let options = Options {
             runtime_dir: self.root.join("run/cockpit"),
             state_dir: self.root.join("state/cockpit"),
@@ -194,6 +215,22 @@ async fn a_launch_whose_step_never_returns_leaves_its_session_failed() {
 async fn a_session_whose_launch_hung_can_be_ended() {
     let home = Home::new();
     let (_daemon, client, _answer) = a_hung_launch(&home).await;
+    let id = the_only_session(&client).await.id;
+
+    let ended = request(&client, Command::SessionEnd { session: id }).await;
+
+    match ended {
+        Ok(Reply::Session { session }) => assert_eq!(session.state, SessionStateView::Ended),
+        other => panic!("session-end: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_whose_terminal_never_opens_fails_and_its_session_can_be_ended() {
+    let home = Home::with_a_tmux_that_hangs_opening_a_terminal();
+    let (_daemon, client, answer) = a_hung_launch(&home).await;
+    let error = common::refused(answer);
+    assert!(error.message.contains("open the terminal"), "{error:?}");
     let id = the_only_session(&client).await.id;
 
     let ended = request(&client, Command::SessionEnd { session: id }).await;
