@@ -21,8 +21,8 @@ Nothing above this contract is keyed on a provider's name, only on its reported
   ([`LaunchCommand::conversation`]); a session whose conversation is unknown cannot be
   resumed, restarted or put to sleep. A resumed launch keeps the conversation it was asked
   for. Each launch gets the session's private directory ([`LaunchRequest::session_dir`]),
-  made before the launch, reachable by the agent and the daemon, and short enough to hold a
-  unix socket.
+  made before the launch, reachable by the agent and the daemon (inside the sandbox with
+  #437), and short enough to hold a unix socket.
 - **Actions.** A provider performs submit, cancel and compact one of two ways. Terminal
   actions ([`Provider::input`]) become text and keys for the agent's terminal, decided from
   its current [`Activity`]; the provider refuses one the activity makes unsafe, such as

@@ -44,7 +44,8 @@ Codex 0.161.0 with a fresh `CODEX_HOME`.
   change what Codex loads for it.
 - **Known limits.** Codex puts the socket's real file in `/tmp/codex-daemon-<uid>/` and leaves
   a symbolic link at the path given, so a sandbox around the agent must share that directory
-  with the daemon. Approval requests from the server are left to the TUI, which answers
+  with the daemon; the sandbox (#61) does not yet grant the session's directory or that
+  folder (#437). Approval requests from the server are left to the TUI, which answers
   them; whether Codex also sends a turn started by `deliver` its approvals on Cockpit's
   short-lived connection was not measured without a signed-in account (#436). One delivery
   makes up to seven calls of at most 5 seconds each, plus 2 seconds of listing retries, so a
