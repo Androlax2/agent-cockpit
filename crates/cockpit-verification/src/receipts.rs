@@ -11,7 +11,7 @@ use cockpit_turso::sql::{Connection, Row, Value, params_from_iter};
 
 use crate::artifacts::{check_artifact_paths, check_relative};
 use crate::error::invalid;
-use crate::gate::CheckEvidence;
+use crate::gate::{CheckEvidence, OtherRun};
 use crate::{
     Artifact, CheckDefinition, Claim, ClaimId, Error, Evidence, NewClaim, NewReceipt, Outcome,
     Receipt, ReceiptId, Refusal, Source,
@@ -148,23 +148,26 @@ pub async fn record_claim(
 }
 
 /// What `project` holds about a gate requiring `checks` on the exact `source`: each check's
-/// newest receipt of exactly its definition there, the source of its newest other receipt,
-/// and its claims about the source. Refused for an empty gate or a check required twice.
+/// newest run of exactly its definition there, what else ran when none did, and its claims
+/// about the source. Refused for an empty gate, a check required twice, or anything
+/// [`record_receipt`] would refuse, so a misspelled gate fails instead of never matching.
 pub async fn evidence(
     connection: &Connection,
     project: &str,
     source: &Source,
     checks: &[CheckDefinition],
 ) -> Result<Evidence, Error> {
+    required("project", project, NAME_MAX_CHARS)?;
+    check_source(source)?;
     if checks.is_empty() {
         return Err(invalid("checks", "a gate requires at least one check").into());
     }
     let mut seen = BTreeSet::new();
-    if let Some(twice) = checks
-        .iter()
-        .find(|check| !seen.insert(check.name.as_str()))
-    {
-        return Err(invalid("checks", format!("`{}` is required twice", twice.name)).into());
+    for check in checks {
+        check_definition(check)?;
+        if !seen.insert(check.name.as_str()) {
+            return Err(invalid("checks", format!("`{}` is required twice", check.name)).into());
+        }
     }
     let mut loaded = Vec::with_capacity(checks.len());
     for check in checks {
@@ -185,22 +188,23 @@ pub async fn evidence(
             .collect();
         let receipt = load_receipts(
             connection,
-            &format!("{EXACT} ORDER BY id DESC LIMIT 1"),
-            exact.clone(),
+            &format!("{EXACT} ORDER BY {NEWEST_FIRST} LIMIT 1"),
+            exact,
         )
         .await?
         .pop();
+        let otherwise = match receipt {
+            Some(_) => None,
+            None => otherwise_ran(connection, on_source.clone()).await?,
+        };
         loaded.push(CheckEvidence {
             check: check.clone(),
             receipt,
-            other_source: other_source(connection, exact).await?,
+            otherwise,
             claims: claims_on_source(connection, on_source).await?,
         });
     }
-    Ok(Evidence {
-        source: source.clone(),
-        checks: loaded,
-    })
+    Ok(Evidence { checks: loaded })
 }
 
 /// The receipts of check `?2` in project `?1` on head `?3` with uncommitted changes `?4`
@@ -208,26 +212,43 @@ pub async fn evidence(
 const EXACT: &str = "project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4
     AND command = ?5 AND working_directory = ?6 AND environment = ?7";
 
-/// The source of the newest receipt of check `?2` in project `?1` that is not [`EXACT`].
-async fn other_source(connection: &Connection, exact: Vec<Value>) -> Result<Option<Source>, Error> {
-    let mut rows = connection
+/// Newest by when the run started, so a run delivered late does not pass a newer one.
+const NEWEST_FIRST: &str = "started_at DESC, id DESC";
+
+/// With no exact receipt: whether another definition of check `?2` ran on this source
+/// (head `?3`, changes `?4`), else where it last ran.
+async fn otherwise_ran(
+    connection: &Connection,
+    on_source: Vec<Value>,
+) -> Result<Option<OtherRun>, Error> {
+    let mut here = connection
+        .query(
+            "SELECT 1 FROM verification_receipts
+             WHERE project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4 LIMIT 1",
+            params_from_iter(on_source.clone()),
+        )
+        .await?;
+    if here.next().await?.is_some() {
+        return Ok(Some(OtherRun::AnotherDefinition));
+    }
+    let mut elsewhere = connection
         .query(
             &format!(
                 "SELECT head, base, dirty FROM verification_receipts
-                 WHERE project = ?1 AND check_name = ?2 AND NOT ({EXACT})
-                 ORDER BY id DESC LIMIT 1"
+                 WHERE project = ?1 AND check_name = ?2 AND NOT (head = ?3 AND dirty IS ?4)
+                 ORDER BY {NEWEST_FIRST} LIMIT 1"
             ),
-            params_from_iter(exact),
+            params_from_iter(on_source),
         )
         .await?;
-    let Some(row) = rows.next().await? else {
+    let Some(row) = elsewhere.next().await? else {
         return Ok(None);
     };
-    Ok(Some(Source {
+    Ok(Some(OtherRun::AnotherSource(Source {
         head: row.get(0)?,
         base: row.get(1)?,
         dirty: row.get(2)?,
-    }))
+    })))
 }
 
 async fn receipt_of_run(
@@ -383,7 +404,7 @@ async fn claims_on_source(
                 "SELECT id, check_name, head, base, dirty, claimant, statement, claimed_at
                  FROM verification_claims
                  WHERE project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4
-                 ORDER BY id DESC LIMIT {CLAIMS_LOADED_PER_CHECK}"
+                 ORDER BY claimed_at DESC, id DESC LIMIT {CLAIMS_LOADED_PER_CHECK}"
             ),
             params_from_iter(parameters),
         )
@@ -411,13 +432,7 @@ async fn claims_on_source(
 fn validated(mut new: NewReceipt) -> Result<NewReceipt, Refusal> {
     required("project", &new.project, NAME_MAX_CHARS)?;
     required("run_id", &new.run_id, NAME_MAX_CHARS)?;
-    required("check.name", &new.check.name, NAME_MAX_CHARS)?;
-    required("check.command", &new.check.command, COMMAND_MAX_CHARS)?;
-    if new.check.working_directory != "." {
-        check_relative(&new.check.working_directory)
-            .map_err(|reason| invalid("check.working_directory", reason))?;
-    }
-    required("check.environment", &new.check.environment, NAME_MAX_CHARS)?;
+    check_definition(&new.check)?;
     check_source(&new.source)?;
     check_exit_code(new.outcome, new.exit_code)?;
     if new.finished_at < new.started_at {
@@ -455,6 +470,17 @@ fn validated(mut new: NewReceipt) -> Result<NewReceipt, Refusal> {
     }
     new.output = output_tail(new.output);
     Ok(new)
+}
+
+fn check_definition(check: &CheckDefinition) -> Result<(), Refusal> {
+    required("check.name", &check.name, NAME_MAX_CHARS)?;
+    required("check.command", &check.command, COMMAND_MAX_CHARS)?;
+    if check.working_directory != "." {
+        check_relative(&check.working_directory)
+            .map_err(|reason| invalid("check.working_directory", reason))?;
+    }
+    required("check.environment", &check.environment, NAME_MAX_CHARS)?;
+    Ok(())
 }
 
 fn check_source(source: &Source) -> Result<(), Refusal> {

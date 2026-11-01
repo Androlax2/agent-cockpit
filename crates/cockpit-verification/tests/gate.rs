@@ -417,3 +417,129 @@ async fn a_receipt_on_the_same_uncommitted_changes_applies() {
         CheckStatus::Checked(Outcome::Passed)
     );
 }
+
+/// Runs are ordered by when they started: an older run delivered late does not override a
+/// newer one.
+#[tokio::test]
+async fn a_run_delivered_late_does_not_override_a_newer_run() {
+    let fixture = Fixture::new().await;
+    let tests = check("test");
+    let newer = fixture
+        .record_run("run-new", &tests, &clean_source(), &[], Outcome::Passed)
+        .await;
+    let mut late = fixture.receipt("run-old", &tests, &clean_source(), &[], Outcome::Failed);
+    late.started_at = newer.recorded.started_at - 100;
+    late.finished_at = newer.recorded.started_at - 50;
+    fixture.record(late).await.unwrap();
+
+    let report = fixture.gate(&clean_source(), &[tests]).await;
+    assert_eq!(report.checks[0].receipt, Some(newer.id));
+    assert_eq!(report.outcome, GateOutcome::Passed);
+}
+
+#[tokio::test]
+async fn a_claim_here_is_unverified_even_when_the_check_ran_on_another_head() {
+    let fixture = Fixture::new().await;
+    let tests = check("test");
+    fixture
+        .record_run("run-1", &tests, &other_head(), &[], Outcome::Passed)
+        .await;
+    fixture.claim(claim("test")).await.unwrap();
+
+    let report = fixture.gate(&clean_source(), &[tests]).await;
+    assert_eq!(report.checks[0].status, CheckStatus::Unverified);
+}
+
+/// The old definition ran on this source; a newer run on another head does not hide that.
+#[tokio::test]
+async fn a_changed_definition_here_is_named_even_after_a_run_on_another_head() {
+    let fixture = Fixture::new().await;
+    let old = check("test");
+    fixture
+        .record_run("run-1", &old, &clean_source(), &[], Outcome::Passed)
+        .await;
+    let mut elsewhere = fixture.receipt("run-2", &old, &other_head(), &[], Outcome::Passed);
+    elsewhere.started_at += 10;
+    elsewhere.finished_at += 10;
+    fixture.record(elsewhere).await.unwrap();
+    let mut current = old.clone();
+    current.command = "make test-all".to_owned();
+
+    let report = fixture.gate(&clean_source(), &[current]).await;
+    assert_eq!(
+        report.checks[0].status,
+        CheckStatus::Stale(StaleReason::CheckChanged)
+    );
+}
+
+#[tokio::test]
+async fn a_stale_report_still_names_the_receipt_it_is_about() {
+    let fixture = Fixture::new().await;
+    fixture.write_file("src/lib.rs", "one\n");
+    let tests = check("test");
+    let recorded = fixture
+        .record_run(
+            "run-1",
+            &tests,
+            &clean_source(),
+            &["src/lib.rs"],
+            Outcome::Passed,
+        )
+        .await;
+    fixture.write_file("src/lib.rs", "two\n");
+
+    let report = fixture.gate(&clean_source(), &[tests]).await;
+    assert!(matches!(report.checks[0].status, CheckStatus::Stale(_)));
+    assert_eq!(report.checks[0].receipt, Some(recorded.id));
+}
+
+#[tokio::test]
+async fn a_file_whose_directory_became_a_file_is_missing() {
+    let fixture = Fixture::new().await;
+    fixture.write_file("docs/report.md", "# Report\n");
+    let tests = check("test");
+    fixture
+        .record_run(
+            "run-1",
+            &tests,
+            &clean_source(),
+            &["docs/report.md"],
+            Outcome::Passed,
+        )
+        .await;
+    std::fs::remove_dir_all(fixture.checkout().join("docs")).unwrap();
+    fixture.write_file("docs", "now a file\n");
+
+    let report = fixture.gate(&clean_source(), &[tests]).await;
+    assert_eq!(
+        report.checks[0].status,
+        CheckStatus::Stale(StaleReason::ArtifactMissing {
+            path: "docs/report.md".to_owned()
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_gate_spelled_differently_from_what_is_recorded_is_refused() {
+    let fixture = Fixture::new().await;
+    let read = fixture.database.read().await.unwrap();
+    let mut dotted = check("test");
+    dotted.working_directory = "./crates".to_owned();
+    let blank_head = Source {
+        head: " ".to_owned(),
+        ..clean_source()
+    };
+    for (field, project, source, checks) in [
+        ("project", "", clean_source(), vec![check("test")]),
+        ("source.head", PROJECT, blank_head, vec![check("test")]),
+        (
+            "check.working_directory",
+            PROJECT,
+            clean_source(),
+            vec![dotted],
+        ),
+    ] {
+        let refused = cockpit_verification::evidence(&read, project, &source, &checks).await;
+        assert_eq!(refused_field(refusal(refused)), field);
+    }
+}

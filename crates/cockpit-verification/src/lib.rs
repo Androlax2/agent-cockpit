@@ -51,9 +51,9 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 UNIQUE (project, run_id)
             );
             CREATE INDEX verification_receipts_by_source
-                ON verification_receipts (project, check_name, head, id);
+                ON verification_receipts (project, check_name, head, started_at);
             CREATE INDEX verification_receipts_by_check
-                ON verification_receipts (project, check_name, id);
+                ON verification_receipts (project, check_name, started_at);
             CREATE TABLE verification_artifacts (
                 receipt INTEGER NOT NULL REFERENCES verification_receipts (id),
                 path TEXT NOT NULL CHECK (path <> ''),

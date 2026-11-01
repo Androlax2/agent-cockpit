@@ -182,7 +182,8 @@ pub enum CheckStatus {
 pub struct CheckReport {
     pub name: String,
     pub status: CheckStatus,
-    /// The receipt that applies, when one does.
+    /// The newest receipt of exactly this definition on this source, stale or not: the
+    /// evidence the status is about.
     pub receipt: Option<ReceiptId>,
 }
 

@@ -71,7 +71,15 @@ impl Checkout {
         check_relative(path)?;
         let full = match self.root.join(path).canonicalize() {
             Ok(full) => full,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            // A parent replaced by a file is as gone as a removed file.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(None);
+            }
             Err(error) => return Err(error.to_string()),
         };
         // Symbolic links are followed, so one pointing out of the checkout is caught here.
