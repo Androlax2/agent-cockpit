@@ -109,3 +109,17 @@ fn a_hook_that_never_answers_is_given_up_on() {
 
     assert!(reason.contains("did not answer"), "{reason}");
 }
+
+#[test]
+fn a_program_path_that_is_not_utf8_is_refused() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let odd = dir.path().join(std::ffi::OsStr::from_bytes(b"bin-\xff"));
+    std::fs::create_dir(&odd).unwrap();
+    let hook = odd.join("cockpit-codex-hook");
+    std::fs::copy(env!("CARGO_BIN_EXE_cockpit-codex-hook"), &hook).unwrap();
+
+    let reason = bridge_with(dir.path(), hook).check().unwrap_err();
+
+    assert!(reason.contains("not valid UTF-8"), "{reason}");
+}

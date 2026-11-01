@@ -70,6 +70,17 @@ impl Bridge {
         if !missing.is_empty() {
             return Err(format!("{} missing", missing.join(" and ")));
         }
+        // The hook command is text Codex hands to a shell; a path it cannot spell would name
+        // another, missing program.
+        if let Some(program) = [&self.hook_program, &self.cockpit_program]
+            .into_iter()
+            .find(|program| program.to_str().is_none())
+        {
+            return Err(format!(
+                "{} is not valid UTF-8, so a hook command cannot name it",
+                program.display()
+            ));
+        }
         if !is_executable(&self.cockpit_program) {
             return Err(format!(
                 "{} has no execute bit, so the hook cannot run it",
@@ -141,9 +152,14 @@ impl Codex {
             reason,
         };
         let output = run_with_deadline(program, "--version", deadline).map_err(failed)?;
-        // `codex-cli 0.161.0`; warnings go to standard error.
+        // `codex-cli 0.161.0`, or a pre-release such as `0.162.0-alpha.3`, which is only
+        // `discovered`; warnings go to standard error.
         let version = match output.split_whitespace().collect::<Vec<_>>()[..] {
-            ["codex-cli", version] if is_dotted_version(version) => version,
+            ["codex-cli", version, ..]
+                if is_dotted_version(version.split('-').next().unwrap_or_default()) =>
+            {
+                version
+            }
             _ => {
                 return Err(failed(format!(
                     "`--version` printed {output:?}, not a version"

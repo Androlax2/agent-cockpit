@@ -55,7 +55,10 @@ fn the_installed_codex_documents_every_flag_a_launch_passes() {
         let help = codex_output(home.path(), command);
 
         for flag in LAUNCH_FLAGS {
-            assert!(help.contains(flag), "{flag} is not in {command:?}");
+            let is_documented = help
+                .split(|character: char| character.is_whitespace() || character == ',')
+                .any(|word| word == flag);
+            assert!(is_documented, "{flag} is not in {command:?}");
         }
     }
 }

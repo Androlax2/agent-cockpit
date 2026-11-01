@@ -62,7 +62,7 @@ fn every_pinned_payload_matches_its_pinned_input_schema() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 9);
+    assert_eq!(checked, 10);
 }
 
 #[test]
@@ -219,6 +219,15 @@ fn a_session_start_after_clear_names_the_new_thread() {
 fn a_subagents_event_reports_nothing() {
     assert_eq!(kind("post-tool-use-subagent"), EventKind::Unknown);
     assert_eq!(report("post-tool-use-subagent"), None);
+}
+
+/// The owner must answer it, whichever agent asked.
+#[test]
+fn a_subagents_permission_request_still_needs_you() {
+    assert_eq!(
+        kind("permission-request-subagent"),
+        EventKind::NeedsYou { question: None }
+    );
 }
 
 #[test]

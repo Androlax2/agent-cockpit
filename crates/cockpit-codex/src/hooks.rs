@@ -103,8 +103,9 @@ pub fn trust_key(event: &HookEvent) -> String {
 
 /// The hash Codex 0.161.0 gives a command hook on `event`: SHA-256 of its normalized
 /// identity as JSON with sorted keys and no spaces (`version_for_toml` over
-/// `NormalizedHookIdentity` in `codex-rs/hooks`). `tests/live_hooks.rs` checks it against
-/// the installed Codex.
+/// `NormalizedHookIdentity` in `codex-rs/hooks`).
+/// `conformance::codex_trusts_every_hook_a_launch_subscribes` checks it against the installed
+/// Codex.
 pub fn trusted_hash(event: &HookEvent, command: &str) -> String {
     let identity = format!(
         "{{\"event_name\":{},\"hooks\":[{{\"async\":false,\"command\":{},\"timeout\":{},\"type\":\"command\"}}]}}",
@@ -154,8 +155,9 @@ impl fmt::Display for HookError {
 impl std::error::Error for HookError {}
 
 /// The event a hook payload (the hook's standard input) describes. An event this adapter
-/// does not normalize is [`EventKind::Unknown`], with the payload kept raw. So is one of a
-/// subagent (`agent_id`): it is not the conversation the session runs.
+/// does not normalize is [`EventKind::Unknown`], with the payload kept raw. So is a
+/// subagent's (`agent_id`) activity: it is not the conversation's turn. A subagent's
+/// permission request still waits for the owner, so it needs you like the agent's own.
 pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
     let value: serde_json::Value = serde_json::from_str(payload).map_err(|error| HookError {
         reason: format!("the hook payload is not JSON: {error}"),
@@ -169,6 +171,7 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
     let text = |field: &str| value.get(field).and_then(serde_json::Value::as_str);
     let is_subagent = value.get("agent_id").is_some();
     let kind = match name {
+        "PermissionRequest" => EventKind::NeedsYou { question: None },
         _ if is_subagent => EventKind::Unknown,
         // After a compaction, possibly automatic in the middle of a turn, it proves no wait.
         "SessionStart" if text("source") == Some("compact") => EventKind::Unknown,
@@ -182,7 +185,6 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
             },
             None => EventKind::Unknown,
         },
-        "PermissionRequest" => EventKind::NeedsYou { question: None },
         // Codex sends `Stop` only for a turn that completed; a failed one sends no hook.
         "Stop" => EventKind::TurnEnded {
             outcome: cockpit_provider_api::TurnOutcome::Completed,

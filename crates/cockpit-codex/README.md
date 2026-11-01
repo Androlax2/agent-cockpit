@@ -31,18 +31,20 @@ provider and nothing above the contract sees a Codex type (#48).
   from (`--conversation`, the payload's `session_id`). A permission request reports a plain
   `--dialog` question, never the tool input; `Stop` and `Interrupt` report `waiting`. It
   prints nothing on standard output, so it never answers a permission request, and never
-  exits 2. A subagent's event (`agent_id`) and a `SessionStart` after a compaction report
-  nothing. `cockpit-codex-hook --version` answers its name and version for `Bridge::check`.
-- **Known gap.** After `/clear`, Codex starts a new thread and sends no `SessionEnd` for the
-  old one (measured), so the bridge cannot announce `--conversation-ends`, and the daemon
-  refuses the new thread's reports (#408).
+  exits 2. A subagent's (`agent_id`) activity and a `SessionStart` after a compaction report
+  nothing; a subagent's permission request still reports `--dialog`. `cockpit-codex-hook --version` answers its name and version for `Bridge::check`.
+- **Known gaps.** A failed turn sends no hook, so the session stays `working` until the next
+  prompt; the app-server path (#407) reports it. After `/clear`, Codex starts a new thread
+  and sends no `SessionEnd` for the old one (measured), so the bridge cannot announce
+  `--conversation-ends`, and the daemon refuses the new thread's reports (#408).
 
 ## Dependency edges
 
 - Depends on: `cockpit-provider-api` only (crate-graph rule
   `provider adapters -> provider-api only`), `serde_json` for hook payloads, `sha2` for the
   hook trust hash.
-- Used by: the daemon's wiring only (`capabilities -> provider adapters`).
+- Used by: the daemon's wiring only (`capabilities -> provider adapters`), which comes with
+  #411 together with shipping `cockpit-codex-hook` in the release.
 
 ## Tests
 

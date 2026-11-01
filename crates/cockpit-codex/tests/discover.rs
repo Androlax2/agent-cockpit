@@ -49,6 +49,20 @@ fn a_version_line_that_is_not_codex_clis_is_refused() {
 }
 
 #[test]
+fn a_pre_release_is_discovered_and_unverified() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = common::script(dir.path(), "codex", "echo 'codex-cli 0.162.0-alpha.3'");
+
+    let codex = Codex::discover(&program, Some(common::bridge())).unwrap();
+
+    assert_eq!(codex.version(), Some("0.162.0-alpha.3"));
+    assert_eq!(
+        codex.capabilities().availability(Capability::Resume),
+        Availability::Unverified
+    );
+}
+
+#[test]
 fn codex_is_found_in_the_first_path_directory_that_has_it() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
