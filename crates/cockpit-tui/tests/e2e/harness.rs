@@ -192,6 +192,15 @@ impl Cockpit {
         for plain in ["bin", "conversations", "projects"] {
             std::fs::create_dir(root.join(plain)).unwrap();
         }
+        // The owner's one opt-out of the sandbox (#61): these tests drive the TUI, not the
+        // sandbox, and must not depend on whether the host has Greywall (CI does not; a
+        // developer's would sandbox the fake agent for real).
+        std::fs::create_dir(root.join("config/cockpit")).unwrap();
+        std::fs::write(
+            root.join("config/cockpit/config.toml"),
+            "[agents]\nsandbox = \"off\"\n",
+        )
+        .unwrap();
         let utf8 = |path: PathBuf| path.to_str().expect("a UTF-8 path").to_owned();
         let fake = root.join("bin/claude");
         std::fs::write(

@@ -1,0 +1,21 @@
+[package]
+name = "cockpit-sandbox"
+description = "Owns the sandbox every launched agent runs in: the profile Cockpit requests, the platform capabilities that decide whether it can be enforced, the Greywall/greyproxy backend that enforces it and the evidence of what each launch got."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
+cockpit-config = { path = "../cockpit-config", version = "0.1.0" }
+cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+serde_json = "1.0.154"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

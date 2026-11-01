@@ -43,7 +43,8 @@ async fn a_reload_prints_each_session_setting_and_the_value_it_replaced() {
         text(&reloaded.stdout),
         "sessions.idle_sleep_after_minutes = 45  # was 60\n\
          sessions.asleep_expiry_days = 7\n\
-         agents.desktop_session = \"withheld\"  # was \"shared\"\n"
+         agents.desktop_session = \"withheld\"  # was \"shared\"\n\
+         agents.sandbox = \"required\"\n"
     );
 }
 
@@ -104,7 +105,8 @@ async fn an_invalid_owner_file_is_refused_and_the_settings_in_force_stay() {
         text(&unchanged.stdout),
         "sessions.idle_sleep_after_minutes = 60\n\
          sessions.asleep_expiry_days = 7\n\
-         agents.desktop_session = \"withheld\"\n"
+         agents.desktop_session = \"withheld\"\n\
+         agents.sandbox = \"required\"\n"
     );
 }
 

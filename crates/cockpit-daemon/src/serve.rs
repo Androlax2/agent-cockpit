@@ -82,6 +82,12 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         .into_iter()
         .map(|claude| Arc::new(claude) as Arc<dyn Provider>)
         .collect();
+    let sandbox = sandbox(
+        instance.options(),
+        &environment,
+        &serve.programs_dir,
+        &config,
+    );
     let mut sessions = cockpit_sessions::Settings {
         base_environment: own_variables(AGENT_BASE_VARIABLES)
             .chain(
@@ -91,6 +97,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             )
             .collect(),
         start_files,
+        sandbox,
         ..session_settings(&config)
     };
     if let Some(window) = serve.idle_sleep_after {
@@ -125,6 +132,87 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         daemon.wait().await;
         Ok(())
     })
+}
+
+/// The sandbox every launch goes through (#61): Greywall and greyproxy as found on the
+/// daemon's `PATH` and checked against the pinned builds, with the paths the daemon's layout
+/// gives every agent and keeps from it. An engine that is missing or of another build is
+/// logged; launches are then refused while the owner requires the sandbox.
+fn sandbox(
+    options: &Options,
+    environment: &cockpit_config::Environment,
+    programs_dir: &Path,
+    config: &cockpit_config::EffectiveConfig,
+) -> cockpit_sandbox::Sandbox {
+    let platform = cockpit_sandbox::Platform::detect();
+    let settings_dir = options.state_dir.join("sandbox");
+    let engine = cockpit_sandbox::GreywallPrograms::on_path(std::env::var_os("PATH").as_ref())
+        .and_then(|programs| {
+            cockpit_sandbox::Greywall::detect(programs, platform.clone(), settings_dir.clone())
+        });
+    match (&engine, config.agents_sandbox.value) {
+        (Ok(greywall), _) => tracing::info!(
+            engine = %greywall.engine(),
+            platform = %greywall.platform,
+            "the sandbox engine is ready"
+        ),
+        (Err(reason), cockpit_config::AgentSandbox::Required) => tracing::error!(
+            %reason,
+            "the sandbox engine is unavailable: every agent launch is refused until it is installed and the daemon restarts"
+        ),
+        (Err(reason), cockpit_config::AgentSandbox::Off) => tracing::warn!(
+            %reason,
+            "the sandbox engine is unavailable"
+        ),
+    }
+    if config.agents_sandbox.value == cockpit_config::AgentSandbox::Off {
+        tracing::warn!(
+            source = %config.agents_sandbox.source,
+            "agents run UNSANDBOXED: the owner set agents.sandbox = \"off\""
+        );
+    }
+    let layout_config_dir = environment
+        .home_dir()
+        .map(|home| {
+            cockpit_config::Layout::resolve(environment, &home)
+                .config_dir
+                .value
+        })
+        .ok();
+    let database = options.database_path();
+    let journal = |suffix: &str| {
+        let mut path = database.clone().into_os_string();
+        path.push(suffix);
+        PathBuf::from(path)
+    };
+    let denied = [
+        Some(options.socket_path()),
+        Some(journal("-wal")),
+        Some(journal("-shm")),
+        Some(database.clone()),
+        Some(options.state_dir.join("logs")),
+        Some(options.executions_dir()),
+        Some(settings_dir),
+        layout_config_dir,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    cockpit_sandbox::Sandbox::new(
+        platform,
+        engine,
+        cockpit_sandbox::HostPaths {
+            read_only: vec![
+                options
+                    .agent_socket_path()
+                    .parent()
+                    .expect("the agent socket is in its own folder")
+                    .to_path_buf(),
+                programs_dir.to_path_buf(),
+            ],
+            denied,
+        },
+    )
 }
 
 /// Those of `names` the daemon's own environment sets, never invented (#303).

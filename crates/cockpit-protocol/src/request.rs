@@ -10,7 +10,8 @@ use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 use crate::queue::{QueueExplanationView, QueuePlacementView};
 use crate::resources::{ProfileView, ReservationView, ResourceStatusView, VerdictView};
 use crate::sessions::{
-    AppliedSettingView, ManagerPaneView, ProviderView, SessionFailure, SessionView,
+    AppliedSettingView, ManagerPaneView, ProviderView, SandboxEvidenceView, SessionFailure,
+    SessionView,
 };
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
@@ -514,6 +515,19 @@ pub enum Command {
     SessionShow {
         session: String,
     },
+    /// Owner only: how the session's latest launch ran: inside which sandbox, with which
+    /// rules, or unsandboxed and why (#61).
+    SessionSandbox {
+        session: String,
+    },
+    /// Owner only: the sandbox a new session of `agent` (the default provider without one)
+    /// in `dir` (absolute) would get, without launching anything (#61). A profile this host
+    /// cannot enforce is refused with the rule and the reason.
+    SandboxShow {
+        dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
     /// The providers `session-new` may name in `agent`: those the daemon was started with.
     ProviderList,
     /// Owner only: the [`crate::DESKTOP_SESSION_VARIABLES`] later launches get, replacing
@@ -738,6 +752,16 @@ pub enum Reply {
     },
     Providers {
         providers: Vec<ProviderView>,
+    },
+    /// `None`: the session has not launched an agent yet.
+    SessionSandbox {
+        evidence: Option<Box<SandboxEvidenceView>>,
+    },
+    /// What a launch would get, and the words it would run, with `<agent>` standing for the
+    /// provider's own program and arguments.
+    SandboxProfile {
+        evidence: Box<SandboxEvidenceView>,
+        command: Vec<String>,
     },
     /// The import is recorded. `withheld`: the owner's `agents.desktop_session` keeps
     /// agents off the desktop session, so none of them gets it (#305).

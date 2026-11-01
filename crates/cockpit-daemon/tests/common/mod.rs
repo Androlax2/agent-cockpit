@@ -302,6 +302,20 @@ pub async fn still_logged<T: std::fmt::Debug>(count: usize, read: impl Fn() -> V
     logged
 }
 
+/// The sessions' product settings with the owner's one named opt-out, `agents.sandbox =
+/// "off"` (#61): in-process daemons launch the `fake` provider's shell agent, for which no
+/// sandbox engine has a profile. The binary's tests launch through a stand-in Greywall.
+pub fn unsandboxed_settings() -> cockpit_sessions::Settings {
+    let product = cockpit_sessions::Settings::default();
+    cockpit_sessions::Settings {
+        owner: cockpit_config::SessionSettings {
+            sandbox: cockpit_config::AgentSandbox::Off,
+            ..product.owner
+        },
+        ..product
+    }
+}
+
 /// What an in-process daemon is wired with in tests: a private tmux server in `dir`, never
 /// the user's, `providers`, and a home of its own in `dir/home`.
 pub fn wiring_in(
@@ -316,7 +330,7 @@ pub fn wiring_in(
         },
         git: cockpit_projects::Git::from_path(),
         providers,
-        sessions: cockpit_sessions::Settings::default(),
+        sessions: unsandboxed_settings(),
         desktop_environment: Vec::new(),
         session_tick: Duration::from_secs(3600),
         run_settings: cockpit_daemon::run_settings(Vec::new()).unwrap(),

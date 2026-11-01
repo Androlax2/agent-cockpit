@@ -67,6 +67,8 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit session sleep|wake|resume|end|show SESSION
        cockpit session end --finished
        cockpit session link SESSION URL
+       cockpit session sandbox SESSION
+       cockpit sandbox show DIR [--agent NAME]
        cockpit provider list
        cockpit desktop-session import
        cockpit tui
@@ -168,6 +170,10 @@ fn main() -> ExitCode {
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("provider"), ..] => match sessions::parse_provider(&arguments[1..]) {
+            Ok(command) => sessions::run(command),
+            Err(problem) => usage_error(Some(problem)),
+        },
+        [Some("sandbox"), ..] => match sessions::parse_sandbox(&arguments[1..]) {
             Ok(command) => sessions::run(command),
             Err(problem) => usage_error(Some(problem)),
         },

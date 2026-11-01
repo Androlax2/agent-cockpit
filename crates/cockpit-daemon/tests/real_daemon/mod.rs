@@ -92,6 +92,29 @@ case "${PWD##*/}" in
 esac
 "#;
 
+/// A stand-in Greywall (#61): `--version` answers as the pinned build on a host with every
+/// capability; a launch appends its arguments to `@LOG@`, one line, then runs the agent
+/// after `--` unsandboxed, so the agents above behave as they do without it.
+const FAKE_GREYWALL: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf 'greywall - stand-in\n  Version: 0.3.7+dotfiles\n  Commit:  @COMMIT@\n'
+  printf 'Checking system capabilities:\n'
+  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated'; do
+    printf '  \342\234\223 %s\n' "$capability"
+  done
+  exit 0
+fi
+printf '%s\n' "$*" >> '@LOG@'
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+"#;
+
+/// A stand-in greyproxy: only `--version`, as the pinned build.
+const FAKE_GREYPROXY: &str = r#"#!/bin/sh
+printf 'greyproxy 0.4.5 (stand-in)\n  commit: @COMMIT@\n'
+"#;
+
 pub struct Home {
     /// The temporary directory, canonical: the daemon compares paths it is sent with it.
     root: PathBuf,
@@ -142,7 +165,28 @@ impl Home {
         )
         .unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (name, script) in [
+            (
+                "greywall",
+                FAKE_GREYWALL
+                    .replace("@COMMIT@", cockpit_sandbox::PINNED_GREYWALL_COMMIT)
+                    .replace("@LOG@", &utf8(&home.sandbox_log())),
+            ),
+            (
+                "greyproxy",
+                FAKE_GREYPROXY.replace("@COMMIT@", cockpit_sandbox::PINNED_GREYPROXY_COMMIT),
+            ),
+        ] {
+            let program = home.path().join("bin").join(name);
+            std::fs::write(&program, script).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         home
+    }
+
+    /// The arguments of each launch the stand-in Greywall ran, one line each.
+    pub fn sandbox_log(&self) -> PathBuf {
+        self.path().join("sandbox.log")
     }
 
     pub fn path(&self) -> PathBuf {
@@ -269,6 +313,25 @@ impl Home {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
         search.extend(std::env::split_paths(&path));
+        self.spawn(search, extra)
+    }
+
+    /// [`Home::start`] on a host without Greywall: neither stand-in, and no folder of the
+    /// caller's `PATH` that holds a real one.
+    pub fn start_without_greywall(&self) -> Daemon {
+        for program in ["greywall", "greyproxy"] {
+            std::fs::remove_file(self.path().join("bin").join(program)).unwrap();
+        }
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut search = vec![self.path().join("bin")];
+        search.extend(
+            std::env::split_paths(&path)
+                .filter(|dir| !dir.join("greywall").exists() && !dir.join("greyproxy").exists()),
+        );
+        self.spawn(search, &[])
+    }
+
+    fn spawn(&self, search: Vec<PathBuf>, extra: &[(&str, &str)]) -> Daemon {
         let mut child = Process::new(env!("CARGO_BIN_EXE_cockpit-daemon"))
             .env_clear()
             .env("HOME", self.path())

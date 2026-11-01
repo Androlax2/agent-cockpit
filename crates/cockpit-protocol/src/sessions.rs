@@ -185,3 +185,64 @@ pub struct ProviderView {
     /// Code, the daemon found a hook bridge that runs (#203).
     pub events: bool,
 }
+
+/// How one launch ran (#61): enforced by a sandbox or not, on which platform, each rule with
+/// what enforced it, and the host capabilities the engine reported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxEvidenceView {
+    pub enforcement: SandboxEnforcementView,
+    pub platform: String,
+    pub rules: Vec<SandboxRuleView>,
+    pub observed: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum SandboxEnforcementView {
+    /// `client_identity`: the greyproxy client this launch alone used.
+    Sandboxed {
+        backend: String,
+        engine: String,
+        client_identity: String,
+    },
+    /// Only by the owner's explicit setting, which `reason` names.
+    Unsandboxed { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxRuleView {
+    pub rule: String,
+    pub enforced_by: String,
+}
+
+impl SandboxEvidenceView {
+    /// One line per fact, in a fixed order: what `session show` and `sandbox show` print.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = match &self.enforcement {
+            SandboxEnforcementView::Sandboxed {
+                backend,
+                engine,
+                client_identity,
+            } => vec![
+                format!("sandbox: enforced by {backend} on {}", self.platform),
+                format!("engine: {engine}"),
+                format!("proxy client: {client_identity}"),
+            ],
+            SandboxEnforcementView::Unsandboxed { reason } => vec![format!(
+                "sandbox: NONE on {}, unsandboxed: {reason}",
+                self.platform
+            )],
+        };
+        lines.extend(
+            self.rules
+                .iter()
+                .map(|rule| format!("rule: {} <- {}", rule.rule, rule.enforced_by)),
+        );
+        lines.extend(
+            self.observed
+                .iter()
+                .map(|observation| format!("observed: {observation}")),
+        );
+        lines
+    }
+}

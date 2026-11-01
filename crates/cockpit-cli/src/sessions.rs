@@ -1,5 +1,6 @@
-//! `cockpit session` and `cockpit provider`: start, list, show and change agent sessions, and
-//! the providers they start with, served by the daemon.
+//! `cockpit session`, `cockpit provider` and `cockpit sandbox`: start, list, show and change
+//! agent sessions, the providers they start with and the sandbox they run in, served by the
+//! daemon.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -15,6 +16,21 @@ pub fn parse_provider(arguments: &[OsString]) -> Result<Command, String> {
     match utf8_words(arguments)?.as_slice() {
         ["list"] => Ok(Command::ProviderList),
         _ => Err("unknown provider arguments".to_owned()),
+    }
+}
+
+/// `sandbox show DIR [--agent NAME]`: the sandbox a new session there would get.
+pub fn parse_sandbox(arguments: &[OsString]) -> Result<Command, String> {
+    match utf8_words(arguments)?.as_slice() {
+        ["show", dir] => Ok(Command::SandboxShow {
+            dir: absolute_dir(dir)?,
+            agent: None,
+        }),
+        ["show", dir, "--agent", agent] => Ok(Command::SandboxShow {
+            dir: absolute_dir(dir)?,
+            agent: Some((*agent).to_owned()),
+        }),
+        _ => Err("unknown sandbox arguments".to_owned()),
     }
 }
 
@@ -44,6 +60,9 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
             session: session(id),
         },
         ["show", id] => Command::SessionShow {
+            session: session(id),
+        },
+        ["sandbox", id] => Command::SessionSandbox {
             session: session(id),
         },
         ["link", id, url] => Command::SessionLink {
@@ -86,7 +105,10 @@ fn session_new(dir: &str, options: &[&str]) -> Result<Command, String> {
 /// with its pending restart.
 pub fn run(command: Command) -> ExitCode {
     let deadline = match command {
-        Command::SessionList { .. } | Command::ProviderList => CONTROL_DEADLINE,
+        Command::SessionList { .. }
+        | Command::ProviderList
+        | Command::SessionSandbox { .. }
+        | Command::SandboxShow { .. } => CONTROL_DEADLINE,
         _ => BULK_DEADLINE,
     };
     let reply = match request(command, deadline) {
@@ -111,6 +133,16 @@ pub fn run(command: Command) -> ExitCode {
             };
             outln!("{}\t{resume}\t{events}", provider.name);
         }),
+        Reply::SessionSandbox { evidence: None } => {
+            outln!("sandbox: no launch recorded yet");
+        }
+        Reply::SessionSandbox {
+            evidence: Some(evidence),
+        } => evidence.lines().iter().for_each(|line| outln!("{line}")),
+        Reply::SandboxProfile { evidence, command } => {
+            evidence.lines().iter().for_each(|line| outln!("{line}"));
+            outln!("command: {}", command.join(" "));
+        }
         Reply::RestartedAll {
             restarted,
             deferred,

@@ -65,6 +65,8 @@ pub enum Error {
         reason: String,
     },
     AgentChannel(cockpit_agent_channel::Error),
+    /// The sandbox refused the launch: a rule this host cannot enforce, or no engine (#61).
+    Sandbox(cockpit_sandbox::Refusal),
     Authorization(cockpit_authorization::Error),
     Io {
         action: &'static str,
@@ -169,6 +171,7 @@ impl fmt::Display for Error {
                  install tmux, then restart the daemon"
             ),
             Error::AgentChannel(error) => write!(formatter, "agent channel: {error}"),
+            Error::Sandbox(refusal) => refusal.fmt(formatter),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::Io {
                 action,

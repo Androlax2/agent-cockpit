@@ -275,7 +275,9 @@ impl Handler for Routes {
                 | Command::SessionResume { .. }
                 | Command::SessionEnd { .. }
                 | Command::SessionEndFinished { .. }
-                | Command::SessionLink { .. }),
+                | Command::SessionLink { .. }
+                | Command::SessionSandbox { .. }
+                | Command::SandboxShow { .. }),
                 peer,
             ) => match peer {
                 // Starting and stopping agents is the owner's; agents ask through their

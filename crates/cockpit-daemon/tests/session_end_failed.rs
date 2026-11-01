@@ -57,7 +57,7 @@ impl Home {
                     grace: Duration::from_secs(2),
                     kill_wait: Duration::from_secs(5),
                 },
-                ..cockpit_sessions::Settings::default()
+                ..common::unsandboxed_settings()
             };
             let options = Options {
                 runtime_dir: self.path().join("run/cockpit"),

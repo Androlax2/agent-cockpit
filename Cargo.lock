@@ -472,6 +472,7 @@ dependencies = [
  "cockpit-protocol",
  "cockpit-provider-api",
  "cockpit-resource-admission",
+ "cockpit-sandbox",
  "cockpit-scheduling",
  "cockpit-sessions",
  "cockpit-tasks",
@@ -562,6 +563,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cockpit-sandbox"
+version = "0.1.0"
+dependencies = [
+ "cockpit-config",
+ "cockpit-turso",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cockpit-scheduling"
 version = "0.1.0"
 dependencies = [
@@ -586,6 +599,7 @@ dependencies = [
  "cockpit-processes",
  "cockpit-projects",
  "cockpit-provider-api",
+ "cockpit-sandbox",
  "cockpit-tmux",
  "cockpit-turso",
  "tempfile",

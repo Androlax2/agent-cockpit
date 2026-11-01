@@ -267,6 +267,14 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: &["cockpit-agent-context"],
         allowed: &[],
     },
+    // #61: the sandbox enforces what the owner's settings and the launch request ask; it reads
+    // the owner's values from configuration and keeps its evidence in the database, and asks
+    // no other capability, so sessions call it and never the reverse.
+    AllowList {
+        rule: "sandbox -> config/database only",
+        from: &["cockpit-sandbox"],
+        allowed: &["cockpit-config", "cockpit-turso"],
+    },
     // Producers own what a message or an entity means and depend on messaging, never the
     // reverse; the daemon converts the feed to wire types (#41).
     AllowList {
@@ -735,6 +743,16 @@ fn each_rule_catches_its_forbidden_edge() {
             "cockpit-scheduling",
             "cockpit-protocol",
         ),
+        (
+            "sandbox -> config/database only",
+            "cockpit-sandbox",
+            "cockpit-sessions",
+        ),
+        (
+            "sandbox -> config/database only",
+            "cockpit-sandbox",
+            "cockpit-authorization",
+        ),
     ] {
         let manifest_path = fixture_workspace(
             &format!("{source}_to_{target}"),
@@ -771,6 +789,9 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-scheduling", "cockpit-messaging"),
         ("cockpit-daemon", "cockpit-scheduling"),
         ("cockpit-daemon", "cockpit-agent-context"),
+        ("cockpit-sandbox", "cockpit-config"),
+        ("cockpit-sandbox", "cockpit-turso"),
+        ("cockpit-sessions", "cockpit-sandbox"),
     ] {
         let manifest_path = fixture_workspace(
             &format!("allowed_{source}_to_{target}"),

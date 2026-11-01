@@ -369,6 +369,9 @@ pub struct Settings {
     /// The files agents read only at launch (`cockpit-config`); each launch records their
     /// state, and `restart --all` restarts the sessions whose files changed since.
     pub start_files: Vec<cockpit_config::StartFile>,
+    /// The sandbox every launch goes through (#61): the engine the daemon detected at its
+    /// start and its host paths. Whether a launch uses it is the owner's `sandbox` setting.
+    pub sandbox: cockpit_sandbox::Sandbox,
     /// How long one step that waits outside the daemon may take: the provider building its
     /// command, a tmux call, a file or process read. A step that runs out of it fails, so a
     /// hung launch ends and the owner can stop its session (#272).
@@ -387,6 +390,7 @@ impl Default for Settings {
                 idle_sleep_after: Duration::from_secs(60 * 60),
                 asleep_expiry: Duration::from_secs(7 * 24 * 60 * 60),
                 desktop_session: crate::DesktopSession::Shared,
+                sandbox: cockpit_config::AgentSandbox::Required,
             },
             stop: Escalation {
                 grace: Duration::from_secs(5),
@@ -396,6 +400,9 @@ impl Default for Settings {
             rows: 50,
             base_environment: Vec::new(),
             start_files: Vec::new(),
+            // The product requires the sandbox, so without a detected engine every launch is
+            // refused until the owner turns it off by name.
+            sandbox: cockpit_sandbox::Sandbox::unavailable("the daemon detected no sandbox engine"),
             step_timeout: Duration::from_secs(30),
             // An eighth of Tokio's default blocking pool (512), so a hung tmux leaves the
             // rest of the daemon its threads.

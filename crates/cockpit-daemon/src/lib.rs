@@ -37,13 +37,14 @@ pub use serve::{SESSION_TICK, Serve, own_program, serve};
 pub use server::Limits;
 
 /// Every capability's migrations, in the order the daemon applies them.
-pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 12] = [
+pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 13] = [
     cockpit_authorization::MIGRATIONS,
     cockpit_agent_channel::MIGRATIONS,
     cockpit_projects::MIGRATIONS,
     cockpit_processes::MIGRATIONS,
     cockpit_approvals::MIGRATIONS,
     cockpit_sessions::MIGRATIONS,
+    cockpit_sandbox::MIGRATIONS,
     cockpit_messaging::MIGRATIONS,
     cockpit_tasks::MIGRATIONS,
     cockpit_resource_admission::MIGRATIONS,
@@ -99,6 +100,7 @@ fn owner_session_settings(
         idle_sleep_after: config.idle_sleep_after.value,
         asleep_expiry: config.asleep_expiry.value,
         desktop_session: config.agents_desktop_session.value,
+        sandbox: config.agents_sandbox.value,
     }
 }
 
