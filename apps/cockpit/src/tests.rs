@@ -14060,7 +14060,6 @@ fn subscription_poll_starts_one_background_sweep_without_blocking_the_sidebar() 
 fn the_subscription_sweep_runs_at_most_every_five_minutes() {
     let (fixture, mut app) = queue_fixture("waiting", 7200);
     let sweeps = |fixture: &Fixture| {
-        std::thread::sleep(Duration::from_millis(100));
         fixture
             .calls("cockpit")
             .iter()
@@ -14069,9 +14068,18 @@ fn the_subscription_sweep_runs_at_most_every_five_minutes() {
     };
     app.subscription_polled_at = Some(util::now() - 299.0);
     app.poll_subscription_routes();
-    assert_eq!(sweeps(&fixture), 0);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        sweeps(&fixture),
+        0,
+        "no sweep within five minutes of the last"
+    );
     app.subscription_polled_at = Some(util::now() - 301.0);
     app.poll_subscription_routes();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while sweeps(&fixture) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(sweeps(&fixture), 1);
 }
 
@@ -19095,6 +19103,26 @@ fn a_queued_key_that_is_not_an_arrow_waits_for_the_next_pass() {
     let mut screen = FakeScreen::answering(&[Key::Down]);
     app.handle_queued_keys(Key::Tab, &mut screen);
     assert_eq!(screen.keys.len(), 1);
+}
+
+#[test]
+fn a_key_after_queued_arrows_is_handled_after_them_in_the_same_pass() {
+    let fixture = Fixture::new();
+    fixture.snapshot(json!([
+        session(SESSION_A, "waiting", "runway", "/r/runway", 100),
+        session(SESSION_B, "waiting", "homelab", "/r/homelab", 100)
+    ]));
+    let mut app = fixture.app();
+    app.has_pane_focus = false;
+    let mut screen = FakeScreen::answering(&[Key::FocusGained, Key::Down]);
+    app.handle_queued_keys(Key::Down, &mut screen);
+    assert_eq!(app.panels[1].selected, 1);
+    assert!(app.has_pane_focus);
+    assert_eq!(
+        screen.keys.len(),
+        1,
+        "the pass ends at the key that is not an arrow"
+    );
 }
 
 #[test]

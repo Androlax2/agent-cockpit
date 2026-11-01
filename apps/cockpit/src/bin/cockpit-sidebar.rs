@@ -112,6 +112,7 @@ fn run() -> io::Result<()> {
                 Changes {
                     refresh: true,
                     immediate: true,
+                    statusline: false,
                 }
             }
         };

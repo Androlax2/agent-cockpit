@@ -752,6 +752,9 @@ fn activate(app: &Application) {
     }
     {
         let registry = registry.clone();
+        // At once too: the first timer fires only after CHIEF_TICK_INTERVAL_S, and until the
+        // Chief has looked, questions skip their grace.
+        measured("chief_tick", || registry.borrow_mut().tick_chief());
         glib::timeout_add_seconds_local(registry::CHIEF_TICK_INTERVAL_S, move || {
             measured("chief_tick", || registry.borrow_mut().tick_chief());
             glib::ControlFlow::Continue

@@ -23,14 +23,16 @@ pub fn take_background_changed() -> bool {
 
 pub const SAFETY_INTERVAL: Duration = Duration::from_secs(5);
 const CHANGE_INTERVAL: Duration = Duration::from_millis(250);
-/// A watched file changed: 15-20 working sessions rewrite their statuslines several times a
-/// second, and each full refresh holds the input loop, so arrow keys waited behind them.
-const DIRTY_COOLDOWN: Duration = Duration::from_millis(1500);
+/// 15-20 working sessions rewrite their statuslines several times a second, and each full
+/// refresh holds the input loop: arrow keys waited behind back-to-back refreshes.
+const STATUSLINE_COOLDOWN: Duration = Duration::from_millis(1500);
 
 #[derive(Default)]
 pub struct Changes {
     pub refresh: bool,
     pub immediate: bool,
+    /// Only a statusline changed: refreshed after STATUSLINE_COOLDOWN, not CHANGE_INTERVAL.
+    pub statusline: bool,
 }
 
 #[derive(Clone)]
@@ -261,7 +263,11 @@ impl Watcher {
                     let path = directory.join(OsStr::from_bytes(&name[..length]));
                     for target in &self.targets {
                         if target.matches(&path) {
-                            changes.refresh = true;
+                            if target.statuslines {
+                                changes.statusline = true;
+                            } else {
+                                changes.refresh = true;
+                            }
                             changes.immediate |= target.immediate;
                             repair |= event.mask & libc::IN_ISDIR != 0;
                         }
@@ -282,6 +288,7 @@ pub struct Schedule {
     last_full: Option<Duration>,
     last_maintenance: Option<Duration>,
     dirty: bool,
+    statusline_dirty: bool,
 }
 
 impl Schedule {
@@ -304,6 +311,7 @@ impl Schedule {
 
     pub fn due(&mut self, now: Duration, changes: Changes, healthy: bool) -> bool {
         self.dirty |= changes.refresh;
+        self.statusline_dirty |= changes.statusline;
         let elapsed = self.last_full.map(|last| now.saturating_sub(last));
         let interval = if healthy {
             SAFETY_INTERVAL
@@ -312,10 +320,13 @@ impl Schedule {
         };
         if elapsed.is_none_or(|elapsed| elapsed >= interval)
             || changes.immediate
-            || (self.dirty && elapsed.is_some_and(|elapsed| elapsed >= DIRTY_COOLDOWN))
+            || (self.dirty && elapsed.is_some_and(|elapsed| elapsed >= CHANGE_INTERVAL))
+            || (self.statusline_dirty
+                && elapsed.is_some_and(|elapsed| elapsed >= STATUSLINE_COOLDOWN))
         {
             self.last_full = Some(now);
             self.dirty = false;
+            self.statusline_dirty = false;
             return true;
         }
         false
@@ -403,7 +414,8 @@ mod tests {
             Duration::from_millis(5040),
             Changes {
                 refresh: true,
-                immediate: true
+                immediate: true,
+                statusline: false,
             },
             true
         ));
@@ -417,7 +429,8 @@ mod tests {
             Duration::from_millis(40),
             Changes {
                 refresh: true,
-                immediate: false
+                immediate: false,
+                statusline: false,
             },
             true
         ));
@@ -425,13 +438,26 @@ mod tests {
             Duration::from_millis(200),
             Changes {
                 refresh: true,
-                immediate: false
+                immediate: false,
+                statusline: false,
             },
             true
         ));
-        assert!(!schedule.due(Duration::from_millis(1499), Changes::default(), true));
+        assert!(schedule.due(Duration::from_millis(250), Changes::default(), true));
+        assert!(!schedule.due(Duration::from_millis(500), Changes::default(), true));
+    }
+
+    #[test]
+    fn statusline_changes_wait_for_their_longer_cooldown() {
+        let mut schedule = Schedule::default();
+        schedule.due(Duration::ZERO, Changes::default(), true);
+        let statusline = || Changes {
+            statusline: true,
+            ..Changes::default()
+        };
+        assert!(!schedule.due(Duration::from_millis(250), statusline(), true));
+        assert!(!schedule.due(Duration::from_millis(1499), statusline(), true));
         assert!(schedule.due(Duration::from_millis(1500), Changes::default(), true));
-        assert!(!schedule.due(Duration::from_millis(1750), Changes::default(), true));
     }
 
     #[test]
@@ -461,12 +487,12 @@ mod tests {
             Duration::from_millis(440),
             Changes {
                 refresh: true,
-                immediate: false
+                immediate: false,
+                statusline: false,
             },
             true
         ));
-        assert!(!schedule.due(Duration::from_millis(1800), Changes::default(), true));
-        assert!(schedule.due(Duration::from_millis(1900), Changes::default(), true));
+        assert!(schedule.due(Duration::from_millis(650), Changes::default(), true));
     }
 
     #[test]
@@ -476,8 +502,9 @@ mod tests {
         fs::write(fixture.0.join("hook.log"), "noise").unwrap();
         fs::create_dir(fixture.0.join("requests")).unwrap();
         fs::write(fixture.0.join("requests/request.json"), "{}").unwrap();
-        assert!(!watcher.changes().unwrap().refresh);
+        let noise = watcher.changes().unwrap();
+        assert!(!noise.refresh && !noise.statusline);
         fs::write(fixture.0.join("statusline-session.json"), "{}").unwrap();
-        assert!(watcher.changes().unwrap().refresh);
+        assert!(watcher.changes().unwrap().statusline);
     }
 }

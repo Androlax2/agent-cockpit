@@ -10047,11 +10047,11 @@ pub fn read_key(timeout: Option<Duration>, last_click: &mut Option<(Instant, u16
 }
 
 pub const POLL_INTERVAL: Duration = POLL;
-/// How often the column looks whether another session went into the session pane (Ctrl+Tab, a
-/// banner, n): its Todo and Pull requests follow within this, not at the next full tick.
 /// The subscription sweep observes every session and reloads the todo list for each: every
 /// minute it took 7-35 s with 15-20 sessions, mostly to learn nothing had changed.
 pub(crate) const SUBSCRIPTION_SWEEP_INTERVAL_S: f64 = 300.0;
+/// How often the column looks whether another session went into the session pane (Ctrl+Tab, a
+/// banner, n): its Todo and Pull requests follow within this, not at the next full tick.
 pub const VIEW_CHECK_INTERVAL: Duration = Duration::from_millis(40);
 
 impl App {
