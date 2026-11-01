@@ -7,6 +7,9 @@
 //! Issue #230: a stop of a session whose launch still runs answers `conflict` at once
 //! instead of holding a stop worker until the launch finishes. The fixture provider holds a
 //! launch while its gate is closed.
+//!
+//! Issue #276: the same refusal through a restart's stop phase, while an agent that ignores
+//! `SIGTERM` waits out the stop's grace.
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -94,6 +97,8 @@ impl LaunchGate {
 struct GatedProvider {
     inner: FakeProvider,
     gate: Arc<LaunchGate>,
+    /// Whether the agents it launches ignore `SIGTERM`, so each stop waits out its grace.
+    agents_ignore_term: Arc<AtomicBool>,
 }
 
 impl Provider for GatedProvider {
@@ -111,7 +116,13 @@ impl Provider for GatedProvider {
             std::thread::sleep(Duration::from_millis(5));
         }
         self.gate.held.fetch_sub(1, Ordering::SeqCst);
-        self.inner.launch(request)
+        let mut command = self.inner.launch(request)?;
+        if self.agents_ignore_term.load(Ordering::SeqCst) {
+            // `-c SCRIPT`: an ignored signal stays ignored across the script's `exec`.
+            let script = &mut command.arguments[1];
+            *script = format!("trap '' TERM; {}", script.to_string_lossy()).into();
+        }
+        Ok(command)
     }
 }
 
@@ -137,6 +148,7 @@ struct Home {
     root: PathBuf,
     held: Arc<Held>,
     launches: Arc<LaunchGate>,
+    agents_ignore_term: Arc<AtomicBool>,
 }
 
 impl Home {
@@ -150,6 +162,7 @@ impl Home {
                 gate: Semaphore::new(0),
             }),
             launches: Arc::default(),
+            agents_ignore_term: Arc::default(),
         }
     }
 
@@ -166,6 +179,7 @@ impl Home {
                     self.path().join("agent.log"),
                 ),
                 gate: Arc::clone(&self.launches),
+                agents_ignore_term: Arc::clone(&self.agents_ignore_term),
             })],
         );
         wiring.sessions.stop = cockpit_processes::Escalation {
@@ -485,4 +499,68 @@ async fn ending_a_restarting_session_answers_conflict_without_waiting_for_the_re
     home.launches.wait_until_held().await;
 
     assert_refused_mid_launch(&client, Command::SessionEnd { session: id }).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ending_a_restarting_session_answers_conflict_while_its_old_agent_waits_out_the_grace() {
+    let home = Home::new();
+    home.agents_ignore_term.store(true, Ordering::SeqCst);
+    let daemon = home
+        .start(Limits {
+            stop: ONE_PLACE,
+            ..Limits::default()
+        })
+        .await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let id = match request(&client, session_new(&root)).await {
+        Ok(Reply::Session { session }) => session.id,
+        other => panic!("session-new: {other:?}"),
+    };
+    let old_agent = FakeProvider::launches(&home.path().join("agent.log"))[0].pid;
+    let _restarting = {
+        let client = Arc::clone(&client);
+        let session = id.clone();
+        tokio::spawn(async move { request(&client, Command::SessionRestart { session }).await })
+    };
+    wait_until_stopping(&client, &id).await;
+
+    assert_refused_mid_launch(&client, Command::SessionEnd { session: id }).await;
+    assert!(
+        is_alive(old_agent),
+        "the refusal came after the stop phase, once the old agent was killed"
+    );
+}
+
+/// Waits until the session `id` is recorded `stopping`, as a stop records it before it
+/// signals the agent.
+async fn wait_until_stopping(client: &Connection, id: &str) {
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        let sessions = match request(client, Command::SessionList { ended: false }).await {
+            Ok(Reply::Sessions { sessions }) => sessions,
+            other => panic!("session-list: {other:?}"),
+        };
+        let state = &sessions
+            .iter()
+            .find(|session| session.id == id)
+            .unwrap()
+            .state;
+        if matches!(state, SessionStateView::Stopping { .. }) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session never stopped: {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+fn is_alive(pid: i32) -> bool {
+    Process::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .unwrap()
+        .success()
 }
