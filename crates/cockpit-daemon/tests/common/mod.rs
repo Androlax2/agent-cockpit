@@ -251,6 +251,14 @@ impl Drop for RunningDaemon {
 /// launched by mistake has logged well within it.
 pub const SETTLE: Duration = Duration::from_millis(500);
 
+/// Seconds since 1970, the clock the daemon stamps rows with.
+pub fn unix_now() -> i64 {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    i64::try_from(elapsed.as_secs()).unwrap()
+}
+
 /// What `read` returns once it holds `count` entries, for a log a fake agent writes from its
 /// own shell after tmux starts it: the daemon's reply about a launch can arrive before the
 /// agent's line, and an agent stopped before it writes never does, so a test waits for a

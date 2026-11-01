@@ -429,25 +429,37 @@ fn moved_expiry(run: &RunRequest, now: i64) -> Option<i64> {
         .flatten()
 }
 
-/// The request `id`, which only its asking session may see. One the owner may no longer
-/// decide ([`may_still_ask`]) reads as expired, so a poll neither keeps it alive nor leaves
-/// the agent waiting (#285).
+/// The request `id`, which only its asking session may see, as [`shown_run`] reads it.
 async fn run_of(
     connection: &Connection,
     session: &SessionId,
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
-    let mut run = match run_request(connection, id, now).await? {
-        Some(run) if run.session == *session => run,
-        _ => return Err(not_found(KIND, id.0).into()),
+    match shown_run(connection, id, now).await? {
+        Some(run) if run.session == *session => Ok(run),
+        _ => Err(not_found(KIND, id.0).into()),
+    }
+}
+
+/// The request `id` as the owner and its asking session read it. One whose asking grant no
+/// longer covers its session reads as expired, as [`open_runs`] leaves it out: a poll
+/// neither keeps it alive nor leaves the agent waiting (#285), and the owner's view offers
+/// no approval (#347).
+pub async fn shown_run(
+    connection: &Connection,
+    id: RunId,
+    now: i64,
+) -> Result<Option<RunRequest>, Error> {
+    let Some(mut run) = run_request(connection, id, now).await? else {
+        return Ok(None);
     };
     if run.state == RunState::Asking
         && !may_still_ask(connection, &run.session, run.asking_grant).await?
     {
         run.state = RunState::Expired;
     }
-    Ok(run)
+    Ok(Some(run))
 }
 
 /// The owner's edit: `command` replaces the current one as a new revision, so a decision

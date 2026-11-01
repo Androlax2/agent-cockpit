@@ -19,7 +19,7 @@ use cockpit_daemon::{Capabilities, Daemon, Instance, Limits, Options, Routes, Wi
 use cockpit_protocol::{Command, ErrorCode, LaunchKindView, Reply, SessionStateView, SessionView};
 use cockpit_provider_api::ProviderName;
 use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
-use common::{GENEROUS, is_alive};
+use common::{GENEROUS, is_alive, unix_now};
 
 struct Home {
     dir: tempfile::TempDir,
@@ -425,13 +425,6 @@ async fn wait_for_state(client: &Connection, id: &str, state: SessionStateView) 
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-}
-
-fn unix_now() -> i64 {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
-    i64::try_from(elapsed.as_secs()).unwrap()
 }
 
 fn settings() -> cockpit_sessions::Settings {

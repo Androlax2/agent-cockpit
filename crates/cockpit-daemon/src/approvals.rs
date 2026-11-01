@@ -500,7 +500,7 @@ pub(crate) fn route_decision(command: Command, database: Arc<Database>, runner: 
             }
             Command::GuideShow { guide } => {
                 let read = database.read().await?;
-                let found = cockpit_approvals::guide_request(&read, GuideId(guide), now())
+                let found = cockpit_approvals::shown_guide(&read, GuideId(guide), now())
                     .await?
                     .ok_or(Refusal::NotFound {
                         kind: "guide",
@@ -548,7 +548,7 @@ async fn existing_run(
     request: i64,
 ) -> Result<RunRequest, Failed> {
     Ok(
-        cockpit_approvals::run_request(connection, RunId(request), now())
+        cockpit_approvals::shown_run(connection, RunId(request), now())
             .await?
             .ok_or(Refusal::NotFound {
                 kind: "run request",
