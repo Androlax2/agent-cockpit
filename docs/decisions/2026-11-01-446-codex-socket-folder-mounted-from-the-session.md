@@ -35,8 +35,8 @@ Issue #446. Decided by Theo on 2026-11-01: option B.
   Codex's entries are 64-character names, too long for a socket address under the daemon's
   folders, so on Linux the daemon connects through the open folder
   (`/proc/self/fd/<folder>/<entry>`).
-- **Ownership:** this lane owns the backend and the detection. The provider-wiring lane
-  (#411) passes the launch plan's `reach` to `SessionTreeSockets` and wires Codex delivery
+- **Ownership:** this lane owns the backend and the detection. Provider delivery in the
+  daemon (#431) passes the launch plan's `reach` to `SessionTreeSockets` and wires Codex delivery
   through it.
 - **Rejected:** sharing the host's `/tmp/codex-daemon-<uid>/` (#437 as written: the agent
   would reach the owner's unsandboxed Codex); reaching the socket through

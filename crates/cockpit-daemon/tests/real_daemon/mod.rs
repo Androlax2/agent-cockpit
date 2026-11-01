@@ -82,8 +82,8 @@ pub const ASKED_GUIDE: &str = "# Asked from the agent\nLook at the panel\n";
 
 /// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
 /// [`STALL_PROJECT`], [`REPORT_PROJECT`], [`ENVIRONMENT_PROJECT`], [`ASK_RUN_PROJECT`],
-/// [`ASK_GUIDE_PROJECT`], [`SESSION_DIR_PROJECT`], [`ONBOARD_PROJECT`]); anything else
-/// sleeps. `--version` answers
+/// [`ASK_GUIDE_PROJECT`], [`COMMANDED_PROJECT`], [`QUESTION_PROJECT`],
+/// [`SESSION_DIR_PROJECT`], [`ONBOARD_PROJECT`]); anything else sleeps. `--version` answers
 /// the version the adapter's conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
@@ -135,8 +135,9 @@ esac
 "#;
 
 /// A stand-in Greywall (#61): `--version` answers as the pinned build on a host with every
-/// capability, and `--help` lists the fork's `--mount` (#446); a launch appends its arguments to `@LOG@`, one line, then runs the agent
-/// after `--` unsandboxed, so the agents above behave as they do without it. The folders it
+/// capability, and `--help` lists the fork's `--mount` (#446); a launch appends its arguments
+/// to `@LOG@`, one line, then runs the agent after `--` unsandboxed, so the agents above
+/// behave as they do without it. The folders it
 /// was asked to make writable (`--allow-path`) are in `FAKE_GREYWALL_WRITABLE`, `:`-separated.
 const FAKE_GREYWALL: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then
@@ -292,7 +293,11 @@ impl Home {
 
     /// The directory of session `id`, which its launch creates.
     pub fn session_dir(&self, id: &str) -> PathBuf {
-        self.path().join("run/cockpit/sessions").join(id)
+        self.path()
+            .join("run")
+            .join(BUILD_PROFILE_DIR)
+            .join("sessions")
+            .join(id)
     }
 
     /// `DBUS_SESSION_BUS_ADDRESS` as systemd sets it for the user running the tests: the

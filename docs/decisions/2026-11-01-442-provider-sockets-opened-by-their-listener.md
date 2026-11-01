@@ -23,4 +23,4 @@ never follow an agent-writable path to a socket.
   the check; nothing is written.
 - **Left:** the kernel records a listener's pid when it called `listen()`; that process may
   have exited and its pid been reused inside the session's tree, and the pid is read after
-  connecting (#448, `SO_PEERPIDFD`). The daemon wiring of Codex delivery is #411.
+  connecting (#448, `SO_PEERPIDFD`). The daemon wiring of provider delivery is #431.
