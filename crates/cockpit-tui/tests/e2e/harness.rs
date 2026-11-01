@@ -87,9 +87,9 @@ done
 "#;
 
 /// The test terminal's tmux configuration: no status bar, and a pane that outlives
-/// `cockpit tui` so a failure still shows its last screen. The size comes from
-/// `new-session -x -y` (the session's `default-size`) and the watcher ignores its own:
-/// `window-size manual` made tmux 3.6's server exit while spawning the window.
+/// `cockpit tui` so a failure still shows its last screen. The size is pinned on the one
+/// window once it exists (`resize-window`): a global `window-size manual` made tmux 3.6's
+/// server exit while spawning it, and without any, macOS's tmux shrank it.
 const OUTER_CONFIG: &str = "\
 set-option -g status off
 set-option -g default-terminal screen
@@ -402,6 +402,22 @@ impl Cockpit {
                 self.terminal_start_log(&config)
             );
         }
+        let resized = tmux(&[
+            "resize-window",
+            "-t",
+            "=owner:",
+            "-x",
+            &columns,
+            "-y",
+            &rows,
+        ])
+        .output()
+        .expect("tmux runs");
+        assert!(
+            resized.status.success(),
+            "the test terminal kept its size: {}",
+            String::from_utf8_lossy(&resized.stderr)
+        );
         let mut watcher = tmux(&["-C", "attach-session", "-t", "=owner", "-f", "ignore-size"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
