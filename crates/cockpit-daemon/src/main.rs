@@ -13,10 +13,21 @@ use cockpit_daemon::{
 use cockpit_provider_api::{Provenance, Provider};
 
 const USAGE: &str = "usage: cockpit-daemon [--foreground]";
-/// Variables of the daemon's own environment every agent starts with, beside its XDG layout;
-/// the provider adds its own after them.
-const AGENT_BASE_VARIABLES: [&str; 8] = [
-    "HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
+/// Variables of the daemon's own environment every agent starts with, where set, beside its
+/// XDG layout; the provider adds its own after them. The display ones let the agent's tools
+/// reach the owner's desktop session, notifications first (#303).
+const AGENT_BASE_VARIABLES: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
 ];
 
 fn main() -> ExitCode {

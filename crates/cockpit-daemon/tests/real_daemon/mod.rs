@@ -38,9 +38,13 @@ pub const STALL_PROJECT: &str = "stall";
 pub const REPORT_PROJECT: &str = "report";
 /// The label the [`REPORT_PROJECT`] agent reports.
 pub const REPORTED_LABEL: &str = "reported from the agent";
+/// A project of this name runs an agent that writes `DISPLAY`, `WAYLAND_DISPLAY` and
+/// `DBUS_SESSION_BUS_ADDRESS` as it was started with to [`Home::environment_log`],
+/// `<name>=unset` for each one it lacks.
+pub const ENVIRONMENT_PROJECT: &str = "environment";
 
 /// The agent acts as the last component of its working directory says ([`FLOOD_PROJECT`],
-/// [`STALL_PROJECT`], [`REPORT_PROJECT`]); anything else sleeps. `--version` answers the version the adapter's
+/// [`STALL_PROJECT`], [`REPORT_PROJECT`], [`ENVIRONMENT_PROJECT`]); anything else sleeps. `--version` answers the version the adapter's
 /// conformance tests ran on.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
@@ -51,6 +55,10 @@ case "${PWD##*/}" in
   @REPORT@) tries=0
     until '@COCKPIT@' agent report --state working --label '@LABEL@' >> '@REPORT_LOG@' 2>&1 \
       || [ "$tries" -ge 50 ]; do tries=$((tries + 1)); sleep 0.1; done
+    exec sleep 3600 ;;
+  @ENVIRONMENT@) printf 'DISPLAY=%s\nWAYLAND_DISPLAY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' \
+      "${DISPLAY-unset}" "${WAYLAND_DISPLAY-unset}" "${DBUS_SESSION_BUS_ADDRESS-unset}" \
+      > '@ENVIRONMENT_LOG@.partial' && mv '@ENVIRONMENT_LOG@.partial' '@ENVIRONMENT_LOG@'
     exec sleep 3600 ;;
   *) exec sleep 3600 ;;
 esac
@@ -93,7 +101,9 @@ impl Home {
                 .replace("@REPORT@", REPORT_PROJECT)
                 .replace("@COCKPIT@", &utf8(&cockpit_program()))
                 .replace("@LABEL@", REPORTED_LABEL)
-                .replace("@REPORT_LOG@", &utf8(&home.report_log())),
+                .replace("@REPORT_LOG@", &utf8(&home.report_log()))
+                .replace("@ENVIRONMENT@", ENVIRONMENT_PROJECT)
+                .replace("@ENVIRONMENT_LOG@", &utf8(&home.environment_log())),
         )
         .unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -111,6 +121,11 @@ impl Home {
     /// What the [`REPORT_PROJECT`] agent's `cockpit agent report` printed.
     pub fn report_log(&self) -> PathBuf {
         self.path().join("reports.log")
+    }
+
+    /// What the [`ENVIRONMENT_PROJECT`] agent wrote, once it wrote all of it.
+    pub fn environment_log(&self) -> PathBuf {
+        self.path().join("environment.log")
     }
 
     pub fn socket_path(&self) -> PathBuf {
@@ -167,6 +182,11 @@ impl Home {
     /// Starts the daemon binary and waits for its `ready` line. Its standard output is read
     /// to the end and its standard error goes to a file, so neither pipe fills and blocks it.
     pub fn start(&self) -> Daemon {
+        self.start_with(&[])
+    }
+
+    /// [`Home::start`], with `extra` added to the daemon's own environment.
+    pub fn start_with(&self, extra: &[(&str, &str)]) -> Daemon {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
         search.extend(std::env::split_paths(&path));
@@ -178,6 +198,7 @@ impl Home {
             .env("XDG_CONFIG_HOME", self.path().join("config"))
             .env("TMUX_TMPDIR", self.path().join("tmux"))
             .env("PATH", std::env::join_paths(search).unwrap())
+            .envs(extra.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(

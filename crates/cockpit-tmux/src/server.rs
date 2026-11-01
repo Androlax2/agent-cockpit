@@ -22,6 +22,8 @@ set-option -g history-limit 50000
 set-option -g default-shell /bin/sh
 # A pane opened by hand (prefix c in the viewer) must not reach this server either.
 set-option -g default-command 'unset TMUX TMUX_PANE; exec /bin/sh'
+# The viewer is Cockpit's own screen: tmux's status bar only takes a row from it (#302).
+set-option -g status off
 # The TUI runs in a pane: an Escape key must not wait for the rest of a sequence.
 set-option -s escape-time 0
 ";
