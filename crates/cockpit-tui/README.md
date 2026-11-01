@@ -75,5 +75,5 @@ detaching the terminal leaves everything running.
   (`docs/acceptance/m1.md`, `m1-idle.md`); idle sleep runs on the daemon crate's
   `cockpit-e2e-daemon` example with a 3-second window. Every later guide adds its sections
   here, and a finding from a live walk gets a failing test here before its fix. Needs tmux;
-  CI runs it on Linux and macOS, where the tests that need the agent channel are ignored
-  until it reads process trees there (#336).
+  CI runs it on Linux and macOS, without the modules that need the agent channel
+  (`ask`, `idle`, `needs_you`) until it reads process trees there (#336).

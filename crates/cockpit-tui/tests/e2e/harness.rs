@@ -50,13 +50,17 @@ while [ $# -gt 0 ]; do
 done
 transcript='@CONVERSATIONS@'/$conversation
 printf '%s pid=%s %s\n' "$COCKPIT_SESSION" "$$" "$mode" >> '@LAUNCHES@'
-# A report before the daemon recorded this launch's process tree is refused (#279): retry.
+# A report before the daemon recorded this launch's process tree is refused (#279): retry
+# that refusal only; any other is final and shown.
 report() {
   tries=0
-  until cockpit agent report "$@" >/dev/null 2>&1; do
+  until refusal=$(cockpit agent report "$@" 2>&1 >/dev/null); do
     tries=$((tries + 1))
-    if [ "$tries" -ge 100 ]; then echo "fake agent: report $* refused"; return 1; fi
-    sleep 0.1
+    case $refusal in
+      *"no process tree yet"*) [ "$tries" -lt 100 ] && { sleep 0.1; continue; } ;;
+    esac
+    echo "fake agent: report $* refused: $refusal"
+    return 1
   done
 }
 status() { printf '\033]7501;state=%s:app=fake-agent\033\\' "$1"; }
@@ -150,6 +154,10 @@ pub enum DaemonKind {
     Product,
     /// The tests' daemon: an idle session sleeps after `idle_seconds`, checked every
     /// `tick_ms`.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "only the Linux-only idle tests use it (#336)")
+    )]
     ShortIdle { idle_seconds: u64, tick_ms: u64 },
 }
 
@@ -377,7 +385,7 @@ impl Cockpit {
             panic!(
                 "the test terminal did not start: {}{}",
                 String::from_utf8_lossy(&started.stderr),
-                self.terminal_start_log(&config, &new_session)
+                self.terminal_start_log(&config)
             );
         }
         let mut watcher = tmux(&["-C", "attach-session", "-t", "=owner", "-f", "ignore-size"])
@@ -424,16 +432,18 @@ impl Cockpit {
             .join("\n")
     }
 
-    /// For a terminal that did not start: the tmux version, and the logs of the same start
-    /// retried once with tmux's own logging, on a socket of its own.
-    fn terminal_start_log(&self, config: &Path, new_session: &[&str]) -> String {
+    /// For a terminal that did not start: the tmux version, and tmux's own logs of the same
+    /// start retried once on a socket of its own, running `true` instead of a second TUI.
+    /// Never panics: the original failure stays the message.
+    fn terminal_start_log(&self, config: &Path) -> String {
         let logs = self.root.join("terminal-start-logs");
-        std::fs::create_dir_all(&logs).unwrap();
+        if let Err(error) = std::fs::create_dir_all(&logs) {
+            return format!("\n(no tmux logs: {error})");
+        }
         let version = self.command(Path::new("tmux")).arg("-V").output();
         let retried = self
             .outer_tmux(&logs.join("retry.sock"), config)
-            .arg("-vv")
-            .args(new_session)
+            .args(["-vv", "new-session", "-d", "-s", "retry", "--", "true"])
             .current_dir(&logs)
             .output();
         let mut report = format!(
@@ -443,10 +453,12 @@ impl Cockpit {
                 |output| String::from_utf8_lossy(&output.stdout).into_owned()
             ),
         );
-        for entry in std::fs::read_dir(&logs).unwrap().flatten() {
+        for entry in std::fs::read_dir(&logs).into_iter().flatten().flatten() {
             let path = entry.path();
             if path.extension().is_some_and(|extension| extension == "log") {
-                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                // tmux logs the pane's bytes as they came.
+                let text =
+                    String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default()).into_owned();
                 let lines: Vec<&str> = text.lines().collect();
                 let tail = &lines[lines.len().saturating_sub(60)..];
                 report += &format!("--- {} ---\n{}\n", path.display(), tail.join("\n"));
@@ -624,6 +636,10 @@ impl Cockpit {
 
     /// Types `line` at the prompt of `session`'s agent without the viewer, as if the agent
     /// decided to run it on its own: for a session the owner is not looking at.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "only the Linux-only ask tests use it (#336)")
+    )]
     pub fn agent_does(&self, session: &str, line: &str) {
         let target = format!("={session}:");
         self.private_tmux(&["send-keys", "-t", &target, "-l", "--", line]);

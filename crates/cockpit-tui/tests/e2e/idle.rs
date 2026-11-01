@@ -14,10 +14,6 @@ const SHORT_IDLE: DaemonKind = DaemonKind::ShortIdle {
 };
 
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "the agent channel reads process trees on Linux only (#336)"
-)]
 fn an_idle_session_falls_asleep_by_itself() {
     let cockpit = Cockpit::start_with(SHORT_IDLE);
     let session = cockpit.session_from_cli();
@@ -28,10 +24,6 @@ fn an_idle_session_falls_asleep_by_itself() {
 }
 
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "the agent channel reads process trees on Linux only (#336)"
-)]
 fn enter_wakes_a_session_that_fell_asleep_in_its_conversation() {
     let cockpit = Cockpit::start_with(SHORT_IDLE);
     let session = cockpit.session_from_cli();

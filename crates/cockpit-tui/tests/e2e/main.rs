@@ -7,9 +7,14 @@
 
 mod harness;
 
-mod ask;
 mod attach;
-mod idle;
 mod lifecycle;
-mod needs_you;
 mod new_session;
+
+// These need the agent channel, which reads process trees on Linux only (#336).
+#[cfg(target_os = "linux")]
+mod ask;
+#[cfg(target_os = "linux")]
+mod idle;
+#[cfg(target_os = "linux")]
+mod needs_you;
