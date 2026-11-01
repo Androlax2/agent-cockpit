@@ -178,14 +178,18 @@ pub(crate) fn launch_token() -> Option<String> {
 
 /// The daemon's socket directory, or exit 1 when the environment cannot place it.
 pub(crate) fn socket_dir() -> Result<PathBuf, ExitCode> {
+    locate_socket_dir().map_err(|error| {
+        eprintln!("cockpit: {error}");
+        ExitCode::FAILURE
+    })
+}
+
+/// The daemon's socket directory, or why this environment names none.
+pub(crate) fn locate_socket_dir() -> Result<PathBuf, cockpit_config::ConfigError> {
     let environment = crate::profile::environment();
     environment
         .home_dir()
         .and_then(|home| cockpit_config::Layout::resolve(&environment, &home).socket_dir())
-        .map_err(|error| {
-            eprintln!("cockpit: {error}");
-            ExitCode::FAILURE
-        })
 }
 
 pub(crate) fn exchange(socket: &Path, command: Command) -> Result<Reply, ClientError> {

@@ -10,8 +10,8 @@ mod common;
 mod scripted;
 
 use cockpit_protocol::{
-    Command, LaunchKindView, LaunchView, Outcome, ProjectView, ReadinessStatusView, Reply,
-    RequirementView, SessionStateView, SessionView,
+    Command, ErrorCode, LaunchKindView, LaunchView, Outcome, ProjectView, ProtocolError,
+    ReadinessStatusView, Reply, RequirementView, SessionStateView, SessionView,
 };
 use scripted::{scripted_conversation, text};
 
@@ -220,7 +220,7 @@ async fn on_a_clean_home_without_a_daemon_cockpit_alone_starts_with_the_daemon()
         assert!(step(&checklist, later).starts_with("[waits"), "{checklist}");
     }
     assert!(
-        final_next(&checklist).starts_with("next: start `cockpit-daemon`"),
+        final_next(&checklist).starts_with("next: `cockpit daemon install`"),
         "{checklist}"
     );
 }
@@ -366,6 +366,62 @@ async fn a_sign_in_the_provider_reports_missing_is_an_open_step() {
     );
     assert!(
         final_next(&checklist).starts_with("next: run `claude /login`"),
+        "{checklist}"
+    );
+}
+
+#[tokio::test]
+async fn one_signed_in_provider_completes_the_sign_in_step() {
+    let home = Home::new();
+    home.accept_sandbox();
+    let mut daemon = Daemon::ready()
+        .replace(available("provider claude sign-in", "signed in"))
+        .with_project()
+        .with_session();
+    daemon
+        .requirements
+        .push(available("provider codex", "0.5 (tested)"));
+    daemon.requirements.push(requirement(
+        "provider codex sign-in",
+        ReadinessStatusView::NeedsAuthorization,
+        "run `codex login`",
+    ));
+
+    let output = home.against(&daemon, &["init"]).await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        step(&checklist, "Sign in to the provider").starts_with("[done"),
+        "{checklist}"
+    );
+    assert!(
+        final_next(&checklist).starts_with("Cockpit is set up"),
+        "{checklist}"
+    );
+}
+
+#[tokio::test]
+async fn a_daemon_that_answers_with_an_error_is_a_step_not_a_crash() {
+    let home = Home::new();
+    let conversation = scripted_conversation(
+        &home.daemon_socket(),
+        vec![Outcome::Error(ProtocolError::new(
+            ErrorCode::Busy,
+            "saturated",
+        ))],
+    );
+
+    let output = home.cockpit(&[]).await;
+    conversation.await.unwrap();
+
+    let checklist = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert!(
+        checklist.contains("daemon: running, but it failed to answer"),
+        "{checklist}"
+    );
+    assert!(
+        final_next(&checklist).starts_with("next: read the daemon's log"),
         "{checklist}"
     );
 }

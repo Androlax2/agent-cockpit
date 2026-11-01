@@ -6,7 +6,7 @@
 //! so the checklist is the same whether it is followed once or interrupted and resumed.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use cockpit_client::ClientError;
@@ -17,7 +17,8 @@ use cockpit_protocol::{
 
 use crate::daemon;
 
-/// The daemon probes Docker only for a project, which `init` does not name; the rest is reads.
+/// For the three reads together; the daemon probes Docker only for a project, which `init`
+/// does not name.
 const INIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// `cockpit init`: the checklist, whether or not the setup is done.
@@ -51,8 +52,7 @@ pub(crate) fn first_run() -> ExitCode {
 
 struct Facts {
     config: Result<EffectiveConfig, String>,
-    /// `Err` holds why no daemon answered.
-    daemon: Result<DaemonFacts, String>,
+    daemon: Result<DaemonFacts, DaemonProblem>,
 }
 
 struct DaemonFacts {
@@ -62,43 +62,56 @@ struct DaemonFacts {
     sessions: Vec<SessionView>,
 }
 
+/// Why the daemon's facts are missing, and what fixes that.
+struct DaemonProblem {
+    detail: String,
+    next: &'static str,
+}
+
+/// Exit 1 only when the client cannot run at all; every other failure is a step to show.
 fn gather() -> Result<Facts, ExitCode> {
-    let environment = cockpit_config::Environment::from_process();
-    let config = cockpit_config::load(&environment, None, &[]).map_err(|error| error.to_string());
-    let daemon = match daemon_socket(&environment) {
-        Ok(socket) => ask_daemon(&socket)?,
-        Err(reason) => Err(reason),
+    let config = cockpit_config::load(&crate::profile::environment(), None, &[])
+        .map_err(|error| error.to_string());
+    let daemon = match crate::agent::locate_socket_dir() {
+        Ok(dir) => ask_daemon(&dir.join(cockpit_config::DAEMON_SOCKET))?,
+        Err(error) => Err(DaemonProblem {
+            detail: format!("cannot locate its socket: {error}"),
+            next: "fix what is named here so `cockpit` finds the daemon's socket",
+        }),
     };
     Ok(Facts { config, daemon })
 }
 
-/// Unlike the other verbs', a socket that cannot be located is a fact to report in the
-/// checklist, next to the configuration error that explains it.
-fn daemon_socket(environment: &cockpit_config::Environment) -> Result<PathBuf, String> {
-    environment
-        .home_dir()
-        .and_then(|home| cockpit_config::Layout::resolve(environment, &home).socket_dir())
-        .map(|dir| dir.join(cockpit_config::DAEMON_SOCKET))
-        .map_err(|error| format!("no socket to reach it: {error}"))
-}
-
-/// The daemon's facts, `Err` with why no daemon answers, or exit 1 when one answered with
-/// an error.
-fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, String>, ExitCode> {
+fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, DaemonProblem>, ExitCode> {
     let commands = vec![
         Command::Readiness { project: None },
         Command::ProjectList,
         Command::SessionList { ended: true },
     ];
-    match daemon::exchange_all(socket, commands, INIT_DEADLINE)? {
-        Ok(replies) => Ok(Ok(daemon_facts(replies)?)),
-        Err(error @ ClientError::Connect { .. }) => Ok(Err(error.to_string())),
-        Err(error) => Err(daemon::failed(&error)),
+    Ok(
+        match daemon::exchange_all(socket, commands, INIT_DEADLINE)? {
+            Ok(replies) => daemon_facts(replies),
+            Err(error @ ClientError::Connect { .. }) => Err(DaemonProblem {
+                detail: format!("not running ({error})"),
+                next: "`cockpit daemon install` runs it as a user service (or run `cockpit-daemon` \
+                   in another terminal)",
+            }),
+            Err(error) => Err(failing_daemon(&error.to_string())),
+        },
+    )
+}
+
+fn failing_daemon(detail: &str) -> DaemonProblem {
+    DaemonProblem {
+        detail: format!("running, but it failed to answer: {detail}"),
+        next: "read the daemon's log, then restart `cockpit-daemon`; a `cockpit` and a daemon \
+               of different releases refuse each other",
     }
 }
 
-fn daemon_facts(replies: Vec<Reply>) -> Result<DaemonFacts, ExitCode> {
+fn daemon_facts(replies: Vec<Reply>) -> Result<DaemonFacts, DaemonProblem> {
     let mut replies = replies.into_iter();
+    let unexpected = |reply: Option<Reply>| failing_daemon(&format!("unexpected reply {reply:?}"));
     let requirements = match replies.next() {
         Some(Reply::Readiness { requirements }) => requirements,
         other => return Err(unexpected(other)),
@@ -116,13 +129,6 @@ fn daemon_facts(replies: Vec<Reply>) -> Result<DaemonFacts, ExitCode> {
         projects,
         sessions,
     })
-}
-
-fn unexpected(reply: Option<Reply>) -> ExitCode {
-    match reply {
-        Some(reply) => daemon::unexpected(&reply),
-        None => daemon::fail("the daemon answered fewer requests than it was asked"),
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -219,12 +225,10 @@ fn readiness_step(facts: &Facts) -> Step {
         );
     }
     match &facts.daemon {
-        Err(unreachable) => {
+        Err(problem) => {
             blocks = true;
-            lines.push(format!("daemon: not running ({unreachable})"));
-            next.get_or_insert_with(|| {
-                "start `cockpit-daemon` in another terminal (it stays in the foreground)".to_owned()
-            });
+            lines.push(format!("daemon: {}", problem.detail));
+            next.get_or_insert_with(|| problem.next.to_owned());
         }
         Ok(daemon) => {
             for requirement in daemon
@@ -345,10 +349,7 @@ fn provider_step(requirements: &[RequirementView], available: &[&str]) -> Step {
             state: State::Open,
             next: missing
                 .iter()
-                .find_map(|requirement| requirement.next.clone())
-                .or_else(|| {
-                    Some("install a supported agent (claude), then restart the daemon".to_owned())
-                }),
+                .find_map(|requirement| requirement.next.clone()),
             lines,
         },
         [only] => {
@@ -368,8 +369,9 @@ fn provider_step(requirements: &[RequirementView], available: &[&str]) -> Step {
     }
 }
 
-/// Open while a provider needs a sign-in; `unknown` (#443: no adapter reports it yet)
-/// names how to check by hand without holding the setup.
+/// Done once one available provider is signed in, since a session needs only one; else open
+/// while one needs a sign-in, and `unknown` (#443: no adapter reports it yet) names how to
+/// check by hand without holding the setup.
 fn sign_in_step(requirements: &[RequirementView], available: &[&str]) -> Step {
     let sign_ins: Vec<&RequirementView> = available
         .iter()
@@ -384,34 +386,31 @@ fn sign_in_step(requirements: &[RequirementView], available: &[&str]) -> Step {
         .iter()
         .map(|requirement| requirement_line(requirement))
         .collect();
-    let first_with = |status: fn(ReadinessStatusView) -> bool| {
+    let has = |status: ReadinessStatusView| {
         sign_ins
             .iter()
-            .find(|requirement| status(requirement.status))
-            .and_then(|requirement| requirement.next.clone())
+            .find(|requirement| requirement.status == status)
     };
-    if let Some(next) = first_with(|status| {
+    if has(ReadinessStatusView::Available).is_some() {
+        return done(SIGN_IN, lines);
+    }
+    let needed = sign_ins.iter().find(|requirement| {
         !matches!(
-            status,
+            requirement.status,
             ReadinessStatusView::Available | ReadinessStatusView::Unknown
         )
-    }) {
-        return Step {
-            title: SIGN_IN,
-            state: State::Open,
-            lines,
-            next: Some(next),
-        };
+    });
+    let (state, requirement) = match (needed, has(ReadinessStatusView::Unknown)) {
+        (Some(needed), _) => (State::Open, *needed),
+        (None, Some(unknown)) => (State::Unknown, *unknown),
+        (None, None) => return done(SIGN_IN, lines),
+    };
+    Step {
+        title: SIGN_IN,
+        state,
+        lines,
+        next: requirement.next.clone(),
     }
-    if let Some(next) = first_with(|status| status == ReadinessStatusView::Unknown) {
-        return Step {
-            title: SIGN_IN,
-            state: State::Unknown,
-            lines,
-            next: Some(next),
-        };
-    }
-    done(SIGN_IN, lines)
 }
 
 fn project_step(projects: &[ProjectView]) -> Step {

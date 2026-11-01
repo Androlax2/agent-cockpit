@@ -45,18 +45,19 @@ pub(crate) fn exchange(
     deadline: Duration,
 ) -> Result<Result<Reply, ClientError>, ExitCode> {
     let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| fail(&format!("cannot start the client runtime: {error}")))?;
-    Ok(runtime.block_on(async {
-        let connection = Connection::open(&socket, CONTROL_DEADLINE).await?;
-        connection.request(command, deadline).await
-    }))
+    Ok(
+        exchange_all(&socket, vec![command], deadline)?.map(|replies| {
+            replies
+                .into_iter()
+                .next()
+                .expect("exchange_all answers each command")
+        }),
+    )
 }
 
 /// The replies of the daemon at `socket` to `commands`, sent in order over one connection,
-/// or the first client error; exit 1 only when no request could be made.
+/// or the first client error; exit 1 only when no request could be made. `deadline` bounds
+/// all of them together.
 pub(crate) fn exchange_all(
     socket: &std::path::Path,
     commands: Vec<Command>,
@@ -68,9 +69,13 @@ pub(crate) fn exchange_all(
         .map_err(|error| fail(&format!("cannot start the client runtime: {error}")))?;
     Ok(runtime.block_on(async {
         let connection = Connection::open(socket, CONTROL_DEADLINE).await?;
+        let started = std::time::Instant::now();
         let mut replies = Vec::with_capacity(commands.len());
         for command in commands {
-            replies.push(connection.request(command, deadline).await?);
+            let remaining = deadline
+                .checked_sub(started.elapsed())
+                .ok_or(ClientError::DeadlineExceeded)?;
+            replies.push(connection.request(command, remaining).await?);
         }
         Ok(replies)
     }))
