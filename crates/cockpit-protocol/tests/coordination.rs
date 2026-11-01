@@ -26,7 +26,18 @@ fn each_coordinator_command_round_trips_with_only_the_fields_it_was_given() {
             Command::AgentStart {
                 launch_token: None,
                 dir: "/p/app".to_owned(),
+                agent: None,
                 prompt: Some("fix it".to_owned()),
+                clone: None,
+            },
+        ),
+        (
+            json!({"id": 1, "command": {"kind": "agent-start", "dir": "/p/app", "agent": "codex"}}),
+            Command::AgentStart {
+                launch_token: None,
+                dir: "/p/app".to_owned(),
+                agent: Some("codex".to_owned()),
+                prompt: None,
                 clone: None,
             },
         ),

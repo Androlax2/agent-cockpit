@@ -196,6 +196,8 @@ async fn a_coordinator_sees_a_question_messages_the_worker_and_starts_one_the_ow
             "agent",
             "start",
             &new_root.display().to_string(),
+            "--agent",
+            "claude",
             "--prompt",
             "Review the fix",
         ]),
@@ -204,7 +206,7 @@ async fn a_coordinator_sees_a_question_messages_the_worker_and_starts_one_the_ow
     assert_eq!(
         request.command,
         format!(
-            "cockpit session new '{}' --prompt 'Review the fix'",
+            "cockpit session new '{}' --agent 'claude' --prompt 'Review the fix'",
             new_root.display()
         )
     );
@@ -266,8 +268,18 @@ async fn an_unconfirmed_start_begins_at_once_until_the_hourly_cap() {
     );
     let new_dir = new_root.display().to_string();
 
-    let first = as_coordinator(&home, &coordinator_root, &["agent", "start", &new_dir]).await;
-    let second = as_coordinator(&home, &coordinator_root, &["agent", "start", &new_dir]).await;
+    let first = as_coordinator(
+        &home,
+        &coordinator_root,
+        &["agent", "start", &new_dir, "--agent", "claude"],
+    )
+    .await;
+    let second = as_coordinator(
+        &home,
+        &coordinator_root,
+        &["agent", "start", &new_dir, "--agent", "claude"],
+    )
+    .await;
 
     assert!(first.ends_with("exit=0\n"), "{first}");
     assert!(first.starts_with("started session "), "{first}");

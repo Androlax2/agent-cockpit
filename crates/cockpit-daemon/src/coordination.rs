@@ -86,6 +86,7 @@ pub(crate) fn route_agent(
             Command::AgentStart {
                 launch_token,
                 dir,
+                agent,
                 prompt,
                 clone,
             } => {
@@ -94,7 +95,11 @@ pub(crate) fn route_agent(
                     &sender,
                     launch_token,
                     &dir,
-                    StartSession { prompt, clone },
+                    StartSession {
+                        prompt,
+                        clone,
+                        agent,
+                    },
                 )
                 .await
             }
@@ -483,7 +488,7 @@ async fn try_finish_approved(
 fn start_request(dir: PathBuf, start: StartSession) -> StartRequest {
     StartRequest {
         dir,
-        provider: None,
+        provider: start.agent,
         first_message: start.prompt,
         clone_branch: start.clone,
     }

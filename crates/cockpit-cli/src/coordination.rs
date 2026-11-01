@@ -82,17 +82,18 @@ pub(crate) fn message(arguments: &[OsString]) -> Result<ExitCode, String> {
     )
 }
 
-/// `cockpit agent start DIR [--prompt TEXT] [--clone BRANCH]`: starts at once when the grant
+/// `cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]`: starts at once when the grant
 /// needs no confirmation, otherwise asks the owner and waits like `cockpit ask run`.
 pub(crate) fn start(arguments: &[OsString]) -> Result<ExitCode, String> {
     let words = utf8_words(arguments)?;
     let [dir, options @ ..] = words.as_slice() else {
         return Err("agent start takes DIR".to_owned());
     };
-    let (mut prompt, mut clone) = (None, None);
+    let (mut agent_name, mut prompt, mut clone) = (None, None, None);
     let mut options = options.iter();
     while let Some(flag) = options.next() {
         let slot = match *flag {
+            "--agent" => &mut agent_name,
             "--prompt" => &mut prompt,
             "--clone" => &mut clone,
             _ => return Err(format!("unknown argument {flag}")),
@@ -113,6 +114,7 @@ pub(crate) fn start(arguments: &[OsString]) -> Result<ExitCode, String> {
         Command::AgentStart {
             launch_token: crate::agent::launch_token(),
             dir,
+            agent: agent_name,
             prompt,
             clone,
         },

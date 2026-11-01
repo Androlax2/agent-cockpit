@@ -24,6 +24,14 @@ fn start(prompt: Option<&str>, clone: Option<&str>) -> StartSession {
     StartSession {
         prompt: prompt.map(str::to_owned),
         clone: clone.map(str::to_owned),
+        agent: None,
+    }
+}
+
+fn start_with_agent(agent: &str) -> StartSession {
+    StartSession {
+        agent: Some(agent.to_owned()),
+        ..start(Some("it's the review"), Some("feature/x"))
     }
 }
 
@@ -64,24 +72,16 @@ async fn asked_start(
 async fn a_start_request_reads_as_the_session_new_command_it_stands_for() {
     let fixture = Fixture::new().await;
 
-    let run = asked_start(
-        &fixture,
-        &session("coordinator"),
-        start(Some("it's the review"), Some("feature/x")),
-    )
-    .await;
+    let run = asked_start(&fixture, &session("coordinator"), start_with_agent("codex")).await;
 
     assert_eq!(
         run.command,
         format!(
-            "cockpit session new '{}' --prompt 'it'\\''s the review' --clone 'feature/x'",
+            "cockpit session new '{}' --agent 'codex' --prompt 'it'\\''s the review' --clone 'feature/x'",
             fixture.cwd().display()
         )
     );
-    assert_eq!(
-        run.start,
-        Some(start(Some("it's the review"), Some("feature/x")))
-    );
+    assert_eq!(run.start, Some(start_with_agent("codex")));
     let read = fixture.database.read().await.unwrap();
     assert_eq!(
         run_request(&read, run.id, NOW).await.unwrap(),
@@ -179,7 +179,7 @@ async fn a_run_commands_grant_does_not_keep_a_start_request_decidable() {
 #[tokio::test]
 async fn an_approved_start_a_restart_finds_is_not_run_never_started_again() {
     let fixture = Fixture::new().await;
-    let run = asked_start(&fixture, &session("coordinator"), start(None, None)).await;
+    let run = asked_start(&fixture, &session("coordinator"), start_with_agent("codex")).await;
     let write = fixture.database.write().await.unwrap();
     approve_run(&write, run.id, run.revision, &run.digest(), AFTER_GRACE)
         .await
@@ -189,7 +189,7 @@ async fn an_approved_start_a_restart_finds_is_not_run_never_started_again() {
     let write = fixture.database.write().await.unwrap();
     let interrupted = interrupted_runs(&write).await.unwrap();
     assert_eq!(interrupted.len(), 1);
-    assert_eq!(interrupted[0].run.start, Some(start(None, None)));
+    assert_eq!(interrupted[0].run.start, Some(start_with_agent("codex")));
     let state = reconcile_run(&write, &interrupted[0], None, AFTER_GRACE)
         .await
         .unwrap();
@@ -198,7 +198,7 @@ async fn an_approved_start_a_restart_finds_is_not_run_never_started_again() {
 }
 
 #[tokio::test]
-async fn a_start_prompt_and_branch_are_validated_before_filing() {
+async fn a_start_prompt_branch_and_agent_are_validated_before_filing() {
     let fixture = Fixture::new().await;
     let coordinator = session("coordinator");
     let write = fixture.database.write().await.unwrap();
@@ -214,6 +214,7 @@ async fn a_start_prompt_and_branch_are_validated_before_filing() {
     for (bad, field) in [
         (start(Some("  "), None), "prompt"),
         (start(None, Some("two words")), "clone"),
+        (start_with_agent("two words"), "agent"),
     ] {
         let refused = refusal(
             ask_start(

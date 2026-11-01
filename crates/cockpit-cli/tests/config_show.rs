@@ -544,7 +544,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit agent reports\n       \
                  cockpit agent sessions [--watch]\n       \
                  cockpit agent message SESSION TEXT\n       \
-                 cockpit agent start DIR [--prompt TEXT] [--clone BRANCH]\n       \
+                 cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
                  cockpit project add DIR [--name NAME]\n       \
                  cockpit project list\n       \
                  cockpit checkout list [PROJECT]\n       \
