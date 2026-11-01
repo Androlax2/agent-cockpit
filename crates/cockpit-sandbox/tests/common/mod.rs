@@ -55,7 +55,7 @@ pub fn capabilities(available: &[&str], missing: &[&str]) -> Vec<HostCapability>
 
 pub fn pinned_greywall() -> EngineBuild {
     EngineBuild {
-        version: "0.3.7+dotfiles".to_owned(),
+        version: "0.3.7-cockpit.1".to_owned(),
         commit: PINNED_GREYWALL_COMMIT.to_owned(),
     }
 }

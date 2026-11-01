@@ -10,13 +10,12 @@ use std::time::{Duration, Instant};
 
 use crate::{EndpointKind, FolderMount, Platform, Profile, Refusal, SecretHandling};
 
-/// The greywall fork build the release pins (`packages/greywall/build.sh` builds the same
-/// commit until the release bundle takes over, #61): an installed binary of another commit
-/// is not the engine whose behavior the profile was checked against.
-pub const PINNED_GREYWALL_COMMIT: &str = "7c06d51afd26cbc90a32c82375a393570c22ffc7";
+/// The greywall fork build in `engine-pins.json` (v0.3.7-cockpit.1, with `--mount`).
+/// An installed binary of another commit is refused.
+pub const PINNED_GREYWALL_COMMIT: &str = "a9ccc58c4e57f7ad7aaf7c2ab3779d71cf485baf";
 
-/// The greyproxy fork build the release pins (`packages/greyproxy/build.sh`).
-pub const PINNED_GREYPROXY_COMMIT: &str = "cdd5cde76dce1262c0fd8d6b1ab2bd9953df5e71";
+/// The greyproxy fork build in `engine-pins.json` (v0.4.5-cockpit.1).
+pub const PINNED_GREYPROXY_COMMIT: &str = "1d1e518c59f130198eb57b3310e2db16f3353901";
 
 pub const GREYWALL_PROGRAM: &str = "greywall";
 pub const GREYPROXY_PROGRAM: &str = "greyproxy";
@@ -221,7 +220,7 @@ impl Greywall {
         })
     }
 
-    /// `greywall 0.3.7+dotfiles (7c06d51), greyproxy 0.4.5 (cdd5cde)`.
+    /// `greywall 0.3.7-cockpit.1 (a9ccc58), greyproxy 0.4.5 (1d1e518)`.
     pub fn engine(&self) -> String {
         format!(
             "greywall {}, greyproxy {}",

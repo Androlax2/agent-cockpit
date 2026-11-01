@@ -18,7 +18,8 @@ Decision (#61, option C): Cockpit owns the policy, the engine enforces it.
    through greywall's filtered proxy (#435). A rule the platform cannot enforce is a
    `Refusal` naming the rule and the reason; nothing is weakened silently.
 2. `Greywall::detect` checks the installed engine: the fork commits the release pins
-   (`PINNED_GREYWALL_COMMIT`, `PINNED_GREYPROXY_COMMIT`) and the host capabilities Greywall
+   (the tags, commits, per-target URLs and SHA-256 values in `engine-pins.json`, with
+   `PINNED_GREYWALL_COMMIT` and `PINNED_GREYPROXY_COMMIT` checked against it by a test) and the host capabilities Greywall
    reports. A missing or other build leaves the engine unready, with the reason.
 3. `Greywall::plan` turns a profile into the command that runs the agent inside Greywall and
    the settings file it reads. Each launch gets its own greyproxy client identity
@@ -32,3 +33,8 @@ Decision (#61, option C): Cockpit owns the policy, the engine enforces it.
 Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values) and
 `cockpit-turso` (the evidence table). `cockpit-sessions` calls it for every launch; nothing
 else invokes Greywall or greyproxy.
+
+The first fork releases are greywall `v0.3.7-cockpit.1` (with `--mount`) and greyproxy
+`v0.4.5-cockpit.1`, copied from the coordinator's release record on #470. The pin file
+supersedes `packages/*/build.sh` for greenfield; the legacy packages remain untouched until
+cutover. Downloading and installing these assets into Cockpit's own directory is #470.
