@@ -24,7 +24,9 @@ that declares `[[checks]]` fails the same way: a check describes a project (#313
 a `name` and a `command`, and a name declared twice fails at its second line. The project's
 requirements fail the same way in the owner file (#50): `[execution] environment` (`native`,
 `sandbox` or `docker`), `[needs] cpu_millis` and `memory_mib` (at least one), and
-`[results] artifacts` (paths relative to the project, never `..`). `cockpit doctor` reports
+`[results] artifacts` (paths relative to the project, never `..`). A check's
+`working_directory` follows the same rule, and its `environment` is `native`, `sandbox` or
+`docker`. `cockpit doctor` reports
 whether this host meets them; the configuration never grants them. Unknown keys,
 relative paths and unknown providers fail the same way. State and cache go under
 `$XDG_STATE_HOME/cockpit` and `$XDG_CACHE_HOME/cockpit`; the runtime directory is

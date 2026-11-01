@@ -27,8 +27,8 @@ and report 11 (repository configuration describes, owner settings grant).
   names what is enforced and what is only requested (report 10). Blocking on a missing cgroup
   controller would fail every macOS host.
 - **A rootful Docker engine blocks on Linux and WSL2.** Whoever reaches its socket is root on
-  the host, and report 11 requires rootless. Docker Desktop on macOS runs inside its own Linux
-  VM, so it is `available` there. Docker is probed only for a project that declares
+  the host, and report 11 requires rootless. Every engine on macOS, and Docker Desktop anywhere
+  (its `OperatingSystem` says so), runs inside a Linux VM of its own, so it is `available`. Docker is probed only for a project that declares
   `[execution] environment = "docker"` or a docker check, within 10 seconds. The probe moves
   to `cockpit-containers` when that crate lands (#390).
 - **Project requirements are describing settings:** `[execution] environment`

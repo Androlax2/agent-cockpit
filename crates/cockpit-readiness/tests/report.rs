@@ -534,6 +534,14 @@ fn engine(rootless: bool) -> DockerEngine {
         name: "host".to_owned(),
         server_version: "28.1.1".to_owned(),
         rootless,
+        in_desktop_vm: false,
+    }
+}
+
+fn docker_desktop() -> DockerEngine {
+    DockerEngine {
+        in_desktop_vm: true,
+        ..engine(false)
     }
 }
 
@@ -548,6 +556,13 @@ fn a_docker_engine_is_identified_and_its_isolation_reported() {
             Status::MissingPrerequisite,
         ),
         (Ok(engine(false)), Platform::MacOs, Status::Available),
+        (
+            Ok(docker_desktop()),
+            Platform::Wsl2 {
+                windows_drives: Vec::new(),
+            },
+            Status::Available,
+        ),
         (
             Err("docker info: no engine answered".to_owned()),
             Platform::Linux,

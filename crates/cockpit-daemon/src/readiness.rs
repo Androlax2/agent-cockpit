@@ -69,6 +69,19 @@ pub(crate) fn route(project: Option<String>, context: Context) -> Route {
     Route::Run {
         class: WorkClass::Bulk,
         job: Box::pin(async move {
+            let project = match project {
+                Some(dir) => match tokio::task::spawn_blocking(move || {
+                    dir.canonicalize()
+                        .map_err(|error| format!("{}: {error}", dir.display()))
+                })
+                .await
+                {
+                    Ok(Ok(dir)) => Some(dir),
+                    Ok(Err(problem)) => return refusal(ErrorCode::InvalidArgument, &problem),
+                    Err(error) => return refusal(ErrorCode::Internal, &error.to_string()),
+                },
+                None => None,
+            };
             match report(project, context).await {
                 Ok(report) => Outcome::Ok(Reply::Readiness {
                     requirements: report
@@ -179,16 +192,12 @@ fn platform(platform: &cockpit_sandbox::Platform) -> cockpit_readiness::Platform
     }
 }
 
-/// The registered checkout holding `dir`, the innermost when clones nest, and the directory
+/// The registered checkout holding `dir` (canonical), the innermost when clones nest, and the directory
 /// the project's configuration is read from: that checkout's root, else `dir` itself.
 async fn checkout_of(
     dir: &Path,
     database: &cockpit_turso::Database,
 ) -> Result<(PathBuf, Option<cockpit_projects::Checkout>), String> {
-    let asked = dir.to_path_buf();
-    let dir = tokio::task::spawn_blocking(move || asked.canonicalize().unwrap_or(asked))
-        .await
-        .map_err(|error| error.to_string())?;
     let read = database.read().await.map_err(|error| error.to_string())?;
     let checkouts = cockpit_projects::checkouts(&read, None)
         .await
@@ -199,7 +208,7 @@ async fn checkout_of(
         .max_by_key(|checkout| checkout.path.components().count());
     match checkout {
         Some(checkout) => Ok((checkout.path.clone(), Some(checkout))),
-        None => Ok((dir, None)),
+        None => Ok((dir.to_path_buf(), None)),
     }
 }
 
@@ -248,13 +257,7 @@ fn presets() -> Vec<PresetFacts> {
 
 /// The `docker` on the daemon's `PATH`, asked for its engine.
 fn probe_docker() -> Result<cockpit_readiness::DockerEngine, String> {
-    let program = std::env::var_os("PATH")
-        .iter()
-        .flat_map(std::env::split_paths)
-        .map(|dir| dir.join("docker"))
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| "no `docker` on the daemon's PATH".to_owned())?;
-    cockpit_readiness::probe_docker(&program, cockpit_readiness::DOCKER_DEADLINE)
+    cockpit_readiness::probe_docker(Path::new("docker"), cockpit_readiness::DOCKER_DEADLINE)
 }
 
 fn requirement_view(requirement: cockpit_readiness::Requirement) -> RequirementView {

@@ -272,3 +272,24 @@ fn real_daemon_refusal(
         other => panic!("expected a refusal, got {other:?}"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_directory_that_does_not_exist_is_refused_naming_it() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let missing = home.path().join("typo");
+
+    let refused = client
+        .request(
+            Command::Readiness {
+                project: Some(missing.display().to_string()),
+            },
+            GENEROUS,
+        )
+        .await;
+
+    let error = real_daemon_refusal(refused);
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(error.message.contains("typo"), "{error:?}");
+}

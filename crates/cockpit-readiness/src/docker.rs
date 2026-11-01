@@ -19,6 +19,8 @@ pub struct DockerEngine {
     pub server_version: String,
     /// The engine runs as this user, not as root (its security options name `rootless`).
     pub rootless: bool,
+    /// Docker Desktop: the engine runs in a Linux VM of its own, not on this host.
+    pub in_desktop_vm: bool,
 }
 
 /// Asks `program` for its engine's identity, within `deadline`. The reason when it does not
@@ -72,6 +74,10 @@ fn parse_info(output: &str) -> Result<DockerEngine, String> {
         name: text("Name")?,
         server_version: text("ServerVersion")?,
         rootless,
+        in_desktop_vm: info
+            .get("OperatingSystem")
+            .and_then(serde_json::Value::as_str)
+            == Some("Docker Desktop"),
     })
 }
 
@@ -95,8 +101,11 @@ fn run(
         if let Some(mut stream) = stream {
             std::thread::spawn(move || {
                 let mut collected = String::new();
-                let _ = stream.read_to_string(&mut collected);
-                let _ = sender.send(collected);
+                let read = stream
+                    .read_to_string(&mut collected)
+                    .map(|_| collected)
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(read);
             });
         }
         text
@@ -130,11 +139,17 @@ fn run(
             Err(error) => return Err(format!("{shown} could not be waited for: {error}")),
         }
     };
-    let collect = |text: std::sync::mpsc::Receiver<String>| {
-        text.recv_timeout(Duration::from_secs(1))
-            .unwrap_or_default()
+    // A helper `docker` started may hold the pipes after it exits; its output is then cut.
+    let collect = |text: std::sync::mpsc::Receiver<Result<String, String>>| match text
+        .recv_timeout(Duration::from_secs(1))
+    {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(error)) => Err(format!("{shown}'s output could not be read: {error}")),
+        Err(_) => Err(format!(
+            "{shown}'s output stayed open after it exited, so its answer is incomplete"
+        )),
     };
-    Ok((status.success(), collect(stdout), collect(stderr)))
+    Ok((status.success(), collect(stdout)?, collect(stderr)?))
 }
 
 #[cfg(test)]
@@ -162,6 +177,18 @@ mod tests {
         .unwrap();
 
         assert!(!engine.rootless);
+        assert!(!engine.in_desktop_vm);
+    }
+
+    #[test]
+    fn docker_desktop_is_recognized_by_its_operating_system() {
+        let engine = parse_info(
+            r#"{"ID":"abc","Name":"docker-desktop","ServerVersion":"28.1.1",
+                "OperatingSystem":"Docker Desktop","SecurityOptions":["name=seccomp,profile=builtin"]}"#,
+        )
+        .unwrap();
+
+        assert!(engine.in_desktop_vm);
     }
 
     #[test]

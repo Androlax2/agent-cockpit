@@ -140,6 +140,8 @@ pub enum ExecutionEnvironment {
 }
 
 impl ExecutionEnvironment {
+    pub const ALL: [ExecutionEnvironment; 3] = [Self::Native, Self::Sandbox, Self::Docker];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Native => "native",
@@ -946,6 +948,26 @@ fn checks(layers: &[Layer]) -> Result<Vec<Sourced<Check>>, ConfigError> {
             if check.command.trim().is_empty() {
                 return Err(invalid(format!("{:?} has an empty command", check.name)));
             }
+            if let Some(reason) = check
+                .working_directory
+                .as_deref()
+                .and_then(outside_the_checkout)
+            {
+                return Err(invalid(format!(
+                    "{:?} has a working_directory that {reason}",
+                    check.name
+                )));
+            }
+            if let Some(environment) = check.environment.as_deref()
+                && !ExecutionEnvironment::ALL
+                    .iter()
+                    .any(|known| known.as_str() == environment)
+            {
+                return Err(invalid(format!(
+                    "{:?} has the environment {environment:?}; it is native, sandbox or docker",
+                    check.name
+                )));
+            }
             if checks.iter().any(|known| known.value.name == check.name) {
                 return Err(invalid(format!("repeats the name {:?}", check.name)));
             }
@@ -1016,6 +1038,18 @@ fn needs(layers: &[Layer]) -> Result<Sourced<Option<ProjectNeeds>>, ConfigError>
 }
 
 /// Each artifact is a path inside the checkout: relative, without `..`.
+/// Why `path` would name something outside the checkout, when it would.
+fn outside_the_checkout(path: &str) -> Option<&'static str> {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return Some("is absolute; name it relative to the checkout");
+    }
+    if path.components().any(|part| part == Component::ParentDir) {
+        return Some("contains `..`");
+    }
+    None
+}
+
 fn result_artifacts(layers: &[Layer]) -> Result<Sourced<Vec<String>>, ConfigError> {
     let mut resolved = Sourced::new(Vec::new(), Source::ProductDefault);
     for layer in layers {
@@ -1029,15 +1063,10 @@ fn result_artifacts(layers: &[Layer]) -> Result<Sourced<Vec<String>>, ConfigErro
         };
         let source = layer.source_at(artifacts.span());
         for artifact in artifacts.get_ref() {
-            let path = Path::new(artifact);
             let reason = if artifact.trim().is_empty() {
                 Some("is empty")
-            } else if path.is_absolute() {
-                Some("is absolute; name it relative to the checkout")
-            } else if path.components().any(|part| part == Component::ParentDir) {
-                Some("contains `..`")
             } else {
-                None
+                outside_the_checkout(artifact)
             };
             if let Some(reason) = reason {
                 return Err(ConfigError::Invalid {

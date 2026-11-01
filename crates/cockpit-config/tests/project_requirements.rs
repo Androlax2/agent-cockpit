@@ -118,6 +118,18 @@ fn an_invalid_project_requirement_fails_with_its_file_and_line() {
             "[execution]\nenvironment = \"docker\"\nimage = \"x\"\n",
             "unknown field `image`",
         ),
+        (
+            "[[checks]]\nname = \"t\"\ncommand = \"true\"\nworking_directory = \"/etc\"\n",
+            "has a working_directory that is absolute",
+        ),
+        (
+            "[[checks]]\nname = \"t\"\ncommand = \"true\"\nworking_directory = \"../other\"\n",
+            "has a working_directory that contains `..`",
+        ),
+        (
+            "[[checks]]\nname = \"t\"\ncommand = \"true\"\nenvironment = \"Docker\"\n",
+            "has the environment \"Docker\"; it is native, sandbox or docker",
+        ),
     ];
     for (contents, expected) in cases {
         let home = TempDir::new().unwrap();

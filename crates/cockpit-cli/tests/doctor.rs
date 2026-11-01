@@ -67,3 +67,18 @@ fn doctor_takes_only_a_project_flag() {
 
     assert_eq!(output.status.code(), Some(2));
 }
+
+#[test]
+fn a_project_directory_that_does_not_exist_is_a_usage_error() {
+    let home = TempDir::new().unwrap();
+    let missing = home.path().join("typo");
+
+    let output = doctor(&home, &["--project", missing.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not a directory"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -35,19 +35,32 @@ pub(crate) fn absolute_dir(dir: &str) -> Result<String, String> {
 
 /// The daemon's reply to `command`, or exit 1 after saying why there is none.
 pub(crate) fn request(command: Command, deadline: Duration) -> Result<Reply, ExitCode> {
+    exchange(command, deadline)?.map_err(|error| failed(&error))
+}
+
+/// The daemon's answer to `command`, the client's error included for a caller that handles
+/// one itself; exit 1 only when no request could be made.
+pub(crate) fn exchange(
+    command: Command,
+    deadline: Duration,
+) -> Result<Result<Reply, ClientError>, ExitCode> {
     let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| fail(&format!("cannot start the client runtime: {error}")))?;
-    let answer = runtime.block_on(async {
+    Ok(runtime.block_on(async {
         let connection = Connection::open(&socket, CONTROL_DEADLINE).await?;
         connection.request(command, deadline).await
-    });
-    answer.map_err(|error| match error {
+    }))
+}
+
+/// Exit 1 after saying why the request failed.
+pub(crate) fn failed(error: &ClientError) -> ExitCode {
+    match error {
         ClientError::Daemon(error) => fail(&format!("{}: {}", error.code.as_str(), error.message)),
         error => fail(&error.to_string()),
-    })
+    }
 }
 
 pub(crate) fn unexpected(reply: &Reply) -> ExitCode {

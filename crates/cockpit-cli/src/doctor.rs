@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cockpit_client::{ClientError, Connection};
+use cockpit_client::ClientError;
 use cockpit_protocol::{Command, ReadinessStatusView, Reply, RequirementView};
 
 use crate::daemon;
@@ -41,7 +41,13 @@ fn parse(arguments: &[OsString]) -> Result<Option<String>, String> {
     let words = daemon::utf8_words(arguments)?;
     match words[..] {
         [] => Ok(None),
-        ["--project", dir] if !dir.starts_with("--") => daemon::absolute_dir(dir).map(Some),
+        ["--project", dir] if !dir.starts_with("--") => {
+            let dir = daemon::absolute_dir(dir)?;
+            if !std::path::Path::new(&dir).is_dir() {
+                return Err(format!("--project {dir}: not a directory"));
+            }
+            Ok(Some(dir))
+        }
         ["--project"] => Err("--project needs a value".to_owned()),
         _ => Err(format!(
             "doctor takes only --project DIR, not {}",
@@ -58,33 +64,13 @@ enum Unanswered {
 }
 
 fn ask_daemon(project: Option<String>) -> Result<Vec<RequirementView>, Unanswered> {
-    let socket = crate::agent::socket_dir()
-        .map_err(Unanswered::Failed)?
-        .join(cockpit_config::DAEMON_SOCKET);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            Unanswered::Failed(daemon::fail(&format!(
-                "cannot start the client runtime: {error}"
-            )))
-        })?;
-    let answer = runtime.block_on(async {
-        let connection = Connection::open(&socket, daemon::CONTROL_DEADLINE).await?;
-        connection
-            .request(Command::Readiness { project }, DOCTOR_DEADLINE)
-            .await
-    });
+    let answer = daemon::exchange(Command::Readiness { project }, DOCTOR_DEADLINE)
+        .map_err(Unanswered::Failed)?;
     match answer {
         Ok(Reply::Readiness { requirements }) => Ok(requirements),
         Ok(other) => Err(Unanswered::Failed(daemon::unexpected(&other))),
         Err(error @ ClientError::Connect { .. }) => Err(Unanswered::Unreachable(error.to_string())),
-        Err(ClientError::Daemon(error)) => Err(Unanswered::Failed(daemon::fail(&format!(
-            "{}: {}",
-            error.code.as_str(),
-            error.message
-        )))),
-        Err(error) => Err(Unanswered::Failed(daemon::fail(&error.to_string()))),
+        Err(error) => Err(Unanswered::Failed(daemon::failed(&error))),
     }
 }
 

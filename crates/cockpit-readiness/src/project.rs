@@ -252,13 +252,17 @@ fn docker(docker: &Result<DockerEngine, String>, platform: &Platform) -> Require
     if engine.rootless {
         return Requirement::available("docker", format!("{identity}, rootless"));
     }
+    // macOS runs no Linux containers itself: every engine there lives in a VM.
     if *platform == Platform::MacOs {
         return Requirement::available("docker", format!("{identity}, inside its Linux VM"));
+    }
+    if engine.in_desktop_vm {
+        return Requirement::available("docker", format!("{identity}, inside Docker Desktop's VM"));
     }
     Requirement::needs(
         "docker",
         Status::MissingPrerequisite,
         format!("{identity} is rootful: whoever reaches its socket is root on this host"),
-        "set up rootless Docker for this user (https://docs.docker.com/engine/security/rootless/) and point DOCKER_HOST at it",
+        "set up rootless Docker for this user (https://docs.docker.com/engine/security/rootless/), set DOCKER_HOST to its socket in the daemon's environment, then restart the daemon",
     )
 }
