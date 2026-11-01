@@ -4,7 +4,7 @@ Issue #279. Decided by the worker: the issue left the daemon hold and a CLI retr
 
 - **The daemon waits, read-only and at most 5 s, while the request's launch token names a
   pending launch without a root** (`cockpit_agent_channel::awaits_root`, called from
-  `Sender::of` in `crates/cockpit-daemon/src/approvals.rs`, which every agent route goes
+  `Sender::once_launched` in `crates/cockpit-daemon/src/approvals.rs`, which every agent route goes
   through). Identification then decides as before, so a launch that never records its root
   is still refused `LaunchNotStarted`. Every client is covered at once (the CLI, the Claude
   hook bridge, future bridges), and the refusal's "Cockpit unblocks it" stays true.

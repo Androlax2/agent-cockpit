@@ -3,11 +3,11 @@
 
 mod common;
 
-use cockpit_agent_channel::{LaunchToken, awaits_root, mint, record_root};
+use cockpit_agent_channel::{LaunchToken, awaits_root, mint};
 use cockpit_turso::Database;
 use common::{identify_committed, launch, open, session, this_process, this_process_identity};
 
-async fn awaits(database: &Database, token: Option<&str>) -> bool {
+async fn awaits(database: &Database, token: &str) -> bool {
     let read = database.read().await.unwrap();
     awaits_root(&read, token).await.unwrap()
 }
@@ -25,21 +25,16 @@ async fn a_launch_without_its_root_awaits_it() {
     let database = open(dir.path()).await;
     let token = mint_committed(&database, "s1").await;
 
-    assert!(awaits(&database, Some(token.as_str())).await);
+    assert!(awaits(&database, token.as_str()).await);
 }
 
 #[tokio::test]
 async fn a_launch_awaits_its_root_no_longer_once_it_is_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let database = open(dir.path()).await;
-    let token = mint_committed(&database, "s1").await;
-    let write = database.write().await.unwrap();
-    record_root(&write, &session("s1"), &this_process_identity())
-        .await
-        .unwrap();
-    write.commit().await.unwrap();
+    let token = launch(&database, &session("s1"), &this_process_identity()).await;
 
-    assert!(!awaits(&database, Some(token.as_str())).await);
+    assert!(!awaits(&database, token.as_str()).await);
 }
 
 #[tokio::test]
@@ -51,17 +46,17 @@ async fn a_spent_token_awaits_nothing() {
         .await
         .unwrap();
 
-    assert!(!awaits(&database, Some(token.as_str())).await);
+    assert!(!awaits(&database, token.as_str()).await);
 }
 
 #[tokio::test]
-async fn unknown_malformed_and_missing_tokens_await_nothing() {
+async fn unknown_and_malformed_tokens_await_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let database = open(dir.path()).await;
     mint_committed(&database, "s1").await;
 
-    for token in [Some("0".repeat(64).as_str()), Some("s1"), None] {
-        assert!(!awaits(&database, token).await, "{token:?}");
+    for token in ["0".repeat(64).as_str(), "s1"] {
+        assert!(!awaits(&database, token).await, "{token}");
     }
 }
 
@@ -82,5 +77,5 @@ async fn a_launch_minted_long_ago_without_its_root_awaits_nothing() {
         .unwrap();
     write.commit().await.unwrap();
 
-    assert!(!awaits(&database, Some(token.as_str())).await);
+    assert!(!awaits(&database, token.as_str()).await);
 }

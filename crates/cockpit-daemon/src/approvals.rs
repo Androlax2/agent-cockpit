@@ -323,16 +323,18 @@ async fn check_syntax(runner: &Runner, command: &str) -> Result<(), Failed> {
 /// How long a request waits for its launch's process tree: the launcher records it moments
 /// after the agent starts, and the wait must end well before the CLI's 10 s deadline so the
 /// agent reads the refusal, not a timeout. The request holds its bulk worker meanwhile;
-/// `awaits_root` only waits for launches minted in the last 30 s, so a failed launch's stray
-/// agent never holds one.
+/// `awaits_root` waits only for recently minted launches, so a failed launch's stray agent
+/// never holds one.
 const LAUNCH_ROOT_WAIT: Duration = Duration::from_secs(5);
-const LAUNCH_ROOT_POLL: Duration = Duration::from_millis(20);
 
 /// Returns once `launch_token` names no launch waiting for its root, or after
 /// [`LAUNCH_ROOT_WAIT`]; identifying the sender then decides, and refuses if still too early.
-/// Nothing is written, so a failure here leaves the request without effect.
+/// Looks again after each commit, since the root arrives with one. Nothing is written, so a
+/// failure here leaves the request without effect.
 async fn await_launch_root(database: &Database, launch_token: &str) -> Result<(), Failed> {
     let deadline = tokio::time::Instant::now() + LAUNCH_ROOT_WAIT;
+    // Subscribed before the first look, so a commit between the look and the wait wakes it.
+    let mut commits = database.watch_commits();
     let failed = |error: &dyn std::fmt::Display| {
         tracing::error!(%error, "waiting for a launch's process tree failed");
         Failed(ProtocolError::new(
@@ -343,14 +345,18 @@ async fn await_launch_root(database: &Database, launch_token: &str) -> Result<()
     loop {
         let awaits = {
             let read = database.read().await.map_err(|error| failed(&error))?;
-            cockpit_agent_channel::awaits_root(&read, Some(launch_token))
+            cockpit_agent_channel::awaits_root(&read, launch_token)
                 .await
                 .map_err(|error| failed(&error))?
         };
-        if !awaits || tokio::time::Instant::now() >= deadline {
+        if !awaits {
             return Ok(());
         }
-        tokio::time::sleep(LAUNCH_ROOT_POLL).await;
+        match tokio::time::timeout_at(deadline, commits.changed()).await {
+            Ok(Ok(())) => {}
+            // The deadline passed, or the database closed: identification refuses.
+            Ok(Err(_)) | Err(_) => return Ok(()),
+        }
     }
 }
 
