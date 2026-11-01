@@ -31,6 +31,7 @@ behavior, SQL queries and tests. No `core`, `domain`, `common`, `host`, `store` 
 | `cockpit-credentials` | Secret references, scoped injection, redaction |
 | `cockpit-agent-context` | Launch brief and instruction discovery assembled from owners' facts |
 | `cockpit-diagnostics` | Logging, levels, support bundle (report 12) |
+| `cockpit-bug-reports` | Bug-report drafts about Cockpit, fingerprint and daily limit, the issue a send hands the owner (reports 12, 17; added by #427) |
 | `cockpit-usage` | Plan windows, quota, cost archive, time per project, digest (report 18) |
 | `cockpit-github` | PRs, issues, tokens, review sessions; an evidence source (reports 06, 16) |
 | `cockpit-audit` | Hash-chained security audit log and verification (report 11) |

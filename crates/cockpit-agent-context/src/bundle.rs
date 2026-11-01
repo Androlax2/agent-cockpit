@@ -68,7 +68,7 @@ const REFERENCES: [(&str, &str, &str, &str); 5] = [
     (
         "coordination",
         "cockpit/references/coordination.md",
-        "report status, ask the owner, file and work task items",
+        "report status, ask the owner, file and work task items, report a Cockpit bug",
         include_str!("../bundle/references/coordination.md"),
     ),
     (

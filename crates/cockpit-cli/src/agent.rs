@@ -189,13 +189,22 @@ pub(crate) fn socket_dir() -> Result<PathBuf, ExitCode> {
 }
 
 pub(crate) fn exchange(socket: &Path, command: Command) -> Result<Reply, ClientError> {
+    exchange_within(socket, command, DEADLINE)
+}
+
+/// [`exchange`] for a request that may wait longer than [`DEADLINE`] for its answer.
+pub(crate) fn exchange_within(
+    socket: &Path,
+    command: Command,
+    deadline: Duration,
+) -> Result<Reply, ClientError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a single-threaded runtime starts");
     runtime.block_on(async {
         let connection = Connection::open(socket, DEADLINE).await?;
-        connection.request(command, DEADLINE).await
+        connection.request(command, deadline).await
     })
 }
 

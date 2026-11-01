@@ -158,7 +158,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         sessions.owner.idle_sleep_after = window;
     }
     let runtime = tokio::runtime::Runtime::new().map_err(StartError::Runtime)?;
-    runtime.block_on(async {
+    let served = runtime.block_on(async {
         let wiring = Wiring {
             tmux: cockpit_tmux::ServerSpec {
                 tmux: "tmux".into(),
@@ -185,10 +185,30 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             })
             .await?;
         println!("ready {}", daemon.socket_path().display());
-        daemon.wait().await;
+        // A stop asked for ends here, so the daemon's cleanup runs: a run that ended without
+        // it is taken for a crash at the next start and opens a bug report draft (#427).
+        let mut terminate = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .map_err(|source| StartError::Io {
+            action: "listen for SIGTERM in",
+            path: "/proc/self".into(),
+            source,
+        })?;
+        tokio::select! {
+            () = daemon.wait() => {}
+            _ = terminate.recv() => tracing::info!("stopping: SIGTERM"),
+            _ = tokio::signal::ctrl_c() => tracing::info!("stopping: SIGINT"),
+        }
         Ok(())
-    })
+    });
+    // Blocking work still running (a stop waiting out its grace) does not hold the exit.
+    runtime.shutdown_timeout(STOP_WAIT);
+    served
 }
+
+/// How long a stopping daemon waits for blocking work before it exits anyway.
+const STOP_WAIT: Duration = Duration::from_secs(5);
 
 /// The sandbox every launch goes through (#61): Greywall and greyproxy as found on the
 /// daemon's `PATH` and checked against the pinned builds, with the paths the daemon's layout

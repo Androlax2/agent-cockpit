@@ -35,5 +35,5 @@ Read one with `cockpit docs TOPIC`; `cockpit --skill` prints them all at once.
 | `workflow` | you begin, checkpoint, finish or hand back a step, or are blocked |
 | `checks` | you need to prove a result or see what a gate still needs |
 | `approvals` | you need a command run on the host, a manual step, or a decision |
-| `coordination` | you report status, file follow-ups, ask the owner a question, or coordinate other sessions |
+| `coordination` | you report status, file follow-ups, ask the owner a question, coordinate other sessions, or hit a Cockpit bug |
 | `sandbox` | something is denied, a host is blocked, or you need Docker |
