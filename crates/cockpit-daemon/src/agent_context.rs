@@ -12,7 +12,7 @@ use cockpit_protocol::{
 };
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
-use cockpit_workflows::{Actor, RunFilter, StepStatus};
+use cockpit_workflows::{Actor, Refusal, RunFilter, StepStatus};
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
@@ -84,7 +84,7 @@ pub(crate) async fn brief(
     let sender = Sender::read(connector).await;
     let session = identify(&sender, &database, launch_token).await?;
     let read = database.read().await?;
-    let facts = facts(&read, &sender, &sessions, session).await?;
+    let facts = facts(&read, &sessions, session).await?;
     let brief = cockpit_agent_context::brief(&facts);
     let budget = cockpit_agent_context::context_budget(&brief);
     Ok(Reply::AgentBrief {
@@ -121,27 +121,29 @@ async fn identify(
 
 async fn facts(
     read: &Connection,
-    sender: &Sender,
     sessions: &cockpit_sessions::Sessions,
     session: cockpit_authorization::SessionId,
 ) -> Result<LaunchFacts, Failed> {
     let id = cockpit_sessions::SessionId::parse(session.as_str())?;
     let working_dir = sessions.get(&id).await?.working_dir;
-    let project = sender.project(read).await?.map(|project| project.name);
+    // The session's own directory, not the caller's: `cockpit brief` may run from anywhere.
+    let project = crate::approvals::project_at(read, &working_dir)
+        .await?
+        .map(|project| project.name);
     let grants = grants(read, &session).await?;
     let actor = Actor::Session {
         session: session.clone(),
         project: project.clone(),
     };
-    let runs = cockpit_workflows::runs(
-        read,
-        &actor,
-        &RunFilter {
-            project: project.clone(),
-            include_closed: false,
-        },
-    )
-    .await?;
+    let filter = RunFilter {
+        project: project.clone(),
+        include_closed: false,
+    };
+    // A session that may not read workflows still gets its brief, which shows it no grant.
+    let runs = match cockpit_workflows::runs(read, &actor, &filter).await {
+        Err(cockpit_workflows::Error::Refused(Refusal::NotAuthorized(_))) => Vec::new(),
+        listed => listed?,
+    };
     let workflow = runs.iter().find_map(|run| {
         let step = run.current_step()?;
         let is_doing = step.status == StepStatus::Active && step.session.as_ref() == Some(&session);

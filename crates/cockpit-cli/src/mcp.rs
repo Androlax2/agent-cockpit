@@ -8,7 +8,7 @@ use std::io::{BufRead, Write};
 use std::process::ExitCode;
 
 use cockpit_client::ClientError;
-use cockpit_protocol::{Command, Reply};
+use cockpit_protocol::{Command, ErrorCode, Reply};
 use serde_json::{Value, json};
 
 use crate::agent::{exchange, launch_token};
@@ -23,6 +23,8 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
+/// MCP's code for a resource that does not exist.
+const RESOURCE_NOT_FOUND: i64 = -32002;
 
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     if let Some(argument) = arguments.first() {
@@ -122,8 +124,8 @@ fn read_resource(params: &Value) -> Answered {
         .ok_or((INVALID_PARAMS, "resources/read needs a uri".to_owned()))?;
     let topic = uri
         .strip_prefix(RESOURCE_PREFIX)
-        .ok_or_else(|| (INVALID_PARAMS, format!("no resource {uri}")))?;
-    let text = instructions(Some(topic.to_owned())).map_err(|refused| (INVALID_PARAMS, refused))?;
+        .ok_or_else(|| (RESOURCE_NOT_FOUND, format!("no resource {uri}")))?;
+    let text = instructions(Some(topic.to_owned()))?;
     Ok(json!({"contents": [{"uri": uri, "mimeType": "text/markdown", "text": text}]}))
 }
 
@@ -166,26 +168,24 @@ fn call_tool(params: &Value) -> Answered {
     };
     let (text, is_error) = match outcome {
         Ok(text) => (text, false),
-        Err(refused) => (refused, true),
+        Err((_, refused)) => (refused, true),
     };
     Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error}))
 }
 
-fn instructions(topic: Option<String>) -> Result<String, String> {
-    match daemon(Command::InstructionsRead { topic }) {
-        Ok(Reply::Instructions { text, .. }) => Ok(text),
-        Ok(other) => Err(unexpected(&other).1),
-        Err((_, refused)) => Err(refused),
+fn instructions(topic: Option<String>) -> Result<String, (i64, String)> {
+    match daemon(Command::InstructionsRead { topic })? {
+        Reply::Instructions { text, .. } => Ok(text),
+        other => Err(unexpected(&other)),
     }
 }
 
-fn brief() -> Result<String, String> {
+fn brief() -> Result<String, (i64, String)> {
     match daemon(Command::AgentBrief {
         launch_token: launch_token(),
-    }) {
-        Ok(Reply::AgentBrief { brief, .. }) => Ok(brief),
-        Ok(other) => Err(unexpected(&other).1),
-        Err((_, refused)) => Err(refused),
+    })? {
+        Reply::AgentBrief { brief, .. } => Ok(brief),
+        other => Err(unexpected(&other)),
     }
 }
 
@@ -203,7 +203,12 @@ fn daemon(command: Command) -> Result<Reply, (i64, String)> {
             if let Some(unblock) = refused.unblock {
                 message.push_str(&format!("; {}", unblock.action));
             }
-            (INVALID_PARAMS, message)
+            let code = match refused.code {
+                ErrorCode::NotFound => RESOURCE_NOT_FOUND,
+                ErrorCode::Internal => INTERNAL_ERROR,
+                _ => INVALID_PARAMS,
+            };
+            (code, message)
         }
         ClientError::Connect { source, .. } => (
             INTERNAL_ERROR,
