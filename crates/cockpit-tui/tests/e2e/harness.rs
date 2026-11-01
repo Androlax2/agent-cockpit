@@ -322,7 +322,36 @@ impl Cockpit {
             let tail = &lines[lines.len().saturating_sub(30)..];
             report += &format!("\n--- {} ---\n{}", entry.path().display(), tail.join("\n"));
         }
-        report + "\n--- launches ---\n" + &read(&self.root.join("launches.log"))
+        report
+            + "\n--- launches ---\n"
+            + &read(&self.root.join("launches.log"))
+            + &self.agent_panes()
+    }
+
+    /// Each window of the daemon's tmux with its size and its pane's history: what the
+    /// agents printed, whether or not the viewer shows it. Never panics, as it reports one.
+    fn agent_panes(&self) -> String {
+        let private_tmux = |arguments: &[&str]| {
+            self.command(Path::new("tmux"))
+                .args(["-L", "cockpit"])
+                .args(arguments)
+                .output()
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                .unwrap_or_else(|error| format!("tmux did not run: {error}\n"))
+        };
+        let windows = private_tmux(&[
+            "list-windows",
+            "-a",
+            "-F",
+            "#{session_name}:#{window_index} #{window_width}x#{window_height}",
+        ]);
+        let mut report = format!("\n--- the daemon's windows ---\n{windows}");
+        for window in windows.lines() {
+            let target = window.split(' ').next().unwrap_or_default();
+            let history = private_tmux(&["capture-pane", "-p", "-S", "-60", "-t", target]);
+            report += &format!("--- {target} ---\n{}\n", history.trim_end());
+        }
+        report
     }
 
     /// Runs `cockpit <arguments>` from the projects directory and returns its stdout,
