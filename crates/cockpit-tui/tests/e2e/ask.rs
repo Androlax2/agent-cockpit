@@ -1,8 +1,6 @@
 //! M1 guide, section 4: an agent's `ask run` and `ask guide` reach the owner in the TUI's
 //! "Waiting on you" pane and the answers reach the agent.
 
-use std::time::Duration;
-
 use crate::harness::{Cockpit, ManagerPane};
 
 /// The pane's grace hint, as far as the list column shows it on one line.
@@ -16,28 +14,6 @@ const HOST_COMMAND: &str = r#"!cockpit ask run --reason "acceptance check" 'prin
 fn asked(cockpit: &Cockpit, command: &str) {
     cockpit.tell_agent(command);
     cockpit.wait_for(RUN_KEYS);
-}
-
-/// Presses `y` on the shown run and returns the screen with its exit. The TUI's 1 s grace
-/// ends before the daemon's 1 to 2 s, so the daemon can still refuse the approval (#337).
-/// The owner then presses `y` again a moment later, and so does this: the one pause in
-/// these tests, since nothing on the screen or the feed marks the daemon's grace ending.
-/// Remove it with #337.
-fn approve(cockpit: &Cockpit) -> String {
-    for _ in 0..10 {
-        cockpit.press(&["y"]);
-        let screen = cockpit.wait_until("the run's exit or the daemon's refusal", |screen| {
-            screen.contains("exit 0") || screen.contains("approval-approve: refused")
-        });
-        if screen.contains("exit 0") {
-            return screen;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    panic!(
-        "the daemon refused the approval ten times, 3 s past its grace\n{}",
-        cockpit.screen()
-    );
 }
 
 #[test]
@@ -62,7 +38,12 @@ fn y_runs_the_command_and_the_agent_gets_its_output_redacted() {
     asked(&cockpit, HOST_COMMAND);
     let screen = cockpit.wait_for("Reason: acceptance check");
     assert!(screen.contains("Directory:"), "{screen}");
-    let screen = approve(&cockpit);
+    // At once after the hint: the TUI's grace outlasts the daemon's (#337).
+    cockpit.press(&["y"]);
+    let screen = cockpit.wait_until("the run's exit or the daemon's refusal", |screen| {
+        screen.contains("exit 0") || screen.contains("approval-approve: refused")
+    });
+    assert!(!screen.contains("approval-approve: refused"), "{screen}");
     assert!(
         screen.contains("\nhello from the host") || screen.contains("││hello from the host"),
         "{screen}"

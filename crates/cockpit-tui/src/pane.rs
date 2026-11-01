@@ -13,8 +13,11 @@ use cockpit_protocol::{Command, GuideStateView, GuideView, RunRequestView, RunSt
 use crate::Key;
 use crate::board::Board;
 
-/// How long the pane ignores input after it shows a request or takes focus.
-pub const INPUT_GRACE: Duration = Duration::from_millis(1000);
+/// How long the pane ignores input after it shows a request or takes focus. The daemon
+/// refuses an approval until two whole seconds after the revision appeared (between one and
+/// two real seconds); the pane shows a revision only after the daemon created it, so two
+/// seconds from showing always outlast that, and a `y` after the hint is never refused (#337).
+pub const INPUT_GRACE: Duration = Duration::from_secs(2);
 
 /// The request the pane shows, as it was when shown: an approval names this revision and
 /// digest, never a newer one the owner has not seen.
