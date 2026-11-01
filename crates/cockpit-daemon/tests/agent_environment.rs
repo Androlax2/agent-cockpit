@@ -1,13 +1,17 @@
-//! An agent the daemon launches reaches the daemon's agent socket whatever XDG layout the
-//! daemon runs with (#268): the real daemon binary on scratch `XDG_*` directories launches a
-//! stand-in Claude Code whose `cockpit agent report` must land.
+//! What an agent the daemon launches inherits from the daemon, through the real daemon
+//! binary and a stand-in Claude Code. It reaches the daemon's agent socket whatever XDG
+//! layout the daemon runs with (#268), and the owner's desktop session through the display
+//! variables the daemon has, never ones it lacks (#303).
 
 mod real_daemon;
 
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{Command, Reply};
-use real_daemon::{GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_program, new_session};
+use real_daemon::{
+    ENVIRONMENT_PROJECT, GENEROUS, Home, REPORT_PROJECT, REPORTED_LABEL, cockpit_program,
+    new_session,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launched_agent_reports_to_a_daemon_on_a_scratch_layout() {
@@ -40,6 +44,51 @@ async fn a_launched_agent_reports_to_a_daemon_on_a_scratch_layout() {
             "the agent's report did not land; it printed {:?}",
             std::fs::read_to_string(home.report_log()).unwrap_or_default()
         );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launched_agent_sees_the_daemons_display_variables() {
+    let home = Home::new();
+    let _daemon = home.start_with(&[
+        ("DISPLAY", ":7"),
+        ("WAYLAND_DISPLAY", "wayland-7"),
+        ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/7/bus"),
+    ]);
+
+    let seen = environment_of_a_launched_agent(&home).await;
+
+    assert_eq!(
+        seen,
+        "DISPLAY=:7\nWAYLAND_DISPLAY=wayland-7\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/7/bus\n"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launched_agent_gets_no_display_variable_the_daemon_lacks() {
+    let home = Home::new();
+    let _daemon = home.start_with(&[("WAYLAND_DISPLAY", "wayland-7")]);
+
+    let seen = environment_of_a_launched_agent(&home).await;
+
+    assert_eq!(
+        seen,
+        "DISPLAY=unset\nWAYLAND_DISPLAY=wayland-7\nDBUS_SESSION_BUS_ADDRESS=unset\n"
+    );
+}
+
+/// Starts a session of the [`ENVIRONMENT_PROJECT`] agent and returns what it wrote.
+async fn environment_of_a_launched_agent(home: &Home) -> String {
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, ENVIRONMENT_PROJECT).await;
+    new_session(&client, &root).await;
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        if let Ok(written) = std::fs::read_to_string(home.environment_log()) {
+            return written;
+        }
+        assert!(Instant::now() < deadline, "the agent wrote no environment");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

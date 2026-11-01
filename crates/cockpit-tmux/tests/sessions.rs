@@ -257,6 +257,16 @@ fn the_server_starts_with_cockpits_own_config() {
 }
 
 #[test]
+fn the_server_shows_no_status_bar() {
+    let fixture = TestServer::new();
+    fixture.start_shell("agent-1", "sleep 30");
+
+    let status = fixture.tmux(&["show-options", "-gv", "status"]);
+
+    assert_eq!(status.trim(), "off");
+}
+
+#[test]
 fn a_session_cockpit_did_not_name_is_left_out_of_the_list() {
     let fixture = TestServer::new();
     fixture.start_shell("agent-1", "sleep 30");
