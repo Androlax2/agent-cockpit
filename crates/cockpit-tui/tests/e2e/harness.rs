@@ -86,14 +86,15 @@ while :; do
 done
 "#;
 
-/// The test terminal's tmux configuration: no status bar, a fixed size, and a pane that
-/// outlives `cockpit tui` so a failure still shows its last screen.
+/// The test terminal's tmux configuration: no status bar, and a pane that outlives
+/// `cockpit tui` so a failure still shows its last screen. The size comes from
+/// `new-session -x -y` (the session's `default-size`) and the watcher ignores its own:
+/// `window-size manual` made tmux 3.6's server exit while spawning the window.
 const OUTER_CONFIG: &str = "\
 set-option -g status off
 set-option -g default-terminal screen
 set-option -s escape-time 0
 set-option -g remain-on-exit on
-set-option -g window-size manual
 ";
 
 /// The programs under test, all of the profile this test was built with.
@@ -307,8 +308,21 @@ impl Cockpit {
         daemon.wait().expect("the daemon is reaped");
     }
 
+    /// What a failed wait shows after the screen: the daemon's stderr, the end of its log
+    /// and the fake agent's launches.
     fn daemon_stderr(&self) -> String {
-        std::fs::read_to_string(self.root.join("daemon.stderr")).unwrap_or_default()
+        let read = |path: &Path| {
+            String::from_utf8_lossy(&std::fs::read(path).unwrap_or_default()).into_owned()
+        };
+        let mut report = read(&self.root.join("daemon.stderr"));
+        let logs = self.root.join("state/cockpit/logs/daemon");
+        for entry in std::fs::read_dir(&logs).into_iter().flatten().flatten() {
+            let text = read(&entry.path());
+            let lines: Vec<&str> = text.lines().collect();
+            let tail = &lines[lines.len().saturating_sub(30)..];
+            report += &format!("\n--- {} ---\n{}", entry.path().display(), tail.join("\n"));
+        }
+        report + "\n--- launches ---\n" + &read(&self.root.join("launches.log"))
     }
 
     /// Runs `cockpit <arguments>` from the projects directory and returns its stdout,
