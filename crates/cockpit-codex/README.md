@@ -83,7 +83,8 @@ provider and nothing above the contract sees a Codex type (#48).
   (`tests/common/app_server.rs`).
 - `tests/turns.rs`: a failed turn's outcome and report.
 - `tests/session.rs`: the session launcher as a process with a fake Codex: the server and TUI
-  words, failed-turn reports, the server stopped with the TUI.
+  words, failed-turn reports, the server stopped with the TUI; a stopped test launcher
+  leaves no fake process behind (#440).
 - `tests/discover.rs`: finding `codex` and its version.
 - `tests/conformance.rs` (ignored without an installed Codex; `-j 1`): the installed version
   is the pinned one, its help documents every flag passed, it lists the `hooks` feature,
