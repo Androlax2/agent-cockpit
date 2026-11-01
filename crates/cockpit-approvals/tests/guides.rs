@@ -438,3 +438,37 @@ async fn another_sessions_guide_is_not_found_for_the_asker() {
         }
     );
 }
+
+#[tokio::test]
+async fn a_guide_whose_session_may_no_longer_ask_leaves_the_owners_queue() {
+    let fixture = Fixture::new().await;
+    fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let read = fixture.database.read().await.unwrap();
+    assert_eq!(open_guides(&read, NOW).await.unwrap(), []);
+}
+
+#[tokio::test]
+async fn a_guide_whose_session_may_no_longer_ask_cannot_be_answered() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let write = fixture.database.write().await.unwrap();
+    assert_eq!(
+        refusal(answer_step(&write, guide.id, 0, None, NOW).await),
+        Refusal::AskerMayNotAsk
+    );
+}
+
+#[tokio::test]
+async fn a_guide_whose_session_may_no_longer_ask_can_still_be_closed() {
+    let fixture = Fixture::new().await;
+    let guide = fixture.asked_guide(GUIDE).await;
+    fixture.revoke_all(&session("s1")).await;
+
+    let write = fixture.database.write().await.unwrap();
+    let closed = close_guide(&write, guide.id, NOW).await.unwrap();
+    assert_eq!(closed.state, GuideState::Closed);
+}

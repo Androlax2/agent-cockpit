@@ -48,6 +48,20 @@ impl Fixture {
         write.commit().await.unwrap();
     }
 
+    /// Revokes every grant `holder` holds, as ending or failing its session does.
+    pub async fn revoke_all(&self, holder: &SessionId) {
+        let write = self.database.write().await.unwrap();
+        for grant in cockpit_authorization::active_grants(&write, holder)
+            .await
+            .unwrap()
+        {
+            cockpit_authorization::revoke(&write, grant.id)
+                .await
+                .unwrap();
+        }
+        write.commit().await.unwrap();
+    }
+
     /// `session`, granted `run-commands`, asks to run `command` here.
     pub async fn asked(&self, session: &SessionId, command: &str) -> RunRequest {
         self.grant(session).await;

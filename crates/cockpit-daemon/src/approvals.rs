@@ -64,9 +64,10 @@ impl From<Refusal> for Failed {
             Refusal::StaleRevision { .. } | Refusal::DigestMismatch | Refusal::StaleStep { .. } => {
                 ErrorCode::StaleRevision
             }
-            Refusal::Expired | Refusal::AlreadyDecided { .. } | Refusal::NotRunning => {
-                ErrorCode::Conflict
-            }
+            Refusal::Expired
+            | Refusal::AskerMayNotAsk
+            | Refusal::AlreadyDecided { .. }
+            | Refusal::NotRunning => ErrorCode::Conflict,
             Refusal::TooSoon { .. } => ErrorCode::Refused,
         };
         let (by, action) = refused.unblock();

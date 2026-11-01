@@ -27,6 +27,10 @@ request here, so nothing is re-read from the sandbox.
    the revision appearing (ask or edit) is refused `TooSoon` (#156, #166). Asking requests expire
    `EXPIRES_AFTER_SECONDS` after the agent last asked about them (`run_status`); a poll
    moves the expiry at most once a minute, so the others write nothing.
+   `run-commands` is evaluated again when the owner reads or decides: once the asking
+   session ends, fails or loses the grant, `open_runs` and `open_guides` leave its asking
+   requests out, and approving, editing or answering them is refused `AskerMayNotAsk`;
+   declining or closing still works (#285).
 4. `Runner::run` reserves a `cockpit-processes` execution and marks the run running with it
    (`start_run`) in one transaction, then launches the approved revision as a terminal
    execution (#163): its own session, so prompts and `sudo` work, in a systemd scope or

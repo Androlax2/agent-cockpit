@@ -21,7 +21,10 @@ use crate::rows::{
     AskState, EXPIRES_AFTER_SECONDS, Project, invalid_row, next_id, not_found, project_from,
     refreshed_expiry, session_from, state_at, still_asking,
 };
-use crate::runs::{REASON_MAX_CHARS, RunAsk, RunId, insert_run, may_ask, validate_command};
+use crate::runs::{
+    REASON_MAX_CHARS, RunAsk, RunId, asker_may_still_ask, insert_run, may_ask, may_still_ask,
+    validate_command,
+};
 use crate::{Error, Refusal};
 
 const GUIDE_MAX_BYTES: usize = 64 * 1024;
@@ -326,7 +329,7 @@ pub async fn ask_guide(
     Ok(asked)
 }
 
-/// Guides still asking, oldest first.
+/// Guides still asking, from a session that may still ask, oldest first.
 pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideRequest>, Error> {
     const OPEN: &str = "state = 'asking' AND expires_at > ?1";
     let mut rows = connection
@@ -355,13 +358,18 @@ pub async fn open_guides(connection: &Connection, now: i64) -> Result<Vec<GuideR
     while let Some(row) = rows.next().await? {
         steps.entry(row.get(0)?).or_default().push(step_from(&row)?);
     }
-    for guide in &mut guides {
+    let mut verdicts = HashMap::new();
+    let mut open = Vec::with_capacity(guides.len());
+    for mut guide in guides {
         // Both queries read one snapshot and every guide has a step: a miss is a broken row.
         guide.steps = steps
             .remove(&guide.id.0)
             .ok_or_else(|| invalid_row(TABLE, format!("guide {} has no steps", guide.id.0)))?;
+        if may_still_ask(connection, &mut verdicts, &guide.session).await? {
+            open.push(guide);
+        }
     }
-    Ok(guides)
+    Ok(open)
 }
 
 pub async fn guide_request(
@@ -460,6 +468,7 @@ async fn guide_of(
 
 /// The owner's answer to step `step`, the one shown now. A step that asks a question needs
 /// `answer`; a `run:` step files its command as an `ask run` request of the guide's session.
+/// Refused once that session may no longer ask: nobody waits for the answer (#285).
 pub async fn answer_step(
     write: &WriteTransaction<'_>,
     id: GuideId,
@@ -468,6 +477,7 @@ pub async fn answer_step(
     now: i64,
 ) -> Result<GuideRequest, Error> {
     let mut guide = asking_at(write, id, step, now).await?;
+    asker_may_still_ask(write, &guide.session).await?;
     let shown = &guide.steps[step].step;
     let answer = answer.map(|answer| checked_answer(&answer)).transpose()?;
     if shown.ask.is_some() && answer.is_none() {
@@ -475,7 +485,6 @@ pub async fn answer_step(
     }
     let run_request = match &shown.run {
         Some(command) => {
-            may_ask(write, &guide.session).await?;
             let ask = RunAsk {
                 command: command.clone(),
                 cwd: guide.cwd.clone(),

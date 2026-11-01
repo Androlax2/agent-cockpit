@@ -10,6 +10,7 @@
 //! request nobody polls for [`EXPIRES_AFTER_SECONDS`] reads as expired and can no longer be
 //! decided.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use cockpit_authorization::{Actor, Outcome, Permission, Scope, SessionId};
@@ -218,17 +219,56 @@ pub async fn ask_run(
 /// Whether `cockpit-authorization` allows `session` to ask the owner: `run-commands` over
 /// itself. Every ask is evaluated so; `ask check` asks it alone.
 pub async fn may_ask(write: &WriteTransaction<'_>, session: &SessionId) -> Result<(), Error> {
+    match ask_refusal(write, session).await? {
+        None => Ok(()),
+        Some(refusal) => Err(Refusal::NotAuthorized(refusal).into()),
+    }
+}
+
+/// Refuses the owner's decision on a request whose asking session may no longer ask: once a
+/// session ends or fails it loses `run-commands`, and nobody waits for its requests (#285).
+pub(crate) async fn asker_may_still_ask(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+) -> Result<(), Error> {
+    match ask_refusal(write, session).await? {
+        None => Ok(()),
+        Some(_) => Err(Refusal::AskerMayNotAsk.into()),
+    }
+}
+
+/// Whether `session` may still ask the owner, evaluated once per session in `verdicts`: the
+/// queue leaves out what a session that ended, failed or lost the grant asked (#285).
+pub(crate) async fn may_still_ask(
+    connection: &Connection,
+    verdicts: &mut HashMap<SessionId, bool>,
+    session: &SessionId,
+) -> Result<bool, Error> {
+    if let Some(&allowed) = verdicts.get(session) {
+        return Ok(allowed);
+    }
+    let allowed = ask_refusal(connection, session).await?.is_none();
+    verdicts.insert(session.clone(), allowed);
+    Ok(allowed)
+}
+
+/// `cockpit-authorization`'s refusal of `run-commands` to `session` over itself; `None` when
+/// it may ask.
+async fn ask_refusal(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<cockpit_authorization::Refusal>, Error> {
     let decision = cockpit_authorization::evaluate(
-        write,
+        connection,
         &Actor::Session(session.clone()),
         Permission::RunCommands,
         &Scope::Session(session.clone()),
     )
     .await?;
-    match decision.outcome {
-        Outcome::Allowed(_) => Ok(()),
-        Outcome::Refused(refusal) => Err(Refusal::NotAuthorized(refusal).into()),
-    }
+    Ok(match decision.outcome {
+        Outcome::Allowed(_) => None,
+        Outcome::Refused(refusal) => Some(refusal),
+    })
 }
 
 /// Inserts an asking request; the caller validated and authorized it.
@@ -269,8 +309,9 @@ pub(crate) async fn insert_run(
     .await
 }
 
-/// Requests the owner still has to see: asking (not expired), approved and running, oldest
-/// first. [`queue_order`] puts them in the order the owner is asked.
+/// Requests the owner still has to see: asking (not expired, from a session that may still
+/// ask), approved and running, oldest first. [`queue_order`] puts them in the order the owner
+/// is asked.
 pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunRequest>, Error> {
     let mut rows = connection
         .query(
@@ -286,7 +327,16 @@ pub async fn open_runs(connection: &Connection, now: i64) -> Result<Vec<RunReque
     while let Some(row) = rows.next().await? {
         runs.push(run_from(&row, now)?);
     }
-    Ok(runs)
+    let mut verdicts = HashMap::new();
+    let mut open = Vec::with_capacity(runs.len());
+    for run in runs {
+        if run.state != RunState::Asking
+            || may_still_ask(connection, &mut verdicts, &run.session).await?
+        {
+            open.push(run);
+        }
+    }
+    Ok(open)
 }
 
 /// Report 17's queue: one approval asks at a time per owner. A running command that waits
@@ -673,8 +723,9 @@ async fn undecided(write: &WriteTransaction<'_>, id: RunId, now: i64) -> Result<
     Ok(run)
 }
 
-/// The request if the owner may still decide it and it is still at `revision`, the one the
-/// owner read.
+/// The request if the owner may still approve or edit it: undecided, still at `revision`,
+/// the one the owner read, and asked by a session that may still ask. A decline needs only
+/// [`undecided`].
 async fn undecided_at(
     write: &WriteTransaction<'_>,
     id: RunId,
@@ -688,6 +739,7 @@ async fn undecided_at(
         }
         .into());
     }
+    asker_may_still_ask(write, &run.session).await?;
     Ok(run)
 }
 
