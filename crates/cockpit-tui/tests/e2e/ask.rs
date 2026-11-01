@@ -69,8 +69,10 @@ fn x_declines_and_the_agent_gets_exit_125() {
 fn the_pane_takes_the_keys_from_the_viewer_the_owner_typed_in() {
     let cockpit = Cockpit::start();
     cockpit.shown_session();
-    cockpit.tell_agent(r#"!cockpit ask run --reason "focus check" 'echo should not run'"#);
-    cockpit.wait_for(RUN_KEYS);
+    asked(
+        &cockpit,
+        r#"!cockpit ask run --reason "focus check" 'echo should not run'"#,
+    );
 
     cockpit.press(&["x"]);
 

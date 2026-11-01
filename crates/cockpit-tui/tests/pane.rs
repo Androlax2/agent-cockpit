@@ -62,10 +62,7 @@ fn a_request_appearing_asks_the_daemon_once_for_the_keys_the_viewer_may_hold() {
         after_grace(now),
     );
 
-    assert_eq!(
-        (appeared, still_shown),
-        (vec![Command::ManagerFocus], Vec::new())
-    );
+    assert_eq!((appeared, still_shown), (Some(Command::ManagerFocus), None));
 }
 
 #[test]

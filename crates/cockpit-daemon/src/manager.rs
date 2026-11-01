@@ -124,7 +124,7 @@ fn open(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let created = match manager_state(tmux, &name)? {
-        ManagerState::Whole { .. } => false,
+        ManagerState::Whole(_) => false,
         ManagerState::Absent => true,
         ManagerState::Broken => {
             tracing::warn!("the manager session lost its column or viewer: building it again");
@@ -164,13 +164,15 @@ fn open(
     })
 }
 
+struct ManagerPanes {
+    column: PaneId,
+    viewer: PaneId,
+}
+
 enum ManagerState {
     Absent,
     /// Its column runs and its viewer pane is there.
-    Whole {
-        column: PaneId,
-        viewer: PaneId,
-    },
+    Whole(ManagerPanes),
     Broken,
 }
 
@@ -183,10 +185,12 @@ fn manager_state(
     }
     let panes = tmux.panes(name).map_err(tmux_error)?;
     Ok(match panes.as_slice() {
-        [column, viewer, ..] if column.state == PaneState::Running => ManagerState::Whole {
-            column: column.id.clone(),
-            viewer: viewer.id.clone(),
-        },
+        [column, viewer, ..] if column.state == PaneState::Running => {
+            ManagerState::Whole(ManagerPanes {
+                column: column.id.clone(),
+                viewer: viewer.id.clone(),
+            })
+        }
         _ => ManagerState::Broken,
     })
 }
@@ -205,7 +209,7 @@ async fn show(
         .map_err(|error| crate::sessions::protocol_error(&error))?;
     let viewer = {
         let manager = Arc::clone(&manager);
-        tmux_blocking(move || Ok(whole_manager(manager.tmux()?)?.1)).await?
+        tmux_blocking(move || Ok(whole_manager(manager.tmux()?)?.viewer)).await?
     };
     if shown.state == SessionState::Asleep {
         shown = sessions
@@ -230,16 +234,16 @@ async fn show(
 /// the TUI shows there rather than the agent in the viewer (#317).
 fn focus_column(manager: &Manager) -> Result<Reply, ProtocolError> {
     let tmux = manager.tmux()?;
-    let (column, _) = whole_manager(tmux)?;
-    tmux.select_pane(&column).map_err(tmux_error)?;
+    let panes = whole_manager(tmux)?;
+    tmux.select_pane(&panes.column).map_err(tmux_error)?;
     Ok(Reply::ManagerFocused)
 }
 
 /// The manager's column and viewer panes, or why it has none: only reopening the manager
 /// mends a broken one.
-fn whole_manager(tmux: &cockpit_tmux::Server) -> Result<(PaneId, PaneId), ProtocolError> {
+fn whole_manager(tmux: &cockpit_tmux::Server) -> Result<ManagerPanes, ProtocolError> {
     match manager_state(tmux, &manager_name())? {
-        ManagerState::Whole { column, viewer } => Ok((column, viewer)),
+        ManagerState::Whole(panes) => Ok(panes),
         ManagerState::Absent => Err(ProtocolError::new(
             ErrorCode::NotFound,
             "no manager session is open: run `cockpit tui`",

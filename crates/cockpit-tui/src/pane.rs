@@ -125,7 +125,7 @@ impl Pane {
             return PaneOutcome::NotMine;
         };
         if self.in_grace(now) {
-            self.accepts_input_at = Some(now + INPUT_GRACE);
+            self.focus(now);
             return PaneOutcome::IgnoredInGrace;
         }
         if let Some(typing) = self.typing {

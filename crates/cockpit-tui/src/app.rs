@@ -356,15 +356,15 @@ impl App {
         command: &Command,
         answer: Result<Reply, String>,
         now: Instant,
-    ) -> Vec<Command> {
+    ) -> Option<Command> {
         let reply = match answer {
             Ok(reply) => reply,
             Err(problem) => {
                 self.failed(command, problem);
-                return Vec::new();
+                return None;
             }
         };
-        let mut send = Vec::new();
+        let mut send = None;
         if self
             .failure
             .as_ref()
@@ -377,7 +377,7 @@ impl App {
             Reply::AgentReports { reports } => self.board.set_reports(reports),
             Reply::ApprovalQueue { runs, guides } => {
                 self.board.set_queue(runs, guides);
-                send.extend(self.follow_queue(now));
+                send = self.follow_queue(now);
             }
             // tmux moved the keys only now, perhaps long after the pane showed the request:
             // the first key they bring waits out the grace again.
@@ -464,12 +464,14 @@ impl App {
         match (was_showing, self.pane.shown().is_some()) {
             (false, true) => {
                 self.focus = Focus::Pane;
-                return Some(Command::ManagerFocus);
+                Some(Command::ManagerFocus)
             }
-            (_, false) => self.focus = Focus::List,
-            _ => {}
+            (_, false) => {
+                self.focus = Focus::List;
+                None
+            }
+            _ => None,
         }
-        None
     }
 
     fn note(&mut self, entry: String) {
