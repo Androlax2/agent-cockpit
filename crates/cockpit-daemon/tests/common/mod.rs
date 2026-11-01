@@ -330,6 +330,7 @@ pub fn wiring_in(
         },
         git: cockpit_projects::Git::from_path(),
         providers,
+        unavailable_providers: Vec::new(),
         sessions: unsandboxed_settings(),
         desktop_environment: Vec::new(),
         session_tick: Duration::from_secs(3600),

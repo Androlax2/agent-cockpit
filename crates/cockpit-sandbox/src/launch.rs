@@ -71,6 +71,11 @@ impl Sandbox {
         Sandbox::new(Platform::detect(), Err(reason.into()), HostPaths::default())
     }
 
+    /// The host's platform, as the daemon detected it.
+    pub fn platform(&self) -> &Platform {
+        &self.platform
+    }
+
     /// The engine, or why there is none.
     pub fn engine(&self) -> Result<&Greywall, &str> {
         self.engine.as_ref().map_err(String::as_str)

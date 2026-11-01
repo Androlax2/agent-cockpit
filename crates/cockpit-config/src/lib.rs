@@ -115,6 +115,47 @@ pub struct EffectiveConfig {
     pub agents_sandbox: Sourced<AgentSandbox>,
     /// The checks the project declares, in its order: what Cockpit runs and a gate requires.
     pub checks: Vec<Sourced<Check>>,
+    /// Where the project expects its work to run (`[execution] environment`); unset asks for
+    /// nothing. Readiness compares it with what the owner granted and the host has (#50).
+    pub execution_environment: Sourced<Option<ExecutionEnvironment>>,
+    /// What one agent's work in the project needs reserved (`[needs]`); unset asks for nothing.
+    pub needs: Sourced<Option<ProjectNeeds>>,
+    /// The result files the project's work is expected to produce (`[results] artifacts`),
+    /// relative to the checkout.
+    pub result_artifacts: Sourced<Vec<String>>,
+}
+
+/// Where a project expects its work to run (report 09). It describes a requirement: a
+/// project that expects `native` work still runs sandboxed until the owner turns the sandbox
+/// off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionEnvironment {
+    /// Directly on the host, with the owner's rights.
+    Native,
+    /// Inside Cockpit's sandbox.
+    Sandbox,
+    /// In containers of a Docker engine.
+    Docker,
+}
+
+impl ExecutionEnvironment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Sandbox => "sandbox",
+            Self::Docker => "docker",
+        }
+    }
+}
+
+/// What one agent's work in the project needs reserved, in `cockpit-resource-admission`'s
+/// units; `0` asks for none of that resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProjectNeeds {
+    /// Thousandths of one CPU.
+    pub cpu_millis: u64,
+    pub memory_mib: u64,
 }
 
 /// Whether a launched agent gets the owner's display and session bus variables. The one
@@ -253,6 +294,29 @@ struct SettingsFile {
     sessions: Option<Spanned<SessionsTable>>,
     agents: Option<Spanned<AgentsTable>>,
     checks: Option<Spanned<Vec<Spanned<CheckEntry>>>>,
+    execution: Option<Spanned<ExecutionTable>>,
+    needs: Option<Spanned<NeedsTable>>,
+    results: Option<Spanned<ResultsTable>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionTable {
+    environment: Option<Spanned<ExecutionEnvironment>>,
+}
+
+/// `u64` keeps a negative value a parse error with its line.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NeedsTable {
+    cpu_millis: Option<u64>,
+    memory_mib: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResultsTable {
+    artifacts: Option<Spanned<Vec<String>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -394,6 +458,9 @@ pub fn load(
         agents_desktop_session: agents_desktop_session(&layers),
         agents_sandbox: agents_sandbox(&layers),
         checks: checks(&layers)?,
+        execution_environment: execution_environment(&layers),
+        needs: needs(&layers)?,
+        result_artifacts: result_artifacts(&layers)?,
     })
 }
 
@@ -447,6 +514,9 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         agents,
         workflow: _,
         checks: _,
+        execution: _,
+        needs: _,
+        results: _,
     } = &layer.settings;
     if let Some(tasks) = tasks {
         return Err(ConfigError::OwnerOnly {
@@ -481,12 +551,23 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// The owner's file declares no checks: they would apply to every project.
+/// The owner's file declares none of a project's own settings: they would apply to every
+/// project.
 fn reject_project_settings(layer: &Layer) -> Result<(), ConfigError> {
-    if let Some(checks) = &layer.settings.checks {
+    let settings = &layer.settings;
+    let declared = [
+        ("checks", settings.checks.as_ref().map(Spanned::span)),
+        ("execution", settings.execution.as_ref().map(Spanned::span)),
+        ("needs", settings.needs.as_ref().map(Spanned::span)),
+        ("results", settings.results.as_ref().map(Spanned::span)),
+    ];
+    if let Some((key, span)) = declared
+        .into_iter()
+        .find_map(|(key, span)| Some((key, span?)))
+    {
         return Err(ConfigError::Invalid {
-            key: "checks".to_string(),
-            source: layer.source_at(checks.span()),
+            key: key.to_string(),
+            source: layer.source_at(span),
             reason: "describes a project; declare it in the project's .cockpit/config.toml"
                 .to_string(),
         });
@@ -887,4 +968,86 @@ fn checks(layers: &[Layer]) -> Result<Vec<Sourced<Check>>, ConfigError> {
         }
     }
     Ok(checks)
+}
+
+/// Only the project file declares the project's own settings, so each has one value and no
+/// precedence.
+fn execution_environment(layers: &[Layer]) -> Sourced<Option<ExecutionEnvironment>> {
+    let mut resolved = Sourced::new(None, Source::ProductDefault);
+    for layer in layers {
+        let Some(value) = layer
+            .settings
+            .execution
+            .as_ref()
+            .and_then(|execution| execution.get_ref().environment.as_ref())
+        else {
+            continue;
+        };
+        resolved = Sourced::new(Some(*value.get_ref()), layer.source_at(value.span()));
+    }
+    resolved
+}
+
+fn needs(layers: &[Layer]) -> Result<Sourced<Option<ProjectNeeds>>, ConfigError> {
+    let mut resolved = Sourced::new(None, Source::ProductDefault);
+    for layer in layers {
+        let Some(table) = &layer.settings.needs else {
+            continue;
+        };
+        let source = layer.source_at(table.span());
+        let NeedsTable {
+            cpu_millis,
+            memory_mib,
+        } = table.get_ref();
+        if cpu_millis.is_none() && memory_mib.is_none() {
+            return Err(ConfigError::Invalid {
+                key: "needs".to_string(),
+                source,
+                reason: "names neither cpu_millis nor memory_mib".to_string(),
+            });
+        }
+        let needs = ProjectNeeds {
+            cpu_millis: cpu_millis.unwrap_or(0),
+            memory_mib: memory_mib.unwrap_or(0),
+        };
+        resolved = Sourced::new(Some(needs), source);
+    }
+    Ok(resolved)
+}
+
+/// Each artifact is a path inside the checkout: relative, without `..`.
+fn result_artifacts(layers: &[Layer]) -> Result<Sourced<Vec<String>>, ConfigError> {
+    let mut resolved = Sourced::new(Vec::new(), Source::ProductDefault);
+    for layer in layers {
+        let Some(artifacts) = layer
+            .settings
+            .results
+            .as_ref()
+            .and_then(|results| results.get_ref().artifacts.as_ref())
+        else {
+            continue;
+        };
+        let source = layer.source_at(artifacts.span());
+        for artifact in artifacts.get_ref() {
+            let path = Path::new(artifact);
+            let reason = if artifact.trim().is_empty() {
+                Some("is empty")
+            } else if path.is_absolute() {
+                Some("is absolute; name it relative to the checkout")
+            } else if path.components().any(|part| part == Component::ParentDir) {
+                Some("contains `..`")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(ConfigError::Invalid {
+                    key: "results.artifacts".to_string(),
+                    source,
+                    reason: format!("entry {artifact:?} {reason}"),
+                });
+            }
+        }
+        resolved = Sourced::new(artifacts.get_ref().clone(), source);
+    }
+    Ok(resolved)
 }

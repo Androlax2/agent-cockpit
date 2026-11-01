@@ -8,6 +8,7 @@ use crate::error::{ErrorCode, ProtocolError, bounded};
 use crate::instructions::{ContextBudgetView, InstructionTopicView};
 use crate::projects::{CheckoutView, KeptCheckout, ProjectView};
 use crate::queue::{QueueExplanationView, QueuePlacementView};
+use crate::readiness::RequirementView;
 use crate::resources::{ProfileView, ReservationView, ResourceStatusView, VerdictView};
 use crate::sessions::{
     AppliedSettingView, ManagerPaneView, ProviderView, SandboxEvidenceView, SessionFailure,
@@ -530,6 +531,12 @@ pub enum Command {
     },
     /// The providers `session-new` may name in `agent`: those the daemon was started with.
     ProviderList,
+    /// Owner only: the readiness report (#50): this host's requirements and, with `project`
+    /// (an absolute directory), that project's, each with its status and next action.
+    Readiness {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// Owner only: the [`crate::DESKTOP_SESSION_VARIABLES`] later launches get, replacing
     /// the ones the daemon had (#307). Only the set ones travel; a name missing here is
     /// unset in later agents. Running agents keep theirs.
@@ -752,6 +759,9 @@ pub enum Reply {
     },
     Providers {
         providers: Vec<ProviderView>,
+    },
+    Readiness {
+        requirements: Vec<RequirementView>,
     },
     /// `None`: the session has not launched an agent yet.
     SessionSandbox {

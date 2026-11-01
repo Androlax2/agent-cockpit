@@ -90,6 +90,33 @@ pub fn render(config: &EffectiveConfig) -> String {
     for ((key, value), source) in session_settings.rendered().into_iter().zip(sources) {
         lines.push(line(key, &value, source));
     }
+    // Before the start files and checks, which list last as they grow.
+    lines.push(line(
+        "execution.environment",
+        &config
+            .execution_environment
+            .value
+            .map_or(UNSET.to_string(), |environment| {
+                Value::from(environment.as_str()).to_string()
+            }),
+        &config.execution_environment.source,
+    ));
+    let needs = config.needs.value;
+    for (key, amount) in [
+        ("needs.cpu_millis", needs.map(|needs| needs.cpu_millis)),
+        ("needs.memory_mib", needs.map(|needs| needs.memory_mib)),
+    ] {
+        lines.push(line(
+            key,
+            &amount.map_or(UNSET.to_string(), |amount| amount.to_string()),
+            &config.needs.source,
+        ));
+    }
+    lines.push(line(
+        "results.artifacts",
+        &Value::from(config.result_artifacts.value.clone()).to_string(),
+        &config.result_artifacts.source,
+    ));
     for start_file in &config.start_files {
         let mut fields = Table::new();
         fields.insert("path".to_string(), path_toml(&start_file.value.path));

@@ -26,6 +26,7 @@ mod ask;
 mod check;
 mod daemon;
 mod desktop_session;
+mod doctor;
 mod instructions;
 mod mcp;
 mod projects;
@@ -71,6 +72,7 @@ const USAGE: &str = "usage: cockpit config show [--project DIR] [--set KEY=VALUE
        cockpit sandbox show DIR [--agent NAME]
        cockpit provider list
        cockpit desktop-session import
+       cockpit doctor [--project DIR]
        cockpit tui
        cockpit version [--all]
        cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...
@@ -181,6 +183,9 @@ fn main() -> ExitCode {
             Ok(()) => desktop_session::import(),
             Err(problem) => usage_error(Some(problem)),
         },
+        [Some("doctor"), ..] => {
+            doctor::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+        }
         [Some("tui"), ..] => {
             tui::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }

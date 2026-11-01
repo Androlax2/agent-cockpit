@@ -472,6 +472,7 @@ dependencies = [
  "cockpit-projects",
  "cockpit-protocol",
  "cockpit-provider-api",
+ "cockpit-readiness",
  "cockpit-resource-admission",
  "cockpit-sandbox",
  "cockpit-scheduling",
@@ -549,6 +550,15 @@ name = "cockpit-provider-api"
 version = "0.1.0"
 dependencies = [
  "cockpit-provider-api",
+ "tempfile",
+]
+
+[[package]]
+name = "cockpit-readiness"
+version = "0.1.0"
+dependencies = [
+ "cockpit-config",
+ "serde_json",
  "tempfile",
 ]
 

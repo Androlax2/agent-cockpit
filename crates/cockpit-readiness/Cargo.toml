@@ -1,0 +1,18 @@
+[package]
+name = "cockpit-readiness"
+description = "Owns the readiness report: one status and a next action per requirement, from facts the daemon gathers from their owners and the project's configuration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
+cockpit-config = { path = "../cockpit-config", version = "0.1.0" }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

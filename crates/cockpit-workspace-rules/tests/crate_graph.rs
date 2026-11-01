@@ -275,6 +275,14 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: &["cockpit-sandbox"],
         allowed: &["cockpit-config", "cockpit-turso"],
     },
+    // #50: readiness assesses facts the daemon gathers from their owners (tmux, sandbox,
+    // providers, admission, presets, projects) and the configuration; it asks no capability
+    // itself, so no owner's probe or state is reached twice.
+    AllowList {
+        rule: "readiness -> config only",
+        from: &["cockpit-readiness"],
+        allowed: &["cockpit-config"],
+    },
     // Producers own what a message or an entity means and depend on messaging, never the
     // reverse; the daemon converts the feed to wire types (#41).
     AllowList {

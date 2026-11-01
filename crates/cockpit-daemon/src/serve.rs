@@ -78,10 +78,12 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
     })?;
     let start_files = config.declared_start_files();
     // Discovery runs programs and may block for seconds, so it comes before the runtime.
-    let providers: Vec<Arc<dyn Provider>> = claude_code(&serve.programs_dir)
-        .into_iter()
-        .map(|claude| Arc::new(claude) as Arc<dyn Provider>)
-        .collect();
+    let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
+    let mut unavailable_providers = Vec::new();
+    match claude_code(&serve.programs_dir) {
+        Ok(claude) => providers.push(Arc::new(claude)),
+        Err(reason) => unavailable_providers.push(("claude".to_owned(), reason)),
+    }
     let sandbox = sandbox(
         instance.options(),
         &environment,
@@ -114,6 +116,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             },
             git: cockpit_projects::Git::from_path(),
             providers,
+            unavailable_providers,
             sessions,
             // The start's values until the owner imports fresher ones (#307).
             desktop_environment: own_variables(&cockpit_protocol::DESKTOP_SESSION_VARIABLES)
@@ -223,17 +226,17 @@ fn own_variables(names: &[&str]) -> impl Iterator<Item = (OsString, OsString)> {
 }
 
 /// The Claude Code adapter for the `claude` on the daemon's `PATH`, with the hook bridge and
-/// the `cockpit` program installed in `programs_dir`. `None`, logged, when there is none or
-/// it does not answer its version.
-fn claude_code(programs_dir: &Path) -> Option<cockpit_claude::ClaudeCode> {
-    let unavailable = |reason: &dyn std::fmt::Display| {
+/// the `cockpit` program installed in `programs_dir`. Why not, logged, when there is none or
+/// it does not answer its version: the readiness report names it (#50).
+fn claude_code(programs_dir: &Path) -> Result<cockpit_claude::ClaudeCode, String> {
+    let unavailable = |reason: String| {
         tracing::warn!("provider claude unavailable: {reason}");
+        reason
     };
     let Some(program) =
         std::env::var_os("PATH").and_then(|path| cockpit_claude::ClaudeCode::find_on_path(&path))
     else {
-        unavailable(&"no `claude` on PATH");
-        return None;
+        return Err(unavailable("no `claude` on PATH".to_owned()));
     };
     let bridge = cockpit_claude::Bridge {
         hook_program: programs_dir.join("cockpit-claude-hook"),
@@ -248,13 +251,8 @@ fn claude_code(programs_dir: &Path) -> Option<cockpit_claude::ClaudeCode> {
             None
         }
     };
-    let claude = match cockpit_claude::ClaudeCode::discover(&program, bridge) {
-        Ok(claude) => claude,
-        Err(error) => {
-            unavailable(&error);
-            return None;
-        }
-    };
+    let claude = cockpit_claude::ClaudeCode::discover(&program, bridge)
+        .map_err(|error| unavailable(error.to_string()))?;
     let provenance = match claude.provenance() {
         Provenance::Tested { .. } => "tested",
         Provenance::Discovered => "unverified",
@@ -263,5 +261,5 @@ fn claude_code(programs_dir: &Path) -> Option<cockpit_claude::ClaudeCode> {
         "provider claude ready version={} provenance={provenance}",
         claude.version().unwrap_or("unknown")
     );
-    Some(claude)
+    Ok(claude)
 }
