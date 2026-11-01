@@ -2,6 +2,8 @@
 //! owner can end the session instead of being refused `conflict` until the daemon restarts.
 //! The real socket and routes; the fixture provider's `launch` never returns while its gate
 //! is closed, as a hung provider or tmux step would hold the launch.
+//! Issue #325: a timed-out step keeps its blocking permit until it returns. Issue #324: a
+//! launch does not open its session's terminal while an earlier step on it is outstanding.
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -54,6 +56,7 @@ struct Home {
     is_closed: Arc<AtomicBool>,
     /// The tmux the daemon runs: the real one unless a test hangs it.
     tmux: PathBuf,
+    blocking_steps: Option<usize>,
 }
 
 impl Home {
@@ -64,7 +67,61 @@ impl Home {
             _dir: dir,
             is_closed: Arc::new(AtomicBool::new(true)),
             tmux: PathBuf::from("tmux"),
+            blocking_steps: None,
         }
+    }
+
+    /// A home whose daemon has one blocking step permit and whose provider hangs.
+    fn with_one_blocking_step() -> Home {
+        let mut home = Home::new();
+        home.blocking_steps = Some(1);
+        home
+    }
+
+    /// A home whose provider answers at once and whose tmux, once [`Home::hang_next_open`]
+    /// armed it, holds the next `new-session` until [`Home::release_hung_open`], then runs it,
+    /// as a hung tmux server that recovers would.
+    fn with_a_tmux_that_recovers() -> Home {
+        let mut home = Home::new();
+        home.is_closed.store(false, Ordering::SeqCst);
+        let root = home.root.display();
+        let tmux = home.root.join("recovering-tmux");
+        std::fs::write(
+            &tmux,
+            format!(
+                "#!/bin/sh\n\
+                 for word; do\n\
+                 if [ \"$word\" = new-session ] && [ -e {root}/armed ] && mkdir {root}/hung 2>/dev/null; then\n\
+                 while [ -e {root}/gate ]; do sleep 0.05; done\n\
+                 tmux \"$@\"; status=$?; touch {root}/returned; exit $status\n\
+                 fi\n\
+                 done\n\
+                 exec tmux \"$@\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&tmux, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        home.tmux = tmux;
+        home
+    }
+
+    fn hang_next_open(&self) {
+        std::fs::write(self.root.join("gate"), "").unwrap();
+        std::fs::write(self.root.join("armed"), "").unwrap();
+    }
+
+    /// Lets the held `new-session` run and waits until it returned.
+    async fn release_hung_open(&self) {
+        std::fs::remove_file(self.root.join("gate")).unwrap();
+        let returned = self.root.join("returned");
+        tokio::time::timeout(GENEROUS, async {
+            while !returned.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the held new-session returns once released");
     }
 
     /// A home whose provider answers at once and whose tmux never answers `new-session`, as
@@ -96,6 +153,9 @@ impl Home {
             })],
         );
         wiring.sessions.step_timeout = STEP_TIMEOUT;
+        if let Some(blocking_steps) = self.blocking_steps {
+            wiring.sessions.blocking_steps = blocking_steps;
+        }
         wiring.tmux.tmux = self.tmux.clone();
         let options = Options {
             runtime_dir: self.root.join("run/cockpit"),
@@ -170,8 +230,13 @@ async fn a_hung_launch(home: &Home) -> (Daemon, Connection, Result<Reply, Client
         .await
         .unwrap();
     let root = home.project(&client).await;
-    let answer = request(
-        &client,
+    let answer = new_session(&client, &root).await;
+    (daemon, client, answer)
+}
+
+async fn new_session(client: &Connection, root: &Path) -> Result<Reply, ClientError> {
+    request(
+        client,
         Command::SessionNew {
             dir: root.display().to_string(),
             agent: Some("fake".to_owned()),
@@ -179,8 +244,38 @@ async fn a_hung_launch(home: &Home) -> (Daemon, Connection, Result<Reply, Client
             clone: None,
         },
     )
+    .await
+}
+
+/// A running session in a daemon whose tmux recovers, and the session's id.
+async fn a_running_session(home: &Home) -> (Daemon, Connection, String) {
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    match new_session(&client, &root).await {
+        Ok(Reply::Session { session }) => {
+            assert_eq!(session.state, SessionStateView::Running, "{session:?}");
+            (daemon, client, session.id)
+        }
+        other => panic!("session-new: {other:?}"),
+    }
+}
+
+/// Restarts the session while tmux holds the relaunch's `new-session`: the restart fails
+/// with the open's timeout, and the held open is still outstanding.
+async fn restart_into_a_hung_open(home: &Home, client: &Connection, id: &str) {
+    home.hang_next_open();
+    let restarted = request(
+        client,
+        Command::SessionRestart {
+            session: id.to_owned(),
+        },
+    )
     .await;
-    (daemon, client, answer)
+    let error = common::refused(restarted);
+    assert!(error.message.contains("open the terminal"), "{error:?}");
 }
 
 async fn the_only_session(client: &Connection) -> cockpit_protocol::SessionView {
@@ -238,5 +333,70 @@ async fn a_launch_whose_terminal_never_opens_fails_and_its_session_can_be_ended(
     match ended {
         Ok(Reply::Session { session }) => assert_eq!(session.state, SessionStateView::Ended),
         other => panic!("session-end: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_is_answered_busy_while_a_timed_out_step_holds_every_permit() {
+    let home = Home::with_one_blocking_step();
+    let (_daemon, client, _answer) = a_hung_launch(&home).await;
+    let root = home.root.join("projects/app");
+
+    let error = common::refused(new_session(&client, &root).await);
+
+    assert_eq!(error.code, ErrorCode::Busy, "{error:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_timed_out_step_gives_its_permit_back_once_it_returns() {
+    let home = Home::with_one_blocking_step();
+    let (_daemon, client, _answer) = a_hung_launch(&home).await;
+    let root = home.root.join("projects/app");
+
+    home.is_closed.store(false, Ordering::SeqCst);
+    let started = tokio::time::timeout(GENEROUS, async {
+        loop {
+            match new_session(&client, &root).await {
+                Err(ClientError::Daemon(error)) if error.code == ErrorCode::Busy => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                other => break other,
+            }
+        }
+    })
+    .await
+    .expect("the permit comes back once the hung launch returns");
+
+    match started {
+        Ok(Reply::Session { session }) => assert_eq!(session.state, SessionStateView::Running),
+        other => panic!("session-new: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_does_not_open_the_terminal_while_a_timed_out_open_is_outstanding() {
+    let home = Home::with_a_tmux_that_recovers();
+    let (_daemon, client, id) = a_running_session(&home).await;
+    restart_into_a_hung_open(&home, &client, &id).await;
+
+    let resumed = request(&client, Command::SessionResume { session: id }).await;
+
+    let error = common::refused(resumed);
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert!(error.message.contains("has not returned"), "{error:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_opens_the_terminal_once_the_timed_out_open_returned() {
+    let home = Home::with_a_tmux_that_recovers();
+    let (_daemon, client, id) = a_running_session(&home).await;
+    restart_into_a_hung_open(&home, &client, &id).await;
+    home.release_hung_open().await;
+
+    let resumed = request(&client, Command::SessionResume { session: id }).await;
+
+    match resumed {
+        Ok(Reply::Session { session }) => assert_eq!(session.state, SessionStateView::Running),
+        other => panic!("session-resume: {other:?}"),
     }
 }
