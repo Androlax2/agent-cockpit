@@ -298,7 +298,7 @@ impl Cockpit {
             Some(socket) => self.socket = PathBuf::from(socket.trim()),
             None => panic!(
                 "the daemon did not report ready: stdout {line:?}, stderr {}",
-                self.daemon_stderr()
+                self.failure_context()
             ),
         }
     }
@@ -312,7 +312,7 @@ impl Cockpit {
 
     /// What a failed wait shows after the screen: the daemon's stderr, the end of its log and
     /// of the TUI's (which keys it took), and the fake agent's launches.
-    fn daemon_stderr(&self) -> String {
+    fn failure_context(&self) -> String {
         let read = |path: &Path| {
             String::from_utf8_lossy(&std::fs::read(path).unwrap_or_default()).into_owned()
         };
@@ -648,7 +648,7 @@ impl Cockpit {
                 Err(RecvTimeoutError::Timeout) => panic!(
                     "waited {GENEROUS:?} for: {what}\n--- screen ---\n{screen}\n--- daemon \
                      stderr ---\n{}",
-                    self.daemon_stderr()
+                    self.failure_context()
                 ),
                 Err(RecvTimeoutError::Disconnected) => {
                     panic!("the test terminal closed while waiting for: {what}\n{screen}")
@@ -790,7 +790,7 @@ impl Cockpit {
         outcome.unwrap_or_else(|(error, screen)| {
             panic!(
                 "{error:?} waiting for {session}'s screen: {what}\n{screen:#?}\n{}",
-                self.daemon_stderr()
+                self.failure_context()
             )
         })
     }
