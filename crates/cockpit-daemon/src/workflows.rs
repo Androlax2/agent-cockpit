@@ -65,48 +65,57 @@ async fn owner(command: Command, context: &Context) -> Answer {
         Command::WorkflowPresets => Ok(presets_reply()),
         Command::WorkflowStart { item, preset } => start(context, item, preset).await,
         command if is_read(&command) => {
-            let read = context
-                .database
-                .read()
-                .await
-                .map_err(|error| internal(&error))?;
+            let read = context.database.read().await?;
             read_reply(&read, &Actor::Owner, command).await
         }
         command => {
-            let write = context
-                .database
-                .write()
-                .await
-                .map_err(|error| internal(&error))?;
+            let write = context.database.write().await?;
             let reply = dispatch(&write, &Actor::Owner, &Capabilities::none(), command).await?;
-            write.commit().await.map_err(|error| internal(&error))?;
+            write.commit().await?;
             Ok(reply)
         }
     }
 }
 
+/// Identifies the sender and resolves its project (and, to begin a step, its provider) on a
+/// read transaction, answers reads there, and takes the writer only to change state. A
+/// launch not bound yet is identified, and so bound, under the writer.
 async fn agent(command: Command, sender: Sender, context: &Context) -> Answer {
     if matches!(command, Command::WorkflowPresets) {
         return Ok(presets_reply());
     }
-    let write = context
-        .database
-        .write()
-        .await
-        .map_err(|error| internal(&error))?;
-    let session = sender.identify(&write, launch_token(&command)).await?;
-    let project = sender.project(&write).await?.map(|project| project.name);
-    let capabilities = match &command {
-        Command::WorkflowBegin { .. } => provider_capabilities(context, &session).await?,
-        _ => Capabilities::none(),
+    let token = launch_token(&command);
+    let read = context.database.read().await?;
+    let bound = sender.identify_bound(&read, token.as_deref()).await?;
+    let project = sender.project(&read).await?.map(|project| project.name);
+    if let Some(session) = &bound
+        && is_read(&command)
+    {
+        let actor = Actor::Session {
+            session: session.clone(),
+            project,
+        };
+        return read_reply(&read, &actor, command).await;
+    }
+    drop(read);
+    let is_begin = matches!(command, Command::WorkflowBegin { .. });
+    let mut capabilities = match &bound {
+        Some(session) if is_begin => Some(provider_capabilities(context, session).await?),
+        _ => None,
     };
+    let write = context.database.write().await?;
+    let session = sender.identify(&write, token).await?;
+    if is_begin && capabilities.is_none() {
+        capabilities = Some(provider_capabilities(context, &session).await?);
+    }
     let actor = Actor::Session { session, project };
     let reply = if is_read(&command) {
         read_reply(&write, &actor, command).await?
     } else {
+        let capabilities = capabilities.unwrap_or_else(Capabilities::none);
         dispatch(&write, &actor, &capabilities, command).await?
     };
-    write.commit().await.map_err(|error| internal(&error))?;
+    write.commit().await?;
     Ok(reply)
 }
 
@@ -137,11 +146,7 @@ async fn provider_capabilities(
 /// a preset nobody chose.
 async fn start(context: &Context, item: i64, asked: Option<String>) -> Answer {
     let (kind, configured) = {
-        let read = context
-            .database
-            .read()
-            .await
-            .map_err(|error| internal(&error))?;
+        let read = context.database.read().await?;
         let task = cockpit_tasks::item(&read, &Actor::Owner, cockpit_tasks::ItemId(item))
             .await
             .map_err(|error| match error {
@@ -159,11 +164,7 @@ async fn start(context: &Context, item: i64, asked: Option<String>) -> Answer {
         (task.kind, configured)
     };
     let preset = cockpit_workflows::select_preset(configured.as_deref(), kind)?;
-    let write = context
-        .database
-        .write()
-        .await
-        .map_err(|error| internal(&error))?;
+    let write = context.database.write().await?;
     let run = cockpit_workflows::start(
         &write,
         &Actor::Owner,
@@ -172,7 +173,7 @@ async fn start(context: &Context, item: i64, asked: Option<String>) -> Answer {
         now(),
     )
     .await?;
-    write.commit().await.map_err(|error| internal(&error))?;
+    write.commit().await?;
     Ok(Reply::Workflow {
         workflow: Box::new(workflow_view(&run)),
     })

@@ -5,7 +5,6 @@
 //! daemon decides what each may do.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
@@ -13,9 +12,9 @@ use cockpit_protocol::{
     WorkflowPacketView, WorkflowPresetView, WorkflowStepView, WorkflowView,
 };
 
-use crate::agent::{agent_socket, exchange, failed, launch_token, socket_dir};
+use crate::agent::{exchange, failed, launch_token};
 use crate::daemon::utf8_words;
-use crate::todo::{Flags, number};
+use crate::todo::{Flags, number, socket};
 
 const HANDOFF_FLAGS: [&str; 4] = ["--changed", "--checked", "--outcome", "--needs-human"];
 
@@ -144,14 +143,6 @@ pub(crate) fn run(request: Request) -> ExitCode {
     }
 }
 
-fn socket(is_session: bool) -> Result<PathBuf, ExitCode> {
-    if is_session {
-        agent_socket()
-    } else {
-        Ok(socket_dir()?.join(cockpit_config::DAEMON_SOCKET))
-    }
-}
-
 /// The handoff the flags give: what changed, what was checked and the outcome are required.
 fn handoff(flags: &mut Flags) -> Result<WorkflowHandoffView, String> {
     Ok(WorkflowHandoffView {
@@ -161,6 +152,12 @@ fn handoff(flags: &mut Flags) -> Result<WorkflowHandoffView, String> {
         needs_human: flags.take("--needs-human").unwrap_or_default(),
         evidence: flags.many("--evidence"),
     })
+}
+
+/// Free text a session or the owner wrote, its later lines indented so none reads as a
+/// field line of its own (`next:` in a checkpoint note).
+fn prose(text: &str) -> String {
+    text.replace('\n', "\n  ")
 }
 
 fn workflow_id(text: &str) -> Result<i64, String> {
@@ -206,7 +203,7 @@ fn details(workflow: &WorkflowView) -> String {
         text.push_str(&format!(
             "blocked: {}: {}\n",
             blocked.action.as_str(),
-            blocked.detail
+            prose(&blocked.detail)
         ));
     }
     for step in &workflow.steps {
@@ -229,7 +226,7 @@ fn step_line(step: &WorkflowStepView) -> String {
     }
     text.push(')');
     if let Some(checkpoint) = &step.checkpoint {
-        text.push_str(&format!(": {}", checkpoint.note));
+        text.push_str(&format!(": {}", prose(&checkpoint.note)));
     }
     text.push('\n');
     text
@@ -267,13 +264,13 @@ fn packet_text(packet: &WorkflowPacketView) -> String {
         text.push_str(&format!(
             "blocked: {}: {}\n",
             blocked.action.as_str(),
-            blocked.detail
+            prose(&blocked.detail)
         ));
     }
     for decision in &packet.decisions {
         text.push_str(&format!("decided: {} {}", decision.item, decision.title));
         if let Some(summary) = &decision.summary {
-            text.push_str(&format!(": {summary}"));
+            text.push_str(&format!(": {}", prose(summary)));
         }
         text.push('\n');
     }
@@ -283,14 +280,14 @@ fn packet_text(packet: &WorkflowPacketView) -> String {
             record.position,
             record.step,
             record.kind,
-            record.handoff.changed,
-            record.handoff.checked,
-            record.handoff.outcome
+            prose(&record.handoff.changed),
+            prose(&record.handoff.checked),
+            prose(&record.handoff.outcome)
         ));
         if !record.handoff.needs_human.is_empty() {
             text.push_str(&format!(
                 "needs the human: {}\n",
-                record.handoff.needs_human
+                prose(&record.handoff.needs_human)
             ));
         }
     }

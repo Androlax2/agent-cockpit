@@ -215,7 +215,7 @@ pub(crate) fn run(request: Request) -> ExitCode {
     }
 }
 
-fn socket(is_session: bool) -> Result<PathBuf, ExitCode> {
+pub(crate) fn socket(is_session: bool) -> Result<PathBuf, ExitCode> {
     if is_session {
         agent_socket()
     } else {

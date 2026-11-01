@@ -409,7 +409,7 @@ impl Sender {
     }
 
     /// [`Sender::identify`] read-only; `None` when only a write may bind the launch.
-    async fn identify_bound(
+    pub(crate) async fn identify_bound(
         &self,
         connection: &Connection,
         launch_token: Option<&str>,
@@ -419,14 +419,11 @@ impl Sender {
 
     /// The registered checkout the sender works in, deepest first. Until sessions record
     /// their checkout (#31), the sender's working directory is the evidence.
-    pub(crate) async fn project(
-        &self,
-        write: &WriteTransaction<'_>,
-    ) -> Result<Option<Project>, Failed> {
+    pub(crate) async fn project(&self, connection: &Connection) -> Result<Option<Project>, Failed> {
         let Some(cwd) = self.cwd().await else {
             return Ok(None);
         };
-        let checkouts = cockpit_projects::checkouts(write, None)
+        let checkouts = cockpit_projects::checkouts(connection, None)
             .await
             .map_err(|error| internal(&error))?;
         Ok(checkouts

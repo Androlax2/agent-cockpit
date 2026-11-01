@@ -113,7 +113,8 @@ impl Refusal {
             Refusal::Blocked { run } => (
                 UnblockedBy::Owner,
                 format!(
-                    "do what the blocker asks, then `cockpit workflow unblock {}`",
+                    "do what the blocker asks; then the owner, or the session doing the step, \
+                     runs `cockpit workflow unblock {}`",
                     run.0
                 ),
             ),

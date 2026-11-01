@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use cockpit_protocol::{
-    Command, Outcome, Reply, WorkflowHandoffView, WorkflowNextView, WorkflowStatusView,
-    WorkflowView,
+    Command, Outcome, Reply, WorkflowCheckpointView, WorkflowHandoffView, WorkflowNextView,
+    WorkflowStatusView, WorkflowStepStatusView, WorkflowStepView, WorkflowView,
 };
 use common::TestHome;
 use scripted::{scripted_daemon, text};
@@ -286,5 +286,45 @@ async fn a_session_releases_its_step_with_a_handoff() {
                 evidence: vec!["receipt 7".to_owned()],
             }),
         }
+    );
+}
+
+#[tokio::test]
+async fn a_multi_line_checkpoint_note_never_reads_as_the_workflows_next_line() {
+    let sandbox = Sandbox::new();
+    let mut view = begun_view();
+    view.steps = vec![WorkflowStepView {
+        position: 1,
+        name: "implement".to_owned(),
+        purpose: "Make the change".to_owned(),
+        doer: "agent".to_owned(),
+        status: WorkflowStepStatusView::Active,
+        session: Some("s0123456789ab".to_owned()),
+        checkpoint: Some(WorkflowCheckpointView {
+            note: "tests pass\nnext: docs".to_owned(),
+            revision: 1,
+            at: 10,
+        }),
+        attempts: 1,
+        requirements: Vec::new(),
+        required_capabilities: Vec::new(),
+    }];
+    let _daemon = scripted_daemon(
+        &sandbox.agent_socket(),
+        Outcome::Ok(Reply::Workflow {
+            workflow: Box::new(view),
+        }),
+    );
+
+    let output = sandbox.cockpit(&["workflow", "show", "3"]).await;
+
+    let shown = text(&output.stdout);
+    assert!(
+        shown.contains("step 1 implement (active, s0123456789ab): tests pass\n  next: docs\n"),
+        "{shown}"
+    );
+    assert_eq!(
+        the_line(&shown, "next:"),
+        "next: session s0123456789ab works on step 1"
     );
 }

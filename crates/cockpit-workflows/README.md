@@ -39,7 +39,8 @@ The preset a task follows: the one the owner names, else the project's `workflow
   records the item's intent revision, and the packet says when the intent has changed since.
 - **Begin.** A session of the run's project begins a ready agent step when its provider
   reports every capability the step declares ([`check_capabilities`]; a discovered,
-  untested capability counts, as for a launch). A session does one step at a time.
+  untested capability counts, as for a launch), the run is not blocked and its item is still
+  open. A session does one step at a time.
 - **Checkpoints.** The session doing the step records its progress; the latest checkpoint
   survives the session, a release and a daemon restart, and the next session resumes there.
 - **Complete.** Ends the step with a handoff once each requirement is satisfied (passed, as
@@ -49,7 +50,7 @@ The preset a task follows: the one the owner names, else the project's `workflow
   may release a session that cannot, without one.
 - **Blockers.** The session doing the step or the owner blocks the run on one next action:
   `answer-question`, `approve-operation`, `restore-capability`, `wait-for-capacity` or
-  `reconcile-result`, with what exactly is needed. A blocked run's step is not placed or
+  `reconcile-result`, with what exactly is needed. A blocked run's step is not placed, begun or
   completed until it is unblocked.
 - **Cancel.** The owner stops a run; the item may start another.
 

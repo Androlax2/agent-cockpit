@@ -410,7 +410,7 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         waive: Vec<String>,
     },
-    /// Hand the active step back mid-step. An agent hands off; the owner may not.
+    /// Hand the active step back mid-step. An agent must hand off; the owner may omit it.
     WorkflowRelease {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         launch_token: Option<String>,

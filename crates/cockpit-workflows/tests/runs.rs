@@ -653,3 +653,67 @@ async fn a_cancelled_run_takes_no_more_steps() {
         }
     );
 }
+
+#[tokio::test]
+async fn a_blocked_runs_ready_step_cannot_be_begun() {
+    let fixture = Fixture::new().await;
+    let run = fixture.code_change("cockpit").await;
+    let session = fixture.session("s1", "cockpit").await;
+    let write = fixture.database.write().await.unwrap();
+    cockpit_workflows::block(
+        &write,
+        &Actor::Owner,
+        run.id,
+        BlockedAction::ApproveOperation,
+        "Approve `npm install` in the project",
+        NOW,
+    )
+    .await
+    .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(
+        refusal(fixture.begin(&session, run.id).await),
+        Refusal::Blocked { run: run.id }
+    );
+}
+
+#[tokio::test]
+async fn a_step_of_a_finished_item_cannot_be_begun() {
+    let fixture = Fixture::new().await;
+    let run = fixture.code_change("cockpit").await;
+    let session = fixture.session("s1", "cockpit").await;
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::finish(&write, &Actor::Owner, run.item, Some("done by hand"), NOW)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    assert_eq!(
+        refusal(fixture.begin(&session, run.id).await),
+        Refusal::ItemNotOpen {
+            item: run.item,
+            status: "done",
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_session_lists_only_its_projects_workflows_whatever_project_it_names() {
+    let fixture = Fixture::new().await;
+    fixture.code_change("cockpit").await;
+    let other = fixture.code_change("other").await;
+    let session = fixture.session("s1", "cockpit").await;
+    let read = fixture.database.read().await.unwrap();
+    let asked_other = RunFilter {
+        project: Some("other".to_owned()),
+        include_closed: false,
+    };
+
+    let listed = cockpit_workflows::runs(&read, &session, &asked_other)
+        .await
+        .unwrap();
+
+    assert!(listed.iter().all(|run| run.id != other.id), "{listed:?}");
+    assert!(listed.is_empty());
+}

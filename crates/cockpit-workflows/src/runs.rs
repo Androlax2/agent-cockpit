@@ -55,17 +55,7 @@ pub async fn start(
         }
         .into());
     }
-    let task = task_item(write, item).await?;
-    if !matches!(
-        task.status,
-        cockpit_tasks::Status::Todo | cockpit_tasks::Status::Doing
-    ) {
-        return Err(Refusal::ItemNotOpen {
-            item,
-            status: task.status.as_str(),
-        }
-        .into());
-    }
+    let task = open_item(write, item).await?;
     if let Some(running) = running_run_of(write, item).await? {
         return Err(Refusal::AlreadyRunning { item, run: running }.into());
     }
@@ -121,6 +111,18 @@ pub async fn runs(
     filter: &RunFilter,
 ) -> Result<Vec<Run>, Error> {
     authorize(connection, actor).await?;
+    let project = match actor {
+        Actor::Owner => filter.project.as_deref(),
+        Actor::Session { project: None, .. } => return Ok(Vec::new()),
+        Actor::Session {
+            project: Some(own), ..
+        } => {
+            if filter.project.as_deref().is_some_and(|asked| asked != own) {
+                return Ok(Vec::new());
+            }
+            Some(own.as_str())
+        }
+    };
     let mut rows = connection
         .query(
             &format!(
@@ -128,21 +130,17 @@ pub async fn runs(
                     AND (?2 = 1 OR status = 'running')
                  ORDER BY id"
             ),
-            (filter.project.as_deref(), i64::from(filter.include_closed)),
+            (project, i64::from(filter.include_closed)),
         )
         .await?;
     let mut runs = Vec::new();
     while let Some(row) = rows.next().await? {
         runs.push(run_from(&row)?);
     }
-    let mut visible = Vec::new();
-    for mut run in runs {
-        if is_visible(actor, &run) {
-            run.steps = steps_of(connection, run.id, run.preset).await?;
-            visible.push(run);
-        }
+    for run in &mut runs {
+        run.steps = steps_of(connection, run.id, run.preset).await?;
     }
-    Ok(visible)
+    Ok(runs)
 }
 
 /// Every ready agent step of a running, unblocked run, oldest run first: what scheduling
@@ -220,7 +218,8 @@ pub async fn begin(
         )
         .into());
     };
-    let run = open_run(write, actor, id).await?;
+    let run = unblocked_run(write, actor, id).await?;
+    open_item(write, run.item).await?;
     let step = current(&run)?;
     if step.definition.doer != Doer::Agent {
         return Err(wrong_step(&run, step, "be begun by a session"));
@@ -289,10 +288,7 @@ pub async fn complete(
     now: i64,
 ) -> Result<Run, Error> {
     let handoff = text::handoff(completion.handoff)?;
-    let run = open_run(write, actor, id).await?;
-    if run.blocked.is_some() {
-        return Err(Refusal::Blocked { run: id }.into());
-    }
+    let run = unblocked_run(write, actor, id).await?;
     let step = current(&run)?;
     match actor {
         Actor::Owner => {
@@ -679,6 +675,31 @@ async fn touch(write: &WriteTransaction<'_>, id: RunId, now: i64) -> Result<(), 
 }
 
 /// A run the actor may act on, still running.
+/// An item a run may still work on: one that is to do or being done.
+async fn open_item(connection: &Connection, item: ItemId) -> Result<cockpit_tasks::Item, Error> {
+    let task = task_item(connection, item).await?;
+    if !matches!(
+        task.status,
+        cockpit_tasks::Status::Todo | cockpit_tasks::Status::Doing
+    ) {
+        return Err(Refusal::ItemNotOpen {
+            item,
+            status: task.status.as_str(),
+        }
+        .into());
+    }
+    Ok(task)
+}
+
+/// A running run no blocker holds: the only kind whose step may be begun or completed.
+async fn unblocked_run(connection: &Connection, actor: &Actor, id: RunId) -> Result<Run, Error> {
+    let run = open_run(connection, actor, id).await?;
+    if run.blocked.is_some() {
+        return Err(Refusal::Blocked { run: id }.into());
+    }
+    Ok(run)
+}
+
 async fn open_run(connection: &Connection, actor: &Actor, id: RunId) -> Result<Run, Error> {
     let run = accessible(connection, actor, id).await?;
     if run.status != RunStatus::Running {
