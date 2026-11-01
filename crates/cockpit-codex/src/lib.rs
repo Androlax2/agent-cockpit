@@ -1,6 +1,9 @@
 #![doc = include_str!("../README.md")]
 
+pub mod app_server;
+pub mod delivery;
 pub mod hooks;
+pub mod turns;
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -12,19 +15,27 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cockpit_provider_api::{
-    Capabilities, Capability, Conversation, LaunchCommand, LaunchRequest, Provenance, Provider,
-    ProviderError, ProviderName,
+    Action, Capabilities, Capability, Conversation, ConversationId, Delivered, LaunchCommand,
+    LaunchRequest, Provenance, Provider, ProviderError, ProviderName,
 };
 
 /// The Codex version this adapter's conformance tests pin; capabilities are `tested` only on
 /// it.
 pub const CONFORMANCE_VERSION: &str = "0.161.0";
 
-/// Every flag a launch may pass; the conformance test finds each in `codex --help` and
-/// `codex resume --help`. `--no-daemon` keeps the conversation out of Codex's shared
-/// background server, whose hooks run with the environment, launch token included, of
-/// whichever launch started it (the failure #184 fixed for Claude Code).
-pub const LAUNCH_FLAGS: [&str; 3] = ["--no-daemon", "--enable", "--config"];
+/// Every flag a launch without the bridge passes; the conformance test finds each in
+/// `codex --help` and `codex resume --help`. `--no-daemon` keeps the conversation out of
+/// Codex's shared background server, whose hooks run with the environment, launch token
+/// included, of whichever launch started it (the failure #184 fixed for Claude Code).
+pub const LAUNCH_FLAGS: [&str; 1] = ["--no-daemon"];
+
+/// Every flag the session launcher passes the TUI ([`tui_arguments`]); found in
+/// `codex --help` and `codex resume --help`.
+pub const TUI_FLAGS: [&str; 1] = ["--remote"];
+
+/// Every flag the session launcher passes the app-server ([`server_arguments`]); found in
+/// `codex app-server --help`.
+pub const SERVER_FLAGS: [&str; 3] = ["--listen", "--enable", "--config"];
 
 /// The feature that runs hooks; a launch enables it so an owner who turned it off still
 /// gets the session's events.
@@ -33,40 +44,54 @@ pub const HOOKS_FEATURE: &str = "hooks";
 /// How long `codex --version` may take at discovery.
 const VERSION_DEADLINE: Duration = Duration::from_secs(10);
 
-/// What a launch ships into the sandbox: the hook program Codex runs on each hook event, and
-/// the `cockpit` program it reports through.
+/// What a launch ships into the sandbox: the session launcher that runs the conversation
+/// (`cockpit-codex-session`), the hook program Codex runs on each hook event, and the
+/// `cockpit` program both report through.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bridge {
+    pub session_program: PathBuf,
     pub hook_program: PathBuf,
     pub cockpit_program: PathBuf,
 }
 
-/// The argument that makes `cockpit-codex-hook` print [`hook_version_line`] and exit.
+/// The argument that makes `cockpit-codex-hook` and `cockpit-codex-session` print their
+/// [`version_line`] and exit.
 pub const HOOK_VERSION_FLAG: &str = "--version";
 
 /// What `cockpit-codex-hook --version` prints: its name and the version it was built as.
 pub fn hook_version_line() -> String {
-    format!("cockpit-codex-hook {}", env!("CARGO_PKG_VERSION"))
+    version_line("cockpit-codex-hook")
 }
 
-/// How long the hook bridge may take to answer [`HOOK_VERSION_FLAG`] at the daemon's start.
+/// What `program --version` prints for one of this crate's programs.
+pub fn version_line(program: &str) -> String {
+    format!("{program} {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// How long each bridge program may take to answer [`HOOK_VERSION_FLAG`] at the daemon's
+/// start.
 const HOOK_CHECK_DEADLINE: Duration = Duration::from_secs(10);
 
 impl Bridge {
-    /// Whether this bridge can run here (#203): both programs are files, `cockpit` has its
-    /// execute bit, and the hook runs and answers [`HOOK_VERSION_FLAG`] with this release's
-    /// [`hook_version_line`]. The reason when not. Blocks up to 10 seconds.
+    /// Whether this bridge can run here (#203): its programs are files, `cockpit` has its
+    /// execute bit, and the hook and the session launcher run and answer
+    /// [`HOOK_VERSION_FLAG`] with this release's [`version_line`]. The reason when not.
+    /// Blocks up to 10 seconds per program.
     pub fn check(&self) -> Result<(), String> {
         self.check_within(HOOK_CHECK_DEADLINE)
     }
 
-    /// [`Bridge::check`], giving up on the hook after `deadline`.
+    /// [`Bridge::check`], giving up on each program after `deadline`.
     pub fn check_within(&self, deadline: Duration) -> Result<(), String> {
-        let missing: Vec<String> = [&self.hook_program, &self.cockpit_program]
-            .into_iter()
-            .filter(|program| !program.is_file())
-            .map(|program| program.display().to_string())
-            .collect();
+        let missing: Vec<String> = [
+            &self.session_program,
+            &self.hook_program,
+            &self.cockpit_program,
+        ]
+        .into_iter()
+        .filter(|program| !program.is_file())
+        .map(|program| program.display().to_string())
+        .collect();
         if !missing.is_empty() {
             return Err(format!("{} missing", missing.join(" and ")));
         }
@@ -87,22 +112,8 @@ impl Bridge {
                 self.cockpit_program.display()
             ));
         }
-        let answer = run_with_deadline(&self.hook_program, HOOK_VERSION_FLAG, deadline)
-            .map_err(|reason| format!("{}: {reason}", self.hook_program.display()))?;
-        if !answer.starts_with("cockpit-codex-hook ") {
-            return Err(format!(
-                "{}: `{HOOK_VERSION_FLAG}` printed {answer:?}, not a hook bridge",
-                self.hook_program.display()
-            ));
-        }
-        let expected = hook_version_line();
-        if answer != expected {
-            return Err(format!(
-                "{}: the hook bridge is {answer:?}, not this release's {expected:?}",
-                self.hook_program.display()
-            ));
-        }
-        Ok(())
+        check_version(&self.hook_program, "cockpit-codex-hook", deadline)?;
+        check_version(&self.session_program, "cockpit-codex-session", deadline)
     }
 
     /// The command Codex runs for each hook; Codex runs it through a shell.
@@ -121,7 +132,8 @@ pub struct Codex {
     name: ProviderName,
     program: PathBuf,
     version: Option<String>,
-    /// Without it, launches subscribe no hooks and `events` is not reported.
+    /// Without it, launches run the TUI alone, subscribe no hooks, and only `resume` is
+    /// reported.
     bridge: Option<Bridge>,
 }
 
@@ -205,59 +217,167 @@ impl Provider for Codex {
         self.version.as_deref()
     }
 
-    /// Resume, and `events` with the bridge. Not submit or cancel: they go through Codex's
-    /// app-server, which waits on #407. Not outcome: a failed turn sends no hook, so it would
-    /// never end. Not effort, compact, billing, commands, evidence, remote control or screen
-    /// reading: untested.
+    /// Resume; with the bridge, also events, submit, cancel and outcome, which its session
+    /// launcher and app-server provide (#407). Not effort, compact, billing, commands,
+    /// evidence, remote control or screen reading: untested.
     fn capabilities(&self) -> Capabilities {
         let provenance = self.provenance();
-        let bridged = self.bridge.is_some().then_some(Capability::Events);
+        let bridged = if self.bridge.is_some() {
+            BRIDGED_CAPABILITIES.as_slice()
+        } else {
+            &[]
+        };
         [Capability::Resume]
             .into_iter()
-            .chain(bridged)
+            .chain(bridged.iter().copied())
             .fold(Capabilities::none(), |capabilities, capability| {
                 capabilities.with(capability, provenance.clone())
             })
     }
 
-    /// `codex [resume] --no-daemon [--enable hooks -c <hooks>…] -- [<thread id>] [<first
-    /// message>]`. A new conversation's thread id is Codex's own and unknown at launch: the
-    /// first report names it. Every word after `--` is positional, so neither can be read as
-    /// a flag.
+    /// With the bridge, the session launcher: `cockpit-codex-session --cockpit <cockpit>
+    /// --codex <codex> --socket <session dir>/codex.sock --config <hook>… [--resume <thread
+    /// id>] [--message <first message>]`. It runs Codex's app-server with the hooks and the
+    /// TUI against it ([`server_arguments`], [`tui_arguments`]). Without the bridge, the TUI
+    /// alone: `codex [resume] --no-daemon [-- [<thread id>] [<first message>]]`. A new
+    /// conversation's thread id is Codex's own and unknown at launch: the first report names
+    /// it.
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {
         request.require(&self.capabilities())?;
-        let mut arguments: Vec<OsString> = Vec::new();
-        if let Conversation::Resume(_) = request.conversation {
-            arguments.push("resume".into());
-        }
-        arguments.push("--no-daemon".into());
-        if let Some(bridge) = &self.bridge {
-            arguments.extend(["--enable".into(), HOOKS_FEATURE.into()]);
-            for value in hooks::subscription(&bridge.hook_command()) {
-                arguments.extend(["--config".into(), value.into()]);
-            }
-        }
-        let positional: Vec<&str> = match request.conversation {
-            Conversation::New => Vec::new(),
-            Conversation::Resume(id) => vec![id.as_str()],
-        }
-        .into_iter()
-        .chain(request.first_message)
-        .collect();
-        if !positional.is_empty() {
-            arguments.push("--".into());
-            arguments.extend(positional.into_iter().map(OsString::from));
-        }
+        let resumed = match request.conversation {
+            Conversation::New => None,
+            Conversation::Resume(id) => Some(id),
+        };
+        let (program, arguments) = match &self.bridge {
+            Some(bridge) => (
+                bridge.session_program.clone(),
+                session_arguments(&self.program, bridge, request, resumed),
+            ),
+            None => (
+                self.program.clone(),
+                direct_arguments(resumed, request.first_message),
+            ),
+        };
         Ok(LaunchCommand {
-            program: self.program.clone(),
+            program,
             arguments,
             environment: Vec::new(),
-            conversation: match request.conversation {
-                Conversation::New => None,
-                Conversation::Resume(id) => Some(id.clone()),
-            },
+            conversation: resumed.cloned(),
         })
     }
+
+    /// Submit and cancel through the session's app-server ([`delivery`]); a message joins the
+    /// turn under way. Blocks up to a few seconds per call.
+    fn deliver(
+        &self,
+        action: &Action<'_>,
+        session_dir: &Path,
+        conversation: &ConversationId,
+    ) -> Result<Delivered, ProviderError> {
+        self.capabilities().require(action.capability())?;
+        delivery::deliver(&delivery::socket_path(session_dir), action, conversation)
+    }
+}
+
+/// What the bridge adds to `resume`.
+const BRIDGED_CAPABILITIES: [Capability; 4] = [
+    Capability::Events,
+    Capability::Submit,
+    Capability::Cancel,
+    Capability::Outcome,
+];
+
+/// The session launcher's arguments for `request`.
+fn session_arguments(
+    codex: &Path,
+    bridge: &Bridge,
+    request: &LaunchRequest<'_>,
+    resumed: Option<&ConversationId>,
+) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = vec![
+        "--cockpit".into(),
+        bridge.cockpit_program.clone().into(),
+        "--codex".into(),
+        codex.into(),
+        "--socket".into(),
+        delivery::socket_path(request.session_dir).into(),
+    ];
+    for value in hooks::subscription(&bridge.hook_command()) {
+        arguments.extend(["--config".into(), value.into()]);
+    }
+    if let Some(id) = resumed {
+        arguments.extend(["--resume".into(), id.as_str().into()]);
+    }
+    if let Some(message) = request.first_message {
+        arguments.extend(["--message".into(), message.into()]);
+    }
+    arguments
+}
+
+/// `[resume] --no-daemon [-- [<thread id>] [<first message>]]`: every word after `--` is
+/// positional, so neither can be read as a flag.
+fn direct_arguments(
+    resumed: Option<&ConversationId>,
+    first_message: Option<&str>,
+) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = Vec::new();
+    if resumed.is_some() {
+        arguments.push("resume".into());
+    }
+    arguments.push("--no-daemon".into());
+    arguments.extend(positional(resumed, first_message));
+    arguments
+}
+
+fn positional(resumed: Option<&ConversationId>, first_message: Option<&str>) -> Vec<OsString> {
+    let words: Vec<OsString> = resumed
+        .map(|id| OsString::from(id.as_str()))
+        .into_iter()
+        .chain(first_message.map(OsString::from))
+        .collect();
+    if words.is_empty() {
+        return words;
+    }
+    std::iter::once(OsString::from("--")).chain(words).collect()
+}
+
+/// The app-server's arguments: `app-server --listen unix://<socket> --enable hooks --config
+/// <value>…`. The hooks are the server's: it runs them, with the launch's environment.
+pub fn server_arguments(socket: &Path, configs: &[String]) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = vec![
+        "app-server".into(),
+        "--listen".into(),
+        unix_address(socket),
+        "--enable".into(),
+        HOOKS_FEATURE.into(),
+    ];
+    for value in configs {
+        arguments.extend(["--config".into(), value.into()]);
+    }
+    arguments
+}
+
+/// The TUI's arguments against the app-server on `socket`: `[resume] --remote unix://<socket>
+/// [-- [<thread id>] [<first message>]]`. A remote TUI's conversation runs in the
+/// app-server's working directory.
+pub fn tui_arguments(
+    socket: &Path,
+    resumed: Option<&ConversationId>,
+    first_message: Option<&str>,
+) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = Vec::new();
+    if resumed.is_some() {
+        arguments.push("resume".into());
+    }
+    arguments.extend(["--remote".into(), unix_address(socket)]);
+    arguments.extend(positional(resumed, first_message));
+    arguments
+}
+
+fn unix_address(socket: &Path) -> OsString {
+    let mut address = OsString::from("unix://");
+    address.push(socket);
+    address
 }
 
 /// Codex's program could not be used.
@@ -274,6 +394,26 @@ impl fmt::Display for DiscoveryError {
 }
 
 impl std::error::Error for DiscoveryError {}
+
+/// Whether `program` answers [`HOOK_VERSION_FLAG`] as this release's `name`.
+fn check_version(program: &Path, name: &str, deadline: Duration) -> Result<(), String> {
+    let answer = run_with_deadline(program, HOOK_VERSION_FLAG, deadline)
+        .map_err(|reason| format!("{}: {reason}", program.display()))?;
+    if !answer.starts_with(&format!("{name} ")) {
+        return Err(format!(
+            "{}: `{HOOK_VERSION_FLAG}` printed {answer:?}, not {name}",
+            program.display()
+        ));
+    }
+    let expected = version_line(name);
+    if answer != expected {
+        return Err(format!(
+            "{}: it is {answer:?}, not this release's {expected:?}",
+            program.display()
+        ));
+    }
+    Ok(())
+}
 
 fn is_executable(program: &Path) -> bool {
     std::fs::metadata(program).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)

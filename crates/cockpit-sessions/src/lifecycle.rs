@@ -69,6 +69,9 @@ pub struct Sessions {
     git: Git,
     providers: Vec<Arc<dyn Provider>>,
     settings: Settings,
+    /// Where each session gets its own directory, `<session dirs>/<session id>`, which its
+    /// provider's launch and delivery use ([`LaunchRequest::session_dir`]).
+    session_dirs: PathBuf,
     /// One lock per session, held by each owner operation and each periodic step on it, so
     /// the periodic pass never acts on a launch an owner operation just replaced. Entries
     /// stay for the daemon's life: one per session ever touched.
@@ -155,6 +158,7 @@ impl Sessions {
         git: Git,
         providers: Vec<Arc<dyn Provider>>,
         settings: Settings,
+        session_dirs: PathBuf,
     ) -> Sessions {
         assert!(
             settings.blocking_steps > 0,
@@ -170,6 +174,7 @@ impl Sessions {
             desktop_environment: Mutex::new(Vec::new()),
             owner_settings: Mutex::new(settings.owner),
             settings,
+            session_dirs,
             operations: Mutex::new(HashMap::new()),
         }
     }
@@ -1348,6 +1353,14 @@ impl Sessions {
         let tmux = self.tmux()?;
         self.wait_for_terminal_steps(id).await?;
         let session = self.get(id).await?;
+        let session_dir = self.session_dir(id);
+        {
+            let session_dir = session_dir.clone();
+            self.blocking("create the session's directory", move || {
+                create_session_dir(&session_dir)
+            })
+            .await?;
+        }
         let command = {
             let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
             let working_dir = session.working_dir.clone();
@@ -1358,6 +1371,7 @@ impl Sessions {
             self.blocking("build the provider's command", move || {
                 Ok(provider.launch(&LaunchRequest {
                     working_dir: &working_dir,
+                    session_dir: &session_dir,
                     conversation: &conversation,
                     first_message: first_message.as_deref(),
                     effort: None,
@@ -1724,6 +1738,11 @@ impl Sessions {
         }
     }
 
+    /// The session's own directory ([`LaunchRequest::session_dir`]); its launch creates it.
+    pub fn session_dir(&self, id: &SessionId) -> PathBuf {
+        self.session_dirs.join(id.as_str())
+    }
+
     /// Runs a blocking step off the async workers, holding one of the capability's permits
     /// (#325). Waits at most the step timeout for the permit, then at most the step timeout
     /// for the step (#272). A step that runs out of it keeps running, and keeps its permit
@@ -1970,5 +1989,19 @@ fn agent_pane(tmux: &Server, name: &SessionName) -> Result<PaneId, Error> {
                 arguments: Vec::new(),
                 output: format!("terminal {name} has no pane"),
             })
+        })
+}
+
+/// Creates `dir` and its parents, private to the owner; one that exists is kept.
+fn create_session_dir(dir: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|source| Error::Io {
+            action: "create",
+            path: dir.to_path_buf(),
+            source,
         })
 }

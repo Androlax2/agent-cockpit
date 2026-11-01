@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-codex"
-description = "The Codex provider adapter: its launch words, capabilities pinned to a tested version, thread ids, and the in-sandbox hook bridge with launch-scoped hook trust."
+description = "The Codex provider adapter: its launch words, capabilities pinned to a tested version, thread ids, the in-sandbox hook bridge with launch-scoped hook trust, and delivery through a private app-server per session."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,12 +10,19 @@ publish.workspace = true
 name = "cockpit-codex-hook"
 path = "src/bin/cockpit-codex-hook.rs"
 
+[[bin]]
+name = "cockpit-codex-session"
+path = "src/bin/cockpit-codex-session.rs"
+
 [dependencies]
 # Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
 cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0" }
 serde_json = "1.0.154"
 # Codex's hook trust hash (`hooks::trusted_hash`); the version the workspace already pins.
 sha2 = "=0.10.9"
+# The session launcher stops Codex's app-server with `SIGTERM`; the version the workspace
+# already pins.
+rustix = { version = "=1.1.6", default-features = false, features = ["process", "std"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

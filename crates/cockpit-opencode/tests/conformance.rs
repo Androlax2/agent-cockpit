@@ -67,6 +67,7 @@ fn a_launched_server_answers_its_password_and_lists_commands() {
     let launch = opencode
         .launch(&LaunchRequest {
             working_dir: project.path(),
+            session_dir: project.path(),
             conversation: &Conversation::New,
             first_message: None,
             effort: None,

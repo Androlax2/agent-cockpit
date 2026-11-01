@@ -253,6 +253,7 @@ impl Instance {
             wiring.git.clone(),
             wiring.providers,
             wiring.sessions,
+            options.session_dirs(),
         ));
         sessions.import_desktop_environment(wiring.desktop_environment);
         sessions::restore(&sessions)

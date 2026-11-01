@@ -12,6 +12,7 @@ use cockpit_provider_api::{Conversation, ConversationId, LaunchRequest, Provider
 fn request(conversation: &Conversation) -> LaunchRequest<'_> {
     LaunchRequest {
         working_dir: Path::new("/work"),
+        session_dir: Path::new("/run/cockpit/sessions/s-1"),
         conversation,
         first_message: None,
         effort: None,

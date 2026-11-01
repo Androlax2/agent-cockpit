@@ -1,6 +1,8 @@
 //! A Codex adapter on fixed paths, and the pinned hook payloads.
 #![allow(dead_code, reason = "each test file uses part of these helpers")]
 
+pub mod app_server;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +10,7 @@ use cockpit_codex::{Bridge, CONFORMANCE_VERSION, Codex};
 
 pub fn bridge() -> Bridge {
     Bridge {
+        session_program: PathBuf::from("/opt/cockpit/bin/cockpit-codex-session"),
         hook_program: PathBuf::from("/opt/cockpit/bin/cockpit-codex-hook"),
         cockpit_program: PathBuf::from("/opt/cockpit/bin/cockpit"),
     }

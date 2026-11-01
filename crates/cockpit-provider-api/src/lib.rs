@@ -14,7 +14,7 @@ pub use capabilities::{Availability, Capabilities, Capability, Provenance};
 pub use events::{
     Activity, Confidence, EventKind, Observation, ObservedBy, ProviderEvent, TurnOutcome,
 };
-pub use terminal::{Action, Key, TerminalInput};
+pub use terminal::{Action, Delivered, Key, TerminalInput};
 
 /// Longest provider name; it is typed on the command line (`--agent`).
 const MAX_NAME_BYTES: usize = 32;
@@ -96,6 +96,11 @@ pub enum Conversation {
 #[derive(Debug, Clone)]
 pub struct LaunchRequest<'request> {
     pub working_dir: &'request Path,
+    /// The session's own directory, private to it and reachable by both its agent and the
+    /// daemon: where a provider keeps what its delivery needs, such as a socket
+    /// ([`Provider::deliver`]). It exists before the launch; its path is short enough for a
+    /// unix socket inside it.
+    pub session_dir: &'request Path,
     pub conversation: &'request Conversation,
     /// The owner's first message, submitted with a new conversation.
     pub first_message: Option<&'request str>,
@@ -167,6 +172,21 @@ pub trait Provider: Send + Sync + 'static {
         activity: Option<Activity>,
     ) -> Result<Vec<TerminalInput>, ProviderError> {
         let _ = activity;
+        Err(ProviderError::unsupported(action.capability()))
+    }
+
+    /// Performs `action` in the running `conversation` itself, through the harness's own
+    /// interface reached in the session's `session_dir`, instead of typing into its terminal
+    /// ([`Provider::input`]). Blocks for a few seconds at most, so callers run it off their
+    /// async workers. Refuses an action whose capability it does not report; the default
+    /// performs none, and callers use [`Provider::input`].
+    fn deliver(
+        &self,
+        action: &Action<'_>,
+        session_dir: &Path,
+        conversation: &ConversationId,
+    ) -> Result<Delivered, ProviderError> {
+        let _ = (session_dir, conversation);
         Err(ProviderError::unsupported(action.capability()))
     }
 

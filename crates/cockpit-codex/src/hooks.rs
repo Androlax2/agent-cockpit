@@ -206,9 +206,9 @@ pub fn normalize(payload: &str) -> Result<ProviderEvent, HookError> {
 /// another conversation and names the session's conversation from its first report. A
 /// permission request goes as `--dialog`, which the next report with a state clears; a
 /// submitted prompt adds `--prompt`, which clears the agent's own question (#200). A turn's
-/// end reports no `--outcome`: the adapter does not report the `outcome` capability, since a
-/// failed turn ends without a hook. `None` when nothing is reported; a payload that names
-/// no valid conversation reports without one.
+/// end reports its `--outcome`; a failed turn sends no hook, and the session launcher
+/// reports it ([`crate::turns`]). `None` when nothing is reported; a payload that names no
+/// valid conversation reports without one.
 pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
     let activity = event.observation()?.activity;
     let mut arguments: Vec<String> = ["agent", "report", "--state"]
@@ -222,7 +222,12 @@ pub fn bridge_arguments(event: &ProviderEvent) -> Option<Vec<String>> {
                 arguments.push("--prompt".to_owned());
             }
         }
-        Activity::Waiting => arguments.push("waiting".to_owned()),
+        Activity::Waiting => {
+            arguments.push("waiting".to_owned());
+            if let EventKind::TurnEnded { outcome } = &event.kind {
+                arguments.extend(crate::turns::outcome_arguments(outcome));
+            }
+        }
         Activity::NeedsYou => {
             arguments.extend(["waiting", "--dialog", PLAIN_QUESTION].map(str::to_owned));
         }

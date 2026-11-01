@@ -1,5 +1,6 @@
-//! Actions Cockpit takes in a running conversation, as the keystrokes its terminal receives.
-//! The provider decides the keys; the caller sends them to the agent's pane.
+//! Actions Cockpit takes in a running conversation: as the keystrokes its terminal receives,
+//! which the provider decides and the caller sends to the agent's pane, or performed by the
+//! provider itself ([`crate::Provider::deliver`]).
 
 use crate::Capability;
 
@@ -38,4 +39,15 @@ pub enum Key {
     Escape,
     /// The control chord of a lower-case ASCII letter, such as Ctrl-X.
     Control(char),
+}
+
+/// What a provider's delivery of an action did ([`crate::Provider::deliver`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivered {
+    /// The message started a turn: the agent was not working.
+    StartedTurn,
+    /// The message joined the turn under way.
+    JoinedTurn,
+    /// The turn under way was interrupted.
+    Interrupted,
 }

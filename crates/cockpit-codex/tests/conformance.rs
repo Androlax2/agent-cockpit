@@ -3,23 +3,27 @@
 //!
 //! ```text
 //! COCKPIT_CODEX_PROGRAM=~/.local/npm/bin/codex \
-//!   cargo nextest run -p cockpit-codex --test conformance --run-ignored only
+//!   cargo nextest run -p cockpit-codex --test conformance --run-ignored only -j 1
 //! ```
 //!
-//! Each test runs Codex with a fresh `CODEX_HOME`, so the owner's configuration, trust and
-//! login are never read. The live turn needs no login: the hooks run before the model call,
-//! which then fails.
+//! Each test runs Codex with a fresh `CODEX_HOME` holding a placeholder API key, so the
+//! owner's configuration, trust and login are never read, and every model call fails as
+//! `unauthorized` after Codex's retries: the hooks run before it, and the retries leave a
+//! turn under way for the delivery tests. The session launcher's test needs `tmux`. One test
+//! at a time (`-j 1`): several Codex starts at once outlast discovery's 10 seconds.
 
 mod common;
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use cockpit_codex::{Bridge, CONFORMANCE_VERSION, Codex, HOOKS_FEATURE, LAUNCH_FLAGS, hooks};
-use cockpit_provider_api::{Conversation, LaunchRequest, Provider};
+use cockpit_codex::app_server::AppServer;
+use cockpit_codex::{
+    Bridge, CONFORMANCE_VERSION, Codex, HOOKS_FEATURE, LAUNCH_FLAGS, SERVER_FLAGS, TUI_FLAGS, hooks,
+};
+use cockpit_provider_api::{Action, ConversationId, Delivered, Provider};
+use serde_json::json;
 
 /// The installed Codex the ignored live tests run.
 fn installed() -> PathBuf {
@@ -27,6 +31,17 @@ fn installed() -> PathBuf {
         std::env::var_os("COCKPIT_CODEX_PROGRAM")
             .expect("COCKPIT_CODEX_PROGRAM names the Codex program to test"),
     )
+}
+
+/// A fresh `CODEX_HOME` whose login is a placeholder API key.
+fn fresh_home() -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("auth.json"),
+        r#"{"auth_mode": "apikey", "OPENAI_API_KEY": "sk-cockpit-conformance-placeholder"}"#,
+    )
+    .unwrap();
+    home
 }
 
 fn codex_output(home: &Path, arguments: &[&str]) -> String {
@@ -37,6 +52,22 @@ fn codex_output(home: &Path, arguments: &[&str]) -> String {
         .unwrap();
     assert!(output.status.success(), "{arguments:?}: {output:?}");
     String::from_utf8(output.stdout).unwrap()
+}
+
+fn documents(help: &str, flag: &str) -> bool {
+    help.split(|character: char| character.is_whitespace() || character == ',')
+        .any(|word| word == flag)
+}
+
+fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
+    let ends_at = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(value) = found() {
+            return value;
+        }
+        assert!(Instant::now() < ends_at, "{what} never happened");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]
@@ -54,12 +85,13 @@ fn the_installed_codex_documents_every_flag_a_launch_passes() {
     for command in [&["--help"][..], &["resume", "--help"][..]] {
         let help = codex_output(home.path(), command);
 
-        for flag in LAUNCH_FLAGS {
-            let is_documented = help
-                .split(|character: char| character.is_whitespace() || character == ',')
-                .any(|word| word == flag);
-            assert!(is_documented, "{flag} is not in {command:?}");
+        for flag in LAUNCH_FLAGS.into_iter().chain(TUI_FLAGS) {
+            assert!(documents(&help, flag), "{flag} is not in {command:?}");
         }
+    }
+    let help = codex_output(home.path(), &["app-server", "--help"]);
+    for flag in SERVER_FLAGS {
+        assert!(documents(&help, flag), "{flag} is not in app-server --help");
     }
 }
 
@@ -96,6 +128,7 @@ impl Recorder {
 
     fn bridge(&self) -> Bridge {
         Bridge {
+            session_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-session")),
             hook_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-hook")),
             cockpit_program: self.dir.path().join("cockpit"),
         }
@@ -109,124 +142,120 @@ impl Recorder {
             .map(|report| report.lines().map(str::to_owned).collect())
             .collect()
     }
-}
 
-/// The `--enable` and `--config` pairs a new launch passes, for `codex app-server`, which
-/// takes the same configuration as the TUI.
-fn launch_configuration(bridge: Bridge) -> Vec<String> {
-    let codex = Codex::new(installed(), None, Some(bridge));
-    let command = codex
-        .launch(&LaunchRequest {
-            working_dir: Path::new("/"),
-            conversation: &Conversation::New,
-            first_message: None,
-            effort: None,
-            remote_control: false,
+    /// Waits for the first report whose arguments contain `word`.
+    fn report_with(&self, word: &str) -> Vec<String> {
+        wait_until(&format!("a report with {word}"), || {
+            self.reports()
+                .into_iter()
+                .find(|report| report.iter().any(|argument| argument == word))
         })
-        .unwrap();
-    let words = common::words(&command.arguments);
-    words
-        .windows(2)
-        .filter(|pair| pair[0] == "--enable" || pair[0] == "--config")
-        .flat_map(|pair| pair.to_vec())
-        .collect()
+    }
 }
 
-/// `codex app-server` over standard input and output, in a fresh home.
-struct AppServer {
+/// `codex app-server` on a unix socket, with the hooks a launch subscribes, as the session
+/// launcher runs it ([`cockpit_codex::server_arguments`]), and a connection to it.
+struct LiveServer {
     child: Child,
-    input: ChildStdin,
-    lines: mpsc::Receiver<serde_json::Value>,
-    next_id: u64,
+    session_dir: tempfile::TempDir,
+    work: tempfile::TempDir,
+    connection: AppServer,
     _home: tempfile::TempDir,
 }
 
-impl AppServer {
-    fn start(configuration: &[String], work: &Path) -> AppServer {
-        let home = tempfile::tempdir().unwrap();
-        let mut child = Command::new(installed())
-            .arg("app-server")
-            .args(configuration)
-            .current_dir(work)
+impl LiveServer {
+    fn start(bridge: &Bridge) -> LiveServer {
+        let home = fresh_home();
+        let session_dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let socket = cockpit_codex::delivery::socket_path(session_dir.path());
+        let child = Command::new(installed())
+            .args(cockpit_codex::server_arguments(
+                &socket,
+                &hooks::subscription(&bridge.hook_command()),
+            ))
+            .current_dir(work.path())
             .env("CODEX_HOME", home.path())
             .env("COCKPIT_LAUNCH_TOKEN", "token-live")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let input = child.stdin.take().unwrap();
-        let output = BufReader::new(child.stdout.take().unwrap());
-        let (sender, lines) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in output.lines().map_while(Result::ok) {
-                if let Ok(message) = serde_json::from_str(&line)
-                    && sender.send(message).is_err()
-                {
-                    return;
-                }
-            }
+        let connection = wait_until("the app-server listening", || {
+            AppServer::connect(&socket, "cockpit-conformance", Duration::from_secs(30)).ok()
         });
-        let mut server = AppServer {
+        LiveServer {
             child,
-            input,
-            lines,
-            next_id: 0,
+            session_dir,
+            work,
+            connection,
             _home: home,
-        };
-        server.request(
-            "initialize",
-            serde_json::json!({"clientInfo": {"name": "cockpit-conformance", "version": "0"}}),
-        );
-        server.send(serde_json::json!({"method": "initialized"}));
-        server
-    }
-
-    fn send(&mut self, message: serde_json::Value) {
-        writeln!(self.input, "{message}").unwrap();
-        self.input.flush().unwrap();
-    }
-
-    /// The result of `method`, waiting up to 30 seconds and skipping notifications.
-    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
-        self.next_id += 1;
-        let id = self.next_id;
-        self.send(serde_json::json!({"id": id, "method": method, "params": params}));
-        let ends_at = Instant::now() + Duration::from_secs(30);
-        loop {
-            let remaining = ends_at.saturating_duration_since(Instant::now());
-            let message = self
-                .lines
-                .recv_timeout(remaining)
-                .unwrap_or_else(|_| panic!("{method} did not answer"));
-            if message["id"] == id {
-                assert!(message.get("error").is_none(), "{method}: {message}");
-                return message["result"].clone();
-            }
         }
+    }
+
+    fn start_thread(&mut self) -> ConversationId {
+        let started = self
+            .connection
+            .call(
+                "thread/start",
+                json!({"cwd": self.work.path().to_str().unwrap()}),
+            )
+            .unwrap();
+        ConversationId::new(started["thread"]["id"].as_str().unwrap()).unwrap()
+    }
+
+    /// `None` also while Codex cannot list the turns yet, just after the first message.
+    fn last_turn_status(&mut self, thread: &ConversationId) -> Option<String> {
+        let page = self
+            .connection
+            .call(
+                "thread/turns/list",
+                json!({"threadId": thread.as_str(), "limit": 1, "sortDirection": "desc"}),
+            )
+            .ok()?;
+        page["data"][0]["status"].as_str().map(str::to_owned)
     }
 }
 
-impl Drop for AppServer {
+impl Drop for LiveServer {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = terminate(&mut self.child);
     }
+}
+
+/// Stops Codex's npm wrapper and the server it runs: `kill -TERM`, which it forwards.
+fn terminate(child: &mut Child) -> std::io::Result<()> {
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()?;
+    let ends_at = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < ends_at {
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.kill()?;
+    child.wait().map(|_| ())
 }
 
 /// Codex runs a hook only when its trusted hash matches: a wrong `hooks::trusted_hash`
-/// would leave every Cockpit hook `untrusted`, so events would silently never arrive.
+/// would leave every Cockpit hook `untrusted`, so events would silently never arrive. Also
+/// proves the adapter's WebSocket client speaks to the real app-server.
 #[test]
 #[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
 fn codex_trusts_every_hook_a_launch_subscribes() {
     let recorder = Recorder::new();
-    let work = tempfile::tempdir().unwrap();
-    let mut server = AppServer::start(&launch_configuration(recorder.bridge()), work.path());
+    let mut server = LiveServer::start(&recorder.bridge());
 
-    let listed = server.request(
-        "hooks/list",
-        serde_json::json!({"cwds": [work.path().to_str().unwrap()]}),
-    );
+    let listed = server
+        .connection
+        .call(
+            "hooks/list",
+            json!({"cwds": [server.work.path().to_str().unwrap()]}),
+        )
+        .unwrap();
 
     let entries = listed["data"][0]["hooks"].as_array().unwrap();
     for event in hooks::HOOK_EVENTS {
@@ -245,39 +274,19 @@ fn codex_trusts_every_hook_a_launch_subscribes() {
 
 #[test]
 #[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
-fn a_real_turns_prompt_reports_working_through_the_bridge_naming_its_thread() {
+fn a_delivered_message_starts_a_turn_whose_prompt_reports_through_the_bridge() {
     let recorder = Recorder::new();
-    let work = tempfile::tempdir().unwrap();
-    let mut server = AppServer::start(&launch_configuration(recorder.bridge()), work.path());
-    let started = server.request(
-        "thread/start",
-        serde_json::json!({"cwd": work.path().to_str().unwrap()}),
-    );
-    let thread = started["thread"]["id"].as_str().unwrap().to_owned();
+    let mut server = LiveServer::start(&recorder.bridge());
+    let thread = server.start_thread();
+    let codex = Codex::new(installed(), None, Some(recorder.bridge()));
 
-    server.request(
-        "turn/start",
-        serde_json::json!({"threadId": thread, "input": [{"type": "text", "text": "hello"}]}),
-    );
+    let delivered = codex
+        .deliver(&Action::Submit("hello"), server.session_dir.path(), &thread)
+        .unwrap();
 
-    let ends_at = Instant::now() + Duration::from_secs(30);
-    let prompt_report = loop {
-        let reports = recorder.reports();
-        if let Some(report) = reports
-            .into_iter()
-            .find(|report| report.contains(&"--prompt".to_owned()))
-        {
-            break report;
-        }
-        assert!(
-            Instant::now() < ends_at,
-            "no prompt report: {:?}",
-            recorder.reports()
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    assert_eq!(delivered, Delivered::StartedTurn);
     assert_eq!(
-        prompt_report,
+        recorder.report_with("--prompt"),
         [
             "token-live",
             "agent",
@@ -286,7 +295,169 @@ fn a_real_turns_prompt_reports_working_through_the_bridge_naming_its_thread() {
             "working",
             "--prompt",
             "--conversation",
-            &thread
+            thread.as_str()
         ]
     );
+}
+
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
+fn a_message_during_a_turn_joins_it_and_a_cancel_interrupts_it() {
+    let recorder = Recorder::new();
+    let mut server = LiveServer::start(&recorder.bridge());
+    let thread = server.start_thread();
+    let codex = Codex::new(installed(), None, Some(recorder.bridge()));
+    let session_dir = server.session_dir.path().to_path_buf();
+    codex
+        .deliver(&Action::Submit("hello"), &session_dir, &thread)
+        .unwrap();
+    wait_until("the turn under way", || {
+        (server.last_turn_status(&thread).as_deref() == Some("inProgress")).then_some(())
+    });
+
+    let joined = codex
+        .deliver(&Action::Submit("and then"), &session_dir, &thread)
+        .unwrap();
+    let cancelled = codex
+        .deliver(&Action::Cancel, &session_dir, &thread)
+        .unwrap();
+
+    assert_eq!(
+        (joined, cancelled),
+        (Delivered::JoinedTurn, Delivered::Interrupted)
+    );
+    wait_until("the turn interrupted", || {
+        (server.last_turn_status(&thread).as_deref() == Some("interrupted")).then_some(())
+    });
+}
+
+/// A failed turn sends no hook (measured); the session launcher's watcher reports it.
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM)"]
+fn a_failed_turn_is_followed_to_its_outcome() {
+    let recorder = Recorder::new();
+    let mut server = LiveServer::start(&recorder.bridge());
+    let thread = server.start_thread();
+    let socket = cockpit_codex::delivery::socket_path(server.session_dir.path());
+    let (sender, reports) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut watcher = AppServer::connect(&socket, "watcher", Duration::from_secs(30)).unwrap();
+        cockpit_codex::turns::watch_failures(&mut watcher, Duration::from_secs(30), |report| {
+            let _ = sender.send(report);
+        });
+    });
+    std::thread::sleep(Duration::from_millis(500));
+
+    server
+        .connection
+        .call(
+            "turn/start",
+            json!({"threadId": thread.as_str(), "input": [{"type": "text", "text": "hello"}]}),
+        )
+        .unwrap();
+
+    // The error's kind depends on the network: `unauthorized` or `httpConnectionFailed`.
+    let report = reports.recv_timeout(Duration::from_secs(180)).unwrap();
+    assert_eq!(
+        report[..6],
+        [
+            "agent",
+            "report",
+            "--state",
+            "waiting",
+            "--outcome",
+            "failed"
+        ]
+    );
+    assert_eq!(report[6], "--outcome-reason");
+    assert_eq!(report[8..], ["--conversation", thread.as_str()]);
+}
+
+/// The whole session: the launcher in a terminal runs the app-server and the TUI, the first
+/// message's prompt reports through the bridge with the launch's token, and the app-server
+/// stops with the TUI.
+#[test]
+#[ignore = "needs an installed Codex (COCKPIT_CODEX_PROGRAM) and tmux"]
+fn the_session_launcher_runs_a_conversation_in_its_terminal() {
+    let recorder = Recorder::new();
+    let home = fresh_home();
+    let session_dir = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let codex = Codex::new(installed(), None, Some(recorder.bridge()));
+    let command = codex
+        .launch(&cockpit_provider_api::LaunchRequest {
+            working_dir: work.path(),
+            session_dir: session_dir.path(),
+            conversation: &cockpit_provider_api::Conversation::New,
+            first_message: Some("hello"),
+            effort: None,
+            remote_control: false,
+        })
+        .unwrap();
+    let tmux_socket = session_dir.path().join("tmux");
+    let tmux = |arguments: &[&std::ffi::OsStr]| {
+        Command::new("tmux")
+            .arg("-S")
+            .arg(&tmux_socket)
+            .args(arguments)
+            .status()
+            .unwrap()
+    };
+    let _tmux_server = TmuxServer(tmux_socket.clone());
+    let mut words: Vec<std::ffi::OsString> = vec![
+        "new-session".into(),
+        "-d".into(),
+        "-x".into(),
+        "160".into(),
+        "-y".into(),
+        "45".into(),
+        "-c".into(),
+        work.path().into(),
+        "-e".into(),
+        format!("CODEX_HOME={}", home.path().display()).into(),
+        "-e".into(),
+        "COCKPIT_LAUNCH_TOKEN=token-session".into(),
+        command.program.clone().into(),
+    ];
+    words.extend(command.arguments.iter().cloned());
+    let words: Vec<&std::ffi::OsStr> = words.iter().map(std::ffi::OsString::as_os_str).collect();
+    assert!(tmux(&words).success());
+
+    let report = recorder.report_with("--prompt");
+    // The first Ctrl-C interrupts the turn, the next ones quit the TUI.
+    for _ in 0..3 {
+        tmux(&["send-keys".as_ref(), "C-c".as_ref()]);
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    let socket = cockpit_codex::delivery::socket_path(session_dir.path());
+    let is_stopped = (0..100).any(|_| {
+        std::thread::sleep(Duration::from_millis(100));
+        std::os::unix::net::UnixStream::connect(&socket).is_err()
+    });
+
+    assert_eq!(
+        &report[..6],
+        [
+            "token-session",
+            "agent",
+            "report",
+            "--state",
+            "working",
+            "--prompt"
+        ]
+    );
+    assert!(is_stopped, "the app-server outlived the TUI");
+}
+
+/// Kills the test's tmux server, and the launcher in it, even when the test fails.
+struct TmuxServer(PathBuf);
+
+impl Drop for TmuxServer {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .arg("-S")
+            .arg(&self.0)
+            .arg("kill-server")
+            .status();
+    }
 }

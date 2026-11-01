@@ -146,9 +146,10 @@ fn a_permission_request_asks_a_plain_question_never_the_tool_input() {
     );
 }
 
-/// No `--outcome`: the adapter does not report `outcome`, since a failed turn sends no hook.
+/// Codex sends `Stop` only for a completed turn; a failed one's outcome comes from the
+/// session launcher (`tests/session.rs`).
 #[test]
-fn a_stop_is_a_completed_turn_reported_as_waiting_without_an_outcome() {
+fn a_stop_is_a_completed_turn_reported_as_waiting_with_its_outcome() {
     assert_eq!(
         kind("stop"),
         EventKind::TurnEnded {
@@ -162,6 +163,8 @@ fn a_stop_is_a_completed_turn_reported_as_waiting_without_an_outcome() {
             "report",
             "--state",
             "waiting",
+            "--outcome",
+            "completed",
             "--conversation",
             THREAD
         ])
@@ -280,6 +283,13 @@ fn a_payload_naming_no_valid_thread_reports_without_one() {
 
     assert_eq!(
         hooks::bridge_arguments(&hooks::normalize(&payload).unwrap()),
-        reported(&["agent", "report", "--state", "waiting"])
+        reported(&[
+            "agent",
+            "report",
+            "--state",
+            "waiting",
+            "--outcome",
+            "completed"
+        ])
     );
 }

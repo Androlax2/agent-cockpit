@@ -40,6 +40,7 @@ fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
     let launch = claude
         .launch(&LaunchRequest {
             working_dir: dir.path(),
+            session_dir: dir.path(),
             conversation: &Conversation::New,
             first_message: Some("Reply with the single word ok."),
             effort: None,
