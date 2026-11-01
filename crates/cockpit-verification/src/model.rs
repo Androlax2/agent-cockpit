@@ -95,6 +95,8 @@ pub struct NewReceipt {
     /// Where the full output and larger result artifacts are.
     pub output_references: Vec<String>,
     pub started_at: i64,
+    /// When the result was known; the newest receipt is the latest to finish. Never later
+    /// than the recording time.
     pub finished_at: i64,
 }
 

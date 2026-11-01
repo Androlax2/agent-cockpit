@@ -35,8 +35,8 @@ evidence.
 `evidence` takes the gate's required check definitions and one exact source (head and
 uncommitted changes), refuses what `record_receipt` would refuse (a misspelled gate fails
 instead of never matching), and loads per check the newest run of exactly that definition
-on exactly that source. "Newest" is by when the run started, so a run delivered late never
-passes a newer one. Matching happens in the query, so no number of other clones' or other
+on exactly that source. "Newest" is by when the result was known (`finished_at`, never in the
+future), so a run delivered late never passes a newer result. Matching happens in the query, so no number of other clones' or other
 definitions' runs pushes the matching receipt out. `Evidence::evaluate` answers, outside
 any transaction because it reads the checkout, where each check stands, first match wins:
 

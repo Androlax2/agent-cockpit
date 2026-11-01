@@ -184,7 +184,7 @@ async fn an_exit_code_contradicting_the_outcome_is_refused() {
 #[tokio::test]
 async fn an_invalid_receipt_is_refused_naming_its_field() {
     type Change = fn(&mut cockpit_verification::NewReceipt);
-    let cases: [(&str, Change); 11] = [
+    let cases: [(&str, Change); 12] = [
         ("project", |new| new.project = String::new()),
         ("run_id", |new| new.run_id = " ".to_owned()),
         ("check.name", |new| new.check.name = String::new()),
@@ -203,6 +203,7 @@ async fn an_invalid_receipt_is_refused_naming_its_field() {
         }),
         ("source.head", |new| new.source.head = String::new()),
         ("finished_at", |new| new.finished_at = new.started_at - 1),
+        ("finished_at", |new| new.finished_at = common::NOW + 1),
         ("output_references", |new| {
             new.output_references = vec![String::new()]
         }),

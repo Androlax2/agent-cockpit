@@ -17,8 +17,9 @@ Issue #40. Decided by the worker, implementing reports 06 and 09 as written.
   `evidence` loads the newest receipt of exactly the required definition on exactly the
   source asked about; once its artifacts changed it is stale, and an older pass does not
   stand in for a newer failure. No loading window exists, so parallel clones' runs on
-  other heads cannot crowd it out. "Newest" is by `started_at`, not insertion: a run
-  delivered late never passes a newer one.
+  other heads cannot crowd it out. "Newest" is by `finished_at`, not insertion, and a
+  future `finished_at` is refused: a run delivered late never passes a newer result, and
+  a long failure finishing after a short pass is the latest word.
 - **Without an exact receipt, a run of another definition on this source outranks claims,
   and claims about this source outrank runs elsewhere.** So a prose claim on a new head
   stays visibly `unverified` instead of hiding behind `source-changed` from an old run.

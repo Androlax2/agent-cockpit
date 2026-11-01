@@ -455,13 +455,13 @@ async fn a_claim_here_is_unverified_even_when_the_check_ran_on_another_head() {
 async fn a_changed_definition_here_is_named_even_after_a_run_on_another_head() {
     let fixture = Fixture::new().await;
     let old = check("test");
+    let mut here = fixture.receipt("run-1", &old, &clean_source(), &[], Outcome::Passed);
+    here.started_at -= 100;
+    here.finished_at -= 100;
+    fixture.record(here).await.unwrap();
     fixture
-        .record_run("run-1", &old, &clean_source(), &[], Outcome::Passed)
+        .record_run("run-2", &old, &other_head(), &[], Outcome::Passed)
         .await;
-    let mut elsewhere = fixture.receipt("run-2", &old, &other_head(), &[], Outcome::Passed);
-    elsewhere.started_at += 10;
-    elsewhere.finished_at += 10;
-    fixture.record(elsewhere).await.unwrap();
     let mut current = old.clone();
     current.command = "make test-all".to_owned();
 
@@ -542,4 +542,24 @@ async fn a_gate_spelled_differently_from_what_is_recorded_is_refused() {
         let refused = cockpit_verification::evidence(&read, project, &source, &checks).await;
         assert_eq!(refused_field(refusal(refused)), field);
     }
+}
+
+/// The latest result decides: a long run that failed after a short one passed wins.
+#[tokio::test]
+async fn a_long_failure_finishing_after_a_short_pass_decides() {
+    let fixture = Fixture::new().await;
+    let tests = check("test");
+    let mut long_failure =
+        fixture.receipt("run-long", &tests, &clean_source(), &[], Outcome::Failed);
+    long_failure.started_at = common::NOW - 100;
+    long_failure.finished_at = common::NOW - 1;
+    let mut short_pass =
+        fixture.receipt("run-short", &tests, &clean_source(), &[], Outcome::Passed);
+    short_pass.started_at = common::NOW - 50;
+    short_pass.finished_at = common::NOW - 40;
+    fixture.record(short_pass).await.unwrap();
+    fixture.record(long_failure).await.unwrap();
+
+    let report = fixture.gate(&clean_source(), &[tests]).await;
+    assert_eq!(report.outcome, GateOutcome::Failed);
 }

@@ -39,7 +39,7 @@ pub async fn record_receipt(
     let output_bytes = new.output.len() as u64;
     let stored_output_bytes =
         i64::try_from(output_bytes).map_err(|_| invalid("output", "is too large"))?;
-    let new = validated(new)?;
+    let new = validated(new, now)?;
     if let Some(existing) = receipt_of_run(write, &new.project, &new.run_id).await? {
         if existing.recorded == new && existing.output_bytes == output_bytes {
             return Ok(existing);
@@ -189,13 +189,13 @@ pub async fn evidence(
         let receipt = load_receipts(
             connection,
             &format!("{EXACT} ORDER BY {NEWEST_FIRST} LIMIT 1"),
-            exact,
+            exact.clone(),
         )
         .await?
         .pop();
         let otherwise = match receipt {
             Some(_) => None,
-            None => otherwise_ran(connection, on_source.clone()).await?,
+            None => otherwise_ran(connection, exact).await?,
         };
         loaded.push(CheckEvidence {
             check: check.clone(),
@@ -212,38 +212,33 @@ pub async fn evidence(
 const EXACT: &str = "project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4
     AND command = ?5 AND working_directory = ?6 AND environment = ?7";
 
-/// Newest by when the run started, so a run delivered late does not pass a newer one.
-const NEWEST_FIRST: &str = "started_at DESC, id DESC";
+/// Newest by when the result was known: a run delivered late does not pass a newer result,
+/// and a long run finishing after a short one is the latest word.
+const NEWEST_FIRST: &str = "finished_at DESC, id DESC";
 
-/// With no exact receipt: whether another definition of check `?2` ran on this source
-/// (head `?3`, changes `?4`), else where it last ran.
+/// With no exact receipt: whether another definition of the check ran on this source, else
+/// where it last ran. One query: runs on this source sort first.
 async fn otherwise_ran(
     connection: &Connection,
-    on_source: Vec<Value>,
+    exact: Vec<Value>,
 ) -> Result<Option<OtherRun>, Error> {
-    let mut here = connection
-        .query(
-            "SELECT 1 FROM verification_receipts
-             WHERE project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4 LIMIT 1",
-            params_from_iter(on_source.clone()),
-        )
-        .await?;
-    if here.next().await?.is_some() {
-        return Ok(Some(OtherRun::AnotherDefinition));
-    }
-    let mut elsewhere = connection
+    let mut rows = connection
         .query(
             &format!(
-                "SELECT head, base, dirty FROM verification_receipts
-                 WHERE project = ?1 AND check_name = ?2 AND NOT (head = ?3 AND dirty IS ?4)
-                 ORDER BY {NEWEST_FIRST} LIMIT 1"
+                "SELECT head, base, dirty, (head = ?3 AND dirty IS ?4) AS is_here
+                 FROM verification_receipts
+                 WHERE project = ?1 AND check_name = ?2 AND NOT ({EXACT})
+                 ORDER BY is_here DESC, {NEWEST_FIRST} LIMIT 1"
             ),
-            params_from_iter(on_source),
+            params_from_iter(exact),
         )
         .await?;
-    let Some(row) = elsewhere.next().await? else {
+    let Some(row) = rows.next().await? else {
         return Ok(None);
     };
+    if row.get::<i64>(3)? == 1 {
+        return Ok(Some(OtherRun::AnotherDefinition));
+    }
     Ok(Some(OtherRun::AnotherSource(Source {
         head: row.get(0)?,
         base: row.get(1)?,
@@ -404,7 +399,7 @@ async fn claims_on_source(
                 "SELECT id, check_name, head, base, dirty, claimant, statement, claimed_at
                  FROM verification_claims
                  WHERE project = ?1 AND check_name = ?2 AND head = ?3 AND dirty IS ?4
-                 ORDER BY claimed_at DESC, id DESC LIMIT {CLAIMS_LOADED_PER_CHECK}"
+                 ORDER BY id DESC LIMIT {CLAIMS_LOADED_PER_CHECK}"
             ),
             params_from_iter(parameters),
         )
@@ -429,7 +424,7 @@ async fn claims_on_source(
 
 /// The receipt as it is stored: every field checked, artifacts ordered by path, the output
 /// cut to its tail.
-fn validated(mut new: NewReceipt) -> Result<NewReceipt, Refusal> {
+fn validated(mut new: NewReceipt, now: i64) -> Result<NewReceipt, Refusal> {
     required("project", &new.project, NAME_MAX_CHARS)?;
     required("run_id", &new.run_id, NAME_MAX_CHARS)?;
     check_definition(&new.check)?;
@@ -437,6 +432,10 @@ fn validated(mut new: NewReceipt) -> Result<NewReceipt, Refusal> {
     check_exit_code(new.outcome, new.exit_code)?;
     if new.finished_at < new.started_at {
         return Err(invalid("finished_at", "is before started_at"));
+    }
+    // A future time would stay the newest result for good: receipts are never edited.
+    if new.finished_at > now {
+        return Err(invalid("finished_at", "is later than now"));
     }
     if new.output_references.len() > OUTPUT_REFERENCES_MAX {
         return Err(invalid(
