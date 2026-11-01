@@ -6,6 +6,9 @@
 //!   revision) or takes focus, and for [`INPUT_GRACE`] after each key it ignored: an owner
 //!   still typing to an agent when the pane took tmux's keys approves nothing (#317). The
 //!   daemon's own grace refusal is the backstop.
+//! - Input is also ignored while tmux's keys the pane asked for are on their way: their
+//!   answer starts the grace again, so a hint shown before it would offer keys it takes back
+//!   (#439).
 //! - While the owner types into the pane, the request shown stays, whatever arrives.
 
 use std::time::{Duration, Instant};
@@ -68,6 +71,9 @@ pub enum PaneOutcome {
 pub struct Pane {
     shown: Option<Shown>,
     accepts_input_at: Option<Instant>,
+    /// Column focuses asked for and not yet answered: the runtime answers every command,
+    /// with the daemon's reply or a failure at its deadline, so this always returns to zero.
+    keys_on_their_way: usize,
     typing: Option<Typing>,
     typed: String,
     /// The whole command instead of its folded start.
@@ -89,7 +95,8 @@ impl Pane {
 
     /// Whether a key now would be ignored.
     pub fn in_grace(&self, now: Instant) -> bool {
-        self.accepts_input_at.is_some_and(|ready| now < ready)
+        let is_waiting_for_keys = self.shown.is_some() && self.keys_on_their_way > 0;
+        is_waiting_for_keys || self.accepts_input_at.is_some_and(|ready| now < ready)
     }
 
     /// Follows the queue after it changed: shows its head, unless the owner is typing into
@@ -118,6 +125,18 @@ impl Pane {
         if self.shown.is_some() {
             self.accepts_input_at = Some(now + INPUT_GRACE);
         }
+    }
+
+    /// The TUI asked tmux for the column's keys: input waits until they arrive.
+    pub fn ask_for_keys(&mut self) {
+        self.keys_on_their_way += 1;
+    }
+
+    /// tmux answered a request for the column's keys, moved or not: the first key after it
+    /// waits out the grace again.
+    pub fn keys_answered(&mut self, now: Instant) {
+        self.keys_on_their_way = self.keys_on_their_way.saturating_sub(1);
+        self.focus(now);
     }
 
     pub fn key(&mut self, key: Key, now: Instant) -> PaneOutcome {
