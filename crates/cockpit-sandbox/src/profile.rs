@@ -67,10 +67,12 @@ pub const DESKTOP_VARIABLES: [&str; 4] = [
 /// WSL2's variable naming the interop socket that starts Windows programs.
 const WSL_INTEROP_VARIABLE: &str = "WSL_INTEROP";
 
-/// The folder Codex 0.161.0 puts its app-server socket's real file in, leaving only a link
-/// at the path it is given (#437): `<this>-<uid>` on the host's `/tmp`, which the daemon
-/// reaches from outside the sandbox.
+/// The folder Codex 0.161.0 keeps its app-server sockets in, whatever `TMPDIR` says:
+/// `<this><uid>`. Inside the sandbox it is a folder of the session's own (#446).
 const CODEX_SOCKET_FOLDER_PREFIX: &str = "/tmp/codex-daemon-";
+
+/// The session's folder, under its directory, mounted at Codex's socket folder.
+pub const CODEX_SOCKET_FOLDER_NAME: &str = "codex-daemon";
 
 /// Where X11 clients find display `:N`'s socket.
 const X11_SOCKET_DIR: &str = "/tmp/.X11-unix";
@@ -103,8 +105,12 @@ pub struct ProfileRequest {
     /// its provider keeps what reaches the running agent, such as Codex's app-server socket:
     /// read and write.
     pub session_dir: PathBuf,
-    /// The user the daemon and its agents run as; names Codex's socket folder and the
-    /// session bus a shared desktop session reaches.
+    /// The session's folder in the daemon's mount sources: where the folders the sandbox
+    /// shows at another path live. It and its parent must be outside every folder the agent
+    /// writes (#446).
+    pub mount_dir: PathBuf,
+    /// The user the daemon and its agents run as; names the session bus a shared desktop
+    /// session reaches.
     pub owner_uid: u32,
     /// Folders the agent must reach read-only: the agent socket's folder, the bridge
     /// programs.
@@ -126,10 +132,6 @@ pub struct Profile {
     pub working_dir: PathBuf,
     pub session_dir: PathBuf,
     pub owner_uid: u32,
-    /// Folders the provider's own program shares with the daemon on the host, read and
-    /// write: Codex's socket folder. Created owner-only before the launch
-    /// ([`crate::Plan::create_provider_folders`]).
-    pub provider_folders: Vec<PathBuf>,
     pub read_only: Vec<PathBuf>,
     pub denied: Vec<PathBuf>,
     pub denied_read_patterns: Vec<String>,
@@ -141,6 +143,32 @@ pub struct Profile {
     /// What the shared desktop session's variables name, each one reachable on its own;
     /// empty when the session is withheld.
     pub desktop_endpoints: Vec<DesktopEndpoint>,
+    /// Folders of the session's own the provider needs at a fixed path inside the sandbox:
+    /// Codex's socket folder. Never the host's folder at that path, which the owner's own
+    /// Codex uses (#446).
+    pub folder_mounts: Vec<FolderMount>,
+}
+
+/// A host folder the sandbox shows at another path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderMount {
+    /// On the host: in the daemon's own folder for the session, outside everything the
+    /// agent writes; created owner-only before the launch.
+    pub host: PathBuf,
+    /// Where the agent finds it.
+    pub sandbox: PathBuf,
+}
+
+impl FolderMount {
+    /// The host's name for `inside`, an entry directly in the mounted folder as the agent
+    /// sees it; None for any other path.
+    pub fn host_path(&self, inside: &Path) -> Option<PathBuf> {
+        let mut rest = inside.strip_prefix(&self.sandbox).ok()?.components();
+        let (Some(std::path::Component::Normal(name)), None) = (rest.next(), rest.next()) else {
+            return None;
+        };
+        Some(self.host.join(name))
+    }
 }
 
 /// One socket or file a desktop variable names, which a shared desktop session reaches
@@ -224,7 +252,8 @@ impl Profile {
         for path in request.read_only.iter() {
             check_absolute(path, "read-only")?;
         }
-        let provider_folders = provider_folders(&request.provider, request.owner_uid);
+        check_absolute(&request.mount_dir, "folder")?;
+        let folder_mounts = folder_mounts(&request.provider, &request.mount_dir, request.owner_uid);
         let desktop_endpoints = match request.desktop {
             DesktopSession::Shared => desktop_endpoints(&environment)?,
             DesktopSession::Withheld => Vec::new(),
@@ -242,6 +271,18 @@ impl Profile {
         }
         for host in &request.allow_hosts {
             check_host(host)?;
+        }
+        let writable: Vec<&Path> = [request.working_dir.as_path(), &request.session_dir]
+            .into_iter()
+            .chain(
+                desktop_endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.kind == EndpointKind::Socket)
+                    .map(|endpoint| endpoint.path.as_path()),
+            )
+            .collect();
+        for mount in &folder_mounts {
+            refuse_writable_source(mount, &writable)?;
         }
         for secret in &request.secrets {
             check_variable(&secret.variable)?;
@@ -265,7 +306,6 @@ impl Profile {
             working_dir: request.working_dir,
             session_dir: request.session_dir,
             owner_uid: request.owner_uid,
-            provider_folders,
             read_only: request.read_only,
             denied,
             denied_read_patterns: BASELINE_DENIED_READ
@@ -281,6 +321,7 @@ impl Profile {
             secrets: request.secrets,
             desktop: request.desktop,
             desktop_endpoints,
+            folder_mounts,
         })
     }
 
@@ -296,10 +337,11 @@ impl Profile {
                 self.session_dir.display()
             ),
         ];
-        rules.extend(self.provider_folders.iter().map(|folder| {
+        rules.extend(self.folder_mounts.iter().map(|mount| {
             format!(
-                "read-write {} ({}'s folder on the host, shared with the daemon)",
-                folder.display(),
+                "folder {} at {} ({}'s own, not the host's)",
+                mount.host.display(),
+                mount.sandbox.display(),
                 self.provider
             )
         }));
@@ -351,15 +393,38 @@ impl Profile {
     }
 }
 
-/// What `provider`'s own program shares with the daemon on the host, beyond the session's
-/// directory.
-fn provider_folders(provider: &str, owner_uid: u32) -> Vec<PathBuf> {
+/// What `provider` needs at a fixed path of the sandbox, from the session's mount folder.
+fn folder_mounts(provider: &str, mount_dir: &Path, owner_uid: u32) -> Vec<FolderMount> {
     match provider {
-        "codex" => vec![PathBuf::from(format!(
-            "{CODEX_SOCKET_FOLDER_PREFIX}{owner_uid}"
-        ))],
+        "codex" => vec![FolderMount {
+            host: mount_dir.join(CODEX_SOCKET_FOLDER_NAME),
+            sandbox: PathBuf::from(format!("{CODEX_SOCKET_FOLDER_PREFIX}{owner_uid}")),
+        }],
         _ => Vec::new(),
     }
+}
+
+/// Greywall refuses unsafe mount sources but checks before it mounts: a source, or the
+/// folder holding it, that the agent writes could be swapped in between (#446).
+fn refuse_writable_source(mount: &FolderMount, writable: &[&Path]) -> Result<(), Refusal> {
+    let holder = mount.host.parent().unwrap_or(&mount.host);
+    let Some(granted) = writable
+        .iter()
+        .find(|granted| holder.starts_with(granted) || granted.starts_with(holder))
+    else {
+        return Ok(());
+    };
+    Err(Refusal::new(
+        format!(
+            "folder {} at {}",
+            mount.host.display(),
+            mount.sandbox.display()
+        ),
+        format!(
+            "the agent writes {}, so it could swap the mounted folder before the mount",
+            granted.display()
+        ),
+    ))
 }
 
 /// The last value `environment` gives `name`, as a later entry overrides an earlier one.

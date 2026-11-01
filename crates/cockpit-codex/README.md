@@ -60,9 +60,10 @@ provider and nothing above the contract sees a Codex type (#48).
 - **Known gaps.** After `/clear`, Codex starts a new thread and sends no `SessionEnd` for the
   old one (measured), so the bridge cannot announce `--conversation-ends`, and the daemon
   refuses the new thread's reports (#408). The socket's real file is Codex's, under
-  `/tmp/codex-daemon-<uid>/`, which the session's sandbox and the daemon share: the sandbox
-  mounts the host's folder and the session's directory (#437). Where the approval requests of a delivered turn go is
-  unmeasured (#436).
+  `/tmp/codex-daemon-<uid>/` whatever `TMPDIR` says, beside the owner's own Codex's: the
+  sandbox shows a folder of the session's own there, through a greywall fork feature, and
+  without it the daemon refuses delivery naming that feature (#446). Where the approval
+  requests of a delivered turn go is unmeasured (#436).
 
 ## Dependency edges
 

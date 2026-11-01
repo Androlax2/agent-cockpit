@@ -12,6 +12,7 @@ const LOCK_FILE: &str = "daemon.lock";
 const DATABASE_FILE: &str = "state.db";
 const EXECUTIONS_DIR: &str = "executions";
 const SESSION_DIRS: &str = "sessions";
+const MOUNT_SOURCES: &str = "mounts";
 /// Only the owner may enter the socket directory.
 const PRIVATE_DIR_MODE: u32 = 0o700;
 
@@ -63,6 +64,12 @@ impl Options {
     /// sockets; short enough for a unix socket path inside each.
     pub fn session_dirs(&self) -> PathBuf {
         self.runtime_dir.join(SESSION_DIRS)
+    }
+
+    /// `$XDG_RUNTIME_DIR/cockpit/mounts`: the folders sandboxes show at another path, one
+    /// folder per session inside. No agent is granted it or any folder above it (#446).
+    pub fn mount_sources(&self) -> PathBuf {
+        self.runtime_dir.join(MOUNT_SOURCES)
     }
 
     /// `$XDG_STATE_HOME/cockpit/executions`: each execution's output files and leader file.

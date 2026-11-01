@@ -271,6 +271,7 @@ fn sandbox(
             .collect(),
             denied,
             owner_uid: instance.owner_uid,
+            mount_sources: options.mount_sources(),
         },
     )
 }

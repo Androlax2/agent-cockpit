@@ -13,13 +13,12 @@ use cockpit_sandbox::{
     Secret, SecretHandling,
 };
 
-pub const LINUX_CAPABILITIES: [&str; 6] = [
+pub const LINUX_CAPABILITIES: [&str; 5] = [
     "bubblewrap",
     "landlock",
     "seccomp",
     "network isolation",
     "D-Bus isolated",
-    "xdg-dbus-proxy",
 ];
 
 /// The user the fixtures' daemon runs as.
@@ -28,12 +27,16 @@ pub const OWNER_UID: u32 = 1000;
 /// The fixtures' session directory for session `s1`.
 pub const SESSION_DIR: &str = "/run/user/1000/cockpit/sessions/s1";
 
+/// The daemon's folder for what sandboxes mount at another path.
+pub const MOUNT_SOURCES: &str = "/run/user/1000/cockpit/mounts";
+
 /// No host paths beyond the owner's user id.
 pub fn no_host_paths() -> HostPaths {
     HostPaths {
         read_only: Vec::new(),
         denied: Vec::new(),
         owner_uid: OWNER_UID,
+        mount_sources: PathBuf::from(MOUNT_SOURCES),
     }
 }
 
@@ -115,6 +118,7 @@ pub fn profile_request(working_dir: &str) -> ProfileRequest {
         provider: "claude".to_owned(),
         working_dir: PathBuf::from(working_dir),
         session_dir: PathBuf::from(SESSION_DIR),
+        mount_dir: Path::new(MOUNT_SOURCES).join("s1"),
         owner_uid: OWNER_UID,
         read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
         denied: vec![PathBuf::from("/home/owner/.local/state/cockpit/cockpit.db")],

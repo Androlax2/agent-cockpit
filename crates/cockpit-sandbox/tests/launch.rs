@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use cockpit_sandbox::{AgentSandbox, Enforcement, HostPaths, MIGRATIONS, Platform, Sandbox};
-use common::{OWNER_UID, launch_request, linux_engine, no_host_paths};
+use common::{MOUNT_SOURCES, OWNER_UID, launch_request, linux_engine, no_host_paths};
 
 fn agent_words() -> (PathBuf, Vec<OsString>) {
     (PathBuf::from("/usr/bin/claude"), vec!["--resume".into()])
@@ -110,6 +110,7 @@ fn a_hosts_denied_path_reaches_the_profile() {
             read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
             denied: vec![PathBuf::from("/run/user/1000/cockpit/daemon.sock")],
             owner_uid: OWNER_UID,
+            mount_sources: PathBuf::from(MOUNT_SOURCES),
         },
     );
 

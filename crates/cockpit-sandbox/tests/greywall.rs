@@ -6,16 +6,17 @@ mod common;
 
 use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cockpit_sandbox::{
-    ClientIdentity, DesktopSession, EngineBuild, Greywall, GreywallPrograms,
-    PINNED_GREYPROXY_COMMIT, PINNED_GREYWALL_COMMIT, Plan, Platform, Profile, ProfileRequest,
-    Refusal, parse_greyproxy_version, parse_greywall_version,
+    ClientIdentity, DesktopSession, EngineBuild, FolderMount, Greywall, GreywallPrograms,
+    MOUNT_FLAG, PINNED_GREYPROXY_COMMIT, PINNED_GREYWALL_COMMIT, Plan, Platform, Profile,
+    ProfileRequest, ProviderReach, Refusal, lists_flag, parse_greyproxy_version,
+    parse_greywall_version,
 };
 use common::{
-    LINUX_CAPABILITIES, SESSION_DIR, capabilities, engine_with, linux_engine, pinned_greyproxy,
-    pinned_greywall, profile_request, programs,
+    LINUX_CAPABILITIES, MOUNT_SOURCES, SESSION_DIR, capabilities, engine_with, linux_engine,
+    pinned_greyproxy, pinned_greywall, profile_request, programs,
 };
 
 const GREYWALL_VERSION_OUTPUT: &str = "greywall - lightweight, container-free sandbox
@@ -140,6 +141,94 @@ fn write_program(dir: &Path, name: &str, output: &str) -> std::path::PathBuf {
     std::fs::write(&path, format!("#!/bin/sh\ncat <<'EOF'\n{output}EOF\n")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
+}
+
+/// A stand-in greywall whose `--help` prints `help` and anything else prints its version.
+fn write_greywall(dir: &Path, help: &str) -> std::path::PathBuf {
+    let path = dir.join("greywall");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = --help ]; then\ncat <<'EOF'\n{help}EOF\nexit 0\nfi\ncat <<'EOF'\n{GREYWALL_VERSION_OUTPUT}EOF\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// `greywall --help` of the installed build without the fork's `--mount` (excerpt).
+const HELP_WITHOUT_MOUNT: &str = "Usage:
+  greywall [flags] -- [command...]
+
+Examples:
+  greywall --allow-path /tmp/work -- mytool      # Grant rw to an extra dir/file for this run
+
+Flags:
+      --allow-path stringArray        Allow read+write access to a directory or file for this session (repeatable, e.g. --allow-path /tmp/work)
+      --allow-read-path stringArray   Allow read-only access to a directory or file for this session (repeatable, e.g. --allow-read-path /data/refs)
+  -s, --settings string               Path to settings file (default: OS config directory)
+";
+
+/// The same with the fork's `--mount` (#446).
+const HELP_WITH_MOUNT: &str = "Usage:
+  greywall [flags] -- [command...]
+
+Flags:
+      --allow-path stringArray        Allow read+write access to a directory or file for this session (repeatable, e.g. --allow-path /tmp/work)
+      --mount stringArray             Mount a host directory at a path below /tmp inside the sandbox (repeatable, Linux only, e.g. --mount /srv/x:/tmp/x)
+  -s, --settings string               Path to settings file (default: OS config directory)
+";
+
+#[test]
+fn detect_finds_mount_when_greywalls_help_lists_it() {
+    for (help, can_mount_folders) in [(HELP_WITH_MOUNT, true), (HELP_WITHOUT_MOUNT, false)] {
+        let bin = tempfile::tempdir().unwrap();
+        let programs = GreywallPrograms {
+            greywall: write_greywall(bin.path(), help),
+            greyproxy: write_program(bin.path(), "greyproxy", GREYPROXY_VERSION_OUTPUT),
+        };
+
+        let engine =
+            Greywall::detect(programs, Platform::Linux, bin.path().join("settings")).unwrap();
+
+        assert_eq!(engine.can_mount_folders, can_mount_folders, "{help}");
+    }
+}
+
+#[test]
+fn only_an_option_line_lists_a_flag() {
+    assert!(lists_flag(HELP_WITH_MOUNT, "--mount"));
+    assert!(lists_flag(HELP_WITH_MOUNT, "--settings"));
+    for help in [
+        "  greywall --mount /srv/x:/tmp/x -- tool   # an example\n",
+        "      --allow-path stringArray   e.g. --mount is not this line's flag\n",
+        "      --mount-all   another flag\n",
+    ] {
+        assert!(!lists_flag(help, "--mount"), "{help}");
+    }
+}
+
+/// Greywall refuses a macOS configuration with mounts: a Codex launch there goes ahead with
+/// its sockets unreachable.
+#[test]
+fn a_codex_launch_on_macos_mounts_nothing() {
+    let settings = tempfile::tempdir().unwrap();
+    let mut engine = engine_with(Platform::MacOs, Vec::new(), settings.path());
+    engine.can_mount_folders = true;
+    let mut request = profile_request("/home/owner/app");
+    request.provider = "codex".to_owned();
+    let profile = Profile::build(request, &Platform::MacOs).unwrap();
+
+    let plan = engine
+        .plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
+        .unwrap();
+
+    assert!(values_of(&plan, "--mount").is_empty());
+    let ProviderReach::Unreachable { reason, .. } = &plan.reach else {
+        panic!("{:?}", plan.reach);
+    };
+    assert!(reason.contains("only on Linux"), "{reason}");
 }
 
 #[test]
@@ -418,25 +507,136 @@ fn plan_on_linux(request: ProfileRequest) -> Result<Plan, Refusal> {
     linux_engine(settings.path()).plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
 }
 
-/// Greywall's private `/tmp` would hide Codex's socket folder from the daemon; the folder
-/// is the host's, mounted over it (#437).
-#[test]
-fn a_codex_launch_mounts_the_session_directory_and_codexs_socket_folder() {
+fn codex_plan(can_mount_folders: bool, settings: &Path) -> Plan {
     let mut request = profile_request("/home/owner/app");
     request.provider = "codex".to_owned();
+    let profile = Profile::build(request, &Platform::Linux).unwrap();
+    let mut engine = linux_engine(settings);
+    engine.can_mount_folders = can_mount_folders;
+    engine
+        .plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
+        .unwrap()
+}
 
-    let plan = plan_on_linux(request).unwrap();
+/// A greywall whose `--help` lists `--mount` shows the session's own folder at Codex's
+/// socket path, and the daemon reaches Codex's sockets through it (#446).
+#[test]
+fn a_codex_launch_mounts_its_sessions_own_folder_at_codexs_socket_path() {
+    let settings = tempfile::tempdir().unwrap();
 
+    let plan = codex_plan(true, settings.path());
+
+    let host = format!("{MOUNT_SOURCES}/s1/codex-daemon");
     assert_eq!(
-        values_of(&plan, "--allow-path"),
-        ["/home/owner/app", SESSION_DIR, "/tmp/codex-daemon-1000"]
+        values_of(&plan, "--mount"),
+        [format!("{host}:/tmp/codex-daemon-1000")]
     );
-    assert_eq!(plan.provider_folders, [Path::new("/tmp/codex-daemon-1000")]);
+    assert_eq!(
+        plan.reach,
+        ProviderReach::Mounted(vec![FolderMount {
+            host: PathBuf::from(&host),
+            sandbox: PathBuf::from("/tmp/codex-daemon-1000"),
+        }])
+    );
     assert!(plan.enforced_by.contains(&(
-        "read-write /tmp/codex-daemon-1000 (codex's folder on the host, shared with the daemon)"
-            .to_owned(),
-        "greywall bubblewrap+Landlock (--allow-path, the host's own folder)".to_owned()
+        format!("folder {host} at /tmp/codex-daemon-1000 (codex's own, not the host's)"),
+        "greywall --mount".to_owned()
     )));
+}
+
+/// Without `--mount` the launch goes ahead with a private `/tmp`, and delivery is
+/// refused naming the feature: the host's folder is never shared instead (#446).
+#[test]
+fn without_mount_a_codex_launch_runs_but_its_sockets_are_unreachable() {
+    let settings = tempfile::tempdir().unwrap();
+
+    let plan = codex_plan(false, settings.path());
+
+    assert!(values_of(&plan, "--mount").is_empty());
+    let ProviderReach::Unreachable { feature, reason } = &plan.reach else {
+        panic!("{:?}", plan.reach);
+    };
+    assert_eq!(*feature, MOUNT_FLAG);
+    assert!(reason.contains("--help lists no --mount"), "{reason}");
+}
+
+#[test]
+fn no_codex_launch_shares_the_hosts_codex_socket_folder() {
+    let settings = tempfile::tempdir().unwrap();
+    for can_mount_folders in [true, false] {
+        let plan = codex_plan(can_mount_folders, settings.path());
+
+        assert_eq!(
+            values_of(&plan, "--allow-path"),
+            ["/home/owner/app", SESSION_DIR]
+        );
+    }
+}
+
+/// Greywall's mount checks its source and then mounts it: the source and the folder holding
+/// it are the daemon's, outside every path the sandbox lets the agent write (#446).
+#[test]
+fn the_mount_source_is_outside_every_path_the_sandbox_writes() {
+    let settings = tempfile::tempdir().unwrap();
+
+    let plan = codex_plan(true, settings.path());
+
+    let writable = values_of(&plan, "--allow-path");
+    let sources = values_of(&plan, "--mount");
+    assert!(!sources.is_empty());
+    for source in sources {
+        let host = Path::new(source.split_once(':').unwrap().0);
+        let holder = host.parent().unwrap();
+        for granted in &writable {
+            assert!(
+                !holder.starts_with(granted) && !Path::new(granted).starts_with(holder),
+                "{} is inside or holds {granted}",
+                host.display()
+            );
+        }
+    }
+}
+
+fn mounted_plan(host: &Path) -> Plan {
+    let settings = tempfile::tempdir().unwrap();
+    let mut plan = codex_plan(true, settings.path());
+    plan.reach = ProviderReach::Mounted(vec![FolderMount {
+        host: host.to_owned(),
+        sandbox: PathBuf::from("/tmp/codex-daemon-1000"),
+    }]);
+    plan
+}
+
+#[test]
+fn a_mounted_folder_is_created_owner_only_in_the_daemons_mount_sources() {
+    let mount_sources = tempfile::tempdir().unwrap();
+    let folder = mount_sources.path().join("s1/codex-daemon");
+
+    mounted_plan(&folder).create_mount_sources().unwrap();
+
+    for created in [folder.parent().unwrap(), &folder] {
+        let mode = std::fs::metadata(created).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{}", created.display());
+    }
+}
+
+/// A link where a mounted folder belongs would mount whatever it names: never followed.
+#[test]
+fn a_link_in_place_of_the_mounted_folder_is_refused() {
+    let mount_sources = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::create_dir(mount_sources.path().join("s1")).unwrap();
+    let folder = mount_sources.path().join("s1/codex-daemon");
+    std::os::unix::fs::symlink(elsewhere.path(), &folder).unwrap();
+
+    let (failed, error) = mounted_plan(&folder).create_mount_sources().unwrap_err();
+
+    assert_eq!(failed, folder);
+    assert!(
+        error.to_string().contains("is not a folder of user"),
+        "{error}"
+    );
+    assert!(std::fs::symlink_metadata(&folder).unwrap().is_symlink());
 }
 
 fn shared_desktop(variables: &[(&str, &str)]) -> ProfileRequest {
@@ -525,11 +725,11 @@ fn a_shared_bus_without_greywalls_proxy_is_refused() {
     let settings = tempfile::tempdir().unwrap();
     let available: Vec<&str> = LINUX_CAPABILITIES
         .into_iter()
-        .filter(|name| *name != "xdg-dbus-proxy")
+        .filter(|name| *name != "D-Bus isolated")
         .collect();
     let engine = engine_with(
         Platform::Linux,
-        capabilities(&available, &["xdg-dbus-proxy"]),
+        capabilities(&available, &["D-Bus isolated"]),
         settings.path(),
     );
     let profile = Profile::build(shared_desktop(&FULL_DESKTOP), &Platform::Linux).unwrap();
@@ -542,7 +742,7 @@ fn a_shared_bus_without_greywalls_proxy_is_refused() {
         refused.rule,
         "desktop bus /run/user/1000/bus for DBUS_SESSION_BUS_ADDRESS"
     );
-    assert!(refused.reason.contains("xdg-dbus-proxy"), "{refused}");
+    assert!(refused.reason.contains("D-Bus isolated"), "{refused}");
 }
 
 /// Greywall mounts its proxy at `/run/user/<uid>/bus`; a bus elsewhere would leave the
@@ -574,65 +774,4 @@ fn a_shared_bus_on_macos_is_refused() {
         .unwrap_err();
 
     assert!(refused.reason.contains("only on Linux"), "{refused}");
-}
-
-fn plan_with_folder(folder: &Path, owner_uid: u32) -> Plan {
-    let settings = tempfile::tempdir().unwrap();
-    let profile = Profile::build(profile_request("/home/owner/app"), &Platform::Linux).unwrap();
-    let mut plan = linux_engine(settings.path())
-        .plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
-        .unwrap();
-    plan.provider_folders = vec![folder.to_owned()];
-    plan.owner_uid = owner_uid;
-    plan
-}
-
-fn own_uid(dir: &Path) -> u32 {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(dir).unwrap().uid()
-}
-
-#[test]
-fn a_missing_provider_folder_is_created_owner_only() {
-    let tmp = tempfile::tempdir().unwrap();
-    let folder = tmp.path().join("codex-daemon-1000");
-
-    plan_with_folder(&folder, own_uid(tmp.path()))
-        .create_provider_folders()
-        .unwrap();
-
-    let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o700);
-}
-
-/// The folder is on the shared `/tmp`: one another user made first, or one others may open,
-/// would hand them the agent's sockets.
-#[test]
-fn a_provider_folder_others_may_open_or_own_is_refused() {
-    let tmp = tempfile::tempdir().unwrap();
-    let owner = own_uid(tmp.path());
-    let open = tmp.path().join("open");
-    std::fs::create_dir(&open).unwrap();
-    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let elsewhere = tmp.path().join("elsewhere");
-    std::fs::create_dir(&elsewhere).unwrap();
-    let link = tmp.path().join("link");
-    std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-    let private = tmp.path().join("private");
-    std::fs::create_dir(&private).unwrap();
-    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
-
-    for (folder, owner_uid) in [(&open, owner), (&link, owner), (&private, owner + 1)] {
-        let (failed, error) = plan_with_folder(folder, owner_uid)
-            .create_provider_folders()
-            .unwrap_err();
-
-        assert_eq!(&failed, folder);
-        assert!(
-            error.to_string().contains("only it may open"),
-            "{}: {error}",
-            folder.display()
-        );
-    }
-    assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
 }

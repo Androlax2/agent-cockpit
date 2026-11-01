@@ -3,10 +3,12 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use cockpit_sandbox::{DesktopSession, EndpointKind, Platform, Profile, ProfileRequest, Refusal};
-use common::{SESSION_DIR, profile_request, wsl2};
+use cockpit_sandbox::{
+    DesktopSession, EndpointKind, FolderMount, Platform, Profile, ProfileRequest, Refusal,
+};
+use common::{MOUNT_SOURCES, SESSION_DIR, profile_request, wsl2};
 
 fn refusal(request: ProfileRequest, platform: &Platform) -> Refusal {
     Profile::build(request, platform).expect_err("the profile is refused")
@@ -218,30 +220,87 @@ fn a_session_directory_inside_a_denied_folder_is_refused() {
     assert_eq!(refused.rule, format!("read-write {SESSION_DIR}"));
 }
 
-/// Codex 0.161.0 puts its socket's real file in `/tmp/codex-daemon-<uid>/` and the daemon
-/// reaches it there from outside the sandbox (#437).
+/// Codex 0.161.0 keeps its sockets in `/tmp/codex-daemon-<uid>/` whatever `TMPDIR` says; the
+/// host's folder of that name is the owner's own Codex's, so the sandbox shows a folder of the
+/// session's own there (#446).
 #[test]
-fn a_codex_agent_writes_codexs_socket_folder_on_the_host() {
+fn a_codex_agent_gets_a_folder_of_its_sessions_own_at_codexs_socket_path() {
     let mut request = profile_request("/home/owner/app");
     request.provider = "codex".to_owned();
 
     let profile = Profile::build(request, &Platform::Linux).unwrap();
 
     assert_eq!(
-        profile.provider_folders,
-        vec![PathBuf::from("/tmp/codex-daemon-1000")]
+        profile.folder_mounts,
+        [FolderMount {
+            host: Path::new(MOUNT_SOURCES).join("s1/codex-daemon"),
+            sandbox: PathBuf::from("/tmp/codex-daemon-1000"),
+        }]
     );
-    assert!(profile.rules().contains(
-        &"read-write /tmp/codex-daemon-1000 (codex's folder on the host, shared with the daemon)"
-            .to_owned()
-    ));
+    assert!(
+        profile.rules().contains(&format!(
+            "folder {MOUNT_SOURCES}/s1/codex-daemon at /tmp/codex-daemon-1000 (codex's own, not the host's)"
+        )),
+        "{:#?}",
+        profile.rules()
+    );
+}
+
+/// Greywall checks a mount source before it mounts it: one the agent could swap in between,
+/// inside or holding a folder it writes, is refused (#446).
+#[test]
+fn a_mount_source_the_agent_could_swap_is_refused() {
+    for mount_dir in [
+        format!("{SESSION_DIR}/mounts"),
+        "/home/owner/app".to_owned(),
+        "/run/user/1000/cockpit".to_owned(),
+    ] {
+        let mut request = profile_request("/home/owner/app/crate");
+        request.provider = "codex".to_owned();
+        request.mount_dir = PathBuf::from(&mount_dir);
+
+        let refused = refusal(request, &Platform::Linux);
+
+        assert!(
+            refused
+                .rule
+                .starts_with(&format!("folder {mount_dir}/codex-daemon at ")),
+            "{mount_dir}: {refused:?}"
+        );
+        assert!(refused.reason.contains("could swap"), "{refused:?}");
+    }
 }
 
 #[test]
-fn other_providers_share_no_folder_with_the_daemon() {
+fn other_providers_get_no_folder_mount() {
     let profile = Profile::build(profile_request("/home/owner/app"), &Platform::Linux).unwrap();
 
-    assert!(profile.provider_folders.is_empty());
+    assert!(profile.folder_mounts.is_empty());
+}
+
+#[test]
+fn a_mounted_folders_entry_has_one_host_name_and_nothing_else_has_one() {
+    let mount = FolderMount {
+        host: PathBuf::from("/run/user/1000/cockpit/sessions/s1/codex-daemon"),
+        sandbox: PathBuf::from("/tmp/codex-daemon-1000"),
+    };
+
+    assert_eq!(
+        mount.host_path(Path::new("/tmp/codex-daemon-1000/5f2c")),
+        Some(PathBuf::from(
+            "/run/user/1000/cockpit/sessions/s1/codex-daemon/5f2c"
+        ))
+    );
+    for elsewhere in [
+        "/tmp/codex-daemon-1000",
+        "/tmp/codex-daemon-1000/a/b",
+        "/tmp/codex-daemon-1000/..",
+        "/tmp/codex-daemon-10000/5f2c",
+        "/home/owner/.ssh/agent.sock",
+        "codex-daemon-1000/5f2c",
+    ] {
+        assert_eq!(mount.host_path(Path::new(elsewhere)), None, "{elsewhere}");
+    }
 }
 
 fn shared_desktop(variables: &[(&str, &str)]) -> ProfileRequest {

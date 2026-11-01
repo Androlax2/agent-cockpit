@@ -135,17 +135,20 @@ esac
 "#;
 
 /// A stand-in Greywall (#61): `--version` answers as the pinned build on a host with every
-/// capability; a launch appends its arguments to `@LOG@`, one line, then runs the agent
+/// capability, and `--help` lists the fork's `--mount` (#446); a launch appends its arguments to `@LOG@`, one line, then runs the agent
 /// after `--` unsandboxed, so the agents above behave as they do without it. The folders it
 /// was asked to make writable (`--allow-path`) are in `FAKE_GREYWALL_WRITABLE`, `:`-separated.
 const FAKE_GREYWALL: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then
   printf 'greywall - stand-in\n  Version: 0.3.7+dotfiles\n  Commit:  @COMMIT@\n'
   printf 'Checking system capabilities:\n'
-  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated' \
-      xdg-dbus-proxy; do
+  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated'; do
     printf '  \342\234\223 %s\n' "$capability"
   done
+  exit 0
+fi
+if [ "$1" = --help ]; then
+  printf 'Flags:\n      --mount stringArray   Mount a host directory below /tmp in the sandbox\n'
   exit 0
 fi
 printf '%s\n' "$*" >> '@LOG@'

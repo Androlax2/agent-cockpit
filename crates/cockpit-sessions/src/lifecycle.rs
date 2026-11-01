@@ -1434,9 +1434,9 @@ impl Sessions {
                     path: plan.settings_path.clone(),
                     source,
                 })?;
-                plan.create_provider_folders()
+                plan.create_mount_sources()
                     .map_err(|(path, source)| Error::Io {
-                        action: "prepare the provider's folder for the sandbox",
+                        action: "prepare the session's folder the sandbox mounts",
                         path,
                         source,
                     })

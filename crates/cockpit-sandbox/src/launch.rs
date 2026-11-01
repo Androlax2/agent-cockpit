@@ -21,6 +21,10 @@ pub struct HostPaths {
     pub denied: Vec<PathBuf>,
     /// The user the daemon runs as, and its agents with it.
     pub owner_uid: u32,
+    /// The daemon's folder for what sandboxes mount at another path, one folder per session
+    /// inside: no agent is granted it or any folder above it, so no agent can swap a mount
+    /// source between Cockpit's check and the engine's mount (#446).
+    pub mount_sources: PathBuf,
 }
 
 /// The sandbox launches go through: the engine the daemon detected at its start (or why
@@ -29,7 +33,8 @@ pub struct HostPaths {
 pub struct Sandbox {
     platform: Platform,
     engine: Result<Greywall, String>,
-    host: HostPaths,
+    /// None only for [`Sandbox::unavailable`], whose caller never read the host.
+    host: Option<HostPaths>,
 }
 
 /// One launch's facts.
@@ -67,19 +72,17 @@ impl Sandbox {
         Sandbox {
             platform,
             engine,
-            host,
+            host: Some(host),
         }
     }
 
     /// No engine on this host: every sandboxed launch is refused with `reason`.
     pub fn unavailable(reason: impl Into<String>) -> Sandbox {
-        // Without an engine no profile is built, so the host paths are never read.
-        let host = HostPaths {
-            read_only: Vec::new(),
-            denied: Vec::new(),
-            owner_uid: u32::MAX,
-        };
-        Sandbox::new(Platform::detect(), Err(reason.into()), host)
+        Sandbox {
+            platform: Platform::detect(),
+            engine: Err(reason.into()),
+            host: None,
+        }
     }
 
     /// The host's platform, as the daemon detected it.
@@ -108,14 +111,20 @@ impl Sandbox {
         engine: &Greywall,
         request: &LaunchRequest,
     ) -> Result<Profile, Refusal> {
+        let host = self
+            .host
+            .as_ref()
+            .ok_or_else(|| Refusal::new("sandbox", "the daemon read none of this host's paths"))?;
+        let mount_dir = session_folder(&host.mount_sources, &request.session)?;
         Profile::build(
             ProfileRequest {
                 provider: request.provider.clone(),
                 working_dir: request.working_dir.clone(),
                 session_dir: request.session_dir.clone(),
-                owner_uid: self.host.owner_uid,
-                read_only: self.host.read_only.clone(),
-                denied: self.host.denied.clone(),
+                mount_dir,
+                owner_uid: host.owner_uid,
+                read_only: host.read_only.clone(),
+                denied: host.denied.clone(),
                 allow_hosts: Vec::new(),
                 environment: request.environment.clone(),
                 secrets: request.secrets.clone(),
@@ -187,5 +196,17 @@ impl Sandbox {
             },
             settings: Some(plan),
         })
+    }
+}
+
+/// `session`'s own folder in `parent`: the id is one plain name, never a path.
+fn session_folder(parent: &std::path::Path, session: &str) -> Result<PathBuf, Refusal> {
+    let mut components = std::path::Path::new(session).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(name)), None) => Ok(parent.join(name)),
+        _ => Err(Refusal::new(
+            format!("session {session}"),
+            "a session id must be one plain name to name its folders",
+        )),
     }
 }

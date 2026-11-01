@@ -5,7 +5,7 @@ never follow an agent-writable path to a socket.
 
 - **The listener is checked, not the path.** `#437` makes the session's directory writable
   by the agent, and Codex 0.161.0 leaves `codex.sock` there as a link into
-  `/tmp/codex-daemon-<uid>/`, which the agent writes too. No path check can tell the
+  `/tmp/codex-daemon-<uid>/` as the sandbox sees it (#446). No path check can tell the
   session's app-server from a link the agent planted, to the owner's unsandboxed app-server,
   another session's, or any socket the daemon may open. So `Provider::deliver` takes a
   `DeliveryTarget` whose `SessionSockets` opens the socket, and the daemon's
@@ -17,6 +17,10 @@ never follow an agent-writable path to a socket.
 - **Rejected:** a daemon-owned socket directory passed to Codex (Codex picks the real
   socket's place under `/tmp/codex-daemon-<uid>/` itself, measured on 0.161.0, and the
   sandbox must write it); opening with `O_NOFOLLOW` alone (the link is how Codex publishes
-  the socket, and the folder it points into is agent-writable as well).
-- **Left:** the gap between connect and reading the peer's process table, as in the agent
-  channel (`SO_PEERPIDFD` would close it); the daemon wiring of Codex delivery is #411.
+  the socket, and the folder it points into is the agent's to write, #446).
+- **The connect waits 5 seconds at most** (`CONNECT_TIMEOUT`), so a listener that never
+  accepts cannot hold a delivery. The connect itself reaches whatever the path names before
+  the check; nothing is written.
+- **Left:** the kernel records a listener's pid when it called `listen()`; that process may
+  have exited and its pid been reused inside the session's tree, and the pid is read after
+  connecting (#448, `SO_PEERPIDFD`). The daemon wiring of Codex delivery is #411.
