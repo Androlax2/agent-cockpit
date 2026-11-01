@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cockpit_agent_channel::{PeerAncestry, ProcessError, ProcessIdentity};
 use cockpit_approvals::{
@@ -182,7 +182,8 @@ pub(crate) fn route_ask(
                 Ok(guide_reply(&guide))
             }
             Command::AskCheck { launch_token } => {
-                let sender = Sender::of(connector).await;
+                let sender =
+                    Sender::once_launched(connector, &database, launch_token.as_deref()).await?;
                 let write = database.write().await?;
                 let session = sender.identify(&write, launch_token).await?;
                 cockpit_approvals::may_ask(&write, &session).await?;
@@ -208,7 +209,7 @@ async fn poll_run_status(
     launch_token: Option<String>,
     id: RunId,
 ) -> Result<RunRequest, Failed> {
-    let sender = Sender::of(connector).await;
+    let sender = Sender::once_launched(connector, database, launch_token.as_deref()).await?;
     let read = database.read().await?;
     if let Some(session) = sender
         .identify_bound(&read, launch_token.as_deref())
@@ -233,7 +234,7 @@ async fn poll_guide_status(
     launch_token: Option<String>,
     id: GuideId,
 ) -> Result<GuideRequest, Failed> {
-    let sender = Sender::of(connector).await;
+    let sender = Sender::once_launched(connector, database, launch_token.as_deref()).await?;
     let read = database.read().await?;
     if let Some(session) = sender
         .identify_bound(&read, launch_token.as_deref())
@@ -260,9 +261,9 @@ async fn ask_run(
     cwd: String,
     reason: String,
 ) -> Answer {
-    let sender = Sender::of(connector).await;
     let cwd = cockpit_approvals::resolve_cwd(&cwd)?;
     check_syntax(runner, &command).await?;
+    let sender = Sender::once_launched(connector, database, launch_token.as_deref()).await?;
     let write = database.write().await?;
     let session = sender.identify(&write, launch_token).await?;
     let project = sender.project(&write).await?;
@@ -290,12 +291,12 @@ async fn ask_guide(
     guide: &str,
     cwd: &str,
 ) -> Answer {
-    let sender = Sender::of(connector).await;
     let guide = cockpit_approvals::parse_guide(guide)?;
     let cwd = cockpit_approvals::resolve_cwd(cwd)?;
     for command in guide.steps.iter().filter_map(|step| step.run.as_deref()) {
         check_syntax(runner, command).await?;
     }
+    let sender = Sender::once_launched(connector, database, launch_token.as_deref()).await?;
     let write = database.write().await?;
     let session = sender.identify(&write, launch_token).await?;
     let project = sender.project(&write).await?;
@@ -319,18 +320,74 @@ async fn check_syntax(runner: &Runner, command: &str) -> Result<(), Failed> {
     }
 }
 
+/// How long a request waits for its launch's process tree: the launcher records it moments
+/// after the agent starts, and the wait must end well before the CLI's 10 s deadline so the
+/// agent reads the refusal, not a timeout. The request holds its bulk worker meanwhile;
+/// `awaits_root` waits only for recently minted launches, so a failed launch's stray agent
+/// never holds one.
+const LAUNCH_ROOT_WAIT: Duration = Duration::from_secs(5);
+
+/// Returns once `launch_token` names no launch waiting for its root, or after
+/// [`LAUNCH_ROOT_WAIT`]; identifying the sender then decides, and refuses if still too early.
+/// Looks again after each commit, since the root arrives with one. Nothing is written, so a
+/// failure here leaves the request without effect.
+async fn await_launch_root(database: &Database, launch_token: &str) -> Result<(), Failed> {
+    let deadline = tokio::time::Instant::now() + LAUNCH_ROOT_WAIT;
+    // Subscribed before the first look, so a commit between the look and the wait wakes it.
+    let mut commits = database.watch_commits();
+    let failed = |error: &dyn std::fmt::Display| {
+        tracing::error!(%error, "waiting for a launch's process tree failed");
+        Failed(ProtocolError::new(
+            ErrorCode::Internal,
+            "the daemon failed; the request did not take effect",
+        ))
+    };
+    loop {
+        let awaits = {
+            let read = database.read().await.map_err(|error| failed(&error))?;
+            cockpit_agent_channel::awaits_root(&read, launch_token)
+                .await
+                .map_err(|error| failed(&error))?
+        };
+        if !awaits {
+            return Ok(());
+        }
+        match tokio::time::timeout_at(deadline, commits.changed()).await {
+            Ok(Ok(())) => {}
+            // The deadline passed, or the database closed: identification refuses.
+            Ok(Err(_)) | Err(_) => return Ok(()),
+        }
+    }
+}
+
 /// The agent at the other end of the socket, as its process tree says.
 pub(crate) struct Sender {
     ancestry: PeerAncestry,
 }
 
 impl Sender {
-    pub(crate) async fn of(connector: Result<ProcessIdentity, ProcessError>) -> Sender {
-        tokio::task::spawn_blocking(move || Sender {
+    /// The sender of a request carrying `launch_token`, once its launch can identify it. The
+    /// agent may ask before the launcher recorded its process tree; such a request waits for
+    /// it, read-only and at most [`LAUNCH_ROOT_WAIT`], instead of being refused (#279). A
+    /// sender whose tree cannot be read is refused anyway, so it does not wait.
+    pub(crate) async fn once_launched(
+        connector: Result<ProcessIdentity, ProcessError>,
+        database: &Database,
+        launch_token: Option<&str>,
+    ) -> Result<Sender, Failed> {
+        let sender = tokio::task::spawn_blocking(move || Sender {
             ancestry: connector.and_then(|process| cockpit_agent_channel::ancestry_of(&process)),
         })
         .await
-        .expect("reading the process table does not panic")
+        .expect("reading the process table does not panic");
+        if let (Ok(_), Some(token)) = (&sender.ancestry, launch_token) {
+            await_launch_root(database, token).await?;
+        }
+        Ok(sender)
+    }
+
+    pub(crate) fn ancestry(&self) -> &PeerAncestry {
+        &self.ancestry
     }
 
     /// The connecting process's working directory, which says which checkout it works in.

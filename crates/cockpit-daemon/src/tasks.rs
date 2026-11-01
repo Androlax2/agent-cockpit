@@ -38,8 +38,11 @@ pub(crate) fn route(
         (Peer::Owner, _) => WorkClass::Control,
     };
     let work = async move {
+        let launch_token = launch_token(&command);
         let sender = match peer {
-            Peer::Agent { connector } => Some(Sender::of(connector).await),
+            Peer::Agent { connector } => {
+                Some(Sender::once_launched(connector, &database, launch_token.as_deref()).await?)
+            }
             Peer::Owner => None,
         };
         // The owner has no launch token to bind: reads need no write lock (#164).
@@ -65,7 +68,7 @@ pub(crate) fn route(
         let actor = match &sender {
             None => Actor::Owner,
             Some(sender) => {
-                let session = sender.identify(&write, launch_token(&command)).await?;
+                let session = sender.identify(&write, launch_token).await?;
                 let project = sender.project(&write).await?.map(|project| project.name);
                 Actor::Session { session, project }
             }

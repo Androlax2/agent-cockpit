@@ -138,6 +138,11 @@ not share code.
 - `tests/agent_channel.rs`: issue #32's acceptance on the binary's sockets: a launched
   agent's report, leaked tokens, payload-claimed sessions, a nested agent with its parent's
   grants, refusals with their unblock, restart.
+- `tests/launch_root_wait.rs`: issue #279: an agent's report or `ask-check` sent before the
+  launcher recorded its launch's process tree is held until it is, then answered.
+- `tests/agent_asks.rs`: issue #286: a daemon-launched agent's own `cockpit ask run` and
+  `cockpit ask guide`, through the real CLI and agent socket, reach the owner's queue and
+  get the owner's answer back as their exit code.
 - `tests/approvals.rs`: issue #34's acceptance on the binary's sockets: a command run in a
   terminal with its exit code, the display rules in the queue, redaction, Git hooks off,
   report 04's walkthrough 3, decline, input to a waiting command, the syntax check, grants,
