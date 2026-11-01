@@ -1383,11 +1383,13 @@ impl Sessions {
         environment.extend(command.environment);
         environment.push(("COCKPIT_SESSION".into(), id.as_str().into()));
         // Every launch goes through the sandbox (#61); a profile this host cannot enforce
-        // fails the launch before anything is reserved.
+        // fails the launch before anything is reserved. The agent gets its whole checkout,
+        // not just the folder it starts in: Git and the project's own files live at its root.
+        let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let prepared = self.prepare_sandbox(
             id.as_str(),
             session.provider.as_str(),
-            session.working_dir.clone(),
+            checkout.path,
             environment,
             command.program,
             command.arguments,
@@ -1498,13 +1500,13 @@ impl Sessions {
         environment
     }
 
-    /// How `program` runs for a launch of `provider` in `working_dir`: through the sandbox,
+    /// How `program` runs for a launch of `provider` in `checkout_root`: through the sandbox,
     /// or unchanged only by the owner's `agents.sandbox = "off"`.
     fn prepare_sandbox(
         &self,
         session: &str,
         provider: &str,
-        working_dir: PathBuf,
+        checkout_root: PathBuf,
         environment: Vec<(OsString, OsString)>,
         program: PathBuf,
         arguments: Vec<OsString>,
@@ -1516,7 +1518,7 @@ impl Sessions {
                 &cockpit_sandbox::LaunchRequest {
                     session: session.to_owned(),
                     provider: provider.to_owned(),
-                    working_dir,
+                    working_dir: checkout_root,
                     environment,
                     secrets: vec![cockpit_sandbox::Secret {
                         // The agent presents it on the local agent socket, never in an HTTP
@@ -1544,11 +1546,11 @@ impl Sessions {
         let dir = self
             .blocking("resolve the directory", move || canonical_dir(dir))
             .await?;
-        self.checkout_containing(&dir).await?;
+        let (checkout, _) = self.checkout_containing(&dir).await?;
         self.prepare_sandbox(
             DRY_RUN_SESSION,
             &provider,
-            dir,
+            checkout.path,
             self.launch_environment(),
             PathBuf::from("<agent>"),
             Vec::new(),

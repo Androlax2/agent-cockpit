@@ -25,6 +25,7 @@ pub struct HostPaths {
 /// there is none) and its host paths.
 #[derive(Debug, Clone)]
 pub struct Sandbox {
+    platform: Platform,
     engine: Result<Greywall, String>,
     host: HostPaths,
 }
@@ -34,6 +35,7 @@ pub struct Sandbox {
 pub struct LaunchRequest {
     pub session: String,
     pub provider: String,
+    /// The checkout the agent works in, whole: read and write.
     pub working_dir: PathBuf,
     pub environment: Vec<(OsString, OsString)>,
     /// Secrets the environment holds, and how each crosses into the sandbox.
@@ -54,13 +56,19 @@ pub struct Prepared {
 }
 
 impl Sandbox {
-    pub fn new(engine: Result<Greywall, String>, host: HostPaths) -> Sandbox {
-        Sandbox { engine, host }
+    /// `platform` is the host's, detected once by the caller; a ready engine was checked on
+    /// it.
+    pub fn new(platform: Platform, engine: Result<Greywall, String>, host: HostPaths) -> Sandbox {
+        Sandbox {
+            platform,
+            engine,
+            host,
+        }
     }
 
-    /// No engine: every sandboxed launch is refused with `reason`.
+    /// No engine on this host: every sandboxed launch is refused with `reason`.
     pub fn unavailable(reason: impl Into<String>) -> Sandbox {
-        Sandbox::new(Err(reason.into()), HostPaths::default())
+        Sandbox::new(Platform::detect(), Err(reason.into()), HostPaths::default())
     }
 
     /// The engine, or why there is none.
@@ -70,10 +78,20 @@ impl Sandbox {
 
     /// The profile `request` gets on this host, without launching anything (the dry run).
     pub fn profile(&self, request: &LaunchRequest) -> Result<Profile, Refusal> {
-        let engine = self
-            .engine
+        self.build_profile(self.ready_engine()?, request)
+    }
+
+    fn ready_engine(&self) -> Result<&Greywall, Refusal> {
+        self.engine
             .as_ref()
-            .map_err(|reason| Refusal::new("sandbox", format!("no sandbox engine: {reason}")))?;
+            .map_err(|reason| Refusal::new("sandbox", format!("no sandbox engine: {reason}")))
+    }
+
+    fn build_profile(
+        &self,
+        engine: &Greywall,
+        request: &LaunchRequest,
+    ) -> Result<Profile, Refusal> {
         Profile::build(
             ProfileRequest {
                 provider: request.provider.clone(),
@@ -109,18 +127,15 @@ impl Sandbox {
                     enforcement: Enforcement::Unsandboxed {
                         reason: "the owner set agents.sandbox = \"off\"".to_owned(),
                     },
-                    platform: Platform::detect().name().to_owned(),
+                    platform: self.platform.name().to_owned(),
                     rules: Vec::new(),
                     observed: Vec::new(),
                 },
                 settings: None,
             });
         }
-        let profile = self.profile(request)?;
-        let engine = self
-            .engine
-            .as_ref()
-            .map_err(|reason| Refusal::new("sandbox", format!("no sandbox engine: {reason}")))?;
+        let engine = self.ready_engine()?;
+        let profile = self.build_profile(engine, request)?;
         let client = ClientIdentity::for_launch(&request.session).map_err(|error| {
             Refusal::new(
                 "network: through greyproxy only",

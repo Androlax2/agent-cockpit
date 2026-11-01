@@ -30,10 +30,17 @@ pub const BASELINE_DENIED_READ: &[&str] = &[
 ];
 
 /// Write denials every profile carries: what would run with the owner's rights outside the
-/// sandbox (Git hooks and config, shell and service start-up, installed programs).
+/// sandbox (Git hooks and config, the project's Cockpit file whose checks the daemon runs on
+/// the host, direnv and IDE run configurations, shell and service start-up, installed
+/// programs).
 pub const BASELINE_DENIED_WRITE: &[&str] = &[
     ".git/hooks",
     ".git/config",
+    ".cockpit",
+    ".envrc",
+    ".vscode/tasks.json",
+    ".vscode/launch.json",
+    ".idea/runConfigurations",
     "~/.gitconfig",
     "~/.ssh",
     "~/.gnupg",
@@ -325,18 +332,21 @@ fn check_host(host: &str) -> Result<(), Refusal> {
         Some((name, port)) => (name, Some(port)),
         None => (host, None),
     };
-    let is_name = !name.is_empty()
+    // A wildcard only as a whole first label (`*.example.com`): a bare `*` would open the
+    // network to every host.
+    let labels = name.strip_prefix("*.").unwrap_or(name);
+    let is_name = !labels.is_empty()
         && name.len() <= 253
-        && name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-' || byte == b'*'
-        });
+        && labels
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-');
     let is_port = port.is_none_or(|port| port.parse::<u16>().is_ok_and(|port| port != 0));
     if is_name && is_port {
         Ok(())
     } else {
         Err(Refusal::new(
             format!("allow host {host}"),
-            "a host is a DNS name with an optional port",
+            "a host is a DNS name, a wildcard only as its whole first label, with an optional port",
         ))
     }
 }

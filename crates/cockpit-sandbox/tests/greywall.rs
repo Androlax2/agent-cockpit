@@ -366,3 +366,28 @@ fn the_settings_file_is_owner_only_and_replaces_only_the_same_sessions_earlier_f
     assert!(!earlier.settings_path.exists());
     assert!(neighbour.settings_path.exists());
 }
+
+/// A wrapper whose background child keeps the pipes open must not hold the daemon's start
+/// past the deadline.
+#[test]
+fn detect_gives_up_on_a_program_that_leaves_its_output_open() {
+    let bin = tempfile::tempdir().unwrap();
+    let greywall = bin.path().join("greywall");
+    std::fs::write(
+        &greywall,
+        "#!/bin/sh\necho 'Version: 0.3.7'\nsleep 60 &\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&greywall, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let programs = GreywallPrograms {
+        greywall,
+        greyproxy: write_program(bin.path(), "greyproxy", GREYPROXY_VERSION_OUTPUT),
+    };
+    let started = std::time::Instant::now();
+
+    let reason =
+        Greywall::detect(programs, Platform::Linux, bin.path().join("settings")).unwrap_err();
+
+    assert!(reason.contains("did not answer within"), "{reason}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}

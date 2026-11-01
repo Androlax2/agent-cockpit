@@ -67,6 +67,27 @@ async fn a_launch_runs_the_agent_inside_greywall_as_its_own_proxy_client() {
     );
 }
 
+/// Git and the project's own files live at the checkout's root: a session started in a
+/// subfolder still gets the whole checkout.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_started_in_a_subfolder_gets_its_whole_checkout() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let subfolder = root.join("crates/core");
+    std::fs::create_dir_all(&subfolder).unwrap();
+
+    let session = new_session(&client, &subfolder).await;
+    home.wait_for_launches(&session.id, 1).await;
+
+    let launch = &sandbox_launches(&home)[0];
+    assert_eq!(
+        argument_after(launch, "--allow-path"),
+        root.to_str().unwrap()
+    );
+}
+
 /// Greyproxy keeps one client secret per name; four launches under one name would leave the
 /// earlier sandboxes without network (stack proposal 00f3a41c). Restarts are the launches
 /// most likely to overlap: the same session, back to back.

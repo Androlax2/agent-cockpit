@@ -156,3 +156,39 @@ fn a_provider_name_outside_lowercase_letters_digits_and_dashes_is_refused() {
 
     assert_eq!(refused.rule, "provider ../claude");
 }
+
+#[test]
+fn a_wildcard_host_is_refused_unless_it_is_a_whole_first_label() {
+    for host in ["*", "*:443", "ex*ample.com", "example.*"] {
+        let mut request = profile_request("/home/owner/app");
+        request.allow_hosts = vec![host.to_owned()];
+
+        let refused = refusal(request, &Platform::Linux);
+
+        assert_eq!(refused.rule, format!("allow host {host}"));
+    }
+    let mut request = profile_request("/home/owner/app");
+    request.allow_hosts = vec!["*.example.com:443".to_owned()];
+    assert!(Profile::build(request, &Platform::Linux).is_ok());
+}
+
+/// The daemon runs a project's `.cockpit/config.toml` checks on the host, direnv runs
+/// `.envrc`, IDEs run their run configurations: an agent that could write them would run
+/// code with the owner's rights outside the sandbox.
+#[test]
+fn files_that_run_outside_the_sandbox_are_denied_writing() {
+    let profile = Profile::build(profile_request("/home/owner/app"), &Platform::Linux).unwrap();
+
+    let rules = profile.rules();
+
+    for denied in [
+        ".cockpit",
+        ".envrc",
+        ".git/hooks",
+        ".vscode/tasks.json",
+        ".idea/runConfigurations",
+    ] {
+        let rule = format!("deny write {denied}");
+        assert!(rules.contains(&rule), "{rule} missing from {rules:#?}");
+    }
+}

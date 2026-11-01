@@ -6,7 +6,7 @@ mod common;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use cockpit_sandbox::{AgentSandbox, Enforcement, HostPaths, MIGRATIONS, Sandbox};
+use cockpit_sandbox::{AgentSandbox, Enforcement, HostPaths, MIGRATIONS, Platform, Sandbox};
 use common::{launch_request, linux_engine};
 
 fn agent_words() -> (PathBuf, Vec<OsString>) {
@@ -16,7 +16,11 @@ fn agent_words() -> (PathBuf, Vec<OsString>) {
 #[test]
 fn a_required_sandbox_wraps_the_agent_in_greywall() {
     let settings = tempfile::tempdir().unwrap();
-    let sandbox = Sandbox::new(Ok(linux_engine(settings.path())), HostPaths::default());
+    let sandbox = Sandbox::new(
+        Platform::Linux,
+        Ok(linux_engine(settings.path())),
+        HostPaths::default(),
+    );
     let (program, arguments) = agent_words();
 
     let prepared = sandbox
@@ -100,6 +104,7 @@ fn the_owners_off_setting_runs_the_agent_unchanged_and_the_evidence_says_so() {
 fn a_hosts_denied_path_reaches_the_profile() {
     let settings = tempfile::tempdir().unwrap();
     let sandbox = Sandbox::new(
+        Platform::Linux,
         Ok(linux_engine(settings.path())),
         HostPaths {
             read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
@@ -125,7 +130,11 @@ async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() 
         .await
         .unwrap();
     let settings = tempfile::tempdir().unwrap();
-    let sandbox = Sandbox::new(Ok(linux_engine(settings.path())), HostPaths::default());
+    let sandbox = Sandbox::new(
+        Platform::Linux,
+        Ok(linux_engine(settings.path())),
+        HostPaths::default(),
+    );
     let unsandboxed = sandbox
         .prepare(
             AgentSandbox::Off,

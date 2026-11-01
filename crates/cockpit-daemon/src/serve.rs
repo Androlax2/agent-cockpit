@@ -148,7 +148,7 @@ fn sandbox(
     let settings_dir = options.state_dir.join("sandbox");
     let engine = cockpit_sandbox::GreywallPrograms::on_path(std::env::var_os("PATH").as_ref())
         .and_then(|programs| {
-            cockpit_sandbox::Greywall::detect(programs, platform, settings_dir.clone())
+            cockpit_sandbox::Greywall::detect(programs, platform.clone(), settings_dir.clone())
         });
     match (&engine, config.agents_sandbox.value) {
         (Ok(greywall), _) => tracing::info!(
@@ -199,6 +199,7 @@ fn sandbox(
     .flatten()
     .collect();
     cockpit_sandbox::Sandbox::new(
+        platform,
         engine,
         cockpit_sandbox::HostPaths {
             read_only: vec![

@@ -523,31 +523,61 @@ fn version_output(program: &Path) -> Result<String, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("{} does not run: {error}", program.display()))?;
-    let started = Instant::now();
+    // Read while it runs, on threads of their own: a full pipe never stalls the program, and
+    // a child it leaves holding the pipes open cannot stall the daemon's start past the
+    // deadline.
+    let (sender, outputs) = std::sync::mpsc::channel();
+    for mut stream in [
+        child
+            .stdout
+            .take()
+            .map(|out| Box::new(out) as Box<dyn Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|err| Box::new(err) as Box<dyn Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = stream.read_to_string(&mut text);
+            let _ = sender.send(text);
+        });
+    }
+    drop(sender);
+    let deadline = Instant::now() + VERSION_DEADLINE;
+    let late = || {
+        format!(
+            "{} --version did not answer within {}s",
+            program.display(),
+            VERSION_DEADLINE.as_secs()
+        )
+    };
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < VERSION_DEADLINE => {
+            Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(20));
             }
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "{} --version did not answer within {}s",
-                    program.display(),
-                    VERSION_DEADLINE.as_secs()
-                ));
+                return Err(late());
             }
             Err(error) => return Err(format!("{} --version: {error}", program.display())),
         }
     }
     let mut output = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_string(&mut output);
-    }
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut output);
+    for _ in 0..2 {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match outputs.recv_timeout(remaining) {
+            Ok(text) => output.push_str(&text),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(late()),
+        }
     }
     Ok(output)
 }
