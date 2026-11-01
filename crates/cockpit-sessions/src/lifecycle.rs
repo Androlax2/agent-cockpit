@@ -625,6 +625,7 @@ impl Sessions {
         .await?;
         give_up_on_end(&write, &ended).await?;
         write.commit().await?;
+        self.remove_session_dir(id).await?;
         Ok(ended)
     }
 
@@ -933,7 +934,7 @@ impl Sessions {
     /// end. A failure is reported per session and looked at again on the next pass.
     pub async fn tick(&self) -> Result<TickReport, Error> {
         let mut report = TickReport::default();
-        let (running, asleep) = {
+        let (running, asleep, ended) = {
             let read = self.database.read().await?;
             (
                 // Without tmux a running session's terminal can be neither checked nor
@@ -944,8 +945,17 @@ impl Sessions {
                     Vec::new()
                 },
                 store::sessions_in(&read, &["asleep"]).await?,
+                store::sessions_in(&read, &["ended"]).await?,
             )
         };
+        for session in ended {
+            let _operation = self.lock(&session.id).await;
+            if self.get(&session.id).await?.state == SessionState::Ended
+                && let Err(error) = self.remove_session_dir(&session.id).await
+            {
+                report.errors.push((session.id, error.to_string()));
+            }
+        }
         for listed in running {
             let id = listed.id.clone();
             let operation = self.lock(&id).await;
@@ -1045,6 +1055,7 @@ impl Sessions {
         .await?;
         give_up_on_end(&write, &ended).await?;
         write.commit().await?;
+        self.remove_session_dir(id).await?;
         Ok(true)
     }
 
@@ -1073,6 +1084,7 @@ impl Sessions {
         .await?;
         give_up_on_end(&write, &ended).await?;
         write.commit().await?;
+        self.remove_session_dir(&session.id).await?;
         tracing::info!(session = %session.id, "a session's agent exited");
         Ok(true)
     }
@@ -1254,6 +1266,9 @@ impl Sessions {
             give_up_on_end(&write, &stopped).await?;
         }
         write.commit().await?;
+        if to == StopTarget::Ended {
+            self.remove_session_dir(id).await?;
+        }
         Ok(stopped)
     }
 
@@ -1365,7 +1380,9 @@ impl Sessions {
         let session_dir = self.session_dir(id);
         {
             let session_dir = session_dir.clone();
+            let counted = TerminalStep::start(&self.session_lock(id));
             self.blocking("create the session's directory", move || {
+                let _counted = counted;
                 create_session_dir(&session_dir)
             })
             .await?;
@@ -1378,7 +1395,9 @@ impl Sessions {
             let first_message = first_message.map(str::to_owned);
             // Off the async workers and bounded: the contract says it does not block, but
             // a provider that does would otherwise hold the launch forever (#272).
+            let counted = TerminalStep::start(&self.session_lock(id));
             self.blocking("build the provider's command", move || {
+                let _counted = counted;
                 Ok(provider.launch(&LaunchRequest {
                     working_dir: &working_dir,
                     session_dir: &session_dir,
@@ -1761,6 +1780,27 @@ impl Sessions {
                 session: id.clone(),
             }),
         }
+    }
+
+    // The caller holds the operation lock; counted work also excludes a later launch
+    // if removal times out and continues on its blocking thread.
+    async fn remove_session_dir(&self, id: &SessionId) -> Result<(), Error> {
+        self.wait_for_terminal_steps(id).await?;
+        let path = self.session_dir(id);
+        let counted = TerminalStep::start(&self.session_lock(id));
+        self.blocking("remove the session's directory", move || {
+            let _counted = counted;
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => Ok(()),
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(source) => Err(Error::Io {
+                    action: "remove",
+                    path,
+                    source,
+                }),
+            }
+        })
+        .await
     }
 
     /// The session's own directory ([`LaunchRequest::session_dir`]); its launch creates it.

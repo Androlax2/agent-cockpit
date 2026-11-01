@@ -24,7 +24,9 @@ stopped in the middle of one finishes or repairs it at its next start.
   root (the agent's process identity) and released it, so the agent's first request is
   identified (#316). Each launch gets the session's own directory, `sessions/<id>` in the
   daemon's socket directory, made 0700 before the agent runs; an adapter keeps what it needs
-  to reach the running agent there (Codex's app-server socket, #407). The owner's
+  to reach the running agent there (Codex's app-server socket, #407). Ending removes it
+  after outstanding launch steps finish; periodic passes retry removal for ended sessions.
+  Restart, sleep and wake retain it. The owner's
   `config reload` replaces the desktop session choice, the idle window and the asleep expiry
   for later launches and passes (`Sessions::apply_owner_settings`, #354).
 - **Restart, sleep, wake and resume** relaunch the same conversation, so each needs a
