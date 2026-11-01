@@ -33,6 +33,8 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const PRUNE_INTERVAL_S: u32 = 2;
+/// How often the Chief looks at its workers: every second cost up to a third of the daemon.
+pub const CHIEF_TICK_INTERVAL_S: u32 = 5;
 const RECENT_SESSIONS_DAYS: f64 = 7.0;
 const RECENT_SESSIONS_WRITE_S: f64 = 60.0;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
@@ -2007,7 +2009,15 @@ impl Registry {
     }
 
     /// Every second: the run and guide queues follow the workspace, the games and closed windows.
+    /// Both halves at once, as the tests drive them; the daemon runs tick_chief less often.
     pub fn tick_queues(&mut self) {
+        self.tick_chief();
+        self.tick_runs();
+    }
+
+    /// The Chief's pass over every live worker: several store queries per session, so the
+    /// daemon runs it every CHIEF_TICK_INTERVAL_S rather than every second.
+    pub fn tick_chief(&mut self) {
         match crate::chief::tick(self, crate::teams::now_ms()) {
             Ok(()) => {
                 self.chief_fault = None;
@@ -2028,6 +2038,10 @@ impl Registry {
                 }
             }
         }
+    }
+
+    /// Question grace, run requests and guides: each second.
+    pub fn tick_runs(&mut self) {
         let attention_changed = self.refresh_chief_questions(crate::teams::now_ms());
         let phases = self.runs.session_phases();
         self.runs.tick(self.system.as_mut(), self.banners.as_mut());

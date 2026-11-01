@@ -746,7 +746,14 @@ fn activate(app: &Application) {
     {
         let registry = registry.clone();
         glib::timeout_add_seconds_local(1, move || {
-            measured("tick", || registry.borrow_mut().tick_queues());
+            measured("tick", || registry.borrow_mut().tick_runs());
+            glib::ControlFlow::Continue
+        });
+    }
+    {
+        let registry = registry.clone();
+        glib::timeout_add_seconds_local(registry::CHIEF_TICK_INTERVAL_S, move || {
+            measured("chief_tick", || registry.borrow_mut().tick_chief());
             glib::ControlFlow::Continue
         });
     }

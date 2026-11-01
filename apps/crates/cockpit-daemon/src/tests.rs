@@ -8768,3 +8768,13 @@ fn output_within_gives_up_on_a_command_that_outlives_the_timeout() {
     assert!(output.is_none());
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
+
+#[test]
+fn the_daemon_runs_the_chief_pass_on_its_own_slower_timer() {
+    // The GTK loop is not driven in tests; its wiring is checked in the source.
+    let daemon = include_str!("../../../osd/src/bin/osd.rs");
+    assert!(daemon.contains("timeout_add_seconds_local(1, move || {\n            measured(\"tick\", || registry.borrow_mut().tick_runs());"));
+    assert!(daemon.contains("timeout_add_seconds_local(registry::CHIEF_TICK_INTERVAL_S, move || {\n            measured(\"chief_tick\", || registry.borrow_mut().tick_chief());"));
+    assert!(!daemon.contains("tick_queues"));
+    assert!(CHIEF_TICK_INTERVAL_S >= 5);
+}
