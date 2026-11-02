@@ -232,6 +232,40 @@ Theo's [2026-11-02 scope decision](decisions/2026-11-02-568-alpha-platform-scope
 Every later release milestone ships on the beta channel. A stable channel and 1.0 are not
 planned: Theo decides them once users have used the betas for a long time.
 
+## Candidate checks
+
+The Alpha1 release plan selects Linux x86_64 and aarch64 archives; WSL2 uses the x86_64
+archive with separate gates. macOS distribution and acceptance are deferred under #568;
+the retained future macOS jobs do not establish support. The `compatibility` job runs
+the archive's daemon through protocol-skew and killed-daemon restart fixtures, plus
+linked migration and interrupted-restore tests from the same source
+revision. `make release-compatibility` owns those commands.
+
+`make release-responsiveness` is CI-only: five minutes against the verified Linux archive,
+with at most two build stand-ins and two database writers. It requires successful load
+operations, held-connection p95 ≤ 100 ms and p99 ≤ 250 ms, and every measured response within
+one second. The workflow uploads `candidate-responsiveness.md`, including the candidate
+revision, even when a target fails. It records phase progress before setup and saves samples
+before shutdown. Sampling stops at the window plus one second; incomplete probes fail the
+gate. Load draining and build cleanup are bounded. Do not run it as a local stress loop.
+
+`make release-upgrade-fetch` selects the newest published earlier release of the same
+channel and downloads its matching archive and checksums with read-only GitHub access.
+`make release-upgrade` verifies the checksum, manifest and source revision, then stops the
+old daemon before starting the candidate in one private temporary home. Project/task state
+must survive, and new writes must work. Tested processes receive no GitHub credentials.
+Alpha1 publication requires successful applicable Linux and WSL2 jobs; their presence
+is not proof of acceptance. Future macOS gates remain pending a separate verified
+restoration decision, alongside the other beta publication requirements.
+
+Alpha keeps its explicit upgrade exemption. Development dry runs have no release channel.
+Both run the state fixture twice with the current candidate and print `upgrade=not-run`;
+that is orchestration coverage, not proof of a previous-release upgrade. A beta without a
+published earlier beta fails by name. Cross-version running-session retention is not yet
+covered by this fixture and remains a named beta publication blocker in `GATE_CHECKS`;
+same-candidate restart tests are separate evidence. Track these
+unmeasured outcomes in [#191](https://github.com/Androlax2/agent-cockpit/issues/191).
+
 ## Changelog
 
 [CHANGELOG.md](../CHANGELOG.md) is the only changelog. **git-cliff** generates it from the

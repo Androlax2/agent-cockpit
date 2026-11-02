@@ -114,7 +114,7 @@ impl Daemon {
     fn ready() -> Daemon {
         Daemon {
             requirements: vec![
-                available("tmux", "tmux 3.5a"),
+                available("tmux", "tmux 3.6a"),
                 available("sandbox", "greywall 0.4"),
                 available("provider claude", "2.1 (tested)"),
                 requirement(
@@ -272,7 +272,7 @@ async fn a_blocking_host_requirement_is_the_first_action() {
     let daemon = Daemon::ready().replace(requirement(
         "tmux",
         ReadinessStatusView::MissingPrerequisite,
-        "install tmux 3.2 or later",
+        "install tmux 3.6 or later",
     ));
 
     let output = home.against(&daemon, &["init"]).await;
@@ -285,7 +285,7 @@ async fn a_blocking_host_requirement_is_the_first_action() {
     );
     assert!(checklist.contains("tmux: tmux is not available (missing-prerequisite)"));
     assert!(
-        final_next(&checklist).starts_with("next: install tmux 3.2 or later"),
+        final_next(&checklist).starts_with("next: install tmux 3.6 or later"),
         "{checklist}"
     );
 }

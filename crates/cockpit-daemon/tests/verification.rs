@@ -4,6 +4,7 @@
 //! says which registered project it works in, as a launched session's does.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};

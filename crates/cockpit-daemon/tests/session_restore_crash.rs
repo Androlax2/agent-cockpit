@@ -7,6 +7,7 @@
 //! stored state the way the interrupted step leaves it.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};

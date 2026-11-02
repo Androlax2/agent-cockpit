@@ -8,6 +8,7 @@
 //! workflow begin` would.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::os::unix::fs::PermissionsExt;

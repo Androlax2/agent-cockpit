@@ -7,6 +7,7 @@
 //! They publish `attempt` entities: the daemon itself owns the `session` and `checkout`
 //! kinds and retracts any it did not derive (#199).
 
+mod candidate;
 mod common;
 
 use std::num::NonZeroU64;

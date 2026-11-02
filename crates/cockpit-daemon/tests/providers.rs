@@ -2,6 +2,7 @@
 //! (#411) and OpenCode (#415) are looked up on the daemon's `PATH`; each one's version
 //! decides whether its capabilities count as tested.
 
+mod candidate;
 mod common;
 
 use std::os::unix::fs::PermissionsExt;

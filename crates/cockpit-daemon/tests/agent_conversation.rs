@@ -4,6 +4,7 @@
 //! after which the session follows the next one. This test process plays the agent.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use cockpit_agent_channel::identity_of;

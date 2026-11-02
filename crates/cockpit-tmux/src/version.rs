@@ -11,9 +11,9 @@ pub struct TmuxVersion {
     pub minor: u32,
 }
 
-/// tmux 3.2 added the control-mode client flags this crate relies on: `pause-after` (flow
-/// control), `read-only` and `ignore-size` on `attach-session -f`.
-pub const MINIMUM_VERSION: TmuxVersion = TmuxVersion { major: 3, minor: 2 };
+/// tmux 3.6 fixes lost child-exit notifications during libutempter cleanup (#523).
+/// Older versions can leave an agent's zombie leader occupying its process group.
+pub const MINIMUM_VERSION: TmuxVersion = TmuxVersion { major: 3, minor: 6 };
 
 impl fmt::Display for TmuxVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,6 +42,12 @@ impl TmuxVersion {
             minor: rest[..minor_digits].parse().ok()?,
         })
     }
+
+    pub(crate) fn is_supported(self, printed: &str) -> bool {
+        let prerelease_at_minimum = self == MINIMUM_VERSION
+            && (printed.starts_with("tmux next-") || printed.contains("-rc"));
+        self >= MINIMUM_VERSION && !prerelease_at_minimum
+    }
 }
 
 /// The readiness check: runs `<binary> -V` and fails unless it is tmux [`MINIMUM_VERSION`]
@@ -67,7 +73,7 @@ pub fn check_version(binary: &Path) -> Result<TmuxVersion, Error> {
         binary: binary.to_path_buf(),
         printed: printed.clone(),
     })?;
-    if version < MINIMUM_VERSION {
+    if !version.is_supported(&printed) {
         return Err(Error::TmuxTooOld {
             binary: binary.to_path_buf(),
             found: printed.trim_start_matches("tmux ").to_string(),

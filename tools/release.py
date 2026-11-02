@@ -11,6 +11,8 @@ Usage: release.py check-tag TAG --main REF --alpha-checklist open|closed
                           --binaries DIR --out DIR
        release.py verify-install ARCHIVE_ROOT --revision SHA
        release.py gate-gaps CHANNEL
+       release.py release-plan --version V --channel C
+       release.py verify-gates --channel C --results JSON
 
 check-tag, next-prerelease and dry-run-version print `key=value` lines for $GITHUB_OUTPUT.
 Every refusal exits 1 with the rule it broke; nothing here creates a tag or a release.
@@ -47,6 +49,21 @@ TAG_PATTERN = re.compile(
     rf"v(?P<core>{CORE_PATTERN})(?:-(?P<channel>alpha|beta)\.(?P<number>[1-9][0-9]*))?"
 )
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-universal")
+ALPHA1_PLATFORMS = ("linux-x86_64", "linux-aarch64")
+# Retain future macOS definitions; #568 must authorize and prove restoration.
+BUILD_TARGETS = (
+    {"platform": "linux-x86_64", "runner": "ubuntu-24.04", "targets": "x86_64-unknown-linux-gnu"},
+    {
+        "platform": "linux-aarch64",
+        "runner": "ubuntu-24.04-arm",
+        "targets": "aarch64-unknown-linux-gnu",
+    },
+    {
+        "platform": "macos-universal",
+        "runner": "macos-26",
+        "targets": "aarch64-apple-darwin,x86_64-apple-darwin",
+    },
+)
 # Programs the daemon runs from its own directory, so they ship in bin/ beside it (#185).
 HELPERS = (
     "cockpit-claude-hook",
@@ -82,12 +99,16 @@ KNOWN_GAPS = "docs/KNOWN-GAPS.md"
 GATE_CHECKS = {
     "rust checks, clippy, dependency and license checks, crate-graph rules": ("gate", ()),
     "real CLI, terminal and provider-contract tests": ("gate", ()),
-    "clean install on Linux x86_64, Linux aarch64 and macOS arm64": ("install", ()),
+    "clean install on Linux x86_64 and Linux aarch64": ("install", ()),
     "clean install of the Linux x86_64 archive inside WSL2": ("install-wsl2", ()),
-    "clean install runs the macOS universal archive's x86_64 slice": (None, ()),
-    "version-skew and interrupted-action fixtures": (None, ()),
-    "sustained responsiveness run (report 03) against the candidate": (None, ()),
-    "upgrade from the previous release of the channel": (None, ("alpha",)),
+    "clean install of the macOS universal archive's arm64 slice": ("install", ("alpha",)),
+    "clean install runs the macOS universal archive's x86_64 slice": ("install", ("alpha",)),
+    "macOS support restoration needs an owner decision and acceptance (#568)": (None, ("alpha",)),
+    "version-skew and interrupted-action fixtures": ("compatibility", ()),
+    "sustained responsiveness run (report 03) against the candidate": ("responsiveness", ()),
+    "upgrade from the previous release of the channel": ("upgrade", ("alpha",)),
+    "upgrade from the previous release of the channel inside WSL2": ("upgrade-wsl2", ("alpha",)),
+    "running sessions survive a previous-channel upgrade": (None, ("alpha",)),
 }
 CHANNELS = ("alpha", "beta")
 
@@ -375,6 +396,31 @@ def archive_name(version, platform):
     return f"cockpit-v{version}-{platform}"
 
 
+def release_platforms(version, channel):
+    """The active Alpha1 plan is Linux/WSL2; no later scope is inferred from it."""
+    if channel in ("alpha", "dev"):
+        number = r"[1-9][0-9]*" if channel == "alpha" else r"(?:0|[1-9][0-9]*)"
+        if not re.fullmatch(rf"0\.1\.0-{channel}\.{number}", version):
+            raise Refusal(f"{version}/{channel}: outside the reviewed Alpha1 scope (#568)")
+        return ALPHA1_PLATFORMS
+    if channel == "beta" and parse_tag(f"v{version}")["channel"] == "beta":
+        return PLATFORMS
+    raise Refusal(f"{version}/{channel}: not a supported release plan")
+
+
+def release_plan(version, channel):
+    platforms = release_platforms(version, channel)
+    builds = [target for target in BUILD_TARGETS if target["platform"] in platforms]
+    installs = [{"platform": target["platform"], "runner": target["runner"]} for target in builds]
+    if "macos-universal" in platforms:
+        installs.append({"platform": "macos-universal", "runner": "macos-26-intel"})
+    return {
+        "platforms": json.dumps(platforms),
+        "build_matrix": json.dumps({"include": builds}),
+        "install_matrix": json.dumps({"include": installs}),
+    }
+
+
 def bundle_files(root):
     """Every file of an unpacked bundle but its manifest, relative and sorted."""
     relative_paths = (str(path.relative_to(root)) for path in root.rglob("*") if path.is_file())
@@ -420,6 +466,8 @@ def package(version, channel, platform, revision, binaries, out, cwd):
     """Stage bin/, the documents and the manifest, then write a reproducible .tar.gz."""
     if platform not in PLATFORMS:
         raise Refusal(f"{platform}: not one of {', '.join(PLATFORMS)}")
+    if platform not in release_platforms(version, channel):
+        raise Refusal(f"{platform}: not distributed for Alpha1; macOS is deferred to #568")
     name = archive_name(version, platform)
     staging = Path(out) / name
     if staging.exists():
@@ -642,6 +690,29 @@ def print_outputs(outputs):
         print(f"{key}={value}")
 
 
+def verify_gates(channel, encoded_results):
+    gaps = gate_gaps(channel)
+    if gaps:
+        raise Refusal("publishing waits: " + "; ".join(gaps))
+    try:
+        results = json.loads(encoded_results)
+    except ValueError as error:
+        raise Refusal("invalid job-results JSON") from error
+    if not isinstance(results, dict):
+        raise Refusal("job results must be an object")
+    # Alpha's upgrade jobs still prove same-candidate state retention, never cross-version.
+    required = {"plan", "draft", "upgrade", "upgrade-wsl2"} | {
+        job for job, exempt in GATE_CHECKS.values() if job is not None and channel not in exempt
+    }
+    failed = [
+        job
+        for job in sorted(required)
+        if not isinstance(results.get(job), dict) or results[job].get("result") != "success"
+    ]
+    if failed:
+        raise Refusal("required release jobs did not succeed: " + ", ".join(failed))
+
+
 def parse_arguments(arguments):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -662,6 +733,12 @@ def parse_arguments(arguments):
     verify_command.add_argument("root")
     verify_command.add_argument("--revision", required=True)
     commands.add_parser("gate-gaps").add_argument("channel")
+    plan_command = commands.add_parser("release-plan")
+    plan_command.add_argument("--version", required=True)
+    plan_command.add_argument("--channel", required=True)
+    gates_command = commands.add_parser("verify-gates")
+    gates_command.add_argument("--channel", required=True)
+    gates_command.add_argument("--results", required=True)
     return parser.parse_args(arguments)
 
 
@@ -706,6 +783,10 @@ def main(arguments, cwd=ROOT):
                 print(f"gap: {gap}")
             if gaps:
                 raise Refusal(f"{len(gaps)} release gate check(s) have no job; publishing waits")
+        elif options.command == "release-plan":
+            print_outputs(release_plan(options.version, options.channel))
+        elif options.command == "verify-gates":
+            verify_gates(options.channel, options.results)
     except Refusal as refusal:
         print(f"release: {refusal}", file=sys.stderr)
         return 1

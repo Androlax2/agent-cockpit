@@ -40,7 +40,10 @@ The quickstart below starts once those prerequisites are ready.
 | macOS | Deferred beyond Alpha 1 | No Alpha 1 download, Homebrew package or macOS acceptance is promised. [#568](https://github.com/Androlax2/agent-cockpit/issues/568) tracks restoration, including unresolved [public CA isolation (#527)](https://github.com/Androlax2/agent-cockpit/issues/527); existing tests do not establish supported installation |
 | Windows | Inside WSL2, from Windows Terminal | Linux backend inside WSL2; platform checks run in CI for selected crates; no native Windows daemon |
 
-You need Git, tmux, curl, a supported provider CLI, and the Cockpit-pinned Greywall/greyproxy engines.
+You need Git, tmux **3.6 or newer**, curl, a supported provider CLI, and the Cockpit-pinned Greywall/greyproxy engines.
+Ubuntu 24.04 (including WSL2) ships tmux 3.4: upgrade tmux before using Cockpit.
+An existing private tmux server also needs the supported version; upgrading its binary alone does not replace it.
+See [tmux prerequisites](docs/DEVELOPMENT.md#tmux-prerequisite) for checks and upgrade guidance.
 Linux/WSL2 service installation requires a systemd user manager.
 Run `cockpit doctor --project /absolute/path/to/project` to check the actual host and project requirements.
 The platform checks are described in [Development](docs/DEVELOPMENT.md#verification-policy); they do not establish a signed-in provider conversation on every platform.

@@ -1,3 +1,4 @@
+mod candidate;
 mod common;
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};

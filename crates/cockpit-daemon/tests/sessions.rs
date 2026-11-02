@@ -7,6 +7,7 @@
 //! agent is a shell script that logs each launch, then sleeps until stopped.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};

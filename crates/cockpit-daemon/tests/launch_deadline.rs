@@ -6,6 +6,7 @@
 //! launch does not open its session's terminal while an earlier step on it is outstanding.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};

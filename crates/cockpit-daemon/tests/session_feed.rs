@@ -7,6 +7,7 @@
 //! The daemon runs in this process, as in `sessions.rs`, for the fake provider.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::collections::HashMap;

@@ -26,6 +26,27 @@ have separate Playwright/Chromium prerequisites described in the root README.
 An unavailable prerequisite is a reported verification gap. Check before installing;
 agent sessions need explicit installation approval.
 
+### tmux prerequisite
+
+The greenfield daemon requires tmux **3.6 or newer**, including its already-running
+private server. Version 3.6 contains the upstream libutempter child-reaping fix;
+`next-3.6` and `3.6-rc…` are refused because they may predate it. See the
+[dependency decision](decisions/2026-11-02-523-tmux-minimum.md).
+
+Check the installed binary with `tmux -V`. Ubuntu 24.04's tmux 3.4, including inside
+WSL2, is insufficient: upgrade to a distribution/package providing 3.6 or newer,
+or build a supported upstream release using its installation instructions.
+Ubuntu 26.04 packages tmux 3.6a. Installing tmux in Windows does not upgrade WSL2's copy.
+
+If Cockpit reports an unsupported running server, finish the sessions on that server and
+restart that private server after upgrading. Cockpit refuses before changing its
+configuration and does not terminate those sessions. The client version check alone
+does not prove an existing server was upgraded.
+
+Candidate compatibility/responsiveness fixtures run on Ubuntu 26.04 with that
+dependency. Archive builds and clean installation checks keep their existing runner
+platforms; these prerequisite checks do not establish public or live-platform acceptance.
+
 ## Existing commands
 
 Run from the repository root:

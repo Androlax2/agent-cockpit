@@ -1,5 +1,6 @@
 //! #419: real daemon launches, native harnesses and loopback model input. No accounts.
 
+mod candidate;
 mod real_daemon;
 
 use std::os::unix::fs::PermissionsExt;

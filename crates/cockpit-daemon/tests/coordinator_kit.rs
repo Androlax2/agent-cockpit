@@ -4,6 +4,7 @@
 //! coordinator sees a worker's question, messages it, and starts a new worker the owner
 //! approves through the `ask run` queue; the audit names both sessions of each action.
 
+mod candidate;
 mod real_daemon;
 
 use std::path::Path;

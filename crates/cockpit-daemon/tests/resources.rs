@@ -1,6 +1,7 @@
 //! `cockpit resources` through the daemon binary (#42): the host's enforcement report, the
 //! foreground profile, the three pause operations, and reservations across a restart.
 
+mod candidate;
 mod common;
 
 use std::ffi::OsString;

@@ -10,6 +10,7 @@
 //! session's agent (#329).
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};
