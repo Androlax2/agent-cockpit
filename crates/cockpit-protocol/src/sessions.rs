@@ -195,7 +195,7 @@ pub struct ProviderView {
 }
 
 /// How one launch ran (#61): enforced by a sandbox or not, on which platform, each rule with
-/// what enforced it, and the host capabilities the engine reported.
+/// what enforced it, engine-reported capabilities and labelled owner probe attestations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxEvidenceView {
     pub enforcement: SandboxEnforcementView,

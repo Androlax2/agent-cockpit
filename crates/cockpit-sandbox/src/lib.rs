@@ -4,6 +4,8 @@ mod evidence;
 mod greywall;
 pub mod install;
 mod launch;
+#[cfg(feature = "persistence")]
+mod observations;
 mod platform;
 mod profile;
 mod proxy;
@@ -18,6 +20,8 @@ pub use greywall::{
     ProviderReach, lists_flag, parse_greyproxy_version, parse_greywall_version,
 };
 pub use launch::{HostPaths, LaunchRequest, Prepared, Sandbox};
+#[cfg(feature = "persistence")]
+pub use observations::{ObservationError, record_observations};
 pub use platform::Platform;
 pub use profile::{
     BASELINE_DENIED_READ, BASELINE_DENIED_WRITE, CODEX_SOCKET_FOLDER_NAME, DESKTOP_VARIABLES,

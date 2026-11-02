@@ -635,6 +635,14 @@ pub enum Command {
     SessionSandbox {
         session: String,
     },
+    /// Owner only: append one bounded, immutable batch of owner-measured observations to
+    /// this exact latest sandbox launch. Identical retries are idempotent; stale clients
+    /// and conflicting second batches refuse. These are owner attestations, not grants.
+    SessionSandboxRecord {
+        session: String,
+        client_identity: String,
+        observations: Vec<String>,
+    },
     /// Owner only: the sandbox a new session of `agent` (the default provider without one)
     /// in `dir` (absolute) would get, without launching anything (#61). A profile this host
     /// cannot enforce is refused with the rule and the reason.

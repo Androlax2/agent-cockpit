@@ -78,6 +78,7 @@ pub enum Error {
     AgentChannel(cockpit_agent_channel::Error),
     /// The sandbox refused the launch: a rule this host cannot enforce, or no engine (#61).
     Sandbox(cockpit_sandbox::Refusal),
+    SandboxObservations(cockpit_sandbox::ObservationError),
     Authorization(cockpit_authorization::Error),
     Io {
         action: &'static str,
@@ -191,6 +192,7 @@ impl fmt::Display for Error {
             ),
             Error::AgentChannel(error) => write!(formatter, "agent channel: {error}"),
             Error::Sandbox(refusal) => refusal.fmt(formatter),
+            Error::SandboxObservations(error) => error.fmt(formatter),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::Io {
                 action,
@@ -236,6 +238,7 @@ impl Error {
             self,
             Error::Database(_)
                 | Error::Sql(_)
+                | Error::SandboxObservations(cockpit_sandbox::ObservationError::Sql(_))
                 | Error::Processes(cockpit_processes::Error::Database(_))
                 | Error::Authorization(cockpit_authorization::Error::Database(_))
                 | Error::AgentChannel(cockpit_agent_channel::Error::Database(_))
@@ -265,6 +268,7 @@ impl std::error::Error for Error {
             Error::Io { source, .. } => Some(source),
             Error::Database(source) => Some(source),
             Error::Sql(source) => Some(source),
+            Error::SandboxObservations(source) => Some(source),
             _ => None,
         }
     }
@@ -290,4 +294,5 @@ from_source! {
     cockpit_authorization::Error => Authorization,
     cockpit_turso::Error => Database,
     cockpit_turso::sql::Error => Sql,
+    cockpit_sandbox::ObservationError => SandboxObservations,
 }

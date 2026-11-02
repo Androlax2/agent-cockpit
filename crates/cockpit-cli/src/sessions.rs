@@ -74,6 +74,21 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
         ["sandbox", id] => Command::SessionSandbox {
             session: session(id),
         },
+        ["sandbox-record", id, "--client", client, options @ ..] => {
+            let mut observations = Vec::new();
+            let mut options = options.iter();
+            while let Some(flag) = options.next() {
+                if *flag != "--observed" {
+                    return Err(format!("unknown sandbox-record argument {flag}"));
+                }
+                observations.push(options.next().ok_or("--observed needs text")?.to_string());
+            }
+            Command::SessionSandboxRecord {
+                session: session(id),
+                client_identity: (*client).to_owned(),
+                observations,
+            }
+        }
         ["link", id, url] => Command::SessionLink {
             session: session(id),
             url: (*url).to_owned(),
@@ -158,6 +173,7 @@ pub fn run(command: Command) -> ExitCode {
         | Command::SessionGrants { .. }
         | Command::ProviderList
         | Command::SessionSandbox { .. }
+        | Command::SessionSandboxRecord { .. }
         | Command::SandboxShow { .. } => CONTROL_DEADLINE,
         _ => BULK_DEADLINE,
     };

@@ -90,6 +90,7 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit session revoke SESSION observe-sessions|message-sessions|start-sessions
        cockpit session grants SESSION
        cockpit session sandbox SESSION
+       cockpit session sandbox-record SESSION --client CLIENT --observed TEXT...
        cockpit sandbox install [--engines-only]
        cockpit sandbox status|restart|stop
        cockpit sandbox show DIR [--agent NAME]
