@@ -73,7 +73,13 @@ crates-doc: ## Check the greenfield workspace's private and public documentation
 crates-deny: ## Check the greenfield workspace's dependencies with the same reviewed policy
 	$(build_runner) cargo deny --manifest-path Cargo.toml --locked --config .cargo/deny.toml check
 
-greenfield-ci: crates-fmt-check crates-clippy crates-doc crates-deny typos crates-test ## Run the greenfield workspace's gate (CI's greenfield job)
+.PHONY: sandbox-install-smoke
+
+sandbox-install-smoke: ## Verify pinned engine installation and doctor in a fresh temporary home
+	$(build_runner) cargo build --locked -j 2 -p cockpit-cli -p cockpit-daemon
+	python3 tools/verify-engine-install.py
+
+greenfield-ci: crates-fmt-check crates-clippy crates-doc crates-deny typos crates-test sandbox-install-smoke ## Run the greenfield workspace's gate (CI's greenfield job)
 
 .PHONY: lint-python lint-shell lint-js lint-markdown lint-lua
 

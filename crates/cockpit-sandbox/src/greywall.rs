@@ -42,24 +42,6 @@ pub struct GreywallPrograms {
     pub greyproxy: PathBuf,
 }
 
-impl GreywallPrograms {
-    /// Both looked up on `path` (a `PATH` value); `None` names the first one missing.
-    pub fn on_path(path: Option<&OsString>) -> Result<GreywallPrograms, String> {
-        let find = |program: &str| {
-            path.and_then(|path| {
-                std::env::split_paths(path)
-                    .map(|dir| dir.join(program))
-                    .find(|candidate| candidate.is_file())
-            })
-            .ok_or_else(|| format!("no `{program}` on PATH"))
-        };
-        Ok(GreywallPrograms {
-            greywall: find(GREYWALL_PROGRAM)?,
-            greyproxy: find(GREYPROXY_PROGRAM)?,
-        })
-    }
-}
-
 /// An installed build: its version and the commit it says it was built from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineBuild {
@@ -163,6 +145,37 @@ impl Greywall {
         platform: Platform,
         settings_dir: PathBuf,
     ) -> Result<Greywall, String> {
+        Self::detect_inner(programs, platform, settings_dir, false)
+    }
+
+    /// The release-owned pair, or explicit local paths only in a debug build's dev profile.
+    /// Local development paths are never an installation route and never selected implicitly.
+    pub fn detect_owned(
+        state: &Path,
+        platform: Platform,
+        settings_dir: PathBuf,
+        profile: &str,
+        dev_greywall: Option<PathBuf>,
+        dev_greyproxy: Option<PathBuf>,
+    ) -> Result<Greywall, String> {
+        let (programs, development) = match (dev_greywall, dev_greyproxy) {
+            (None, None) => (crate::install::programs(state).map_err(|error| error.to_string())?, false),
+            (Some(greywall), Some(greyproxy)) if cfg!(debug_assertions) && profile == "dev"
+                && greywall.is_absolute() && greyproxy.is_absolute() => {
+                tracing::warn!("explicit development engine overrides; release pins are not enforced");
+                (GreywallPrograms { greywall, greyproxy }, true)
+            }
+            _ => return Err("development-override-refused: both COCKPIT_DEV_GREYWALL and COCKPIT_DEV_GREYPROXY must be absolute paths, in profile dev of a debug build only".into()),
+        };
+        Self::detect_inner(programs, platform, settings_dir, development)
+    }
+
+    fn detect_inner(
+        programs: GreywallPrograms,
+        platform: Platform,
+        settings_dir: PathBuf,
+        development: bool,
+    ) -> Result<Greywall, String> {
         let greywall_output = program_output(&programs.greywall, "--version")?;
         let can_mount_folders =
             lists_flag(&program_output(&programs.greywall, "--help")?, MOUNT_FLAG);
@@ -170,6 +183,20 @@ impl Greywall {
             .map_err(|reason| format!("{} --version: {reason}", programs.greywall.display()))?;
         let greyproxy = parse_greyproxy_version(&program_output(&programs.greyproxy, "--version")?)
             .map_err(|reason| format!("{} --version: {reason}", programs.greyproxy.display()))?;
+        if development {
+            if let Platform::Unsupported(name) = &platform {
+                return Err(format!("greywall does not run on {name}"));
+            }
+            return Ok(Greywall {
+                programs,
+                greywall,
+                greyproxy,
+                platform,
+                capabilities,
+                can_mount_folders,
+                settings_dir,
+            });
+        }
         let mut engine = Greywall::from_builds(
             programs,
             greywall,
@@ -425,6 +452,23 @@ impl Greywall {
             },
         });
         let mut environment = profile.environment.clone();
+        let inherited = environment
+            .iter()
+            .find(|(name, _)| name == "PATH")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        let owned = [&self.programs.greyproxy, &self.programs.greywall]
+            .into_iter()
+            .filter_map(|program| program.parent().map(Path::to_owned));
+        let path = std::env::join_paths(owned.chain(std::env::split_paths(&inherited)))
+            .map_err(|error| Refusal::new("engine paths", error.to_string()))?;
+        environment.retain(|(name, _)| {
+            name != "PATH"
+                && name != "GREYWALL_NO_GREYPROXY_INSTALL"
+                && name != "GREYWALL_NO_PROMPT"
+        });
+        environment.push(("PATH".into(), path));
+        environment.push(("GREYWALL_NO_GREYPROXY_INSTALL".into(), "1".into()));
         // The engine's drift prompt would wait for a terminal answer the daemon never gives.
         environment.push(("GREYWALL_NO_PROMPT".into(), "1".into()));
         Ok(Plan {
@@ -716,7 +760,7 @@ pub fn lists_flag(help: &str, flag: &str) -> bool {
 }
 
 /// What `program <flag>` prints, within [`VERSION_DEADLINE`].
-fn program_output(program: &Path, flag: &str) -> Result<String, String> {
+pub(crate) fn program_output(program: &Path, flag: &str) -> Result<String, String> {
     let mut child = Command::new(program)
         .arg(flag)
         .stdin(Stdio::null())

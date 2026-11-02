@@ -2,13 +2,17 @@
 //! names always has its evidence: enforced or unsandboxed, the engine and platform, each rule
 //! with what enforced it, and the host capabilities observed when the engine was checked.
 
+#[cfg(feature = "persistence")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "persistence")]
 use cockpit_turso::sql::Connection;
+#[cfg(feature = "persistence")]
 use cockpit_turso::{Migration, MigrationSet, WriteTransaction};
 
 /// Evidence rows are kept with their launch; nothing deletes them, so `session show` on an
 /// ended session still says how its last agent ran.
+#[cfg(feature = "persistence")]
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "sandbox",
     migrations: &[Migration {
@@ -67,8 +71,16 @@ pub struct Evidence {
     pub observed: Vec<String>,
 }
 
+impl Evidence {
+    /// A running launch retains its previous engine until the owner restarts the session.
+    pub fn requires_engine_restart(&self, current: &str) -> bool {
+        matches!(&self.enforcement, Enforcement::Sandboxed { engine, .. } if engine != current)
+    }
+}
+
 /// Records `evidence` for the launch of `execution` in `session`, in the caller's
 /// transaction (the one that records the launch).
+#[cfg(feature = "persistence")]
 pub async fn record(
     write: &WriteTransaction<'_>,
     execution: i64,
@@ -132,6 +144,7 @@ pub async fn record(
 }
 
 /// The evidence of `session`'s latest recorded launch, if it has one.
+#[cfg(feature = "persistence")]
 pub async fn latest_for_session(
     connection: &Connection,
     session: &str,
@@ -190,6 +203,7 @@ pub async fn latest_for_session(
     }))
 }
 
+#[cfg(feature = "persistence")]
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

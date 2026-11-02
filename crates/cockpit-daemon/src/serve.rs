@@ -218,8 +218,8 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
 /// How long a stopping daemon waits for blocking work before it exits anyway.
 const STOP_WAIT: Duration = Duration::from_secs(5);
 
-/// The sandbox every launch goes through (#61): Greywall and greyproxy as found on the
-/// daemon's `PATH` and checked against the pinned builds, with the paths the daemon's layout
+/// The sandbox every launch goes through (#61): the release-owned Greywall and greyproxy
+/// checked against the pinned builds, with the paths the daemon's layout
 /// gives every agent and keeps from it; `bridge_dirs` hold what the adapters' bridges run
 /// and load inside it, and the instruction bundle. An engine that is missing or of another build is
 /// logged; launches are then refused while the owner requires the sandbox.
@@ -232,10 +232,14 @@ fn sandbox(
     let options = instance.options();
     let platform = cockpit_sandbox::Platform::detect();
     let settings_dir = options.state_dir.join("sandbox");
-    let engine = cockpit_sandbox::GreywallPrograms::on_path(std::env::var_os("PATH").as_ref())
-        .and_then(|programs| {
-            cockpit_sandbox::Greywall::detect(programs, platform.clone(), settings_dir.clone())
-        });
+    let engine = cockpit_sandbox::Greywall::detect_owned(
+        &options.state_dir,
+        platform.clone(),
+        settings_dir.clone(),
+        environment.profile.value.name(),
+        std::env::var_os("COCKPIT_DEV_GREYWALL").map(PathBuf::from),
+        std::env::var_os("COCKPIT_DEV_GREYPROXY").map(PathBuf::from),
+    );
     match (&engine, config.agents_sandbox.value) {
         (Ok(greywall), _) => tracing::info!(
             engine = %greywall.engine(),
@@ -284,6 +288,7 @@ fn sandbox(
     .into_iter()
     .flatten()
     .collect();
+    let engines = options.state_dir.join("engines");
     cockpit_sandbox::Sandbox::new(
         platform,
         engine,
@@ -296,8 +301,12 @@ fn sandbox(
                     .to_path_buf(),
             )
             .chain(bridge_dirs.iter().cloned())
+            // Greywall re-executes its Landlock wrapper inside the sandbox. Keep the
+            // release readable, with an explicit write denial for broad project roots.
+            .chain(engines.is_dir().then_some(engines.clone()))
             .collect(),
             denied,
+            denied_write: vec![engines],
             owner_uid: instance.owner_uid,
             mount_sources: options.mount_sources(),
         },

@@ -107,6 +107,40 @@ async fn a_launch_may_read_the_instruction_bundle_and_the_opencode_plugin() {
     }
 }
 
+/// The Linux Landlock wrapper re-executes the owned Greywall inside the sandbox.
+/// Its directory must remain readable, while the agent cannot replace engine files.
+#[tokio::test(flavor = "multi_thread")]
+async fn managed_engines_are_read_only_and_never_hidden_from_the_wrapper() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let engines = state_folder(&home, "engines");
+
+    let readable = readable_folders(&home).await;
+
+    assert!(readable.contains(&engines), "{readable:?}");
+    let launch = &sandbox_launches(&home)[0];
+    let words: Vec<_> = launch.split(' ').collect();
+    for pair in words.windows(2).filter(|pair| pair[0] == "--allow-path") {
+        assert!(!engines.starts_with(pair[1]), "writable engines: {launch}");
+    }
+    let settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(argument_after(launch, "--settings")).unwrap())
+            .unwrap();
+    assert!(
+        settings["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .contains(&engines.clone().into()),
+        "engines need an explicit write denial: {settings}"
+    );
+    for denied in settings["filesystem"]["denyRead"].as_array().unwrap() {
+        assert!(
+            !engines.starts_with(denied.as_str().unwrap()),
+            "hidden engines: {settings}"
+        );
+    }
+}
+
 /// #419: Claude Code lists the bundle's `cockpit` skill because the launch adds the folder
 /// whose `.claude/skills` holds it, written at the daemon's start and readable in the sandbox.
 #[tokio::test(flavor = "multi_thread")]
@@ -271,7 +305,7 @@ async fn without_greywall_a_launch_is_refused_naming_why() {
     assert!(
         matches!(&refused, Err(ClientError::Daemon(error))
             if error.code == ErrorCode::Refused
-                && error.message.contains("no `greywall` on PATH")),
+                && error.message.contains("/engines/") && error.message.contains("greywall does not run")),
         "{refused:?}"
     );
     assert!(home.launches().is_empty());
@@ -365,7 +399,11 @@ async fn cockpit_sandbox_show_prints_the_profile_without_launching() {
         .lines()
         .find_map(|line| line.strip_prefix("command: "))
         .unwrap_or_else(|| panic!("no command line in:\n{printed}"));
-    assert!(command.contains("/bin/greywall --settings "), "{command}");
+    let engine = cockpit_sandbox::install::programs(&home.state_dir()).unwrap();
+    assert!(
+        command.contains(&format!("{} --settings ", engine.greywall.display())),
+        "{command}"
+    );
     assert!(command.ends_with(" -- <agent>"), "{command}");
     assert!(sandbox_launches(&home).is_empty());
     assert!(home.launches().is_empty());
@@ -393,7 +431,8 @@ async fn cockpit_sandbox_show_without_greywall_fails_naming_why() {
 
     assert!(!shown.status.success());
     assert!(
-        text(&shown.stderr).contains("no `greywall` on PATH"),
+        text(&shown.stderr).contains("/engines/")
+            && text(&shown.stderr).contains("greywall does not run"),
         "{}",
         text(&shown.stderr)
     );

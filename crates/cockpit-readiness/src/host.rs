@@ -75,6 +75,7 @@ pub(crate) fn tmux(tmux: &Result<String, String>) -> Requirement {
 pub(crate) fn sandbox(
     engine: &Result<SandboxEngine, String>,
     setting: AgentSandbox,
+    profile: &cockpit_config::Profile,
 ) -> Requirement {
     match (setting, engine) {
         (AgentSandbox::Required, Ok(engine)) => {
@@ -85,7 +86,7 @@ pub(crate) fn sandbox(
             Status::MissingPrerequisite,
             format!("no sandbox engine: {reason}; every agent launch is refused"),
             format!(
-                "install the greywall and greyproxy builds this release pins on the daemon's PATH, {RESTART}"
+                "run `cockpit --profile {profile} sandbox install` to install this release's verified engines, {RESTART}"
             ),
         ),
         (AgentSandbox::Off, engine) => {

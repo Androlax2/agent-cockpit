@@ -2,12 +2,15 @@
 
 mod evidence;
 mod greywall;
+pub mod install;
 mod launch;
 mod platform;
 mod profile;
 
 pub use cockpit_config::{AgentSandbox, DesktopSession};
-pub use evidence::{AppliedRule, Enforcement, Evidence, MIGRATIONS, latest_for_session, record};
+pub use evidence::{AppliedRule, Enforcement, Evidence};
+#[cfg(feature = "persistence")]
+pub use evidence::{MIGRATIONS, latest_for_session, record};
 pub use greywall::{
     ClientIdentity, EngineBuild, GREYPROXY_PROGRAM, GREYWALL_PROGRAM, Greywall, GreywallPrograms,
     HostCapability, MOUNT_FLAG, PINNED_GREYPROXY_COMMIT, PINNED_GREYWALL_COMMIT, Plan,

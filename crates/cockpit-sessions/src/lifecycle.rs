@@ -1559,8 +1559,27 @@ impl Sessions {
         id: &SessionId,
     ) -> Result<Option<cockpit_sandbox::Evidence>, Error> {
         let read = self.database.read().await?;
-        store::session(&read, id).await?;
-        Ok(cockpit_sandbox::latest_for_session(&read, id.as_str()).await?)
+        let session = store::session(&read, id).await?;
+        let mut evidence = cockpit_sandbox::latest_for_session(&read, id.as_str()).await?;
+        if session.state != SessionState::Ended
+            && let Some(evidence) = &mut evidence
+            && let Ok(engine) = self.settings.sandbox.engine()
+            && evidence.requires_engine_restart(&engine.engine())
+        {
+            let action = self
+                .settings
+                .base_environment
+                .iter()
+                .find(|(name, _)| name == cockpit_config::PROFILE_VARIABLE)
+                .and_then(|(_, value)| value.to_str())
+                .and_then(|name| cockpit_config::Profile::parse(name).ok())
+                .map(|profile| format!("run `cockpit --profile {profile} session restart {id}`"))
+                .unwrap_or_else(|| "restart this session in its Cockpit profile".to_owned());
+            evidence.observed.push(format!(
+                "restart required: this session retains an earlier engine; {action}"
+            ));
+        }
+        Ok(evidence)
     }
 
     async fn confirm_agent(

@@ -143,7 +143,8 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
     .await
     .map_err(|error| error.to_string())?;
     let Some(dir) = dir else {
-        return Ok(cockpit_readiness::assess(&host, &config, None));
+        return with_engine_upgrades(cockpit_readiness::assess(&host, &config, None), &context)
+            .await;
     };
     let checkout = match (&config, checkout) {
         (Ok(config), Some(checkout)) => Some(checkout_facts(config, checkout)),
@@ -168,7 +169,44 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
         },
         docker,
     };
-    Ok(cockpit_readiness::assess(&host, &config, Some(&project)))
+    with_engine_upgrades(
+        cockpit_readiness::assess(&host, &config, Some(&project)),
+        &context,
+    )
+    .await
+}
+
+async fn with_engine_upgrades(mut report: Report, context: &Context) -> Result<Report, String> {
+    let Ok(current) = context.sandbox.engine() else {
+        return Ok(report);
+    };
+    for session in context
+        .sessions
+        .list(false)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if session.launch.is_some()
+            && let Some(evidence) = context
+                .sessions
+                .sandbox_evidence(&session.id)
+                .await
+                .map_err(|error| error.to_string())?
+            && evidence.requires_engine_restart(&current.engine())
+        {
+            report.requirements.push(
+                cockpit_readiness::Requirement::available(
+                    format!("session {} sandbox", session.id),
+                    "restart required: this session still uses an earlier engine release",
+                )
+                .with_advice(format!(
+                    "run `cockpit --profile {} session restart {}`",
+                    context.environment.profile.value, session.id
+                )),
+            );
+        }
+    }
+    Ok(report)
 }
 
 fn sign_in_fact(fact: cockpit_provider_api::SignIn) -> SignInFacts {
@@ -191,6 +229,7 @@ fn sign_in_fact(fact: cockpit_provider_api::SignIn) -> SignInFacts {
 
 fn host_facts(context: &Context) -> HostFacts {
     HostFacts {
+        profile: context.environment.profile.value.clone(),
         platform: platform(context.sandbox.platform()),
         tmux: context.tmux.clone(),
         sandbox_engine: context

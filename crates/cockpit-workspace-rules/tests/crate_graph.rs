@@ -239,11 +239,16 @@ const ALLOW_LISTS: &[AllowList] = &[
         from: &["cockpit-tui"],
         allowed: &["cockpit-client", "cockpit-protocol", "cockpit-diagnostics"],
     },
-    // #77: the CLI's offline verbs import their capability crate. Adding one is a decision.
+    // #470: the offline installer uses sandbox without its persistence feature (Theo).
     AllowList {
         rule: "cli -> client/protocol/offline capabilities only",
         from: &["cockpit-cli"],
-        allowed: &["cockpit-client", "cockpit-protocol", "cockpit-config"],
+        allowed: &[
+            "cockpit-client",
+            "cockpit-protocol",
+            "cockpit-config",
+            "cockpit-sandbox",
+        ],
     },
     // "Authorization depends on nothing product-level": the state database's infrastructure
     // is the only Cockpit crate it builds against.
@@ -813,6 +818,7 @@ fn every_allowed_frontend_and_authorization_edge_passes() {
         ("cockpit-tui", "cockpit-diagnostics"),
         ("cockpit-web", "cockpit-protocol"),
         ("cockpit-cli", "cockpit-config"),
+        ("cockpit-cli", "cockpit-sandbox"),
         ("cockpit-authorization", "cockpit-turso"),
         ("cockpit-daemon", "cockpit-claude"),
         ("cockpit-claude", "cockpit-provider-api"),
