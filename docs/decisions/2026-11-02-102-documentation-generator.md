@@ -12,11 +12,12 @@ The current environment has Node, but no `mdbook`, `mkdocs` or `hugo` command.
 
 | Option | Search, dark mode and editing | Versioning and checks | Cost |
 | --- | --- | --- | --- |
-| mdBook, standard theme (recommended) | Built-in browser search, light/dark themes and edit links | Build separate `latest/` and release-tag trees; retain existing Markdown/link/spelling checks and check rendered links | One pinned documentation build tool and `book.toml`; no product Cargo dependency or Node application |
+| mdBook, standard theme (rejected by Theo) | Built-in browser search, light/dark themes and edit links | Build separate `latest/` and release-tag trees; retain existing Markdown/link/spelling checks and check rendered links | Small build toolchain, but its UI does not meet Theo's preference |
 | Starlight | Built-in Pagefind search, theme switching and edit links | Same version-tree publishing requirement; same source checks plus site build | Astro/Node package manifest and dependency lockfile; more frontend tooling than this Alpha guide needs |
 | Plain static generator | Small HTML output; search, dark mode and edit links would need implementation or extra tooling | Same version-tree publishing requirement; retain existing source checks | Less external tooling can mean more custom renderer/navigation/search code to maintain |
 
-The recommendation is mdBook's standard theme and the published Agent Cockpit name, without a new logo, palette or branded landing page.
+Theo rejected mdBook's UI. The replacement generator remains undecided pending a visual reference; do not install mdBook or add its configuration.
+Retain the published Agent Cockpit name while #339 is undecided.
 Any custom visual design requires the approved Designer/FigCraft/Impeccable workflow separately; this proposal does not authorize one.
 
 ## Intended implementation after approval
