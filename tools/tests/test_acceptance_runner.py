@@ -8,7 +8,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools/acceptance/run.sh"
-GUIDES = (REPO / "docs/acceptance/m1.md", REPO / "docs/acceptance/m1-idle.md")
+GUIDES = (
+    REPO / "docs/acceptance/m1.md",
+    REPO / "docs/acceptance/m1-idle.md",
+    REPO / "docs/acceptance/m3.md",
+)
 BINARIES = ("cockpit", "cockpit-daemon", "cockpit-tui", "cockpit-claude-hook")
 # ask-to-guide's limit (apps/cockpit/src/bin/ask-to-guide.rs MAX_STEPS).
 MAX_STEPS = 60
@@ -43,7 +47,7 @@ def guide_steps(text):
 
 
 class GuideTests(unittest.TestCase):
-    def test_the_m1_guides_fit_ask_to_guide(self):
+    def test_the_guides_fit_ask_to_guide(self):
         for guide in GUIDES:
             with self.subTest(guide=guide.name):
                 steps = guide_steps(guide.read_text())
