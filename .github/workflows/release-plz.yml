@@ -17,6 +17,7 @@ on:
       - tools/tests/release_pr_conformance.py
       - Makefile
       - .github/workflows/prerelease.yml
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -38,6 +39,7 @@ defaults:
 
 jobs:
   check:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

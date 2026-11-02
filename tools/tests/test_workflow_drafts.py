@@ -1,0 +1,175 @@
+import re
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = ROOT / ".github/workflows"
+
+
+def job_conditions(text):
+    jobs = text.split("\njobs:\n", 1)[1]
+    headers = list(re.finditer(r"^  ([\w-]+):\s*$", jobs, re.MULTILINE))
+    conditions = {}
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(jobs)
+        body = jobs[header.end() : end]
+        condition = re.search(r"^    if: (.*)(?:\n|$)", body, re.MULTILINE)
+        expression = condition[1] if condition else "true"
+        if expression == ">-":
+            continuation = re.match(r"(?:      [^\n]*\n)+", body[condition.end() :])
+            expression = " ".join(continuation[0].split())
+        conditions[header[1]] = expression
+    return conditions
+
+
+def allows(expression, context):
+    """Evaluate the workflows' boolean conditions, not steps or an Actions scheduler."""
+    expression = expression.removeprefix("${{").removesuffix("}}").strip()
+    expression = re.sub(
+        r"\b(?:github|needs)\.[\w.-]+",
+        lambda match: repr(context.get(match[0], "")),
+        expression,
+    )
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    expression = re.sub(r"!(?!=)", " not ", expression)
+    return bool(eval(expression.strip(), {"__builtins__": {}}, {"true": True, "false": False}))
+
+
+def context(event, draft=False, branch="feature/example", ref="refs/heads/main", selected="true"):
+    values = {
+        "github.event_name": event,
+        "github.event.pull_request.draft": draft,
+        "github.head_ref": branch,
+        "github.event.pull_request.head.ref": branch,
+        "github.ref": ref,
+        "github.repository": "Androlax2/agent-cockpit",
+        "github.event.workflow_run.repository.full_name": "Androlax2/agent-cockpit",
+        "github.event.workflow_run.conclusion": "success",
+        "github.event.workflow_run.event": "push",
+        "needs.changes.outputs.greenfield": selected,
+        "needs.changes.outputs.platform": selected,
+        "needs.changes.outputs.docs": selected,
+        "needs.plan.outputs.tag": "v0.1.0-alpha.1" if event == "push" else "",
+    }
+    if event != "pull_request":
+        del values["github.event.pull_request.draft"]
+    return values
+
+
+class DraftWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.workflows = {
+            path.name: path.read_text()
+            for path in WORKFLOWS.iterdir()
+            if path.suffix in (".yml", ".yaml")
+        }
+        self.pr_workflows = {
+            name: text
+            for name, text in self.workflows.items()
+            if re.search(r"^  pull_request:", text, re.MULTILINE)
+        }
+
+    def test_ready_event_and_ordinary_pr_updates_are_subscribed(self):
+        self.assertEqual(
+            set(self.pr_workflows), {"ci.yml", "docs.yml", "release.yml", "release-plz.yml"}
+        )
+        for name, text in self.pr_workflows.items():
+            with self.subTest(workflow=name):
+                trigger = re.search(r"  pull_request:\n((?:    [^\n]*\n)*)", text)[1]
+                types = re.search(r"    types: \[([^\]]+)\]", trigger)
+                self.assertIsNotNone(types, "ready_for_review is not a default PR action")
+                self.assertEqual(
+                    {action.strip() for action in types[1].split(",")},
+                    {"opened", "synchronize", "reopened", "ready_for_review"},
+                )
+
+    def test_no_job_is_eligible_on_human_or_generated_draft_prs(self):
+        for name, text in self.pr_workflows.items():
+            for job, expression in job_conditions(text).items():
+                for branch in ("feature/example", "release-plz/" + "a" * 40):
+                    with self.subTest(workflow=name, job=job, branch=branch):
+                        self.assertFalse(allows(expression, context("pull_request", True, branch)))
+
+    def test_ready_prs_execute_checks_but_never_publish(self):
+        expected = {
+            "ci.yml": {"changes", "greenfield", "greenfield-macos", "greenfield-wsl2", "docs"},
+            "docs.yml": {"catalog", "build", "assemble"},
+            "release.yml": {"plan", "notes", "build", "install", "install-wsl2", "assemble"},
+            "release-plz.yml": {"check"},
+        }
+        for name, jobs in expected.items():
+            with self.subTest(workflow=name):
+                self.assertEqual(self.eligible(name, context("pull_request")), jobs)
+
+    def test_non_pr_events_keep_their_existing_job_gates(self):
+        cases = [
+            (
+                "ci.yml",
+                "push",
+                {"changes", "greenfield", "greenfield-macos", "greenfield-wsl2", "docs"},
+            ),
+            ("docs.yml", "push", {"catalog", "build", "assemble", "deploy"}),
+            ("docs.yml", "release", {"catalog", "build", "assemble", "deploy"}),
+            ("docs.yml", "workflow_run", {"catalog", "build", "assemble", "deploy"}),
+            ("docs.yml", "workflow_dispatch", {"catalog", "build", "assemble", "deploy"}),
+            ("release-plz.yml", "push", {"check", "proposal"}),
+            ("release-plz.yml", "workflow_dispatch", {"check", "proposal"}),
+            ("prerelease.yml", "workflow_dispatch", {"tag"}),
+            (
+                "release.yml",
+                "push",
+                {
+                    "plan",
+                    "notes",
+                    "build",
+                    "install",
+                    "install-wsl2",
+                    "assemble",
+                    "draft",
+                    "gate",
+                    "publish",
+                },
+            ),
+            (
+                "release.yml",
+                "schedule",
+                {"plan", "notes", "build", "install", "install-wsl2", "assemble"},
+            ),
+            (
+                "release.yml",
+                "workflow_dispatch",
+                {"plan", "notes", "build", "install", "install-wsl2", "assemble"},
+            ),
+        ]
+        for name, event, jobs in cases:
+            with self.subTest(workflow=name, event=event):
+                self.assertEqual(self.eligible(name, context(event)), jobs)
+
+    def test_ready_prs_still_respect_path_selection(self):
+        self.assertEqual(
+            self.eligible("ci.yml", context("pull_request", selected="false")), {"changes"}
+        )
+
+    def test_docs_catalog_still_rejects_ineligible_non_pr_events(self):
+        expression = job_conditions(self.workflows["docs.yml"])["catalog"]
+        cases = [
+            context("workflow_dispatch", ref="refs/heads/feature/example"),
+            context("workflow_run") | {"github.event.workflow_run.event": "pull_request"},
+            context("workflow_run") | {"github.event.workflow_run.conclusion": "failure"},
+            context("workflow_run")
+            | {"github.event.workflow_run.repository.full_name": "other/repo"},
+        ]
+        for values in cases:
+            with self.subTest(context=values):
+                self.assertFalse(allows(expression, values))
+
+    def eligible(self, name, values):
+        return {
+            job
+            for job, expression in job_conditions(self.workflows[name]).items()
+            if allows(expression, values)
+        }
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -19,6 +19,7 @@ on:
       - tools/tests/test_release.py
       - cliff.toml
       - tools/changelog.py
+    types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
     - cron: "17 3 * * *"
@@ -44,6 +45,7 @@ defaults:
 jobs:
   # The tag's version and channel, checked against every rule on the tagged commit.
   plan:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -83,6 +85,7 @@ jobs:
   # git-cliff's notes over the range release.py chose; only the draft waits for them.
   notes:
     needs: plan
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -117,6 +120,7 @@ jobs:
   # One archive per platform: the stamped version, built from the checked commit.
   build:
     needs: plan
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     strategy:
       fail-fast: true
       matrix:
@@ -192,6 +196,7 @@ jobs:
   # manifest, `cockpit version --all`, and the daemon's start on an empty home.
   install:
     needs: [plan, build]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     strategy:
       fail-fast: false
       matrix:
@@ -224,6 +229,7 @@ jobs:
   # ci.yml's greenfield-wsl2 job (docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md).
   install-wsl2:
     needs: [plan, build]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: windows-2025
     timeout-minutes: 30
     defaults:
@@ -258,6 +264,7 @@ jobs:
   # Checksums over every archive; with the archive-* artifacts, the nightly's download.
   assemble:
     needs: [plan, build]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
