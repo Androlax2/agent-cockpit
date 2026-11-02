@@ -37,7 +37,7 @@ async fn a_clean_home_agent_finds_its_workflow_checks_and_approval_route() {
             "{route}: no {evidence:?} in\n{read}"
         );
     }
-    assert!(!read.contains("cockpit: "), "a command failed:\n{read}");
+    assert!(!read.contains("torlek: "), "a command failed:\n{read}");
 }
 
 async fn read_when_written(home: &Home) -> String {
