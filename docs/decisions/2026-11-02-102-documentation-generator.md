@@ -1,0 +1,69 @@
+# Documentation generator proposal
+
+Issue #102. **Fumadocs visual direction and exact Astro dependency proposal approved by Theo.** Design/frame approval and host workflow pushes, Pages settings and deployment remain separate.
+
+## Approval record
+
+Theo explicitly approved the candidate versions in decision commit `fd9194c`, the site-only package manifest and lockfile, sandbox resolution/installation with `npm --prefix site install --ignore-scripts --no-audit --no-fund`, and build validation. Approval covers the proposed framework, React, search/schema, CSS and type-check packages. Report incompatible pins before changing this proposal. It does not approve the proposed frames or host actions.
+
+## Initial tooling audit
+
+The repository has Markdown source, `make docs-ci` (markdownlint-cli2, offline lychee and typos), and no documentation-site generator configuration or Node package manifest.
+The current environment has Node, but no `mdbook`, `mkdocs` or `hugo` command.
+`DESIGN.md` describes approved terminal surfaces, not a website identity. Product naming is still #339.
+
+## Smallest justified options
+
+| Option | Search, dark mode and editing | Versioning and checks | Cost |
+| --- | --- | --- | --- |
+| Fumadocs (Theo's selected visual reference) | Standard documentation layout, light/dark themes, search dialog and source links | Configure static output and browser-side search; build version trees and retain source/rendered link checks | Site framework with React integration, Fumadocs packages, CSS build tooling and a documentation-only manifest/lockfile |
+| mdBook, standard theme (rejected by Theo) | Built-in browser search, light/dark themes and edit links | Build separate `latest/` and release-tag trees; retain existing Markdown/link/spelling checks and check rendered links | Small build toolchain, but its UI does not meet Theo's preference |
+| Starlight | Built-in Pagefind search, theme switching and edit links | Same version-tree publishing requirement; same source checks plus site build | Astro/Node package manifest and dependency lockfile; more frontend tooling than this Alpha guide needs |
+| Plain static generator | Small HTML output; search, dark mode and edit links would need implementation or extra tooling | Same version-tree publishing requirement; retain existing source checks | Less external tooling can mean more custom renderer/navigation/search code to maintain |
+
+Theo rejected mdBook's UI and selected [Fumadocs](https://www.fumadocs.dev/docs) as the visual reference. Do not install mdBook or add its configuration.
+Retain the published Agent Cockpit name while #339 is undecided.
+The worker recommends implementing that direction with Fumadocs UI itself, rather than recreating it in another generator. This recommendation does not treat the visual preference as approval for a dependency graph or a finished layout.
+
+## Proposed technical choice
+
+Use Fumadocs UI with Astro static output under `site/`, isolated from the Rust product manifests. Its documented integration uses Astro content collections for documents and React islands for Fumadocs UI. Search indexes are emitted at build time and queried in the browser; Pages must not require a Node server or search service.
+
+The worker initially favored Next.js because its Fumadocs integration is more established than the current `@fumadocs/astro` 0.1.1 adapter. Theo questioned that choice. There is no measured bundle-size or performance advantage supporting it, and this site needs static documentation rather than server functionality. The revised recommendation is Astro, subject to proving its Fumadocs integration at the pinned versions. Next.js static export remains a fallback to discuss if that validation fails, not a dependency to install alongside Astro.
+
+Approved direct packages, queried read-only from the npm registry on 2026-11-02:
+
+| Purpose | Approved exact versions |
+| --- | --- |
+| Docs and content | `fumadocs-core` 16.17.9, `fumadocs-ui` 16.17.9, `@fumadocs/astro` 0.1.1 |
+| Framework | `astro` 7.4.4, `@astrojs/react` 7.1.2, `react` 19.3.1, `react-dom` 19.3.1 |
+| Local search and content schema | `@orama/core` 1.2.19, `zod` 4.6.7 |
+| CSS build | `tailwindcss` 4.3.3, `@tailwindcss/vite` 4.3.3 |
+| Type checks | `typescript` 7.0.2, `@types/node` 26.6.6, `@types/react` 19.3.0, `@types/react-dom` 19.3.0, `@types/mdx` 2.0.14 |
+
+The installed Node 26.12.1 and npm 12.2.1 satisfy the inspected framework engine requirements. Resolution and installation succeeded with every direct pin unchanged, using the approved ignore-scripts command and a sandbox-local cache after the default read-only cache failed. The isolated Astro/Fumadocs build and fixture TypeScript checks pass; the build reports two upstream CSS warnings about `::highlight(fd-search)`. See the [validation record](../../site/README.md) for commands and limitations. No global generator or automatic project scaffold was installed.
+
+## Design handoff
+
+A Designer prepared the [current r4 layout handoff](../design/102-documentation-layout-r4.md) under #499, FigCraft revision `1a19a1c1456`; exact-frame approval remains pending. The original r3 handoff and critique remain as historical evidence. Use standard Fumadocs navigation, document body, table of contents, version selector, search and theme controls. Retain source provenance and pending-reference labels in the content. No new logo, product palette or marketing landing page is requested.
+The approved FigCraft frame revision and Impeccable guidance actually used must be recorded before implementing a new layout. A preferred reference is not an approved frame. Missing design capabilities must be reported rather than silently replaced with invented UI.
+
+## Intended implementation after approval
+
+- Reuse canonical repository Markdown for the user guide, quickstart, design reports and decision records. Generate a staging tree rather than maintaining duplicate copies.
+- Derive the CLI reference from the built `cockpit` help and effective configuration output from a binary run with an isolated empty home, no daemon, and a clean environment. Label effective defaults as defaults, not a complete schema reference. #295's protocol schema remains explicitly planned until implemented.
+- Render the current shipped agent instruction bundle from its source. Add search and source-specific edit links; generated references link to their owning source and state their revision.
+- Keep `make docs-ci` on canonical source; add a deterministic site-build entry point and rendered local-link checks, including project subpath and release-version URLs.
+- Build on PRs without deploying. Deploy `latest/` from `main` and immutable versioned copies only for released tags matching the release lane's tag grammar. Coordinate preservation of older version outputs and release-event wiring with the release lane; do not edit its workflows or `docs/RELEASING.md` concurrently.
+- Pages settings/deployment, workflow pushes and the repository website field use reviewed `ask-to-run` host approval. No custom domain, tag or release creation.
+- Keep install/session acceptance open until the merged public installer is used successfully by a reader following the site alone. #98's pending volunteer result is not site acceptance.
+
+The dependency approval is recorded above and package installation stays in this sandbox checkout. Exact-frame approval, workflow pushes, Pages settings and deployments retain their separate review requirements.
+
+## Sources
+
+- [mdBook HTML renderer configuration](https://rust-lang.github.io/mdBook/format/configuration/renderers.html): search, themes, edit links and site subpath.
+- [Starlight configuration](https://starlight.astro.build/reference/configuration/): search and edit links.
+- [Fumadocs Next.js integration](https://www.fumadocs.dev/docs/manual-installation/next), [static build and search](https://www.fumadocs.dev/docs/deploying/static), and [Astro integration](https://www.fumadocs.dev/docs/manual-installation/astro).
+- Package versions and engine/peer declarations were read from the public [npm registry](https://registry.npmjs.org/), without executing package code.
+- Repository ownership and release policy: [Releasing](../RELEASING.md), [user README acceptance](../acceptance/98-user-readme.md).

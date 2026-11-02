@@ -1,0 +1,31 @@
+{
+  "name": "agent-cockpit-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:probe": "ASTRO_TELEMETRY_DISABLED=1 astro build --root validation",
+    "test": "node --test tests/*.test.mjs",
+    "check:probe": "tsc --noEmit --project validation/tsconfig.json"
+  },
+  "dependencies": {
+    "fumadocs-core": "16.17.9",
+    "fumadocs-ui": "16.17.9",
+    "@fumadocs/astro": "0.1.1",
+    "astro": "7.4.4",
+    "@astrojs/react": "7.1.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "@orama/core": "1.2.19",
+    "zod": "4.6.7",
+    "tailwindcss": "4.3.3",
+    "@tailwindcss/vite": "4.3.3"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/mdx": "2.0.14"
+  }
+}

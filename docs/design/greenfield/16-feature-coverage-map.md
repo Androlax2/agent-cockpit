@@ -128,6 +128,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Feature | Verdict | Owner |
 | --- | --- | --- |
 | Product README and first project/session quickstart | change | user documentation (#98): source-grounded front page, legacy operator guide retained under `docs/legacy/`; Markdown, local links and spelling checked by `make docs-ci`; current CLI fixture pointers and still-pending public install, greenfield screenshot and volunteer acceptance recorded in [README acceptance](../../acceptance/98-user-readme.md). No live onboarding claim |
+| Versioned documentation site | keep | user documentation (#102): exact approved Astro/Fumadocs pins resolved under `site/`; `site/tests/build.test.mjs` drives the real Astro build and checks static MDX, React assets, CSS and a static search index. Fixture TypeScript checks pass; two upstream CSS warnings remain. See [build validation](../../../site/README.md). Product layout, generated references, browser acceptance and Pages publication remain pending |
 
 ## Gaps this map found in reports 01–15
 

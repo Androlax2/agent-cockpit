@@ -1,0 +1,19 @@
+---
+import { getCollection, render } from 'astro:content';
+import Probe from '../components/Probe';
+import '../styles/global.css';
+
+const [page] = await getCollection('docs');
+const { Content } = await render(page);
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{page.data.title}</title>
+  </head>
+  <body>
+    <h1>{page.data.title}</h1>
+    <Content />
+    <Probe client:load />
+  </body>
+</html>
