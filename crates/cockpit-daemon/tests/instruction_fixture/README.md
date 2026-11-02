@@ -6,9 +6,10 @@ directory, MCP server and authenticated agent channel. The first prompt is only
 `Reply with only OK.` A local model fixture records the request and returns canned
 text. It never emits a tool call or approval response.
 
-On Linux, the ordinary test runs eleven Python standard-library regressions for external
+On Linux, the ordinary test runs thirteen Python standard-library regressions for external
 configuration refusal, credential isolation, descendant cleanup and false
-instruction evidence; two Rust regressions cover failed capture and cleanup I/O. The three native tests are ignored by default and currently
+instruction evidence and model shutdown; three Rust regressions cover failed capture,
+cleanup I/O and final model exit. The three native tests are ignored by default and currently
 support Linux only. They require explicit paths to already approved binaries;
 they never install or download anything.
 
@@ -19,6 +20,10 @@ output, the selected program's SHA-256, fixture source SHA-256, request SHA-256 
 the assertions that passed. Session IDs, temporary paths, request bodies and
 credentials are not exported. Codex's program digest identifies its npm JavaScript
 launcher, not the native executable it selects.
+
+These receipts retain the pre-drain-fix fixture hash and are historical evidence.
+They have not been regenerated for the shutdown follow-through; local fake-process
+regressions do not substitute for a new exact-version native run.
 
 | Harness | Target pin | Binary used | Native evidence |
 | --- | --- | --- | --- |
@@ -54,7 +59,7 @@ CARGO_BUILD_JOBS=2 cargo nextest run --locked --offline \
 
 ```sh
 CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 cargo nextest run --locked --offline \
-  -p cockpit-daemon --test native_instructions --test agent_onboarding -j 2
+  -p cockpit-daemon --test native_instructions -j 2
 ```
 
 ## Isolation and limits
@@ -74,7 +79,11 @@ read-only global config directory prevents 1.19.5's automatic plugin dependency
 installation; Rust restores permissions even on test failure. Child groups retain
 their waitable leader until killed. Native commands have 3-second version (inside discovery’s 10-second deadline) and
 50-second execution limits; requests are limited to eight, and bodies/captures to
-2 MiB. Cooperative teardown works even after daemon failure.
+2 MiB. Cooperative teardown works even after daemon failure. Before publishing a
+receipt, the Rust owner stops native wrappers and asks the model server to drain.
+The server joins active HTTP handlers before exiting; Rust requires successful
+exit within ten seconds and checks the final error record. Timeout or failed
+shutdown fails the probe instead of publishing a receipt.
 
 The existing daemon fixture supplies fake managed sandbox engines. Application
 configuration controls are not proof of an OS network boundary or real sandbox

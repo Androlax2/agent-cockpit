@@ -186,3 +186,120 @@ The reviewer explicitly left signed-in recognition/model understanding, Claude T
 parity, Codex 0.161.0, real sandbox/network enforcement, approval routing, persisted
 completion and total context outside these measured claims. Those limitations
 remain open; no account or native test was run by the reviewer.
+
+## Task 3: Bound final model shutdown before publishing a receipt
+
+Theo selected local reproduction and repair (Option A) after the replacement
+OpenCode medium review. Scope: the late-handler error candidate and the README
+command that still invokes the separately tracked #526 fixture. Execute inline
+in this preserved checkout; no host retry, account use or publication is included.
+
+Files: `tests/instruction_fixture/native.py`, `test_native.py`,
+`tests/native_instructions.rs` and the fixture README under `cockpit-daemon`.
+
+- [x] Reproduce premature model-server shutdown using a real loopback request and
+  an event-gated error-file write. Expect the current server close to return before
+  that write finishes. No native provider or account is involved.
+- [x] Give the Python server a drain request and join its active handlers before
+  normal exit. The Rust model owner stops native wrappers, requests drain, waits
+  at most ten seconds for successful server exit, then checks final capture errors.
+  Add failure-path and successful-shutdown coverage through these entry points.
+- [x] Remove `--test agent_onboarding` from the README's ordinary command. Keep
+  #526's shared helper separate and historical receipts intact; changed fixture
+  hashes must not be presented as already measured native evidence.
+- [x] Run focused fixture tests and affected static/documentation checks, with
+  two Cargo jobs and two test threads. Expected: all ordinary tests pass and
+  the three native tests remain explicitly skipped. No broad or stress run.
+- [x] Record the exact results and request bounded independent review through
+  the coordinator if available. Keep that review distinct from the installed
+  inline `code-review medium` workflow; do not claim completion while it is missing.
+
+Review focus: shutdown must not outrun an error writer, a failed/stalled model
+must fail visibly, and panic cleanup must still stop owned children. Use the
+existing process owner and standard-library server, not a new fixture framework.
+
+### Follow-through evidence and remaining gates
+
+Baseline `python3 -I -B -m unittest discover -s crates/cockpit-daemon/tests/instruction_fixture -p test_native.py`
+passed: `Ran 11 tests in 3.770s`, `OK`, exit 0.
+
+Before the fix, the same command with `-k test_model_close_waits -v` failed:
+`True is not false : model closed before recording its in-flight error`
+(`Ran 1 test in 0.003s`, `FAILED (failures=1)`, exit 1). The actual server-process
+entry-point test, selected with `-k test_model_process -v`, failed with
+`subprocess.TimeoutExpired` after two seconds (`FAILED (errors=1)`, exit 1).
+Both use fresh temporary directories and loopback HTTP, with no native provider.
+
+After the fix,
+`TMPDIR=/tmp/opencode python3 -I -B -m unittest discover -s crates/cockpit-daemon/tests/instruction_fixture -p test_native.py -v`
+passed: `Ran 13 tests in 4.047s`, `OK`, exit 0. These two new regressions are
+RED→GREEN. Native receipts remain historical and have not been regenerated.
+
+Rust regression attempt:
+`CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 cargo nextest run --locked --offline -p cockpit-daemon --test native_instructions -j 2 -E 'test(=model_shutdown_requires_a_successful_exit_without_late_errors)'`
+failed before compilation: `no matching package named tempfile found`, required
+by `cockpit-agent-channel`; Cargo metadata exit 101, nextest exit 102. This is not
+a Rust RED result. Rust compilation, regression execution and Clippy remain
+unverified; blocker `b6359a07` is accepted. No dependency fetch was attempted.
+
+`cargo fmt --all -- --check` passed. Ruff check passed; initial Ruff format check
+reported one long argument list, corrected with a formatting-only patch.
+
+Independent review is pending: replacement-session `cockpit-team context` exposes
+no task, teammate or approved link. Routing blocker `cd24ee50` is accepted; no
+reviewer was invented or started. The installed inline medium review remains
+distinct from that gate. No commit, push, CI retry or host action is part of this
+local follow-through.
+
+### Approved dependency fetch and Rust verification
+
+Theo approved downloading only dependencies already pinned in `Cargo.lock`.
+`cargo fetch --locked` exited 0. The subsequent
+`git diff --exit-code -- Cargo.lock Cargo.toml ':(glob)**/Cargo.toml'` exited 0;
+no manifest or lockfile changed. This resolves the cache prerequisite, without
+erasing the earlier offline failure above.
+
+`CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 TMPDIR=/tmp/opencode cargo nextest run --locked --offline -p cockpit-daemon --test native_instructions -j 2`
+exited 0: `Summary [4.644s] 4 tests run: 4 passed, 3 skipped`. The new
+`model_shutdown_requires_a_successful_exit_without_late_errors` regression passed
+in 0.080s, and the ordinary Python entry point passed in 4.639s (all thirteen
+Python regressions). This is the first executed Rust check of the follow-through;
+only the two Python regressions have observed pre-fix RED runs.
+
+Blocker `b6359a07` is marked done. Independent review routing remains `cd24ee50`.
+Native/account validation and supported-platform CI have not been repeated.
+
+`CARGO_BUILD_JOBS=2 cargo clippy --locked --offline -p cockpit-daemon --test native_instructions -j 2 -- -D warnings`
+exited 0: `Finished dev profile [unoptimized + debuginfo] target(s) in 0.52s`.
+All focused code checks pass. The pending independent review is still a separate
+gate, and no publication or host retry has been performed.
+
+### Independent follow-through review and integration boundary
+
+After Theo's review approval, one bounded read-only OpenAI GPT-6 Astra reviewer
+ran in a fresh session (identity retained in the local review receipt). It reviewed the full delta
+from `e05bf5d37a5a8df4a171a366604f790d7b138056` through HEAD `33efa89` plus the local
+follow-through, matching combined diff SHA-256
+`e773c29ff11b4d45ab4cdd787a9f0faa1d4af1d5dd95237a4d91e9a00456c31c`.
+This was independent review, not the installed inline medium workflow. It ran
+no tests, provider/account commands or edits. No critical or important findings;
+ready for final-head CI, not unconditional merge approval.
+
+The stale coverage inventory is corrected to thirteen Python and three Rust
+failure-path tests, explicitly retaining the earlier native receipts' provenance.
+The other minor finding is deferred: direct fake-process tests of the ten-second
+drain timeout and Rust unwinding cleanup. Those paths were reviewed statically;
+the new Rust test covers late errors, unsuccessful exit and successful exit.
+No additional code or native evidence is claimed for the deferred cases.
+
+Reviewer exclusions remain open: signed-in recognition, Claude TUI parity,
+Codex 0.161.0, real sandbox/network enforcement, approval execution, persisted
+completion #516, total context #479 and the separate #526 shared helper. Treat
+them as evidence limits, not newly accepted functionality.
+
+Coordinator update verified through GitHub: #444 merged at
+`c8ba4022bf4409a811286f9feb67502d238e0313`. Final verification must use a fresh
+PR integration containing that commit. A normal follow-up commit/push on the
+existing authorized branch triggers pull-request CI; check its actual checkout
+and parents. Do not rerun the old job, rewrite history, or apply greenfield work
+to the running legacy copy.

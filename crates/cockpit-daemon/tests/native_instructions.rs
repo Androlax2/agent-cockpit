@@ -215,8 +215,7 @@ async fn probe(provider: &str, variable: &str, version: &str) {
         bound.conversation.is_some(),
         "native conversation was not bound"
     );
-    stop_native(&home.path()).unwrap();
-    read_capture(&home.path()).unwrap();
+    model.finish().unwrap();
     let ended = client
         .request(
             Request::SessionEnd {
@@ -279,6 +278,32 @@ fn diagnostics(home: &Home) -> String {
 struct Model {
     child: Child,
     root: std::path::PathBuf,
+}
+
+impl Model {
+    fn finish(&mut self) -> Result<(), String> {
+        stop_native(&self.root)?;
+        std::fs::write(self.root.join("drain"), "")
+            .map_err(|error| format!("cannot request model drain: {error}"))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self
+                .child
+                .try_wait()
+                .map_err(|error| format!("cannot wait for model drain: {error}"))?
+            {
+                if !status.success() {
+                    return Err(format!("model fixture exited with {status}"));
+                }
+                read_capture(&self.root)?;
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("model fixture did not finish draining within ten seconds".to_owned());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
 }
 
 fn stop_native(root: &Path) -> Result<(), String> {
@@ -360,6 +385,53 @@ fn a_valid_main_capture_never_hides_a_model_fixture_failure() {
             .unwrap_err()
             .contains("unexpected model request")
     );
+}
+
+#[test]
+fn model_shutdown_requires_a_successful_exit_without_late_errors() {
+    for (outcome, expected_error) in [
+        ("late-error", Some("late model error")),
+        ("failed-exit", Some("model fixture exited")),
+        ("success", None),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("probe-processes")).unwrap();
+        std::fs::write(root.path().join("requests.jsonl"), "{\"main\":true}\n").unwrap();
+        let mut model = Model {
+            root: root.path().to_owned(),
+            child: Command::new("python3")
+                .args([
+                    "-I",
+                    "-B",
+                    "-c",
+                    r"import pathlib, sys, time
+root = pathlib.Path.cwd()
+deadline = time.monotonic() + 5
+while not (root / 'drain').exists():
+    if time.monotonic() >= deadline:
+        raise RuntimeError('no drain request')
+    time.sleep(0.01)
+if sys.argv[1] == 'late-error':
+    (root / 'error.json').write_text('late model error')
+sys.exit(7 if sys.argv[1] == 'failed-exit' else 0)",
+                    outcome,
+                ])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .current_dir(root.path())
+                .stdin(Stdio::null())
+                .spawn()
+                .unwrap(),
+        };
+        let result = model.finish();
+        match expected_error {
+            Some(expected) => assert!(
+                result.unwrap_err().contains(expected),
+                "shutdown outcome {outcome}"
+            ),
+            None => result.unwrap(),
+        }
+    }
 }
 
 #[test]

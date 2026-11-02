@@ -4,9 +4,11 @@ import json
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -14,12 +16,14 @@ from unittest.mock import patch
 
 from native import (
     SKILL_DESCRIPTION,
+    Model,
     environment,
     evidence,
     initialize_project,
     prepare,
     refuse_existing,
     run_bounded,
+    write_json,
 )
 
 
@@ -180,6 +184,93 @@ class Safety(unittest.TestCase):
 
 
 class Evidence(unittest.TestCase):
+    def test_model_process_acknowledges_drain_by_exiting_successfully(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "fixture.json"
+            config.write_text(json.dumps({"root": directory, "provider": "claude"}))
+            child = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    str(Path(__file__).with_name("native.py")),
+                    "serve",
+                    str(config),
+                ],
+                cwd=root,
+                env={"HOME": directory, "PATH": "/usr/bin:/bin"},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not (root / "ready").exists():
+                    self.assertIsNone(child.poll(), "model exited before becoming ready")
+                    self.assertLess(time.monotonic(), deadline, "model did not become ready")
+                    time.sleep(0.01)
+                (root / "drain").touch()
+                _, errors = child.communicate(timeout=2)
+                self.assertEqual(child.returncode, 0, errors.decode())
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=2)
+
+    def test_model_close_waits_for_an_inflight_error_to_be_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pending_error = threading.Event()
+            release_error = threading.Event()
+            error_written = threading.Event()
+            closed = threading.Event()
+
+            def delayed_error(path, value):
+                pending_error.set()
+                if not release_error.wait(3):
+                    raise TimeoutError("test did not release the error writer")
+                try:
+                    write_json(path, value)
+                finally:
+                    error_written.set()
+
+            model = Model({"root": directory, "provider": "opencode", "prompt": "OK"})
+            serving = threading.Thread(target=model.serve_forever, daemon=True)
+
+            def close_model():
+                model.server_close()
+                closed.set()
+
+            closing = threading.Thread(target=close_model, daemon=True)
+            with patch("native.write_json", side_effect=delayed_error):
+                serving.start()
+                try:
+                    with socket.create_connection(model.server_address, timeout=2) as client:
+                        client.sendall(
+                            b"POST /v1/chat/completions HTTP/1.0\r\n"
+                            b"Authorization: Bearer fixture-key\r\n"
+                            b"Content-Length: 1\r\n\r\n{"
+                        )
+                        self.assertTrue(pending_error.wait(2), "handler did not reach its error")
+                        model.shutdown()
+                        closing.start()
+                        self.assertFalse(
+                            closed.wait(0.1), "model closed before recording its in-flight error"
+                        )
+                        release_error.set()
+                        self.assertTrue(closed.wait(2), "model did not finish after the error")
+                        self.assertIn("JSONDecodeError", (root / "error.json").read_text())
+                finally:
+                    release_error.set()
+                    model.shutdown()
+                    model.server_close()
+                    serving.join(timeout=2)
+                    if closing.ident is not None:
+                        closing.join(timeout=2)
+                    if pending_error.is_set():
+                        self.assertTrue(error_written.wait(2), "error writer did not stop")
+
     def test_codex_mcp_tools_are_registered_under_the_captured_namespace(self):
         config = {"provider": "codex", "prompt": "Reply with only OK."}
         request = {

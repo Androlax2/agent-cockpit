@@ -385,7 +385,8 @@ def evidence(config, request, number):
 
 
 class Model(ThreadingHTTPServer):
-    daemon_threads = True
+    # Normal shutdown must join error writers before Rust inspects the final capture.
+    daemon_threads = False
 
     def __init__(self, config):
         super().__init__(("127.0.0.1", 0), Handler)
@@ -538,7 +539,9 @@ def main():
         partial = ready.with_suffix(".partial")
         partial.write_text(url)
         partial.replace(ready)
-        model.serve_forever()
+        model.timeout = 0.05
+        while not (Path(config["root"]) / "drain").exists():
+            model.handle_request()
     return 0
 
 
