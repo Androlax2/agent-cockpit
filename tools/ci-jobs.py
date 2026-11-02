@@ -13,7 +13,7 @@ greenfield change and leaves at the cutover; `make ci` stays available locally.
 `platform` runs the macOS and WSL 2 jobs on a pull request only when it changes a crate those
 jobs build: the crates they test or run (PLATFORM_ROOTS) and every crate those depend on,
 read from the manifests, so no dependency reaches main untested on a platform (#127, #397).
-The root manifests and ci.yml run them too, and every push to main does.
+The root manifests, Makefile and ci.yml run them too, and every push to main does.
 """
 
 import sys
@@ -67,6 +67,7 @@ JOB_PATHS = {
         *(f"crates/{crate}/**" for crate in sorted(platform_crates())),
         "Cargo.toml",
         "Cargo.lock",
+        "Makefile",
         ".github/workflows/ci.yml",
     ],
     "docs": ["docs/**", "site/**", "**/*.md"],

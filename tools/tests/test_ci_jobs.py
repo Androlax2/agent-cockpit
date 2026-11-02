@@ -39,7 +39,7 @@ class CiJobSelectionTests(unittest.TestCase):
             ".agents/rules/rust.md": {"docs"},
             "Cargo.toml": {"greenfield", "platform"},
             "Cargo.lock": {"greenfield", "platform"},
-            "Makefile": {"greenfield"},
+            "Makefile": {"greenfield", "platform"},
             ".github/workflows/ci.yml": {"greenfield", "platform"},
             ".github/workflows/release.yml": {"greenfield"},
             "docs/DEVELOPMENT.md": {"docs"},
