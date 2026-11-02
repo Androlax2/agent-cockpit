@@ -49,7 +49,13 @@ The requested `$code-review medium` skill was loaded from
 `58205740fe18fa4d11313cbcfb7f4d38a45a27bb` plus the working #191 delta. It found missing
 release-trigger paths, an overstated archive-coverage description, and a verdict that could
 accept wholly failed load operations. Those are corrected here. This preliminary review
-is separate from the required fresh independent review of the final branch revision.
+is separate from the fresh independent review of the completed branch delta.
+
+A fresh independent reviewer loaded and ran the same actual `$code-review medium` skill
+on `58205740fe18fa4d11313cbcfb7f4d38a45a27bb..0c004c618b5e06c14f11c3a05e559b505e126a70`: all
+eight inline angles, deduplication only, no verifier pass, findings `[]`. No actionable
+correctness or repository-rule findings. It ran no tests, load, edits or Git operations.
+This review does not claim the pending native-platform or sustained CI acceptance.
 
 ## Sources
 

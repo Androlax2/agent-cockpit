@@ -53,5 +53,6 @@ Files: `tools/release_upgrade.py`, `tools/tests/test_release_upgrade.py`, Makefi
 
 - [x] Update dated #191 decision, RELEASING guidance and coverage-map evidence without claiming unmeasured live outcomes.
 - [x] Run focused tests and affected format/lint checks once on final source; record unavailable tools and failures.
-- [ ] Obtain independent full-delta review, fix findings with focused regressions, then request host approval for the normal workflow branch push.
+- [x] Obtain independent full-delta review: actual `$code-review medium` on `0c004c6`, findings `[]`.
+- [ ] Request host approval for the normal workflow branch push.
 - [ ] Open a PR with Part of #191 until all acceptance is measured; wait for required CI and record exact archive/gate results before merge.
