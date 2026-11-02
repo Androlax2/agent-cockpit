@@ -148,6 +148,11 @@ class ChangelogTests(unittest.TestCase):
             ("- \\` <repo> `\n", "- \\` &lt;repo&gt; `\n"),
             ("- \\\\`<repo>`\n", "- \\\\`<repo>`\n"),
             ("- `<repo>\n- <repo>`\n", "- `&lt;repo&gt;\n- &lt;repo&gt;`\n"),
+            ("- \\``<repo>`\n", "- \\``<repo>`\n"),
+            ("- <https://example.invalid>\n", "- <https://example.invalid>\n"),
+            ("- <owner@example.invalid>\n", "- <owner@example.invalid>\n"),
+            ("- [file](<docs/a b.md>)\n", "- [file](<docs/a b.md>)\n"),
+            ("- \\<repo\\>\n", "- \\<repo\\>\n"),
         ]
         for source, expected in cases:
             with self.subTest(source=source):

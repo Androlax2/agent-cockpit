@@ -44,3 +44,16 @@ exercises both forms; command-entry tests cover escaped/unmatched backticks and 
 spans. Both release workflow path filters include the postprocessor. Full-history
 output is checked with the unchanged `make docs-ci` in a disposable checkout before
 review; replacement-draft CI still needs measured evidence.
+
+## Review provenance for the Markdown correction
+
+The first independent fresh-agent review covered the full delta at `8ba5d573a9c55272baf2cc5e5ceddcbe1e4f6b66` and found the
+code-span entity regression. That was a fallback review, not `$code-review`. After
+Theo clarified Codex skill discovery, the skill was found by following
+`~/.codex/skills/code-review/SKILL.md`; the earlier unavailable-workflow report is
+corrected. `$code-review medium` ran its eight inline angles on `570fe35..a9fca50`,
+without subagents or a verifier pass. It found escaped opening backtick runs,
+Markdown links and already escaped angle brackets changed by the postprocessor.
+All three were reproduced with failing command-entry fixtures and corrected; the
+focused tests and real-tool conformance then passed. This inline skill execution
+is recorded separately from independent review.

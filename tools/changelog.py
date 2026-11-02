@@ -4,9 +4,24 @@
 import re
 import sys
 
+ANGLES = re.compile(
+    r"(?P<link>(?:\]\([ \t]*|\]:[ \t]*)<[^<>\n]*>"
+    r"|<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\s]*|[^<>\s@]+@[^<>\s@]+)>)|[<>]"
+)
+
+
+def is_escaped(text, position):
+    prefix = text[:position]
+    return (len(prefix) - len(prefix.rstrip("\\"))) % 2 == 1
+
 
 def escape_prose(text):
-    return text.replace("<", "&lt;").replace(">", "&gt;")
+    def replace(match):
+        if match["link"] or is_escaped(text, match.start()):
+            return match[0]
+        return "&lt;" if match[0] == "<" else "&gt;"
+
+    return ANGLES.sub(replace, text)
 
 
 def render_line(line):
@@ -17,14 +32,14 @@ def render_line(line):
     position = index = 0
     while index < len(runs):
         opening = runs[index]
-        prefix = line[: opening.start()]
-        escaped = (len(prefix) - len(prefix.rstrip("\\"))) % 2
-        closing = next((j for j in range(index + 1, len(runs)) if runs[j][0] == opening[0]), None)
-        if escaped or closing is None:
+        start = opening.start() + int(is_escaped(line, opening.start()))
+        width = opening.end() - start
+        closing = next((j for j in range(index + 1, len(runs)) if len(runs[j][0]) == width), None)
+        if not width or closing is None:
             index += 1
             continue
         end = runs[closing].end()
-        result.extend((escape_prose(line[position : opening.start()]), line[opening.start() : end]))
+        result.extend((escape_prose(line[position:start]), line[start:end]))
         position, index = end, closing + 1
     result.append(escape_prose(line[position:]))
     return "".join(result)
