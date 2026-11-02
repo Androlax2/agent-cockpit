@@ -31,3 +31,13 @@ Evidence: [isolated orchestration tests](../../tools/tests/test_release_pr.py),
 [real-tool conformance](../../tools/tests/release_pr_conformance.py), and
 [workflow](../../.github/workflows/release-plz.yml). Live draft workflow acceptance is not
 claimed by fixture tests. Workflow pushes remain host-reviewed through `ask-to-run`.
+
+## Generated Markdown correction
+
+The first live draft (#514) and same-base retry preserved the exact branch/head, but
+its docs CI found MD022 (header separation) and MD033 (a historical subject containing
+an angle-bracket placeholder). Fix the shared git-cliff template rather than changing
+the immutable draft, rewriting historical commits, or relaxing Markdown rules. The
+real-tool fixture now includes that subject shape and an inline command. Full-history
+output is checked with the unchanged `make docs-ci` in a disposable checkout before
+review; replacement-draft CI still needs measured evidence.
