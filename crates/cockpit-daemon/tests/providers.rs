@@ -87,14 +87,14 @@ fn a_claude_code_that_fails_its_version_is_not_wired() {
 #[test]
 fn codex_on_the_path_is_wired_with_its_version_tested() {
     let bin = tempfile::tempdir().unwrap();
-    fake_program(bin.path(), "codex", "echo 'codex-cli 0.161.0'");
+    fake_program(bin.path(), "codex", "echo 'codex-cli 0.166.0'");
     let home = home_with_path(bin.path());
     let _daemon = home.start();
 
     let log = home.log_once_it_contains("provider codex");
 
     assert!(
-        log.contains("provider codex ready version=0.161.0 provenance=tested"),
+        log.contains("provider codex ready version=0.166.0 provenance=tested"),
         "{log}"
     );
 }

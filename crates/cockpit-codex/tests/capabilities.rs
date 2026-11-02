@@ -44,6 +44,32 @@ fn on_the_pinned_version_each_capability_is_available_with_that_version() {
 }
 
 #[test]
+fn the_validated_0166_release_has_available_capabilities() {
+    let capabilities = on_version(Some("0.166.0")).capabilities();
+    for capability in REPORTED {
+        assert_eq!(
+            capabilities.availability(capability),
+            Availability::Available {
+                version: "0.166.0".to_owned()
+            },
+            "{capability:?}"
+        );
+    }
+}
+
+#[test]
+fn the_previous_0161_release_is_unverified_after_revalidation() {
+    let capabilities = on_version(Some("0.161.0")).capabilities();
+    for capability in REPORTED {
+        assert_eq!(
+            capabilities.availability(capability),
+            Availability::Unverified,
+            "{capability:?}"
+        );
+    }
+}
+
+#[test]
 fn on_another_version_each_capability_is_unverified() {
     let capabilities = on_version(Some("0.162.0")).capabilities();
 

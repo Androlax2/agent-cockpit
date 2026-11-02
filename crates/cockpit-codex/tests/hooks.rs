@@ -1,5 +1,5 @@
-//! Conformance with the hook payloads pinned for `CONFORMANCE_VERSION`, and the reports they
-//! become.
+//! Historical 0.161.0 hook payloads and their reports. The subscribed input schemas
+//! also match upstream 0.166.0; see fixtures/codex-0.166.0/README.md.
 
 mod common;
 

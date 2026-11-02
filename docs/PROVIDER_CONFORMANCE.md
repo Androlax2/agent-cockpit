@@ -27,7 +27,7 @@ it does not use shared Git/project fixtures or launch a daemon.
 
 ## Six-area contract
 
-Pins: **Claude Code 2.1.316**, **Codex 0.161.0**, **OpenCode 1.19.5**. These are
+Pins: **Claude Code 2.1.316**, **Codex 0.166.0**, **OpenCode 1.19.5**. These are
 the adapters' capability pins, not a claim that every row was measured natively.
 
 | Area | Claude Code | Codex | OpenCode |
@@ -37,7 +37,7 @@ the adapters' capability pins, not a claim that every row was measured natively.
 | Cancellation | Direct delivery unsupported; terminal Escape has no affirmative interruption receipt | Active turn returns `Interrupted` after server acknowledgement; no active turn is refused | `Interrupted` only after authenticated affirmative abort; false/refused responses fail |
 | Command discovery/invocation | Unsupported: exact `Commands` capability refusal before socket access | Unsupported: exact `Commands` capability refusal before socket access | Authenticated launch endpoint; command name, description and source retained; invocation message ID is not completion evidence |
 | Evidence retrieval | Unavailable; no provider trait operation exists | Unavailable; no provider trait operation exists | Unavailable; no provider trait operation exists |
-| Capability provenance | Pin reports `Tested`; different/unknown version reports `Discovered` | Same policy; native 0.166.0 evidence does not establish the 0.161.0 pin | Same policy; unknown version is unverified for every reported capability |
+| Capability provenance | Pin reports `Tested`; different/unknown version reports `Discovered` | 0.166.0 reports `Tested` after separate native capability validation; 0.161.0 and different/unknown versions are unverified | Same policy; unknown version is unverified for every reported capability |
 
 ### Executable anchors
 
@@ -77,7 +77,8 @@ Keep these boundaries separate from fixture pass/fail:
 | Evidence | What it establishes | What remains open |
 | --- | --- | --- |
 | [#419 instruction captures](../crates/cockpit-daemon/tests/instruction_fixture/README.md) | Real daemon launches deliver brief/MCP input to a local canned model: Claude 2.1.316 print mode, Codex 0.166.0 TUI/app-server, OpenCode 1.19.5 TUI; Claude/OpenCode advertise the native skill | Signed-in recognition and Claude TUI parity unmeasured. Claude TUI failed `SELF_SIGNED_CERT_IN_CHAIN` before model input. Stored receipts predate the model-drain fix and retain their original hashes |
-| [Codex approval routing](../crates/cockpit-codex/tests/approval_routing.rs), #436 | Account-free native 0.166.0 start/steer approval reaches the persistent TUI after delivery disconnects; owner cancels | Production pin 0.161.0 and signed-in routing unmeasured. Approved signed-in attempt stopped at custom-keymap preflight before a model turn |
+| [Codex capability revalidation](../crates/cockpit-codex/tests/fixtures/codex-0.166.0/README.md), #436 | Account-free native Linux 0.166.0 Resume, Events, Submit, Cancel and Outcome; historical schemas reused without relabelling captures | WSL2 native acceptance and signed-in model behavior are not established by Linux canned responses |
+| [Codex approval routing](../crates/cockpit-codex/tests/approval_routing.rs), #436 | Account-free native 0.166.0 start/steer approval reaches the persistent TUI after delivery disconnects; TUI cancels | Signed-in routing unmeasured. Approved signed-in attempt stopped at custom-keymap preflight before a model turn; subsequent default-keymap repair does not reclassify that receipt |
 | [OpenCode native events](../crates/cockpit-opencode/tests/fixtures/opencode-1.19.5/README.md), #417 | Recorded 1.19.5/Bun 1.4.4 tool, permission-rejection and aborted-turn events plus bridge reports; no account used | Persisted completion is a **known failure**, #516: completed → trailing busy → idle clears the stored outcome. Event replay is not proof of persisted completion |
 
 Other fixture payloads retain their recorded native or schema-derived provenance.
