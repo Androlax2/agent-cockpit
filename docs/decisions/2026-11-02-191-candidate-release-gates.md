@@ -100,6 +100,30 @@ It ran all eight inline angles, deduplication only, no verifier, and returned `[
 Six focused fixture/verdict tests and latency Clippy pass; formatting, docs and diff checks
 pass. The measured candidate CI result is still required.
 
+## Measured candidate result and remaining blocker
+
+Required CI run 41393259764 passed at `b7c4c12` on its first attempt: Linux recorded 2,219
+passed and 35 skipped tests; macOS, WSL2, docs and changes also passed. Release run
+41393259723 passed every archive, install, compatibility and same-candidate upgrade job.
+Native Intel macOS and WSL2 archive commands are measured, not inferred from the build.
+
+The corrected responsiveness test finished in 306.154 seconds and retained its
+[report artifact](https://github.com/Androlax2/agent-cockpit/actions/runs/41393259723/artifacts/13119610104).
+Actual packaged source revision: `1ae7643d6fa8b3090019dd14e724d15af8bc64a1` (the PR merge
+checkout). All 6,000 held and 300 fresh probes answered: held p95 8.9 ms, p99 12.7 ms,
+maximum 151.3 ms; fresh maximum 12.3 ms. The killed-daemon restart was ready after 251 ms,
+reattached every session and kept 619 launches unchanged.
+
+The overall gate **failed**, as intended: the restart load had one failed operation out of
+61 and session churn had one out of 1,228. Both reported processes still present after
+SIGKILL. The two item writers completed 46,712 and 46,760 operations without failures.
+The report cannot distinguish live survivors from zombie observation or a lifecycle race.
+[Alpha 1 blocker #537](https://github.com/Androlax2/agent-cockpit/issues/537) records the
+failure and owning process/session paths for Chief to route. No threshold, load-success
+requirement or ownership check is relaxed. PR #523 auto-merge stays off; a corrected
+candidate must pass bounded CI before acceptance. No unchanged rerun or local stress loop
+is used to replace this failed evidence.
+
 ## Sources
 
 - [GitHub hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
