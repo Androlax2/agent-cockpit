@@ -19,7 +19,7 @@ use crate::pane::{Pane, Shown, Typing};
 
 /// The help overlay's text: every key the basic TUI has.
 pub const HELP: &str = "\
-Documentation (publication pending)
+Documentation
   https://androlax2.github.io/agent-cockpit/latest/
 
 Sessions

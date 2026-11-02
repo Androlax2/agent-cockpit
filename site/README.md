@@ -2,7 +2,8 @@
 
 Issue #102. This static Astro/Fumadocs site renders canonical repository content,
 with the [approved r4 layout](../docs/design/102-documentation-layout-r4.md).
-Pages publication and reader onboarding acceptance remain pending.
+Published at [GitHub Pages](https://androlax2.github.io/agent-cockpit/).
+Public installation and reader onboarding acceptance remain open.
 
 ## Build and check
 
@@ -18,7 +19,7 @@ npm_config_cache="$PWD/site/.npm-cache" npm --prefix site ci --ignore-scripts --
 make site-ci
 ```
 
-`site-ci` builds only the CLI used for references (`--locked -j 2`), runs the Node
+`site-ci` builds only the CLI used for references (`--locked -j 2`), runs the
 Node tests, checks site/probe TypeScript and checks rendered HTML with the existing
 offline lychee command. It does not install missing tools. The Astro compiler
 checks `.astro` syntax; the full Astro language-service checker is not installed.
@@ -51,7 +52,7 @@ can be selected with `COCKPIT_DOCS_BINARY`. Version and base inputs are validate
 Search is a static, version-local index; no search service or Node server runs on
 Pages. Edit links target current source; revision links identify the viewed copy.
 
-## Publishing proposal
+## Publishing
 
 The separate `.github/workflows/docs.yml` builds every PR without deployment.
 Main builds `latest`; a successful tag-triggered Release run or a published-release
@@ -70,7 +71,8 @@ warrants it. A release predating this site cannot be silently skipped.
 
 Workflow pushes, Pages enablement, environment policy, deployment and repository
 website settings require their separate host review. No custom domain is set
-while #339 remains open. README and TUI links say publication is pending.
+while #339 remains open. [First-publication evidence](../docs/design/evidence/102-pages-publication.json)
+records the approved setup, successful deployment and anonymous HTTP checks.
 
 ## Browser verification
 
@@ -100,6 +102,6 @@ medium review from the independent final PR review.
 Earlier `make lint-js` failed on the unchanged OpenCode plugin's formatting,
 with existing warnings/information. Focused new-source checks are recorded in the
 acceptance evidence. No unrelated static-analysis failure is hidden or suppressed.
-Public installation, a volunteer site-only session walkthrough, deployed Pages,
-physical-device checks and exhaustive accessibility/performance conformance are
+Public installation, a volunteer site-only session walkthrough, released-version
+publication, physical-device checks and exhaustive accessibility/performance conformance are
 not established by the local build.

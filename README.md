@@ -1,6 +1,6 @@
 # Agent Cockpit
 
-[![Documentation: publication pending](https://img.shields.io/badge/docs-publication_pending-lightgrey)](https://androlax2.github.io/agent-cockpit/latest/)
+[![Documentation (latest)](https://img.shields.io/badge/docs-latest-lightgrey)](https://androlax2.github.io/agent-cockpit/latest/)
 
 Agent Cockpit runs your coding agents in terminal sessions and keeps their work, questions and approvals together.
 One installation belongs to one person, with a CLI and terminal UI backed by a per-user daemon and tmux.
