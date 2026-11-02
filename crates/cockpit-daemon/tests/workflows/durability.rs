@@ -86,3 +86,101 @@ async fn an_obsolete_completion_cannot_finish_a_replacement_attempt_on_the_same_
         WorkflowStepStatusView::Done
     );
 }
+
+#[tokio::test]
+async fn partial_and_mismatched_completion_identities_refuse_for_both_peers_without_mutation() {
+    let mut workflows = prepared("").await;
+    let run = workflows.begun_with_checkpoint("original attempt").await;
+    workflows.daemon = Some(workflows.home.start());
+    let before = workflows.packet(run).await;
+    for (step, attempt) in [
+        (Some(1), None),
+        (None, Some(1)),
+        (Some(2), Some(1)),
+        (Some(1), Some(2)),
+    ] {
+        for agent in [true, false] {
+            let command = Command::WorkflowComplete {
+                launch_token: agent.then(|| workflows.token.as_str().to_owned()),
+                workflow: run,
+                expected_step: step,
+                expected_attempt: attempt,
+                handoff: handoff("Result for a mismatched or incomplete identity"),
+                waive: Vec::new(),
+            };
+            let result = if agent {
+                workflows.as_agent(command).await
+            } else {
+                workflows.as_owner(command).await
+            };
+            assert_eq!(
+                refused(result).code,
+                ErrorCode::StaleRevision,
+                "agent={agent}, step={step:?}, attempt={attempt:?}"
+            );
+            assert_eq!(workflows.packet(run).await, before);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_completed_steps_identity_cannot_complete_the_next_step_but_owner_override_remains() {
+    let mut workflows = prepared("").await;
+    let run = workflows.begun_with_checkpoint("original attempt").await;
+    workflows.daemon = Some(workflows.home.start());
+    let completion = |step, attempt, waive| Command::WorkflowComplete {
+        launch_token: None,
+        workflow: run,
+        expected_step: step,
+        expected_attempt: attempt,
+        handoff: handoff("Owner reviewed this result"),
+        waive,
+    };
+    // A supplied, current owner identity is accepted, without waiving any requirement.
+    let completed = workflow(
+        workflows
+            .as_owner(completion(Some(1), Some(1), Vec::new()))
+            .await,
+    );
+    assert_eq!(completed.steps[0].status, WorkflowStepStatusView::Done);
+    assert_eq!(
+        completed.next,
+        WorkflowNextView::AwaitPlacement { position: 2 }
+    );
+    let before = workflows.packet(run).await;
+    // Waivers cannot make an obsolete binding current, even for the owner.
+    for agent in [true, false] {
+        let mut stale = completion(Some(1), Some(1), vec!["checks".into(), "review".into()]);
+        let result = if agent {
+            if let Command::WorkflowComplete {
+                launch_token,
+                waive,
+                ..
+            } = &mut stale
+            {
+                *launch_token = workflows.token();
+                waive.clear();
+            }
+            workflows.as_agent(stale).await
+        } else {
+            workflows.as_owner(stale).await
+        };
+        assert_eq!(refused(result).code, ErrorCode::StaleRevision);
+        assert_eq!(workflows.packet(run).await, before);
+    }
+    // Omitting both fields remains the owner's deliberate current-step override.
+    let completed = workflow(
+        workflows
+            .as_owner(completion(
+                None,
+                None,
+                vec!["checks".into(), "review".into()],
+            ))
+            .await,
+    );
+    assert_eq!(completed.steps[1].status, WorkflowStepStatusView::Done);
+    assert_eq!(
+        completed.next,
+        WorkflowNextView::AwaitPlacement { position: 3 }
+    );
+}
