@@ -563,7 +563,7 @@ impl App {
                     self.bug_form = None;
                 }
                 self.note(format!(
-                    "drafted bug report {id}: review and send it with `cockpit bug-report show {id}`",
+                    "drafted bug report {id}: review and send it with `torlek bug-report show {id}`",
                     id = report.id
                 ));
                 self.failure = None;

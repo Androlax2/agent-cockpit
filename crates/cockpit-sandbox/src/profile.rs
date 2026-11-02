@@ -37,6 +37,7 @@ pub const BASELINE_DENIED_WRITE: &[&str] = &[
     ".git/hooks",
     ".git/config",
     ".cockpit",
+    ".torlek",
     ".envrc",
     ".vscode/tasks.json",
     ".vscode/launch.json",

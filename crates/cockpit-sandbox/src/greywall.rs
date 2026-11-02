@@ -165,7 +165,7 @@ impl Greywall {
                 tracing::warn!("explicit development engine overrides; release pins are not enforced");
                 (GreywallPrograms { greywall, greyproxy }, true)
             }
-            _ => return Err("development-override-refused: both COCKPIT_DEV_GREYWALL and COCKPIT_DEV_GREYPROXY must be absolute paths, in profile dev of a debug build only".into()),
+            _ => return Err("development-override-refused: both TORLEK_DEV_GREYWALL and TORLEK_DEV_GREYPROXY must be absolute paths, in profile dev of a debug build only".into()),
         };
         Self::detect_inner(programs, platform, settings_dir, development)
     }

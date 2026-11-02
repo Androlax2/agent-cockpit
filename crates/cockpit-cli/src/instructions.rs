@@ -99,8 +99,8 @@ fn catalog() -> ExitCode {
                 outln!("{:width$}  {}", topic.name, topic.summary);
             }
             outln!(
-                "\nRead one with `cockpit docs TOPIC`; `cockpit --skill` prints them all. \
-                 Cockpit {version}, instructions {manifest}."
+                "\nRead one with `torlek docs TOPIC`; `torlek --skill` prints them all. \
+                 Torlek {version}, instructions {manifest}."
             );
             ExitCode::SUCCESS
         }

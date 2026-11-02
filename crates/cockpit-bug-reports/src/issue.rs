@@ -55,7 +55,7 @@ pub fn issue(report: &Report) -> Issue {
         .collect::<Vec<_>>()
         .join("\n\n");
     let marker = format!(
-        "\n\n[cut to fit the URL: `cockpit bug-report show {}` prints all of it]",
+        "\n\n[cut to fit the URL: `torlek bug-report show {}` prints all of it]",
         report.id.0
     );
     let mut is_truncated = false;
@@ -148,7 +148,7 @@ fn listing_cut(report: &Report) -> Option<String> {
     };
     let file_name = path.rsplit('/').next().unwrap_or(path);
     Some(format!(
-        "To attach: {file_name}\n\n[listing cut to fit the URL: `cockpit bug-report show {}` prints it]",
+        "To attach: {file_name}\n\n[listing cut to fit the URL: `torlek bug-report show {}` prints it]",
         report.id.0
     ))
 }

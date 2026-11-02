@@ -10,7 +10,7 @@ use crate::Error;
 use crate::queue::{QueueWriter, own_record};
 
 /// A dedicated variable, so Cockpit never inherits an unrelated `RUST_LOG`.
-pub const LOG_LEVEL_VAR: &str = "COCKPIT_LOG_LEVEL";
+pub const LOG_LEVEL_VAR: &str = "TORLEK_LOG_LEVEL";
 pub const DEFAULT_OVERRIDE: Duration = Duration::from_secs(5 * 60);
 pub const MAX_OVERRIDE: Duration = Duration::from_secs(15 * 60);
 

@@ -158,7 +158,7 @@ fn turn_outcome(
     }
 }
 
-/// The agent socket: `COCKPIT_AGENT_SOCKET` when the sandbox mounts it elsewhere, else its
+/// The agent socket: `TORLEK_AGENT_SOCKET` when the sandbox mounts it elsewhere, else its
 /// place in the daemon's socket directory.
 pub(crate) fn agent_socket() -> Result<PathBuf, ExitCode> {
     match std::env::var_os(AGENT_SOCKET_VARIABLE).filter(|path| !path.is_empty()) {
@@ -179,7 +179,7 @@ pub(crate) fn launch_token() -> Option<String> {
 /// The daemon's socket directory, or exit 1 when the environment cannot place it.
 pub(crate) fn socket_dir() -> Result<PathBuf, ExitCode> {
     locate_socket_dir().map_err(|error| {
-        eprintln!("cockpit: {error}");
+        eprintln!("torlek: {error}");
         ExitCode::FAILURE
     })
 }
@@ -216,25 +216,25 @@ pub(crate) fn exchange_within(
 pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> ExitCode {
     match outcome {
         Err(ClientError::Daemon(error)) => {
-            eprintln!("cockpit: refused: {}", error.message);
+            eprintln!("torlek: refused: {}", error.message);
             if let Some(unblock) = error.unblock {
                 let by = match unblock.by {
                     UnblockedBy::Owner => "the owner",
                     UnblockedBy::Agent => "you",
-                    UnblockedBy::Cockpit => "Cockpit",
+                    UnblockedBy::Cockpit => "Torlek",
                     UnblockedBy::Unknown(ref party) => party.as_str(),
                 };
-                eprintln!("cockpit: to unblock ({by}): {}", unblock.action);
+                eprintln!("torlek: to unblock ({by}): {}", unblock.action);
             }
         }
         Err(ClientError::Connect { source, .. }) => {
             eprintln!(
-                "cockpit: cannot reach the daemon at {}: {source}",
+                "torlek: cannot reach the daemon at {}: {source}",
                 socket.display()
             );
         }
-        Err(error) => eprintln!("cockpit: {error}"),
-        Ok(reply) => eprintln!("cockpit: the daemon answered with an unexpected {reply:?}"),
+        Err(error) => eprintln!("torlek: {error}"),
+        Ok(reply) => eprintln!("torlek: the daemon answered with an unexpected {reply:?}"),
     }
     ExitCode::FAILURE
 }

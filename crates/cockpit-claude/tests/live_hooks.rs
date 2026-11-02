@@ -24,7 +24,7 @@ fn recording_cockpit(dir: &Path) -> PathBuf {
     common::script(
         dir,
         "cockpit",
-        "printf '%s %s\\n' \"$COCKPIT_LAUNCH_TOKEN\" \"$*\" >> \"$(dirname \"$0\")/reports\"",
+        "printf '%s %s\\n' \"$TORLEK_LAUNCH_TOKEN\" \"$*\" >> \"$(dirname \"$0\")/reports\"",
     )
 }
 
@@ -33,7 +33,7 @@ fn recording_cockpit(dir: &Path) -> PathBuf {
 fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = Bridge {
-        hook_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-claude-hook")),
+        hook_program: PathBuf::from(env!("CARGO_BIN_EXE_torlek-claude-hook")),
         cockpit_program: recording_cockpit(dir.path()),
     };
     let claude = ClaudeCode::discover(&common::installed(), Some(bridge)).unwrap();
@@ -54,9 +54,9 @@ fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
         .args(["-p", "--model", "haiku", "--setting-sources", "project"])
         .args(&launch.arguments)
         .envs(launch.environment.iter().cloned())
-        .env_remove("COCKPIT_SESSION")
+        .env_remove("TORLEK_SESSION")
         .env_remove("CLAUDE_CODE_SESSION_ID")
-        .env("COCKPIT_LAUNCH_TOKEN", "live-launch-token")
+        .env("TORLEK_LAUNCH_TOKEN", "live-launch-token")
         .current_dir(dir.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())

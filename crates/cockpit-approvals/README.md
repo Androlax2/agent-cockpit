@@ -4,7 +4,7 @@ Owns the owner's decisions on what agents ask the host to do: each command bound
 exact digest, working directory, revision and expiry, consumed once by the run it
 authorizes, and the guides walked one step at a time.
 
-Report 17. An agent asks with `cockpit ask run` or `cockpit ask guide` on the agent channel;
+Report 17. An agent asks with `torlek ask run` or `torlek ask guide` on the agent channel;
 the daemon identifies the session (`cockpit-agent-channel`) and keeps its own copy of the
 request here, so nothing is re-read from the sandbox.
 

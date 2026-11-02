@@ -32,7 +32,7 @@ impl Home {
     }
 
     fn socket(&self, relative: &str) -> PathBuf {
-        let path = self.runtime_dir().join("cockpit-dev").join(relative);
+        let path = self.runtime_dir().join("torlek-dev").join(relative);
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -50,17 +50,17 @@ impl Home {
     }
 
     /// Runs `cockpit` with `arguments` and `stdin`, as an agent launched with `the-token`
-    /// that waits at most `COCKPIT_ASK_WAIT_SECONDS=2`.
+    /// that waits at most `TORLEK_ASK_WAIT_SECONDS=2`.
     async fn cockpit(&self, arguments: &[&str], stdin: &str) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .current_dir(self.dir.path())
             .env_clear()
             .env("HOME", self.dir.path())
             .env("XDG_RUNTIME_DIR", self.runtime_dir())
-            .env("COCKPIT_LAUNCH_TOKEN", "the-token")
-            .env("COCKPIT_ASK_WAIT_SECONDS", "2")
+            .env("TORLEK_LAUNCH_TOKEN", "the-token")
+            .env("TORLEK_ASK_WAIT_SECONDS", "2")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -255,7 +255,7 @@ async fn a_pending_request_names_the_command_that_waits_on() {
 
     assert_eq!(output.status.code(), Some(124));
     assert!(
-        text(&output.stderr).contains("cockpit ask run --wait 7"),
+        text(&output.stderr).contains("torlek ask run --wait 7"),
         "{}",
         text(&output.stderr)
     );
@@ -408,7 +408,7 @@ async fn the_owner_reads_a_request_with_its_warnings() {
         "{shown}"
     );
     assert!(shown.contains(&format!(
-        "approve: cockpit approval approve 7 --revision 1 --digest {}",
+        "approve: torlek approval approve 7 --revision 1 --digest {}",
         "d".repeat(64)
     )));
 }
@@ -585,7 +585,7 @@ async fn the_queue_folds_a_long_command_behind_an_explicit_more() {
 
     assert_eq!(
         text(&output.stdout),
-        "run\t7\tasking\ts1\techo 1 [more: 2 lines; cockpit approval show 7]\n"
+        "run\t7\tasking\ts1\techo 1 [more: 2 lines; torlek approval show 7]\n"
     );
 }
 
@@ -609,7 +609,7 @@ async fn ask_run_no_wait_files_the_request_and_returns_at_once_with_how_to_wait(
 
     assert_eq!(output.status.code(), Some(124), "{}", text(&output.stderr));
     assert!(
-        text(&output.stderr).contains("cockpit ask run --wait 7"),
+        text(&output.stderr).contains("torlek ask run --wait 7"),
         "{}",
         text(&output.stderr)
     );
@@ -653,7 +653,7 @@ async fn the_queue_counts_every_line_its_one_line_leaves_out() {
 
     assert_eq!(
         line,
-        "run\t7\tasking\ts1\techo 1 [more: 9 lines; cockpit approval show 7]\n"
+        "run\t7\tasking\ts1\techo 1 [more: 9 lines; torlek approval show 7]\n"
     );
 }
 
@@ -672,7 +672,7 @@ async fn the_queue_folds_one_long_line_by_characters() {
     assert_eq!(
         line,
         format!(
-            "run\t7\tasking\ts1\t{} [more: 100 characters; cockpit approval show 7]\n",
+            "run\t7\tasking\ts1\t{} [more: 100 characters; torlek approval show 7]\n",
             "x".repeat(600)
         )
     );

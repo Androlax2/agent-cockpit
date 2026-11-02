@@ -1,5 +1,5 @@
-//! Two Cockpits on one machine (#196, #134): each profile's daemon, sessions and agents keep
-//! to `cockpit-<name>` in every XDG base and to their own tmux server, through the real daemon
+//! Two Torlek profiles on one machine (#196, #134): each daemon, session and agent keeps
+//! to `torlek-<name>` in every XDG base and to its own tmux server, through the real daemon
 //! binary, a stand-in Claude Code and the real tmux.
 
 mod candidate;
@@ -85,10 +85,10 @@ async fn an_agent_of_a_profile_reports_to_its_daemon_and_leaves_the_legacy_layou
     assert_cockpit_built(&cockpit_program());
     let home = Home::new();
     let legacy = legacy_layout(&home);
-    // `next` is neither this build's profile nor the default, so the agent's `cockpit` (this
+    // `next` is neither this build's profile nor the default, so the agent's `torlek` (this
     // build) reaches the `next` daemon only through what its launch carries.
     let _next = home.start_profile("next");
-    let client = home.connect_to("cockpit-next").await;
+    let client = home.connect_to("torlek-next").await;
     let (root, _) = home.project(&client, REPORT_PROJECT).await;
     let session = new_session(&client, &root).await;
 
@@ -101,10 +101,10 @@ async fn an_agent_of_a_profile_reports_to_its_daemon_and_leaves_the_legacy_layou
             #[cfg(target_os = "linux")]
             "config/systemd",
             "run/cockpit",
-            "run/cockpit-next",
+            "run/torlek-next",
             "state/cockpit",
-            "state/cockpit-next",
-            "tmux server cockpit-next",
+            "state/torlek-next",
+            "tmux server torlek-next",
         ]
     );
     for (path, text) in legacy {
@@ -147,9 +147,9 @@ async fn the_default_profile_and_a_dev_build_run_side_by_side_each_with_its_own_
     let home = Home::new();
     // Fake managers prove profile routing here. They do not claim that two real
     // managed proxies can own the fixed ports at once.
-    let _installed = home.start_profile("cockpit");
+    let _installed = home.start_profile("torlek");
     let _dev = home.start();
-    let installed = home.connect_to("cockpit").await;
+    let installed = home.connect_to("torlek").await;
     let dev = home.connect().await;
 
     let (root, _) = home.project(&dev, REPORT_PROJECT).await;
@@ -171,11 +171,11 @@ async fn the_default_profile_and_a_dev_build_run_side_by_side_each_with_its_own_
         [
             #[cfg(target_os = "linux")]
             "config/systemd".to_owned(),
-            "run/cockpit".to_owned(),
+            "run/torlek".to_owned(),
             format!("run/{BUILD_PROFILE_DIR}"),
-            "state/cockpit".to_owned(),
+            "state/torlek".to_owned(),
             format!("state/{BUILD_PROFILE_DIR}"),
-            "tmux server cockpit".to_owned(),
+            "tmux server torlek".to_owned(),
             format!("tmux server {BUILD_PROFILE_DIR}"),
         ]
     );

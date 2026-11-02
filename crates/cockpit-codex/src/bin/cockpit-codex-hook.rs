@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(reason) => {
-            eprintln!("cockpit-codex-hook: {reason}");
+            eprintln!("torlek-codex-hook: {reason}");
             ExitCode::FAILURE
         }
     }
@@ -32,7 +32,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let mut arguments = std::env::args_os().skip(1);
     let (Some(cockpit), None) = (arguments.next(), arguments.next()) else {
-        return Err("usage: cockpit-codex-hook <cockpit program> | --version".to_owned());
+        return Err("usage: torlek-codex-hook <torlek program> | --version".to_owned());
     };
     if cockpit == cockpit_codex::HOOK_VERSION_FLAG {
         println!("{}", cockpit_codex::hook_version_line());
@@ -88,7 +88,7 @@ fn read_brief(cockpit: &OsStr) -> Result<String, String> {
         .output()
         .map_err(|error| format!("cannot run {}: {error}", cockpit.to_string_lossy()))?;
     if !output.status.success() {
-        return Err(format!("`cockpit brief` failed ({})", output.status));
+        return Err(format!("`torlek brief` failed ({})", output.status));
     }
-    String::from_utf8(output.stdout).map_err(|_| "`cockpit brief` printed no UTF-8".to_owned())
+    String::from_utf8(output.stdout).map_err(|_| "`torlek brief` printed no UTF-8".to_owned())
 }

@@ -207,7 +207,7 @@ fn explanation_shows_the_daemons_reason_limits_action_and_next_evaluation() {
     assert_eq!(app.key(Key::Char('?'), now).send, vec![command.clone()]);
     let explanation = serde_json::from_value(serde_json::json!({
         "item":7, "project":"app", "title":"Fix login", "reason":"no-room", "why":"Needs more memory",
-        "limited_by":"shared budget", "sessions":[], "action":"Wait for capacity", "action_by":"cockpit",
+        "limited_by":"shared budget", "sessions":[], "action":"Wait for capacity", "action_by":"torlek",
         "priority":3, "aging_boost":1, "demand":{"cpu_millis":500,"memory_mib":512}, "headroom_percent":20,
         "evaluated_at":100, "next_evaluation_at":120
     })).unwrap();

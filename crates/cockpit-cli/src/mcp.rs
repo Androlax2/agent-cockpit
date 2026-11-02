@@ -16,7 +16,7 @@ use crate::todo::socket;
 
 /// Newest first; a client asking for another gets the newest.
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const RESOURCE_PREFIX: &str = "cockpit://instructions/";
+const RESOURCE_PREFIX: &str = "torlek://instructions/";
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -38,7 +38,7 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         let line = match line {
             Ok(line) => line,
             Err(error) => {
-                eprintln!("cockpit: cannot read the MCP client: {error}");
+                eprintln!("torlek: cannot read the MCP client: {error}");
                 return Ok(ExitCode::FAILURE);
             }
         };
@@ -95,9 +95,9 @@ fn initialize(params: &Value) -> Value {
     json!({
         "protocolVersion": version,
         "capabilities": {"resources": {}, "tools": {}},
-        "serverInfo": {"name": "cockpit", "version": env!("CARGO_PKG_VERSION")},
-        "instructions": "Cockpit's manual for agents. Read cockpit://instructions/overview first, \
-                         or call cockpit_brief from a Cockpit session."
+        "serverInfo": {"name": "torlek", "version": env!("CARGO_PKG_VERSION")},
+        "instructions": "Torlek's manual for agents. Read torlek://instructions/overview first, \
+                         or call torlek_brief from a Torlek session."
     })
 }
 
@@ -132,8 +132,8 @@ fn read_resource(params: &Value) -> Answered {
 fn tools() -> Value {
     json!({"tools": [
         {
-            "name": "cockpit_docs",
-            "description": "Cockpit's manual for agents: one topic (overview, workflow, checks, \
+            "name": "torlek_docs",
+            "description": "Torlek's manual for agents: one topic (overview, workflow, checks, \
                             approvals, coordination, sandbox), or all of them without a topic.",
             "inputSchema": {
                 "type": "object",
@@ -141,9 +141,9 @@ fn tools() -> Value {
             },
         },
         {
-            "name": "cockpit_brief",
-            "description": "This Cockpit session's launch brief: its rules, workspace, task step \
-                            and grants. Only from a session Cockpit launched.",
+            "name": "torlek_brief",
+            "description": "This Torlek session's launch brief: its rules, workspace, task step \
+                            and grants. Only from a session Torlek launched.",
             "inputSchema": {"type": "object", "properties": {}},
         },
     ]})
@@ -156,14 +156,14 @@ fn call_tool(params: &Value) -> Answered {
         .and_then(Value::as_str)
         .ok_or((INVALID_PARAMS, "tools/call needs a name".to_owned()))?;
     let outcome = match name {
-        "cockpit_docs" => {
+        "torlek_docs" => {
             let topic = params
                 .pointer("/arguments/topic")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             instructions(topic)
         }
-        "cockpit_brief" => brief(),
+        "torlek_brief" => brief(),
         _ => return Err((INVALID_PARAMS, format!("no tool {name}"))),
     };
     let (text, is_error) = match outcome {

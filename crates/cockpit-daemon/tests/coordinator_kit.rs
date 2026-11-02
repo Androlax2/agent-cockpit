@@ -139,7 +139,7 @@ async fn without_its_grant_each_coordinator_verb_is_refused_naming_the_grant() {
             "{arguments:?}: {printed}"
         );
         assert!(
-            printed.contains(&format!("cockpit session grant {coordinator} {permission}")),
+            printed.contains(&format!("torlek session grant {coordinator} {permission}")),
             "{arguments:?}: {printed}"
         );
     }
@@ -183,7 +183,7 @@ async fn a_coordinator_sees_a_question_messages_the_worker_and_starts_one_the_ow
     assert!(messaged.ends_with("exit=0\n"), "{messaged}");
     let inbox = pair.worker_root.join("inbox.log");
     let expected = format!(
-        "[Cockpit] Message from session {} (a collaborator, not the owner): Base it on main.",
+        "[Torlek] Message from session {} (a collaborator, not the owner): Base it on main.",
         pair.coordinator.id
     );
     wait_until("the worker reads the message", || async {
@@ -207,7 +207,7 @@ async fn a_coordinator_sees_a_question_messages_the_worker_and_starts_one_the_ow
     assert_eq!(
         request.command,
         format!(
-            "cockpit session new '{}' --agent 'claude' --prompt 'Review the fix'",
+            "torlek session new '{}' --agent 'claude' --prompt 'Review the fix'",
             new_root.display()
         )
     );

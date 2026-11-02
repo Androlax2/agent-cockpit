@@ -249,7 +249,7 @@ fn opening_applies_the_config_to_a_running_server() {
                 "-f",
                 config.as_str(),
                 "-L",
-                "cockpit",
+                "torlek",
                 "display-message",
                 "-p",
                 "#{version}",
@@ -258,7 +258,7 @@ fn opening_applies_the_config_to_a_running_server() {
                 "-f",
                 config.as_str(),
                 "-L",
-                "cockpit",
+                "torlek",
                 "source-file",
                 config.as_str()
             ]
@@ -271,7 +271,7 @@ fn launch(name: &str, working_dir: &Path) -> SessionLaunch {
         name: SessionName::new(name).expect("a valid name"),
         working_dir: working_dir.to_path_buf(),
         command: vec!["claude".into(), "--resume".into()],
-        environment: vec![("COCKPIT_SESSION".to_string(), "s1".into())],
+        environment: vec![("TORLEK_SESSION".to_string(), "s1".into())],
         columns: 120,
         rows: 40,
     }
@@ -289,7 +289,7 @@ fn every_command_uses_the_private_cockpit_server_and_its_config() {
     let calls = fake.calls();
     let config = fake.config_path().display().to_string();
     assert_eq!(calls.len(), 1, "{calls:?}");
-    assert_eq!(calls[0][..4], ["-f", config.as_str(), "-L", "cockpit"]);
+    assert_eq!(calls[0][..4], ["-f", config.as_str(), "-L", "torlek"]);
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn a_new_session_runs_its_command_without_tmux_variables_with_its_environment() 
     );
     assert!(
         call.windows(2)
-            .any(|pair| pair == ["-e", "COCKPIT_SESSION=s1"]),
+            .any(|pair| pair == ["-e", "TORLEK_SESSION=s1"]),
         "{call:?}"
     );
     let working_dir = fake.directory.path().display().to_string();
@@ -423,7 +423,7 @@ fn the_attach_command_names_the_private_server_and_the_exact_session() {
         [
             tmux.as_os_str(),
             "-L".as_ref(),
-            "cockpit".as_ref(),
+            "torlek".as_ref(),
             "attach-session".as_ref(),
             "-t".as_ref(),
             "=cockpit:".as_ref(),

@@ -56,7 +56,7 @@ fn with_the_bridge_a_launch_runs_the_session_launcher_on_the_sessions_socket() {
     let words = common::words(&command.arguments);
 
     assert_eq!(command.program, common::bridge().session_program);
-    assert_eq!(values_of(&words, "--cockpit"), ["/opt/cockpit/bin/cockpit"]);
+    assert_eq!(values_of(&words, "--torlek"), ["/opt/cockpit/bin/cockpit"]);
     assert_eq!(values_of(&words, "--codex"), ["/usr/bin/codex"]);
     assert_eq!(values_of(&words, "--socket"), [SOCKET]);
 }
@@ -84,10 +84,10 @@ fn with_the_bridge_a_launch_registers_cockpits_mcp_server() {
         configs[configs.len() - 3..configs.len() - 1],
         [
             format!(
-                "mcp_servers.cockpit.command=\"{}\"",
+                "mcp_servers.torlek.command=\"{}\"",
                 common::bridge().cockpit_program.display()
             ),
-            "mcp_servers.cockpit.args=[\"mcp\"]".to_owned(),
+            "mcp_servers.torlek.args=[\"mcp\"]".to_owned(),
         ]
     );
 }
@@ -102,12 +102,13 @@ fn cockpits_mcp_server_receives_the_launch_token_and_the_agent_socket() {
     let configs = values_of(&common::words(&command.arguments), "--config");
     let passed = configs
         .last()
-        .and_then(|config| config.strip_prefix("mcp_servers.cockpit.env_vars="))
+        .and_then(|config| config.strip_prefix("mcp_servers.torlek.env_vars="))
         .unwrap_or_else(|| panic!("no env_vars for cockpit's MCP server: {configs:?}"));
 
     for variable in [
-        "\"COCKPIT_LAUNCH_TOKEN\"",
-        "\"COCKPIT_AGENT_SOCKET\"",
+        "\"TORLEK_LAUNCH_TOKEN\"",
+        "\"TORLEK_AGENT_SOCKET\"",
+        "\"TORLEK_PROFILE\"",
         "\"XDG_RUNTIME_DIR\"",
     ] {
         assert!(

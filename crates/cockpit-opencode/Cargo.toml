@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "cockpit-opencode-bridge"
+name = "torlek-opencode-bridge"
 path = "src/bin/cockpit-opencode-bridge.rs"
 
 [dependencies]

@@ -225,7 +225,7 @@ class EvidenceTests(unittest.TestCase):
                     "ANTHROPIC_API_KEY": "must-not-travel",
                     "GH_TOKEN": "must-not-travel",
                     "HOME": "/live-home",
-                    "COCKPIT_SESSION": "live-session",
+                    "TORLEK_SESSION": "live-session",
                     "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
                     "HTTPS_PROXY": "http://ci-route:1234",
                     "RUNNER_TEMP": str(root),
@@ -235,7 +235,7 @@ class EvidenceTests(unittest.TestCase):
             self.assertTrue(env["PATH"].startswith(str(root / "bin") + ":"))
             self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/run/user/1000/bus")
             self.assertEqual(env["HTTPS_PROXY"], "http://ci-route:1234")
-            self.assertFalse({"ANTHROPIC_API_KEY", "GH_TOKEN", "COCKPIT_SESSION"} & env.keys())
+            self.assertFalse({"ANTHROPIC_API_KEY", "GH_TOKEN", "TORLEK_SESSION"} & env.keys())
 
 
 class AgentProbeTests(unittest.TestCase):
@@ -272,7 +272,7 @@ assert sys.argv[1:3] == ["--profile", "enforcement"]
 args = sys.argv[3:]
 with (home / "commands.jsonl").open("a") as out:
     out.write(json.dumps(args) + "\n")
-state = home / "state/cockpit-enforcement"
+state = home / "state/torlek-enforcement"
 if args[:2] == ["sandbox", "install"]:
     (state / "greyproxy").mkdir(parents=True)
     for name in ["owned.json", "ca-key.pem", "api-token"]:
@@ -302,13 +302,13 @@ elif args[:2] == ["session", "sandbox"]:
 FAKE_DAEMON = r"""
 import os, socket, time, tomllib
 from pathlib import Path
-config = Path(os.environ["XDG_CONFIG_HOME"]) / "cockpit-enforcement/config.toml"
+config = Path(os.environ["XDG_CONFIG_HOME"]) / "torlek-enforcement/config.toml"
 assert tomllib.loads(config.read_text())["agents"]["desktop_session"] == "withheld"
 runtime = Path(os.environ["XDG_RUNTIME_DIR"])
-folder = runtime / "cockpit-enforcement"
+folder = runtime / "torlek-enforcement"
 folder.mkdir()
 (folder / "daemon.sock").touch()
-tmux = runtime / ("tmux-" + str(os.getuid())) / "cockpit-enforcement"
+tmux = runtime / ("tmux-" + str(os.getuid())) / "torlek-enforcement"
 tmux.parent.mkdir()
 sock = socket.socket(socket.AF_UNIX)
 sock.bind(str(tmux))
@@ -358,7 +358,7 @@ class RunnerEntryTests(unittest.TestCase):
             ]
             for path in [home, runtime, output, programs]:
                 path.mkdir()
-            for name, source in [("cockpit", FAKE_CLI), ("cockpit-daemon", FAKE_DAEMON)]:
+            for name, source in [("torlek", FAKE_CLI), ("torlek-daemon", FAKE_DAEMON)]:
                 path = programs / name
                 path.write_text(f"#!{sys.executable}\n{source}")
                 path.chmod(0o755)
@@ -370,7 +370,7 @@ class RunnerEntryTests(unittest.TestCase):
                 ("curl", "#!/bin/sh\nprintf 200\n"),
                 (
                     "tmux",
-                    f"#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\np=Path(sys.argv[2])\nassert p == Path(os.environ['XDG_RUNTIME_DIR']) / ('tmux-' + str(os.getuid())) / 'cockpit-enforcement'\np.unlink()\n",
+                    f"#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\np=Path(sys.argv[2])\nassert p == Path(os.environ['XDG_RUNTIME_DIR']) / ('tmux-' + str(os.getuid())) / 'torlek-enforcement'\np.unlink()\n",
                 ),
             ]:
                 path = runner.bin / name
@@ -398,7 +398,7 @@ class RunnerEntryTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(runner.daemon.poll())
                 self.assertFalse(
-                    (runtime / ("tmux-" + str(os.getuid())) / "cockpit-enforcement").exists()
+                    (runtime / ("tmux-" + str(os.getuid())) / "torlek-enforcement").exists()
                 )
 
 

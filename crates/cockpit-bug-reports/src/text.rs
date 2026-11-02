@@ -83,7 +83,7 @@ pub(crate) fn derived_title(description: &str) -> String {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .unwrap_or("Cockpit bug");
+        .unwrap_or("Torlek bug");
     let mut title: String = first_line
         .chars()
         .filter(|character| !character.is_control())

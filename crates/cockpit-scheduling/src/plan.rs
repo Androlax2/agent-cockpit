@@ -199,7 +199,7 @@ fn decide(
             Reason::NoSession,
             format!("no session works in project {}", unit.project),
             format!(
-                "start a session in project {}: `cockpit session new DIR`",
+                "start a session in project {}: `torlek session new DIR`",
                 unit.project
             ),
             ActionBy::Owner,
@@ -271,7 +271,7 @@ fn held(
     let (reason, action, action_by, limited_by) = match hold {
         Hold::QueuePaused => (
             Reason::QueuePaused,
-            "resume the queue: `cockpit resources resume-queue`".to_owned(),
+            "resume the queue: `torlek resources resume-queue`".to_owned(),
             ActionBy::Owner,
             None,
         ),

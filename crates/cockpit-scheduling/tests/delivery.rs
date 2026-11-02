@@ -56,8 +56,8 @@ async fn a_placed_item_is_enqueued_for_its_session_with_the_line_that_gives_it_t
     assert_eq!(
         envelope.payload,
         format!(
-            "Cockpit gives you item {id}: read it with `cockpit todo show {id}`, do it, then \
-             finish it with `cockpit todo done {id} --summary '<what you did>'`.",
+            "Torlek gives you item {id}: read it with `torlek todo show {id}`, do it, then \
+             finish it with `torlek todo done {id} --summary '<what you did>'`.",
             id = item.id.0
         )
     );
@@ -77,8 +77,8 @@ async fn a_placed_step_is_given_as_its_task_packet() {
     assert_eq!(
         envelope_of(&fixture, placement).await.payload,
         format!(
-            "Cockpit gives you step `investigate` of workflow run {run} (item {item}): read its \
-             task packet with `cockpit workflow packet {run}` and hand the step off as it says.",
+            "Torlek gives you step `investigate` of workflow run {run} (item {item}): read its \
+             task packet with `torlek workflow packet {run}` and hand the step off as it says.",
             run = run.id.0,
             item = item.id.0
         )

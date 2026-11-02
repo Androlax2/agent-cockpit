@@ -43,9 +43,9 @@ fn run_plugin(
         .args([&plugin, &events_file, &log])
         .arg(server_port)
         .arg(expected.to_string())
-        .env_remove("COCKPIT_OPENCODE_BRIDGE")
-        .env_remove("COCKPIT_OPENCODE_COCKPIT")
-        .env_remove("COCKPIT_OPENCODE_PORT")
+        .env_remove("TORLEK_OPENCODE_BRIDGE")
+        .env_remove("TORLEK_OPENCODE_COCKPIT")
+        .env_remove("TORLEK_OPENCODE_PORT")
         .env("BRIDGE_LOG", &log)
         .envs(environment.iter().map(|(name, value)| {
             let value = value.replace("{dir}", &dir.path().display().to_string());
@@ -98,9 +98,9 @@ await new Promise((r) => setTimeout(r, 400))
 
 fn launched() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("COCKPIT_OPENCODE_BRIDGE", "{dir}/cockpit-opencode-bridge"),
-        ("COCKPIT_OPENCODE_COCKPIT", "/opt/cockpit/bin/cockpit"),
-        ("COCKPIT_OPENCODE_PORT", PORT),
+        ("TORLEK_OPENCODE_BRIDGE", "{dir}/cockpit-opencode-bridge"),
+        ("TORLEK_OPENCODE_COCKPIT", "/opt/cockpit/bin/cockpit"),
+        ("TORLEK_OPENCODE_PORT", PORT),
     ]
 }
 
@@ -214,7 +214,7 @@ fn without_its_launch_variables_it_subscribes_to_nothing() {
 fn a_bridge_that_cannot_run_never_stops_the_plugin() {
     let mut environment = launched();
     environment[0] = (
-        "COCKPIT_OPENCODE_BRIDGE",
+        "TORLEK_OPENCODE_BRIDGE",
         "/nonexistent/cockpit-opencode-bridge",
     );
     let events = fixtures(&["session-status-busy", "session-status-idle"]);
@@ -256,7 +256,7 @@ fn system_prompts(brief_body: &str, apart_ms: u64) -> (Vec<String>, usize) {
         "cockpit",
         &format!(
             "[ \"$1\" = brief ] || exit 9\n\
-             printf '%s' \"$COCKPIT_LAUNCH_TOKEN\" >> \"$(dirname \"$0\")/runs\"\n\
+             printf '%s' \"$TORLEK_LAUNCH_TOKEN\" >> \"$(dirname \"$0\")/runs\"\n\
              echo >> \"$(dirname \"$0\")/runs\"\n{brief_body}"
         ),
     );
@@ -268,12 +268,12 @@ fn system_prompts(brief_body: &str, apart_ms: u64) -> (Vec<String>, usize) {
         .arg(PORT)
         .arg(apart_ms.to_string())
         .env(
-            "COCKPIT_OPENCODE_BRIDGE",
+            "TORLEK_OPENCODE_BRIDGE",
             dir.path().join("cockpit-opencode-bridge"),
         )
-        .env("COCKPIT_OPENCODE_COCKPIT", dir.path().join("cockpit"))
-        .env("COCKPIT_OPENCODE_PORT", PORT)
-        .env("COCKPIT_LAUNCH_TOKEN", "token-1")
+        .env("TORLEK_OPENCODE_COCKPIT", dir.path().join("cockpit"))
+        .env("TORLEK_OPENCODE_PORT", PORT)
+        .env("TORLEK_LAUNCH_TOKEN", "token-1")
         .output()
         .unwrap_or_else(|error| panic!("the plugin tests need Node.js on PATH: {error}"));
     assert!(output.status.success(), "{output:?}");

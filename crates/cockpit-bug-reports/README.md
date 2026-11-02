@@ -12,15 +12,15 @@ happens in the owner's browser or with the owner's own `gh` login, from the CLI.
 `cockpit-workspace-rules/tests/crate_graph.rs`). The daemon passes in what it knows about
 itself (version, platform, providers) and writes the support bundle through
 `cockpit-diagnostics`, then records it here.
-**Used by:** `cockpit-daemon`, which serves `cockpit agent report-bug` on the agent socket,
-`cockpit bug-report` on the host-only socket, and opens drafts for the faults it sees.
+**Used by:** `cockpit-daemon`, which serves `torlek agent report-bug` on the agent socket,
+`torlek bug-report` on the host-only socket, and opens drafts for the faults it sees.
 
 ## Sources and the daily limit
 
 | Source | Opens | Limit |
 | --- | --- | --- |
-| The owner (`cockpit bug-report new`, the TUI) | a new draft every time | none |
-| A session's own report (`cockpit agent report-bug`) | one draft per fingerprint per UTC day | also 5 new drafts per session per day |
+| The owner (`torlek bug-report new`, the TUI) | a new draft every time | none |
+| A session's own report (`torlek agent report-bug`) | one draft per fingerprint per UTC day | also 5 new drafts per session per day |
 | A session the owner asked (`--requested-by-owner`) | a new draft every time | 5 new drafts per session per day |
 | The daemon (panic, stalled lane, crash at restart, repeated internal error) | one draft per fingerprint per UTC day | none beyond it |
 
@@ -40,6 +40,6 @@ issue with the same fingerprint only when it is specific (not `other` with no co
 
 `issue()` renders the title, the body `gh issue create` files, and the prefilled URL of the
 `bug-from-cockpit.yml` template, whose field ids are `FIELDS`. The URL is cut to 8000 bytes,
-the description and steps shrinking first, with a pointer to `cockpit bug-report show`. The
+the description and steps shrinking first, with a pointer to `torlek bug-report show`. The
 issue names the bundle's file name and contents, never the owner's path; the owner attaches
 the file.

@@ -1,6 +1,6 @@
-//! `cockpit-daemon`: this user's one Cockpit daemon per profile (report 03, #196).
+//! `torlek-daemon`: this user's one Torlek daemon per profile (report 03, #196).
 //! `--foreground` also prints the log to stderr; `--profile NAME` selects the profile, as
-//! `$COCKPIT_PROFILE` does. It prints `ready <socket>` on stdout once it accepts requests.
+//! `$TORLEK_PROFILE` does. It prints `ready <socket>` on stdout once it accepts requests.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -9,7 +9,7 @@ use cockpit_daemon::{
     RUN_LEADER_FLAG, SESSION_TICK, Serve, StartError, own_profile, own_program, serve,
 };
 
-const USAGE: &str = "usage: cockpit-daemon [--foreground] [--profile NAME]";
+const USAGE: &str = "usage: torlek-daemon [--foreground] [--profile NAME]";
 
 fn main() -> ExitCode {
     let mut raw_arguments = std::env::args_os().skip(1);
@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     match run(arguments) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("cockpit-daemon: {error}");
+            eprintln!("torlek-daemon: {error}");
             ExitCode::FAILURE
         }
     }

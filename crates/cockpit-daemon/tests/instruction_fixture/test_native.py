@@ -146,7 +146,7 @@ class Safety(unittest.TestCase):
                     "HTTP_PROXY": "https://owner-proxy.invalid",
                     "CODEX_HOME": "/owner/config",
                     "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "5",
-                    "COCKPIT_SESSION": "fixture-session",
+                    "TORLEK_SESSION": "fixture-session",
                 },
                 clear=True,
             ),
@@ -155,7 +155,7 @@ class Safety(unittest.TestCase):
             self.assertNotIn("owner-secret", str(env))
             self.assertNotIn("HTTP_PROXY", env)
             self.assertNotIn("CLAUDE_CODE_API_KEY_HELPER_TTL_MS", env)
-            self.assertEqual(env["COCKPIT_SESSION"], "fixture-session")
+            self.assertEqual(env["TORLEK_SESSION"], "fixture-session")
             self.assertEqual(env["CODEX_HOME"], str(Path(directory) / ".codex"))
 
     def test_a_timed_out_wrapper_stops_its_descendant_and_clears_its_marker(self):
@@ -278,10 +278,10 @@ class Evidence(unittest.TestCase):
             "tools": [
                 {
                     "type": "namespace",
-                    "name": "mcp__cockpit",
+                    "name": "mcp__torlek",
                     "tools": [
-                        {"type": "function", "name": "cockpit_brief"},
-                        {"type": "function", "name": "cockpit_docs"},
+                        {"type": "function", "name": "torlek_brief"},
+                        {"type": "function", "name": "torlek_docs"},
                     ],
                 }
             ],
@@ -294,7 +294,7 @@ class Evidence(unittest.TestCase):
         config = {"provider": "opencode", "prompt": "Reply with only OK."}
         request = {
             "messages": [{"role": "user", "content": config["prompt"]}],
-            "tools": [{"function": {"name": "read", "description": "cockpit_brief cockpit_docs"}}],
+            "tools": [{"function": {"name": "read", "description": "torlek_brief torlek_docs"}}],
         }
         self.assertFalse(evidence(config, request, 1)["mcp"])
 
@@ -314,7 +314,7 @@ class Evidence(unittest.TestCase):
         request = {
             "input": [
                 {"role": "user", "content": "Reply with only OK."},
-                {"role": "user", "content": "# Cockpit launch brief"},
+                {"role": "user", "content": "# Torlek launch brief"},
             ],
             "tools": [{"name": "echo", "description": SKILL_DESCRIPTION}],
         }
@@ -329,11 +329,11 @@ class Evidence(unittest.TestCase):
     def test_claude_deferred_tools_require_native_system_context_and_tool_search(self):
         config = {"provider": "claude", "prompt": "Reply with only OK."}
         context = (
-            "SessionStart hook additional context: # Cockpit launch brief\n" + SKILL_DESCRIPTION
+            "SessionStart hook additional context: # Torlek launch brief\n" + SKILL_DESCRIPTION
         )
-        context += "\nmcp__cockpit__cockpit_brief\nmcp__cockpit__cockpit_docs"
+        context += "\nmcp__torlek__torlek_brief\nmcp__torlek__torlek_docs"
         context += (
-            "\nThe following skills are available for use with the Skill tool:\n- cockpit: "
+            "\nThe following skills are available for use with the Skill tool:\n- torlek: "
             + SKILL_DESCRIPTION
         )
         request = {

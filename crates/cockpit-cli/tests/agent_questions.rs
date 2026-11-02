@@ -26,7 +26,7 @@ impl Home {
 
     /// Where the daemon puts a socket, `relative` to its socket directory.
     fn socket(&self, relative: &str) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit-dev").join(relative);
+        let path = self.dir.path().join("run/torlek-dev").join(relative);
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -37,7 +37,7 @@ impl Home {
 
     /// Runs `cockpit` with `arguments` in this home, off the test's runtime threads.
     async fn cockpit(&self, arguments: &[&str]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()

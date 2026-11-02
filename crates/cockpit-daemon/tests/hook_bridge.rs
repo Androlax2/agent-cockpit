@@ -11,10 +11,10 @@ use real_daemon::{Home, cockpit_program};
 
 /// The bridge programs the release ships beside the daemon.
 const BRIDGE_PROGRAMS: [&str; 4] = [
-    "cockpit-claude-hook",
-    "cockpit-codex-hook",
-    "cockpit-codex-session",
-    "cockpit-opencode-bridge",
+    "torlek-claude-hook",
+    "torlek-codex-hook",
+    "torlek-codex-session",
+    "torlek-opencode-bridge",
 ];
 
 #[tokio::test(flavor = "multi_thread")]

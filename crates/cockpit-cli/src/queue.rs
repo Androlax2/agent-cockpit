@@ -121,9 +121,9 @@ fn dispatched_text(placed: &[QueuePlacementView], ended: &[i64], waiting: u64) -
     }
     match waiting {
         0 => text.push_str("nothing waits\n"),
-        1 => text.push_str("1 item waits: `cockpit queue explain` says why\n"),
+        1 => text.push_str("1 item waits: `torlek queue explain` says why\n"),
         count => text.push_str(&format!(
-            "{count} items wait: `cockpit queue explain` says why\n"
+            "{count} items wait: `torlek queue explain` says why\n"
         )),
     }
     text

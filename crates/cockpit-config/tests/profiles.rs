@@ -15,7 +15,7 @@ fn resolved(choice: ProfileChoice<'_>, build: Build) -> (String, Source) {
 #[test]
 fn without_a_choice_a_release_runs_the_default_profile_and_any_other_build_runs_dev() {
     for (build, expected) in [
-        (Build::Release, ("cockpit", Source::ProductDefault)),
+        (Build::Release, ("torlek", Source::ProductDefault)),
         (
             Build::Development,
             ("dev", Source::DevelopmentBuild { ignored: None }),
@@ -33,7 +33,7 @@ fn the_flag_beats_the_command_name_which_beats_the_inherited_variable() {
             ProfileChoice {
                 flag: Some("review"),
                 variable: Some(OsStr::new("next")),
-                command_name: Some(OsStr::new("/opt/bin/cockpit-other")),
+                command_name: Some(OsStr::new("/opt/bin/torlek-other")),
             },
             "review",
             Source::Flag("--profile"),
@@ -41,8 +41,8 @@ fn the_flag_beats_the_command_name_which_beats_the_inherited_variable() {
         (
             ProfileChoice {
                 flag: None,
-                variable: Some(OsStr::new("cockpit")),
-                command_name: Some(OsStr::new("/opt/bin/cockpit-next")),
+                variable: Some(OsStr::new("torlek")),
+                command_name: Some(OsStr::new("/opt/bin/torlek-next")),
             },
             "next",
             Source::CommandName,
@@ -51,10 +51,10 @@ fn the_flag_beats_the_command_name_which_beats_the_inherited_variable() {
             ProfileChoice {
                 flag: None,
                 variable: Some(OsStr::new("next")),
-                command_name: Some(OsStr::new("/opt/bin/cockpit")),
+                command_name: Some(OsStr::new("/opt/bin/torlek")),
             },
             "next",
-            Source::Environment("COCKPIT_PROFILE"),
+            Source::Environment("TORLEK_PROFILE"),
         ),
     ];
     for build in [Build::Release, Build::Development] {
@@ -71,7 +71,7 @@ fn the_flag_beats_the_command_name_which_beats_the_inherited_variable() {
 #[test]
 fn a_development_build_reaches_the_default_profile_only_through_the_flag() {
     let inherited = ProfileChoice {
-        variable: Some(OsStr::new("cockpit")),
+        variable: Some(OsStr::new("torlek")),
         ..ProfileChoice::default()
     };
     assert_eq!(
@@ -79,31 +79,32 @@ fn a_development_build_reaches_the_default_profile_only_through_the_flag() {
         (
             "dev".to_owned(),
             Source::DevelopmentBuild {
-                ignored: Some("COCKPIT_PROFILE")
+                ignored: Some("TORLEK_PROFILE")
             }
         )
     );
     let explicit = ProfileChoice {
-        flag: Some("cockpit"),
+        flag: Some("torlek"),
         ..inherited
     };
     assert_eq!(
         resolved(explicit, Build::Development),
-        ("cockpit".to_owned(), Source::Flag("--profile"))
+        ("torlek".to_owned(), Source::Flag("--profile"))
     );
     assert_eq!(
         resolved(inherited, Build::Release),
-        ("cockpit".to_owned(), Source::Environment("COCKPIT_PROFILE"))
+        ("torlek".to_owned(), Source::Environment("TORLEK_PROFILE"))
     );
 }
 
 #[test]
 fn a_command_name_that_names_no_profile_selects_none() {
     for command_name in [
-        "cockpit",
-        "/usr/bin/cockpit",
-        "cockpit-tui",
-        "cockpit-",
+        "torlek",
+        "/usr/bin/torlek",
+        "torlek-tui",
+        "torlek-",
+        "cockpit-next",
         "other",
     ] {
         let choice = ProfileChoice {
@@ -112,7 +113,7 @@ fn a_command_name_that_names_no_profile_selects_none() {
         };
         assert_eq!(
             resolved(choice, Build::Release),
-            ("cockpit".to_owned(), Source::ProductDefault),
+            ("torlek".to_owned(), Source::ProductDefault),
             "{command_name}"
         );
     }
@@ -154,7 +155,7 @@ fn an_empty_variable_counts_as_unset() {
     };
     assert_eq!(
         resolved(choice, Build::Release),
-        ("cockpit".to_owned(), Source::ProductDefault)
+        ("torlek".to_owned(), Source::ProductDefault)
     );
 }
 
@@ -162,22 +163,22 @@ fn an_empty_variable_counts_as_unset() {
 fn each_profile_names_its_directories_tmux_server_and_units() {
     for (name, qualified, unit, label) in [
         (
-            "cockpit",
-            "cockpit",
-            "cockpit.service",
-            "io.github.androlax2.cockpit",
+            "torlek",
+            "torlek",
+            "torlek.service",
+            "io.github.androlax2.torlek",
         ),
         (
             "dev",
-            "cockpit-dev",
-            "cockpit-dev.service",
-            "io.github.androlax2.cockpit-dev",
+            "torlek-dev",
+            "torlek-dev.service",
+            "io.github.androlax2.torlek-dev",
         ),
         (
             "next",
-            "cockpit-next",
-            "cockpit-next.service",
-            "io.github.androlax2.cockpit-next",
+            "torlek-next",
+            "torlek-next.service",
+            "io.github.androlax2.torlek-next",
         ),
     ] {
         let profile = Profile::parse(name).unwrap();
@@ -219,16 +220,16 @@ fn every_directory_and_the_socket_directory_are_the_profiles_own() {
             layout.socket_dir().unwrap(),
         ],
         [
-            PathBuf::from("/home/owner/.config/cockpit-dev"),
-            PathBuf::from("/home/owner/.local/state/cockpit-dev"),
-            PathBuf::from("/home/owner/.cache/cockpit-dev"),
-            PathBuf::from("/run/user/1000/cockpit-dev"),
+            PathBuf::from("/home/owner/.config/torlek-dev"),
+            PathBuf::from("/home/owner/.local/state/torlek-dev"),
+            PathBuf::from("/home/owner/.cache/torlek-dev"),
+            PathBuf::from("/run/user/1000/torlek-dev"),
         ]
     );
     let without_runtime = Layout::resolve(&environment_for("dev", home, None), home);
     assert_eq!(
         without_runtime.socket_dir().unwrap(),
-        Path::new("/home/owner/.local/state/cockpit-dev/run")
+        Path::new("/home/owner/.local/state/torlek-dev/run")
     );
 }
 
@@ -241,7 +242,7 @@ fn a_launched_process_gets_the_profile_beside_the_xdg_variables() {
         variables,
         [
             ("XDG_RUNTIME_DIR", "/run/user/1000".into()),
-            ("COCKPIT_PROFILE", "next".into()),
+            ("TORLEK_PROFILE", "next".into()),
         ]
     );
 }

@@ -45,9 +45,9 @@ fn fake_docker(home: &Home, info: &str) {
 }
 
 fn declare_docker(root: &Path) {
-    std::fs::create_dir_all(root.join(".cockpit")).unwrap();
+    std::fs::create_dir_all(root.join(".torlek")).unwrap();
     std::fs::write(
-        root.join(".cockpit/config.toml"),
+        root.join(".torlek/config.toml"),
         "[execution]\nenvironment = \"docker\"\n",
     )
     .unwrap();
@@ -77,7 +77,7 @@ async fn doctor_refreshes_proxy_health_separately_from_verified_engine_builds() 
         assert_eq!(status(proxy), "missing-prerequisite", "{report}");
         assert!(
             next.unwrap()
-                .contains("cockpit --profile dev sandbox restart"),
+                .contains("torlek --profile dev sandbox restart"),
             "{report}"
         );
         std::fs::remove_file(control.join(name)).unwrap();
@@ -94,7 +94,7 @@ async fn doctor_refreshes_proxy_health_separately_from_verified_engine_builds() 
         requirement(&report, "sandbox proxy")
             .1
             .unwrap()
-            .contains("cockpit --profile dev sandbox install"),
+            .contains("torlek --profile dev sandbox install"),
         "{report}"
     );
 }
@@ -230,12 +230,12 @@ async fn a_host_without_greywall_blocks_naming_what_to_install() {
     assert_eq!(status(sandbox), "missing-prerequisite", "{sandbox}");
     assert!(
         next.unwrap()
-            .contains("cockpit --profile next sandbox install"),
+            .contains("torlek --profile next sandbox install"),
         "{report}"
     );
     let init = home.cockpit(&["--profile", "next", "init"], &[]).await;
     assert!(
-        text(&init.stdout).contains("cockpit --profile next sandbox install"),
+        text(&init.stdout).contains("torlek --profile next sandbox install"),
         "{}",
         text(&init.stdout)
     );
@@ -245,7 +245,7 @@ async fn a_host_without_greywall_blocks_naming_what_to_install() {
 async fn an_engine_upgrade_names_the_running_session_that_needs_restart() {
     let home = Home::new();
     let daemon = home.start_profile("next");
-    let client = home.connect_to("cockpit-next").await;
+    let client = home.connect_to("torlek-next").await;
     let (root, _) = home.project(&client, "app").await;
     let session = real_daemon::new_session(&client, &root).await;
     home.wait_for_launches(&session.id, 1).await;
@@ -253,7 +253,7 @@ async fn an_engine_upgrade_names_the_running_session_that_needs_restart() {
     daemon.kill();
     // A previous release's recorded launch, with the real session still alive in tmux.
     let database = cockpit_turso::Database::open(
-        &home.path().join("state/cockpit-next/state.db"),
+        &home.path().join("state/torlek-next/state.db"),
         &cockpit_daemon::MIGRATION_SETS,
     )
     .await
@@ -273,7 +273,7 @@ async fn an_engine_upgrade_names_the_running_session_that_needs_restart() {
     let report = text(&output.stdout);
     assert!(
         report.contains(&format!(
-            "cockpit --profile next session restart {}",
+            "torlek --profile next session restart {}",
             session.id
         )),
         "{report}"
@@ -286,7 +286,7 @@ async fn an_engine_upgrade_names_the_running_session_that_needs_restart() {
         .await;
     assert!(
         text(&shown.stdout).contains(&format!(
-            "cockpit --profile next session restart {}",
+            "torlek --profile next session restart {}",
             session.id
         )),
         "{}",
@@ -332,7 +332,7 @@ async fn an_unregistered_directory_names_the_project_add_command() {
     assert_eq!(status(project), "missing-prerequisite", "{project}");
     assert!(
         next.unwrap()
-            .contains(&format!("cockpit project add {}", dir.display())),
+            .contains(&format!("torlek project add {}", dir.display())),
         "{report}"
     );
 }

@@ -76,7 +76,7 @@ fn gather() -> Result<Facts, ExitCode> {
         Ok(dir) => ask_daemon(&dir.join(cockpit_config::DAEMON_SOCKET))?,
         Err(error) => Err(DaemonProblem {
             detail: format!("cannot locate its socket: {error}"),
-            next: "fix what is named here so `cockpit` finds the daemon's socket",
+            next: "fix what is named here so `torlek` finds the daemon's socket",
         }),
     };
     Ok(Facts { config, daemon })
@@ -93,7 +93,7 @@ fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, DaemonProblem>, ExitC
             Ok(replies) => daemon_facts(replies),
             Err(error @ ClientError::Connect { .. }) => Err(DaemonProblem {
                 detail: format!("not running ({error})"),
-                next: "`cockpit daemon install` runs it as a user service (or run `cockpit-daemon` \
+                next: "`torlek daemon install` runs it as a user service (or run `torlek-daemon` \
                    in another terminal)",
             }),
             Err(error) => Err(failing_daemon(&error.to_string())),
@@ -104,7 +104,7 @@ fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, DaemonProblem>, ExitC
 fn failing_daemon(detail: &str) -> DaemonProblem {
     DaemonProblem {
         detail: format!("running, but it failed to answer: {detail}"),
-        next: "read the daemon's log, then restart `cockpit-daemon`; a `cockpit` and a daemon \
+        next: "read the daemon's log, then restart `torlek-daemon`; a `torlek` and a daemon \
                of different releases refuse each other",
     }
 }
@@ -220,8 +220,7 @@ fn readiness_step(facts: &Facts) -> Step {
         blocks = true;
         lines.push(format!("config: {error}"));
         next = Some(
-            "fix what is named here; `cockpit config show` reads the configuration again"
-                .to_owned(),
+            "fix what is named here; `torlek config show` reads the configuration again".to_owned(),
         );
     }
     match &facts.daemon {
@@ -250,7 +249,7 @@ fn readiness_step(facts: &Facts) -> Step {
     if !blocks && lines.is_empty() {
         lines.push("tmux, the sandbox engine, proxy and resource controls are ready".to_owned());
     }
-    lines.push("`cockpit doctor` shows every requirement".to_owned());
+    lines.push("`torlek doctor` shows every requirement".to_owned());
     Step {
         title: READINESS,
         state: if blocks { State::Open } else { State::Done },
@@ -268,13 +267,13 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
     let setting = &config.agents_sandbox;
     let mut lines = vec![
         "restricted: each agent runs in the greywall sandbox; it writes only inside its \
-         own checkout, cannot read Cockpit's own files, and reaches the network through \
+         own checkout, cannot read Torlek's own files, and reaches the network through \
          greyproxy"
             .to_owned(),
-        "needs you: a command outside the sandbox (`cockpit ask run`) or a step only a \
-         person can do (`cockpit ask guide`); an agent cannot approve its own request"
+        "needs you: a command outside the sandbox (`torlek ask run`) or a step only a \
+         person can do (`torlek ask guide`); an agent cannot approve its own request"
             .to_owned(),
-        "approvals: `cockpit approval list` (or the approval pane of `cockpit tui`) shows the \
+        "approvals: `torlek approval list` (or the approval pane of `torlek tui`) shows the \
          exact command, its directory and the content it runs; an approval runs that command \
          once, a decline tells the agent"
             .to_owned(),
@@ -420,7 +419,7 @@ fn project_step(projects: &[ProjectView]) -> Step {
             state: State::Open,
             lines: vec!["no project is registered".to_owned()],
             next: Some(
-                "`cockpit project add DIR` registers the Git repository agents work in".to_owned(),
+                "`torlek project add DIR` registers the Git repository agents work in".to_owned(),
             ),
         };
     }
@@ -438,7 +437,7 @@ fn session_step(daemon: &DaemonFacts, available: &[&str], is_host_ready: bool) -
         return done(
             SESSION,
             vec![format!(
-                "{} session(s) started; `cockpit tui` shows them",
+                "{} session(s) started; `torlek tui` shows them",
                 daemon.sessions.len()
             )],
         );
@@ -461,8 +460,8 @@ fn session_step(daemon: &DaemonFacts, available: &[&str], is_host_ready: bool) -
         state: State::Open,
         lines: vec!["no session has started yet".to_owned()],
         next: Some(format!(
-            "`cockpit session new {}{agent}` starts an agent there; \
-             `cockpit tui` shows it",
+            "`torlek session new {}{agent}` starts an agent there; \
+             `torlek tui` shows it",
             shell_word(&project.root)
         )),
     }
@@ -504,7 +503,7 @@ fn render(steps: &[Step]) {
         .iter()
         .filter(|step| step.state == State::Done)
         .count();
-    outln!("Cockpit setup: {finished} of {} steps done", steps.len());
+    outln!("Torlek setup: {finished} of {} steps done", steps.len());
     for (number, step) in steps.iter().enumerate() {
         outln!("");
         outln!("[{:<7}] {}. {}", step.state.label(), number + 1, step.title);
@@ -518,11 +517,11 @@ fn render(steps: &[Step]) {
     outln!("");
     match steps.iter().find(|step| step.state == State::Open) {
         Some(step) => outln!(
-            "next: {} (then run `cockpit init` again)",
+            "next: {} (then run `torlek init` again)",
             step.next.as_deref().unwrap_or(step.title)
         ),
         None => outln!(
-            "Cockpit is set up: `cockpit tui` opens the manager, `cockpit --help` lists every verb"
+            "Torlek is set up: `torlek tui` opens the manager, `torlek --help` lists every verb"
         ),
     }
 }

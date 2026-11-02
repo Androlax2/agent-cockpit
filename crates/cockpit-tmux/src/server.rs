@@ -42,9 +42,9 @@ pub enum Socket {
 }
 
 impl Socket {
-    /// The product's server, `-L cockpit` (report 05).
+    /// The product's server, `-L torlek` (report 05).
     pub fn cockpit() -> Socket {
-        Socket::Named("cockpit".to_string())
+        Socket::Named("torlek".to_string())
     }
 
     fn arguments(&self) -> [&OsStr; 2] {

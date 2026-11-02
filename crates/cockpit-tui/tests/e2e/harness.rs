@@ -49,13 +49,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 transcript='@CONVERSATIONS@'/$conversation
-printf '%s pid=%s %s\n' "$COCKPIT_SESSION" "$$" "$mode" >> '@LAUNCHES@'
+printf '%s pid=%s %s\n' "$TORLEK_SESSION" "$$" "$mode" >> '@LAUNCHES@'
 # A report before the daemon recorded this launch's process tree is refused (#279): retry
 # that refusal only; any other is final and logged for the failure report. Not printed:
 # a refusal that wraps cuts the viewer's first screen short.
 report() {
   tries=0
-  until refusal=$(cockpit agent report "$@" 2>&1 >/dev/null); do
+  until refusal=$(torlek agent report "$@" 2>&1 >/dev/null); do
     tries=$((tries + 1))
     case $refusal in
       *"no process tree yet"*) [ "$tries" -lt 100 ] && { sleep 0.1; continue; } ;;
@@ -113,7 +113,7 @@ struct Programs {
 fn programs() -> &'static Programs {
     static PROGRAMS: OnceLock<Programs> = OnceLock::new();
     PROGRAMS.get_or_init(|| {
-        let tui = Path::new(env!("CARGO_BIN_EXE_cockpit-tui"));
+        let tui = Path::new(env!("CARGO_BIN_EXE_torlek-tui"));
         let dir = tui.parent().expect("a profile directory").to_path_buf();
         let profile = match dir.file_name().and_then(|name| name.to_str()) {
             Some("debug") => "dev",
@@ -122,15 +122,10 @@ fn programs() -> &'static Programs {
         };
         let built = Command::new(env!("CARGO"))
             .args(["build", "--locked", "--quiet", "--profile", profile])
-            .args(["--package", "cockpit-cli", "--bin", "cockpit"])
-            .args(["--package", "cockpit-daemon", "--bin", "cockpit-daemon"])
+            .args(["--package", "cockpit-cli", "--bin", "torlek"])
+            .args(["--package", "cockpit-daemon", "--bin", "torlek-daemon"])
             .args(["--example", "cockpit-e2e-daemon"])
-            .args([
-                "--package",
-                "cockpit-claude",
-                "--bin",
-                "cockpit-claude-hook",
-            ])
+            .args(["--package", "cockpit-claude", "--bin", "torlek-claude-hook"])
             .arg("--manifest-path")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"))
             .output()
@@ -141,8 +136,8 @@ fn programs() -> &'static Programs {
             String::from_utf8_lossy(&built.stderr)
         );
         Programs {
-            cockpit: dir.join("cockpit"),
-            daemon: dir.join("cockpit-daemon"),
+            cockpit: dir.join("torlek"),
+            daemon: dir.join("torlek-daemon"),
             e2e_daemon: dir.join("examples/cockpit-e2e-daemon"),
             dir,
         }
@@ -195,9 +190,9 @@ impl Cockpit {
         // The owner's one opt-out of the sandbox (#61): these tests drive the TUI, not the
         // sandbox, and must not depend on whether the host has Greywall (CI does not; a
         // developer's would sandbox the fake agent for real).
-        std::fs::create_dir(root.join("config/cockpit-dev")).unwrap();
+        std::fs::create_dir(root.join("config/torlek-dev")).unwrap();
         std::fs::write(
-            root.join("config/cockpit-dev/config.toml"),
+            root.join("config/torlek-dev/config.toml"),
             "[agents]\nsandbox = \"off\"\n",
         )
         .unwrap();
@@ -323,7 +318,7 @@ impl Cockpit {
         };
         let mut report = read(&self.root.join("daemon.stderr"));
         for process in ["daemon", "tui"] {
-            let logs = self.root.join("state/cockpit-dev/logs").join(process);
+            let logs = self.root.join("state/torlek-dev/logs").join(process);
             for entry in std::fs::read_dir(&logs).into_iter().flatten().flatten() {
                 let text = read(&entry.path());
                 let lines: Vec<&str> = text.lines().collect();
@@ -345,7 +340,7 @@ impl Cockpit {
     fn agent_panes(&self) -> String {
         let private_tmux = |arguments: &[&str]| {
             self.command(Path::new("tmux"))
-                .args(["-L", "cockpit-dev"])
+                .args(["-L", "torlek-dev"])
                 .args(arguments)
                 .output()
                 .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -702,7 +697,7 @@ impl Cockpit {
     /// Gives the keys to the list or the viewer, as the owner's click does: selects that
     /// pane of the manager session on the daemon's tmux server.
     pub fn click(&self, pane: ManagerPane) {
-        let panes = self.private_tmux(&["list-panes", "-t", "=cockpit:", "-F", "#{pane_id}"]);
+        let panes = self.private_tmux(&["list-panes", "-t", "=torlek:", "-F", "#{pane_id}"]);
         let ids: Vec<&str> = panes.lines().collect();
         let id = ids
             .get(pane as usize)
@@ -713,7 +708,7 @@ impl Cockpit {
     /// Which manager pane has the keys.
     pub fn focused(&self) -> ManagerPane {
         // By position in tmux's order, as `click` selects them.
-        let panes = self.private_tmux(&["list-panes", "-t", "=cockpit:", "-F", "#{pane_active}"]);
+        let panes = self.private_tmux(&["list-panes", "-t", "=torlek:", "-F", "#{pane_active}"]);
         match panes.lines().position(|active| active == "1") {
             Some(0) => ManagerPane::List,
             Some(_) => ManagerPane::Viewer,
@@ -725,7 +720,7 @@ impl Cockpit {
     fn private_tmux(&self, arguments: &[&str]) -> String {
         let output = self
             .command(Path::new("tmux"))
-            .args(["-L", "cockpit-dev"])
+            .args(["-L", "torlek-dev"])
             .args(arguments)
             .output()
             .expect("tmux runs");
@@ -792,7 +787,7 @@ impl Cockpit {
         let target = format!("={session}:");
         let mut watcher = self
             .command(Path::new("tmux"))
-            .args(["-L", "cockpit-dev", "-C", "attach-session", "-t", &target])
+            .args(["-L", "torlek-dev", "-C", "attach-session", "-t", &target])
             .args(["-f", "read-only,ignore-size"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -850,7 +845,7 @@ impl Cockpit {
         let sizes = self.private_tmux(&[
             "list-panes",
             "-t",
-            "=cockpit:",
+            "=torlek:",
             "-F",
             "#{pane_width}x#{pane_height}",
         ]);
@@ -987,7 +982,7 @@ impl Drop for Cockpit {
         // The agents run in the daemon's tmux server, which outlives the daemon by design.
         let _ = self
             .command(Path::new("tmux"))
-            .args(["-L", "cockpit-dev", "kill-server"])
+            .args(["-L", "torlek-dev", "kill-server"])
             .output();
     }
 }

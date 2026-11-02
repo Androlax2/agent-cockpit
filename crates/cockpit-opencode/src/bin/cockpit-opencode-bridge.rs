@@ -20,7 +20,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(reason) => {
-            eprintln!("cockpit-opencode-bridge: {reason}");
+            eprintln!("torlek-opencode-bridge: {reason}");
             ExitCode::FAILURE
         }
     }
@@ -29,7 +29,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let mut arguments = std::env::args_os().skip(1);
     let (Some(cockpit), None) = (arguments.next(), arguments.next()) else {
-        return Err("usage: cockpit-opencode-bridge <cockpit program> | --version".to_owned());
+        return Err("usage: torlek-opencode-bridge <torlek program> | --version".to_owned());
     };
     if cockpit == cockpit_opencode::BRIDGE_VERSION_FLAG {
         println!("{}", cockpit_opencode::bridge_version_line());
@@ -55,7 +55,7 @@ fn run() -> Result<(), String> {
     let status = loop {
         if let Some(status) = child
             .try_wait()
-            .map_err(|error| format!("cannot wait for `cockpit`: {error}"))?
+            .map_err(|error| format!("cannot wait for `torlek`: {error}"))?
         {
             break status;
         }
@@ -63,7 +63,7 @@ fn run() -> Result<(), String> {
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!(
-                "`cockpit {}` did not end within {} ms",
+                "`torlek {}` did not end within {} ms",
                 report.join(" "),
                 REPORT_DEADLINE.as_millis()
             ));
@@ -71,7 +71,7 @@ fn run() -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(10));
     };
     if !status.success() {
-        return Err(format!("`cockpit {}` failed ({status})", report.join(" ")));
+        return Err(format!("`torlek {}` failed ({status})", report.join(" ")));
     }
     Ok(())
 }

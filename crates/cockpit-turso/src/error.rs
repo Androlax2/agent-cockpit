@@ -64,7 +64,7 @@ impl fmt::Display for Error {
         match self {
             Error::AlreadyOpen { path } => write!(
                 formatter,
-                "{} is already open in another Cockpit daemon or tool; stop it first",
+                "{} is already open in another Torlek daemon or tool; stop it first",
                 path.display()
             ),
             Error::SchemaNewerThanBinary {
@@ -74,7 +74,7 @@ impl fmt::Display for Error {
             } => write!(
                 formatter,
                 "the database holds {owner} schema version {applied_version}, newer than \
-                 version {known_version} this Cockpit knows; run the newer Cockpit or restore \
+                 version {known_version} this Torlek knows; run the newer Torlek or restore \
                  a backup taken by this one"
             ),
             Error::MigrationEdited { owner, version } => write!(

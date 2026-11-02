@@ -24,7 +24,7 @@ fn the_built_hook_bridge_passes() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = bridge_with(
         dir.path(),
-        PathBuf::from(env!("CARGO_BIN_EXE_cockpit-claude-hook")),
+        PathBuf::from(env!("CARGO_BIN_EXE_torlek-claude-hook")),
     );
 
     assert_eq!(bridge.check(), Ok(()));
@@ -32,7 +32,7 @@ fn the_built_hook_bridge_passes() {
 
 #[test]
 fn the_built_hook_bridge_answers_its_version() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-claude-hook"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_torlek-claude-hook"))
         .arg("--version")
         .output()
         .unwrap();
@@ -48,7 +48,7 @@ fn the_built_hook_bridge_answers_its_version() {
 fn a_hook_without_its_execute_bit_fails_naming_it() {
     let dir = tempfile::tempdir().unwrap();
     let hook = dir.path().join("cockpit-claude-hook");
-    std::fs::copy(env!("CARGO_BIN_EXE_cockpit-claude-hook"), &hook).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_torlek-claude-hook"), &hook).unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
 
     let refused = bridge_with(dir.path(), hook.clone()).check();
@@ -95,7 +95,7 @@ fn a_hook_bridge_of_another_release_fails() {
     let hook = common::script(
         dir.path(),
         "cockpit-claude-hook",
-        "echo 'cockpit-claude-hook 0.0.0-stale'",
+        "echo 'torlek-claude-hook 0.0.0-stale'",
     );
 
     let reason = bridge_with(dir.path(), hook).check().unwrap_err();
@@ -108,7 +108,7 @@ fn a_cockpit_program_without_its_execute_bit_fails_naming_it() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = bridge_with(
         dir.path(),
-        PathBuf::from(env!("CARGO_BIN_EXE_cockpit-claude-hook")),
+        PathBuf::from(env!("CARGO_BIN_EXE_torlek-claude-hook")),
     );
     std::fs::set_permissions(
         &bridge.cockpit_program,
@@ -129,7 +129,7 @@ fn a_cockpit_program_without_its_execute_bit_fails_naming_it() {
 fn a_missing_cockpit_program_fails_naming_it() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = Bridge {
-        hook_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-claude-hook")),
+        hook_program: PathBuf::from(env!("CARGO_BIN_EXE_torlek-claude-hook")),
         cockpit_program: dir.path().join("cockpit"),
     };
 

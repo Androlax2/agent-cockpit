@@ -44,7 +44,7 @@ impl Home {
 
     /// The owner's configuration file the daemon reads (`wiring_in`'s home).
     fn config_file(&self) -> PathBuf {
-        self.path().join("home/.config/cockpit/config.toml")
+        self.path().join("home/.config/torlek/config.toml")
     }
 
     /// Publishes a `session` entity on the daemon's state while no daemon runs, as a

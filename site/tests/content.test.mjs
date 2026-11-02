@@ -54,14 +54,14 @@ test("reference generation uses an empty home and cleared environment", async ()
   const { join } = await import("node:path");
   const dir = mkdtempSync(join(tmpdir(), "cockpit-reference-test-"));
   try {
-    const binary = join(dir, "fake cockpit");
+    const binary = join(dir, "fake torlek");
     writeFileSync(
       binary,
       `#!${process.execPath}
 if (process.env.COCKPIT_DOCS_TEST_SENTINEL) process.exit(17);
 const args = process.argv.slice(2).join(' ');
-if (args === '--help') { console.log('usage: cockpit VERB'); process.exit(2); }
-if (args === '--profile cockpit config show') console.log('home = "'+process.env.HOME+'"');
+if (args === '--help') { console.log('usage: torlek VERB'); process.exit(2); }
+if (args === '--profile torlek config show') console.log('home = "'+process.env.HOME+'"');
 else if (args === 'version --all') console.log('fixture version');
 else process.exit(19);
 `,
@@ -69,7 +69,7 @@ else process.exit(19);
     );
     process.env.COCKPIT_DOCS_TEST_SENTINEL = "fixture-only";
     const refs = content.readReferences(binary);
-    assert.equal(refs.help, "usage: cockpit VERB");
+    assert.equal(refs.help, "usage: torlek VERB");
     assert.equal(refs.config, 'home = "~"');
     assert.equal(refs.version, "fixture version");
   } finally {

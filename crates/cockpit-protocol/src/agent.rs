@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 
 /// The variable a launcher passes the launch token in. The agent sends it with its reports;
 /// the daemon binds it only from the launch's own process tree.
-pub const LAUNCH_TOKEN_VARIABLE: &str = "COCKPIT_LAUNCH_TOKEN";
+pub const LAUNCH_TOKEN_VARIABLE: &str = "TORLEK_LAUNCH_TOKEN";
 
 /// The variable a launcher passes the agent socket's path in, for sandboxes where the
 /// default path is mounted elsewhere.
-pub const AGENT_SOCKET_VARIABLE: &str = "COCKPIT_AGENT_SOCKET";
+pub const AGENT_SOCKET_VARIABLE: &str = "TORLEK_AGENT_SOCKET";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

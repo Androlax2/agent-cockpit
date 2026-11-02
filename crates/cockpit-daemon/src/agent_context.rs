@@ -19,7 +19,7 @@ use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 
 use crate::approvals::{Answer, Failed, Sender};
 
-/// Where the daemon writes the bundle (`$COCKPIT_INSTRUCTIONS`) under `state_dir`.
+/// Where the daemon writes the bundle (`$TORLEK_INSTRUCTIONS`) under `state_dir`.
 pub(crate) fn bundle_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("agent-context")
 }

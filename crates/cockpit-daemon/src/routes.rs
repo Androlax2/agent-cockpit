@@ -202,7 +202,7 @@ impl Handler for Routes {
             },
             (Command::AgentReport { .. }, Peer::Owner) => Route::Answer(wrong_socket(
                 "agent-report is an agent's request; the owner has no session",
-                "send it on the agent socket from a session Cockpit launched",
+                "send it on the agent socket from a session Torlek launched",
                 UnblockedBy::Agent,
             )),
             (Command::AgentReports, Peer::Owner) => Route::Run {
@@ -218,7 +218,7 @@ impl Handler for Routes {
                 }
                 Peer::Owner => Route::Answer(wrong_socket(
                     "agent report-bug is a session's report; the owner opens a draft directly",
-                    "use `cockpit bug-report new` on the host",
+                    "use `torlek bug-report new` on the host",
                     UnblockedBy::Owner,
                 )),
             },
@@ -250,7 +250,7 @@ impl Handler for Routes {
             },
             (Command::AgentBrief { .. }, Peer::Owner) => Route::Answer(wrong_socket(
                 "a launch brief is a session's; the owner has none",
-                "run `cockpit brief` from a session Cockpit launched",
+                "run `torlek brief` from a session Torlek launched",
                 UnblockedBy::Agent,
             )),
             (
@@ -290,7 +290,7 @@ impl Handler for Routes {
                 ),
                 Peer::Owner => Route::Answer(wrong_socket(
                     "asking the owner is an agent's request; the owner has no session",
-                    "send it on the agent socket from a session Cockpit launched",
+                    "send it on the agent socket from a session Torlek launched",
                     UnblockedBy::Agent,
                 )),
             },
@@ -329,7 +329,7 @@ impl Handler for Routes {
                 }
                 Peer::Owner => Route::Answer(wrong_socket(
                     "observing, messaging and starting sessions as a coordinator are a session's requests",
-                    "use `cockpit session list` or `cockpit session new` on the host",
+                    "use `torlek session list` or `torlek session new` on the host",
                     UnblockedBy::Owner,
                 )),
             },
@@ -393,7 +393,7 @@ impl Handler for Routes {
                     ),
                     Peer::Owner => Route::Answer(wrong_socket(
                         "proposing and reporting a blocker are a session's requests; the owner adds items",
-                        "use `cockpit todo add` on the host",
+                        "use `torlek todo add` on the host",
                         UnblockedBy::Owner,
                     )),
                 }
@@ -446,7 +446,7 @@ impl Handler for Routes {
                 }
                 Peer::Owner => Route::Answer(wrong_socket(
                     "beginning and checkpointing a step are the session's doing it; the owner completes or releases it",
-                    "use `cockpit workflow complete` or `release` on the host",
+                    "use `torlek workflow complete` or `release` on the host",
                     UnblockedBy::Owner,
                 )),
             },
@@ -535,7 +535,7 @@ impl Handler for Routes {
                 }
                 Peer::Owner => Route::Answer(wrong_socket(
                     "a claim is a session's statement about its own work; the owner runs the check",
-                    "use `cockpit check run` on the host",
+                    "use `torlek check run` on the host",
                     UnblockedBy::Owner,
                 )),
             },

@@ -3,8 +3,8 @@
 
 use crate::harness::Cockpit;
 
-const LABEL_REPORT: &str = r#"!cockpit agent report --label "acceptance" --doing "checking cards""#;
-const QUESTION_REPORT: &str = r#"!cockpit agent report --needs-input "Pick A or B?""#;
+const LABEL_REPORT: &str = r#"!torlek agent report --label "acceptance" --doing "checking cards""#;
+const QUESTION_REPORT: &str = r#"!torlek agent report --needs-input "Pick A or B?""#;
 
 fn card_shows_needs_you(screen: &str, session: &str) -> bool {
     screen.contains(&format!("! {session}")) && screen.contains("waiting on you")
@@ -68,7 +68,7 @@ fn an_agent_that_asked_and_still_works_shows_apart_from_one_waiting_on_you() {
     cockpit.agent_does(
         &session,
         &format!(
-            r#"!cockpit agent report --needs-input "Pick A or B?" && cockpit agent report --state working && until [ -e '{}' ]; do sleep 0.1; done"#,
+            r#"!torlek agent report --needs-input "Pick A or B?" && torlek agent report --state working && until [ -e '{}' ]; do sleep 0.1; done"#,
             go_on.display()
         ),
     );

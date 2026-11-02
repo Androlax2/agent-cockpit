@@ -322,7 +322,7 @@ def run(config):
         }
     )
     environment["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline)
-    port = environment["COCKPIT_OPENCODE_PORT"]
+    port = environment["TORLEK_OPENCODE_PORT"]
     credentials = "opencode:" + environment["OPENCODE_SERVER_PASSWORD"]
     headers = {
         "Authorization": "Basic " + base64.b64encode(credentials.encode()).decode(),

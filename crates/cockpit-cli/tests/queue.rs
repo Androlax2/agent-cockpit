@@ -32,7 +32,7 @@ impl Home {
     }
 
     fn daemon_socket(&self) -> PathBuf {
-        let path = self.runtime_dir().join("cockpit-dev/daemon.sock");
+        let path = self.runtime_dir().join("torlek-dev/daemon.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -42,7 +42,7 @@ impl Home {
     }
 
     async fn cockpit(&self, arguments: &[&str]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
@@ -248,7 +248,7 @@ async fn queue_explain_refuses_an_item_that_is_not_a_number() {
 
     assert_eq!(output.status.code(), Some(2));
     assert!(
-        text(&output.stderr).starts_with("cockpit: five: not an item number\n"),
+        text(&output.stderr).starts_with("torlek: five: not an item number\n"),
         "{}",
         text(&output.stderr)
     );
@@ -303,7 +303,7 @@ async fn queue_dispatch_prints_what_the_pass_placed_and_ended() {
         "placed item 4 (web) on session s0123456789ab\tcharge 500 millicores 1024 MiB\n\
          placed step 2 check of workflow run 3 of item 6 (api) on session s0123456789ac\tcharge 750 millicores 1536 MiB\n\
          ended placement 5\n\
-         2 items wait: `cockpit queue explain` says why\n"
+         2 items wait: `torlek queue explain` says why\n"
     );
     assert_eq!(daemon.await.unwrap(), Command::QueueDispatch);
 }

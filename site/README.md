@@ -40,15 +40,15 @@ protocol reference. No generated protocol schema is claimed before #295.
 
 CLI help and effective configuration defaults come from the actual built binary.
 The generator clears its environment and uses a temporary empty home, explicit
-`cockpit` profile, no daemon and no provider calls. It normalizes the temporary
+`torlek` profile, no daemon and no provider calls. It normalizes the temporary
 home to `~`; defaults are not a complete configuration schema. Each page retains
 its owning source path, revision and source hash. `build.json` records these plus
 the binary hash, version, base path and version catalog. References from a release
 tag use a source build of that tag, not an assertion about downloaded archives.
 
 The default path is `/agent-cockpit/latest/`. Release builds set
-`COCKPIT_DOCS_VERSION`, `COCKPIT_DOCS_BASE` and `COCKPIT_DOCS_VERSIONS`; the CLI path
-can be selected with `COCKPIT_DOCS_BINARY`. Version and base inputs are validated.
+`TORLEK_DOCS_VERSION`, `TORLEK_DOCS_BASE` and `TORLEK_DOCS_VERSIONS`; the CLI path
+can be selected with `TORLEK_DOCS_BINARY`. Version and base inputs are validated.
 Search is a static, version-local index; no search service or Node server runs on
 Pages. Edit links target current source; revision links identify the viewed copy.
 

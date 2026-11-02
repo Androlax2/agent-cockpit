@@ -81,6 +81,12 @@ impl TestHome {
         let fake = home.home().join("bin/git");
         std::fs::write(&fake, FAKE_GIT).unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Provider discovery must not run the host's launchers, which may invoke Git too.
+        for provider in ["claude", "codex", "opencode"] {
+            let program = home.home().join("bin").join(provider);
+            std::fs::write(&program, "#!/bin/sh\nexit 127\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         real_git(
             &home.home(),
             &["init", "--quiet", "--bare", home.github().to_str().unwrap()],
@@ -132,7 +138,7 @@ impl TestHome {
     }
 
     pub fn trust(&self, root: &Path) {
-        let config = self.home().join("config/cockpit-dev");
+        let config = self.home().join("config/torlek-dev");
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(
             config.join("config.toml"),
@@ -200,7 +206,7 @@ impl TestHome {
 
     /// Runs `cockpit <arguments>` and waits for it.
     pub fn cockpit(&self, arguments: &[&str]) -> Output {
-        self.base_command(Path::new(env!("CARGO_BIN_EXE_cockpit")))
+        self.base_command(Path::new(env!("CARGO_BIN_EXE_torlek")))
             .args(arguments)
             .output()
             .expect("the cockpit binary runs")
@@ -208,7 +214,7 @@ impl TestHome {
 
     /// Runs `cockpit <arguments>` from `dir` and waits for it.
     pub fn cockpit_in(&self, dir: &Path, arguments: &[&str]) -> Output {
-        self.base_command(Path::new(env!("CARGO_BIN_EXE_cockpit")))
+        self.base_command(Path::new(env!("CARGO_BIN_EXE_torlek")))
             .current_dir(dir)
             .args(arguments)
             .output()
@@ -261,7 +267,7 @@ impl Drop for RunningDaemon {
 /// not depend on the daemon crate (rule `nothing -> daemon`), so Cargo has not built it for
 /// this test: build it here, which is a no-op once it is up to date.
 fn daemon_binary() -> PathBuf {
-    let cli = Path::new(env!("CARGO_BIN_EXE_cockpit"));
+    let cli = Path::new(env!("CARGO_BIN_EXE_torlek"));
     let profile_dir = cli.parent().expect("the binary is in a profile directory");
     let profile = match profile_dir.file_name().and_then(|name| name.to_str()) {
         Some("debug") => "dev",
@@ -270,7 +276,7 @@ fn daemon_binary() -> PathBuf {
     };
     let built = Command::new(env!("CARGO"))
         .args(["build", "--locked", "--quiet", "--profile", profile])
-        .args(["--package", "cockpit-daemon", "--bin", "cockpit-daemon"])
+        .args(["--package", "cockpit-daemon", "--bin", "torlek-daemon"])
         .arg("--manifest-path")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"))
         .output()
@@ -280,7 +286,7 @@ fn daemon_binary() -> PathBuf {
         "building cockpit-daemon failed: {}",
         String::from_utf8_lossy(&built.stderr)
     );
-    profile_dir.join("cockpit-daemon")
+    profile_dir.join("torlek-daemon")
 }
 
 /// The machine's Git, found on the test's own `PATH`.

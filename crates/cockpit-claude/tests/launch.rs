@@ -121,7 +121,7 @@ fn every_launch_registers_cockpits_mcp_server() {
         config,
         serde_json::json!({
             "mcpServers": {
-                "cockpit": {
+                "torlek": {
                     "type": "stdio",
                     "command": "/opt/cockpit/bin/cockpit",
                     "args": ["mcp"],

@@ -72,7 +72,7 @@ backend's reason.
   and its observed end), `rustix` (`SIGSTOP`/`SIGCONT` without `unsafe`), `tokio`.
 - Never depends on scheduling, sessions or tasks: `cockpit-scheduling` calls it
   (`scheduling -> admission`), not the reverse. `tests/crate_graph.rs` enforces it.
-- Used by: the daemon, which serves `cockpit resources`, sweeps reservations and applies a
+- Used by: the daemon, which serves `torlek resources`, sweeps reservations and applies a
   profile change to running heavy executions.
 
 ## Tests

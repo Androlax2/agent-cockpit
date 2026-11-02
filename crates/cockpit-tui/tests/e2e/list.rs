@@ -5,7 +5,7 @@ use crate::harness::Cockpit;
 
 /// A label and a doing that together are longer than the list is wide, so the card's
 /// details line wraps.
-const LABEL_AND_DOING: &str = r#"!cockpit agent report --label "plan review" --doing "reading every report before it changes the card layout""#;
+const LABEL_AND_DOING: &str = r#"!torlek agent report --label "plan review" --doing "reading every report before it changes the card layout""#;
 
 /// Rows the owner's terminal keeps: the list's border and the status line leave five rows of
 /// cards, fewer than the project's name and five one-row cards need.

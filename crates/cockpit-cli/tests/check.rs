@@ -16,9 +16,9 @@ fn with_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
     let home = TestHome::new();
     let daemon = home.start();
     let root = home.project("app");
-    std::fs::create_dir_all(root.join(".cockpit")).unwrap();
+    std::fs::create_dir_all(root.join(".torlek")).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join(".cockpit/config.toml"), CHECKS).unwrap();
+    std::fs::write(root.join(".torlek/config.toml"), CHECKS).unwrap();
     std::fs::write(root.join("src/lib.rs"), "pub fn answer() -> u8 { 42 }\n").unwrap();
     commit_all(&root, "declare the checks");
     home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
@@ -83,7 +83,7 @@ fn a_check_that_fails_exits_non_zero_with_its_receipt() {
     let (home, _daemon, root) = with_checks();
     std::fs::remove_file(root.join("src/lib.rs")).unwrap();
     std::fs::write(
-        root.join(".cockpit/config.toml"),
+        root.join(".torlek/config.toml"),
         CHECKS.replace("artifacts = [\"src/lib.rs\"]\n", ""),
     )
     .unwrap();

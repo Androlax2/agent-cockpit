@@ -311,7 +311,7 @@ fn audit_line(entry: &CoordinatorAuditView) -> String {
 /// `outcome` is what did not happen to the session: `restarted`, `ended`.
 fn failure_line(failure: &SessionFailure, outcome: &str) -> String {
     format!(
-        "cockpit: {} not {outcome}: {}: {}\n",
+        "torlek: {} not {outcome}: {}: {}\n",
         failure.session,
         failure.error.code.as_str(),
         failure.error.message

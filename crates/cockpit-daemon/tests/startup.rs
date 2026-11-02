@@ -56,7 +56,7 @@ async fn a_second_daemon_for_the_same_user_refuses_to_start() {
     assert_eq!(second.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&second.stderr);
     assert!(
-        stderr.contains("another cockpit daemon of this user is already running")
+        stderr.contains("another torlek daemon of this user is already running")
             && stderr.contains(&home.socket_dir().join("daemon.lock").display().to_string()),
         "{stderr}"
     );

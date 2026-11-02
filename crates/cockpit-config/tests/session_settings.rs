@@ -9,7 +9,7 @@ use cockpit_config::{ConfigError, EffectiveConfig, Environment, Source};
 use tempfile::TempDir;
 
 fn write_user_config(home: &Path, contents: &str) {
-    let config_dir = home.join(".config/cockpit");
+    let config_dir = home.join(".config/torlek");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(config_dir.join("config.toml"), contents).unwrap();
 }
@@ -105,9 +105,9 @@ fn a_negative_idle_window_fails_instead_of_wrapping() {
 fn a_project_file_cannot_set_the_sessions_settings() {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-    fs::create_dir_all(project.path().join(".cockpit")).unwrap();
+    fs::create_dir_all(project.path().join(".torlek")).unwrap();
     fs::write(
-        project.path().join(".cockpit/config.toml"),
+        project.path().join(".torlek/config.toml"),
         "[sessions]\nidle_sleep_after_minutes = 30\n",
     )
     .unwrap();

@@ -9,7 +9,7 @@
 // the agent sees it without asking and a compaction never drops it.
 //
 // It stays silent unless it runs in the server its launch started: an `opencode` a tool
-// starts inherits the environment, but not the port (COCKPIT_OPENCODE_PORT).
+// starts inherits the environment, but not the port (TORLEK_OPENCODE_PORT).
 import { spawn } from "node:child_process"
 
 // Must match events::FORWARDED_EVENTS.
@@ -32,9 +32,9 @@ const BRIEF_RETRY_MS = 60000
 const UNFINISHED = ["tool-calls", "unknown"]
 
 export const CockpitBridge = async ({ serverUrl }) => {
-  const bridge = process.env.COCKPIT_OPENCODE_BRIDGE
-  const cockpit = process.env.COCKPIT_OPENCODE_COCKPIT
-  const port = process.env.COCKPIT_OPENCODE_PORT
+  const bridge = process.env.TORLEK_OPENCODE_BRIDGE
+  const cockpit = process.env.TORLEK_OPENCODE_COCKPIT
+  const port = process.env.TORLEK_OPENCODE_PORT
   let ownPort
   try {
     ownPort = String(serverUrl.port)

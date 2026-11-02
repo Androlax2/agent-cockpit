@@ -1,5 +1,5 @@
 //! Issue #49 through the daemon: the instruction bundle written at every start, the
-//! `COCKPIT_INSTRUCTIONS` every agent gets, and a launched session's brief assembled from its
+//! `TORLEK_INSTRUCTIONS` every agent gets, and a launched session's brief assembled from its
 //! owners' facts (the session's workspace, the step it does, its grants).
 //!
 //! The daemon runs in this process with a fake provider; its agent runs this test binary's
@@ -268,7 +268,7 @@ async fn the_daemon_writes_the_bundle_at_start_and_names_it_to_agents() {
         "{manifest}"
     );
     assert_eq!(
-        std::fs::read_to_string(home.bundle_dir().join("cockpit/SKILL.md")).unwrap(),
+        std::fs::read_to_string(home.bundle_dir().join("torlek/SKILL.md")).unwrap(),
         cockpit_agent_context::documents()[0].file_text()
     );
     assert_eq!(
@@ -301,10 +301,10 @@ async fn a_session_doing_a_step_is_briefed_with_its_task_workspace_and_grants() 
         format!("Session {session} · project app"),
         format!("- Workspace: {}", root.display()),
         format!("workflow {run}, step implement (attempt 1, no checkpoint yet)"),
-        format!("`cockpit workflow packet {run}`"),
+        format!("`torlek workflow packet {run}`"),
         "change-state over this session".to_owned(),
         // The in-process daemon runs the default profile; a launch names its daemon's (#196).
-        "profile cockpit".to_owned(),
+        "profile torlek".to_owned(),
         format!("instructions {manifest}"),
     ] {
         assert!(
@@ -434,7 +434,7 @@ async fn brief_agent() {
             .await,
     );
     let seen = Seen {
-        instructions: std::env::var("COCKPIT_INSTRUCTIONS").ok(),
+        instructions: std::env::var("TORLEK_INSTRUCTIONS").ok(),
         begun,
         brief,
     };

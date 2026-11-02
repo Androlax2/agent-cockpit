@@ -31,7 +31,7 @@ the wire. Report 14 treats this contract as stable from the first release.
    or continues from a `cursor`; a cursor other than the client's own is a gap.
 4. The agent channel (report 17): on the agent socket, `agent-report` carries an
    `AgentReport` and, from a newly launched agent, the `launch_token` it was given in
-   `COCKPIT_LAUNCH_TOKEN`. No command names the sender's session; the daemon identifies it.
+   `TORLEK_LAUNCH_TOKEN`. No command names the sender's session; the daemon identifies it.
    The owner reads every session's latest report with `agent-reports`. A refusal the sender
    can act on carries `unblock`: the `action` that would lift it and who can (`owner`,
    `agent`, `cockpit`).

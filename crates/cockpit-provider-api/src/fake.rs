@@ -17,11 +17,11 @@ use crate::{
     LaunchRequest, Provenance, Provider, ProviderError, ProviderName, TerminalInput,
 };
 
-const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s\n' "$COCKPIT_SESSION" "$1" "$2" "${3:-}" "$$" "$COCKPIT_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
+const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s\n' "$TORLEK_SESSION" "$1" "$2" "${3:-}" "$$" "$TORLEK_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
 : > "$FAKE_AGENT_SESSION_DIR/agent-was-here"
 if [ -n "${FAKE_AGENT_RUN:-}" ]; then "$FAKE_AGENT_RUN"; fi
 if [ -n "${FAKE_AGENT_MESSAGES:-}" ]; then
-  while IFS= read -r line; do printf '%s %s\n' "$COCKPIT_SESSION" "$line" >> "$FAKE_AGENT_MESSAGES"; done
+  while IFS= read -r line; do printf '%s %s\n' "$TORLEK_SESSION" "$line" >> "$FAKE_AGENT_MESSAGES"; done
 fi
 exec sleep "${FAKE_AGENT_SLEEP:-600}""#;
 

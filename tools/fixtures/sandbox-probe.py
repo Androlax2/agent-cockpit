@@ -83,12 +83,12 @@ def main():
     checkout = Path.cwd()
     folder = checkout / ".enforcement"
     request = json.loads((folder / "request.json").read_text())
-    result = run_probe(request, checkout, os.environ["COCKPIT_SESSION"], dict(os.environ))
+    result = run_probe(request, checkout, os.environ["TORLEK_SESSION"], dict(os.environ))
     staged = folder / (request["nonce"] + ".partial")
     with staged.open("x") as output:
         json.dump(result, output)
     staged.replace(folder / (request["nonce"] + ".json"))
-    # Cockpit owns termination/restart. No more requests or reads after this batch.
+    # Torlek owns termination/restart. No more requests or reads after this batch.
     while True:
         time.sleep(60)
 

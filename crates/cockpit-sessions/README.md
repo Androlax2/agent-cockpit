@@ -19,7 +19,7 @@ stopped in the middle of one finishes or repairs it at its next start.
   execution of `cockpit-processes`: its containment and whole-tree termination are the same
   as any execution's. It gets the daemon's base environment, the owner's desktop session
   variables as last imported unless the owner withholds them (`DesktopSession`, #305, #307),
-  its provider's variables, `COCKPIT_SESSION` and a one-use `COCKPIT_LAUNCH_TOKEN`, and only
+  its provider's variables, `TORLEK_SESSION` and a one-use `TORLEK_LAUNCH_TOKEN`, and only
   `TERM` and `COLORTERM` from tmux. The pane's program waits until the launch recorded its
   root (the agent's process identity) and released it, so the agent's first request is
   identified (#316). Each launch gets the session's own directory, `sessions/<id>` in the
@@ -157,4 +157,4 @@ stopped in the middle of one finishes or repairs it at its next start.
   missing mount support and the mapping retained across daemon restart (#450).
 - `cockpit-daemon/tests/opencode_messaging.rs`: the real adapter's owner send/cancel with
   the launch's authenticated endpoint retained across daemon restart (#416).
-- `cockpit-cli/tests/sessions.rs`: each `cockpit session` verb's request and output.
+- `cockpit-cli/tests/sessions.rs`: each `torlek session` verb's request and output.

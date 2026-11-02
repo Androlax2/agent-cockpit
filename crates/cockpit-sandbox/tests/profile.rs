@@ -30,7 +30,7 @@ fn the_profile_denies_reading_everything_but_the_checkout_and_cockpits_folders()
         "deny read ~/.ssh/id_*",
         "deny write .git/hooks",
         "network: through greyproxy only",
-        "secret COCKPIT_LAUNCH_TOKEN passed through",
+        "secret TORLEK_LAUNCH_TOKEN passed through",
         "desktop session withheld",
     ] {
         assert!(
@@ -174,7 +174,7 @@ fn a_wildcard_host_is_refused_unless_it_is_a_whole_first_label() {
     assert!(Profile::build(request, &Platform::Linux).is_ok());
 }
 
-/// The daemon runs a project's `.cockpit/config.toml` checks on the host, direnv runs
+/// The daemon runs a project's `.torlek/config.toml` checks on the host, direnv runs
 /// `.envrc`, IDEs run their run configurations: an agent that could write them would run
 /// code with the owner's rights outside the sandbox.
 #[test]
@@ -185,6 +185,7 @@ fn files_that_run_outside_the_sandbox_are_denied_writing() {
 
     for denied in [
         ".cockpit",
+        ".torlek",
         ".envrc",
         ".git/hooks",
         ".vscode/tasks.json",

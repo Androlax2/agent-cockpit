@@ -137,10 +137,10 @@ async fn a_launch_runs_the_agent_inside_greywall_as_its_own_proxy_client() {
             .unwrap();
     let unit = if cfg!(target_os = "macos") {
         home.path()
-            .join("Library/LaunchAgents/io.github.androlax2.cockpit.greyproxy.dev.plist")
+            .join("Library/LaunchAgents/io.github.androlax2.torlek.greyproxy.dev.plist")
     } else {
         home.path()
-            .join("config/systemd/user/cockpit-greyproxy-dev.service")
+            .join("config/systemd/user/torlek-greyproxy-dev.service")
     };
     for path in [home.state_dir().join("greyproxy"), unit] {
         for rule in ["denyRead", "denyWrite"] {
@@ -159,7 +159,7 @@ async fn a_launch_runs_the_agent_inside_greywall_as_its_own_proxy_client() {
     );
     assert_eq!(
         argument_after(launch, "--ignore-secret"),
-        "COCKPIT_LAUNCH_TOKEN"
+        "TORLEK_LAUNCH_TOKEN"
     );
     assert!(
         argument_after(launch, "--").ends_with("/bin/claude"),
@@ -239,7 +239,7 @@ async fn managed_engines_are_read_only_and_never_hidden_from_the_wrapper() {
     }
 }
 
-/// #419: Claude Code lists the bundle's `cockpit` skill because the launch adds the folder
+/// #419: Claude Code lists the bundle's `torlek` skill because the launch adds the folder
 /// whose `.claude/skills` holds it, written at the daemon's start and readable in the sandbox.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_claude_launch_adds_the_instruction_skills_it_may_read() {
@@ -255,10 +255,10 @@ async fn a_claude_launch_adds_the_instruction_skills_it_may_read() {
         skills_root
     );
     let skill = std::fs::read_to_string(
-        std::path::Path::new(&skills_root).join(".claude/skills/cockpit/SKILL.md"),
+        std::path::Path::new(&skills_root).join(".claude/skills/torlek/SKILL.md"),
     )
     .unwrap();
-    assert!(skill.starts_with("---\nname: cockpit\n"), "{skill}");
+    assert!(skill.starts_with("---\nname: torlek\n"), "{skill}");
 }
 
 /// `--add-dir` lets Claude Code's own tools edit the folder, so only the sandbox keeps one

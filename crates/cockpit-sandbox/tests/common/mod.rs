@@ -109,7 +109,7 @@ pub fn wsl2() -> Platform {
 
 pub fn launch_token() -> Secret {
     Secret {
-        variable: "COCKPIT_LAUNCH_TOKEN".to_owned(),
+        variable: "TORLEK_LAUNCH_TOKEN".to_owned(),
         handling: SecretHandling::PassThrough,
     }
 }
@@ -139,7 +139,7 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         session_dir: PathBuf::from(format!("/run/user/1000/cockpit/sessions/{session}")),
         environment: vec![
             ("PATH".into(), "/usr/bin".into()),
-            ("COCKPIT_LAUNCH_TOKEN".into(), "token-1".into()),
+            ("TORLEK_LAUNCH_TOKEN".into(), "token-1".into()),
         ],
         secrets: vec![launch_token()],
         desktop: DesktopSession::Withheld,

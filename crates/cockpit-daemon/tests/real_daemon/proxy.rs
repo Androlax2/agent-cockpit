@@ -9,9 +9,9 @@ const PID: u32 = 999_999_999;
 pub(super) fn commands(home: &Path) {
     fs::create_dir_all(home.join("bin")).unwrap();
     let manager = r#"#!/bin/sh
-fixture="$HOME/proxy-fixture/$COCKPIT_PROFILE"
+fixture="$HOME/proxy-fixture/$TORLEK_PROFILE"
 case "$*" in
-  '--user show cockpit-greyproxy-'*|print*io.github.androlax2.cockpit.greyproxy.*)
+  '--user show torlek-greyproxy-'*|print*io.github.androlax2.torlek.greyproxy.*)
     if [ -f "$fixture/stopped" ]; then
       case "$*" in print*) exit 113;; esac
       while IFS= read -r line; do
@@ -30,7 +30,7 @@ esac
             "curl",
             r#"#!/bin/sh
 case "$*" in *'http://[::1]:'*) exit 7;; esac
-fixture="$HOME/proxy-fixture/$COCKPIT_PROFILE"
+fixture="$HOME/proxy-fixture/$TORLEK_PROFILE"
 case "$*" in
   */api/health)
     status=ok
@@ -46,7 +46,7 @@ esac
             "readlink",
             r#"#!/bin/sh
 case "$*" in
-  /proc/999999999/exe) exec /bin/cat "$HOME/proxy-fixture/$COCKPIT_PROFILE/exe";;
+  /proc/999999999/exe) exec /bin/cat "$HOME/proxy-fixture/$TORLEK_PROFILE/exe";;
   *) exec /usr/bin/readlink "$@";;
 esac
 "#,
@@ -55,10 +55,10 @@ esac
             "cat",
             r#"#!/bin/sh
 case "$*" in
-  /proc/999999999/cmdline) exec /bin/cat "$HOME/proxy-fixture/$COCKPIT_PROFILE/cmdline";;
-  /proc/999999999/environ) exec /bin/cat "$HOME/proxy-fixture/$COCKPIT_PROFILE/environ";;
-  /proc/999999999/net/tcp) exec /bin/cat "$HOME/proxy-fixture/$COCKPIT_PROFILE/tcp";;
-  /proc/999999999/net/udp) exec /bin/cat "$HOME/proxy-fixture/$COCKPIT_PROFILE/udp";;
+  /proc/999999999/cmdline) exec /bin/cat "$HOME/proxy-fixture/$TORLEK_PROFILE/cmdline";;
+  /proc/999999999/environ) exec /bin/cat "$HOME/proxy-fixture/$TORLEK_PROFILE/environ";;
+  /proc/999999999/net/tcp) exec /bin/cat "$HOME/proxy-fixture/$TORLEK_PROFILE/tcp";;
+  /proc/999999999/net/udp) exec /bin/cat "$HOME/proxy-fixture/$TORLEK_PROFILE/udp";;
   *) exec /bin/cat "$@";;
 esac
 "#,

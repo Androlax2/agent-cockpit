@@ -25,7 +25,7 @@ pub fn is_alive(pid: i32) -> bool {
 
 /// The profile directory of a daemon this test build runs without `--profile`: a build
 /// outside a release bundle runs profile `dev` (#196).
-pub const BUILD_PROFILE_DIR: &str = "cockpit-dev";
+pub const BUILD_PROFILE_DIR: &str = "torlek-dev";
 
 /// Long enough never to fire in a passing test, short enough to fail a hung one quickly.
 pub const GENEROUS: Duration = Duration::from_secs(10);
@@ -63,7 +63,7 @@ impl TestHome {
     }
 
     /// A home with nothing in it and only `HOME` in the environment. Under `/tmp`: without
-    /// `XDG_RUNTIME_DIR` the agent socket is `<home>/.local/state/cockpit-dev/run/agent/agent.sock`,
+    /// `XDG_RUNTIME_DIR` the agent socket is `<home>/.local/state/torlek-dev/run/agent/agent.sock`,
     /// which under macOS's `/var/folders/…/T` exceeds the 104-byte socket path limit.
     pub fn bare() -> TestHome {
         TestHome {
@@ -125,7 +125,7 @@ impl TestHome {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(candidate::program("cockpit-daemon"));
+        let mut command = Command::new(candidate::program("torlek-daemon"));
         command
             .env_clear()
             .env("HOME", self.home())
@@ -141,7 +141,7 @@ impl TestHome {
             command.env("XDG_RUNTIME_DIR", base);
         }
         if let Some(level) = &self.log_level {
-            command.env("COCKPIT_LOG_LEVEL", level);
+            command.env("TORLEK_LOG_LEVEL", level);
         }
         if let Some(path) = &self.path {
             command.env("PATH", path);

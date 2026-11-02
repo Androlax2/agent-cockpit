@@ -38,8 +38,8 @@ WSL2, is insufficient: upgrade to a distribution/package providing 3.6 or newer,
 or build a supported upstream release using its installation instructions.
 Ubuntu 26.04 packages tmux 3.6a. Installing tmux in Windows does not upgrade WSL2's copy.
 
-If Cockpit reports an unsupported running server, finish the sessions on that server and
-restart that private server after upgrading. Cockpit refuses before changing its
+If Torlek reports an unsupported running server, finish the sessions on that server and
+restart that private server after upgrading. Torlek refuses before changing its
 configuration and does not terminate those sessions. The client version check alone
 does not prove an existing server was upgraded.
 

@@ -29,11 +29,11 @@ impl FakeCockpit {
             dir.path(),
             "cockpit",
             &format!(
-                "if [ \"$1\" = brief ]; then printf '%s' \"$COCKPIT_LAUNCH_TOKEN\" \
+                "if [ \"$1\" = brief ]; then printf '%s' \"$TORLEK_LAUNCH_TOKEN\" \
                    > \"$(dirname \"$0\")/brief-token\"\n\
                    printf '{BRIEF}\\n'; exit {brief_status}; fi\n\
                  printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/arguments\"\n\
-                 printf '%s' \"$COCKPIT_LAUNCH_TOKEN\" > \"$(dirname \"$0\")/token\"\n\
+                 printf '%s' \"$TORLEK_LAUNCH_TOKEN\" > \"$(dirname \"$0\")/token\"\n\
                  echo 'reported for session s000000000001'\nexit {status}"
             ),
         );
@@ -56,15 +56,15 @@ impl FakeCockpit {
 }
 
 fn run_hook(cockpit: &Path, payload: &str, token: Option<&str>) -> Output {
-    let mut hook = Command::new(env!("CARGO_BIN_EXE_cockpit-codex-hook"));
+    let mut hook = Command::new(env!("CARGO_BIN_EXE_torlek-codex-hook"));
     hook.arg(cockpit)
-        .env_remove("COCKPIT_CODEX_REPORT_STATE")
-        .env_remove("COCKPIT_LAUNCH_TOKEN")
+        .env_remove("TORLEK_CODEX_REPORT_STATE")
+        .env_remove("TORLEK_LAUNCH_TOKEN")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(token) = token {
-        hook.env("COCKPIT_LAUNCH_TOKEN", token);
+        hook.env("TORLEK_LAUNCH_TOKEN", token);
     }
     let mut child = hook.spawn().unwrap();
     child
@@ -163,8 +163,8 @@ fn a_start_whose_report_and_brief_both_fail_names_both() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("`cockpit agent report"), "{stderr}");
-    assert!(stderr.contains("`cockpit brief` failed"), "{stderr}");
+    assert!(stderr.contains("`torlek agent report"), "{stderr}");
+    assert!(stderr.contains("`torlek brief` failed"), "{stderr}");
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn a_brief_that_cannot_be_read_still_lets_the_start_report_and_exits_1() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("`cockpit brief` failed"),
+        String::from_utf8_lossy(&output.stderr).contains("`torlek brief` failed"),
         "{output:?}"
     );
     assert_eq!(cockpit.arguments().unwrap()[..2], ["agent", "report"]);
@@ -210,7 +210,7 @@ fn a_payload_that_is_not_a_hook_event_exits_1_saying_why() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr).starts_with("cockpit-codex-hook: "),
+        String::from_utf8_lossy(&output.stderr).starts_with("torlek-codex-hook: "),
         "{output:?}"
     );
     assert_eq!(cockpit.arguments(), None);
@@ -229,7 +229,7 @@ fn a_missing_cockpit_program_exits_1() {
 
 #[test]
 fn without_its_cockpit_argument_it_exits_1_with_its_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_cockpit-codex-hook"))
+    let output = Command::new(env!("CARGO_BIN_EXE_torlek-codex-hook"))
         .stdin(Stdio::null())
         .output()
         .unwrap();

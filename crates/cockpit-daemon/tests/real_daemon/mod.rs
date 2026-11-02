@@ -23,11 +23,11 @@ mod proxy;
 
 /// The profile directory of a daemon this test build runs without `--profile`: a build
 /// outside a release bundle runs profile `dev` (#196).
-pub const BUILD_PROFILE_DIR: &str = "cockpit-dev";
+pub const BUILD_PROFILE_DIR: &str = "torlek-dev";
 
 /// Every profile directory a test here runs a daemon under, whose tmux servers the home
 /// stops when dropped.
-const PROFILE_DIRS: [&str; 3] = ["cockpit", BUILD_PROFILE_DIR, "cockpit-next"];
+const PROFILE_DIRS: [&str; 3] = ["torlek", BUILD_PROFILE_DIR, "torlek-next"];
 
 /// Long enough never to fire in a passing test, short enough to fail a hung one.
 pub const GENEROUS: Duration = Duration::from_secs(10);
@@ -63,7 +63,7 @@ pub const ASK_RUN_PROJECT: &str = "ask-run";
 pub const ASK_GUIDE_PROJECT: &str = "ask-guide";
 /// A project of this name runs an agent that has nothing but what Cockpit launched it with
 /// (#49): it runs `cockpit brief`, `cockpit docs` and the `workflow`, `checks` and
-/// `approvals` topics, checks the skill under `$COCKPIT_INSTRUCTIONS` is readable, and writes
+/// `approvals` topics, checks the skill under `$TORLEK_INSTRUCTIONS` is readable, and writes
 /// everything it read to [`Home::onboard_log`].
 pub const ONBOARD_PROJECT: &str = "onboard";
 /// A project of this name runs an agent that runs, in order, each `<n>.sh` the test drops
@@ -92,7 +92,7 @@ pub const ASKED_GUIDE: &str = "# Asked from the agent\nLook at the panel\n";
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
 if [ "$*" = 'auth status' ]; then exit 2; fi
-printf '%s pid=%s\n' "$COCKPIT_SESSION" "$$" >> '@LOG@'
+printf '%s pid=%s\n' "$TORLEK_SESSION" "$$" >> '@LOG@'
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
   @STALL@) trap '' TERM; while :; do sleep 1; done ;;
@@ -126,13 +126,13 @@ case "${PWD##*/}" in
     exec sleep 3600 ;;
   @SESSION_DIR@) IFS=:
     for dir in $FAKE_GREYWALL_WRITABLE; do
-      case "$dir" in */sessions/"$COCKPIT_SESSION") printf 'written\n' > "$dir/probe" ;; esac
+      case "$dir" in */sessions/"$TORLEK_SESSION") printf 'written\n' > "$dir/probe" ;; esac
     done
     unset IFS
     exec sleep 3600 ;;
   @ONBOARD@) { '@COCKPIT@' brief; '@COCKPIT@' docs; for topic in workflow checks approvals; do
       '@COCKPIT@' docs "$topic"; done
-    test -r "$COCKPIT_INSTRUCTIONS/cockpit/SKILL.md" && echo 'skill readable on disk'
+    test -r "$TORLEK_INSTRUCTIONS/torlek/SKILL.md" && echo 'skill readable on disk'
     } > '@ONBOARD_LOG@.partial' 2>&1; mv '@ONBOARD_LOG@.partial' '@ONBOARD_LOG@'
     exec sleep 3600 ;;
   *) exec sleep 3600 ;;
@@ -488,7 +488,7 @@ impl Home {
             std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o700)).unwrap();
             proxy::configure(&self.path(), profile.unwrap_or("dev"));
         }
-        let mut command = Process::new(candidate::program("cockpit-daemon"));
+        let mut command = Process::new(candidate::program("torlek-daemon"));
         command
             .args(
                 profile
@@ -638,7 +638,7 @@ pub struct Daemon {
 /// builds it there for the workspace run (`make crates-test`), not for a run of this
 /// package alone.
 pub fn cockpit_program() -> PathBuf {
-    candidate::program("cockpit")
+    candidate::program("torlek")
 }
 
 impl Daemon {

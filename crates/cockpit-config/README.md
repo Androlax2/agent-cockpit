@@ -6,7 +6,7 @@ settings, precedence, provenance and start-file change detection. Design:
 
 **Depends on:** no product crate (only `serde` and `toml`).
 **Used by:** `cockpit-daemon` for paths and settings, `cockpit-sessions` for start-file
-snapshots (one per launch, #146), `cockpit-readiness` for the project's requirements (#50), and `cockpit-cli` for `cockpit config show` and an offline `cockpit doctor`. It reads files; it never
+snapshots (one per launch, #146), `cockpit-readiness` for the project's requirements (#50), and `cockpit-cli` for `torlek config show` and an offline `torlek doctor`. It reads files; it never
 grants: owner settings are inputs to `cockpit-authorization`, which decides.
 
 ## Files and precedence
@@ -14,8 +14,8 @@ grants: owner settings are inputs to `cockpit-authorization`, which decides.
 | Layer (lowest first) | Location | May set |
 | --- | --- | --- |
 | Product defaults | this crate | everything |
-| Owner config | `$XDG_CONFIG_HOME/cockpit/config.toml` (default `~/.config/cockpit/config.toml`) | everything |
-| Project config | `<project>/.cockpit/config.toml` | describing settings only (`workflow.preset`, `[[checks]]`, `[execution]`, `[needs]`, `[results]`) |
+| Owner config | `$XDG_CONFIG_HOME/torlek/config.toml` (default `~/.config/torlek/config.toml`) | everything |
+| Project config | `<project>/.torlek/config.toml` | describing settings only (`workflow.preset`, `[[checks]]`, `[execution]`, `[needs]`, `[results]`) |
 | Overrides | `--set key=value` (TOML value) | `projects.trusted`, `workflow.preset` |
 
 A project file that sets an owner setting (`projects`, `start_files`, `tasks`, `sessions`) fails with its file and
@@ -26,14 +26,14 @@ requirements fail the same way in the owner file (#50): `[execution] environment
 `sandbox` or `docker`), `[needs] cpu_millis` and `memory_mib` (at least one), and
 `[results] artifacts` (paths relative to the project, never `..`). A check's
 `working_directory` follows the same rule, and its `environment` is `native`, `sandbox` or
-`docker`. `cockpit doctor` reports
+`docker`. `torlek doctor` reports
 whether this host meets them; the configuration never grants them. Unknown keys,
 relative paths and unknown providers fail the same way. State and cache go under
-`$XDG_STATE_HOME/cockpit` and `$XDG_CACHE_HOME/cockpit`; the runtime directory is
-`$XDG_RUNTIME_DIR/cockpit` and shown as unset when that variable is.
+`$XDG_STATE_HOME/torlek` and `$XDG_CACHE_HOME/torlek`; the runtime directory is
+`$XDG_RUNTIME_DIR/torlek` and shown as unset when that variable is.
 
 ```sh
-cockpit config show [--project DIR] [--set KEY=VALUE]...
+torlek config show [--project DIR] [--set KEY=VALUE]...
 ```
 
 prints every value as `key = value  # source`. It reads files only, so it works without the

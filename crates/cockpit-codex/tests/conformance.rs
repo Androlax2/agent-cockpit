@@ -206,15 +206,15 @@ impl Recorder {
         common::script(
             dir.path(),
             "cockpit",
-            "{ printf '%s\\n' \"$COCKPIT_LAUNCH_TOKEN\" \"$@\"; echo; } >> \"$(dirname \"$0\")/reports\"",
+            "{ printf '%s\\n' \"$TORLEK_LAUNCH_TOKEN\" \"$@\"; echo; } >> \"$(dirname \"$0\")/reports\"",
         );
         Recorder { dir }
     }
 
     fn bridge(&self) -> Bridge {
         Bridge {
-            session_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-session")),
-            hook_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-hook")),
+            session_program: PathBuf::from(env!("CARGO_BIN_EXE_torlek-codex-session")),
+            hook_program: PathBuf::from(env!("CARGO_BIN_EXE_torlek-codex-hook")),
             cockpit_program: self.dir.path().join("cockpit"),
         }
     }
@@ -330,7 +330,7 @@ fn start_server(
             ))
             .current_dir(work)
             .process_group(0)
-            .env("COCKPIT_LAUNCH_TOKEN", "token-live")
+            .env("TORLEK_LAUNCH_TOKEN", "token-live")
             .env(cockpit_codex::reports::STATE_VARIABLE, reports.path())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -708,7 +708,7 @@ while :; do sleep 1; done"#,
             launch.arg(assignment);
         }
         launch
-            .arg("COCKPIT_LAUNCH_TOKEN=token-session")
+            .arg("TORLEK_LAUNCH_TOKEN=token-session")
             .arg(program)
             .args(arguments);
         let output = bounded_command::output(&mut launch, Duration::from_secs(10)).unwrap();

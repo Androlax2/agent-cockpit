@@ -29,7 +29,7 @@ pub fn import() -> ExitCode {
     // likely a mistake, and it replaces a live session's values.
     if variables.is_empty() {
         eprintln!(
-            "cockpit: no desktop session variable is set here; agents launched from now on get none"
+            "torlek: no desktop session variable is set here; agents launched from now on get none"
         );
     }
     match request(
@@ -40,7 +40,7 @@ pub fn import() -> ExitCode {
         // Recorded all the same: a login script must not fail because the owner opted out.
         Ok(Reply::DesktopSessionImported { withheld: true }) => {
             eprintln!(
-                "cockpit: recorded, but agents.desktop_session = \"withheld\" keeps every agent off the desktop session"
+                "torlek: recorded, but agents.desktop_session = \"withheld\" keeps every agent off the desktop session"
             );
             ExitCode::SUCCESS
         }

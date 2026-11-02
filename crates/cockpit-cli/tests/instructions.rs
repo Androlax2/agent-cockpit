@@ -18,9 +18,9 @@ fn skill_prints_the_whole_manual_in_one_read() {
 
     let manual = home.cockpit_ok(&["--skill"]);
 
-    assert!(manual.starts_with("<!-- Cockpit "), "{manual}");
+    assert!(manual.starts_with("<!-- Torlek "), "{manual}");
     for heading in [
-        "# Working in a Cockpit session",
+        "# Working in a Torlek session",
         "# Workflow: your task's steps",
         "# Checks and evidence",
         "# Asking the owner: approvals and guides",
@@ -58,7 +58,7 @@ fn docs_lists_each_topic_with_when_to_read_it() {
         catalog.contains("prove a result with receipts"),
         "{catalog}"
     );
-    assert!(catalog.contains("`cockpit docs TOPIC`"), "{catalog}");
+    assert!(catalog.contains("`torlek docs TOPIC`"), "{catalog}");
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn every_command_the_manual_names_is_a_verb_of_this_cli() {
         .split('`')
         .skip(1)
         .step_by(2)
-        .filter(|span| span.starts_with("cockpit "))
+        .filter(|span| span.starts_with("torlek "))
         .collect();
 
     assert!(named.len() > 20, "{named:?}");
@@ -154,27 +154,24 @@ fn the_mcp_server_offers_the_topics_as_resources_and_tools() {
     let checks = server.call(
         3,
         "resources/read",
-        json!({"uri": "cockpit://instructions/checks"}),
+        json!({"uri": "torlek://instructions/checks"}),
     );
     let tools = server.call(4, "tools/list", json!({}));
     let approvals = server.call(
         5,
         "tools/call",
-        json!({"name": "cockpit_docs", "arguments": {"topic": "approvals"}}),
+        json!({"name": "torlek_docs", "arguments": {"topic": "approvals"}}),
     );
 
     assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(initialized["result"]["serverInfo"]["name"], "cockpit");
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "torlek");
     let uris: Vec<&str> = resources["result"]["resources"]
         .as_array()
         .unwrap()
         .iter()
         .map(|resource| resource["uri"].as_str().unwrap())
         .collect();
-    assert!(
-        uris.contains(&"cockpit://instructions/workflow"),
-        "{uris:?}"
-    );
+    assert!(uris.contains(&"torlek://instructions/workflow"), "{uris:?}");
     let text = checks["result"]["contents"][0]["text"].as_str().unwrap();
     assert!(text.starts_with("# Checks and evidence"), "{text}");
     let tool_names: Vec<&str> = tools["result"]["tools"]
@@ -183,9 +180,9 @@ fn the_mcp_server_offers_the_topics_as_resources_and_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(tool_names, ["cockpit_docs", "cockpit_brief"]);
+    assert_eq!(tool_names, ["torlek_docs", "torlek_brief"]);
     let text = approvals["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("cockpit ask run"), "{text}");
+    assert!(text.contains("torlek ask run"), "{text}");
     assert_eq!(approvals["result"]["isError"], false);
 }
 
@@ -198,7 +195,7 @@ fn an_mcp_tool_call_the_daemon_refuses_is_a_tool_error() {
     let missing = server.call(
         1,
         "tools/call",
-        json!({"name": "cockpit_docs", "arguments": {"topic": "teleport"}}),
+        json!({"name": "torlek_docs", "arguments": {"topic": "teleport"}}),
     );
     let unknown = server.call(2, "teleport/now", json!({}));
 
@@ -217,7 +214,7 @@ fn reading_an_unknown_mcp_resource_is_resource_not_found() {
     let unknown_topic = server.call(
         1,
         "resources/read",
-        json!({"uri": "cockpit://instructions/teleport"}),
+        json!({"uri": "torlek://instructions/teleport"}),
     );
     let foreign = server.call(2, "resources/read", json!({"uri": "file:///etc/hosts"}));
 
@@ -248,7 +245,7 @@ struct McpServer {
 impl McpServer {
     fn start(home: &TestHome) -> McpServer {
         let mut child = home
-            .base_command(Path::new(env!("CARGO_BIN_EXE_cockpit")))
+            .base_command(Path::new(env!("CARGO_BIN_EXE_torlek")))
             .arg("mcp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
