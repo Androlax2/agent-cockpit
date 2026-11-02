@@ -167,7 +167,7 @@ async fn a_new_draft_carries_the_versions_and_a_support_bundle() {
     let draft = report(&owner, new_draft("the session list stays empty")).await;
 
     assert!(
-        draft.environment.contains("cockpit "),
+        draft.environment.contains("torlek "),
         "{}",
         draft.environment
     );

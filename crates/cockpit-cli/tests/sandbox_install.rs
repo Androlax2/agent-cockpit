@@ -6,7 +6,7 @@ use std::process::Command;
 #[test]
 fn proxy_status_is_offline_and_names_the_selected_profiles_setup_command() {
     let home = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
+    let output = Command::new(env!("CARGO_BIN_EXE_torlek"))
         .args(["--profile", "next", "sandbox", "status"])
         .env_clear()
         .env("HOME", home.path())
@@ -21,7 +21,7 @@ fn proxy_status_is_offline_and_names_the_selected_profiles_setup_command() {
     assert_eq!(output.status.code(), Some(1), "{report}");
     assert!(report.contains("proxy-not-configured"), "{report}");
     assert!(
-        report.contains("cockpit --profile next sandbox install"),
+        report.contains("torlek --profile next sandbox install"),
         "{report}"
     );
     assert!(!report.contains("daemon.sock"), "{report}");
@@ -35,7 +35,7 @@ fn install_reports_a_download_failure_without_connecting_to_a_daemon() {
     let curl = bin.join("curl");
     fs::write(&curl, "#!/bin/sh\nexit 22\n").unwrap();
     fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
+    let output = Command::new(env!("CARGO_BIN_EXE_torlek"))
         .args(["sandbox", "install"])
         .env_clear()
         .env("HOME", home.path())

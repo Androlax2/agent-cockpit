@@ -115,7 +115,7 @@ pub(crate) fn facts(
     providers: &[cockpit_readiness::ProviderFacts],
 ) -> Facts {
     let version = env!("CARGO_PKG_VERSION").to_owned();
-    let revision = option_env!("COCKPIT_SOURCE_REVISION").unwrap_or("unknown: not a release build");
+    let revision = option_env!("TORLEK_SOURCE_REVISION").unwrap_or("unknown: not a release build");
     let providers = if providers.is_empty() {
         "none".to_owned()
     } else {
@@ -134,7 +134,7 @@ pub(crate) fn facts(
             .join(", ")
     };
     let environment = format!(
-        "cockpit {version} (revision {revision})\nplatform: {platform} ({os} {arch})\ntmux: {tmux}\nproviders: {providers}",
+        "torlek {version} (revision {revision})\nplatform: {platform} ({os} {arch})\ntmux: {tmux}\nproviders: {providers}",
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         tmux = tmux.as_deref().unwrap_or("unavailable"),

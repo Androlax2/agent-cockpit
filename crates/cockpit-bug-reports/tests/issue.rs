@@ -72,7 +72,7 @@ fn a_long_description_is_cut_to_fit_the_url_with_a_pointer_to_the_full_text() {
     assert!(
         issue
             .new_issue_url
-            .contains("cockpit%20bug-report%20show%203")
+            .contains("torlek%20bug-report%20show%203")
     );
     assert!(
         issue.body.contains(&long.description),

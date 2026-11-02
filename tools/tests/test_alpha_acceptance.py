@@ -22,7 +22,7 @@ verb = sys.argv[3:]
 if verb[0] == "doctor":
     print("available             config: absent")
     print("missing-prerequisite  daemon: not running")
-    print("                        next: start `cockpit-daemon`")
+    print("                        next: start `torlek-daemon`")
     print("unknown               host: assessed by the daemon")
     sys.exit(1)
 print("fixture " + " ".join(verb))
@@ -38,7 +38,7 @@ class AlphaAcceptanceTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.bin = self.root / "candidate with spaces"
         self.bin.mkdir()
-        self.program = self.bin / "cockpit"
+        self.program = self.bin / "torlek"
         self.program.write_text(FAKE.format(python=sys.executable))
         self.program.chmod(0o755)
         self.parent = self.root / "runs"
@@ -50,9 +50,9 @@ class AlphaAcceptanceTests(unittest.TestCase):
             env={
                 **os.environ,
                 "HOME": str(self.root / "real owner"),
-                "COCKPIT_PROFILE": "cockpit",
-                "COCKPIT_AGENT_SOCKET": "/real/agent.sock",
-                "COCKPIT_LAUNCH_TOKEN": "fixture-secret",
+                "TORLEK_PROFILE": "torlek",
+                "TORLEK_AGENT_SOCKET": "/real/agent.sock",
+                "TORLEK_LAUNCH_TOKEN": "fixture-secret",
                 "ANTHROPIC_API_KEY": "fixture-secret",
                 "OPENAI_API_KEY": "fixture-secret",
                 "GH_TOKEN": "fixture-secret",
@@ -90,9 +90,9 @@ class AlphaAcceptanceTests(unittest.TestCase):
                     ("TMPDIR", "tmp"),
                 ):
                     self.assertEqual(call["env"][name], str(scratch / child))
-                self.assertEqual(call["env"]["COCKPIT_PROFILE"], "next")
+                self.assertEqual(call["env"]["TORLEK_PROFILE"], "next")
                 self.assertNotIn("fixture-secret", json.dumps(call))
-                for name in ("DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "TMUX", "COCKPIT_AGENT_SOCKET"):
+                for name in ("DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "TMUX", "TORLEK_AGENT_SOCKET"):
                     self.assertNotIn(name, call["env"])
         self.assertEqual(scratch.stat().st_mode & 0o777, 0o700)
 

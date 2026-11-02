@@ -241,7 +241,7 @@ class Runner:
         self.bin = home / "bin"
         self.bin.mkdir()
         self.env = environment(home, runtime, self.bin, ambient)
-        self.state = home / "state" / f"cockpit-{PROFILE}"
+        self.state = home / "state" / f"torlek-{PROFILE}"
         self.daemon = None
         self.log = None
         self.session = None
@@ -249,7 +249,7 @@ class Runner:
 
     def cli(self, *arguments, timeout=60):
         return command(
-            [str(self.programs / "cockpit"), "--profile", PROFILE, *arguments],
+            [str(self.programs / "torlek"), "--profile", PROFILE, *arguments],
             self.env,
             timeout=timeout,
         )
@@ -264,7 +264,7 @@ class Runner:
                 return self.cli(*arguments)
             except RuntimeError as error:
                 # Busy refuses before mutation; no retry of timeouts or other refusals.
-                if "cockpit: busy:" not in str(error) or time.monotonic() >= deadline:
+                if "torlek: busy:" not in str(error) or time.monotonic() >= deadline:
                     raise
                 time.sleep(0.1)
 
@@ -300,7 +300,7 @@ class Runner:
                 time.sleep(0.2)  # The proxy persists its decisions asynchronously.
 
     def prepare(self):
-        config = self.home / "config" / f"cockpit-{PROFILE}"
+        config = self.home / "config" / f"torlek-{PROFILE}"
         config.mkdir(parents=True)
         # The manager bus is needed by host health checks, not by this headless agent.
         (config / "config.toml").write_text('[agents]\ndesktop_session = "withheld"\n')
@@ -321,14 +321,14 @@ class Runner:
         self.cli("sandbox", "status")
         self.log = (self.output / "daemon-stderr.log").open("w+")
         self.daemon = subprocess.Popen(
-            [str(self.programs / "cockpit-daemon"), "--profile", PROFILE, "--foreground"],
+            [str(self.programs / "torlek-daemon"), "--profile", PROFILE, "--foreground"],
             env=self.env,
             stdin=subprocess.DEVNULL,
             stdout=self.log,
             stderr=self.log,
             start_new_session=True,
         )
-        socket = self.runtime / f"cockpit-{PROFILE}/daemon.sock"
+        socket = self.runtime / f"torlek-{PROFILE}/daemon.sock"
         deadline = time.monotonic() + 30
         while not socket.exists():
             if self.daemon.poll() is not None or time.monotonic() >= deadline:
@@ -453,7 +453,7 @@ class Runner:
                         self.daemon.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired) as error:
                 failures.append(str(error))
-        socket = self.runtime / f"tmux-{os.getuid()}/cockpit-{PROFILE}"
+        socket = self.runtime / f"tmux-{os.getuid()}/torlek-{PROFILE}"
         if socket.exists():
             try:
                 if not stat.S_ISSOCK(socket.lstat().st_mode):

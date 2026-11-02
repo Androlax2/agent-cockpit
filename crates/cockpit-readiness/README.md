@@ -11,7 +11,7 @@ value's source), and `serde_json` to read a Docker engine's answer. The
 `readiness -> config only` rule of `cockpit-workspace-rules/tests/crate_graph.rs` keeps every
 other Cockpit crate out: the daemon gathers each fact from its owner (tmux, the sandbox engine,
 the providers, resource admission, the workflow presets, the project registry) and passes it in.
-**Used by:** `cockpit-daemon`, which serves the report as `readiness`; `cockpit doctor` renders
+**Used by:** `cockpit-daemon`, which serves the report as `readiness`; `torlek doctor` renders
 it (#50).
 
 ## Statuses
@@ -25,7 +25,7 @@ it (#50).
 | `unknown` | Cockpit cannot tell yet. | no |
 
 `Requirement::needs` refuses a status other than `available` without a next action.
-`Report::is_ready` is false while a requirement blocks; `cockpit doctor` then exits 1.
+`Report::is_ready` is false while a requirement blocks; `torlek doctor` then exits 1.
 
 ## Requirements
 

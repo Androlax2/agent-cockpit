@@ -14,7 +14,7 @@ use crate::routes::{Route, WorkClass, refusal};
 
 /// The manager's tmux session name. Session ids are `s` and 12 hex digits, so no agent's
 /// session can take it.
-const MANAGER: &str = "cockpit";
+const MANAGER: &str = "torlek";
 /// The viewer's share of the manager's width.
 const VIEWER_PERCENT: u8 = 70;
 
@@ -282,11 +282,11 @@ fn whole_manager(tmux: &cockpit_tmux::Server) -> Result<ManagerPanes, ProtocolEr
         ManagerState::Whole(panes) => Ok(panes),
         ManagerState::Absent => Err(ProtocolError::new(
             ErrorCode::NotFound,
-            "no manager session is open: run `cockpit tui`",
+            "no manager session is open: run `torlek tui`",
         )),
         ManagerState::Broken => Err(ProtocolError::new(
             ErrorCode::Conflict,
-            "the manager session lost its column or its viewer: run `cockpit tui` again to rebuild it",
+            "the manager session lost its column or its viewer: run `torlek tui` again to rebuild it",
         )),
     }
 }

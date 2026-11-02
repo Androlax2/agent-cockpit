@@ -134,7 +134,7 @@ fn run_line(run: &RunRequestView) -> String {
         (None, None) => return format!("{line}{shown}"),
     };
     format!(
-        "{line}{preview} [more: {more}; cockpit approval show {}]",
+        "{line}{preview} [more: {more}; torlek approval show {}]",
         run.id
     )
 }
@@ -245,7 +245,7 @@ fn run_detail(run: &RunRequestView) -> String {
     if run.waiting_for_input {
         let _ = writeln!(
             text,
-            "waiting for input: cockpit approval input {} (reads one line from standard input)",
+            "waiting for input: torlek approval input {} (reads one line from standard input)",
             run.id
         );
     }
@@ -266,7 +266,7 @@ fn run_detail(run: &RunRequestView) -> String {
     if run.state == RunStateView::Asking {
         let _ = writeln!(
             text,
-            "approve: cockpit approval approve {} --revision {} --digest {}",
+            "approve: torlek approval approve {} --revision {} --digest {}",
             run.id, run.revision, run.digest
         );
     }

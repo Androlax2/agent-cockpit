@@ -32,13 +32,13 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
                 outln!("this profile's managed Greyproxy service is healthy");
             }
             outln!(
-                "restart this profile's daemon, then run `cockpit --profile {} doctor`; existing sessions keep their previous engines until restarted",
+                "restart this profile's daemon, then run `torlek --profile {} doctor`; existing sessions keep their previous engines until restarted",
                 environment.profile.value
             );
             Ok(ExitCode::SUCCESS)
         }
         Err(error) => {
-            eprintln!("cockpit sandbox install: {error}");
+            eprintln!("torlek sandbox install: {error}");
             Ok(ExitCode::FAILURE)
         }
     }
@@ -67,7 +67,7 @@ pub(crate) fn proxy(action: &str, arguments: &[OsString]) -> Result<ExitCode, St
 
 fn proxy_failure(error: &cockpit_sandbox::ProxyError) -> ExitCode {
     eprintln!(
-        "cockpit sandbox: {error}\nnext: {}",
+        "torlek sandbox: {error}\nnext: {}",
         error.next(&crate::profile::active().value)
     );
     ExitCode::FAILURE

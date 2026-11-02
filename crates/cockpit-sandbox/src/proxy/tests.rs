@@ -125,7 +125,7 @@ impl Fixture {
         executable(
             &self.proxy.service_program,
             &format!(
-                "printf '%s\\n' \"$*\" >> \"$HOME/manager.log\"\ncase \"$*\" in *show*|*print*) if [ -e \"$HOME/manager.stopped\" ]; then case \"$*\" in *cockpit.greyproxy*) exit 113;; *show*) printf '%s' '{inactive}'; exit 0;; esac; fi; printf '%s' '{body}';; *stop*|*bootout*) /bin/touch \"$HOME/manager.stopped\";; *start*|*bootstrap*) /bin/rm -f \"$HOME/manager.stopped\"; umask 077; printf '%s' '{}' > '{}';; esac",
+                "printf '%s\\n' \"$*\" >> \"$HOME/manager.log\"\ncase \"$*\" in *show*|*print*) if [ -e \"$HOME/manager.stopped\" ]; then case \"$*\" in *torlek.greyproxy*) exit 113;; *show*) printf '%s' '{inactive}'; exit 0;; esac; fi; printf '%s' '{body}';; *stop*|*bootout*) /bin/touch \"$HOME/manager.stopped\";; *start*|*bootstrap*) /bin/rm -f \"$HOME/manager.stopped\"; umask 077; printf '%s' '{}' > '{}';; esac",
                 "a".repeat(64),
                 self.proxy.data_dir.join("api-token").display(),
             ),
@@ -193,7 +193,7 @@ fn managed_units_and_configuration_preserve_authentication_and_profile_isolation
         let unit = fs::read_to_string(fixture.proxy.unit_path()).unwrap();
         assert!(unit.contains("GREYPROXY_DATA_HOME"));
         assert!(unit.contains(&fixture.proxy.program.display().to_string()));
-        assert!(!unit.contains("X-Cockpit-Profile="));
+        assert!(!unit.contains("X-Torlek-Profile="));
         assert_eq!(
             fs::metadata(fixture.proxy.data_dir())
                 .unwrap()
@@ -475,7 +475,7 @@ fn an_unloaded_launchd_service_is_stopped_when_its_login_domain_is_available() {
     fixture.configure();
     executable(
         &fixture.proxy.service_program,
-        "case \"$*\" in *cockpit.greyproxy*) exit 113;; *) exit 0;; esac",
+        "case \"$*\" in *torlek.greyproxy*) exit 113;; *) exit 0;; esac",
     );
     assert_eq!(
         fixture.proxy.health().unwrap_err().code(),
@@ -559,7 +559,7 @@ bootout) printf 0 > "$HOME/stopping";;
 bootstrap) [ ! -e "$HOME/stopping" ] || exit 5;;
 print)
   case "$2" in
-  *cockpit.greyproxy*)
+  *torlek.greyproxy*)
     if [ -e "$HOME/stopping" ]; then
       count=$(/bin/cat "$HOME/stopping"); count=$((count + 1))
       if [ "$count" -ge 3 ]; then /bin/rm "$HOME/stopping"; exit 113; fi

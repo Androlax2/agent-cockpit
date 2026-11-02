@@ -49,14 +49,14 @@ pub const OPENCODE_VARIABLES: [&str; 3] = [
 /// The variables the plugin reads: the bridge program, the `cockpit` program it reports
 /// through, and the port of the server the plugin must run in.
 pub const PLUGIN_VARIABLES: [&str; 3] = [
-    "COCKPIT_OPENCODE_BRIDGE",
-    "COCKPIT_OPENCODE_COCKPIT",
-    "COCKPIT_OPENCODE_PORT",
+    "TORLEK_OPENCODE_BRIDGE",
+    "TORLEK_OPENCODE_COCKPIT",
+    "TORLEK_OPENCODE_PORT",
 ];
 
 /// The name Cockpit's MCP server (`cockpit mcp`) has in every harness a launch registers it
 /// with (#419).
-pub const MCP_SERVER_NAME: &str = "cockpit";
+pub const MCP_SERVER_NAME: &str = "torlek";
 
 /// The plugin OpenCode loads in every launch with a bridge. The daemon writes it to the
 /// file [`Bridge::plugin`] names; [`Bridge::check`] refuses a file with other content.
@@ -73,7 +73,7 @@ pub const BRIDGE_VERSION_FLAG: &str = "--version";
 
 /// What `cockpit-opencode-bridge --version` prints: its name and the version it was built as.
 pub fn bridge_version_line() -> String {
-    format!("cockpit-opencode-bridge {}", env!("CARGO_PKG_VERSION"))
+    format!("torlek-opencode-bridge {}", env!("CARGO_PKG_VERSION"))
 }
 
 /// What a launch ships into the sandbox: the plugin OpenCode loads, the bridge program it
@@ -152,7 +152,7 @@ fn inline_config(
     instruction_skills: Option<&Path>,
 ) -> Result<String, ProviderError> {
     let refused = |why: &str| ProviderError {
-        reason: format!("OPENCODE_CONFIG_CONTENT {why}, so Cockpit's settings cannot join it"),
+        reason: format!("OPENCODE_CONFIG_CONTENT {why}, so Torlek's settings cannot join it"),
     };
     let mut config = match owner {
         None => serde_json::json!({}),

@@ -15,22 +15,22 @@ use std::process::ExitCode;
 /// keeps its pid, session and terminal. Returns only on failure.
 pub fn run_session_leader(arguments: &[OsString]) -> ExitCode {
     let Some((program, program_arguments)) = arguments.split_first() else {
-        eprintln!("cockpit: the session leader needs a program to run");
+        eprintln!("torlek: the session leader needs a program to run");
         return ExitCode::from(2);
     };
     if let Err(error) = rustix::process::setsid() {
-        eprintln!("cockpit: cannot start a session for the command: {error}");
+        eprintln!("torlek: cannot start a session for the command: {error}");
         return ExitCode::from(127);
     }
     if let Err(error) = rustix::process::ioctl_tiocsctty(std::io::stdin()) {
-        eprintln!("cockpit: cannot take the terminal for the command: {error}");
+        eprintln!("torlek: cannot take the terminal for the command: {error}");
         return ExitCode::from(127);
     }
     let error = std::process::Command::new(program)
         .args(program_arguments)
         .exec();
     eprintln!(
-        "cockpit: cannot run {}: {error}",
+        "torlek: cannot run {}: {error}",
         Path::new(program).display()
     );
     ExitCode::from(127)

@@ -362,7 +362,7 @@ async fn explain(context: &Context, item: Option<i64>) -> Answer {
                 ErrorCode::NotFound,
                 format!(
                     "item {item} has no explanation: the last pass found it placed, being \
-                     done, finished or gone; `cockpit todo show {item}` says which"
+                     done, finished or gone; `torlek todo show {item}` says which"
                 ),
             )));
         }

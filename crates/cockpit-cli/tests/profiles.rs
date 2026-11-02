@@ -26,9 +26,9 @@ impl Home {
         };
         let bin = home.bin();
         fs::create_dir_all(&bin).unwrap();
-        fs::copy(env!("CARGO_BIN_EXE_cockpit"), bin.join("cockpit")).unwrap();
+        fs::copy(env!("CARGO_BIN_EXE_torlek"), bin.join("torlek")).unwrap();
         for (name, text) in [
-            ("cockpit-daemon", "#!/bin/sh\n"),
+            ("torlek-daemon", "#!/bin/sh\n"),
             ("systemctl", FAKE_SERVICE_MANAGER),
             ("launchctl", FAKE_SERVICE_MANAGER),
         ] {
@@ -84,7 +84,7 @@ impl Home {
     }
 
     fn cockpit(&self, arguments: &[&str]) -> Output {
-        self.run(&self.bin().join("cockpit"), arguments, &[])
+        self.run(&self.bin().join("torlek"), arguments, &[])
     }
 }
 
@@ -119,7 +119,7 @@ fn a_build_outside_a_release_bundle_runs_profile_dev_in_its_own_directories() {
     assert_eq!(
         line_for(&shown, "paths.config_dir"),
         format!(
-            "paths.config_dir = \"{}/config/cockpit-dev\"  # environment $XDG_CONFIG_HOME",
+            "paths.config_dir = \"{}/config/torlek-dev\"  # environment $XDG_CONFIG_HOME",
             home.path().display()
         )
     );
@@ -130,15 +130,15 @@ fn a_default_profile_inherited_from_the_installed_cockpit_does_not_reach_it_from
     let home = Home::new();
 
     let shown = succeeded(&home.run(
-        &home.bin().join("cockpit"),
+        &home.bin().join("torlek"),
         &["config", "show"],
-        &[("COCKPIT_PROFILE", "cockpit")],
+        &[("TORLEK_PROFILE", "torlek")],
     ));
 
     assert_eq!(
         line_for(&shown, "profile"),
-        "profile = \"dev\"  # development build default; $COCKPIT_PROFILE ignored: a \
-         development build reaches the default profile only with --profile cockpit"
+        "profile = \"dev\"  # development build default; $TORLEK_PROFILE ignored: a \
+         development build reaches the default profile only with --profile torlek"
     );
 }
 
@@ -154,30 +154,29 @@ struct Choice<'a> {
 #[test]
 fn each_way_of_choosing_a_profile_places_the_directories_under_it() {
     let home = Home::new();
-    std::os::unix::fs::symlink(home.bin().join("cockpit"), home.bin().join("cockpit-next"))
-        .unwrap();
-    let cockpit = home.bin().join("cockpit");
-    let next = home.bin().join("cockpit-next");
+    std::os::unix::fs::symlink(home.bin().join("torlek"), home.bin().join("torlek-next")).unwrap();
+    let cockpit = home.bin().join("torlek");
+    let next = home.bin().join("torlek-next");
     let cases = [
         Choice {
             program: &cockpit,
-            arguments: &["--profile", "cockpit", "config", "show"],
+            arguments: &["--profile", "torlek", "config", "show"],
             variables: &[],
-            profile: "cockpit",
+            profile: "torlek",
             source: "command line --profile",
         },
         Choice {
             program: &cockpit,
             arguments: &["config", "show"],
-            variables: &[("COCKPIT_PROFILE", "review")],
+            variables: &[("TORLEK_PROFILE", "review")],
             profile: "review",
-            source: "environment $COCKPIT_PROFILE",
+            source: "environment $TORLEK_PROFILE",
         },
         Choice {
             program: &next,
             arguments: &["config", "show"],
             // What every agent of the installed Cockpit inherits.
-            variables: &[("COCKPIT_PROFILE", "cockpit")],
+            variables: &[("TORLEK_PROFILE", "torlek")],
             profile: "next",
             source: "command name",
         },
@@ -196,10 +195,10 @@ fn each_way_of_choosing_a_profile_places_the_directories_under_it() {
             line_for(&shown, "profile"),
             format!("profile = \"{profile}\"  # {source}")
         );
-        let directory = if profile == "cockpit" {
-            "cockpit".to_owned()
+        let directory = if profile == "torlek" {
+            "torlek".to_owned()
         } else {
-            format!("cockpit-{profile}")
+            format!("torlek-{profile}")
         };
         assert_eq!(
             line_for(&shown, "paths.state_dir"),
@@ -253,11 +252,11 @@ fn daemon_install_writes_the_profiles_unit_and_starts_it() {
 
     let printed = succeeded(&home.cockpit(&["daemon", "install"]));
 
-    let unit = fs::read_to_string(home.unit_of("cockpit-dev")).unwrap();
-    let daemon = home.bin().join("cockpit-daemon");
+    let unit = fs::read_to_string(home.unit_of("torlek-dev")).unwrap();
+    let daemon = home.bin().join("torlek-daemon");
     if cfg!(target_os = "macos") {
         assert!(
-            unit.contains("<string>io.github.androlax2.cockpit-dev</string>"),
+            unit.contains("<string>io.github.androlax2.torlek-dev</string>"),
             "{unit}"
         );
         assert!(
@@ -276,7 +275,7 @@ fn daemon_install_writes_the_profiles_unit_and_starts_it() {
             home.service_manager_log()
         );
     } else {
-        assert!(unit.contains("X-Cockpit-Profile=dev\n"), "{unit}");
+        assert!(unit.contains("X-Torlek-Profile=dev\n"), "{unit}");
         assert!(
             unit.contains(&format!(
                 "ExecStart=\"{}\" --profile dev\n",
@@ -297,8 +296,8 @@ fn daemon_install_writes_the_profiles_unit_and_starts_it() {
         );
         assert_eq!(
             home.service_manager_log(),
-            "systemctl --user daemon-reload\nsystemctl --user enable cockpit-dev.service\n\
-             systemctl --user restart cockpit-dev.service\n"
+            "systemctl --user daemon-reload\nsystemctl --user enable torlek-dev.service\n\
+             systemctl --user restart torlek-dev.service\n"
         );
     }
     assert!(
@@ -313,12 +312,12 @@ fn daemon_install_of_another_profile_installs_the_command_whose_name_selects_it(
 
     succeeded(&home.cockpit(&["--profile", "next", "daemon", "install"]));
 
-    let command = home.bin().join("cockpit-next");
+    let command = home.bin().join("torlek-next");
     assert_eq!(
         fs::canonicalize(&command).unwrap(),
-        fs::canonicalize(home.bin().join("cockpit")).unwrap()
+        fs::canonicalize(home.bin().join("torlek")).unwrap()
     );
-    assert!(home.unit_of("cockpit-next").is_file());
+    assert!(home.unit_of("torlek-next").is_file());
     let shown = succeeded(&home.run(&command, &["config", "show"], &[]));
     assert_eq!(
         line_for(&shown, "profile"),
@@ -329,17 +328,17 @@ fn daemon_install_of_another_profile_installs_the_command_whose_name_selects_it(
 #[test]
 fn daemon_install_refuses_a_command_name_another_file_holds() {
     let home = Home::new();
-    fs::write(home.bin().join("cockpit-next"), "someone else's\n").unwrap();
+    fs::write(home.bin().join("torlek-next"), "someone else's\n").unwrap();
 
     let output = home.cockpit(&["--profile", "next", "daemon", "install"]);
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("exists and is not this cockpit"),
+        String::from_utf8_lossy(&output.stderr).contains("exists and is not this torlek"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!home.unit_of("cockpit-next").exists());
+    assert!(!home.unit_of("torlek-next").exists());
     assert_eq!(home.service_manager_log(), "");
 }
 
@@ -353,13 +352,13 @@ fn daemon_install_refuses_the_default_profile_beside_a_legacy_unit_and_proposes_
     fs::create_dir_all(home.unit_dir()).unwrap();
     fs::write(home.unit_dir().join("cockpit.service"), LEGACY_UNIT).unwrap();
 
-    let output = home.cockpit(&["--profile", "cockpit", "daemon", "install"]);
+    let output = home.cockpit(&["--profile", "torlek", "daemon", "install"]);
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("a legacy Cockpit is installed (unit ")
-            && stderr.contains("cockpit --profile next daemon install"),
+            && stderr.contains("torlek --profile next daemon install"),
         "{stderr}"
     );
     assert_eq!(
@@ -378,8 +377,8 @@ fn daemon_install_refuses_the_default_profile_beside_another_cockpit_on_path() {
     let path = format!("{}:{}", legacy_bin.display(), home.bin().display());
 
     let output = home.run(
-        &home.bin().join("cockpit"),
-        &["--profile", "cockpit", "daemon", "install"],
+        &home.bin().join("torlek"),
+        &["--profile", "torlek", "daemon", "install"],
         &[("PATH", &path)],
     );
 
@@ -392,16 +391,16 @@ fn daemon_install_refuses_the_default_profile_beside_another_cockpit_on_path() {
         )),
         "{stderr}"
     );
-    assert!(!home.unit_of("cockpit").exists());
+    assert!(!home.unit_of("torlek").exists());
 }
 
 #[test]
 fn daemon_install_accepts_the_default_profile_when_no_legacy_cockpit_is_found() {
     let home = Home::new();
 
-    succeeded(&home.cockpit(&["--profile", "cockpit", "daemon", "install"]));
+    succeeded(&home.cockpit(&["--profile", "torlek", "daemon", "install"]));
 
-    assert!(home.unit_of("cockpit").is_file());
+    assert!(home.unit_of("torlek").is_file());
 }
 
 #[test]
@@ -409,7 +408,7 @@ fn doctor_names_the_active_profile_and_every_other_installation_it_sees() {
     let home = Home::new();
     succeeded(&home.cockpit(&["--profile", "next", "daemon", "install"]));
     succeeded(&home.cockpit(&["daemon", "install"]));
-    let installed_socket = home.path().join("run/cockpit/daemon.sock");
+    let installed_socket = home.path().join("run/torlek/daemon.sock");
     fs::create_dir_all(installed_socket.parent().unwrap()).unwrap();
     let _listener = std::os::unix::net::UnixListener::bind(&installed_socket).unwrap();
     let legacy_bin = home.path().join("legacy-bin");
@@ -417,7 +416,7 @@ fn doctor_names_the_active_profile_and_every_other_installation_it_sees() {
     fs::write(legacy_bin.join("cockpit"), "#!/bin/sh\n").unwrap();
     let path = format!("{}:{}", home.bin().display(), legacy_bin.display());
 
-    let output = home.run(&home.bin().join("cockpit"), &["doctor"], &[("PATH", &path)]);
+    let output = home.run(&home.bin().join("torlek"), &["doctor"], &[("PATH", &path)]);
 
     // Exit 1: this profile's daemon is not running, which the readiness report after the
     // installations names as the missing prerequisite (#50).
@@ -429,17 +428,17 @@ fn doctor_names_the_active_profile_and_every_other_installation_it_sees() {
     let expected_head = [
         "profile dev (development build default)".to_owned(),
         "build development".to_owned(),
-        format!("config dir {root}/config/cockpit-dev"),
-        format!("state dir {root}/state/cockpit-dev"),
-        format!("daemon {root}/run/cockpit-dev/daemon.sock: not running"),
-        "tmux server cockpit-dev".to_owned(),
-        format!("unit {}: installed", home.unit_of("cockpit-dev").display()),
+        format!("config dir {root}/config/torlek-dev"),
+        format!("state dir {root}/state/torlek-dev"),
+        format!("daemon {root}/run/torlek-dev/daemon.sock: not running"),
+        "tmux server torlek-dev".to_owned(),
+        format!("unit {}: installed", home.unit_of("torlek-dev").display()),
         "other installations:".to_owned(),
         format!(
             "- profile next: unit {}",
-            home.unit_of("cockpit-next").display()
+            home.unit_of("torlek-next").display()
         ),
-        format!("- profile cockpit: daemon {root}/run/cockpit/daemon.sock: answering"),
+        format!("- profile torlek: daemon {root}/run/torlek/daemon.sock: answering"),
     ];
     let lines: Vec<String> = printed.lines().map(str::to_owned).collect();
     assert_eq!(lines[..expected_head.len()], expected_head, "{printed}");
@@ -466,7 +465,7 @@ fn daemon_install_of_profile_next_beside_a_legacy_unit_leaves_that_unit_alone() 
 
     succeeded(&home.cockpit(&["--profile", "next", "daemon", "install"]));
 
-    assert!(home.unit_of("cockpit-next").is_file());
+    assert!(home.unit_of("torlek-next").is_file());
     assert_eq!(
         fs::read_to_string(home.unit_dir().join("cockpit.service")).unwrap(),
         LEGACY_UNIT
@@ -479,23 +478,23 @@ fn daemon_install_of_profile_next_beside_a_legacy_unit_leaves_that_unit_alone() 
 fn daemon_install_refuses_to_replace_a_unit_it_did_not_write() {
     let home = Home::new();
     fs::create_dir_all(home.unit_dir()).unwrap();
-    let remote = "[Unit]\nDescription=the legacy Cockpit's remote access\n";
-    fs::write(home.unit_dir().join("cockpit-remote.service"), remote).unwrap();
+    let remote = "[Unit]\nDescription=someone else's remote access\n";
+    fs::write(home.unit_dir().join("torlek-remote.service"), remote).unwrap();
 
     let output = home.cockpit(&["--profile", "remote", "daemon", "install"]);
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("was not written by `cockpit daemon install` for profile remote"),
+            .contains("was not written by `torlek daemon install` for profile remote"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        fs::read_to_string(home.unit_dir().join("cockpit-remote.service")).unwrap(),
+        fs::read_to_string(home.unit_dir().join("torlek-remote.service")).unwrap(),
         remote
     );
-    assert!(!home.bin().join("cockpit-remote").exists());
+    assert!(!home.bin().join("torlek-remote").exists());
     assert_eq!(home.service_manager_log(), "");
 }
 
@@ -506,5 +505,79 @@ fn daemon_install_again_replaces_its_own_unit_and_restarts_it() {
 
     succeeded(&home.cockpit(&["--profile", "next", "daemon", "install"]));
 
-    assert!(home.unit_of("cockpit-next").is_file());
+    assert!(home.unit_of("torlek-next").is_file());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn torlek_default_install_refuses_historical_cockpit_units_without_touching_state() {
+    for legacy_unit in [LEGACY_UNIT, "[Unit]\nX-Cockpit-Profile=cockpit\n"] {
+        let home = Home::new();
+        fs::create_dir_all(home.unit_dir()).unwrap();
+        let unit = home.unit_dir().join("cockpit.service");
+        fs::write(&unit, legacy_unit).unwrap();
+        let old_state = home.path().join("state/cockpit-next");
+        fs::create_dir_all(&old_state).unwrap();
+        fs::write(old_state.join("state.db"), b"historical state").unwrap();
+
+        let output = home.cockpit(&["--profile", "torlek", "daemon", "install"]);
+
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("a legacy Cockpit"));
+        assert_eq!(fs::read_to_string(&unit).unwrap(), legacy_unit);
+        assert_eq!(
+            fs::read(old_state.join("state.db")).unwrap(),
+            b"historical state"
+        );
+        assert!(!home.unit_of("torlek").exists());
+        assert!(!home.path().join("state/torlek").exists());
+        assert_eq!(home.service_manager_log(), "");
+    }
+}
+
+#[test]
+fn the_old_profile_variable_is_not_a_torlek_alias() {
+    let home = Home::new();
+    let output = home.run(
+        &home.bin().join("torlek"),
+        &["config", "show"],
+        &[("COCKPIT_PROFILE", "next")],
+    );
+
+    assert_eq!(
+        line_for(&succeeded(&output), "profile"),
+        "profile = \"dev\"  # development build default"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn named_profile_installs_leave_legacy_remote_and_failsafe_units_untouched() {
+    for profile in ["remote", "failsafe"] {
+        let home = Home::new();
+        fs::create_dir_all(home.unit_dir()).unwrap();
+        let old_unit = home.unit_dir().join(format!("cockpit-{profile}.service"));
+        fs::write(&old_unit, LEGACY_UNIT).unwrap();
+
+        succeeded(&home.cockpit(&["--profile", profile, "daemon", "install"]));
+
+        assert_eq!(fs::read_to_string(&old_unit).unwrap(), LEGACY_UNIT);
+        assert!(home.unit_of(&format!("torlek-{profile}")).is_file());
+        assert!(!home.service_manager_log().contains("cockpit-"));
+    }
+}
+
+#[test]
+fn daemon_install_never_adopts_an_old_product_marker_as_its_own() {
+    let home = Home::new();
+    fs::create_dir_all(home.unit_dir()).unwrap();
+    let unit = home.unit_of("torlek-next");
+    let old_marker = "[Unit]\nX-Cockpit-Profile=next\n";
+    fs::write(&unit, old_marker).unwrap();
+
+    let output = home.cockpit(&["--profile", "next", "daemon", "install"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(unit).unwrap(), old_marker);
+    assert_eq!(home.service_manager_log(), "");
 }

@@ -84,12 +84,12 @@ impl fmt::Display for Error {
             ),
             Self::TmuxTooOld { binary, found } => write!(
                 formatter,
-                "`{}` is tmux {found}; Cockpit needs tmux {MINIMUM_VERSION} or newer",
+                "`{}` is tmux {found}; Torlek needs tmux {MINIMUM_VERSION} or newer",
                 binary.display()
             ),
             Self::UnsupportedServerVersion { socket, found } => write!(
                 formatter,
-                "running tmux server at {socket:?} reports {found:?}; Cockpit needs tmux \
+                "running tmux server at {socket:?} reports {found:?}; Torlek needs tmux \
                  {MINIMUM_VERSION} or newer; finish its sessions and restart that private server"
             ),
             Self::CommandFailed {

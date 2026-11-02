@@ -15,11 +15,11 @@ fn load(home: &Path, project_dir: Option<&Path>) -> Result<EffectiveConfig, Conf
     cockpit_config::load(&environment, project_dir, &[])
 }
 
-/// A project directory whose `.cockpit/config.toml` holds `contents`.
+/// A project directory whose `.torlek/config.toml` holds `contents`.
 fn project(home: &TempDir, contents: &str) -> PathBuf {
     let project = home.path().join("project");
-    fs::create_dir_all(project.join(".cockpit")).unwrap();
-    fs::write(project.join(".cockpit/config.toml"), contents).unwrap();
+    fs::create_dir_all(project.join(".torlek")).unwrap();
+    fs::write(project.join(".torlek/config.toml"), contents).unwrap();
     project
 }
 
@@ -58,7 +58,7 @@ fn a_project_declares_its_checks_with_their_lines() {
     assert_eq!(
         config.checks[1].source,
         Source::ProjectFile {
-            path: project.join(".cockpit/config.toml"),
+            path: project.join(".torlek/config.toml"),
             line: 6,
         }
     );
@@ -105,7 +105,7 @@ fn a_check_without_a_name_or_a_command_fails() {
 #[test]
 fn the_owner_file_cannot_declare_checks_for_every_project() {
     let home = TempDir::new().unwrap();
-    let config_dir = home.path().join(".config/cockpit");
+    let config_dir = home.path().join(".config/torlek");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(
         config_dir.join("config.toml"),

@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cockpit_provider_api::ConversationId;
 
-pub const STATE_VARIABLE: &str = "COCKPIT_CODEX_REPORT_STATE";
+pub const STATE_VARIABLE: &str = "TORLEK_CODEX_REPORT_STATE";
 const MAX_STATE_BYTES: u64 = 1024 * 1024;
 
 /// A fresh file per launcher invocation, so old hooks cannot change a replacement launch.
@@ -138,7 +138,7 @@ fn run(cockpit: &OsStr, report: &[String]) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "`cockpit {}` failed ({}): {}",
+            "`torlek {}` failed ({}): {}",
             report.join(" "),
             output.status,
             String::from_utf8_lossy(&output.stderr)

@@ -33,19 +33,19 @@ const LOG_FILE: &str = "codex-app-server.log";
 fn main() -> ExitCode {
     let options = match Options::parse(std::env::args_os().skip(1)) {
         Ok(Parsed::Version) => {
-            println!("{}", cockpit_codex::version_line("cockpit-codex-session"));
+            println!("{}", cockpit_codex::version_line("torlek-codex-session"));
             return ExitCode::SUCCESS;
         }
         Ok(Parsed::Run(options)) => options,
         Err(reason) => {
-            eprintln!("cockpit-codex-session: {reason}");
+            eprintln!("torlek-codex-session: {reason}");
             return ExitCode::FAILURE;
         }
     };
     match run(&options) {
         Ok(code) => code,
         Err(reason) => {
-            eprintln!("cockpit-codex-session: {reason}");
+            eprintln!("torlek-codex-session: {reason}");
             ExitCode::FAILURE
         }
     }
@@ -67,7 +67,7 @@ enum Parsed {
 
 impl Options {
     fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Parsed, String> {
-        let usage = "usage: cockpit-codex-session --cockpit <program> --codex <program> \
+        let usage = "usage: torlek-codex-session --torlek <program> --codex <program> \
                      --socket <path> [--config <value>]… [--resume <thread id>] \
                      [--message <text>] | --version";
         let (mut cockpit, mut codex, mut socket) = (None, None, None);
@@ -87,7 +87,7 @@ impl Options {
                     .map_err(|_| format!("{} is not UTF-8", flag.to_string_lossy()))
             };
             match flag.to_str() {
-                Some("--cockpit") => cockpit = Some(PathBuf::from(&value)),
+                Some("--torlek") => cockpit = Some(PathBuf::from(&value)),
                 Some("--codex") => codex = Some(PathBuf::from(&value)),
                 Some("--socket") => socket = Some(PathBuf::from(&value)),
                 Some("--config") => configs.push(text()?),
@@ -211,9 +211,9 @@ fn watch_in_background(options: &Options, log: Arc<Mutex<File>>, reports: PathBu
             let mut log = log
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = writeln!(log, "cockpit-codex-session: {line}");
+            let _ = writeln!(log, "torlek-codex-session: {line}");
         };
-        let mut server = match AppServer::connect(&socket, "cockpit-codex-session", CALL_TIMEOUT) {
+        let mut server = match AppServer::connect(&socket, "torlek-codex-session", CALL_TIMEOUT) {
             Ok(server) => server,
             Err(error) => return note(format!("failed turns are not reported: {error}")),
         };

@@ -16,7 +16,7 @@ use scripted::{scripted_daemon, text};
 async fn import(variables: &[(&str, &str)], withheld: bool) -> (Output, Command) {
     let home = tempfile::tempdir().unwrap();
     let runtime_dir: PathBuf = home.path().join("run");
-    let socket = runtime_dir.join("cockpit-dev/daemon.sock");
+    let socket = runtime_dir.join("torlek-dev/daemon.sock");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -26,7 +26,7 @@ async fn import(variables: &[(&str, &str)], withheld: bool) -> (Output, Command)
         &socket,
         Outcome::Ok(Reply::DesktopSessionImported { withheld }),
     );
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
     command
         .args(["desktop-session", "import"])
         .env_clear()

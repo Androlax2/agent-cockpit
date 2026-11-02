@@ -77,7 +77,7 @@ async fn a_start_request_reads_as_the_session_new_command_it_stands_for() {
     assert_eq!(
         run.command,
         format!(
-            "cockpit session new '{}' --agent 'codex' --prompt 'it'\\''s the review' --clone 'feature/x'",
+            "torlek session new '{}' --agent 'codex' --prompt 'it'\\''s the review' --clone 'feature/x'",
             fixture.cwd().display()
         )
     );

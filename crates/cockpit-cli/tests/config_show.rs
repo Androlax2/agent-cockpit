@@ -30,7 +30,7 @@ impl Home {
     }
 
     fn write_user_config(&self, contents: &str) -> PathBuf {
-        self.write(".config/cockpit/config.toml", contents)
+        self.write(".config/torlek/config.toml", contents)
     }
 
     fn show(&self, arguments: &[&str]) -> Output {
@@ -38,8 +38,8 @@ impl Home {
     }
 
     fn show_with_env(&self, arguments: &[&str], variables: &[(&str, &str)]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_cockpit"))
-            .args(["--profile", "cockpit", "config", "show"])
+        Command::new(env!("CARGO_BIN_EXE_torlek"))
+            .args(["--profile", "torlek", "config", "show"])
             .args(arguments)
             .env_clear()
             .env("HOME", self.path())
@@ -86,15 +86,15 @@ fn a_clean_home_shows_working_defaults_for_every_value() {
 
     assert_eq!(
         line_for(&shown, "paths.config_dir"),
-        format!("paths.config_dir = \"{home_path}/.config/cockpit\"  # product default")
+        format!("paths.config_dir = \"{home_path}/.config/torlek\"  # product default")
     );
     assert_eq!(
         line_for(&shown, "paths.state_dir"),
-        format!("paths.state_dir = \"{home_path}/.local/state/cockpit\"  # product default")
+        format!("paths.state_dir = \"{home_path}/.local/state/torlek\"  # product default")
     );
     assert_eq!(
         line_for(&shown, "files.user_config"),
-        format!("files.user_config = \"{home_path}/.config/cockpit/config.toml\"  # absent")
+        format!("files.user_config = \"{home_path}/.config/torlek/config.toml\"  # absent")
     );
     assert_eq!(
         line_for(&shown, "projects.trusted"),
@@ -179,10 +179,10 @@ fn xdg_variables_choose_the_directories_and_are_named_as_the_source() {
         ],
     ));
     for expected in [
-        "paths.config_dir = \"/xdg/config/cockpit\"  # environment $XDG_CONFIG_HOME",
-        "paths.state_dir = \"/xdg/state/cockpit\"  # environment $XDG_STATE_HOME",
-        "paths.cache_dir = \"/xdg/cache/cockpit\"  # environment $XDG_CACHE_HOME",
-        "paths.runtime_dir = \"/run/user/4242/cockpit\"  # environment $XDG_RUNTIME_DIR",
+        "paths.config_dir = \"/xdg/config/torlek\"  # environment $XDG_CONFIG_HOME",
+        "paths.state_dir = \"/xdg/state/torlek\"  # environment $XDG_STATE_HOME",
+        "paths.cache_dir = \"/xdg/cache/torlek\"  # environment $XDG_CACHE_HOME",
+        "paths.runtime_dir = \"/run/user/4242/torlek\"  # environment $XDG_RUNTIME_DIR",
     ] {
         assert!(
             shown.lines().any(|line| line == expected),
@@ -228,7 +228,7 @@ fn a_relative_xdg_variable_is_ignored_and_the_reason_shown() {
     assert_eq!(
         line_for(&shown, "paths.state_dir"),
         format!(
-            "paths.state_dir = \"{}/.local/state/cockpit\"  # product default; \
+            "paths.state_dir = \"{}/.local/state/torlek\"  # product default; \
              $XDG_STATE_HOME ignored: not an absolute path",
             home.path().display()
         )
@@ -240,7 +240,7 @@ fn the_user_config_is_read_from_xdg_config_home() {
     let home = Home::clean();
     let config_home = home.path().join("elsewhere");
     let config_path = home.write(
-        "elsewhere/cockpit/config.toml",
+        "elsewhere/torlek/config.toml",
         "workflow.preset = \"solo\"\n",
     );
     let shown =
@@ -301,7 +301,7 @@ fn a_project_description_beats_the_user_default_and_loses_to_an_override() {
     let home = Home::clean();
     home.write_user_config("workflow.preset = \"solo\"\n");
     let project_config = home.write(
-        "project/.cockpit/config.toml",
+        "project/.torlek/config.toml",
         "[workflow]\npreset = \"team\"\n",
     );
     let project = home.path().join("project");
@@ -337,7 +337,7 @@ fn a_project_without_its_own_file_shows_the_file_as_absent() {
     assert_eq!(
         line_for(&shown, "files.project_config"),
         format!(
-            "files.project_config = \"{}/.cockpit/config.toml\"  # absent",
+            "files.project_config = \"{}/.torlek/config.toml\"  # absent",
             project.display()
         )
     );
@@ -354,13 +354,13 @@ fn a_project_config_cannot_set_owner_settings() {
         ("tasks", "\n[tasks]\nblocker_project = \"elsewhere\"\n"),
     ] {
         let home = Home::clean();
-        let project_config = home.write("project/.cockpit/config.toml", contents);
+        let project_config = home.write("project/.torlek/config.toml", contents);
         let project = home.path().join("project");
         let stderr = stderr_of_failure(&home.show(&["--project", project.to_str().unwrap()]));
         assert_eq!(
             stderr,
             format!(
-                "cockpit: project config {}:2: `{owner_setting}` is an owner setting; \
+                "torlek: project config {}:2: `{owner_setting}` is an owner setting; \
                  project configuration describes the project and cannot set it\n",
                 project_config.display()
             )
@@ -485,13 +485,13 @@ fn an_override_must_name_an_overridable_key_with_a_one_line_value() {
 #[test]
 fn a_missing_or_relative_home_fails_instead_of_guessing() {
     for (home_value, expected_message) in [
-        (None, "cockpit: HOME is not set\n"),
+        (None, "torlek: HOME is not set\n"),
         (
             Some("relative"),
-            "cockpit: HOME is not an absolute path: relative\n",
+            "torlek: HOME is not an absolute path: relative\n",
         ),
     ] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_torlek"));
         command.args(["config", "show"]).env_clear();
         if let Some(home_value) = home_value {
             command.env("HOME", home_value);
@@ -508,7 +508,7 @@ fn a_project_that_is_not_a_directory_fails() {
     let stderr = stderr_of_failure(&home.show(&["--project", missing.to_str().unwrap()]));
     assert_eq!(
         stderr,
-        format!("cockpit: project {}: not a directory\n", missing.display())
+        format!("torlek: project {}: not a directory\n", missing.display())
     );
 }
 
@@ -533,91 +533,91 @@ fn a_rejected_argument_is_named_before_the_usage() {
         assert_eq!(
             stderr,
             format!(
-                "cockpit: {problem}\n\
-                 usage: cockpit [--profile NAME] VERB ...\n       \
-                 cockpit config show [--project DIR] [--set KEY=VALUE]...\n       \
-                 cockpit config reload\n       \
-                 cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] \
+                "torlek: {problem}\n\
+                  usage: torlek [--profile NAME] VERB ...\n       \
+                  torlek config show [--project DIR] [--set KEY=VALUE]...\n       \
+                  torlek config reload\n       \
+                  torlek agent report [--state working|waiting] [--label TEXT] [--doing TEXT] \
                  [--needs-input QUESTION | --dialog QUESTION] [--prompt] \
                  [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] \
                  [--conversation ID [--conversation-ends]]\n       \
-                 cockpit agent reports\n       \
-                 cockpit agent sessions [--watch]\n       \
-                 cockpit agent message SESSION TEXT\n       \
-                 cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
-                 cockpit agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] \
+                  torlek agent reports\n       \
+                  torlek agent sessions [--watch]\n       \
+                  torlek agent message SESSION TEXT\n       \
+                  torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
+                  torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] \
                  [--component NAME] [--steps TEXT] [--requested-by-owner]\n       \
-                 cockpit bug-report new DESCRIPTION [--title TEXT] [--steps TEXT]\n       \
-                 cockpit bug-report list [--all] | show ID | discard ID\n       \
-                 cockpit bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]\n       \
-                 cockpit bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL\n       \
-                 cockpit project add DIR [--name NAME]\n       \
-                 cockpit project list\n       \
-                 cockpit checkout list [PROJECT]\n       \
-                 cockpit checkout clone PROJECT BRANCH\n       \
-                 cockpit checkout review PROJECT PULL_REQUEST\n       \
-                 cockpit checkout claim CHECKOUT HOLDER\n       \
-                 cockpit checkout release CHECKOUT HOLDER\n       \
-                 cockpit checkout sweep [--dry-run]\n       \
-                 cockpit checkout push CHECKOUT\n       \
-                 cockpit ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check\n       \
-                 cockpit ask guide [--cwd DIR] < GUIDE | --wait ID\n       \
-                 cockpit approval list | show ID | decline ID | input ID < LINE\n       \
-                 cockpit approval approve ID --revision REVISION --digest DIGEST\n       \
-                 cockpit approval edit ID --revision REVISION COMMAND\n       \
-                 cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID\n       \
-                 cockpit session send ID MESSAGE | cancel ID\n       \
-                 cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
-                 cockpit session list [--ended]\n       \
-                 cockpit session restart SESSION|--all\n       \
-                 cockpit session sleep|wake|resume|end|show SESSION\n       \
-                 cockpit session end --finished\n       \
-                 cockpit session link SESSION URL\n       \
-                 cockpit session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]]\n       \
-                 cockpit session revoke SESSION observe-sessions|message-sessions|start-sessions\n       \
-                 cockpit session grants SESSION\n       \
-                 cockpit session sandbox SESSION\n       \
-                 cockpit session sandbox-record SESSION --client CLIENT --observed TEXT...\n       \
-                 cockpit sandbox install [--engines-only]\n       \
-                 cockpit sandbox status|restart|stop\n       \
-                 cockpit sandbox show DIR [--agent NAME]\n       \
-                 cockpit provider list\n       \
-                 cockpit desktop-session import\n       \
-                 cockpit init\n       \
-                 cockpit doctor [--project DIR]\n       \
-                 cockpit tui [--version]\n       \
-                 cockpit version [--all]\n       \
-                 cockpit daemon install\n       \
-                 cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \
+                  torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT]\n       \
+                  torlek bug-report list [--all] | show ID | discard ID\n       \
+                  torlek bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]\n       \
+                  torlek bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL\n       \
+                  torlek project add DIR [--name NAME]\n       \
+                  torlek project list\n       \
+                  torlek checkout list [PROJECT]\n       \
+                  torlek checkout clone PROJECT BRANCH\n       \
+                  torlek checkout review PROJECT PULL_REQUEST\n       \
+                  torlek checkout claim CHECKOUT HOLDER\n       \
+                  torlek checkout release CHECKOUT HOLDER\n       \
+                  torlek checkout sweep [--dry-run]\n       \
+                  torlek checkout push CHECKOUT\n       \
+                  torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check\n       \
+                  torlek ask guide [--cwd DIR] < GUIDE | --wait ID\n       \
+                  torlek approval list | show ID | decline ID | input ID < LINE\n       \
+                  torlek approval approve ID --revision REVISION --digest DIGEST\n       \
+                  torlek approval edit ID --revision REVISION COMMAND\n       \
+                  torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID\n       \
+                  torlek session send ID MESSAGE | cancel ID\n       \
+                  torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
+                  torlek session list [--ended]\n       \
+                  torlek session restart SESSION|--all\n       \
+                  torlek session sleep|wake|resume|end|show SESSION\n       \
+                  torlek session end --finished\n       \
+                  torlek session link SESSION URL\n       \
+                  torlek session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]]\n       \
+                  torlek session revoke SESSION observe-sessions|message-sessions|start-sessions\n       \
+                  torlek session grants SESSION\n       \
+                  torlek session sandbox SESSION\n       \
+                  torlek session sandbox-record SESSION --client CLIENT --observed TEXT...\n       \
+                  torlek sandbox install [--engines-only]\n       \
+                  torlek sandbox status|restart|stop\n       \
+                  torlek sandbox show DIR [--agent NAME]\n       \
+                  torlek provider list\n       \
+                  torlek desktop-session import\n       \
+                  torlek init\n       \
+                  torlek doctor [--project DIR]\n       \
+                  torlek tui [--version]\n       \
+                  torlek version [--all]\n       \
+                  torlek daemon install\n       \
+                  torlek todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \
                  [--priority 1-6] [--after ID]...\n       \
-                 cockpit todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]\n       \
-                 cockpit todo blocked TITLE --why TEXT [--notes TEXT]\n       \
-                 cockpit todo list [--project P] [--all] | show ID | delete ID\n       \
-                 cockpit todo start ID | done ID [--summary TEXT] | reopen ID\n       \
-                 cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]\n       \
-                 cockpit todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID\n       \
-                 cockpit todo after ID ON... | unwait ID ON...\n       \
-                 cockpit todo image add ID FILE | image get ID NUMBER FILE\n       \
-                 cockpit todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]\n       \
-                 cockpit todo drafts | draft discard (ID | --new PROJECT)\n       \
-                 cockpit workflow presets | start ITEM [--preset NAME] | cancel ID\n       \
-                 cockpit workflow list [--project P] [--all] | show ID | packet ID\n       \
-                 cockpit workflow begin ID | checkpoint ID NOTE | unblock ID\n       \
-                 cockpit workflow complete ID [--step N --attempt N] --changed T --checked T --outcome T \
+                 torlek todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]\n       \
+                 torlek todo blocked TITLE --why TEXT [--notes TEXT]\n       \
+                 torlek todo list [--project P] [--all] | show ID | delete ID\n       \
+                 torlek todo start ID | done ID [--summary TEXT] | reopen ID\n       \
+                 torlek todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]\n       \
+                 torlek todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID\n       \
+                 torlek todo after ID ON... | unwait ID ON...\n       \
+                 torlek todo image add ID FILE | image get ID NUMBER FILE\n       \
+                 torlek todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]\n       \
+                 torlek todo drafts | draft discard (ID | --new PROJECT)\n       \
+                 torlek workflow presets | start ITEM [--preset NAME] | cancel ID\n       \
+                 torlek workflow list [--project P] [--all] | show ID | packet ID\n       \
+                 torlek workflow begin ID | checkpoint ID NOTE | unblock ID\n       \
+                 torlek workflow complete ID [--step N --attempt N] --changed T --checked T --outcome T \
                  [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...\n       \
-                 cockpit workflow release ID [--changed T --checked T --outcome T \
+                  torlek workflow release ID [--changed T --checked T --outcome T \
                  [--needs-human T] [--evidence REF]...]\n       \
-                 cockpit workflow block ID ACTION --detail TEXT\n       \
-                 cockpit check run CHECK --project P [--checkout PATH] | gate [--project P] [--checkout PATH]\n       \
-                 cockpit check claim CHECK STATEMENT\n       \
-                 cockpit resources status | profile normal|foreground | pause-queue | resume-queue\n       \
-                 cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...\n       \
-                 cockpit resources checkpoint RESERVATION | stop RESERVATION\n       \
-                 cockpit queue explain [ITEM] | dispatch\n       \
-                 cockpit --skill\n       \
-                 cockpit docs [TOPIC]\n       \
-                 cockpit brief [--measure]\n       \
-                 cockpit mcp\n"
+                  torlek workflow block ID ACTION --detail TEXT\n       \
+                  torlek check run CHECK --project P [--checkout PATH] | gate [--project P] [--checkout PATH]\n       \
+                  torlek check claim CHECK STATEMENT\n       \
+                  torlek resources status | profile normal|foreground | pause-queue | resume-queue\n       \
+                  torlek resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...\n       \
+                  torlek resources checkpoint RESERVATION | stop RESERVATION\n       \
+                  torlek queue explain [ITEM] | dispatch\n       \
+                  torlek --skill\n       \
+                  torlek docs [TOPIC]\n       \
+                  torlek brief [--measure]\n       \
+                  torlek mcp\n"
             )
         );
     }
@@ -630,7 +630,7 @@ fn a_non_utf8_project_path_is_reported_not_a_crash() {
     let project = home
         .path()
         .join(std::ffi::OsStr::from_bytes(b"project\xff"));
-    let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
+    let output = Command::new(env!("CARGO_BIN_EXE_torlek"))
         .args(["config", "show", "--project"])
         .arg(&project)
         .env_clear()
@@ -644,13 +644,13 @@ fn a_non_utf8_project_path_is_reported_not_a_crash() {
 #[test]
 fn an_unknown_verb_prints_usage_and_exits_2() {
     for arguments in [&["config"][..], &["configure", "show"][..]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
+        let output = Command::new(env!("CARGO_BIN_EXE_torlek"))
             .args(arguments)
             .env_clear()
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");
-        assert!(String::from_utf8_lossy(&output.stderr).starts_with("usage: cockpit "));
+        assert!(String::from_utf8_lossy(&output.stderr).starts_with("usage: torlek "));
     }
 }
 
@@ -664,7 +664,7 @@ fn show_tells_the_owner_a_running_daemon_applies_session_settings_after_config_r
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("agents.desktop_session")
-            && stderr.contains("after `cockpit config reload`"),
+            && stderr.contains("after `torlek config reload`"),
         "{stderr}"
     );
 }

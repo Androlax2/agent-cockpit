@@ -43,7 +43,7 @@ pub const SERVER_FLAGS: [&str; 3] = ["--listen", "--enable", "--config"];
 
 /// The name Cockpit's MCP server (`cockpit mcp`) has in every harness a launch registers it
 /// with (#419).
-pub const MCP_SERVER_NAME: &str = "cockpit";
+pub const MCP_SERVER_NAME: &str = "torlek";
 
 /// The feature that runs hooks; a launch enables it so an owner who turned it off still
 /// gets the session's events.
@@ -68,7 +68,7 @@ pub const HOOK_VERSION_FLAG: &str = "--version";
 
 /// What `cockpit-codex-hook --version` prints: its name and the version it was built as.
 pub fn hook_version_line() -> String {
-    version_line("cockpit-codex-hook")
+    version_line("torlek-codex-hook")
 }
 
 /// What `program --version` prints for one of this crate's programs.
@@ -120,8 +120,8 @@ impl Bridge {
                 self.cockpit_program.display()
             ));
         }
-        check_version(&self.hook_program, "cockpit-codex-hook", deadline)?;
-        check_version(&self.session_program, "cockpit-codex-session", deadline)
+        check_version(&self.hook_program, "torlek-codex-hook", deadline)?;
+        check_version(&self.session_program, "torlek-codex-session", deadline)
     }
 
     /// The command Codex runs for each hook; Codex runs it through a shell.
@@ -312,7 +312,7 @@ fn session_arguments(
     resumed: Option<&ConversationId>,
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = vec![
-        "--cockpit".into(),
+        "--torlek".into(),
         bridge.cockpit_program.clone().into(),
         "--codex".into(),
         codex.into(),
@@ -357,10 +357,11 @@ pub fn mcp_configs(cockpit: &Path) -> Vec<String> {
 /// What `cockpit mcp` needs from the launch's environment to reach its session: Codex hands
 /// a stdio MCP server only `HOME`, `PATH` and a few locale variables unless a server names
 /// more (`DEFAULT_ENV_VARS`, codex-rs/rmcp-client at rust-v0.161.0).
-const MCP_ENVIRONMENT: [&str; 7] = [
-    "COCKPIT_LAUNCH_TOKEN",
-    "COCKPIT_AGENT_SOCKET",
-    "COCKPIT_INSTRUCTIONS",
+const MCP_ENVIRONMENT: [&str; 8] = [
+    "TORLEK_LAUNCH_TOKEN",
+    "TORLEK_AGENT_SOCKET",
+    "TORLEK_PROFILE",
+    "TORLEK_INSTRUCTIONS",
     "XDG_RUNTIME_DIR",
     "XDG_CONFIG_HOME",
     "XDG_STATE_HOME",

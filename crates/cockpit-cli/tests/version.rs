@@ -19,8 +19,8 @@ impl Bundle {
         let prefix = tempfile::tempdir().expect("temporary prefix");
         fs::create_dir(prefix.path().join("bin")).unwrap();
         fs::copy(
-            env!("CARGO_BIN_EXE_cockpit"),
-            prefix.path().join("bin/cockpit"),
+            env!("CARGO_BIN_EXE_torlek"),
+            prefix.path().join("bin/torlek"),
         )
         .unwrap();
         Self { prefix }
@@ -34,11 +34,11 @@ impl Bundle {
     }
 
     fn manifest_path(&self) -> PathBuf {
-        self.prefix.path().join("share/cockpit/manifest.json")
+        self.prefix.path().join("share/torlek/manifest.json")
     }
 
     fn binary(&self) -> PathBuf {
-        self.prefix.path().join("bin/cockpit")
+        self.prefix.path().join("bin/torlek")
     }
 }
 
@@ -65,7 +65,7 @@ fn stdout(output: &Output) -> String {
 fn version_names_the_package_version() {
     let printed = stdout(&version(Bundle::unpacked().binary().as_path(), &[]));
     assert!(
-        printed.starts_with(&format!("cockpit {} (revision ", env!("CARGO_PKG_VERSION"))),
+        printed.starts_with(&format!("torlek {} (revision ", env!("CARGO_PKG_VERSION"))),
         "{printed}"
     );
     assert_eq!(printed.lines().count(), 1, "{printed}");
@@ -90,7 +90,7 @@ fn version_all_shows_the_bundle_manifest_installed_beside_the_binary() {
 fn version_all_follows_a_symlinked_binary_to_its_bundle() {
     let bundle = Bundle::unpacked().with_manifest(MANIFEST);
     let elsewhere = tempfile::tempdir().unwrap();
-    let link = elsewhere.path().join("cockpit");
+    let link = elsewhere.path().join("torlek");
     std::os::unix::fs::symlink(bundle.binary(), &link).unwrap();
     let printed = stdout(&version(&link, &["--all"]));
     assert!(

@@ -18,7 +18,7 @@ fn runtime_dir(home: &Path) -> PathBuf {
 }
 
 fn socket(home: &Path, relative: &str) -> PathBuf {
-    let path = runtime_dir(home).join("cockpit-dev").join(relative);
+    let path = runtime_dir(home).join("torlek-dev").join(relative);
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -28,7 +28,7 @@ fn socket(home: &Path, relative: &str) -> PathBuf {
 }
 
 async fn cockpit(home: &Path, arguments: &[&str]) -> Output {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
     command
         .args(arguments)
         .env_clear()
@@ -149,7 +149,7 @@ async fn an_unknown_outcome_is_named_even_with_a_reason() {
     .await;
 
     assert!(
-        text(&output.stderr).starts_with("cockpit: --outcome finished: use completed"),
+        text(&output.stderr).starts_with("torlek: --outcome finished: use completed"),
         "{}",
         text(&output.stderr)
     );

@@ -22,7 +22,7 @@ fn bridge_with(dir: &Path, bridge: PathBuf) -> Bridge {
 }
 
 fn built_bridge() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cockpit-opencode-bridge"))
+    PathBuf::from(env!("CARGO_BIN_EXE_torlek-opencode-bridge"))
 }
 
 #[test]

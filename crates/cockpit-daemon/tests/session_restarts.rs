@@ -26,7 +26,7 @@ use cockpit_provider_api::{
 use cockpit_sessions::{AgentState, SessionId, Sessions, WakeCause};
 use common::GENEROUS;
 
-const AGENT_SCRIPT: &str = r#"printf '%s %s pid=%s token=%s\n' "$COCKPIT_SESSION" "$1" "$$" "$COCKPIT_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
+const AGENT_SCRIPT: &str = r#"printf '%s %s pid=%s token=%s\n' "$TORLEK_SESSION" "$1" "$$" "$TORLEK_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
 exec sleep 600"#;
 
 /// The start file the fake provider's agents read at launch.

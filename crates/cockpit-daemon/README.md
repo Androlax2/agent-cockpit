@@ -2,7 +2,7 @@
 
 Startup, wiring, request routing and supervised worker lifetimes; no business rules.
 
-The `cockpit-daemon` binary is this user's one daemon (reports 03 and 11). It holds no
+The `torlek-daemon` binary is this user's one daemon (reports 03 and 11). It holds no
 feature logic: capabilities own their rules and state, and the daemon starts them in order,
 routes each request to a lane and keeps its workers alive. `apps/crates/cockpit-daemon` is
 the current programs' crate of the same name in the separate `apps/` workspace; the two do
@@ -35,16 +35,16 @@ not share code.
 
 ## Startup
 
-1. Resolve the layout. The socket directory is `$XDG_RUNTIME_DIR/cockpit`, or
-   `$XDG_STATE_HOME/cockpit/run` when that variable is unset (macOS). Both it and the state
+1. Resolve the layout. The socket directory is `$XDG_RUNTIME_DIR/torlek`, or
+   `$XDG_STATE_HOME/torlek/run` when that variable is unset (macOS). Both it and the state
    directory are created 0700; an existing one with any other mode or a symbolic link stops
    startup, it is never tightened.
 2. Take the instance lock, `daemon.lock` in the socket directory. A second daemon of the same
-   user exits 1 with `another cockpit daemon of this user is already running`.
-3. Start logging (`COCKPIT_LOG_LEVEL`, report 12): `$XDG_STATE_HOME/cockpit/logs/daemon`.
-4. Write the agent instruction bundle under `$XDG_STATE_HOME/cockpit/agent-context`
+   user exits 1 with `another torlek daemon of this user is already running`.
+3. Start logging (`TORLEK_LOG_LEVEL`, report 12): `$XDG_STATE_HOME/torlek/logs/daemon`.
+4. Write the agent instruction bundle under `$XDG_STATE_HOME/torlek/agent-context`
    (`cockpit-agent-context`), replacing what an earlier start wrote, and name it to every
-   agent in `COCKPIT_INSTRUCTIONS`. A bundle that cannot be written stops startup: agents
+   agent in `TORLEK_INSTRUCTIONS`. A bundle that cannot be written stops startup: agents
    would read another release's instructions.
 5. Restart contract (report 03): open `state.db` with every capability's migrations
    (`MIGRATION_SETS`), then reconcile. `cockpit-processes` reattaches each execution it
@@ -93,7 +93,7 @@ not share code.
   directory's resolution happen before the write transaction.
 - An approval commits the run intent, then the run starts outside the lanes: a long command
   holds no control worker. It is a `cockpit-processes` terminal execution (#163) of the
-  daemon's one supervisor: a pseudo-terminal under `cockpit-daemon --run-leader`
+  daemon's one supervisor: a pseudo-terminal under `torlek-daemon --run-leader`
   (`cockpit_processes::run_session_leader`, which makes the terminal controlling without
   `unsafe`), in `$SHELL` when absolute or `/bin/sh`, with the daemon's environment minus
   `GIT_*` and the launch token, and `cockpit-projects`' `SAFE_CONFIG` as `GIT_CONFIG_*`.
@@ -140,7 +140,7 @@ not share code.
 
 ## Tasks (#38)
 
-- `cockpit todo` reaches `cockpit-tasks` on both sockets. An agent may file (`task-add`,
+- `torlek todo` reaches `cockpit-tasks` on both sockets. An agent may file (`task-add`,
   `task-propose`, `task-report-blocker`), read and work items (`task-list`, `task-show`,
   `task-start`, `task-done`, `task-delete`); the rest is the owner's and refused on the agent
   socket. Proposals and blocker reports are refused on the owner's socket: the owner adds.
@@ -152,7 +152,7 @@ not share code.
 
 ## Workflows (#39)
 
-- `cockpit workflow` reaches `cockpit-workflows` on both sockets. Starting and cancelling a
+- `torlek workflow` reaches `cockpit-workflows` on both sockets. Starting and cancelling a
   workflow are the owner's; beginning a step and recording its checkpoint are an agent's.
   Reading, completing, releasing, blocking and unblocking serve both, and
   `cockpit-workflows` decides who may act on which step.
@@ -231,13 +231,13 @@ builds it only when asked and no release installs it.
   grants, refusals with their unblock, restart.
 - `tests/launch_root_order.rs`: issue #316: launched agents' first reports land without a
   retry, and a request whose launch has no root is refused at once, never held.
-- `tests/config_reload.rs`: issue #354: `cockpit config reload` applies the owner's changed
+- `tests/config_reload.rs`: issue #354: `torlek config reload` applies the owner's changed
   session settings to later launches, refuses an invalid file and keeps the settings in
   force, and is the owner's alone.
-- `tests/hook_bridge.rs`: issue #203: `cockpit provider list` shows Claude reports `events`
+- `tests/hook_bridge.rs`: issue #203: `torlek provider list` shows Claude reports `events`
   through the hook bridge installed beside the daemon.
-- `tests/agent_asks.rs`: issue #286: a daemon-launched agent's own `cockpit ask run` and
-  `cockpit ask guide`, through the real CLI and agent socket, reach the owner's queue and
+- `tests/agent_asks.rs`: issue #286: a daemon-launched agent's own `torlek ask run` and
+  `torlek ask guide`, through the real CLI and agent socket, reach the owner's queue and
   get the owner's answer back as their exit code.
 - `tests/approvals.rs`: issue #34's acceptance on the binary's sockets: a command run in a
   terminal with its exit code, the display rules in the queue, redaction, Git hooks off,

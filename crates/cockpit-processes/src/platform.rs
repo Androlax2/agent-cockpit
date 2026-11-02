@@ -54,7 +54,7 @@ pub(crate) const HOSTED_LAUNCH_SCRIPT: &str = concat!(
     r#"release=$2 looks=$3
 shift 3
 while [ ! -e "$release" ]; do
-  [ "$looks" -gt 0 ] || { echo 'cockpit: the launch was never released' >&2; exit 126; }
+  [ "$looks" -gt 0 ] || { echo 'torlek: the launch was never released' >&2; exit 126; }
   looks=$((looks - 1))
   /bin/sleep 0.02
 done

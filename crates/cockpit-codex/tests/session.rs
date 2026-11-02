@@ -22,7 +22,7 @@ const OTHER_THREAD: &str = "01a1981e-7a10-7c11-b0a2-0d1e2f3a4b5c";
 /// the test's directory is gone or after 600 seconds, whichever comes first, so a test
 /// killed before it cleans up leaks them for 10 minutes at most.
 const FAKE_CODEX: &str = r#"if [ "$1" = app-server ]; then
-  printf '%s' "$COCKPIT_CODEX_REPORT_STATE" > "$FAKE_DIR/report-state-path"
+  printf '%s' "$TORLEK_CODEX_REPORT_STATE" > "$FAKE_DIR/report-state-path"
   printf '%s\n' "$@" > "$FAKE_DIR/server.args"
   echo $$ > "$FAKE_DIR/server.pid.partial" && mv "$FAKE_DIR/server.pid.partial" "$FAKE_DIR/server.pid"
   ticks=0
@@ -79,8 +79,8 @@ impl Launcher {
         let dir = tempfile::tempdir().unwrap();
         let codex = common::script(dir.path(), "codex", codex_body);
         let cockpit = common::script(dir.path(), "cockpit", FAKE_COCKPIT);
-        let child = Command::new(env!("CARGO_BIN_EXE_cockpit-codex-session"))
-            .args(["--cockpit".as_ref(), cockpit.as_os_str()])
+        let child = Command::new(env!("CARGO_BIN_EXE_torlek-codex-session"))
+            .args(["--torlek".as_ref(), cockpit.as_os_str()])
             .args(["--codex".as_ref(), codex.as_os_str()])
             .args([
                 "--socket".as_ref(),
@@ -461,14 +461,14 @@ fn assert_no_process_names(dir: &Path) {
 
 #[test]
 fn a_launch_without_its_socket_is_refused_with_the_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_cockpit-codex-session"))
-        .args(["--cockpit", "/bin/true", "--codex", "/bin/true"])
+    let output = Command::new(env!("CARGO_BIN_EXE_torlek-codex-session"))
+        .args(["--torlek", "/bin/true", "--codex", "/bin/true"])
         .output()
         .unwrap();
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("usage: cockpit-codex-session"),
+        String::from_utf8_lossy(&output.stderr).contains("usage: torlek-codex-session"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

@@ -47,7 +47,7 @@ impl Refusal {
         let (by, action) = match self {
             Refusal::UnknownLaunchToken | Refusal::Unidentified => (
                 UnblockedBy::Owner,
-                "restart the session from Cockpit so its launch is bound to this process tree"
+                "restart the session from Torlek so its launch is bound to this process tree"
                     .to_owned(),
             ),
             Refusal::LaunchNotStarted { session } => (

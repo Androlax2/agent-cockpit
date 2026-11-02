@@ -79,7 +79,7 @@ fn the_native_plugin_captures_tool_permission_and_aborted_turns() {
         "program": launch.program,
         "arguments": launch.arguments.iter().map(|v| v.to_str().unwrap()).collect::<Vec<_>>(),
         "environment": launch.environment.iter().map(|(k,v)| (k.to_str().unwrap(),v.to_str().unwrap())).collect::<std::collections::BTreeMap<_,_>>(),
-        "bridge": env!("CARGO_BIN_EXE_cockpit-opencode-bridge"),
+        "bridge": env!("CARGO_BIN_EXE_torlek-opencode-bridge"),
         "observed_version": CONFORMANCE_VERSION,
     }).to_string()).unwrap();
     let mut command = Command::new("python3");

@@ -386,7 +386,7 @@ fn the_plan_runs_the_agent_under_greywall_as_a_proxy_client_of_its_own() {
             "--allow-read-path",
             "/run/user/1000/cockpit/agent",
             "--ignore-secret",
-            "COCKPIT_LAUNCH_TOKEN",
+            "TORLEK_LAUNCH_TOKEN",
             "--",
         ]
     );

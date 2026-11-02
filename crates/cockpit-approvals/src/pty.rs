@@ -544,5 +544,5 @@ pub fn present(kept: &[u8], total: u64, answer_lines: usize) -> Output {
 
 /// Whether `name` is one of the variables a run never inherits from the daemon.
 fn is_withheld_variable(name: &OsStr) -> bool {
-    name.as_encoded_bytes().starts_with(b"GIT_") || name == "COCKPIT_LAUNCH_TOKEN"
+    name.as_encoded_bytes().starts_with(b"GIT_") || name == "TORLEK_LAUNCH_TOKEN"
 }

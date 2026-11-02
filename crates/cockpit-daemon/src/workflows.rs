@@ -320,7 +320,7 @@ async fn provider_capabilities(
             refused(
                 ErrorCode::Refused,
                 format!("this daemon no longer offers the session's provider {provider}"),
-                "restart the session with a provider `cockpit session new` offers",
+                "restart the session with a provider `torlek session new` offers",
                 UnblockedBy::Owner,
             )
         })
@@ -377,7 +377,7 @@ async fn project_preset(
             return Err(refused(
                 ErrorCode::NotFound,
                 format!("the item's project {project} is not registered"),
-                "register it with `cockpit project add`, or name a preset",
+                "register it with `torlek project add`, or name a preset",
                 UnblockedBy::Owner,
             ));
         }

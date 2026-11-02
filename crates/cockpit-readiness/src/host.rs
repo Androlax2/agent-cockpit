@@ -22,7 +22,7 @@ pub(crate) fn config(config: &Result<EffectiveConfig, String>) -> Requirement {
             "config",
             Status::MissingPrerequisite,
             error.clone(),
-            "fix the file and line named here; `cockpit config show` reads it again",
+            "fix the file and line named here; `torlek config show` reads it again",
         ),
     }
 }
@@ -54,8 +54,8 @@ pub(crate) fn platform(platform: &Platform) -> Requirement {
         Platform::Unsupported(name) => Requirement::needs(
             "platform",
             Status::Unsupported,
-            format!("{name}: Cockpit runs on Linux and macOS, and on Windows inside WSL2"),
-            "run Cockpit in a WSL2 distribution or on a Linux or macOS host",
+            format!("{name}: Torlek runs on Linux and macOS, and on Windows inside WSL2"),
+            "run Torlek in a WSL2 distribution or on a Linux or macOS host",
         ),
     }
 }
@@ -86,7 +86,7 @@ pub(crate) fn sandbox(
             Status::MissingPrerequisite,
             format!("no sandbox engine: {reason}; every agent launch is refused"),
             format!(
-                "run `cockpit --profile {profile} sandbox install` to install this release's verified engines, {RESTART}"
+                "run `torlek --profile {profile} sandbox install` to install this release's verified engines, {RESTART}"
             ),
         ),
         (AgentSandbox::Off, engine) => {
@@ -99,7 +99,7 @@ pub(crate) fn sandbox(
                 format!("agents run UNSANDBOXED: the owner set agents.sandbox = \"off\"; {engine}"),
             )
             .with_advice(
-                "to sandbox agents, remove agents.sandbox = \"off\" from the owner config and run `cockpit config reload`",
+                "to sandbox agents, remove agents.sandbox = \"off\" from the owner config and run `torlek config reload`",
             )
         }
     }

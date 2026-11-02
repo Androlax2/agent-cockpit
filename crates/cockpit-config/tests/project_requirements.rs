@@ -20,13 +20,13 @@ fn load(home: &Path, project_dir: Option<&Path>) -> Result<EffectiveConfig, Conf
 
 fn project(home: &TempDir, contents: &str) -> PathBuf {
     let project = home.path().join("project");
-    fs::create_dir_all(project.join(".cockpit")).unwrap();
-    fs::write(project.join(".cockpit/config.toml"), contents).unwrap();
+    fs::create_dir_all(project.join(".torlek")).unwrap();
+    fs::write(project.join(".torlek/config.toml"), contents).unwrap();
     project
 }
 
 fn owner_file(home: &TempDir, contents: &str) {
-    let dir = home.path().join(".config/cockpit");
+    let dir = home.path().join(".config/torlek");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("config.toml"), contents).unwrap();
 }
@@ -42,7 +42,7 @@ fn a_project_describes_its_environment_needs_and_artifacts_with_their_lines() {
 
     let config = load(home.path(), Some(&project)).unwrap();
 
-    let file = project.join(".cockpit/config.toml");
+    let file = project.join(".torlek/config.toml");
     assert_eq!(
         config.execution_environment.value,
         Some(ExecutionEnvironment::Docker)
@@ -139,7 +139,7 @@ fn an_invalid_project_requirement_fails_with_its_file_and_line() {
 
         assert!(error.contains(expected), "{contents:?}: {error}");
         assert!(
-            error.contains(".cockpit/config.toml"),
+            error.contains(".torlek/config.toml"),
             "{contents:?}: {error}"
         );
     }
@@ -176,7 +176,7 @@ fn config_show_prints_the_project_requirements_with_their_sources() {
 
     let shown = cockpit_config::render(&load(home.path(), Some(&project)).unwrap());
 
-    let file = project.join(".cockpit/config.toml");
+    let file = project.join(".torlek/config.toml");
     let file = file.display();
     assert!(
         shown.contains(&format!(

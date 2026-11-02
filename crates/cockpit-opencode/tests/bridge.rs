@@ -20,7 +20,7 @@ impl FakeCockpit {
             "cockpit",
             &format!(
                 "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/arguments\"\n\
-                 printf '%s' \"$COCKPIT_LAUNCH_TOKEN\" > \"$(dirname \"$0\")/token\"\n\
+                 printf '%s' \"$TORLEK_LAUNCH_TOKEN\" > \"$(dirname \"$0\")/token\"\n\
                  echo 'reported for session s000000000001'\nexit {status}"
             ),
         );
@@ -50,9 +50,9 @@ impl FakeCockpit {
 }
 
 fn run_bridge(cockpit: &Path, event: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cockpit-opencode-bridge"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_torlek-opencode-bridge"))
         .arg(cockpit)
-        .env("COCKPIT_LAUNCH_TOKEN", "token-1")
+        .env("TORLEK_LAUNCH_TOKEN", "token-1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -143,7 +143,7 @@ fn a_refused_report_exits_1_naming_it() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr).starts_with("cockpit-opencode-bridge: "),
+        String::from_utf8_lossy(&output.stderr).starts_with("torlek-opencode-bridge: "),
         "{output:?}"
     );
 }
@@ -160,7 +160,7 @@ fn an_event_that_is_not_json_exits_1() {
 
 #[test]
 fn the_bridge_answers_its_version() {
-    let output = Command::new(env!("CARGO_BIN_EXE_cockpit-opencode-bridge"))
+    let output = Command::new(env!("CARGO_BIN_EXE_torlek-opencode-bridge"))
         .arg("--version")
         .output()
         .unwrap();

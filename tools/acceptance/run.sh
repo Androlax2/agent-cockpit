@@ -6,23 +6,23 @@
 #   run.sh start              start the daemon, register the scratch project `demo`
 #   run.sh tui                attach this terminal to the TUI
 #   run.sh tui-window         open the TUI in its own opaque kitty window (Hyprland)
-#   run.sh cockpit ARGS...    run this clone's `cockpit`, from the scratch projects directory
-#   run.sh session new ARGS   start a session in `demo` (`cockpit session new` options), remember it
+#   run.sh torlek ARGS...    run this clone's `torlek`, from the scratch projects directory
+#   run.sh session new ARGS   start a session in `demo` (`torlek session new` options), remember it
 #   run.sh session VERB       sleep|wake|resume|end|show the session `session new` remembered
 #   run.sh kill-daemon        kill -9 the daemon, leaving its sessions running
 #   run.sh stop               stop the daemon and the scratch tmux server
 #   run.sh clean              stop, then delete the scratch directory
 #
-# The scratch directory is $COCKPIT_ACCEPTANCE_HOME, by default /tmp/cockpit-acceptance-<uid>:
+# The scratch directory is $COCKPIT_ACCEPTANCE_HOME, by default /tmp/torlek-acceptance-<uid>:
 # short, because the daemon's sockets live under it. HOME stays the owner's own, so the agent
 # uses the owner's Claude Code login.
 set -euo pipefail
 
-usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | cockpit ARGS... | session new [OPTIONS] | session sleep|wake|resume|end|show"
+usage="usage: run.sh start|tui|tui-window|kill-daemon|stop|clean | torlek ARGS... | session new [OPTIONS] | session sleep|wake|resume|end|show"
 
 clone=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 bin="$clone/target/release"
-scratch=${COCKPIT_ACCEPTANCE_HOME:-/tmp/cockpit-acceptance-$(id -u)}
+scratch=${COCKPIT_ACCEPTANCE_HOME:-/tmp/torlek-acceptance-$(id -u)}
 [[ $scratch == /* ]] || {
     echo "COCKPIT_ACCEPTANCE_HOME must be an absolute path: $scratch" >&2
     exit 2
@@ -33,7 +33,7 @@ demo="$projects/demo"
 pid_file="$scratch/daemon.pid"
 daemon_output="$scratch/daemon.out"
 # `clean` deletes only a directory this script made.
-marker=.cockpit-acceptance
+marker=.torlek-acceptance
 
 # `systemctl --user` finds the user manager through XDG_RUNTIME_DIR unless the bus address is
 # set: keep the owner's, so sessions get the same systemd scope containment as outside the walk.
@@ -45,9 +45,9 @@ export XDG_CONFIG_HOME="$scratch/config"
 export XDG_STATE_HOME="$scratch/state"
 export XDG_CACHE_HOME="$scratch/cache"
 export XDG_RUNTIME_DIR="$scratch/runtime"
-# The daemon's tmux server is `-L cockpit` in tmux's per-user directory: a private one here.
+# The daemon's tmux server is `-L torlek` in tmux's per-user directory: a private one here.
 export TMUX_TMPDIR="$scratch/tmux"
-# Agents inherit the daemon's PATH: their `cockpit` must be this clone's, not the installed one,
+# Agents inherit the daemon's PATH: their `torlek` must be this clone's, not the installed one,
 # and their `claude` the one start linked into $scratch/bin (see link_claude).
 owner_path=$PATH
 export PATH="$scratch/bin:$bin:$PATH"
@@ -55,7 +55,7 @@ unset TMUX
 
 require_binaries() {
     local name
-    for name in cockpit cockpit-daemon cockpit-tui cockpit-claude-hook; do
+    for name in torlek torlek-daemon torlek-tui torlek-claude-hook; do
         [[ -x $bin/$name ]] || {
             echo "$bin/$name is not built: cargo build --release --manifest-path $clone/Cargo.toml" >&2
             exit 1
@@ -78,18 +78,18 @@ daemon_pid() {
     pid=$(<"$pid_file")
     [[ $pid =~ ^[0-9]+$ ]] || return 1
     program=$(readlink "/proc/$pid/exe" 2>/dev/null) || return 1
-    [[ ${program% (deleted)} == "$bin/cockpit-daemon" ]] || return 1
+    [[ ${program% (deleted)} == "$bin/torlek-daemon" ]] || return 1
     echo "$pid"
 }
 
 make_scratch() {
-    mkdir -p "$scratch" "$XDG_CONFIG_HOME/cockpit" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" \
+    mkdir -p "$scratch" "$XDG_CONFIG_HOME/torlek" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" \
         "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR" "$projects"
     chmod 700 "$scratch" "$XDG_RUNTIME_DIR" "$TMUX_TMPDIR"
     touch "$scratch/$marker"
     # The shortest idle window the configuration accepts, so the walk can see a session sleep.
-    [[ -f $XDG_CONFIG_HOME/cockpit/config.toml ]] ||
-        printf '[sessions]\nidle_sleep_after_minutes = 30\n' >"$XDG_CONFIG_HOME/cockpit/config.toml"
+    [[ -f $XDG_CONFIG_HOME/torlek/config.toml ]] ||
+        printf '[sessions]\nidle_sleep_after_minutes = 30\n' >"$XDG_CONFIG_HOME/torlek/config.toml"
     if [[ ! -d $demo/.git ]]; then
         mkdir -p "$demo"
         git -C "$demo" init --quiet --initial-branch=main
@@ -107,7 +107,7 @@ start_daemon() {
         return
     fi
     # `setsid` in a non-interactive shell's background job execs in place, so $! is the daemon.
-    setsid "$bin/cockpit-daemon" </dev/null >"$daemon_output" 2>&1 &
+    setsid "$bin/torlek-daemon" </dev/null >"$daemon_output" 2>&1 &
     pid=$!
     echo "$pid" >"$pid_file"
     disown
@@ -155,8 +155,8 @@ start() {
     make_scratch
     link_claude
     start_daemon
-    if ! "$bin/cockpit" project list | awk -F '\t' -v dir="$demo" '$2 == dir { found = 1 } END { exit !found }'; then
-        "$bin/cockpit" project add "$demo" --name demo
+    if ! "$bin/torlek" project list | awk -F '\t' -v dir="$demo" '$2 == dir { found = 1 } END { exit !found }'; then
+        "$bin/torlek" project add "$demo" --name demo
     fi
     echo "scratch:  $scratch"
     echo "project:  $demo"
@@ -179,14 +179,14 @@ stop() {
         fi
     fi
     rm -f "$pid_file"
-    tmux -L cockpit kill-server 2>/dev/null || true
+    tmux -L torlek kill-server 2>/dev/null || true
 }
 
 # The owner's Hyprland draws windows at 0.95 / 0.9 opacity, too faint for the walk: the TUI gets
 # its own kitty window, made opaque by a rule on its class (the same rule as hypr/apps/craft.lua),
 # added for this Hyprland session only.
 tui_window() {
-    local class=cockpit-acceptance rule
+    local class=torlek-acceptance rule
     require_binaries
     enter_projects
     rule="hl.window_rule({ match = { class = \"^($class)\$\" }, opacity = \"1 1\" })"
@@ -209,20 +209,20 @@ tui-window) tui_window ;;
 tui)
     require_binaries
     enter_projects
-    exec "$bin/cockpit" tui
+    exec "$bin/torlek" tui
     ;;
-cockpit)
+torlek)
     require_binaries
     shift
     enter_projects
-    exec "$bin/cockpit" "$@"
+    exec "$bin/torlek" "$@"
     ;;
 session)
     case ${2:-} in
     new)
         require_binaries
         enter_projects
-        line=$("$bin/cockpit" session new demo "${@:3}")
+        line=$("$bin/torlek" session new demo "${@:3}")
         echo "$line"
         echo "${line%%$'\t'*}" >"$scratch/session"
         ;;
@@ -233,7 +233,7 @@ session)
             echo "no session started with run.sh session new yet" >&2
             exit 1
         }
-        exec "$bin/cockpit" session "$2" "$(<"$scratch/session")"
+        exec "$bin/torlek" session "$2" "$(<"$scratch/session")"
         ;;
     *)
         echo "$usage" >&2

@@ -69,7 +69,7 @@ impl Refusal {
             ),
             Refusal::OwnerOnly { action } => (
                 UnblockedBy::Owner,
-                format!("ask the owner to {action} with `cockpit todo` on the host"),
+                format!("ask the owner to {action} with `torlek todo` on the host"),
             ),
             Refusal::InvalidRequest { field, .. } => (
                 UnblockedBy::Agent,
@@ -81,12 +81,12 @@ impl Refusal {
             ),
             Refusal::WrongStatus { .. } => (
                 UnblockedBy::Agent,
-                "read the item again with `cockpit todo show`".to_owned(),
+                "read the item again with `torlek todo show`".to_owned(),
             ),
             Refusal::Waiting { on, .. } => (
                 UnblockedBy::Owner,
                 format!(
-                    "finish {} first, or remove the wait with `cockpit todo unwait`",
+                    "finish {} first, or remove the wait with `torlek todo unwait`",
                     item_list(on)
                 ),
             ),
@@ -108,7 +108,7 @@ impl Refusal {
             ),
             Refusal::NoProject => (
                 UnblockedBy::Owner,
-                "register the project the session works in with `cockpit project add`".to_owned(),
+                "register the project the session works in with `torlek project add`".to_owned(),
             ),
             Refusal::WaitedOn { by, .. } => (
                 UnblockedBy::Owner,
@@ -120,7 +120,7 @@ impl Refusal {
             ),
             Refusal::NotDoing { .. } => (
                 UnblockedBy::Agent,
-                "start the item first with `cockpit todo start`".to_owned(),
+                "start the item first with `torlek todo start`".to_owned(),
             ),
             Refusal::InvalidImage { .. } => (
                 UnblockedBy::Owner,

@@ -16,7 +16,7 @@ use cockpit_config::Profile;
 use crate::daemon::fail;
 use crate::installations::{Legacy, ServiceManager, profile_of_unit};
 
-const DAEMON_PROGRAM: &str = "cockpit-daemon";
+const DAEMON_PROGRAM: &str = "torlek-daemon";
 
 /// The profile proposed beside a legacy Cockpit (#134).
 const COEXISTING_PROFILE: &str = "next";
@@ -24,7 +24,7 @@ const COEXISTING_PROFILE: &str = "next";
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     if let Some(extra) = arguments.first() {
         return Err(format!(
-            "unknown argument {}: select the profile with `cockpit --profile NAME daemon install`",
+            "unknown argument {}: select the profile with `torlek --profile NAME daemon install`",
             extra.to_string_lossy()
         ));
     }
@@ -46,10 +46,10 @@ fn install() -> Result<ExitCode, String> {
         let legacy = Legacy::find(&unit_dir, std::env::var_os("PATH").as_deref(), &program);
         if legacy.is_found() {
             return Err(format!(
-                "a legacy Cockpit is installed ({}): the default profile stays its until the \
-                 cutover; install this one beside it with \
-                 `cockpit --profile {COEXISTING_PROFILE} daemon install`, which also installs \
-                 the command cockpit-{COEXISTING_PROFILE}",
+                "a legacy Cockpit is installed ({}): the default profile is refused until the \
+                 cutover because greyproxy endpoints are shared; install this one beside it with \
+                 `torlek --profile {COEXISTING_PROFILE} daemon install`, which also installs \
+                  the command torlek-{COEXISTING_PROFILE}",
                 legacy.describe()
             ));
         }
@@ -57,7 +57,7 @@ fn install() -> Result<ExitCode, String> {
     let daemon = program.with_file_name(DAEMON_PROGRAM);
     if !daemon.is_file() {
         return Err(format!(
-            "{} is missing: install {DAEMON_PROGRAM} beside cockpit",
+            "{} is missing: install {DAEMON_PROGRAM} beside torlek",
             daemon.display()
         ));
     }
@@ -112,7 +112,7 @@ fn link_command(program: &Path, profile: &Profile) -> Result<(), String> {
         Ok(_) if link.canonicalize().ok().as_ref() == Some(&target) => return Ok(()),
         Ok(_) => {
             return Err(format!(
-                "{} exists and is not this cockpit: remove it or choose another profile",
+                "{} exists and is not this torlek: remove it or choose another profile",
                 link.display()
             ));
         }
@@ -143,9 +143,9 @@ fn systemd_unit(
     let name = profile.name();
     let marker = ServiceManager::marker(profile);
     Ok(format!(
-        "# Written by `cockpit daemon install`; `cockpit doctor` reads the profile line.\n\
+        "# Written by `torlek daemon install`; `torlek doctor` reads the profile line.\n\
          [Unit]\n\
-         Description=Cockpit daemon (profile {name})\n\
+          Description=Torlek daemon (profile {name})\n\
          {marker}\n\
          \n\
          [Service]\n\
@@ -189,7 +189,7 @@ fn launchd_agent(
     Ok(format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <!-- Written by `cockpit daemon install`; `cockpit doctor` reads the profile line.\n\
+          <!-- Written by `torlek daemon install`; `torlek doctor` reads the profile line.\n\
          {marker}\n\
          -->\n\
          <plist version=\"1.0\">\n\
@@ -257,7 +257,7 @@ fn refuse_a_foreign_unit(unit: &Path, profile: &Profile) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "{} exists and was not written by `cockpit daemon install` for profile {profile}: \
+        "{} exists and was not written by `torlek daemon install` for profile {profile}: \
          remove it or choose another profile",
         unit.display()
     ))

@@ -171,7 +171,7 @@ impl ManagedProxy {
         let mut invocation = Command::new(self.metadata_commands.join(tool));
         invocation
             .env("HOME", &self.home)
-            .env("COCKPIT_PROFILE", self.profile.name())
+            .env("TORLEK_PROFILE", self.profile.name())
             .env("LC_ALL", "C");
         if tool == "ls" {
             invocation.arg("-l");

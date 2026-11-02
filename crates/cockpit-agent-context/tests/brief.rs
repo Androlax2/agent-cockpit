@@ -36,7 +36,7 @@ fn the_brief_states_the_invariants_before_any_dynamic_field() {
         .find("Prose grants nothing")
         .expect("authority boundary");
     assert!(text.contains("A skipped check is not a pass"), "{text}");
-    assert!(text.contains("cockpit ask run"), "{text}");
+    assert!(text.contains("torlek ask run"), "{text}");
     assert!(invariants < text.find("/home/owner/projects/app").unwrap());
 }
 
@@ -51,7 +51,7 @@ fn the_brief_names_the_session_its_profile_task_step_and_checkpoint() {
         "item 41",
         "workflow 3",
         "step implement (attempt 2, checkpoint recorded)",
-        "`cockpit workflow packet 3`",
+        "`torlek workflow packet 3`",
         "revision 12",
         "change-state over session s-7",
         "profile dev",
@@ -65,7 +65,7 @@ fn the_brief_names_the_session_its_profile_task_step_and_checkpoint() {
 fn the_brief_points_to_discovery_and_recovery() {
     let text = brief(&facts());
 
-    for entry_point in ["`cockpit docs`", "`cockpit --skill`", "`cockpit brief`"] {
+    for entry_point in ["`torlek docs`", "`torlek --skill`", "`torlek brief`"] {
         assert!(
             text.contains(entry_point),
             "missing {entry_point} in\n{text}"
@@ -81,7 +81,7 @@ fn a_session_without_a_step_is_told_how_to_find_one() {
     });
 
     assert!(text.contains("no workflow step"), "{text}");
-    assert!(text.contains("`cockpit workflow list`"), "{text}");
+    assert!(text.contains("`torlek workflow list`"), "{text}");
 }
 
 #[test]

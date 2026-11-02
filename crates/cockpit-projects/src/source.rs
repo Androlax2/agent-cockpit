@@ -101,7 +101,7 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         // This crate does not log; the daemon's standard error reaches its journal.
         if let Err(error) = std::fs::remove_dir_all(&self.path) {
-            eprintln!("cockpit: could not remove {}: {error}", self.path.display());
+            eprintln!("torlek: could not remove {}: {error}", self.path.display());
         }
     }
 }

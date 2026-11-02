@@ -108,7 +108,7 @@ async fn release_candidate_responsiveness() {
         std::env::var("COCKPIT_CANDIDATE_REVISION").expect("the verified source revision");
     std::env::var("COCKPIT_LATENCY_REPORT").expect("a persistent report path");
     let manifest: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(Path::new(&root).join("share/cockpit/manifest.json")).unwrap(),
+        &std::fs::read(Path::new(&root).join("share/torlek/manifest.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(

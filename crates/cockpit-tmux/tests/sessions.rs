@@ -26,8 +26,8 @@ fn a_session_runs_its_command_in_its_directory_with_its_environment() {
         .new_session(&SessionLaunch {
             name,
             working_dir: fixture.home.path().to_path_buf(),
-            command: shell("echo \"in $(pwd) as $COCKPIT_SESSION\"; sleep 30"),
-            environment: vec![("COCKPIT_SESSION".to_string(), "s-41".into())],
+            command: shell("echo \"in $(pwd) as $TORLEK_SESSION\"; sleep 30"),
+            environment: vec![("TORLEK_SESSION".to_string(), "s-41".into())],
             columns: 100,
             rows: 30,
         })

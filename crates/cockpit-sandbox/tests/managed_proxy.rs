@@ -16,12 +16,12 @@ fn missing_configuration_has_a_typed_reason_and_profile_specific_repair() {
     assert!(
         error
             .next(&environment.profile.value)
-            .contains("cockpit --profile next sandbox install")
+            .contains("torlek --profile next sandbox install")
     );
     assert!(
         proxy
             .data_dir()
-            .starts_with(home.path().join(".local/state/cockpit-next"))
+            .starts_with(home.path().join(".local/state/torlek-next"))
     );
     assert!(!proxy.data_dir().exists());
 }

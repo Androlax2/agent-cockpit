@@ -31,7 +31,7 @@ impl Home {
     }
 
     fn daemon_socket(&self) -> PathBuf {
-        let path = self.runtime_dir().join("cockpit-dev/daemon.sock");
+        let path = self.runtime_dir().join("torlek-dev/daemon.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -42,7 +42,7 @@ impl Home {
 
     /// `cockpit` with `arguments`, in this home only.
     fn command(&self, arguments: &[&str]) -> std::process::Command {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
@@ -258,7 +258,7 @@ async fn restart_all_exits_1_naming_each_session_it_could_not_restart() {
     );
     assert_eq!(
         text(&output.stderr),
-        "cockpit: s000000000002 not restarted: conflict: it cannot resume\n"
+        "torlek: s000000000002 not restarted: conflict: it cannot resume\n"
     );
     assert_eq!(daemon.await.unwrap(), Command::SessionRestartAll);
 }
@@ -281,7 +281,7 @@ async fn a_refused_session_verb_exits_1_with_the_daemons_reason() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "cockpit: conflict: session s0123456789ab is running; wake needs asleep\n"
+        "torlek: conflict: session s0123456789ab is running; wake needs asleep\n"
     );
 }
 
@@ -385,7 +385,7 @@ async fn end_finished_exits_1_naming_each_session_it_could_not_end() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "cockpit: s000000000002 not ended: conflict: its agent did not stop\n"
+        "torlek: s000000000002 not ended: conflict: its agent did not stop\n"
     );
 }
 
@@ -530,7 +530,7 @@ async fn a_refused_sandbox_show_exits_1_with_the_rule_and_reason() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "cockpit: refused: the sandbox refuses `sandbox`: no sandbox engine: no `greywall` on PATH\n"
+        "torlek: refused: the sandbox refuses `sandbox`: no sandbox engine: no `greywall` on PATH\n"
     );
 }
 

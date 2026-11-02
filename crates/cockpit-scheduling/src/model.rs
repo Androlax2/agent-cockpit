@@ -288,13 +288,13 @@ impl Placement {
     pub fn brief(&self) -> String {
         match &self.unit {
             Unit::Item => format!(
-                "Cockpit gives you item {item}: read it with `cockpit todo show {item}`, do it, \
-                 then finish it with `cockpit todo done {item} --summary '<what you did>'`.",
+                "Torlek gives you item {item}: read it with `torlek todo show {item}`, do it, \
+                 then finish it with `torlek todo done {item} --summary '<what you did>'`.",
                 item = self.item.0
             ),
             Unit::Step { run, name, .. } => format!(
-                "Cockpit gives you step `{name}` of workflow run {run} (item {item}): read its \
-                 task packet with `cockpit workflow packet {run}` and hand the step off as it \
+                "Torlek gives you step `{name}` of workflow run {run} (item {item}): read its \
+                 task packet with `torlek workflow packet {run}` and hand the step off as it \
                  says.",
                 run = run.0,
                 item = self.item.0

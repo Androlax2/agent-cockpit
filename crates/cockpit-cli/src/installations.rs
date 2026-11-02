@@ -10,9 +10,8 @@ use std::path::{Path, PathBuf};
 
 use cockpit_config::{Environment, Profile};
 
-/// The line `cockpit daemon install` puts in every unit it writes: a `cockpit.service` without
-/// it is the legacy Cockpit's.
-const PROFILE_MARKER: &str = "X-Cockpit-Profile=";
+/// Only Torlek-marked units belong to this installer; old Cockpit units are read-only.
+const PROFILE_MARKER: &str = "X-Torlek-Profile=";
 
 /// The service manager that starts the daemon at login.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,7 +98,7 @@ pub(crate) fn installed_units(unit_dir: &Path) -> Result<Vec<InstalledUnit>, Str
 }
 
 /// What every unit file `cockpit daemon install` writes is named after.
-const UNIT_NAME_PREFIXES: [&str; 2] = ["cockpit", "io.github.androlax2.cockpit"];
+const UNIT_NAME_PREFIXES: [&str; 2] = ["torlek", "io.github.androlax2.torlek"];
 
 /// The profile `unit`'s marker line names; `None` when the file is missing or has none.
 pub(crate) fn profile_of_unit(unit: &Path) -> Result<Option<Profile>, String> {
@@ -128,7 +127,8 @@ pub(crate) struct Legacy {
 
 impl Legacy {
     pub(crate) fn find(unit_dir: &Path, path: Option<&OsStr>, this_program: &Path) -> Self {
-        let unit = unit_dir.join(Profile::default_profile().systemd_unit());
+        // The old name stays fixed even though the new product's namespace changes.
+        let unit = unit_dir.join("cockpit.service");
         let unit = fs::read_to_string(&unit)
             .ok()
             .filter(|text| profile_marked_in(text).is_none())
@@ -137,7 +137,7 @@ impl Legacy {
         let command = path
             .into_iter()
             .flat_map(std::env::split_paths)
-            .map(|dir| dir.join(cockpit_config::DEFAULT_PROFILE))
+            .map(|dir| dir.join("cockpit"))
             .find(|candidate| candidate.is_file() && candidate.canonicalize().ok() != this_program);
         Self { unit, command }
     }

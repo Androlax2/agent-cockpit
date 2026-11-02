@@ -73,7 +73,7 @@ impl Refusal {
             ),
             Refusal::OwnerOnly { action } => (
                 UnblockedBy::Owner,
-                format!("ask the owner to {action} with `cockpit workflow` on the host"),
+                format!("ask the owner to {action} with `torlek workflow` on the host"),
             ),
             Refusal::InvalidRequest { field, .. } => (
                 UnblockedBy::Agent,
@@ -85,20 +85,20 @@ impl Refusal {
             ),
             Refusal::NotFound { .. } => (
                 UnblockedBy::Agent,
-                "name a workflow of your project with `cockpit workflow list`".to_owned(),
+                "name a workflow of your project with `torlek workflow list`".to_owned(),
             ),
             Refusal::ItemNotFound { .. } => (
                 UnblockedBy::Owner,
-                "name an item of `cockpit todo list`".to_owned(),
+                "name an item of `torlek todo list`".to_owned(),
             ),
             Refusal::ItemNotOpen { .. } => (
                 UnblockedBy::Owner,
-                "reopen or approve the item first with `cockpit todo`".to_owned(),
+                "reopen or approve the item first with `torlek todo`".to_owned(),
             ),
             Refusal::AlreadyRunning { run, .. } => (
                 UnblockedBy::Owner,
                 format!(
-                    "continue workflow {}, or cancel it with `cockpit workflow cancel`",
+                    "continue workflow {}, or cancel it with `torlek workflow cancel`",
                     run.0
                 ),
             ),
@@ -110,14 +110,14 @@ impl Refusal {
                 UnblockedBy::Owner,
                 format!(
                     "do what the blocker asks; then the owner, or the session doing the step, \
-                     runs `cockpit workflow unblock {}`",
+                     runs `torlek workflow unblock {}`",
                     run.0
                 ),
             ),
             Refusal::WrongStep { run, .. } => (
                 UnblockedBy::Agent,
                 format!(
-                    "read the workflow again with `cockpit workflow show {}`",
+                    "read the workflow again with `torlek workflow show {}`",
                     run.0
                 ),
             ),
@@ -132,7 +132,7 @@ impl Refusal {
             Refusal::NotDoing { run } => (
                 UnblockedBy::Agent,
                 format!(
-                    "begin the step first with `cockpit workflow begin {}`",
+                    "begin the step first with `torlek workflow begin {}`",
                     run.0
                 ),
             ),

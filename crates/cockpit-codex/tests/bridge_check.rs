@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use cockpit_codex::Bridge;
 
 fn built_session() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-session"))
+    PathBuf::from(env!("CARGO_BIN_EXE_torlek-codex-session"))
 }
 
 /// A bridge whose hook is `hook`, beside the built session launcher and a `cockpit` that is
@@ -31,7 +31,7 @@ fn the_built_hook_bridge_passes() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = bridge_with(
         dir.path(),
-        PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-hook")),
+        PathBuf::from(env!("CARGO_BIN_EXE_torlek-codex-hook")),
     );
 
     assert_eq!(bridge.check(), Ok(()));
@@ -39,7 +39,7 @@ fn the_built_hook_bridge_passes() {
 
 #[test]
 fn the_built_hook_bridge_answers_its_version() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-codex-hook"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_torlek-codex-hook"))
         .arg("--version")
         .output()
         .unwrap();
@@ -61,7 +61,7 @@ fn the_built_session_launcher_answers_its_version() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
-        cockpit_codex::version_line("cockpit-codex-session")
+        cockpit_codex::version_line("torlek-codex-session")
     );
 }
 
@@ -70,12 +70,12 @@ fn another_program_in_the_session_launchers_place_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut bridge = bridge_with(
         dir.path(),
-        PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-hook")),
+        PathBuf::from(env!("CARGO_BIN_EXE_torlek-codex-hook")),
     );
     bridge.session_program = common::script(
         dir.path(),
         "cockpit-codex-session",
-        "echo 'cockpit-codex-session 0.0.0'",
+        "echo 'torlek-codex-session 0.0.0'",
     );
 
     let reason = bridge.check().unwrap_err();
@@ -98,7 +98,7 @@ fn a_cockpit_without_its_execute_bit_fails_naming_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut bridge = bridge_with(
         dir.path(),
-        PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-hook")),
+        PathBuf::from(env!("CARGO_BIN_EXE_torlek-codex-hook")),
     );
     let cockpit = dir.path().join("cockpit-plain");
     std::fs::write(&cockpit, "").unwrap();
@@ -120,7 +120,7 @@ fn another_program_in_the_hooks_place_is_refused() {
 
     let reason = bridge_with(dir.path(), hook).check().unwrap_err();
 
-    assert!(reason.contains("not cockpit-codex-hook"), "{reason}");
+    assert!(reason.contains("not torlek-codex-hook"), "{reason}");
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn a_hook_of_another_release_is_refused() {
     let hook = common::script(
         dir.path(),
         "cockpit-codex-hook",
-        "echo 'cockpit-codex-hook 0.0.0'",
+        "echo 'torlek-codex-hook 0.0.0'",
     );
 
     let reason = bridge_with(dir.path(), hook).check().unwrap_err();
@@ -156,7 +156,7 @@ fn a_program_path_that_is_not_utf8_is_refused() {
     let odd = dir.path().join(std::ffi::OsStr::from_bytes(b"bin-\xff"));
     std::fs::create_dir(&odd).unwrap();
     let hook = odd.join("cockpit-codex-hook");
-    std::fs::copy(env!("CARGO_BIN_EXE_cockpit-codex-hook"), &hook).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_torlek-codex-hook"), &hook).unwrap();
 
     let reason = bridge_with(dir.path(), hook).check().unwrap_err();
 

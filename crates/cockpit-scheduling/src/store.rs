@@ -344,7 +344,7 @@ fn units<'a>(items: &'a [Item], runs: &[Run]) -> (Vec<Waiting>, Vec<Outside<'a>>
                             .map(|blocked| format!(" ({})", blocked.detail))
                             .unwrap_or_default()
                     ),
-                    action: format!("unblock it: `cockpit workflow unblock {}`", run.id.0),
+                    action: format!("unblock it: `torlek workflow unblock {}`", run.id.0),
                 }),
                 NextAction::OwnerCompletes { .. } => outside.push(Outside {
                     item,
@@ -354,7 +354,7 @@ fn units<'a>(items: &'a [Item], runs: &[Run]) -> (Vec<Waiting>, Vec<Outside<'a>>
                         "step {} of workflow run {} is the owner's",
                         step.definition.name, run.id.0
                     ),
-                    action: format!("complete it: `cockpit workflow complete {} ...`", run.id.0),
+                    action: format!("complete it: `torlek workflow complete {} ...`", run.id.0),
                 }),
                 NextAction::InProgress { .. } | NextAction::Nothing => {}
             }
@@ -372,7 +372,7 @@ fn units<'a>(items: &'a [Item], runs: &[Run]) -> (Vec<Waiting>, Vec<Outside<'a>>
                 reason: Reason::WaitsOnItems,
                 why: format!("it waits on {names}, not done yet"),
                 action: format!(
-                    "finish {names}, or remove the wait: `cockpit todo unwait {} ...`",
+                    "finish {names}, or remove the wait: `torlek todo unwait {} ...`",
                     item.id.0
                 ),
             });
@@ -382,7 +382,7 @@ fn units<'a>(items: &'a [Item], runs: &[Run]) -> (Vec<Waiting>, Vec<Outside<'a>>
                 unit: Unit::Item,
                 reason: Reason::NotQueued,
                 why: "it is not queued".to_owned(),
-                action: format!("queue it: `cockpit todo queue {}`", item.id.0),
+                action: format!("queue it: `torlek todo queue {}`", item.id.0),
             });
         } else {
             waiting.push(Waiting {

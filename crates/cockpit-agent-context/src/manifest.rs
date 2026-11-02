@@ -71,7 +71,7 @@ fn computed() -> Manifest {
         .iter()
         .map(|document| ManifestEntry {
             path: document.path.to_owned(),
-            source: "cockpit".to_owned(),
+            source: "torlek".to_owned(),
             scope: Scope::Product,
             version: VERSION.to_owned(),
             sha256: hex(&Sha256::digest(document.file_text().as_bytes())),

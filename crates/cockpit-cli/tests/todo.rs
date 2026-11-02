@@ -195,7 +195,7 @@ impl Sandbox {
     }
 
     fn agent_socket(&self) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit-dev/agent/agent.sock");
+        let path = self.dir.path().join("run/torlek-dev/agent/agent.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -206,13 +206,13 @@ impl Sandbox {
 
     /// Runs `cockpit` as an agent launched with `the-token`, off the test's runtime threads.
     async fn cockpit(&self, arguments: &[&str]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
             .env("HOME", self.dir.path())
             .env("XDG_RUNTIME_DIR", self.dir.path().join("run"))
-            .env("COCKPIT_LAUNCH_TOKEN", "the-token");
+            .env("TORLEK_LAUNCH_TOKEN", "the-token");
         tokio::task::spawn_blocking(move || command.output().unwrap())
             .await
             .unwrap()
@@ -334,8 +334,8 @@ async fn a_refused_blocker_report_says_who_unblocks_it() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "cockpit: refused: no project takes blocker reports\n\
-         cockpit: to unblock (the owner): set tasks.blocker_project in the owner configuration\n"
+        "torlek: refused: no project takes blocker reports\n\
+         torlek: to unblock (the owner): set tasks.blocker_project in the owner configuration\n"
     );
 }
 

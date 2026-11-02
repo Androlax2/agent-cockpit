@@ -547,10 +547,10 @@ class StampTests(unittest.TestCase):
 FAKE_COCKPIT = """#!/bin/sh
 if [ "$1" = provider ]; then cat "$HOME/providers"; exit; fi
 prefix=$(cd "$(dirname "$0")/.." && pwd)
-if [ "$1" = tui ]; then shift; exec "$prefix/bin/cockpit-tui" "$@"; fi
-echo "cockpit 0.1.0-alpha.7 (revision 0123abcd)"
-echo "bundle manifest $prefix/share/cockpit/manifest.json:"
-cat "$prefix/share/cockpit/manifest.json"
+if [ "$1" = tui ]; then shift; exec "$prefix/bin/torlek-tui" "$@"; fi
+echo "torlek 0.1.0-alpha.7 (revision 0123abcd)"
+echo "bundle manifest $prefix/share/torlek/manifest.json:"
+cat "$prefix/share/torlek/manifest.json"
 """
 # As the real daemon: a provider reports events when its `--version` answers and every
 # bridge program beside the daemon it needs runs.
@@ -568,18 +568,18 @@ report() {
   printf '%s\\tresume\\tevents\\n' "$provider" >> "$HOME/providers"
 }
 : > "$HOME/providers"
-report claude cockpit-claude-hook
-report codex cockpit-codex-hook cockpit-codex-session
-report opencode cockpit-opencode-bridge
-echo "ready $HOME/.local/state/cockpit/run/daemon.sock"
+report claude torlek-claude-hook
+report codex torlek-codex-hook torlek-codex-session
+report opencode torlek-opencode-bridge
+echo "ready $HOME/.local/state/torlek/run/daemon.sock"
 exec sleep 60
 """
 # The provider each helper bridges.
 HELPER_PROVIDERS = {
-    "cockpit-claude-hook": "claude",
-    "cockpit-codex-hook": "codex",
-    "cockpit-codex-session": "codex",
-    "cockpit-opencode-bridge": "opencode",
+    "torlek-claude-hook": "claude",
+    "torlek-codex-hook": "codex",
+    "torlek-codex-session": "codex",
+    "torlek-opencode-bridge": "opencode",
 }
 FAKE_HOOK_BRIDGE = """#!/bin/sh
 exit 0
@@ -593,11 +593,11 @@ class PackagingTestCase(unittest.TestCase):
         self.root = Path(directory.name)
         self.binaries = self.root / "target"
         self.binaries.mkdir()
-        self.write_fake("cockpit", FAKE_COCKPIT)
-        self.write_fake("cockpit-daemon", FAKE_DAEMON)
+        self.write_fake("torlek", FAKE_COCKPIT)
+        self.write_fake("torlek-daemon", FAKE_DAEMON)
         self.write_fake(
-            "cockpit-tui",
-            '#!/bin/sh\n[ "$1" = --version ] || exit 2\necho "cockpit-tui 0.1.0-alpha.7"\n',
+            "torlek-tui",
+            '#!/bin/sh\n[ "$1" = --version ] || exit 2\necho "torlek-tui 0.1.0-alpha.7"\n',
         )
         for helper in release.HELPERS:
             self.write_fake(helper, FAKE_HOOK_BRIDGE)
@@ -639,7 +639,7 @@ class PackageTests(PackagingTestCase):
         code, outputs, error = self.package()
         self.assertEqual(code, 0, error)
         archive = Path(outputs["archive"])
-        self.assertEqual(archive.name, "cockpit-v0.1.0-alpha.7-linux-x86_64.tar.gz")
+        self.assertEqual(archive.name, "torlek-v0.1.0-alpha.7-linux-x86_64.tar.gz")
         with tarfile.open(archive) as bundle:
             names = set(bundle.getnames())
             members = bundle.getmembers()
@@ -648,13 +648,13 @@ class PackageTests(PackagingTestCase):
         for binary in release.BINARIES:
             self.assertEqual(modes[f"bin/{binary}"], 0o755)
         self.assertEqual(modes["README.md"], 0o644)
-        prefix = "cockpit-v0.1.0-alpha.7-linux-x86_64"
+        prefix = "torlek-v0.1.0-alpha.7-linux-x86_64"
         self.assertLessEqual(
             {
-                f"{prefix}/bin/cockpit",
-                f"{prefix}/bin/cockpit-daemon",
-                f"{prefix}/bin/cockpit-tui",
-                f"{prefix}/share/cockpit/manifest.json",
+                f"{prefix}/bin/torlek",
+                f"{prefix}/bin/torlek-daemon",
+                f"{prefix}/bin/torlek-tui",
+                f"{prefix}/share/torlek/manifest.json",
                 f"{prefix}/LICENSE",
                 f"{prefix}/README.md",
             },
@@ -671,16 +671,16 @@ class PackageTests(PackagingTestCase):
         self.assertEqual(
             manifest["helpers"],
             {
-                "cockpit-claude-hook": "0.1.0-alpha.7",
-                "cockpit-codex-hook": "0.1.0-alpha.7",
-                "cockpit-codex-session": "0.1.0-alpha.7",
-                "cockpit-opencode-bridge": "0.1.0-alpha.7",
+                "torlek-claude-hook": "0.1.0-alpha.7",
+                "torlek-codex-hook": "0.1.0-alpha.7",
+                "torlek-codex-session": "0.1.0-alpha.7",
+                "torlek-opencode-bridge": "0.1.0-alpha.7",
             },
         )
         self.assertIsNone(manifest["instruction_bundle"])
         self.assertEqual(
-            manifest["contents"]["bin/cockpit"],
-            release.sha256_of(self.binaries / "cockpit"),
+            manifest["contents"]["bin/torlek"],
+            release.sha256_of(self.binaries / "torlek"),
         )
 
     def test_the_gzip_header_carries_no_build_time(self):
@@ -745,31 +745,31 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertEqual(code, 0, error)
         # Even if both packaging and its manifest omit the TUI, executing the
         # installed CLI must detect the missing sibling.
-        (root / "bin/cockpit-tui").unlink(missing_ok=True)
-        self.edit_manifest(root, lambda m: m["contents"].pop("bin/cockpit-tui", None))
+        (root / "bin/torlek-tui").unlink(missing_ok=True)
+        self.edit_manifest(root, lambda m: m["contents"].pop("bin/torlek-tui", None))
         with patch.object(
-            release, "BINARIES", tuple(b for b in release.BINARIES if b != "cockpit-tui")
+            release, "BINARIES", tuple(b for b in release.BINARIES if b != "torlek-tui")
         ):
             code, _, error = self.verify(root)
         self.assertEqual(code, 1)
-        self.assertIn("cockpit tui --version", error)
+        self.assertIn("torlek tui --version", error)
 
     def test_a_tui_that_cannot_run_fails_the_install_check(self):
-        self.write_fake("cockpit-tui", "#!/bin/sh\nexit 126\n")
+        self.write_fake("torlek-tui", "#!/bin/sh\nexit 126\n")
         _, outputs, _ = self.package()
         code, _, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
-        self.assertIn("cockpit tui --version", error)
+        self.assertIn("torlek tui --version", error)
 
     def test_a_missing_or_changed_file_fails_naming_it(self):
         _code, outputs, _error = self.package()
         root = Path(outputs["root"])
         (root / "README.md").unlink()
-        (root / "bin/cockpit").write_text("changed")
+        (root / "bin/torlek").write_text("changed")
         code, _verified, error = self.verify(root)
         self.assertEqual(code, 1)
         self.assertIn("README.md: missing", error)
-        self.assertIn("bin/cockpit: checksum differs", error)
+        self.assertIn("bin/torlek: checksum differs", error)
 
     def test_an_install_without_a_bridge_fails_naming_it(self):
         for helper in release.HELPERS:
@@ -808,14 +808,14 @@ class VerifyInstallTests(PackagingTestCase):
 
     def test_a_file_the_manifest_does_not_list_fails_naming_it(self):
         _code, outputs, _error = self.package()
-        (Path(outputs["root"]) / "bin/cockpit.debug").write_text("stray")
+        (Path(outputs["root"]) / "bin/torlek.debug").write_text("stray")
         code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
-        self.assertIn("bin/cockpit.debug: not listed in the manifest", error)
+        self.assertIn("bin/torlek.debug: not listed in the manifest", error)
 
     def test_a_daemon_whose_helper_keeps_its_pipes_open_does_not_hang_the_check(self):
         self.write_fake(
-            "cockpit-daemon",
+            "torlek-daemon",
             "#!/bin/sh\nfor provider in claude codex opencode; do\n"
             '  printf \'%s\\tresume\\tevents\\n\' "$provider" >> "$HOME/providers"\ndone\n'
             'sleep 600 &\necho "ready $HOME/daemon.sock"\nexec sleep 600\n',
@@ -825,7 +825,7 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertEqual(code, 0, error)
 
     def test_a_version_command_that_hangs_fails_instead_of_hanging_the_check(self):
-        self.write_fake("cockpit", "#!/bin/sh\nsleep 600 &\nexec sleep 600\n")
+        self.write_fake("torlek", "#!/bin/sh\nsleep 600 &\nexec sleep 600\n")
         _code, outputs, _error = self.package()
         with patch.object(release, "COMMAND_TIMEOUT_SECONDS", 1):
             code, _verified, error = self.verify(outputs["root"])
@@ -836,7 +836,7 @@ class VerifyInstallTests(PackagingTestCase):
         _code, outputs, _error = self.package()
         code, _verified, error = self.verify(outputs["root"], revision="fedcba98")
         self.assertEqual(code, 1)
-        self.assertIn("expected 'cockpit 0.1.0-alpha.7 (revision fedcba98)'", error)
+        self.assertIn("expected 'torlek 0.1.0-alpha.7 (revision fedcba98)'", error)
 
     def test_an_install_whose_bridge_cannot_run_fails_naming_its_provider(self):
         for helper, provider in HELPER_PROVIDERS.items():
@@ -852,9 +852,9 @@ class VerifyInstallTests(PackagingTestCase):
                 self.assertIn(f"{provider}\\tresume\\tno-events", error)
 
     def test_a_provider_list_that_hangs_fails_with_the_daemon_log(self):
-        # A FIFO nobody writes keeps the fake `cockpit provider list` reading forever.
+        # A FIFO nobody writes keeps the fake `torlek provider list` reading forever.
         self.write_fake(
-            "cockpit-daemon",
+            "torlek-daemon",
             "#!/bin/sh\nmkfifo \"$HOME/providers\"\necho 'stuck on the hook bridge' >&2\n"
             'echo "ready $HOME/daemon.sock"\nexec sleep 600\n',
         )
@@ -873,7 +873,7 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertIn("did not find a runnable bridge for claude, codex, opencode", error)
 
     def test_a_daemon_that_does_not_become_ready_fails(self):
-        self.write_fake("cockpit-daemon", "#!/bin/sh\necho 'no state dir' >&2\nexit 1\n")
+        self.write_fake("torlek-daemon", "#!/bin/sh\necho 'no state dir' >&2\nexit 1\n")
         _code, outputs, _error = self.package()
         code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)

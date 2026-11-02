@@ -39,7 +39,7 @@ pub const LAUNCH_FLAGS: [&str; 7] = [
 
 /// The name Cockpit's MCP server (`cockpit mcp`) has in every harness a launch registers it
 /// with (#419).
-pub const MCP_SERVER_NAME: &str = "cockpit";
+pub const MCP_SERVER_NAME: &str = "torlek";
 
 /// The environment every launch sets; the conformance test finds each name in the binary.
 /// `CLAUDE_CODE_DISABLE_AGENT_VIEW` turns off Claude Code's background daemon:
@@ -71,7 +71,7 @@ pub const HOOK_VERSION_FLAG: &str = "--version";
 
 /// What `cockpit-claude-hook --version` prints: its name and the version it was built as.
 pub fn hook_version_line() -> String {
-    format!("cockpit-claude-hook {}", env!("CARGO_PKG_VERSION"))
+    format!("torlek-claude-hook {}", env!("CARGO_PKG_VERSION"))
 }
 
 /// How long the hook bridge may take to answer [`HOOK_VERSION_FLAG`] at the daemon's start.
@@ -105,7 +105,7 @@ impl Bridge {
         }
         let answer = run_with_deadline(&self.hook_program, HOOK_VERSION_FLAG, deadline)
             .map_err(|reason| format!("{}: {reason}", self.hook_program.display()))?;
-        if !answer.starts_with("cockpit-claude-hook ") {
+        if !answer.starts_with("torlek-claude-hook ") {
             return Err(format!(
                 "{}: `{HOOK_VERSION_FLAG}` printed {answer:?}, not a hook bridge",
                 self.hook_program.display()
@@ -140,7 +140,7 @@ pub struct ClaudeCode {
 }
 
 /// Where Claude Code looks for skills in a directory added with `--add-dir`: the bundle is
-/// written there so the `cockpit` skill sits at `<root>/.claude/skills/cockpit/SKILL.md`.
+/// written there so the `torlek` skill sits at `<root>/.claude/skills/torlek/SKILL.md`.
 pub fn instruction_skills_dir(root: &Path) -> PathBuf {
     root.join(".claude").join("skills")
 }

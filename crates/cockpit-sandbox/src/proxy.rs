@@ -55,11 +55,11 @@ impl ProxyError {
     }
 
     pub fn next(&self, profile: &Profile) -> String {
-        let command = format!("cockpit --profile {profile} sandbox");
+        let command = format!("torlek --profile {profile} sandbox");
         match self {
             Self::NotConfigured => format!("run `{command} install`"),
             Self::EndpointOccupied(endpoint) => format!(
-                "have the owner resolve the listener at {endpoint}, then run `{command} install`; Cockpit will not stop or adopt it"
+                "have the owner resolve the listener at {endpoint}, then run `{command} install`; Torlek will not stop or adopt it"
             ),
             Self::ConfigurationChanged(path) | Self::UnsafePath(path) => format!(
                 "inspect {} without changing another installation, then retry `{command} install`",
@@ -69,8 +69,8 @@ impl ProxyError {
                 "make this user's systemd service manager (also on WSL2) or macOS login launchd domain available, then run `{command} install`"
             ),
             Self::Unsupported(_) => "use Linux, macOS or a WSL2 distribution".into(),
-            Self::EngineCapability(_) => "a verified Greywall release with macOS public-CA access and private-state isolation is required; keep sandboxing enabled and update Cockpit when that pin is published".into(),
-            _ => format!("run `{command} restart`, then `cockpit --profile {profile} doctor`"),
+            Self::EngineCapability(_) => "a verified Greywall release with macOS public-CA access and private-state isolation is required; keep sandboxing enabled and update Torlek when that pin is published".into(),
+            _ => format!("run `{command} restart`, then `torlek --profile {profile} doctor`"),
         }
     }
 }
@@ -604,7 +604,7 @@ impl ManagedProxy {
         let mut command = Command::new(&self.curl);
         command
             .env("HOME", &self.home)
-            .env("COCKPIT_PROFILE", self.profile.name())
+            .env("TORLEK_PROFILE", self.profile.name())
             .args([
                 "-q",
                 "--silent",

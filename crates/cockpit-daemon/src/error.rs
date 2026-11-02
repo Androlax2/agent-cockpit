@@ -65,7 +65,7 @@ impl fmt::Display for StartError {
             }
             Self::AlreadyRunning { lock_path } => write!(
                 formatter,
-                "another cockpit daemon of this user is already running (it holds {})",
+                "another torlek daemon of this user is already running (it holds {})",
                 lock_path.display()
             ),
             Self::Io {

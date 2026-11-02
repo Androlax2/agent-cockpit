@@ -23,8 +23,8 @@ impl ServiceManager {
 
     pub(super) fn unit_name(self, profile: &Profile) -> String {
         match self {
-            Self::Systemd => format!("cockpit-greyproxy-{profile}.service"),
-            Self::Launchd => format!("io.github.androlax2.cockpit.greyproxy.{profile}.plist"),
+            Self::Systemd => format!("torlek-greyproxy-{profile}.service"),
+            Self::Launchd => format!("io.github.androlax2.torlek.greyproxy.{profile}.plist"),
         }
     }
 }
@@ -32,7 +32,7 @@ impl ServiceManager {
 impl ManagedProxy {
     fn launchd_target(&self) -> String {
         format!(
-            "gui/{}/io.github.androlax2.cockpit.greyproxy.{}",
+            "gui/{}/io.github.androlax2.torlek.greyproxy.{}",
             self.uid, self.profile
         )
     }
@@ -41,7 +41,7 @@ impl ManagedProxy {
         command::run(
             Command::new(&self.service_program)
                 .env("HOME", &self.home)
-                .env("COCKPIT_PROFILE", self.profile.name())
+                .env("TORLEK_PROFILE", self.profile.name())
                 .env("LC_ALL", "C")
                 .args(arguments),
             None,
@@ -280,7 +280,7 @@ impl ManagedProxy {
         let configuration = path_text(&self.configuration_path())?;
         let data = path_text(&self.data_dir)?;
         let home = path_text(&self.home)?;
-        let marker = format!("Cockpit managed Greyproxy, profile {}", self.profile);
+        let marker = format!("Torlek managed Greyproxy, profile {}", self.profile);
         Ok(match self.manager {
             ServiceManager::Systemd => format!(
                 "# {marker}\n[Unit]\nDescription={marker}\n\n[Service]\nType=simple\nUMask=0077\n\
@@ -293,7 +293,7 @@ impl ManagedProxy {
                 systemd_quote(&configuration),
             ),
             ServiceManager::Launchd => {
-                let label = format!("io.github.androlax2.cockpit.greyproxy.{}", self.profile);
+                let label = format!("io.github.androlax2.torlek.greyproxy.{}", self.profile);
                 let args = [
                     program.as_str(),
                     "serve",

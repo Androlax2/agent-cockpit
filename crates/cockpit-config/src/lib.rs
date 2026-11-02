@@ -2,7 +2,7 @@
 //! settings, precedence, provenance and start-file change detection (report 09).
 //!
 //! Precedence, lowest first: product defaults, the owner's `config.toml`, the project's
-//! `.cockpit/config.toml` (only settings that describe the project), `--set` overrides.
+//! `.torlek/config.toml` (only settings that describe the project), `--set` overrides.
 //! A project file that sets an owner setting fails: repository configuration describes
 //! requirements, owner settings grant.
 
@@ -28,7 +28,7 @@ pub use show::{SessionSettings, render};
 pub use start_files::{FileState, KNOWN_PROVIDERS, RecordedFile, StartFile, StartFileSnapshot};
 
 /// Where the project's own configuration lives, relative to the project directory.
-pub const PROJECT_CONFIG_FILE: &str = ".cockpit/config.toml";
+pub const PROJECT_CONFIG_FILE: &str = ".torlek/config.toml";
 
 /// The settings `--set key=value` accepts; values are TOML (`--set 'projects.trusted=["/p"]'`).
 pub const OVERRIDABLE_KEYS: [&str; 2] = ["projects.trusted", "workflow.preset"];
@@ -92,7 +92,7 @@ impl fmt::Display for Source {
             } => write!(
                 formatter,
                 "development build default; ${variable} ignored: a development build reaches \
-                 the default profile only with --profile cockpit"
+                 the default profile only with --profile torlek"
             ),
         }
     }
@@ -595,7 +595,7 @@ fn reject_project_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::Invalid {
             key: key.to_string(),
             source: layer.source_at(span),
-            reason: "describes a project; declare it in the project's .cockpit/config.toml"
+            reason: "describes a project; declare it in the project's .torlek/config.toml"
                 .to_string(),
         });
     }

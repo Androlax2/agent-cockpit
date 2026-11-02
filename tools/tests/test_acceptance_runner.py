@@ -13,7 +13,7 @@ GUIDES = (
     REPO / "docs/acceptance/m1-idle.md",
     REPO / "docs/acceptance/m3.md",
 )
-BINARIES = ("cockpit", "cockpit-daemon", "cockpit-tui", "cockpit-claude-hook")
+BINARIES = ("torlek", "torlek-daemon", "torlek-tui", "torlek-claude-hook")
 # ask-to-guide's limit (apps/cockpit/src/bin/ask-to-guide.rs MAX_STEPS).
 MAX_STEPS = 60
 BASH = shutil.which("bash")
@@ -22,7 +22,7 @@ START_TOOLS = (
     "awk", "bash", "cat", "chmod", "dirname", "env", "git", "grep", "id", "ln", "mkdir",
     "readlink", "realpath", "setsid", "sleep", "touch",
 )
-RUNNER_VERBS = {"start", "tui", "tui-window", "cockpit", "session", "kill-daemon", "stop", "clean"}
+RUNNER_VERBS = {"start", "tui", "tui-window", "torlek", "session", "kill-daemon", "stop", "clean"}
 
 
 def guide_steps(text):
@@ -65,8 +65,8 @@ class GuideTests(unittest.TestCase):
                     self.assertIn(words[2], RUNNER_VERBS)
 
 
-# Stands in for each program: `cockpit session new` prints a session line for s-new, another
-# `cockpit session` verb prints itself, anything else prints its directory and environment.
+# Stands in for each program: `torlek session new` prints a session line for s-new, another
+# `torlek session` verb prints itself, anything else prints its directory and environment.
 STAND_IN = """#!/bin/sh
 case "$1 $2" in
 "session new") printf 's-new\\trunning\\tclaude\\tstart\\t-\\t%s\\t-\\t-\\t-\\n' "$PWD/$3" ;;
@@ -111,9 +111,9 @@ class RunnerTests(unittest.TestCase):
             text=True,
         )
 
-    def test_cockpit_runs_this_clones_build_on_the_scratch_home(self):
+    def test_torlek_runs_this_clones_build_on_the_scratch_home(self):
         (self.scratch / "projects").mkdir(parents=True)
-        result = self.run_script("cockpit", "version")
+        result = self.run_script("torlek", "version")
         self.assertEqual(result.returncode, 0, result.stderr)
         cwd, *lines = result.stdout.splitlines()
         variables = dict(line.split("=", 1) for line in lines if "=" in line)
@@ -142,7 +142,7 @@ class RunnerTests(unittest.TestCase):
         """run.sh start with the given directories (relative to the temporary directory) first on
         PATH and a daemon stand-in that is ready at once."""
         # Alive a moment after ready, like a real daemon, so start's liveness check holds.
-        (self.bin / "cockpit-daemon").write_text("#!/bin/sh\necho 'ready stand-in'\nexec sleep 2\n")
+        (self.bin / "torlek-daemon").write_text("#!/bin/sh\necho 'ready stand-in'\nexec sleep 2\n")
         # The host's own PATH holds claude programs: give the script only the tools it uses.
         tools = self.root / "tools"
         tools.mkdir()
@@ -196,11 +196,11 @@ class RunnerTests(unittest.TestCase):
         result, (hyprctl, setsid) = self.open_tui_window()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(hyprctl.startswith("hyprctl /run/user/owner eval hl.window_rule("))
-        self.assertIn('class = "^(cockpit-acceptance)$"', hyprctl)
+        self.assertIn('class = "^(torlek-acceptance)$"', hyprctl)
         self.assertIn('opacity = "1 1"', hyprctl)
         self.assertEqual(
             setsid,
-            f"setsid unset /run/user/owner -f kitty --class cockpit-acceptance bash {self.script} tui",
+            f"setsid unset /run/user/owner -f kitty --class torlek-acceptance bash {self.script} tui",
         )
 
     def test_tui_window_opens_nothing_when_hyprctl_fails(self):
@@ -209,16 +209,16 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0].startswith("hyprctl "))
 
-    def test_cockpit_before_start_says_to_start_first(self):
-        result = self.run_script("cockpit", "version")
+    def test_torlek_before_start_says_to_start_first(self):
+        result = self.run_script("torlek", "version")
         self.assertEqual(result.returncode, 1)
         self.assertIn("run.sh start first", result.stderr)
 
     def test_a_missing_build_is_named(self):
-        (self.bin / "cockpit-tui").unlink()
+        (self.bin / "torlek-tui").unlink()
         result = self.run_script("tui")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("cockpit-tui is not built", result.stderr)
+        self.assertIn("torlek-tui is not built", result.stderr)
 
     def test_a_relative_scratch_home_is_refused(self):
         result = self.run_script("stop", COCKPIT_ACCEPTANCE_HOME="scratch")

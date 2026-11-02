@@ -52,7 +52,7 @@ pub fn own_program() -> Result<PathBuf, StartError> {
     })
 }
 
-/// The profile this daemon program serves: `--profile` (`flag`), else `$COCKPIT_PROFILE`, else
+/// The profile this daemon program serves: `--profile` (`flag`), else `$TORLEK_PROFILE`, else
 /// its build's own (`cockpit` for a release, `dev` otherwise).
 pub fn own_profile(
     flag: Option<&str>,
@@ -138,7 +138,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         &[
             Some(serve.programs_dir.clone()),
             opencode_plugin_dir,
-            // `$COCKPIT_INSTRUCTIONS`, which the launch brief points agents at and OpenCode
+            // `$TORLEK_INSTRUCTIONS`, which the launch brief points agents at and OpenCode
             // lists as skills, and its copy Claude Code lists as skills (#419).
             Some(bundle_dir),
             Some(claude_skills_root),
@@ -237,8 +237,8 @@ fn sandbox(
         platform.clone(),
         settings_dir.clone(),
         environment.profile.value.name(),
-        std::env::var_os("COCKPIT_DEV_GREYWALL").map(PathBuf::from),
-        std::env::var_os("COCKPIT_DEV_GREYPROXY").map(PathBuf::from),
+        std::env::var_os("TORLEK_DEV_GREYWALL").map(PathBuf::from),
+        std::env::var_os("TORLEK_DEV_GREYPROXY").map(PathBuf::from),
     );
     match (&engine, config.agents_sandbox.value) {
         (Ok(greywall), _) => tracing::info!(
@@ -336,8 +336,8 @@ fn claude_code(programs_dir: &Path) -> Result<cockpit_claude::ClaudeCode, String
         return Err(unavailable("no `claude` on PATH".to_owned()));
     };
     let bridge = cockpit_claude::Bridge {
-        hook_program: programs_dir.join("cockpit-claude-hook"),
-        cockpit_program: programs_dir.join("cockpit"),
+        hook_program: programs_dir.join("torlek-claude-hook"),
+        cockpit_program: programs_dir.join("torlek"),
     };
     // Without its bridge the adapter subscribes no hooks and does not report `events`, which
     // `cockpit provider list` shows (#203).
@@ -368,9 +368,9 @@ fn codex(programs_dir: &Path) -> Result<cockpit_codex::Codex, String> {
         return Err(unavailable("no `codex` on PATH".to_owned()));
     };
     let bridge = cockpit_codex::Bridge {
-        session_program: programs_dir.join("cockpit-codex-session"),
-        hook_program: programs_dir.join("cockpit-codex-hook"),
-        cockpit_program: programs_dir.join("cockpit"),
+        session_program: programs_dir.join("torlek-codex-session"),
+        hook_program: programs_dir.join("torlek-codex-hook"),
+        cockpit_program: programs_dir.join("torlek"),
     };
     // Without its bridge the adapter launches the TUI alone and reports only `resume`.
     let bridge = match bridge.check() {
@@ -405,8 +405,8 @@ fn opencode(programs_dir: &Path, plugin_dir: &Path) -> Result<cockpit_opencode::
     let bridge = write_opencode_plugin(plugin_dir).and_then(|plugin| {
         let bridge = cockpit_opencode::Bridge {
             plugin,
-            bridge_program: programs_dir.join("cockpit-opencode-bridge"),
-            cockpit_program: programs_dir.join("cockpit"),
+            bridge_program: programs_dir.join("torlek-opencode-bridge"),
+            cockpit_program: programs_dir.join("torlek"),
         };
         bridge.check().map(|()| bridge)
     });

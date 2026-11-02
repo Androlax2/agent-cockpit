@@ -66,18 +66,18 @@ BUILD_TARGETS = (
 )
 # Programs the daemon runs from its own directory, so they ship in bin/ beside it (#185).
 HELPERS = (
-    "cockpit-claude-hook",
-    "cockpit-codex-hook",
-    "cockpit-codex-session",
-    "cockpit-opencode-bridge",
+    "torlek-claude-hook",
+    "torlek-codex-hook",
+    "torlek-codex-session",
+    "torlek-opencode-bridge",
 )
-BINARIES = ("cockpit", "cockpit-daemon", "cockpit-tui", *HELPERS)
+BINARIES = ("torlek", "torlek-daemon", "torlek-tui", *HELPERS)
 # No CHANGELOG.md: the committed file lags the tag (release-plz regenerates it, #101); the
 # release notes are on the GitHub Release.
 DOCUMENTS = ("LICENSE", "README.md")
-MANIFEST_PATH = "share/cockpit/manifest.json"
+MANIFEST_PATH = "share/torlek/manifest.json"
 MANIFEST_SCHEMA = 1
-# How long verify-install waits for `cockpit version --all` and for the daemon's ready line.
+# How long verify-install waits for `torlek version --all` and for the daemon's ready line.
 COMMAND_TIMEOUT_SECONDS = 60
 # The providers verify-install puts first on the daemon's PATH: each answers only
 # `--version`, which is all the daemon runs of it at its start, in the words its adapter reads.
@@ -393,7 +393,7 @@ def sha256_of(path):
 
 
 def archive_name(version, platform):
-    return f"cockpit-v{version}-{platform}"
+    return f"torlek-v{version}-{platform}"
 
 
 def release_platforms(version, channel):
@@ -437,13 +437,13 @@ def write_manifest(staging, version, channel, platform, revision):
     contents = bundle_files(staging)
     manifest = {
         "schema": MANIFEST_SCHEMA,
-        "name": "cockpit",
+        "name": "torlek",
         "version": version,
         "channel": channel,
         "platform": platform,
         "source_revision": revision,
         "helpers": helper_versions(version),
-        # No instruction bundle ships yet (#97); `cockpit version --all` shows the null.
+        # No instruction bundle ships yet (#97); `torlek version --all` shows the null.
         "instruction_bundle": None,
         "contents": {path: sha256_of(staging / path) for path in contents},
     }
@@ -509,14 +509,14 @@ def verify_install(root, revision):
         )
     refuse_changed_contents(root, manifest)
     # Short and fresh: a clean home, and a socket path under macOS's 104-byte limit.
-    home = tempfile.mkdtemp(prefix="cockpit-home-", dir="/tmp")
+    home = tempfile.mkdtemp(prefix="torlek-home-", dir="/tmp")
     environment = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     refuse_wrong_version_output(root, manifest, manifest_text, revision, environment)
-    code, stdout, stderr = run_bounded([str(root / "bin/cockpit"), "tui", "--version"], environment)
-    expected = f"cockpit-tui {manifest['version']}"
+    code, stdout, stderr = run_bounded([str(root / "bin/torlek"), "tui", "--version"], environment)
+    expected = f"torlek-tui {manifest['version']}"
     if code != 0 or stdout.strip() != expected:
         raise Refusal(
-            f"cockpit tui --version: exit {code}, expected {expected!r}, got {stdout!r} {stderr!r}"
+            f"torlek tui --version: exit {code}, expected {expected!r}, got {stdout!r} {stderr!r}"
         )
     # Stand-in providers, so the daemon checks each bridge it ships (#203, #411, #415).
     stand_in_dir = Path(home) / "stand-in-bin"
@@ -568,7 +568,7 @@ def refuse_wrong_version_output(root, manifest, manifest_text, revision, environ
         tempfile.TemporaryFile(mode="w+") as stderr_file,
     ):
         shown = subprocess.Popen(
-            [str(root / "bin/cockpit"), "version", "--all"],
+            [str(root / "bin/torlek"), "version", "--all"],
             env=environment,
             stdout=stdout_file,
             stderr=stderr_file,
@@ -577,34 +577,32 @@ def refuse_wrong_version_output(root, manifest, manifest_text, revision, environ
         try:
             shown.wait(timeout=COMMAND_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as timeout:
-            raise Refusal(
-                f"cockpit version --all did not finish in {timeout.timeout}s"
-            ) from timeout
+            raise Refusal(f"torlek version --all did not finish in {timeout.timeout}s") from timeout
         finally:
             stop_group(shown)
         stdout_file.seek(0)
         stdout = stdout_file.read()
         stderr_file.seek(0)
         stderr = stderr_file.read()
-    expected_first_line = f"cockpit {manifest['version']} (revision {revision})"
+    expected_first_line = f"torlek {manifest['version']} (revision {revision})"
     if shown.returncode != 0 or stdout.splitlines()[:1] != [expected_first_line]:
         raise Refusal(
-            f"cockpit version --all: exit {shown.returncode}, expected {expected_first_line!r}, "
+            f"torlek version --all: exit {shown.returncode}, expected {expected_first_line!r}, "
             f"got {stdout!r} {stderr!r}"
         )
     if manifest_text not in stdout:
-        raise Refusal("cockpit version --all does not show the installed manifest")
+        raise Refusal("torlek version --all does not show the installed manifest")
 
 
 def refuse_daemon_not_ready(root, environment):
-    """cockpit-daemon prints `ready <socket>` once it accepts requests on a clean home, and
-    `cockpit provider list` then shows that every stand-in provider reports events: the
+    """torlek-daemon prints `ready <socket>` once it accepts requests on a clean home, and
+    `torlek provider list` then shows that every stand-in provider reports events: the
     daemon found and ran each bridge beside it (#203, #411, #415)."""
     # Its own process group, so a helper it started dies with it; stderr goes to a file, so
     # a chatty daemon never blocks on a full pipe.
     with tempfile.TemporaryFile(mode="w+") as stderr_file:
         daemon = subprocess.Popen(
-            [str(root / "bin/cockpit-daemon")],
+            [str(root / "bin/torlek-daemon")],
             env=environment,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
@@ -620,7 +618,7 @@ def refuse_daemon_not_ready(root, environment):
             if first_line.startswith("ready "):
                 try:
                     listed = run_bounded(
-                        [str(root / "bin/cockpit"), "provider", "list"], environment
+                        [str(root / "bin/torlek"), "provider", "list"], environment
                     )
                 except Refusal as timed_out:
                     # Raised once the daemon's log is read, which says why it hung.
@@ -632,7 +630,7 @@ def refuse_daemon_not_ready(root, environment):
         stderr_file.seek(0)
         stderr = stderr_file.read()
     if not first_line.startswith("ready "):
-        raise Refusal(f"cockpit-daemon did not print `ready <socket>`: {first_line!r} {stderr!r}")
+        raise Refusal(f"torlek-daemon did not print `ready <socket>`: {first_line!r} {stderr!r}")
     if isinstance(listed, Refusal):
         raise Refusal(f"{listed}; daemon log {stderr!r}")
     code, stdout, listed_stderr = listed
@@ -644,7 +642,7 @@ def refuse_daemon_not_ready(root, environment):
     if code != 0 or unbridged:
         raise Refusal(
             f"the daemon did not find a runnable bridge for {', '.join(unbridged) or 'any'}: "
-            f"cockpit provider list exit {code}, printed {stdout!r} {listed_stderr!r}; "
+            f"torlek provider list exit {code}, printed {stdout!r} {listed_stderr!r}; "
             f"daemon log {stderr!r}"
         )
 

@@ -6,7 +6,7 @@ use std::time::Duration;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// `COCKPIT_LOG_LEVEL` or an override is not a level or `component=level` list.
+    /// `TORLEK_LOG_LEVEL` or an override is not a level or `component=level` list.
     InvalidDirectives {
         input: String,
         reason: String,

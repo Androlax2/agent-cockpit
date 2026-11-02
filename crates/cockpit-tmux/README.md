@@ -24,7 +24,7 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   unknown server is refused without ending sessions; an absent/exiting server is allowed. It
   writes [`CONFIG`] (mode 0600), applies it to a server already running (`source-file`, so
   an upgrade's config reaches the sessions it holds; #308) and starts nothing.
-- **Private server.** Every command is `tmux -f <Cockpit's config> -L cockpit` ([`Socket`];
+- **Private server.** Every command is `tmux -f <Torlek's config> -L torlek` ([`Socket`];
   tests use `-S` in a temporary directory). The user's `~/.tmux.conf` never applies, and the
   caller's `TMUX`/`TMUX_PANE` are removed so a daemon started inside tmux cannot reach it.
 - **Sessions.** One session per agent. [`SessionName`] admits only `A-Z a-z 0-9 _ -`, and

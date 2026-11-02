@@ -46,8 +46,8 @@ Approval pane (Tab moves between the list and the pane)
   Keys are ignored for a moment after a request appears or the pane takes focus.
 Bug reports
   B                  the bug report drafts waiting for you; review and send them
-                     with cockpit bug-report show ID and send ID
-  b                  report a Cockpit bug (description, optional title and steps)
+                     with torlek bug-report show ID and send ID
+  b                  report a Torlek bug (description, optional title and steps)
 Elsewhere
   L                  log of what the TUI did
   ?                  this help;  Esc closes it
@@ -150,7 +150,7 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
         push_wrapped(&mut lines, &text, width, "", bold);
     }
     if lines.len() == drafts_rows {
-        let text = "No project yet: cockpit project add DIR";
+        let text = "No project yet: torlek project add DIR";
         push_wrapped(&mut lines, text, width, "", Style::default());
     }
     let mut title = match &app.profile {
@@ -335,7 +335,7 @@ fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {
 fn bug_reports_text(board: &Board) -> String {
     let drafts = board.bug_report_drafts();
     if drafts.is_empty() {
-        return "No bug report draft waits for you.\n\nEsc, then b reports a Cockpit bug."
+        return "No bug report draft waits for you.\n\nEsc, then b reports a Torlek bug."
             .to_owned();
     }
     let mut lines: Vec<String> = drafts
@@ -352,9 +352,9 @@ fn bug_reports_text(board: &Board) -> String {
         })
         .collect();
     lines.push(String::new());
-    lines.push("Review one: cockpit bug-report show ID".to_owned());
+    lines.push("Review one: torlek bug-report show ID".to_owned());
     lines.push(
-        "Send it: cockpit bug-report send ID   Drop it: cockpit bug-report discard ID".to_owned(),
+        "Send it: torlek bug-report send ID   Drop it: torlek bug-report discard ID".to_owned(),
     );
     lines.join("\n")
 }
@@ -370,7 +370,7 @@ fn draw_bug_form(form: &BugForm, frame: &mut Frame<'_>, area: Rect) {
         field(BugField::Steps, "Steps (optional)", &form.steps),
         Line::from(""),
         Line::from("Tab next field  Enter draft it  Esc cancel"),
-        Line::from("It is a draft: nothing is sent until you run cockpit bug-report send."),
+        Line::from("It is a draft: nothing is sent until you run torlek bug-report send."),
     ];
     if form.submitted.is_some() {
         lines.push(Line::from("Drafting…"));
@@ -382,7 +382,7 @@ fn draw_bug_form(form: &BugForm, frame: &mut Frame<'_>, area: Rect) {
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Report a Cockpit bug"),
+                .title("Report a Torlek bug"),
         ),
         area,
     );

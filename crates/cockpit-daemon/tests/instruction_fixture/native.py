@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 LIMIT = 2 * 1024 * 1024
-SKILL_DESCRIPTION = "How to work inside a Cockpit session"
+SKILL_DESCRIPTION = "How to work inside a Torlek session"
 # Provider discovery kills its wrapper at ten seconds. Leave time for group cleanup.
 VERSION_TIMEOUT = 3
 
@@ -160,7 +160,7 @@ def environment(config, url):
         "OPENCODE_SERVER_PASSWORD",
         "OPENCODE_SERVER_USERNAME",
     }
-    env = {k: v for k, v in os.environ.items() if k.startswith("COCKPIT_") or k in preserve}
+    env = {k: v for k, v in os.environ.items() if k.startswith("TORLEK_") or k in preserve}
     env.update(
         {
             "HOME": str(root),
@@ -222,7 +222,7 @@ def environment(config, url):
                         },
                     }
                 },
-                "permission": {"*": "deny", "skill": "allow", "cockpit_*": "allow"},
+                "permission": {"*": "deny", "skill": "allow", "torlek_*": "allow"},
             }
         )
         env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline)
@@ -321,7 +321,7 @@ def blocks(value):
 def tool_names(tools, prefix=""):
     for tool in tools:
         if tool.get("type") == "namespace":
-            # Captured Codex 0.166.0 groups cockpit_brief/docs under mcp__cockpit.
+            # Codex 0.166.0 groups tools under the registered MCP server's namespace.
             yield from tool_names(tool["tools"], prefix + tool["name"] + "__")
         elif name := tool.get("function", tool).get("name"):
             yield prefix + name
@@ -357,19 +357,18 @@ def evidence(config, request, number):
             if text_blocks(b).startswith("SessionStart hook additional context:")
         )
     tools = set(tool_names(request.get("tools", [])))
-    prefix = "cockpit_" if provider == "opencode" else "mcp__cockpit__"
-    mcp_inline = all(prefix + name in tools for name in ["cockpit_brief", "cockpit_docs"])
+    prefix = "torlek_" if provider == "opencode" else "mcp__torlek__"
+    mcp_inline = all(prefix + name in tools for name in ["torlek_brief", "torlek_docs"])
     mcp_deferred = (
         provider == "claude"
         and "ToolSearch" in tools
         and all(
-            name in context
-            for name in ["mcp__cockpit__cockpit_brief", "mcp__cockpit__cockpit_docs"]
+            name in context for name in ["mcp__torlek__torlek_brief", "mcp__torlek__torlek_docs"]
         )
     )
     skill = SKILL_DESCRIPTION in context and (
-        (provider == "claude" and "- cockpit: " in context and "Skill" in tools)
-        or (provider == "opencode" and "<name>cockpit</name>" in context and "skill" in tools)
+        (provider == "claude" and "- torlek: " in context and "Skill" in tools)
+        or (provider == "opencode" and "<name>torlek</name>" in context and "skill" in tools)
     )
     return {
         "number": number,

@@ -56,7 +56,7 @@ pub(crate) fn provider_found(provider: &dyn cockpit_provider_api::Provider) -> P
             // on its bulk worker for every request, so a login needs no daemon restart.
             sign_in: sign_in_fact(cockpit_provider_api::SignIn::unknown(
                 "sign-in has not been probed",
-                "run `cockpit doctor`",
+                "run `torlek doctor`",
             )),
         }),
     }
@@ -123,7 +123,7 @@ async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, St
             }),
             Err(reason) => Err(cockpit_readiness::ProxyUnavailable {
                 detail: reason.to_owned(),
-                next: format!("run `cockpit --profile {profile} sandbox install`"),
+                next: format!("run `torlek --profile {profile} sandbox install`"),
             }),
         })
         .await
@@ -218,7 +218,7 @@ async fn with_engine_upgrades(mut report: Report, context: &Context) -> Result<R
                     "restart required: this session still uses an earlier engine release",
                 )
                 .with_advice(format!(
-                    "run `cockpit --profile {} session restart {}`",
+                    "run `torlek --profile {} session restart {}`",
                     context.environment.profile.value, session.id
                 )),
             );

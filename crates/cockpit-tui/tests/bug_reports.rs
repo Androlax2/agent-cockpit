@@ -114,8 +114,8 @@ fn b_upper_lists_each_draft_and_how_to_review_and_send_it_in_the_cli() {
         screen.contains("4  agent  todo add timed out  (3 times)  from s00000000000a"),
         "{screen}"
     );
-    assert!(screen.contains("cockpit bug-report show ID"), "{screen}");
-    assert!(screen.contains("cockpit bug-report send ID"), "{screen}");
+    assert!(screen.contains("torlek bug-report show ID"), "{screen}");
+    assert!(screen.contains("torlek bug-report send ID"), "{screen}");
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn b_drafts_a_report_with_bug_report_new_and_closes_once_answered() {
     assert!(app.bug_form().is_none());
     assert!(
         app.log()
-            .any(|entry| entry.contains("cockpit bug-report show 7")),
+            .any(|entry| entry.contains("torlek bug-report show 7")),
         "{:?}",
         app.log().collect::<Vec<_>>()
     );

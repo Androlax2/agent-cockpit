@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "cockpit-tui"
+name = "torlek-tui"
 path = "src/main.rs"
 
 [dependencies]

@@ -127,7 +127,7 @@ pub(crate) fn start(arguments: &[OsString]) -> Result<ExitCode, String> {
         }
         Ok(Reply::RunRequest { request }) => {
             eprintln!(
-                "cockpit: asked the owner to start it (request {}); waiting",
+                "torlek: asked the owner to start it (request {}); waiting",
                 request.id
             );
             agent.wait_for_run(request.id)

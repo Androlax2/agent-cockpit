@@ -61,7 +61,7 @@ pub const MIGRATION_SETS: [cockpit_turso::MigrationSet; 14] = [
 ];
 
 /// Names the directory holding the instruction bundle in every agent's environment.
-pub const INSTRUCTIONS_VARIABLE: &str = "COCKPIT_INSTRUCTIONS";
+pub const INSTRUCTIONS_VARIABLE: &str = "TORLEK_INSTRUCTIONS";
 
 /// How often expired and ended reservations are released.
 const RESOURCE_SWEEP_INTERVAL: Duration = Duration::from_secs(30);

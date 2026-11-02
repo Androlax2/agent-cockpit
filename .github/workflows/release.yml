@@ -164,9 +164,9 @@ jobs:
           python3 tools/release.py stamp "$VERSION"
           # Rewrites only the workspace members' entries; --locked below refuses any other.
           cargo update --workspace
-      - name: Build cockpit, cockpit-daemon, cockpit-tui and the provider bridges
+      - name: Build torlek, torlek-daemon, torlek-tui and the provider bridges
         env:
-          COCKPIT_SOURCE_REVISION: ${{ needs.plan.outputs.revision }}
+          TORLEK_SOURCE_REVISION: ${{ needs.plan.outputs.revision }}
           TARGETS: ${{ matrix.targets }}
         run: |
           target_flags=()
@@ -177,7 +177,7 @@ jobs:
           TARGETS: ${{ matrix.targets }}
         run: |
           mkdir binaries
-          for binary in cockpit cockpit-daemon cockpit-tui cockpit-claude-hook cockpit-codex-hook cockpit-codex-session cockpit-opencode-bridge; do
+          for binary in torlek torlek-daemon torlek-tui torlek-claude-hook torlek-codex-hook torlek-codex-session torlek-opencode-bridge; do
             if [ "$RUNNER_OS" = macOS ]; then
               lipo -create -output "binaries/$binary" \
                 "target/aarch64-apple-darwin/release/$binary" \
@@ -205,7 +205,7 @@ jobs:
           retention-days: 14
 
   # Report 13's clean install: unpack into a fresh prefix, check every file against the
-  # manifest, `cockpit version --all`, and the daemon's start on an empty home.
+  # manifest, `torlek version --all`, and the daemon's start on an empty home.
   install:
     needs: [plan, build]
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -230,7 +230,7 @@ jobs:
           if [ "$NATIVE_RUNNER" = macos-26-intel ]; then test "$(uname -m)" = x86_64; fi
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
-          python3 tools/release.py verify-install "$prefix"/cockpit-v* --revision "$REVISION"
+          python3 tools/release.py verify-install "$prefix"/torlek-v* --revision "$REVISION"
 
   # WSL2 has no archive of its own: it installs the Linux x86_64 one (report 13). Setup as in
   # ci.yml's greenfield-wsl2 job (docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md).
@@ -266,7 +266,7 @@ jobs:
           # The distribution's own file system, not DrvFs, as a real install would be.
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
-          python3 tools/release.py verify-install "$prefix"/cockpit-v* --revision "$revision"
+          python3 tools/release.py verify-install "$prefix"/torlek-v* --revision "$revision"
 
   # Protocol skew/restart use the archive; migration/crash fixtures use its source revision.
   compatibility:
@@ -305,7 +305,7 @@ jobs:
         run: |
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
-          roots=("$prefix"/cockpit-v*)
+          roots=("$prefix"/torlek-v*)
           export COCKPIT_CANDIDATE_ROOT="${roots[0]}"
           python3 tools/release.py verify-install "$COCKPIT_CANDIDATE_ROOT" --revision "$REVISION"
           make release-compatibility
@@ -352,7 +352,7 @@ jobs:
         run: |
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
-          roots=("$prefix"/cockpit-v*)
+          roots=("$prefix"/torlek-v*)
           export COCKPIT_CANDIDATE_ROOT="${roots[0]}"
           export COCKPIT_CANDIDATE_REVISION="$REVISION"
           python3 tools/release.py verify-install "$COCKPIT_CANDIDATE_ROOT" --revision "$REVISION"
@@ -418,7 +418,7 @@ jobs:
         run: |
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
-          roots=("$prefix"/cockpit-v*)
+          roots=("$prefix"/torlek-v*)
           COCKPIT_CANDIDATE_ROOT="${roots[0]}" make release-upgrade
 
   upgrade-wsl2:
@@ -454,7 +454,7 @@ jobs:
           test "$(id -u)" -ne 0
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
-          roots=("$prefix"/cockpit-v*)
+          roots=("$prefix"/torlek-v*)
           export COCKPIT_CANDIDATE_ROOT="${roots[0]}"
           BASELINE_DOWNLOADS=baseline/linux-x86_64 make release-upgrade
 

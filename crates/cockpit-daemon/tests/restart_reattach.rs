@@ -133,12 +133,12 @@ fn release_compatibility_evidence_survives_a_restart_fixture_failure() {
     let report = artifact.path().join("compatibility.md");
     let programs = artifact.path().join("bin");
     std::fs::create_dir(&programs).unwrap();
-    let daemon = programs.join("cockpit-daemon");
+    let daemon = programs.join("torlek-daemon");
     std::fs::write(
         &daemon,
         r#"#!/bin/sh
 set -eu
-logs="$XDG_STATE_HOME/cockpit-dev/logs/daemon"
+logs="$XDG_STATE_HOME/torlek-dev/logs/daemon"
 mkdir -p "$logs"
 printf '%s\n' '{"timestamp":"2026-11-02T16:10:42Z","fields":{"message":"a session'"'"'s agent termination is unconfirmed","session":"compatibility-fixture","execution":17,"diagnostics":"Unidentified; term: None; kill: None","environment":"must-not-export"},"provider_output":"must-not-export"}' > "$logs/cockpit.log"
 printf 'deliberately not ready\n'

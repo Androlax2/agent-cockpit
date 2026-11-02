@@ -27,7 +27,7 @@ impl Home {
     }
 
     fn daemon_socket(&self) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit-dev/daemon.sock");
+        let path = self.dir.path().join("run/torlek-dev/daemon.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -37,7 +37,7 @@ impl Home {
     }
 
     fn owner_config(&self) -> PathBuf {
-        self.dir.path().join(".config/cockpit-dev/config.toml")
+        self.dir.path().join(".config/torlek-dev/config.toml")
     }
 
     fn write_owner_config(&self, contents: &str) {
@@ -52,7 +52,7 @@ impl Home {
 
     /// `cockpit` with `arguments` in this home, off the test's runtime threads.
     async fn cockpit(&self, arguments: &[&str]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
@@ -234,7 +234,7 @@ async fn on_a_clean_home_without_a_daemon_cockpit_alone_starts_with_the_daemon()
     let checklist = text(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     assert!(
-        checklist.starts_with("Cockpit setup: 0 of 6 steps done"),
+        checklist.starts_with("Torlek setup: 0 of 6 steps done"),
         "{checklist}"
     );
     assert!(
@@ -245,14 +245,14 @@ async fn on_a_clean_home_without_a_daemon_cockpit_alone_starts_with_the_daemon()
         assert!(step(&checklist, later).starts_with("[waits"), "{checklist}");
     }
     assert!(
-        final_next(&checklist).starts_with("next: `cockpit daemon install`"),
+        final_next(&checklist).starts_with("next: `torlek daemon install`"),
         "{checklist}"
     );
 }
 
 #[test]
 fn without_a_home_cockpit_alone_names_the_configuration_error_first() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"))
         .env_clear()
         .output()
         .unwrap();
@@ -367,7 +367,7 @@ async fn an_unknown_sign_in_names_how_to_check_without_holding_the_setup() {
         "{checklist}"
     );
     assert!(
-        final_next(&checklist).starts_with("next: `cockpit project add DIR`"),
+        final_next(&checklist).starts_with("next: `torlek project add DIR`"),
         "{checklist}"
     );
 }
@@ -420,7 +420,7 @@ async fn one_signed_in_provider_completes_the_sign_in_step() {
         "{checklist}"
     );
     assert!(
-        final_next(&checklist).starts_with("Cockpit is set up"),
+        final_next(&checklist).starts_with("Torlek is set up"),
         "{checklist}"
     );
 }
@@ -497,7 +497,7 @@ async fn with_a_project_the_next_action_starts_a_session_there() {
         "{checklist}"
     );
     assert!(
-        final_next(&checklist).starts_with("next: `cockpit session new '/home/me/code/my app'`"),
+        final_next(&checklist).starts_with("next: `torlek session new '/home/me/code/my app'`"),
         "{checklist}"
     );
 }
@@ -536,11 +536,11 @@ async fn once_a_session_started_init_says_the_setup_is_done() {
     let checklist = text(&output.stdout);
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert!(
-        checklist.starts_with("Cockpit setup: 5 of 6 steps done"),
+        checklist.starts_with("Torlek setup: 5 of 6 steps done"),
         "{checklist}"
     );
     assert!(
-        final_next(&checklist).starts_with("Cockpit is set up"),
+        final_next(&checklist).starts_with("Torlek is set up"),
         "{checklist}"
     );
 }
@@ -557,8 +557,8 @@ async fn once_the_setup_is_done_cockpit_alone_prints_the_usage() {
     assert_eq!(output.status.code(), Some(2));
     assert!(text(&output.stdout).is_empty(), "{}", text(&output.stdout));
     let usage = text(&output.stderr);
-    assert!(usage.starts_with("usage: cockpit "), "{usage}");
-    assert!(usage.contains("\n       cockpit init\n"), "{usage}");
+    assert!(usage.starts_with("usage: torlek "), "{usage}");
+    assert!(usage.contains("\n       torlek init\n"), "{usage}");
 }
 
 #[tokio::test]

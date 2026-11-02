@@ -105,7 +105,7 @@ fn offline(project: Option<&str>, unreachable: String) -> Vec<RequirementView> {
             status: ReadinessStatusView::MissingPrerequisite,
             detail: error.to_string(),
             next: Some(
-                "fix the file and line named here; `cockpit config show` reads it again".to_owned(),
+                "fix the file and line named here; `torlek config show` reads it again".to_owned(),
             ),
         },
     };
@@ -115,7 +115,7 @@ fn offline(project: Option<&str>, unreachable: String) -> Vec<RequirementView> {
             name: "daemon".to_owned(),
             status: ReadinessStatusView::MissingPrerequisite,
             detail: unreachable,
-            next: Some("start `cockpit-daemon`, then run `cockpit doctor` again".to_owned()),
+            next: Some("start `torlek-daemon`, then run `torlek doctor` again".to_owned()),
         },
         RequirementView {
             name: "host".to_owned(),
@@ -179,7 +179,7 @@ fn print_installations() -> Result<(), String> {
     match own_unit {
         Some(unit) => outln!("unit {}: installed", unit.path.display()),
         None => outln!(
-            "unit {}: not installed (`cockpit --profile {} daemon install`)",
+            "unit {}: not installed (`torlek --profile {} daemon install`)",
             manager.unit_file_name(&profile.value),
             profile.value
         ),

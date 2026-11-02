@@ -1,4 +1,4 @@
-//! `cockpit todo`: the task list (#38). A launched session (one with `COCKPIT_LAUNCH_TOKEN`)
+//! `torlek todo`: the task list (#38). A launched session (one with `TORLEK_LAUNCH_TOKEN`)
 //! files, reads and works items on the agent socket, where the daemon identifies it; everyone
 //! else is the owner, on the host-only socket. Proposals and blocker reports are a session's
 //! only, so they always go to the agent socket. The daemon decides what each may do.
@@ -230,7 +230,7 @@ fn write_image(file: &Path, bytes: &[u8]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("cockpit: cannot write {}: {error}", file.display());
+            eprintln!("torlek: cannot write {}: {error}", file.display());
             ExitCode::FAILURE
         }
     }
@@ -343,7 +343,7 @@ fn next(next: &TaskNextView) -> String {
         } => format!("session {session} works on it"),
         TaskNextView::InProgress { session: None } => "the owner works on it".to_owned(),
         TaskNextView::Nothing => "nothing: it is closed".to_owned(),
-        TaskNextView::Unknown => "unknown to this cockpit version".to_owned(),
+        TaskNextView::Unknown => "unknown to this torlek version".to_owned(),
     }
 }
 

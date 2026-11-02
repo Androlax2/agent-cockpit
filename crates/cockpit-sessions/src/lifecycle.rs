@@ -28,7 +28,7 @@ use crate::{
 };
 
 /// The variable that hands the agent its one-time launch token (report 17).
-const LAUNCH_TOKEN_VARIABLE: &str = "COCKPIT_LAUNCH_TOKEN";
+const LAUNCH_TOKEN_VARIABLE: &str = "TORLEK_LAUNCH_TOKEN";
 
 /// The session a dry run's proxy client identity names: no session launches under it.
 const DRY_RUN_SESSION: &str = "dry-run";
@@ -1355,7 +1355,7 @@ impl Sessions {
         let delivery_launch = command.clone();
         let mut environment = self.launch_environment();
         environment.extend(command.environment);
-        environment.push(("COCKPIT_SESSION".into(), id.as_str().into()));
+        environment.push(("TORLEK_SESSION".into(), id.as_str().into()));
         // Every launch goes through the sandbox (#61); a profile this host cannot enforce
         // fails the launch before anything is reserved. The agent gets its whole checkout,
         // not just the folder it starts in: Git and the project's own files live at its root.
@@ -1605,8 +1605,8 @@ impl Sessions {
                 .find(|(name, _)| name == cockpit_config::PROFILE_VARIABLE)
                 .and_then(|(_, value)| value.to_str())
                 .and_then(|name| cockpit_config::Profile::parse(name).ok())
-                .map(|profile| format!("run `cockpit --profile {profile} session restart {id}`"))
-                .unwrap_or_else(|| "restart this session in its Cockpit profile".to_owned());
+                .map(|profile| format!("run `torlek --profile {profile} session restart {id}`"))
+                .unwrap_or_else(|| "restart this session in its Torlek profile".to_owned());
             evidence.observed.push(format!(
                 "restart required: this session retains an earlier engine; {action}"
             ));

@@ -21,7 +21,7 @@ const UNREACHABLE: u8 = 126;
 const STUCK: u8 = 3;
 
 /// Overrides how long a call waits before answering 124; whole seconds.
-const WAIT_VARIABLE: &str = "COCKPIT_ASK_WAIT_SECONDS";
+const WAIT_VARIABLE: &str = "TORLEK_ASK_WAIT_SECONDS";
 /// Under the ten minutes an agent's tool call usually may take.
 const DEFAULT_WAIT: Duration = Duration::from_secs(540);
 const POLL_EVERY: Duration = Duration::from_millis(500);
@@ -210,13 +210,13 @@ impl Agent {
         });
         match asked {
             Ok(Reply::RunRequest { request }) if waits => {
-                eprintln!("cockpit: asked the owner (request {}); waiting", request.id);
+                eprintln!("torlek: asked the owner (request {}); waiting", request.id);
                 self.wait_for_run(request.id)
             }
             Ok(Reply::RunRequest { request }) => {
                 eprintln!(
-                    "cockpit: asked the owner (request {id}); collect the answer with: \
-                     cockpit ask run --wait {id}",
+                    "torlek: asked the owner (request {id}); collect the answer with: \
+                     torlek ask run --wait {id}",
                     id = request.id
                 );
                 ExitCode::from(PENDING)
@@ -241,7 +241,7 @@ impl Agent {
             }
             if Instant::now() >= deadline {
                 eprintln!(
-                    "cockpit: request {id} is still {}; wait on with: cockpit ask run --wait {id}",
+                    "torlek: request {id} is still {}; wait on with: torlek ask run --wait {id}",
                     state_name(request.state)
                 );
                 return ExitCode::from(PENDING);
@@ -258,7 +258,7 @@ impl Agent {
         });
         match asked {
             Ok(Reply::Guide { guide }) => {
-                eprintln!("cockpit: handed the owner guide {}; waiting", guide.id);
+                eprintln!("torlek: handed the owner guide {}; waiting", guide.id);
                 self.wait_for_guide(guide.id)
             }
             other => self.failed(other),
@@ -281,8 +281,8 @@ impl Agent {
             }
             if Instant::now() >= deadline {
                 eprintln!(
-                    "cockpit: the owner is at step {} of guide {id}; wait on with: \
-                     cockpit ask guide --wait {id}",
+                    "torlek: the owner is at step {} of guide {id}; wait on with: \
+                     torlek ask guide --wait {id}",
                     guide.current_step + 1
                 );
                 return ExitCode::from(PENDING);
@@ -294,12 +294,12 @@ impl Agent {
 
 fn unreachable(socket: &Path, error: &ClientError) -> ExitCode {
     eprintln!(
-        "cockpit: cannot reach the Cockpit daemon at {}: {error}",
+        "torlek: cannot reach the Torlek daemon at {}: {error}",
         socket.display()
     );
     eprintln!(
-        "cockpit: to fix: the owner starts it (cockpit-daemon), or mounts its agent socket \
-         directory into this sandbox and sets COCKPIT_AGENT_SOCKET"
+        "torlek: to fix: the owner starts it (torlek-daemon), or mounts its agent socket \
+         directory into this sandbox and sets TORLEK_AGENT_SOCKET"
     );
     ExitCode::from(UNREACHABLE)
 }
@@ -327,26 +327,26 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
             outln!("{}", result.output);
             if result.redacted > 0 {
                 eprintln!(
-                    "cockpit: {} secrets redacted from the output",
+                    "torlek: {} secrets redacted from the output",
                     result.redacted
                 );
             }
             Some(ExitCode::from(u8::try_from(result.exit_code).unwrap_or(1)))
         }
         RunStateView::Declined => {
-            eprintln!("cockpit: the owner declined request {}", request.id);
+            eprintln!("torlek: the owner declined request {}", request.id);
             Some(ExitCode::from(DECLINED))
         }
         RunStateView::Expired => {
             eprintln!(
-                "cockpit: request {} expired: nobody waited for its answer; ask again",
+                "torlek: request {} expired: nobody waited for its answer; ask again",
                 request.id
             );
             Some(ExitCode::FAILURE)
         }
         RunStateView::NotRun | RunStateView::OutcomeUnknown => {
             eprintln!(
-                "cockpit: request {} {}: {}",
+                "torlek: request {} {}: {}",
                 request.id,
                 state_name(request.state),
                 request.note.as_deref().unwrap_or("no reason recorded")
@@ -367,7 +367,7 @@ fn guide_answer(guide: &GuideView) -> Option<ExitCode> {
                 }
                 if let Some(request) = step.run_request {
                     outln!(
-                        "step {}: filed run request {request}; cockpit ask run --wait {request}",
+                        "step {}: filed run request {request}; torlek ask run --wait {request}",
                         index + 1
                     );
                 }
@@ -383,12 +383,12 @@ fn guide_answer(guide: &GuideView) -> Option<ExitCode> {
             Some(ExitCode::from(STUCK))
         }
         GuideStateView::Closed => {
-            eprintln!("cockpit: the owner closed guide {}", guide.id);
+            eprintln!("torlek: the owner closed guide {}", guide.id);
             Some(ExitCode::from(DECLINED))
         }
         GuideStateView::Expired => {
             eprintln!(
-                "cockpit: guide {} expired: nobody waited for it; ask again",
+                "torlek: guide {} expired: nobody waited for it; ask again",
                 guide.id
             );
             Some(ExitCode::FAILURE)

@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "cockpit-claude-hook"
+name = "torlek-claude-hook"
 path = "src/bin/cockpit-claude-hook.rs"
 
 [dependencies]

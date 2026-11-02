@@ -81,7 +81,7 @@ async fn prepare_staged_copy(staging: &Path) -> Result<(), Error> {
     if epochs_updated != 1 {
         return Err(Error::IntegrityCheckFailed {
             path: staging.to_path_buf(),
-            report: "not a Cockpit database: it has no epoch".to_string(),
+            report: "not a Torlek database: it has no epoch".to_string(),
         });
     }
     connection

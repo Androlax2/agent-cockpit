@@ -7,7 +7,7 @@ use crate::harness::{Cockpit, ManagerPane};
 const GRACE_HINT: &str = "Read it first:";
 const RUN_KEYS: &str = "y approve   x decline   m more";
 /// The command of the guide's section 4, with a token the run's output must not show.
-const HOST_COMMAND: &str = r#"!cockpit ask run --reason "acceptance check" 'printf "hello from the host\nGITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n"'"#;
+const HOST_COMMAND: &str = r#"!torlek ask run --reason "acceptance check" 'printf "hello from the host\nGITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n"'"#;
 
 /// The agent asks to run `command` (with its `!`); waits for the pane to show it past its
 /// grace. The pane has the keys then, without a click (#317).
@@ -58,7 +58,7 @@ fn x_declines_and_the_agent_gets_exit_125() {
     cockpit.shown_session();
     asked(
         &cockpit,
-        r#"!cockpit ask run --reason "decline check" 'echo should not run'"#,
+        r#"!torlek ask run --reason "decline check" 'echo should not run'"#,
     );
     cockpit.press(&["x"]);
     let screen = cockpit.wait_for("exit 125");
@@ -71,7 +71,7 @@ fn the_pane_takes_the_keys_from_the_viewer_the_owner_typed_in() {
     cockpit.shown_session();
     asked(
         &cockpit,
-        r#"!cockpit ask run --reason "focus check" 'echo should not run'"#,
+        r#"!torlek ask run --reason "focus check" 'echo should not run'"#,
     );
 
     cockpit.press(&["x"]);
@@ -113,7 +113,7 @@ fn a_guide_shows_one_step_at_a_time_and_the_agent_gets_the_answer() {
     let cockpit = Cockpit::start();
     cockpit.shown_session();
     cockpit.tell_agent(
-        r"!printf '# Pane guide\n## One\n1. Look at the sky\n   ask: What colour is it?\n2. Press y\n' | cockpit ask guide",
+        r"!printf '# Pane guide\n## One\n1. Look at the sky\n   ask: What colour is it?\n2. Press y\n' | torlek ask guide",
     );
     cockpit.wait_for("y answer   s stuck   x close");
     let screen = cockpit.wait_for("Step 1 of 2: Look at the sky");

@@ -208,7 +208,7 @@ async fn message(
         return Err(refused(
             ErrorCode::InvalidArgument,
             "a session does not message itself".to_owned(),
-            "name another session from `cockpit agent sessions`".to_owned(),
+            "name another session from `torlek agent sessions`".to_owned(),
             UnblockedBy::Agent,
         ));
     }
@@ -884,7 +884,7 @@ fn message_key(entry: i64) -> String {
 /// The line the target's agent reads: who sent it and that it is not the owner speaking.
 fn message_line(coordinator: &Holder, text: &str) -> String {
     format!(
-        "[Cockpit] Message from session {} (a collaborator, not the owner): {text}",
+        "[Torlek] Message from session {} (a collaborator, not the owner): {text}",
         coordinator.as_str()
     )
 }
@@ -976,7 +976,7 @@ fn not_granted(coordinator: &Holder, refusal: &Refusal) -> Failed {
     refused(
         ErrorCode::NotAuthorized,
         format!("session {coordinator} holds no {permission} grant"),
-        format!("the owner runs `cockpit session grant {coordinator} {permission}`"),
+        format!("the owner runs `torlek session grant {coordinator} {permission}`"),
         UnblockedBy::Owner,
     )
 }

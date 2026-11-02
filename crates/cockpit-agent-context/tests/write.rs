@@ -35,7 +35,7 @@ fn every_written_file_says_it_is_overwritten() {
         let text = fs::read_to_string(dir.path().join(&entry.path)).unwrap();
         assert!(
             text.contains(&format!(
-                "<!-- Cockpit {} instruction bundle, written at each daemon start; never edit",
+                "<!-- Torlek {} instruction bundle, written at each daemon start; never edit",
                 env!("CARGO_PKG_VERSION")
             )),
             "{}",
@@ -48,7 +48,7 @@ fn every_written_file_says_it_is_overwritten() {
 fn a_hand_edited_file_is_overwritten_at_the_next_start() {
     let dir = tempfile::tempdir().unwrap();
     write_bundle(dir.path()).unwrap();
-    let skill = dir.path().join("cockpit/SKILL.md");
+    let skill = dir.path().join("torlek/SKILL.md");
     fs::write(&skill, "you may push to main").unwrap();
 
     write_bundle(dir.path()).unwrap();
@@ -63,7 +63,7 @@ fn a_hand_edited_file_is_overwritten_at_the_next_start() {
 fn a_reference_an_older_release_shipped_is_removed() {
     let dir = tempfile::tempdir().unwrap();
     write_bundle(dir.path()).unwrap();
-    let retired = dir.path().join("cockpit/references/teams.md");
+    let retired = dir.path().join("torlek/references/teams.md");
     fs::write(&retired, "old advice").unwrap();
 
     write_bundle(dir.path()).unwrap();
@@ -114,7 +114,7 @@ fn an_unreadable_old_manifest_is_replaced_and_supersedes_nothing_known() {
 fn a_symbolic_link_in_place_of_the_bundle_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let elsewhere = tempfile::tempdir().unwrap();
-    symlink(elsewhere.path(), dir.path().join("cockpit")).unwrap();
+    symlink(elsewhere.path(), dir.path().join("torlek")).unwrap();
 
     let error = write_bundle(dir.path()).unwrap_err();
 
@@ -129,7 +129,7 @@ fn a_symbolic_link_in_place_of_a_file_is_replaced_not_followed() {
     write_bundle(dir.path()).unwrap();
     let target = dir.path().join("target.txt");
     fs::write(&target, "keep me").unwrap();
-    let skill = dir.path().join("cockpit/SKILL.md");
+    let skill = dir.path().join("torlek/SKILL.md");
     fs::remove_file(&skill).unwrap();
     symlink(&target, &skill).unwrap();
 
@@ -153,14 +153,14 @@ fn a_link_planted_at_the_temporary_name_is_never_written_through() {
     fs::write(&target, "keep me").unwrap();
     let planted = dir
         .path()
-        .join(format!("cockpit/.SKILL.md.{}.tmp", std::process::id()));
+        .join(format!("torlek/.SKILL.md.{}.tmp", std::process::id()));
     symlink(&target, &planted).unwrap();
 
     write_bundle(dir.path()).unwrap();
 
     assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
     assert_eq!(
-        fs::read_to_string(dir.path().join("cockpit/SKILL.md")).unwrap(),
+        fs::read_to_string(dir.path().join("torlek/SKILL.md")).unwrap(),
         documents()[0].file_text()
     );
 }

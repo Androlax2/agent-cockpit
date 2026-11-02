@@ -12,7 +12,7 @@ use scripted::{scripted_daemon, text};
 
 async fn agent_reports(report: SessionReport) -> Output {
     let home = tempfile::tempdir().unwrap();
-    let socket = home.path().join("run/cockpit-dev/daemon.sock");
+    let socket = home.path().join("run/torlek-dev/daemon.sock");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -24,7 +24,7 @@ async fn agent_reports(report: SessionReport) -> Output {
             reports: vec![report],
         }),
     );
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
     command
         .args(["agent", "reports"])
         .env_clear()

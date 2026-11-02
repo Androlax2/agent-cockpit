@@ -100,7 +100,7 @@ class UpgradeTests(unittest.TestCase):
         common = f"""#!{sys.executable}
 import json, os, pathlib, sys, time
 root = pathlib.Path(__file__).resolve().parents[1]
-manifest = json.loads((root / 'share/cockpit/manifest.json').read_text())
+manifest = json.loads((root / 'share/torlek/manifest.json').read_text())
 home = pathlib.Path(os.environ['HOME'])
 assert 'GH_TOKEN' not in os.environ
 """
@@ -109,8 +109,8 @@ assert 'GH_TOKEN' not in os.environ
             + f"""
 args = sys.argv[1:]
 if args == ['version', '--all']:
-    print('cockpit ' + manifest['version'] + ' (revision ' + manifest['source_revision'] + ')')
-    print((root / 'share/cockpit/manifest.json').read_text(), end='')
+    print('torlek ' + manifest['version'] + ' (revision ' + manifest['source_revision'] + ')')
+    print((root / 'share/torlek/manifest.json').read_text(), end='')
     sys.exit(0)
 assert args[:2] == ['--profile', 'release-gate'], args
 args = args[2:]
@@ -143,7 +143,7 @@ if {fail_start!r}:
     print('fixture startup failure', file=sys.stderr)
     sys.exit(1)
 pidfile.write_text(str(os.getpid()))
-print('ready ' + str(home / 'run/cockpit-release-gate/daemon.sock'), flush=True)
+print('ready ' + str(home / 'run/torlek-release-gate/daemon.sock'), flush=True)
 time.sleep(60)
 """
         )
@@ -151,9 +151,9 @@ time.sleep(60)
             path = binaries / name
             path.write_text(
                 cli
-                if name == "cockpit"
+                if name == "torlek"
                 else daemon
-                if name == "cockpit-daemon"
+                if name == "torlek-daemon"
                 else "#!/bin/sh\nexit 0\n"
             )
             path.chmod(0o755)
@@ -318,7 +318,7 @@ time.sleep(60)
         candidate, _ = self.bundle("0.1.0-beta.2", "2" * 40)
         for name, kind in (
             ("../escaped", tarfile.REGTYPE),
-            ("cockpit-v0.1.0-beta.1-linux-x86_64/link", tarfile.SYMTYPE),
+            ("torlek-v0.1.0-beta.1-linux-x86_64/link", tarfile.SYMTYPE),
         ):
             with self.subTest(name=name):
                 with tarfile.open(archive, "w:gz") as bundle:

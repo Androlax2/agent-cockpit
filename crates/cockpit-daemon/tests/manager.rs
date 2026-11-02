@@ -287,7 +287,7 @@ async fn the_manager_opens_a_column_and_a_viewer_once_and_answers_how_to_attach(
     let second = home.open_manager(&client).await.unwrap();
 
     let socket = home.path().join("tmux.sock").display().to_string();
-    let attach: Vec<String> = ["tmux", "-S", &socket, "attach-session", "-t", "=cockpit:"]
+    let attach: Vec<String> = ["tmux", "-S", &socket, "attach-session", "-t", "=torlek:"]
         .map(str::to_owned)
         .to_vec();
     assert_eq!(
@@ -306,7 +306,7 @@ async fn the_manager_opens_a_column_and_a_viewer_once_and_answers_how_to_attach(
     let panes = home.tmux(&[
         "list-panes",
         "-t",
-        "=cockpit:",
+        "=torlek:",
         "-F",
         "#{pane_left} #{pane_start_command}",
     ]);
@@ -329,7 +329,7 @@ fn focus(pane: ManagerPaneView) -> Command {
 }
 
 fn focused_pane(home: &Home) -> String {
-    home.tmux(&["display-message", "-p", "-t", "=cockpit:", "#{pane_index}"])
+    home.tmux(&["display-message", "-p", "-t", "=torlek:", "#{pane_index}"])
         .trim()
         .to_owned()
 }
@@ -355,7 +355,7 @@ async fn reopening_the_manager_keeps_the_pane_its_owner_focused() {
         .await
         .unwrap();
     home.open_manager(&client).await.unwrap();
-    home.tmux(&["select-pane", "-t", "=cockpit:.1"]);
+    home.tmux(&["select-pane", "-t", "=torlek:.1"]);
 
     home.open_manager(&client).await.unwrap();
 
@@ -370,7 +370,7 @@ async fn manager_focus_gives_the_column_the_keys_the_viewer_had() {
         .await
         .unwrap();
     home.open_manager(&client).await.unwrap();
-    home.tmux(&["select-pane", "-t", "=cockpit:.1"]);
+    home.tmux(&["select-pane", "-t", "=torlek:.1"]);
 
     let reply = request(&client, focus(ManagerPaneView::Column))
         .await
@@ -436,7 +436,7 @@ async fn manager_focus_before_the_manager_is_open_is_refused_naming_the_fix() {
 
     assert_eq!(error.code, ErrorCode::NotFound);
     assert!(
-        error.message.contains("run `cockpit tui`"),
+        error.message.contains("run `torlek tui`"),
         "{}",
         error.message
     );
@@ -517,7 +517,7 @@ async fn showing_a_session_before_the_manager_is_open_is_refused_naming_the_fix(
 
     assert_eq!(error.code, ErrorCode::NotFound);
     assert!(
-        error.message.contains("run `cockpit tui`"),
+        error.message.contains("run `torlek tui`"),
         "{}",
         error.message
     );
@@ -605,7 +605,7 @@ async fn a_manager_that_lost_its_viewer_is_built_again_on_the_next_open() {
         .await
         .unwrap();
     home.open_manager(&client).await.unwrap();
-    home.tmux(&["kill-pane", "-t", "=cockpit:.1"]);
+    home.tmux(&["kill-pane", "-t", "=torlek:.1"]);
 
     let reopened = home.open_manager(&client).await.unwrap();
 
@@ -613,6 +613,6 @@ async fn a_manager_that_lost_its_viewer_is_built_again_on_the_next_open() {
         matches!(reopened, Reply::Manager { created: true, .. }),
         "{reopened:?}"
     );
-    let panes = home.tmux(&["list-panes", "-t", "=cockpit:", "-F", "#{pane_id}"]);
+    let panes = home.tmux(&["list-panes", "-t", "=torlek:", "-F", "#{pane_id}"]);
     assert_eq!(panes.lines().count(), 2, "{panes}");
 }

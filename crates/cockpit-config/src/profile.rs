@@ -1,6 +1,6 @@
-//! Profiles (#196, #134): one switch that keeps two Cockpits on one machine apart. Profile
-//! `<name>` places every file, socket, lock, tmux server and unit under `cockpit-<name>`;
-//! the default profile is `cockpit` itself.
+//! Profiles (#196, #134): one switch that keeps two Torlek installations apart. Profile
+//! `<name>` places every file, socket, lock, tmux server and unit under `torlek-<name>`;
+//! the default profile is `torlek` itself.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -9,21 +9,21 @@ use std::path::{Path, PathBuf};
 use crate::{ConfigError, Source, Sourced};
 
 /// The variable that selects a profile; `--profile` beats it.
-pub const PROFILE_VARIABLE: &str = "COCKPIT_PROFILE";
+pub const PROFILE_VARIABLE: &str = "TORLEK_PROFILE";
 
 /// What the cutover ships, and what a release build runs without a choice.
-pub const DEFAULT_PROFILE: &str = "cockpit";
+pub const DEFAULT_PROFILE: &str = "torlek";
 
 /// What a build outside a release bundle runs without a choice, so `cargo run` from a clone
-/// never reaches the installed Cockpit.
+/// never reaches the installed Torlek.
 pub const DEVELOPMENT_PROFILE: &str = "dev";
 
-/// Where a release bundle puts its manifest under the prefix holding `bin/cockpit`; the same
-/// for the unpacked archive and an install under `/usr` or `/opt/cockpit` (`tools/release.py`).
-pub const MANIFEST_IN_PREFIX: &str = "share/cockpit/manifest.json";
+/// Where a release bundle puts its manifest under the prefix holding `bin/torlek`; the same
+/// for the unpacked archive and an install under `/usr` or `/opt/torlek` (`tools/release.py`).
+pub const MANIFEST_IN_PREFIX: &str = "share/torlek/manifest.json";
 
-/// Cockpit's programs are `cockpit-<suffix>`; a profile of that name would make its
-/// `cockpit-<name>` command replace the program.
+/// Torlek's programs are `torlek-<suffix>`; a profile of that name would make its
+/// `torlek-<name>` command replace the program.
 const PROGRAM_SUFFIXES: &[&str] = &[
     "daemon",
     "tui",
@@ -41,13 +41,13 @@ const NAME_MAX: usize = 24;
 pub struct Profile(String);
 
 impl Profile {
-    /// The default profile, `cockpit`.
+    /// The default profile, `torlek`.
     pub fn default_profile() -> Self {
         Self(DEFAULT_PROFILE.to_owned())
     }
 
     /// Lowercase ASCII letters, digits and inner hyphens, starting with a letter; never the
-    /// suffix of one of Cockpit's programs.
+    /// suffix of one of Torlek's programs.
     pub fn parse(name: &str) -> Result<Self, String> {
         let is_shaped = name.len() <= NAME_MAX
             && name.starts_with(|first: char| first.is_ascii_lowercase())
@@ -64,7 +64,7 @@ impl Profile {
         }
         if PROGRAM_SUFFIXES.contains(&name) {
             return Err(format!(
-                "profile {name:?} would be named like Cockpit's program cockpit-{name}"
+                "profile {name:?} would be named like Torlek's program torlek-{name}"
             ));
         }
         Ok(Self(name.to_owned()))
@@ -78,7 +78,7 @@ impl Profile {
         self.0 == DEFAULT_PROFILE
     }
 
-    /// `cockpit` or `cockpit-<name>`: the directory name under each XDG base, the tmux
+    /// `torlek` or `torlek-<name>`: the directory name under each XDG base, the tmux
     /// server's socket name, the command name and the unit's base name.
     pub fn qualified_name(&self) -> String {
         if self.is_default() {
@@ -99,7 +99,7 @@ impl Profile {
         format!("io.github.androlax2.{}", self.qualified_name())
     }
 
-    /// The profile a command named `cockpit-<name>` selects; `None` for `cockpit` and any
+    /// The profile a command named `torlek-<name>` selects; `None` for `torlek` and any
     /// other name.
     pub fn of_command_name(command: &OsStr) -> Option<Self> {
         let name = Path::new(command).file_name()?.to_str()?;
@@ -130,7 +130,7 @@ pub enum Build {
 
 impl Build {
     /// `program` is this process's own path. Symlinks are resolved first, so
-    /// `/usr/local/bin/cockpit -> /opt/cockpit/bin/cockpit` finds `/opt/cockpit/share/`.
+    /// `/usr/local/bin/torlek -> /opt/torlek/bin/torlek` finds `/opt/torlek/share/`.
     pub fn of_program(program: &Path) -> Self {
         if cfg!(debug_assertions) {
             return Self::Development;
@@ -164,16 +164,16 @@ pub fn release_manifest(program: &Path) -> std::io::Result<PathBuf> {
 pub struct ProfileChoice<'a> {
     /// `--profile NAME`.
     pub flag: Option<&'a str>,
-    /// The name the program was started as (`argv[0]`): `cockpit-next` selects `next`.
+    /// The name the program was started as (`argv[0]`): `torlek-next` selects `next`.
     pub command_name: Option<&'a OsStr>,
-    /// `$COCKPIT_PROFILE`.
+    /// `$TORLEK_PROFILE`.
     pub variable: Option<&'a OsStr>,
 }
 
-/// The profile `choice` selects, then the build's own: `cockpit` for a release, `dev`
+/// The profile `choice` selects, then the build's own: `torlek` for a release, `dev`
 /// otherwise. The command name beats the variable: every launched agent inherits
-/// `$COCKPIT_PROFILE`, and `cockpit-next` typed in one must still reach `next`. A development build reaches the default profile only through `--profile
-/// cockpit`: `$COCKPIT_PROFILE=cockpit`, which every agent of the installed Cockpit inherits,
+/// `$TORLEK_PROFILE`, and `torlek-next` typed in one must still reach `next`. A development build reaches the default profile only through `--profile
+/// torlek`: `$TORLEK_PROFILE=torlek`, which every agent of the installed Torlek inherits,
 /// is ignored there, so a test build run by such an agent stays on `dev`.
 pub fn resolve_profile(
     choice: ProfileChoice<'_>,
