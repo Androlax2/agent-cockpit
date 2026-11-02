@@ -71,7 +71,7 @@ preview control shapes or copy spacing by eye when the upstream component alread
 provides them. The framework choice belongs to the
 [generator proposal](../decisions/2026-11-02-102-documentation-generator.md).
 
-## Manual critique and remaining verification
+## Author preview review and remaining verification
 
 - The article starts with the reader's task and visible installation limits;
   source truth takes precedence over attractive onboarding claims.
@@ -93,26 +93,56 @@ automated accessibility audit, browser interaction check or performance
 measurement has run. Dark-theme values exist in the reference variables, but a
 dark browser rendering has not been reviewed. Exact-frame approval remains open.
 
-## Impeccable provenance and tooling
+## Verified Impeccable use for revision 1a199ed781f
 
-Guidance was read manually from upstream revision
+**No Impeccable command, automated Impeccable check or independent critique ran for this revision.** The Designer manually read and applied portions of upstream guidance. Reading the critique and audit references did not execute either workflow. There is no Impeccable report, score, detector output or independent reviewer verdict.
+
+After Theo requested verification, the original Designer checked the original session transcript and embedded FigCraft snapshots. The parent worker independently checked the original retrieval calls, verified the archive hash/version index and confirmed the upstream commit through GitHub's API. This is retrospective evidence verification, not a new design review or a new Impeccable run.
+
+### Upstream revision and original reads
+
+Repository: `pbakaus/impeccable`, exact revision
 `e89e3ada3e875a89ac2c5d33d11e65ebef6fe285`:
-[Impeccable](https://github.com/pbakaus/impeccable/tree/e89e3ada3e875a89ac2c5d33d11e65ebef6fe285/.agents/skills/impeccable).
-References read: `SKILL.md`, `mode-read.md`, `new-work.md`, `craft-floor.md`,
-`critique.md` and `audit.md`. Applicable guidance: honor the chosen visual
-direction, use familiar reading navigation, maintain a calm text column, use real
-content, inspect responsive states and distinguish empty from failed search.
+[pinned upstream guidance](https://github.com/pbakaus/impeccable/tree/e89e3ada3e875a89ac2c5d33d11e65ebef6fe285/.agents/skills/impeccable).
+All paths in this table are relative to `.agents/skills/impeccable/`.
 
-No discoverable local Impeccable skill or connected FigCraft MCP tool was found in
-this session. No Impeccable engine, detector, hooks or automated command workflow
-was installed or executed. Reading critique/audit instructions is not a claim that
-those workflows ran. The upstream guidance does not broaden this lane's authority.
+| Source file | Original retrieval and visibility | Original transcript line |
+| --- | --- | --- |
+| `SKILL.md` | Direct fetch; displayed guidance | 56 |
+| `reference/mode-read.md` | Direct fetch; displayed in full | 66 |
+| `reference/new-work.md` | Direct fetch in the same call; combined output was truncated, so only partially visible | 66 |
+| `reference/critique.md` | Direct fetch piped through `head -105` | 78 |
+| `reference/audit.md` | Direct fetch piped through `head -85` | 78 |
+| `reference/craft-floor.md` | Direct fetch piped through `head -115`, before artifact generation; not merely a transitive reference | 137 |
 
-The already installed `figcraft-cli` created the board headlessly through JSON
-commands, saved its native version history, and exported the PNG previews. Font-free
-initial exports lacked visible text; the final previews were regenerated using
-already installed fonts and inspected. No new tool, dependency, live desktop
-operation, product code change, Git commit or push was performed for this proposal.
+The retrieval command pattern was the following, substituting each exact source path above for `PATH`:
+
+```sh
+gh api repos/pbakaus/impeccable/contents/PATH?ref=e89e3ada3e875a89ac2c5d33d11e65ebef6fe285 --jq .content | base64 -d
+```
+
+The `head` limits in the table were applied after decoding. No Impeccable skill command/workflow, executable, engine, detector, hook or live mode was invoked or installed. In particular, there was no executed Impeccable critique, audit or polish action. No claim of a full read of the partially displayed references is made.
+
+### Manual application and concrete changes
+
+The guidance informed familiar navigation, a restrained reading column, real source content, respecting Theo's selected Fumadocs aesthetic, and separate search-results, empty and failure states. These are author design choices, not findings emitted by Impeccable automation. The component appearance comes from the chosen Fumadocs reference; it is not a new Impeccable-generated product identity.
+
+| Process that found the issue | Finding | Resulting change and evidence |
+| --- | --- | --- |
+| Designer's manual inspection of initial FigCraft previews, followed by installed-font discovery | Initial exports had no visible text; Inter was unavailable | r1 to r2 used already installed DejaVu preview fonts and regenerated the images; embedded snapshots record font/style and layout changes |
+| Designer's manual inspection of the mobile navigation preview | Product name appeared twice | r2 to r3 hid node `113`, removing the duplicate heading; snapshots also record seven resulting transform changes |
+| Reading the repository README | Public installation remained incomplete | Proposal copy retained that limitation and did not claim successful public onboarding |
+
+These author checks were not an independent critique. Reading `critique.md` or `audit.md` did not produce a formal finding list. Keyboard behavior, browser accessibility, dark rendering, performance and search behavior remain unverified.
+
+### Evidence locations and verification boundaries
+
+- Original Designer transcript, retained locally: `/home/theo/.codex/sessions/2026/11/02/rollout-2026-11-02T02-34-28-01a199e4-c0cb-7511-b1be-16fdbe112925.jsonl`. Original retrieval calls: lines 56, 66, 78 and 137. FigCraft generation/saved revisions: lines 176, 199 and 232. Preview inspections and final artifact checks: lines 183, 204 and 239. The full transcript is not copied into this repository.
+- The committed [FigCraft archive](../../design-plans/documentation-site.figcraft) contains `versions/index.json` and snapshots `versions/1a199ebf63e.json` (r1), `versions/1a199ec6e4b.json` (r2) and `versions/1a199ed781f.json` (r3). The Designer verified that the current saved document matches r3. Its SHA-256 remains the value at the top of this handoff.
+- The six committed PNG previews are linked in the frame table above. The Designer opened all six; the parent also inspected the desktop and mobile-reading previews.
+- Installed `figcraft-cli` generated, saved and rendered the proposal headlessly. Archive/JSON validity, PNG dimensions, local-link existence and empty `readyForDev` checks were artifact verification. They were not Impeccable automated checks, browser tests or independent design review.
+
+The Designer's inspected discovery paths did not expose a local Impeccable skill or a connected FigCraft MCP tool. Reading pinned upstream guidance granted no execution authority. No dependency, host action, product-code change or Git mutation was performed by the Designer; the parent subsequently committed the proposal artifacts and separately performed the approved dependency/build validation.
 
 Review these frames before implementation. Approval should identify the saved
 version above; only approved frames may subsequently be marked `readyForDev`.
