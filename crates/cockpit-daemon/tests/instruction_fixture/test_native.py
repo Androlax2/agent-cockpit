@@ -1,16 +1,125 @@
 """Safety and evidence failures, with temporary files and harmless fake processes."""
 
+import json
 import os
+import shlex
+import signal
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from native import SKILL_DESCRIPTION, environment, evidence, refuse_existing, run_bounded
+from native import (
+    SKILL_DESCRIPTION,
+    environment,
+    evidence,
+    initialize_project,
+    prepare,
+    refuse_existing,
+    run_bounded,
+)
 
 
 class Safety(unittest.TestCase):
+    def test_fixture_git_never_runs_the_fake_owners_hooks_or_signer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "fixture home"
+            fixture.mkdir()
+            (fixture / "probe-processes").mkdir()
+            owner = root / "fake owner"
+            hooks = owner / "hooks"
+            hooks.mkdir(parents=True)
+            marker = root / "owner-command-ran"
+            hook = hooks / "pre-commit"
+            hook.write_text("#!/bin/sh\ntouch " + shlex.quote(str(marker)) + "\nexit 1\n")
+            hook.chmod(0o755)
+            config = owner / ".gitconfig"
+            config.write_text(
+                f"[core]\n hooksPath = {json.dumps(str(hooks))}\n"
+                f"[commit]\n gpgsign = true\n[gpg]\n program = {json.dumps(str(hook))}\n"
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "HOME": str(owner),
+                    "GIT_CONFIG_GLOBAL": str(config),
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "core.hooksPath",
+                    "GIT_CONFIG_VALUE_0": str(hooks),
+                    "GIT_TEMPLATE_DIR": str(owner),
+                },
+                clear=True,
+            ):
+                initialize_project(fixture)
+            self.assertFalse(marker.exists())
+            self.assertFalse(
+                (fixture / "projects/native-instructions/.git/hooks/pre-commit").exists()
+            )
+            self.assertTrue(
+                (fixture / "projects/native-instructions/.git/refs/heads/main").is_file()
+            )
+
+    def test_version_wrapper_cleans_up_before_the_outer_discovery_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_file = root / "fake-native.pid"
+            program = root / "fake-provider"
+            program.write_text(
+                "#!/bin/sh\nprintf '%s' \"$$\" > "
+                + shlex.quote(str(pid_file))
+                + "\nexec /bin/sleep 30\n"
+            )
+            program.chmod(0o755)
+            config = {
+                "root": directory,
+                "provider": "claude",
+                "program": str(program),
+                "version": "2.1.316",
+            }
+            prepare(config, "http://127.0.0.1:9")
+            (root / "ready").write_text("http://127.0.0.1:9")
+            config_file = root / "fixture.json"
+            config_file.write_text(json.dumps(config))
+            wrapper = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    str(Path(__file__).with_name("native.py")),
+                    "launch",
+                    str(config_file),
+                    "--version",
+                ],
+                cwd=root,
+                env={"HOME": directory, "PATH": "/usr/bin:/bin"},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                _, errors = wrapper.communicate(timeout=10)
+                self.assertNotEqual(wrapper.returncode, 0)
+                self.assertIn(b"native fixture process timed out", errors)
+                self.assertEqual(list((root / "probe-processes").iterdir()), [])
+                self.assertFalse(Path(f"/proc/{pid_file.read_text()}/stat").exists())
+            finally:
+                if wrapper.poll() is None:
+                    wrapper.kill()
+                    wrapper.wait()
+                # A regression of the original outer-timeout race must clean its
+                # own still-sleeping fake child, never leave it behind in CI.
+                if pid_file.exists():
+                    pid = int(pid_file.read_text())
+                    try:
+                        if Path(f"/proc/{pid}/cwd").resolve() == root:
+                            os.killpg(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
     def test_external_symlinks_and_metadata_errors_are_refused_without_reading(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "policy"

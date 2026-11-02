@@ -14,6 +14,8 @@ from pathlib import Path
 
 LIMIT = 2 * 1024 * 1024
 SKILL_DESCRIPTION = "How to work inside a Cockpit session"
+# Provider discovery kills its wrapper at ten seconds. Leave time for group cleanup.
+VERSION_TIMEOUT = 3
 
 
 def write_json(path, value):
@@ -106,6 +108,42 @@ stream_max_retries = 0
 [projects.{json.dumps(str(root / "projects/native-instructions"))}]
 trust_level = "trusted"
 ''')
+    initialize_project(root)
+
+
+def initialize_project(root):
+    """Real Git, without the caller's hooks, signers, templates or configuration."""
+    project = root / "projects/native-instructions"
+    project.mkdir(parents=True)
+    empty = root / "empty-git-config"
+    empty.mkdir()
+    env = {
+        "HOME": str(root),
+        "XDG_CONFIG_HOME": str(root / "config"),
+        "PATH": "/usr/bin:/bin",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    git = [
+        "git",
+        "-c",
+        f"core.hooksPath={empty}",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+    ]
+    (project / "README").write_text("fixture\n")
+    with (root / "git.log").open("w+") as output:
+        for args in [
+            ["init", "--quiet", "--initial-branch=main", f"--template={empty}"],
+            ["add", "README"],
+            ["commit", "--quiet", "-m", "initial"],
+        ]:
+            assert run_bounded(git + args, env, 3, output, cwd=project) == 0, "fixture Git failed"
 
 
 def environment(config, url):
@@ -191,9 +229,9 @@ def environment(config, url):
     return env
 
 
-def run_bounded(argv, env, timeout, output=None):
+def run_bounded(argv, env, timeout, output=None, cwd=None):
     """Retain the waitable leader until its descendants are stopped, even on a signal."""
-    child = subprocess.Popen(argv, env=env, start_new_session=True, stdout=output)
+    child = subprocess.Popen(argv, env=env, start_new_session=True, stdout=output, cwd=cwd)
     marker = Path(env["HOME"]) / "probe-processes" / str(os.getpid())
     try:
         marker.touch()
@@ -203,7 +241,7 @@ def run_bounded(argv, env, timeout, output=None):
                 break
             assert time.monotonic() < until, "native fixture process timed out"
             if output is not None:
-                assert output.tell() <= 65536, "excessive version output"
+                assert output.tell() <= 65536, "excessive helper output"
             time.sleep(0.025)
     finally:
         # The real Codex launcher may also signal its app-server wrapper while the
@@ -232,7 +270,7 @@ def launch(config, arguments):
     argv = [config["program"], *arguments]
     if arguments == ["--version"]:
         with (root / "version.txt").open("w+") as output:
-            status = run_bounded(argv, env, 10, output)
+            status = run_bounded(argv, env, VERSION_TIMEOUT, output)
             output.seek(0)
             observed = output.read(65537).strip()
         expected = {

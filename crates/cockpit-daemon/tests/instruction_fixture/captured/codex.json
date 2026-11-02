@@ -1,13 +1,13 @@
 {
   "brief": true,
   "main_request_number": 1,
-  "main_request_sha256": "9c51ee87a82786539a2eb2172097cb6bcccfe9e2395247eb89f09032acd0d1fa",
+  "main_request_sha256": "27a0c07e20dd722f77c42981b4078ebef8d02fd3455b7a604fc19a51656d6187",
   "mcp": "inline",
   "mode": "native-tui",
   "native_cockpit_skill": false,
   "observed": {
-    "captured_at": "2026-11-02T04:27:47.515957+00:00",
-    "fixture_sha256": "d4c353d556e28864f10c151ae811ea22398d193c117b2ea5ed4b25727d6f8c77",
+    "captured_at": "2026-11-02T04:43:41.943830+00:00",
+    "fixture_sha256": "91db51c9e885e47230f2d391e8915aa506523a981e73a0156033da8aa05867c8",
     "program_name": "codex.js",
     "program_sha256": "e14fc83739c13c1074b12bd1acce4010c893c7f6fbfc1593b4a31d74cabb57af",
     "version_output": "codex-cli 0.166.0"

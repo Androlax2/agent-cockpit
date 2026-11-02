@@ -28,7 +28,7 @@ fn the_instruction_fixture_refuses_unsafe_inputs_and_false_evidence() {
         .stdin(Stdio::null())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             assert!(status.success(), "fixture safety tests: {status}");
@@ -138,7 +138,22 @@ async fn probe(provider: &str, variable: &str, version: &str) {
     let path = format!("{}:/usr/bin:/bin", home.path().join("bin").display());
     let _daemon = home.start_with(&[("PATH", &path), ("TERM", "xterm-256color")]);
     let client = home.connect().await;
-    let (project, _) = home.project(&client, "native-instructions").await;
+    // The Python fixture creates this repository with isolated Git configuration.
+    // Home::project currently inherits the caller's Git environment (separate follow-up).
+    let project = home.path().join("projects/native-instructions");
+    let added = client
+        .request(
+            Request::ProjectAdd {
+                path: project.display().to_string(),
+                name: None,
+            },
+            real_daemon::GENEROUS,
+        )
+        .await;
+    assert!(
+        matches!(added, Ok(Reply::ProjectAdded { .. })),
+        "project add: {added:?}"
+    );
     let reply = client
         .request(
             Request::SessionNew {

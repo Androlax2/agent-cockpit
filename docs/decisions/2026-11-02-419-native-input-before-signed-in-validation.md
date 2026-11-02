@@ -29,7 +29,8 @@ explicitly absent. OpenCode's actual TUI puts the brief and skill list in system
 input and advertises MCP tools.
 
 Fresh environment/config/state and metadata-only refusal of external policy
-prevent accidental owner configuration use. Native commands are bounded and
+prevent accidental owner configuration use. Fixture Git setup also excludes owner
+configuration, hooks, templates and signing; the older shared helper remains #526. Native commands are bounded and
 temporary OpenCode permissions are restored. No account access, model usage,
 installation, new dependency or production behavior change was needed.
 

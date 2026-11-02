@@ -70,7 +70,7 @@ row of `docs/design/greenfield/16-feature-coverage-map.md`.
 
 - [x] Update evidence with exact versions, provenance and remaining limits.
 - [x] Run the affected native/focused tests and final lint/format/docs checks once.
-- [ ] Invoke the actual Codex `$code-review medium` workflow over the full delta;
+- [x] Invoke the actual Codex `$code-review medium` workflow over the full delta;
   record revision, findings and outcome. Retain a separate fresh independent
   full-delta review as required by the lane.
 - [ ] Resolve findings, open one PR with `Part of #419`, and enable squash
@@ -95,12 +95,12 @@ CARGO_BUILD_JOBS=2 \
 COCKPIT_CLAUDE_PROGRAM=/home/theo/.local/share/claude/versions/2.1.316 \
 COCKPIT_CODEX_PROGRAM=/home/theo/.local/npm/bin/codex \
 COCKPIT_OPENCODE_PROGRAM=$PWD/.outgoing/opencode-1.19.5-7mi5obxc/opencode \
-COCKPIT_INSTRUCTION_CAPTURE_DIR=$PWD/.outgoing/instruction-419-reviewed \
+COCKPIT_INSTRUCTION_CAPTURE_DIR=$PWD/.outgoing/instruction-419-isolated-git \
 cargo nextest run --locked --offline -p cockpit-daemon --test native_instructions \
   -j 2 --run-ignored only --no-capture
 ```
 
-Exit 0: all three native probes passed in 7.278 seconds; three ordinary tests were
+Exit 0: all three native probes passed in 7.643 seconds; three ordinary tests were
 excluded. Native requests used the real daemon-generated session, workspace and
 manifest. No signed-in run occurred. Receipts are committed beside the fixture.
 
@@ -151,3 +151,38 @@ Ruff check/format on `tests/instruction_fixture`; Markdownlint, offline Lychee a
 Typos on the changed code/docs. All pass. No local full suite or live/account test
 was run. Supported-platform CI and a fresh independent full-delta review are the
 remaining integration gates; neither is represented as this skill invocation.
+
+## Independent review and follow-through
+
+The fresh independent reviewer read the full
+`e05bf5d37a5a8df4a171a366604f790d7b138056..a68eec37c14dc3cf73bc2b31a9f3c1315a1411ec`
+delta and reported two P2 findings:
+
+- `Home::project` inherits caller Git configuration during setup. The new fixture
+  now initializes real Git with a cleared environment, isolated configuration,
+  empty templates/hooks and signing disabled, then sends `ProjectAdd` to the real
+  owner socket. A fake owner hook/signer/config regression passes. The pre-existing
+  shared helper is unchanged and tracked in Hardening #526. Earlier receipts are
+  superseded; owner Git configuration was not inspected to infer what it did.
+- The native version timeout equaled discovery's ten-second limit, allowing the
+  outer caller to kill the wrapper before cleanup. The reviewer reproduced the
+  orphan with only a fake sleeping provider, then explicitly cleaned it up. The
+  wrapper now gives native version discovery three seconds, reserving cleanup
+  headroom. A fake wrapper/child regression checks the real ten-second outer limit.
+
+Targeted follow-through by that same independent reviewer found both resolved and
+no new concrete regression: ready for final verification and receipt refresh.
+This was not a second full-delta review or a `$code-review` invocation.
+
+Final ordinary check after these fixes:
+`CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 cargo nextest run --locked --offline -p cockpit-daemon --test native_instructions -j 2`
+passed three Rust tests, including eleven Python regressions, with three native
+tests explicitly skipped (3.866 seconds). The earlier `agent_onboarding` baseline
+was not repeated after discovering #526. The final native command above passed
+all three providers using the isolated Git setup and refreshed every receipt.
+Clippy, formatting and the changed-file documentation checks pass on the fixes.
+
+The reviewer explicitly left signed-in recognition/model understanding, Claude TUI
+parity, Codex 0.161.0, real sandbox/network enforcement, approval routing, persisted
+completion and total context outside these measured claims. Those limitations
+remain open; no account or native test was run by the reviewer.

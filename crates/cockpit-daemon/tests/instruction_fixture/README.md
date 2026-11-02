@@ -6,7 +6,7 @@ directory, MCP server and authenticated agent channel. The first prompt is only
 `Reply with only OK.` A local model fixture records the request and returns canned
 text. It never emits a tool call or approval response.
 
-The ordinary test runs nine Python standard-library regressions for external
+On Linux, the ordinary test runs eleven Python standard-library regressions for external
 configuration refusal, credential isolation, descendant cleanup and false
 instruction evidence; two Rust regressions cover failed capture and cleanup I/O. The three native tests are ignored by default and currently
 support Linux only. They require explicit paths to already approved binaries;
@@ -60,7 +60,9 @@ CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 cargo nextest run --locked --offline \
 ## Isolation and limits
 
 Each probe has fresh HOME/XDG/config/cache/state directories, a clean fixture Git
-project and a private tmux server. Native wrappers preserve only the daemon's
+project and a private tmux server. Git setup clears the caller’s environment and
+disables user/system configuration, hooks, templates and signing; the shared
+fixture’s older setup remains tracked separately in #526. Native wrappers preserve only the daemon's
 launch identity and explicit terminal/provider launch settings. They replace model
 transport with loopback fixtures and suppress updates, telemetry and external
 provider discovery. Managed/system policy and instruction-bearing parent paths
@@ -70,7 +72,7 @@ signed out. No auth file is copied or read by the fixture.
 OpenCode's bundled compatible provider avoids dependency downloads. A temporary
 read-only global config directory prevents 1.19.5's automatic plugin dependency
 installation; Rust restores permissions even on test failure. Child groups retain
-their waitable leader until killed. Native commands have 10-second version and
+their waitable leader until killed. Native commands have 3-second version (inside discovery’s 10-second deadline) and
 50-second execution limits; requests are limited to eight, and bodies/captures to
 2 MiB. Cooperative teardown works even after daemon failure.
 
