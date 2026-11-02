@@ -2,8 +2,9 @@
 
 **Status: Option A provisioned in part for [#382](https://github.com/Androlax2/agent-cockpit/issues/382),
 not live enforcement acceptance.** Tag rules, environments and proposal credentials have
-approved readback evidence. Workflow integration, release-key migration, old-run expiry,
-scanners and live negative tests remain open. The release boundary is not complete.
+approved readback evidence. Workflow source now separates proposal and release credentials;
+release-key migration, old-run expiry, scanners and live negative tests remain open.
+The release boundary is not complete.
 
 ## Ownership and evidence
 
@@ -49,7 +50,10 @@ new bot login and numeric ID, including prerelease selection and comment dedupli
 Old-author drafts require separately approved exact cleanup after replacement verification;
 they are not accepted through an old/new allowlist.
 
-These source changes are pending coordinated delivery after #523. The existing repository
+After #523's protected merge, the integrated source also references `release` from
+prerelease tagging, release drafting and publication, preserving all nine publication
+dependencies and the draft-PR guards. Source integration does not prove live enforcement.
+The existing repository
 `RELEASE_APP_PRIVATE_KEY` has **not** been migrated or removed. Old workflows and already
 started runs may still hold publishing credentials. Before protected release use, move
 that key through its separately reviewed migration, verify environment-only storage,
