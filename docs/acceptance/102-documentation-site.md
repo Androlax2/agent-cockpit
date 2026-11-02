@@ -13,7 +13,7 @@ The exact design approval is recorded in the [r4 handoff](../design/102-document
 | Version prefixes and preserved copies | Real Astro builds at latest and a fixture prerelease prefix; `site/tests/versions.test.mjs` covers complete-catalog assembly, missing builds, unsafe names and overlapping directories; browser fixture switches both ways |
 | Source and rendered links | Existing `make docs-ci`; `site/scripts/links.mjs` mounts output under its complete prefix and invokes offline lychee; regression fixture proves a missing anchor fails |
 | Search and responsive themes | [Browser script](../../site/tests/browser.py), [rendered evidence](../design/evidence/102-site-browser.json) and [captures](../../design-plans/previews/102-web-desktop-light.png); light/dark, 320 px, results/empty/unavailable, keyboard selection, Close/Escape/focus and touch |
-| PR build and separate Pages deploy | Proposed `.github/workflows/docs.yml`, built-in version assembler, read-only build permissions and separate Pages/OIDC job; YAML parsed locally using the already installed transitive `yaml` package |
+| PR build and separate Pages deploy | Merged `.github/workflows/docs.yml`, built-in version assembler, read-only build permissions and separate Pages/OIDC job; successful PR build/assembly and main deployment are recorded below |
 | Discoverability | README badge and plain-text TUI help URL to the published latest guide; `cockpit-tui --test keys` opens the real help renderer and asserts the URL |
 
 Exact commands and outcomes are recorded in [validation evidence](../design/evidence/102-site-validation.json).
@@ -52,12 +52,15 @@ pass. No install/session walkthrough or live release-tag deployment is claimed.
 - A released version publishes its tagged copy without losing older copies. The
   catalog/paths are fixture-tested; no release tag existed at first publication.
 - Final public installation instructions following the merged installer/release
-  implementation. Main's engine-install work #470 has progressed independently;
-  it is not a measured public onboarding result for this branch.
+  implementation. The #470 installer and #495 proxy wiring are merged and the
+  canonical README documents their commands, prerequisites and current platform
+  blockers; public archive onboarding remains unmeasured.
 - A reader installs and starts a session from the published site alone, coordinated
   with Chief. No volunteer has completed this acceptance walk yet.
-- Keep #98's pending screenshot/public-install/volunteer evidence open. Local site
-  screenshots do not constitute a greenfield product screenshot or a live session.
+- #98's greenfield fixture image is complete in PR #536; its
+  [capture evidence](98-demo-screenshot.json) identifies the actual TUI renderer and
+  fictional data. Public installation and volunteer acceptance stay open. Neither
+  that fixture image nor local site screenshots prove a live session.
 
 The [build guide](../../site/README.md) owns executable commands and tooling limits.
 This record does not close either issue's live-validation criteria.
