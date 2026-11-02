@@ -527,6 +527,11 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         launch_token: Option<String>,
         workflow: i64,
+        /// Identity read before preparing the result; required for agent completions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_step: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_attempt: Option<u32>,
         handoff: WorkflowHandoffView,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         waive: Vec<String>,

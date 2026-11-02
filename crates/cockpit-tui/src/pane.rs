@@ -61,7 +61,7 @@ pub enum PaneOutcome {
     /// command for the usage count.
     Handled {
         used: &'static str,
-        send: Option<Command>,
+        send: Option<Box<Command>>,
     },
     /// Not a key of the pane.
     NotMine,
@@ -263,7 +263,10 @@ impl Pane {
 }
 
 fn handled(used: &'static str, send: Option<Command>) -> PaneOutcome {
-    PaneOutcome::Handled { used, send }
+    PaneOutcome::Handled {
+        used,
+        send: send.map(Box::new),
+    }
 }
 
 /// What waits on the owner, in the daemon's queue order (a command waiting for input, then
