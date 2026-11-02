@@ -57,3 +57,11 @@ Markdown links and already escaped angle brackets changed by the postprocessor.
 All three were reproduced with failing command-entry fixtures and corrected; the
 focused tests and real-tool conformance then passed. This inline skill execution
 is recorded separately from independent review.
+
+A second fresh independent context also invoked the actual `$code-review medium`
+workflow on the full delta through `be5a50c`. Its two findings concerned reference-like
+prose incorrectly exempted as a link, and backticks inside link destinations treated
+as code delimiters. Both were reproduced by failing command-entry cases. Link ranges
+now come from the complete line, with reference definitions anchored at its start;
+backticks inside those destinations cannot open a prose code span. Targeted reviewer
+confirmation and replacement-draft CI are still required before acceptance.

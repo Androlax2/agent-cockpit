@@ -153,6 +153,16 @@ class ChangelogTests(unittest.TestCase):
             ("- <owner@example.invalid>\n", "- <owner@example.invalid>\n"),
             ("- [file](<docs/a b.md>)\n", "- [file](<docs/a b.md>)\n"),
             ("- \\<repo\\>\n", "- \\<repo\\>\n"),
+            ("- fix mapping [key]: <value>\n", "- fix mapping [key]: &lt;value&gt;\n"),
+            (
+                "- [file](<docs/`a.md>) and `<repo>`\n",
+                "- [file](<docs/`a.md>) and `<repo>`\n",
+            ),
+            ("- `a` [key]: <value>\n", "- `a` [key]: &lt;value&gt;\n"),
+            ("[key]: <docs/value.md>\n", "[key]: <docs/value.md>\n"),
+            ("- literal ](<value>)\n", "- literal ](&lt;value&gt;)\n"),
+            ("- [<label>](<file>)\n", "- [&lt;label&gt;](<file>)\n"),
+            ("- \\[label](<value>)\n", "- \\[label](&lt;value&gt;)\n"),
         ]
         for source, expected in cases:
             with self.subTest(source=source):
