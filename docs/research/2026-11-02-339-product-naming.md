@@ -9,7 +9,9 @@ sources and limits are in [the Torlek appendix](339/torlek.md). In short:
   Debian, Ubuntu or Fedora.
 - **Trademarks:** USPTO, TMview and WIPO returned no marks.
 - **Domains:** no product domain will be bought.
-- **Not established:** legal clearance, the official Nix index, `.sh` and a native-speaker check.
+- **Not established:** legal clearance and a similar-mark or phonetic analysis (Torlen, one letter
+  away, returned marks), the official Nix index, `.sh`, a native-speaker check, and the GitHub name
+  `torlek`, which belongs to a personal account.
 
 The rename itself is [#560](https://github.com/Androlax2/agent-cockpit/issues/560).
 
@@ -169,7 +171,7 @@ state ownership and host authority stable ([engineering guide](../../AGENTS.md),
 [architecture](../ARCHITECTURE.md)). No new dependencies or manifest edits are authorized here.
 
 Owns: the proposed product identity and coordinated rename order for #339. Dependencies:
-Theo's choice precedes the rename and #99 design; #134/#196 profile isolation must survive;
+Theo's choice (made: Torlek) precedes the rename and #99 design; #134/#196 profile isolation must survive;
 Issue #97 needs the approved identity before the first alpha tag. Product naming can precede #209.
 The chosen name is **Torlek** (`torlek` / `TORLEK`); the spelling map below uses it.
 
@@ -202,11 +204,12 @@ not accepted new assignments; Chief must confirm scope with each owner before im
 
 1. **Done: Theo chose Torlek and the decision is recorded**
    ([decision record](../decisions/2026-11-02-339-product-name.md)). Theo decided not to buy a
-   domain. Legal clearance remains a condition before a public launch, not a prerequisite for the
-   internal rename.
-2. **Done: the Alpha 1 rename follow-up exists, and #99, #209 and #97 carry the name.**
-   [#560](https://github.com/Androlax2/agent-cockpit/issues/560) owns the rename and its acceptance.
-   #99 designs the mark for Torlek. Keep greenfield-cleanup #209 separate: its execution depends on
+   domain. No legal clearance exists. Theo decides whether a professional clearance precedes the
+   public-facing steps (crate publication, release assets, the repository rename): if a clearance
+   later blocks Torlek, those steps would have to be redone under the backup name.
+2. **Done: the Alpha 1 rename follow-up exists.**
+   [#560](https://github.com/Androlax2/agent-cockpit/issues/560) owns the rename and its acceptance;
+   #99, #209 and #97 are told the name on the issues themselves. #99 designs the mark for Torlek. Keep greenfield-cleanup #209 separate: its execution depends on
    cutover, while the product rename before alpha can precede that cleanup.
 3. **Use a feature branch and inventory the current greenfield surface.** Enumerate crate/package
    and binary names, imports, profiles, filesystem layout, protocol identifiers, environment
@@ -237,18 +240,20 @@ not accepted new assignments; Chief must confirm scope with each owner before im
 
 ## Workflow status
 
-**#339's research is complete.** Theo chose Torlek, the
-[decision record](../decisions/2026-11-02-339-product-name.md) holds the checked table and the
-reasons, and [#560](https://github.com/Androlax2/agent-cockpit/issues/560) owns the rename.
+**#339's decision is made.** Theo chose Torlek; the
+[decision record](../decisions/2026-11-02-339-product-name.md) holds the reasons, the
+[Torlek appendix](339/torlek.md) holds the checked table, and
+[#560](https://github.com/Androlax2/agent-cockpit/issues/560) owns the rename.
 
 The eight-name study's earlier "morning choice" between Crewkiln and Runlark is **superseded**.
 Its trademark and browser blockers (`1820d58f`) still describe what the sandbox could not reach;
 Theo ran the USPTO, TMview and WIPO searches for Torlek in his own browser.
 
-**Still open (conditions, not blockers to the rename):**
+**Still open, carried by #560's pre-launch checklist:**
 
-- legal clearance before a public launch
-- the official Nix index and `.sh`
+- legal clearance, including a similar-mark and phonetic analysis
+- the official Nix index (partial evidence only) and `.sh` (not needed: no domain will be bought)
 - a native-speaker slang check
+- a GitHub organization name, since `torlek` is a personal account
 
 Review and verification evidence belongs in PR #534.

@@ -61,11 +61,11 @@ resource not returned; **H** = hit; **P** = partial evidence; **N** = not checke
 | GitHub account / organization | H user | `torlek` is a personal account created in 2013 with 7 public repositories; `torlek-dev`, `torlek-cli` and `torlekhq` returned 404. The project would need another organization name |
 | `.dev` registration | RDAP 404 | [Google RDAP](https://pubapi.registry.google/rdap/domain/torlek.dev); no registration returned, not purchase availability. `torlek.app` was also 404 |
 | `.sh` registration | N | The registry's web form does not run a lookup without JavaScript (see the [domain follow-up](domain-trademark-followup.md)). Theo does not plan to buy a domain, so this was not pursued |
-| `.com` | H, not software | Registered 2026-08-14 with parking nameservers; the site is a residential HVAC company in the San Francisco Bay Area |
+| `.com` | H, not software | RDAP: registered 2026-08-14, nameservers `cosmos.dns-parking.com` / `nova.dns-parking.com`. The site serves a live page titled "Torlek" for a residential HVAC company in the San Francisco Bay Area. Whether that company trades under the Torlek name, and why the domain is so recent, was not established |
 | USPTO | A, no results | Theo's browser search, 2026-11-02 (the sandboxed browser cannot reach it) |
 | EUIPO and national offices (TMview) | A, no results | Theo's browser search, 2026-11-02 |
 | WIPO Global Brand Database | A, no results | Theo's browser search, 2026-11-02 |
-| Businesses (web search) | No exact match | No business or software product with the exact name was found. The nearest names are Tork (a hygiene brand) and the Torx software companies |
+| Businesses (web search) | No software match | The web search found no business or product with the exact name; only the `torlek.com` HVAC page above uses it. The nearest software names found are the Torx software companies |
 | Meaning (EN / FR) | None found | No entry on [en.wiktionary](https://en.wiktionary.org/api/rest_v1/page/definition/torlek) (404) or [fr.wiktionary](https://fr.wiktionary.org/w/api.php?action=query&titles=torlek&format=json) (missing). No native-speaker or slang check was done |
 | Shell builtin / common tool | A | `type torlek` reported not found and there is no bash builtin of that name; no PATH-wide or distro file inventory was done |
 
