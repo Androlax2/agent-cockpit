@@ -14,7 +14,7 @@ The exact design approval is recorded in the [r4 handoff](../design/102-document
 | Source and rendered links | Existing `make docs-ci`; `site/scripts/links.mjs` mounts output under its complete prefix and invokes offline lychee; regression fixture proves a missing anchor fails |
 | Search and responsive themes | [Browser script](../../site/tests/browser.py), [rendered evidence](../design/evidence/102-site-browser.json) and [captures](../../design-plans/previews/102-web-desktop-light.png); light/dark, 320 px, results/empty/unavailable, keyboard selection, Close/Escape/focus and touch |
 | PR build and separate Pages deploy | Proposed `.github/workflows/docs.yml`, built-in version assembler, read-only build permissions and separate Pages/OIDC job; YAML parsed locally using the already installed transitive `yaml` package |
-| Discoverability | README badge and plain-text TUI help URL, both labeled publication pending; `cockpit-tui --test keys` opens the real help renderer and asserts the URL |
+| Discoverability | README badge and plain-text TUI help URL to the published latest guide; `cockpit-tui --test keys` opens the real help renderer and asserts the URL |
 
 Exact commands and outcomes are recorded in [validation evidence](../design/evidence/102-site-validation.json).
 

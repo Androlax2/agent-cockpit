@@ -1,0 +1,35 @@
+{
+  "invocation": "$code-review",
+  "skill_path": "/home/theo/.codex/skills/code-review/SKILL.md",
+  "skill_sha256": "dd5bb20c63d55b3dac6f3b8b4295456c8af9bcc271b18081577176d84b419b35",
+  "effort": "medium",
+  "reviewer": "/root/native_review_102_publication",
+  "independent": true,
+  "base": "ea5458970720cf24dd807c21a1cdb808085ed5a4",
+  "head": "9e7384f0437e908d783d455874ba6ae3927c71c5",
+  "scope": "Publication-evidence follow-up only; distinct from implementation PR #507 review",
+  "angles": [
+    "A",
+    "B",
+    "C",
+    "Reuse",
+    "Simplification",
+    "Efficiency",
+    "Altitude",
+    "Conventions"
+  ],
+  "method": "All angles inline, pooled/deduplicated without verification. No subagents, tests, fixes, posting, installs, Git mutations or host actions. Stored HTTP command not executed.",
+  "findings": [
+    {
+      "file": "docs/acceptance/102-documentation-site.md",
+      "line": 17,
+      "summary": "Discoverability evidence still says the links are labeled publication pending.",
+      "failure_scenario": "The acceptance table contradicts the README/TUI labels and measured publication status.",
+      "resolution": "Updated the row to describe the published latest guide."
+    }
+  ],
+  "outcome": "One finding addressed with a small Markdown correction; no second independent review",
+  "limits": [
+    "Host/publication evidence supplied by implementer; no fresh public browser, volunteer or released-version validation"
+  ]
+}
