@@ -75,7 +75,8 @@ provider and nothing above the contract sees a Codex type (#48).
   `/tmp/codex-daemon-<uid>/` whatever `TMPDIR` says, beside the owner's own Codex's: the
   sandbox shows a folder of the session's own there, through a greywall fork feature, and
   without it the daemon refuses delivery naming that feature (#446). Where the approval
-  requests of a delivered turn go is unmeasured (#436).
+  requests of a delivered turn go is measured with a local fake model on 0.166.0 below;
+  signed-in acceptance and the older 0.161.0 target remain unmeasured (#436).
 
 ## Dependency edges
 
@@ -109,3 +110,64 @@ provider and nothing above the contract sees a Codex type (#48).
   Codex trusts every hook a launch subscribes, a delivered message's prompt reports through
   the bridge, a message joins a turn under way and a cancel interrupts it, a failed turn is
   followed to its outcome, and the launcher runs a whole conversation in tmux.
+
+## Delivered-turn approval conformance (#436)
+
+`tests/approval_routing.rs` exercises `Provider::deliver`, a recording Unix-socket proxy,
+the installed app-server and its real TUI in a private tmux server. Its ordinary tests
+check framing, connection identity, disconnect observation and helper-process bounds.
+The ignored isolated tests pin **0.166.0**, the installed version observed on 2026-11-02;
+they do not change `CONFORMANCE_VERSION` (0.161.0) or mark other capabilities tested.
+
+```sh
+CARGO_BUILD_JOBS=2 COCKPIT_CODEX_PROGRAM=/path/to/codex \
+  cargo nextest run --locked -p cockpit-codex --test approval_routing \
+  --run-ignored only -E 'not test(a_signed_in_)' --no-capture
+```
+
+`--no-capture` runs these serially. Both isolated scenarios passed on Linux: a delivered
+start and a delivered steer reach the TUI with `item/commandExecution/requestApproval`
+after their delivery connection closes. The TUI returns `cancel`, the server resolves
+that request, and the matching turn ends `interrupted`. Cockpit sends no approval response.
+The fake model only requests `/usr/bin/printf cockpit-approval-fixture`; it uses loopback
+HTTP, fresh homes, no auth files, and no account usage. The TUI's tool-less title helper is
+kept separate from the root conversation. The recorder does not modify traffic.
+Credential-free native regressions also check refusal of enabled MCP servers, inherited
+execution rules, custom providers, signed-out homes, project settings and custom keymaps.
+A configured notification sentinel
+does not run during the isolated turn. The probe records a disconnect only after shutting
+down its upstream socket and matches the connection carrying the specific start or steer.
+
+The signed-in test is **not part of this proof**. Run it only after explicit host approval
+(agents use `ask-to-run`), with the exact installed version and an existing signed-in home:
+
+```sh
+COCKPIT_CODEX_PROGRAM=/path/to/codex \
+COCKPIT_CODEX_SIGNED_IN_HOME=/absolute/signed-in/codex-home \
+COCKPIT_CODEX_ALLOW_SIGNED_IN=1 CARGO_BUILD_JOBS=2 \
+  cargo nextest run --locked -p cockpit-codex --test approval_routing \
+  --run-ignored only -E 'test(=a_signed_in_delivered_turn_reaches_the_real_tui)' --no-capture
+```
+
+This uses the home's configured model and account, sends an initial READY prompt and one
+delivered command request, and may generate a title. It consumes account usage and writes
+Codex conversation/state records in that home. It never copies credentials into fixtures.
+The work directory, other home directories, sockets and tmux server are temporary. Hooks,
+legacy notification commands, plugins, apps, memories and shell snapshots are disabled for
+these test processes. Before a thread starts, the probe refuses enabled MCP servers,
+inherited execution rules, nonempty project layers (including disabled ones), unsupported
+configuration layers, managed requirements, custom TUI keymaps, custom providers/endpoints,
+and a missing signed-in OpenAI account. `config/read` receives the actual work directory;
+the same setup guards apply to isolated tests, which also verify their local model URL.
+The live probe checks `account/read` without requesting a token refresh. Refusal requires a separate live-run
+plan, not edits to the owner's policy or credentials. The probe sets read-only sandboxing
+and human approval, only cancels through the TUI, and never accepts a command. Version and
+tmux commands have deadlines and bounded output, including teardown. Live transcripts
+and server diagnostics are withheld from test output. The environment marker is an opt-in,
+not a substitute for host authorization. No signed-in result is claimed until this command
+has actually run with approval; keep #436 open meanwhile.
+
+On 2026-11-02, the host approved one run of the compiled signed-in test on 0.166.0.
+It exited **101** with `custom TUI keymaps need a separate conformance plan; no turn
+started`. The configured home was not changed to bypass that guard. No model turn ran;
+signed-in routing remains unmeasured, so #436 stays open.
