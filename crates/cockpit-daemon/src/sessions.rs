@@ -29,6 +29,7 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
     let class = match command {
         Command::SessionList { .. }
         | Command::SessionSandbox { .. }
+        | Command::SessionSandboxRecord { .. }
         | Command::SandboxShow { .. } => WorkClass::Control,
         Command::SessionEnd { .. }
         | Command::SessionSleep { .. }
@@ -123,6 +124,19 @@ pub(crate) fn route(command: Command, sessions: Arc<Sessions>) -> Route {
             let evidence = sessions.sandbox_evidence(&id).await?;
             Ok(Reply::SessionSandbox {
                 evidence: evidence.map(|evidence| Box::new(evidence_view(evidence))),
+            })
+        }),
+        Command::SessionSandboxRecord {
+            session,
+            client_identity,
+            observations,
+        } => job(async move {
+            let id = SessionId::parse(&session)?;
+            let evidence = sessions
+                .record_sandbox_observations(&id, &client_identity, &observations)
+                .await?;
+            Ok(Reply::SessionSandbox {
+                evidence: Some(Box::new(evidence_view(evidence))),
             })
         }),
         Command::SandboxShow { dir, agent } => job(async move {
@@ -376,6 +390,13 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::InvalidMessage { .. }
         | Error::InvalidValue(_)
         | Error::ProviderNeeded { .. } => ErrorCode::InvalidArgument,
+        Error::SandboxObservations(cockpit_sandbox::ObservationError::Invalid(_)) => {
+            ErrorCode::InvalidArgument
+        }
+        Error::SandboxObservations(
+            cockpit_sandbox::ObservationError::StaleLaunch
+            | cockpit_sandbox::ObservationError::AlreadyRecorded,
+        ) => ErrorCode::Conflict,
         Error::UnknownSession { .. }
         | Error::UnknownProvider { .. }
         | Error::NotInProject { .. } => ErrorCode::NotFound,
