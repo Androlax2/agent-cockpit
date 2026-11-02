@@ -2,6 +2,9 @@
 #![cfg(target_os = "linux")]
 mod common;
 mod messaging_fixture;
+#[path = "real_daemon/proxy.rs"]
+mod proxy_fixture;
+use cockpit_client::{ClientError, Connection};
 use cockpit_codex::{Bridge, CONFORMANCE_VERSION, Codex};
 use cockpit_daemon::Wiring;
 use cockpit_protocol::{Command, ErrorCode};
@@ -68,6 +71,18 @@ exec "$@"
             cockpit_sandbox::PINNED_GREYPROXY_COMMIT
         ),
     );
+    let owned =
+        cockpit_sandbox::install::programs(&home.path().join("state/cockpit-test")).unwrap();
+    std::fs::create_dir_all(owned.greyproxy.parent().unwrap()).unwrap();
+    std::fs::set_permissions(
+        home.path().join("state"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    std::fs::copy(&greyproxy, owned.greyproxy).unwrap();
+    proxy_fixture::commands(home.path());
+    let proxy = proxy_fixture::configure(home.path(), "test")
+        .with_command_directory(&home.path().join("bin"));
     let engine = Greywall::detect(
         GreywallPrograms {
             greywall,
@@ -90,7 +105,8 @@ exec "$@"
             owner_uid: 1000,
             mount_sources: home.path().join("mounts"),
         },
-    );
+    )
+    .with_managed_proxy(Ok(proxy));
     wiring
 }
 
@@ -132,6 +148,26 @@ fn requests(dir: &Path) -> Vec<Value> {
         .collect()
 }
 
+async fn request_when_idle(
+    client: &Connection,
+    command: Command,
+) -> Result<cockpit_protocol::Reply, ClientError> {
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        let result = client.request(command.clone(), GENEROUS).await;
+        // The periodic lifecycle sweep uses the same operation lock. Busy is an
+        // explicit refusal before delivery, so this fixture can wait for it; never
+        // retry an unconfirmed delivery or any other error.
+        if matches!(&result, Err(ClientError::Daemon(error)) if error.code == ErrorCode::Busy)
+            && Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        } else {
+            return result;
+        }
+    }
+}
+
 #[tokio::test]
 async fn owner_send_and_cancel_reach_the_mapped_codex_socket_after_daemon_restart() {
     let home = Home::new();
@@ -145,40 +181,37 @@ async fn owner_send_and_cancel_reach_the_mapped_codex_socket_after_daemon_restar
             .unwrap()
             .starts_with("/tmp/codex-daemon-1000")
     );
-    client
-        .request(
-            Command::SessionSend {
-                session: session.id.clone(),
-                message: "first".into(),
-            },
-            GENEROUS,
-        )
-        .await
-        .unwrap();
+    request_when_idle(
+        &client,
+        Command::SessionSend {
+            session: session.id.clone(),
+            message: "first".into(),
+        },
+    )
+    .await
+    .unwrap();
     drop(client);
     home.stop(daemon).await;
     // The next daemon sees an engine without --mount. The running launch retains its mapping.
     let _daemon = home.start_wired(wiring(&home, false)).await;
     let client = home.connect().await;
-    client
-        .request(
-            Command::SessionSend {
-                session: session.id.clone(),
-                message: "second".into(),
-            },
-            GENEROUS,
-        )
-        .await
-        .unwrap();
-    client
-        .request(
-            Command::SessionCancel {
-                session: session.id.clone(),
-            },
-            GENEROUS,
-        )
-        .await
-        .unwrap();
+    request_when_idle(
+        &client,
+        Command::SessionSend {
+            session: session.id.clone(),
+            message: "second".into(),
+        },
+    )
+    .await
+    .unwrap();
+    request_when_idle(
+        &client,
+        Command::SessionCancel {
+            session: session.id.clone(),
+        },
+    )
+    .await
+    .unwrap();
     let actions: Vec<Value> = requests(&dir)
         .into_iter()
         .filter(|request| {
@@ -215,7 +248,7 @@ async fn owner_delivery_without_the_mount_feature_is_refused_without_connecting(
             session: session.id,
         },
     ] {
-        let error = refused(client.request(command, GENEROUS).await);
+        let error = refused(request_when_idle(&client, command).await);
         assert_eq!(error.code, ErrorCode::Refused);
         assert!(error.message.contains("--mount"), "{error:?}");
     }
@@ -311,16 +344,15 @@ async fn unsandboxed_codex_delivery_uses_the_direct_socket_and_old_context_is_re
             .unwrap()
             .is_symlink()
     );
-    client
-        .request(
-            Command::SessionSend {
-                session: session.id.clone(),
-                message: "direct".into(),
-            },
-            GENEROUS,
-        )
-        .await
-        .unwrap();
+    request_when_idle(
+        &client,
+        Command::SessionSend {
+            session: session.id.clone(),
+            message: "direct".into(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(
         requests(&dir)
             .iter()
@@ -344,14 +376,13 @@ async fn unsandboxed_codex_delivery_uses_the_direct_socket_and_old_context_is_re
     write.commit().await.unwrap();
     let before = requests(&dir);
     let error = refused(
-        client
-            .request(
-                Command::SessionCancel {
-                    session: session.id,
-                },
-                GENEROUS,
-            )
-            .await,
+        request_when_idle(
+            &client,
+            Command::SessionCancel {
+                session: session.id,
+            },
+        )
+        .await,
     );
     assert!(error.message.contains("restart the session"), "{error:?}");
     assert_eq!(requests(&dir), before);

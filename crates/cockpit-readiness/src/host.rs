@@ -105,6 +105,27 @@ pub(crate) fn sandbox(
     }
 }
 
+pub(crate) fn sandbox_proxy(
+    proxy: &Result<String, crate::ProxyUnavailable>,
+    setting: AgentSandbox,
+) -> Requirement {
+    if setting == AgentSandbox::Off {
+        return Requirement::available(
+            "sandbox proxy",
+            "not required: the owner disabled the sandbox",
+        );
+    }
+    match proxy {
+        Ok(detail) => Requirement::available("sandbox proxy", detail),
+        Err(failure) => Requirement::needs(
+            "sandbox proxy",
+            Status::MissingPrerequisite,
+            &failure.detail,
+            &failure.next,
+        ),
+    }
+}
+
 fn engine_detail(engine: &SandboxEngine) -> String {
     if engine.observations.is_empty() {
         return engine.engine.clone();

@@ -1373,6 +1373,11 @@ impl Sessions {
             tracing::warn!(session = %id, %reason, "an agent launches UNSANDBOXED");
         }
         if let Some(plan) = prepared.settings.clone() {
+            let sandbox = self.settings.sandbox.clone();
+            self.blocking("check the managed proxy", move || {
+                sandbox.require_proxy().map_err(Error::Sandbox)
+            })
+            .await?;
             self.blocking("write the sandbox settings", move || {
                 plan.write_settings().map_err(|source| Error::Io {
                     action: "write the sandbox settings",

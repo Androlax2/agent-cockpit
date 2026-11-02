@@ -577,7 +577,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit session revoke SESSION observe-sessions|message-sessions|start-sessions\n       \
                  cockpit session grants SESSION\n       \
                  cockpit session sandbox SESSION\n       \
-                 cockpit sandbox install\n       \
+                 cockpit sandbox install [--engines-only]\n       \
+                 cockpit sandbox status|restart|stop\n       \
                  cockpit sandbox show DIR [--agent NAME]\n       \
                  cockpit provider list\n       \
                  cockpit desktop-session import\n       \

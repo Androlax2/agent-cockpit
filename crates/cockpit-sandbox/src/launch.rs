@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use cockpit_config::{AgentSandbox, DesktopSession};
 
 use crate::{
-    AppliedRule, ClientIdentity, Enforcement, Evidence, Greywall, Platform, Profile,
-    ProfileRequest, Refusal, Secret,
+    AppliedRule, ClientIdentity, Enforcement, Evidence, Greywall, ManagedProxy, Platform, Profile,
+    ProfileRequest, ProxyError, Refusal, Secret,
 };
 
 /// What the daemon's own layout asks of every profile.
@@ -37,6 +37,7 @@ pub struct Sandbox {
     engine: Result<Greywall, String>,
     /// None only for [`Sandbox::unavailable`], whose caller never read the host.
     host: Option<HostPaths>,
+    proxy: Result<ManagedProxy, String>,
 }
 
 /// One launch's facts.
@@ -75,6 +76,7 @@ impl Sandbox {
             platform,
             engine,
             host: Some(host),
+            proxy: Err(ProxyError::NotConfigured.to_string()),
         }
     }
 
@@ -84,6 +86,7 @@ impl Sandbox {
             platform: Platform::detect(),
             engine: Err(reason.into()),
             host: None,
+            proxy: Err(ProxyError::NotConfigured.to_string()),
         }
     }
 
@@ -95,6 +98,39 @@ impl Sandbox {
     /// The engine, or why there is none.
     pub fn engine(&self) -> Result<&Greywall, &str> {
         self.engine.as_ref().map_err(String::as_str)
+    }
+
+    /// Attach this profile's lifecycle owner and protect its state even when the checkout
+    /// is an ancestor of the profile directory. The agent must not read the API token or
+    /// replace configuration that a later owner restart would execute.
+    pub fn with_managed_proxy(mut self, proxy: Result<ManagedProxy, ProxyError>) -> Self {
+        if let (Ok(proxy), Some(host)) = (&proxy, &mut self.host) {
+            for path in [proxy.data_dir(), proxy.unit_path()] {
+                host.denied.push(path.to_owned());
+                host.denied_write.push(path.to_owned());
+            }
+            // A writable unit directory also permits drop-ins or replacement launch agents.
+            if let Some(directory) = proxy.unit_path().parent() {
+                host.denied_write.push(directory.to_owned());
+            }
+        }
+        self.proxy = proxy.map_err(|error| error.to_string());
+        self
+    }
+
+    pub fn proxy(&self) -> Result<&ManagedProxy, &str> {
+        self.proxy.as_ref().map_err(String::as_str)
+    }
+
+    /// Bounded live health, called on a blocking worker before reserving a launch.
+    pub fn require_proxy(&self) -> Result<(), Refusal> {
+        let proxy = self
+            .proxy()
+            .map_err(|reason| Refusal::new("sandbox proxy", reason))?;
+        proxy
+            .launch_health(self.engine().ok())
+            .map(|_| ())
+            .map_err(|error| proxy.refusal(error))
     }
 
     /// The profile `request` gets on this host, without launching anything (the dry run).
@@ -172,7 +208,28 @@ impl Sandbox {
                 format!("no randomness for the proxy client identity: {error}"),
             )
         })?;
-        let plan = engine.plan(&profile, &client)?;
+        let mut plan = engine.plan(&profile, &client)?;
+        if let Ok(proxy) = self.proxy() {
+            plan.environment
+                .retain(|(key, _)| key != "GREYPROXY_DATA_HOME");
+            plan.environment
+                .push(("GREYPROXY_DATA_HOME".into(), proxy.data_dir().into()));
+            // The pinned management API uses localhost; traffic is explicitly IPv4 so
+            // another listener on ::1 cannot receive this launch's proxy credentials.
+            let at = plan.arguments.len() - 1; // Greywall's terminating `--`.
+            plan.arguments.splice(
+                at..at,
+                [
+                    "--proxy",
+                    "socks5://127.0.0.1:43052",
+                    "--http-proxy",
+                    "http://127.0.0.1:43051",
+                    "--dns",
+                    "127.0.0.1:43053",
+                ]
+                .map(OsString::from),
+            );
+        }
         let mut command_arguments = plan.arguments.clone();
         command_arguments.push(program.into_os_string());
         command_arguments.extend(arguments);
