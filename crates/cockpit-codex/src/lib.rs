@@ -25,7 +25,7 @@ use cockpit_provider_api::{
 
 /// The Codex version this adapter's conformance tests pin; capabilities are `tested` only on
 /// it.
-pub const CONFORMANCE_VERSION: &str = "0.161.0";
+pub const CONFORMANCE_VERSION: &str = "0.166.0";
 
 /// Every flag a launch without the bridge passes; the conformance test finds each in
 /// `codex --help` and `codex resume --help`. `--no-daemon` keeps the conversation out of

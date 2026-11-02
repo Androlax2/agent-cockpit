@@ -111,6 +111,7 @@ impl Routes {
                 queued: capabilities.messages_queued,
             },
             workflows: workflows::Context {
+                git: capabilities.git.clone(),
                 database: Arc::clone(&capabilities.database),
                 environment: environment.clone(),
                 sessions: Arc::clone(&capabilities.sessions),

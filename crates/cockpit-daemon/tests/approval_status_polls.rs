@@ -2,6 +2,7 @@
 //! carries a relaunched agent's unspent token still binds it, through the agent socket.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use cockpit_agent_channel::{LaunchToken, identity_of};

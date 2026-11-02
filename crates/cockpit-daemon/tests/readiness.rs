@@ -3,6 +3,7 @@
 //! start (stand-in Greywall, greyproxy and claude, and a stand-in `docker`), and exits 1
 //! only when a requirement blocks.
 
+mod candidate;
 mod real_daemon;
 
 use std::os::unix::fs::PermissionsExt;

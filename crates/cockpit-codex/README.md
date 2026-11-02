@@ -15,7 +15,7 @@ provider and nothing above the contract sees a Codex type (#48).
   on `SIGN_IN_CONFORMANCE_VERSION` (0.166.0), independently of the delivery capability pin.
 
 - **Capabilities with provenance.** Resume and, with the bridge, events, submit, cancel and
-  outcome are `tested` only when the running Codex is `CONFORMANCE_VERSION`; on any other or
+  outcome are `tested` only when the running Codex is `CONFORMANCE_VERSION` (0.166.0); on any other or
   unknown version they are `discovered` (unverified). Effort, compact, billing, commands,
   evidence, remote control and screen reading are untested and not reported.
 - **Launch with the bridge** (#407). The session runs `torlek-codex-session`, which starts
@@ -76,7 +76,8 @@ provider and nothing above the contract sees a Codex type (#48).
   sandbox shows a folder of the session's own there, through a greywall fork feature, and
   without it the daemon refuses delivery naming that feature (#446). Where the approval
   requests of a delivered turn go is measured with a local fake model on 0.166.0 below;
-  signed-in acceptance and the older 0.161.0 target remain unmeasured (#436).
+  signed-in delivered-start acceptance passed on Linux with 0.166.0
+  ([#436 receipt](../../docs/acceptance/436-codex-approval-routing.md)). Older versions are unverified.
 
 ## Dependency edges
 
@@ -91,7 +92,9 @@ provider and nothing above the contract sees a Codex type (#48).
 - `tests/launch.rs`, `tests/capabilities.rs`: the contract's words, and the app-server's and
   TUI's.
 - `tests/hooks.rs`: conformance with the payloads and hook input schemas pinned in
-  `tests/fixtures/codex-0.161.0/`, and the reports they become.
+  `tests/fixtures/codex-0.161.0/`, and the reports they become. Captures retain their
+  original provenance; [0.166.0 evidence](tests/fixtures/codex-0.166.0/README.md) records
+  the identical upstream schema blobs and separate native observations.
 - `tests/trust.rs`: the subscription's `--config` values and the trust hash.
 - `tests/bridge.rs`: the hook bridge as a process against a fake `torlek`.
 - `tests/clear.rs`: repeated clears, duplicate and late hooks, failed handoff retries and
@@ -105,19 +108,26 @@ provider and nothing above the contract sees a Codex type (#48).
   words, failed-turn reports, the server stopped with the TUI; a stopped test launcher
   leaves no fake process behind (#440).
 - `tests/discover.rs`: finding `codex` and its version.
-- `tests/conformance.rs` (ignored without an installed Codex; `-j 1`): the installed version
-  is the pinned one, its help documents every flag passed, it lists the `hooks` feature,
+- `tests/conformance.rs` (native checks ignored by default; `-j 1`): the installed version
+  is exactly 0.166.0, its help documents every flag passed, it lists the `hooks` feature,
   Codex trusts every hook a launch subscribes, a delivered message's prompt reports through
   the bridge, a message joins a turn under way and a cancel interrupts it, a failed turn is
-  followed to its outcome, and the launcher runs a whole conversation in tmux.
+  followed to its outcome, and the launcher completes and resumes the same conversation
+  in private tmux. Children have cleared environments and scratch homes; successful and
+  gated-error responses come from a loopback fixture without credentials or account use.
+  Ordinary tests check environment isolation and the local response scenarios.
+  Native terminal checks require Linux `/proc` for verified pane-group cleanup;
+  `a_failed_terminal_check_stops_descendants_that_ignore_hangup` exercises the
+  failure path with fake processes in private tmux, without running Codex.
 
 ## Delivered-turn approval conformance (#436)
 
 `tests/approval_routing.rs` exercises `Provider::deliver`, a recording Unix-socket proxy,
 the installed app-server and its real TUI in a private tmux server. Its ordinary tests
 check framing, connection identity, disconnect observation and helper-process bounds.
-The ignored isolated tests pin **0.166.0**, the installed version observed on 2026-11-02;
-they do not change `CONFORMANCE_VERSION` (0.161.0) or mark other capabilities tested.
+The ignored isolated tests pin **0.166.0**, the installed version observed on 2026-11-02.
+The separate capability suite now validates that same production pin; approval routing
+alone is not evidence for the other capabilities.
 
 ```sh
 CARGO_BUILD_JOBS=2 COCKPIT_CODEX_PROGRAM=/path/to/codex \
@@ -138,7 +148,9 @@ A configured notification sentinel
 does not run during the isolated turn. The probe records a disconnect only after shutting
 down its upstream socket and matches the connection carrying the specific start or steer.
 
-The signed-in test is **not part of this proof**. Run it only after explicit host approval
+The signed-in test is **separate from the account-free proof**. It passed on Linux
+on 2026-11-02; see the [acceptance receipt](../../docs/acceptance/436-codex-approval-routing.md).
+Run it only after explicit host approval
 (agents use `ask-to-run`), with the exact installed version and an existing signed-in home:
 
 ```sh
@@ -156,7 +168,7 @@ The work directory, other home directories, sockets and tmux server are temporar
 legacy notification commands, plugins, apps, memories and shell snapshots are disabled for
 these test processes. Before a thread starts, the probe refuses enabled MCP servers,
 inherited execution rules, nonempty project layers (including disabled ones), unsupported
-configuration layers, managed requirements, custom TUI keymaps, custom providers/endpoints,
+configuration layers, managed requirements, concrete TUI bindings/unbindings, custom providers/endpoints,
 and a missing signed-in OpenAI account. `config/read` receives the actual work directory;
 the same setup guards apply to isolated tests, which also verify their local model URL.
 The live probe checks `account/read` without requesting a token refresh. Refusal requires a separate live-run
@@ -164,10 +176,21 @@ plan, not edits to the owner's policy or credentials. The probe sets read-only s
 and human approval, only cancels through the TUI, and never accepts a command. Version and
 tmux commands have deadlines and bounded output, including teardown. Live transcripts
 and server diagnostics are withheld from test output. The environment marker is an opt-in,
-not a substitute for host authorization. No signed-in result is claimed until this command
-has actually run with approval; keep #436 open meanwhile.
+not a substitute for host authorization. Each additional run needs fresh approval;
+the recorded success covers its exact version, platform and configuration.
 
 On 2026-11-02, the host approved one run of the compiled signed-in test on 0.166.0.
 It exited **101** with `custom TUI keymaps need a separate conformance plan; no turn
 started`. The configured home was not changed to bypass that guard. No model turn ran;
-signed-in routing remains unmeasured, so #436 stays open.
+that receipt remains a failed attempt.
+
+Subsequent account-free resume checks showed that 0.166.0 serializes default keymap
+slots as null after a TUI session. The guard now accepts only object/null defaults;
+concrete bindings and arrays (including empty unbindings) remain refused. This repair
+does not reclassify the earlier refused signed-in attempt or authorize a retry.
+
+After PR #576 merged, a separately approved run refused inherited execution rules
+before a turn. Theo then selected a private validation home, signed in through the
+official CLI, and approved one new run: `edeea0394e55` passed (1 passed, 19 skipped,
+exit 0). The delivered start reached the persistent TUI, which returned `cancel`;
+the matching turn ended interrupted. Both earlier refusals remain historical.

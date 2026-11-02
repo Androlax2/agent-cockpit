@@ -11,6 +11,7 @@
 //! server. The periodic pass is left at the fixture's hour, so it never runs mid-test.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};

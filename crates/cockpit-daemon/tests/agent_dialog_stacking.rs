@@ -3,6 +3,7 @@
 //! answered. This test process plays the launched agent and its provider bridge.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use cockpit_agent_channel::{LaunchToken, ProcessIdentity, identity_of};

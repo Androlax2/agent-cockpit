@@ -2,6 +2,7 @@
 //! ended on the agent socket, and the owner reads it back. This test process plays the agent.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use cockpit_agent_channel::identity_of;

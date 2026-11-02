@@ -25,6 +25,21 @@ def ci_job(workflow, name):
 
 
 class CiBootstrapTests(unittest.TestCase):
+    def test_session_fixture_jobs_provision_a_tmux_with_the_reaping_fix(self):
+        # Lowest packaged tmux in the selected Ubuntu release, before security updates.
+        packaged_tmux = {"ubuntu-24.04": (3, 4), "ubuntu-26.04": (3, 6)}
+        for filename, name in [
+            ("ci.yml", "greenfield"),
+            ("release.yml", "gate"),
+            ("release.yml", "compatibility"),
+            ("release.yml", "responsiveness"),
+        ]:
+            with self.subTest(workflow=filename, job=name):
+                steps = ci_job((ROOT / ".github/workflows" / filename).read_text(), name)
+                runner = re.search(r"^    runs-on: (\S+)$", steps, re.MULTILINE)[1]
+                self.assertGreaterEqual(packaged_tmux[runner], (3, 6))
+                self.assertIn("apt-get install --no-install-recommends --yes tmux", steps)
+
     def test_hosted_runner_initializes_admission_before_quality_gate(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         setup = re.search(

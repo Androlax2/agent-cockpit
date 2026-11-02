@@ -1,4 +1,5 @@
 //! Owner-measured enforcement stays with the exact launch; a report cannot grant authority.
+mod candidate;
 mod real_daemon;
 
 use std::time::{Duration, Instant};

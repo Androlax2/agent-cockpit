@@ -9,6 +9,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+#[derive(Clone, Copy)]
+pub enum Scenario {
+    Approval,
+    Success,
+    Failure,
+}
+
 pub struct Model {
     pub url: String,
     calls: Arc<AtomicUsize>,
@@ -18,7 +25,15 @@ pub struct Model {
 }
 
 impl Model {
+    pub fn conformance(scenario: Scenario) -> Self {
+        Self::with_scenario(scenario)
+    }
+
     pub fn start() -> Self {
+        Self::with_scenario(Scenario::Approval)
+    }
+
+    fn with_scenario(scenario: Scenario) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -53,23 +68,36 @@ impl Model {
                                 calls.fetch_add(1, Ordering::SeqCst) + 1
                             };
                             assert!(call <= 4, "unexpected repeated model requests");
-                            if call == 2 {
+                            let gated = match scenario {
+                                Scenario::Approval => call == 2,
+                                Scenario::Failure => !helper,
+                                Scenario::Success => false,
+                            };
+                            if gated {
                                 let deadline = Instant::now() + Duration::from_secs(45);
                                 while !released.load(Ordering::SeqCst)
                                     && !stop.load(Ordering::SeqCst)
                                 {
                                     assert!(
                                         Instant::now() < deadline,
-                                        "approval fixture was never released"
+                                        "model fixture response was never released"
                                     );
                                     std::thread::sleep(Duration::from_millis(20));
                                 }
                             }
-                            let body = response(call);
-                            let reply = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                                body.len()
-                            );
+                            let reply = if matches!(scenario, Scenario::Failure) && !helper {
+                                let body = r#"{"error":{"message":"Local conformance failure","type":"invalid_request_error","code":"invalid_request"}}"#;
+                                format!(
+                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                    body.len()
+                                )
+                            } else {
+                                let body = response(call, matches!(scenario, Scenario::Approval));
+                                format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                    body.len()
+                                )
+                            };
                             let _ = stream.write_all(reply.as_bytes());
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -97,7 +125,7 @@ impl Model {
         }
     }
 
-    pub fn release_tool(&self) {
+    pub fn release_response(&self) {
         self.released.store(true, Ordering::SeqCst);
     }
 }
@@ -140,9 +168,9 @@ fn read_request(stream: &mut TcpStream) -> (String, Value) {
     }
 }
 
-fn response(call: usize) -> String {
+fn response(call: usize, approval: bool) -> String {
     let id = format!("fixture-response-{call}");
-    let item = if call >= 2 {
+    let item = if approval && call >= 2 {
         // Steering may discard an in-flight response and ask the model again.
         json!({"type":"function_call", "call_id":format!("fixture-command-{call}"), "name":"exec_command", "arguments":json!({
             "cmd":"/usr/bin/printf cockpit-approval-fixture", "sandbox_permissions":"require_escalated",
@@ -170,4 +198,47 @@ fn sse(events: &[Value]) -> String {
             )
         })
         .collect()
+}
+
+#[test]
+fn a_failure_scenario_returns_a_local_terminal_error() {
+    let model = Model::conformance(Scenario::Failure);
+    model.release_response();
+    let reply = fixture_request(&model);
+    assert!(reply.starts_with("HTTP/1.1 400 Bad Request"), "{reply}");
+}
+
+#[test]
+fn a_success_scenario_never_requests_a_tool() {
+    let model = Model::conformance(Scenario::Success);
+    model.release_response();
+    for _ in 0..2 {
+        let reply = fixture_request(&model);
+        assert!(reply.contains("Fixture ready."), "{reply}");
+        assert!(!reply.contains("function_call"), "{reply}");
+    }
+}
+
+#[cfg(test)]
+fn fixture_request(model: &Model) -> String {
+    let address = model
+        .url
+        .strip_prefix("http://")
+        .unwrap()
+        .strip_suffix("/v1")
+        .unwrap();
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let body = r#"{"tools":[{"type":"function"}]}"#;
+    write!(
+        stream,
+        "POST /v1/responses HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    reply
 }

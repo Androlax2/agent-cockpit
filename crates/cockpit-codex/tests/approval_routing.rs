@@ -1,5 +1,7 @@
 //! #436: transport observations are separate from signed-in acceptance.
 
+#[path = "common/approval_preflight.rs"]
+mod approval_preflight;
 #[path = "common/approval_probe.rs"]
 mod approval_probe;
 mod common;
@@ -12,6 +14,52 @@ use cockpit_codex::app_server::AppServer;
 use common::app_server::FakeAppServer;
 use recording_proxy::{Direction, RecordingProxy};
 use serde_json::json;
+
+fn keymap_preflight(keymap: serde_json::Value) -> Result<(), &'static str> {
+    let home = tempfile::tempdir().unwrap();
+    let socket = home.path().join("server.sock");
+    let _server = FakeAppServer::start(&socket, move |method, _| match method {
+        "config/read" => Ok(json!({
+            "config": {"notify": [], "approval_policy": "on-request", "approvals_reviewer": "user",
+                "sandbox_mode": "read-only", "tui": {"keymap": keymap}},
+            "layers": [{"name": {"type": "sessionFlags"}, "config": {}}]
+        })),
+        "configRequirements/read" => Ok(json!({"requirements": null})),
+        "account/read" => Ok(json!({"requiresOpenaiAuth": true, "account": {}})),
+        _ => panic!("unexpected preflight call: {method}"),
+    });
+    let mut client =
+        AppServer::connect(&socket, "keymap-preflight", Duration::from_secs(2)).unwrap();
+    approval_preflight::check(&mut client, home.path(), home.path(), None)
+}
+
+#[test]
+fn an_empty_effective_keymap_keeps_builtin_cancellation() {
+    for keymap in [
+        json!(null),
+        json!({}),
+        json!({"approval": {"approve": null, "cancel": null}, "list": {"cancel": null}}),
+    ] {
+        assert_eq!(keymap_preflight(keymap.clone()), Ok(()), "{keymap}");
+    }
+}
+
+#[test]
+fn configured_key_bindings_and_unbindings_remain_refused() {
+    for keymap in [
+        json!({"approval": {"approve": "esc"}}),
+        json!({"list": {"cancel": []}}),
+        json!({"global": {"submit": ["esc"]}}),
+        json!({"future_context": {"future_action": false}}),
+        json!([]),
+    ] {
+        assert_eq!(
+            keymap_preflight(keymap.clone()),
+            Err("custom TUI keymaps need a separate conformance plan; no turn started"),
+            "{keymap}"
+        );
+    }
+}
 
 #[test]
 #[ignore = "needs Codex 0.166.0 and tmux; isolated home and local fake model only"]

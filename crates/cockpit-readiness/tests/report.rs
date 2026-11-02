@@ -16,7 +16,7 @@ fn ready_host() -> HostFacts {
     HostFacts {
         profile: cockpit_config::Profile::parse("next").unwrap(),
         platform: Platform::Linux,
-        tmux: Ok("3.5".to_owned()),
+        tmux: Ok("3.6".to_owned()),
         sandbox_engine: Ok(SandboxEngine {
             engine: "greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)".to_owned(),
             observations: vec!["landlock: yes".to_owned()],
@@ -199,7 +199,7 @@ fn a_host_fact_decides_its_requirement_status() {
     let cases: Vec<(HostFacts, &str, Status)> = vec![
         (
             HostFacts {
-                tmux: Err("`tmux` is tmux 3.0; Torlek needs tmux 3.2 or newer".to_owned()),
+                tmux: Err("`tmux` is tmux 3.4; Torlek needs tmux 3.6 or newer".to_owned()),
                 ..ready_host()
             },
             "tmux",

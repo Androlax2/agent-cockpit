@@ -5,6 +5,7 @@
 //! Claude Code hook bridge.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use cockpit_agent_channel::{LaunchToken, identity_of};

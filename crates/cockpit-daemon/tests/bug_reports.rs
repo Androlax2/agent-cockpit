@@ -6,6 +6,7 @@
 //! handler panics in a job, and the fake provider runs an agent with a prompt.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};

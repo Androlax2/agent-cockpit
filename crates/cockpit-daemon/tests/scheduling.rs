@@ -7,6 +7,7 @@
 //! its idle window at zero, so each pass is the test's own.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};

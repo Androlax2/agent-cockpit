@@ -114,10 +114,30 @@ impl Server {
     /// Why: `docs/decisions/2026-11-01-308-tmux-config-on-a-running-server.md`.
     pub fn open(spec: ServerSpec) -> Result<Server, Error> {
         let version = check_version(&spec.tmux)?;
-        write_private_file(&spec.config_path, CONFIG)?;
         let server = Server { spec, version };
+        server.check_running_version()?;
+        write_private_file(&server.spec.config_path, CONFIG)?;
         server.apply_config_to_running_server()?;
         Ok(server)
+    }
+
+    fn check_running_version(&self) -> Result<(), Error> {
+        // Upgrading the binary does not replace the server that reaps existing agents.
+        let printed = match self.run_if_server(&words(&["display-message", "-p", "#{version}"])) {
+            Ok(Some(printed)) => printed,
+            Ok(None) => return Ok(()),
+            Err(error) if is_exiting_server(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let found = String::from_utf8_lossy(&printed).trim().to_string();
+        let printed = format!("tmux {found}");
+        if TmuxVersion::parse(&printed).is_some_and(|version| version.is_supported(&printed)) {
+            return Ok(());
+        }
+        Err(Error::UnsupportedServerVersion {
+            socket: self.spec.socket.clone(),
+            found,
+        })
     }
 
     /// `source-file` starts no server. An exiting one is left alone: the next server reads
@@ -642,7 +662,10 @@ fn parse_pane_line(line: &str) -> Option<PaneInfo> {
 /// tmux's two messages for a socket with no server behind it: no file, or a stale one.
 fn is_no_server(error: &Error) -> bool {
     matches!(error, Error::CommandFailed { stderr, .. }
-        if stderr.starts_with("no server running") || stderr.starts_with("error connecting to"))
+        if stderr.starts_with("no server running on ")
+            || (stderr.starts_with("error connecting to ")
+                && (stderr.trim_end().ends_with(" (No such file or directory)")
+                    || stderr.trim_end().ends_with(" (Connection refused)"))))
 }
 
 /// tmux's messages for a server that closed the connection as it exits: it ran nothing.

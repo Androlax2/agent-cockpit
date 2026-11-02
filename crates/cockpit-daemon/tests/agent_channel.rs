@@ -3,6 +3,7 @@
 //! act with their parent session's grants. This test process plays the launched agent.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::process::{Command as Process, Stdio};

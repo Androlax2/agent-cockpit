@@ -4,8 +4,8 @@
 //! The daemon reads the project's `workflow.preset` and the sender's provider capabilities;
 //! the rules live in `cockpit-workflows`.
 //!
-//! No request can claim a requirement passed: until `cockpit-verification` (#40) reports
-//! which ones did, a step with requirements completes only with the owner's waiver.
+//! No request can claim a requirement passed: verification supplies fresh passing check
+//! names for the current checkout; the owner may still waive requirements.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -34,6 +34,7 @@ use crate::tasks::{kind_view, refused, status_view as task_status_view, unblocke
 /// provider reports it can do.
 #[derive(Clone)]
 pub(crate) struct Context {
+    pub(crate) git: cockpit_projects::Git,
     pub(crate) database: Arc<Database>,
     pub(crate) environment: cockpit_config::Environment,
     pub(crate) sessions: Arc<cockpit_sessions::Sessions>,
@@ -41,14 +42,15 @@ pub(crate) struct Context {
 }
 
 /// The route for a workflow command; `routes.rs` sends only those here, after the socket
-/// rules. Agent requests run in the bulk lane like every agent request (#32).
+/// rules. Agent requests and evidence-bound completion run in bulk; completion may read
+/// Git and hash artifacts, so it must not hold a control worker (#328).
 pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
     if matches!(command, Command::WorkflowPresets) {
         return Route::Answer(Outcome::Ok(presets_reply()));
     }
-    let class = match peer {
-        Peer::Agent { .. } => WorkClass::Bulk,
-        Peer::Owner => WorkClass::Control,
+    let class = match (&command, &peer) {
+        (Command::WorkflowComplete { .. }, _) | (_, Peer::Agent { .. }) => WorkClass::Bulk,
+        (_, Peer::Owner) => WorkClass::Control,
     };
     let work = async move {
         match peer {
@@ -72,9 +74,19 @@ async fn owner(command: Command, context: &Context) -> Answer {
             let read = context.database.read().await?;
             read_reply(&read, &Actor::Owner, command).await
         }
+        command @ Command::WorkflowComplete { .. } => {
+            complete(context, &Actor::Owner, command, None).await
+        }
         command => {
             let write = context.database.write().await?;
-            let reply = dispatch(&write, &Actor::Owner, &Capabilities::none(), command).await?;
+            let reply = dispatch(
+                &write,
+                &Actor::Owner,
+                &Capabilities::none(),
+                command,
+                Vec::new(),
+            )
+            .await?;
             write.commit().await?;
             Ok(reply)
         }
@@ -99,6 +111,25 @@ async fn agent(command: Command, sender: Sender, context: &Context) -> Answer {
         return read_reply(&read, &actor, command).await;
     }
     drop(read);
+    if matches!(command, Command::WorkflowComplete { .. }) {
+        let session = match bound {
+            Some(session) => session,
+            None => {
+                let write = context.database.write().await?;
+                let session = sender.identify(&write, token.clone()).await?;
+                // Identification must commit with completion, never with a refused request.
+                write.rollback().await?;
+                session
+            }
+        };
+        return complete(
+            context,
+            &Actor::Session { session, project },
+            command,
+            Some(&sender),
+        )
+        .await;
+    }
     let is_begin = matches!(command, Command::WorkflowBegin { .. });
     let mut capabilities = match &bound {
         Some(session) if is_begin => Some(provider_capabilities(context, session).await?),
@@ -114,10 +145,145 @@ async fn agent(command: Command, sender: Sender, context: &Context) -> Answer {
         read_reply(&write, &actor, command).await?
     } else {
         let capabilities = capabilities.unwrap_or_else(Capabilities::none);
-        dispatch(&write, &actor, &capabilities, command).await?
+        dispatch(&write, &actor, &capabilities, command, Vec::new()).await?
     };
     write.commit().await?;
     Ok(reply)
+}
+
+/// Evaluates artifacts without a transaction, then rechecks the run, sender and database
+/// evidence under the writer that owns completion. Filesystem observations are snapshots,
+/// like `check gate`; a source change during evaluation invalidates the snapshot.
+async fn complete(
+    context: &Context,
+    actor: &Actor,
+    command: Command,
+    sender: Option<&Sender>,
+) -> Answer {
+    let Command::WorkflowComplete {
+        workflow, waive, ..
+    } = &command
+    else {
+        unreachable!("only completion uses verification");
+    };
+    let (run, checkout) = {
+        let read = context.database.read().await?;
+        let run = cockpit_workflows::run(&read, actor, RunId(*workflow)).await?;
+        let checkout = match sender {
+            Some(sender) => sender.project(&read).await?.map(|project| project.root),
+            None => project_checkout(&read, &run.project).await?,
+        };
+        (run, checkout)
+    };
+    let required = run
+        .current_step()
+        .map_or(&[][..], |step| step.definition.requirements);
+    // Let workflows retain its authority, state and waiver refusals before reading files.
+    let eligible = run.current_step().is_some_and(|step| match actor {
+        Actor::Owner => true,
+        Actor::Session { session, .. } => {
+            waive.is_empty() && step.session.as_ref() == Some(session)
+        }
+    });
+    let mut satisfied = Vec::new();
+    let mut snapshot = None;
+    if eligible
+        && run.blocked.is_none()
+        && required
+            .iter()
+            .any(|name| !waive.iter().any(|waived| waived == name))
+        && let Some(checkout) = &checkout
+    {
+        let checks: Vec<_> = crate::verification::declared_checks(&context.environment, checkout)
+            .await?
+            .iter()
+            .map(crate::verification::definition)
+            .filter(|check| required.contains(&check.name.as_str()) && !waive.contains(&check.name))
+            .collect();
+        if !checks.is_empty() {
+            let source = crate::verification::source(&context.git, checkout).await?;
+            let evidence = {
+                let read = context.database.read().await?;
+                cockpit_verification::evidence(&read, &run.project, &source, &checks).await?
+            };
+            let evaluated = evidence.clone();
+            let path = checkout.clone();
+            let report = tokio::task::spawn_blocking(move || evaluated.evaluate(&path))
+                .await
+                .map_err(|error| internal(&error))??;
+            let current_checks: Vec<_> =
+                crate::verification::declared_checks(&context.environment, checkout)
+                    .await?
+                    .iter()
+                    .map(crate::verification::definition)
+                    .filter(|check| {
+                        required.contains(&check.name.as_str()) && !waive.contains(&check.name)
+                    })
+                    .collect();
+            if source == crate::verification::source(&context.git, checkout).await?
+                && checks == current_checks
+            {
+                satisfied = report
+                    .checks
+                    .into_iter()
+                    .filter(|check| {
+                        check.status
+                            == cockpit_verification::CheckStatus::Checked(
+                                cockpit_verification::Outcome::Passed,
+                            )
+                    })
+                    .map(|check| check.name)
+                    .collect();
+                snapshot = Some((source, checks, evidence));
+            }
+        }
+    }
+    let write = context.database.write().await?;
+    if let Some(sender) = sender {
+        let session = sender.identify(&write, launch_token(&command)).await?;
+        let project = sender.project(&write).await?;
+        let same_actor = matches!(actor, Actor::Session { session: expected, project: expected_project }
+            if *expected == session && project.as_ref().map(|p| &p.name) == expected_project.as_ref());
+        if !same_actor || project.map(|p| p.root) != checkout {
+            return Err(completion_changed());
+        }
+    } else {
+        let current = project_checkout(&write, &run.project).await?;
+        if current != checkout {
+            return Err(completion_changed());
+        }
+    }
+    if cockpit_workflows::run(&write, actor, run.id).await? != run {
+        return Err(completion_changed());
+    }
+    if let Some((source, checks, evidence)) = snapshot
+        && cockpit_verification::evidence(&write, &run.project, &source, &checks).await? != evidence
+    {
+        return Err(completion_changed());
+    }
+    let reply = dispatch(&write, actor, &Capabilities::none(), command, satisfied).await?;
+    write.commit().await?;
+    Ok(reply)
+}
+
+async fn project_checkout(
+    connection: &Connection,
+    project: &str,
+) -> Result<Option<std::path::PathBuf>, Failed> {
+    match cockpit_projects::project_named(connection, project).await {
+        Ok(project) => Ok(Some(project.root)),
+        Err(cockpit_projects::Error::UnknownProject { .. }) => Ok(None),
+        Err(error) => Err(internal(&error)),
+    }
+}
+
+fn completion_changed() -> Failed {
+    refused(
+        ErrorCode::Conflict,
+        "workflow completion changed while evidence was evaluated".to_owned(),
+        "retry workflow complete against the current step and result",
+        UnblockedBy::Agent,
+    )
 }
 
 /// What the sender's provider reports, from the session the agent channel identified.
@@ -219,6 +385,7 @@ async fn dispatch(
     actor: &Actor,
     capabilities: &Capabilities,
     command: Command,
+    satisfied: Vec<String>,
 ) -> Answer {
     let now = now();
     let run = match command {
@@ -236,7 +403,7 @@ async fn dispatch(
         } => {
             let completion = Completion {
                 handoff: handoff_of(handoff),
-                satisfied: Vec::new(),
+                satisfied,
                 waived: waive,
             };
             cockpit_workflows::complete(write, actor, RunId(workflow), completion, now).await?

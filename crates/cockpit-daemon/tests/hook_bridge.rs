@@ -4,6 +4,7 @@
 //! `cockpit provider list` says whether each provider reports its agents' activity, which
 //! the release's clean-install check (`tools/release.py verify-install`) reads.
 
+mod candidate;
 mod real_daemon;
 
 use real_daemon::{Home, cockpit_program};

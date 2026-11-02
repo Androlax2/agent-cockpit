@@ -2,8 +2,6 @@
 
 #[path = "approval_model.rs"]
 mod approval_model;
-#[path = "approval_preflight.rs"]
-mod approval_preflight;
 #[path = "bounded_command.rs"]
 mod bounded_command;
 
@@ -18,8 +16,8 @@ use cockpit_provider_api::{Action, ConversationId, Delivered, Provider};
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde_json::json;
 
-use crate::common;
 use crate::recording_proxy::{Direction, Entry, RecordingProxy};
+use crate::{approval_preflight, common};
 
 const VERSION: &str = "0.166.0";
 const APPROVAL: &str = "item/commandExecution/requestApproval";
@@ -115,13 +113,17 @@ pub fn signed_out_is_refused() {
 }
 
 pub fn custom_keymap_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config.toml"),
-        "[tui.keymap]\n\"list.cancel\" = \"q\"\n\"approval.decline\" = \"n\"\n\"approval.approve\" = \"esc\"\n").unwrap();
-    refused(
-        dir.path(),
-        "custom TUI keymaps need a separate conformance plan",
-    );
+    for config in [
+        "[tui.keymap.list]\ncancel = \"q\"\n[tui.keymap.approval]\ndecline = \"n\"\napprove = \"esc\"\n",
+        "[tui.keymap.list]\ncancel = []\n",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), config).unwrap();
+        refused(
+            dir.path(),
+            "custom TUI keymaps need a separate conformance plan",
+        );
+    }
 }
 
 pub fn project_settings_are_refused() {
@@ -481,7 +483,7 @@ trust_level = "trusted"
         })
     });
     if let Some(model) = &model {
-        model.release_tool();
+        model.release_response();
     }
     wait("owner approval", &proxy, &tmux, |entries| {
         entries

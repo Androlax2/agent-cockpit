@@ -10,6 +10,7 @@
 //! session's agent (#329).
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};
@@ -151,6 +152,15 @@ impl Workflows {
     /// A `code-change` run on a new item whose first step `s0123456789ab` began and checkpointed, as
     /// its agent would have, before the daemon starts.
     async fn begun_with_checkpoint(&self, note: &str) -> i64 {
+        self.begun_preset_with_checkpoint(note, &cockpit_workflows::CODE_CHANGE)
+            .await
+    }
+
+    async fn begun_preset_with_checkpoint(
+        &self,
+        note: &str,
+        preset: &'static cockpit_workflows::Preset,
+    ) -> i64 {
         let database = self.home.open_state().await;
         let write = database.write().await.unwrap();
         let settings = cockpit_tasks::Settings {
@@ -173,15 +183,31 @@ impl Workflows {
         )
         .await
         .unwrap();
-        let run = cockpit_workflows::start(
-            &write,
-            &cockpit_tasks::Actor::Owner,
-            item.id,
-            &cockpit_workflows::CODE_CHANGE,
-            NOW,
-        )
-        .await
-        .unwrap();
+        let run =
+            cockpit_workflows::start(&write, &cockpit_tasks::Actor::Owner, item.id, preset, NOW)
+                .await
+                .unwrap();
+        if preset.name == "design-led" {
+            cockpit_workflows::complete(
+                &write,
+                &cockpit_tasks::Actor::Owner,
+                run.id,
+                cockpit_workflows::Completion {
+                    handoff: cockpit_workflows::Handoff {
+                        changed: "Approved the design".into(),
+                        checked: "design v1".into(),
+                        outcome: "approved".into(),
+                        needs_human: String::new(),
+                        evidence: Vec::new(),
+                    },
+                    satisfied: Vec::new(),
+                    waived: Vec::new(),
+                },
+                NOW,
+            )
+            .await
+            .unwrap();
+        }
         let session = cockpit_tasks::Actor::Session {
             session: SessionId::new("s0123456789ab").unwrap(),
             project: Some("app".to_owned()),
@@ -467,4 +493,304 @@ async fn the_packet_of_a_run_whose_item_was_finished_then_deleted_still_answers(
         (deleted.item, deleted.goal, deleted.status),
         (item, None, WorkflowStatusView::Running)
     );
+}
+
+/// Passing prose cannot replace receipts; stale or failed receipts cannot advance a step.
+#[tokio::test]
+async fn fresh_receipts_complete_check_but_stale_failed_and_claimed_evidence_refuse() {
+    evidence_scenario(&cockpit_workflows::CODE_CHANGE, "review").await;
+}
+
+#[tokio::test]
+async fn design_match_receipts_complete_design_led_verification() {
+    evidence_scenario(&cockpit_workflows::DESIGN_LED, "design-match").await;
+}
+
+async fn evidence_scenario(preset: &'static cockpit_workflows::Preset, second: &str) {
+    let mut config = format!(
+        "[[checks]]\nname = \"checks\"\ncommand = \"true\"\nartifacts = [\"artifact\"]\n\n[[checks]]\nname = \"{second}\"\ncommand = \"true\"\n"
+    );
+    config.push_str("\n[[checks]]\nname = \"unrelated\"\ncommand = \"true\"\n");
+    let mut workflows = prepared(&config).await;
+    let run = workflows
+        .begun_preset_with_checkpoint("implemented", preset)
+        .await;
+    let root = std::env::current_dir().unwrap();
+    std::fs::write(root.join(".gitignore"), "artifact\n").unwrap();
+    std::fs::write(root.join("artifact"), "evidence").unwrap();
+    for args in [
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    workflows.daemon = Some(workflows.home.start());
+    let token = workflows.token();
+    let complete = || Command::WorkflowComplete {
+        launch_token: token.clone(),
+        workflow: run,
+        handoff: handoff("Checked the implementation"),
+        waive: Vec::new(),
+    };
+    workflow(workflows.as_agent(complete()).await);
+    workflows.daemon.take().unwrap().kill();
+    // Begin check directly, like the fixture's initial step: no live session is needed.
+    {
+        let database = workflows.home.open_state().await;
+        let write = database.write().await.unwrap();
+        let actor = cockpit_tasks::Actor::Session {
+            session: SessionId::new("s0123456789ab").unwrap(),
+            project: Some("app".into()),
+        };
+        let capabilities = Capabilities::none()
+            .with(Capability::Events, Provenance::Discovered)
+            .with(Capability::Outcome, Provenance::Discovered);
+        cockpit_workflows::begin(
+            &write,
+            &actor,
+            cockpit_workflows::RunId(run),
+            &capabilities,
+            NOW,
+        )
+        .await
+        .unwrap();
+        write.commit().await.unwrap();
+    }
+    workflows.daemon = Some(workflows.home.start());
+    let mut waiver = complete();
+    if let Command::WorkflowComplete { waive, .. } = &mut waiver {
+        *waive = vec!["checks".into()];
+    }
+    assert_eq!(
+        refused(workflows.as_agent(waiver).await).code,
+        ErrorCode::NotAuthorized
+    );
+    let missing = refused(workflows.as_agent(complete()).await);
+    assert_eq!(missing.code, ErrorCode::Conflict);
+    assert!(missing.message.contains("checks"));
+    workflows
+        .as_agent(Command::CheckClaim {
+            launch_token: workflows.token(),
+            check: "checks".into(),
+            statement: "everything passed".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        refused(workflows.as_agent(complete()).await).code,
+        ErrorCode::Conflict
+    );
+    let source = cockpit_projects::Git::from_path()
+        .source_state(&root)
+        .unwrap();
+    let record = async |workflows: &mut Workflows, outcome| {
+        workflows.daemon.take().unwrap().kill();
+        let database = workflows.home.open_state().await;
+        let write = database.write().await.unwrap();
+        for name in ["checks", second, "unrelated"] {
+            cockpit_verification::record_receipt(
+                &write,
+                cockpit_verification::NewReceipt {
+                    project: "app".into(),
+                    run_id: format!("{name}-{outcome:?}"),
+                    check: cockpit_verification::CheckDefinition {
+                        name: name.into(),
+                        command: "true".into(),
+                        working_directory: ".".into(),
+                        environment: "native".into(),
+                    },
+                    source: cockpit_verification::Source {
+                        head: source.head.clone(),
+                        base: None,
+                        dirty: source.dirty.clone(),
+                    },
+                    artifacts: if name == "checks" {
+                        cockpit_verification::fingerprint(&root, &["artifact"]).unwrap()
+                    } else {
+                        Vec::new()
+                    },
+                    outcome,
+                    exit_code: Some(if outcome == cockpit_verification::Outcome::Passed {
+                        0
+                    } else {
+                        1
+                    }),
+                    output: String::new(),
+                    output_references: Vec::new(),
+                    started_at: NOW,
+                    finished_at: NOW,
+                },
+                NOW,
+            )
+            .await
+            .unwrap();
+        }
+        write.commit().await.unwrap();
+        drop(database);
+        workflows.daemon = Some(workflows.home.start());
+    };
+    for outcome in [
+        cockpit_verification::Outcome::Failed,
+        cockpit_verification::Outcome::Unknown,
+        cockpit_verification::Outcome::Unavailable,
+        cockpit_verification::Outcome::Blocked,
+        cockpit_verification::Outcome::Cancelled,
+    ] {
+        record(&mut workflows, outcome).await;
+        assert_eq!(
+            refused(workflows.as_agent(complete()).await).code,
+            ErrorCode::Conflict
+        );
+    }
+    record(&mut workflows, cockpit_verification::Outcome::Passed).await;
+    std::fs::write(root.join("artifact"), "changed evidence").unwrap();
+    assert!(
+        refused(workflows.as_agent(complete()).await)
+            .message
+            .contains("checks")
+    );
+    std::fs::write(root.join("artifact"), "evidence").unwrap();
+    std::fs::write(root.join("changed"), "new result").unwrap();
+    let stale = refused(workflows.as_agent(complete()).await);
+    assert_eq!(stale.code, ErrorCode::Conflict);
+    assert!(stale.message.contains("checks"));
+    std::fs::remove_file(root.join("changed")).unwrap();
+    let completed = workflow(workflows.as_agent(complete()).await);
+    assert_eq!(
+        completed.next,
+        if preset.name == "design-led" {
+            WorkflowNextView::Nothing
+        } else {
+            WorkflowNextView::AwaitPlacement { position: 3 }
+        }
+    );
+}
+
+/// Completion may hash a checkout: full bulk admission must refuse it before Git/artifact
+/// work starts, while ordinary owner workflow reads retain their control capacity.
+#[tokio::test]
+async fn owner_workflow_completion_uses_bulk_admission_while_reads_stay_responsive() {
+    use cockpit_daemon::{
+        Handler, Instance, LaneLimits, Limits, Options, Peer, Route, Routes, WorkClass,
+    };
+    use cockpit_protocol::{FeedPosition, Outcome, Welcome};
+    use std::sync::Arc;
+    use tokio::sync::{Notify, Semaphore};
+
+    struct HeldBulk {
+        routes: Routes,
+        started: Arc<Notify>,
+        release: Arc<Semaphore>,
+    }
+    impl Handler for HeldBulk {
+        fn route(&self, command: Command, welcome: &Welcome, peer: Peer) -> Route {
+            if matches!(command, Command::Subscribe { .. }) {
+                let started = Arc::clone(&self.started);
+                let release = Arc::clone(&self.release);
+                return Route::Run {
+                    class: WorkClass::Bulk,
+                    job: Box::pin(async move {
+                        started.notify_one();
+                        let _permit = release.acquire().await.unwrap();
+                        Outcome::Ok(Reply::Pong)
+                    }),
+                };
+            }
+            self.routes.route(command, welcome, peer)
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().canonicalize().unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Semaphore::new(0));
+    let daemon = Instance::acquire(Options {
+        runtime_dir: root.join("run"),
+        state_dir: root.join("state"),
+        limits: Limits {
+            bulk: LaneLimits {
+                workers: 1,
+                waiting: 0,
+            },
+            ..Limits::default()
+        },
+    })
+    .unwrap()
+    .start(common::wiring_in(&root, Vec::new()), |capabilities| {
+        Arc::new(HeldBulk {
+            routes: Routes::new(
+                capabilities,
+                cockpit_config::Environment {
+                    home: Some(root.join("home").into()),
+                    ..cockpit_config::Environment::default()
+                },
+            ),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        })
+    })
+    .await
+    .unwrap();
+    let client = Arc::new(
+        Connection::open(daemon.socket_path(), GENEROUS)
+            .await
+            .unwrap(),
+    );
+    let held_client = Arc::clone(&client);
+    let held = tokio::spawn(async move {
+        held_client
+            .request(
+                Command::Subscribe {
+                    from: FeedPosition::Snapshot,
+                },
+                GENEROUS,
+            )
+            .await
+    });
+    tokio::time::timeout(GENEROUS, started.notified())
+        .await
+        .unwrap();
+    let completion = client
+        .request(
+            Command::WorkflowComplete {
+                launch_token: None,
+                workflow: 1,
+                handoff: handoff("Checked the implementation"),
+                waive: Vec::new(),
+            },
+            GENEROUS,
+        )
+        .await;
+    let reads = client
+        .request(
+            Command::WorkflowList {
+                launch_token: None,
+                project: None,
+                all: false,
+            },
+            GENEROUS,
+        )
+        .await;
+    // Release even on a regression, so the fixture leaves no held task behind.
+    release.add_permits(1);
+    held.await.unwrap().unwrap();
+    let refusal = refused(completion);
+    assert_eq!(refusal.code, ErrorCode::Busy);
+    assert!(refusal.message.contains("bulk"));
+    assert!(matches!(reads, Ok(Reply::Workflows { .. })));
+    drop(daemon);
 }

@@ -31,7 +31,7 @@ fn each_requirement_carries_its_status_and_only_a_next_action_it_has() {
             RequirementView {
                 name: "tmux".to_owned(),
                 status: ReadinessStatusView::Available,
-                detail: "tmux 3.5".to_owned(),
+                detail: "tmux 3.6".to_owned(),
                 next: None,
             },
             RequirementView {
@@ -50,7 +50,7 @@ fn each_requirement_carries_its_status_and_only_a_next_action_it_has() {
         json!({
             "kind": "readiness",
             "requirements": [
-                {"name": "tmux", "status": "available", "detail": "tmux 3.5"},
+                {"name": "tmux", "status": "available", "detail": "tmux 3.6"},
                 {"name": "docker", "status": "missing-prerequisite",
                  "detail": "no engine answered", "next": "start a Docker engine"}
             ]

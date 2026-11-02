@@ -2,6 +2,7 @@
 //! a sandboxed agent cannot register a project, take a checkout, sweep or push.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use cockpit_client::ClientError;

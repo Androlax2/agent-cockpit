@@ -214,7 +214,14 @@ def convert(store, code):
     check_app(app)
 
 
-def registration_server(store):
+def registration_server(store, *, make_manifest=None, exchange=None, description=None):
+    make_manifest = make_manifest or manifest
+    exchange = exchange or convert
+    description = description or (
+        "Signed in as Androlax2: register a private App with contents and "
+        "pull-request write access. Installation is a separate confirmation."
+    )
+
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             self.request.settimeout(5)
@@ -241,14 +248,14 @@ def registration_server(store):
                 self.reply(403, "Unexpected host.")
                 return
             if parsed.path == "/start/" + self.server.state and not self.server.consumed:
-                payload = html.escape(json.dumps(manifest(self.server.callback)), quote=True)
+                registration = make_manifest(self.server.callback)
+                payload = html.escape(json.dumps(registration), quote=True)
                 self.reply(
                     200,
-                    "<!doctype html><title>Register Cockpit Release App</title>"
+                    f"<!doctype html><title>Register {html.escape(registration['name'])}</title>"
                     f'<form method="post" action="https://github.com/settings/apps/new?state={self.server.state}">'
                     f'<input type="hidden" name="manifest" value="{payload}">'
-                    "<p>Signed in as Androlax2: register a private App with contents and "
-                    "pull-request write access. Installation is a separate confirmation.</p>"
+                    f"<p>{html.escape(description)}</p>"
                     "<button>Continue to GitHub</button></form>",
                 )
                 return
@@ -268,7 +275,7 @@ def registration_server(store):
                 return
             self.server.consumed = True
             try:
-                convert(store, code[0])
+                exchange(store, code[0])
                 self.reply(
                     200,
                     "Registration saved privately. Return to the setup command for installation.",

@@ -7,6 +7,7 @@
 //! private tmux server. Its agent logs one line per launch, then sleeps until stopped.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::ffi::OsString;

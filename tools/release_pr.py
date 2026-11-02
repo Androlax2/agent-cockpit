@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Prepare a local release proposal, then publish an immutable draft without rewriting history.
 
-Run prepare only in a disposable, clean checkout of --base. Publish requires the
-repository-scoped Release App token through GH_TOKEN. Neither command creates tags/releases.
+Run prepare only in a disposable, clean checkout of --base. Publish uses a
+read/PR-write proposal App token through GH_TOKEN and a Git-only PROPOSAL_GIT_SSH_KEY.
+Neither command creates tags/releases.
 """
 
 import argparse
@@ -10,6 +11,7 @@ import copy
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -20,7 +22,12 @@ import release
 
 REPOSITORY = "Androlax2/agent-cockpit"
 ORIGIN = f"https://github.com/{REPOSITORY}.git"
-BOT = "agent-cockpit-release[bot]"
+BOT = "agent-cockpit-proposal[bot]"
+BOT_ID = 351595931
+# Pinned from https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+GITHUB_HOST_KEY = (
+    "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n"
+)
 ALLOWED = {"Cargo.toml", "Cargo.lock", "CHANGELOG.md"}
 SHA = r"[0-9a-f]{40}"
 MARKER = re.compile(rf"<!-- cockpit-release-proposal v1 base=({SHA}) head=({SHA}) -->")
@@ -52,12 +59,18 @@ def run(args, cwd, *, env=None, input_text=None, ok=(0,)):
 
 
 def git(*args, cwd, env=None, ok=(0,)):
-    return run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd, env=env, ok=ok)
+    return run(
+        ["git", "-c", "core.hooksPath=/dev/null", *args],
+        cwd,
+        env=generation_environment() if env is None else env,
+        ok=ok,
+    )
 
 
 def clean_environment():
     env = dict(os.environ)
     env.pop("GH_DEBUG", None)
+    env.pop("PROPOSAL_GIT_SSH_KEY", None)
     env.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1")
     return env
 
@@ -183,8 +196,8 @@ def prepare(base, cwd, channel):
     env.update(
         GIT_AUTHOR_NAME=BOT,
         GIT_COMMITTER_NAME=BOT,
-        GIT_AUTHOR_EMAIL=f"{BOT}@users.noreply.github.com",
-        GIT_COMMITTER_EMAIL=f"{BOT}@users.noreply.github.com",
+        GIT_AUTHOR_EMAIL=f"{BOT_ID}+{BOT}@users.noreply.github.com",
+        GIT_COMMITTER_EMAIL=f"{BOT_ID}+{BOT}@users.noreply.github.com",
         GIT_AUTHOR_DATE=f"@{stamp} +0000",
         GIT_COMMITTER_DATE=f"@{stamp} +0000",
     )
@@ -212,6 +225,73 @@ def remote_git(*args, cwd):
         cwd=cwd,
         env=clean_environment(),
     )
+
+
+def push_proposal(base, head, cwd):
+    if not re.fullmatch(SHA, base) or not re.fullmatch(SHA, head):
+        raise Refusal("proposal push needs full base and head commit SHAs")
+    private_key = os.environ.get("PROPOSAL_GIT_SSH_KEY")
+    if not private_key:
+        raise Refusal("proposal push requires PROPOSAL_GIT_SSH_KEY")
+    environment = clean_environment()
+    for name in ("GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"):
+        environment.pop(name, None)
+    if git(
+        "config",
+        "--name-only",
+        "--get-regexp",
+        r"^url\..*\.(insteadof|pushinsteadof)$",
+        cwd=cwd,
+        env=environment,
+        ok=(0, 1),
+    ):
+        raise Refusal("proposal push refuses Git URL rewrites")
+    with tempfile.TemporaryDirectory(prefix="proposal-git-") as directory:
+        key_path = Path(directory) / "key"
+        key_path.touch(mode=0o600)
+        key_path.write_text(private_key.rstrip("\n") + "\n")
+        known_hosts = Path(directory) / "known_hosts"
+        known_hosts.write_text(GITHUB_HOST_KEY)
+        environment.update(
+            GIT_SSH_VARIANT="ssh",
+            GIT_SSH_COMMAND=shlex.join(
+                [
+                    "ssh",
+                    "-F",
+                    "/dev/null",
+                    "-i",
+                    str(key_path),
+                    "-o",
+                    "IdentitiesOnly=yes",
+                    "-o",
+                    "IdentityAgent=none",
+                    "-o",
+                    "StrictHostKeyChecking=yes",
+                    "-o",
+                    f"UserKnownHostsFile={known_hosts}",
+                    "-o",
+                    "GlobalKnownHostsFile=/dev/null",
+                    "-o",
+                    "HostKeyAlgorithms=ssh-ed25519",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ForwardAgent=no",
+                    "-o",
+                    "ConnectTimeout=30",
+                ]
+            ),
+        )
+        git(
+            "-c",
+            "credential.helper=",
+            "push",
+            "--no-follow-tags",
+            f"git@github.com:{REPOSITORY}.git",
+            f"{head}:refs/heads/release-plz/{base}",
+            cwd=cwd,
+            env=environment,
+        )
 
 
 def remote_head(branch, cwd):
@@ -257,6 +337,7 @@ def owned_draft(pr):
         and pr["state"] == "open"
         and pr["draft"]
         and pr["user"]["login"] == BOT
+        and pr["user"]["id"] == BOT_ID
         and pr["user"]["type"] == "Bot"
         and pr["head"]["repo"] is not None
         and pr["head"]["repo"]["full_name"] == REPOSITORY
@@ -346,7 +427,9 @@ def verify_replacement(number, branch, head, base, cwd):
 def comment_once(number, body):
     pages = api("GET", endpoint(f"issues/{number}/comments?per_page=100"), paginate=True)
     if not any(
-        comment["body"] == body and comment["user"]["login"] == BOT
+        comment["body"] == body
+        and comment["user"]["login"] == BOT
+        and comment["user"]["id"] == BOT_ID
         for page in pages
         for comment in page
     ):
@@ -384,7 +467,7 @@ def publish(base, cwd):
         raise Refusal("existing draft branch is missing; do not recreate it silently")
     if not remote:
         current_main(base)
-        remote_git("push", "origin", f"{head}:refs/heads/{branch}", cwd=cwd)
+        push_proposal(base, head, cwd)
         if remote_head(branch, cwd) != head:
             raise Refusal("normal push did not establish the expected proposal branch")
     current_main(base)

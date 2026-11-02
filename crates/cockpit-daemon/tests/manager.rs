@@ -7,6 +7,7 @@
 //! change apart; both use `cockpit_provider_api::fake`).
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::fs::Permissions;

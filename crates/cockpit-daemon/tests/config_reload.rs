@@ -2,6 +2,7 @@
 //! settings changed on disk reach the running daemon at `cockpit config reload`, which
 //! prints what it applied; an invalid file is refused and the settings in force stay.
 
+mod candidate;
 mod real_daemon;
 
 use cockpit_client::{ClientError, Connection};

@@ -3,6 +3,7 @@
 //! request waiting for a root (#279's wait is gone).
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 mod real_daemon;
 
