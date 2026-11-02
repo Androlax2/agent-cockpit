@@ -49,6 +49,7 @@ Contribution expectations live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 | Task | Skill |
 | --- | --- |
+| Coordinate and deliver repository work | [repo-workflow](.agents/skills/repo-workflow/SKILL.md) |
 | Choose checks and verify a change | [verify-cockpit](.agents/skills/verify-cockpit/SKILL.md) |
 | Apply completed work through host review | [apply-cockpit](.agents/skills/apply-cockpit/SKILL.md) |
 
