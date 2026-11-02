@@ -1,0 +1,14 @@
+# Local version calculation only. tools/release_pr.py owns draft PRs; no release/tag path.
+[workspace]
+git_only = true
+repo_url = "https://github.com/Androlax2/agent-cockpit"
+git_tag_name = "v{{ version }}"
+git_tag_enable = false
+git_release_enable = false
+publish = false
+changelog_update = false
+semver_check = false
+dependencies_update = false
+features_always_increment_minor = false
+pr_branch_prefix = "release-plz/"
+pr_draft = true

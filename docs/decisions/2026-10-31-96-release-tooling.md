@@ -22,8 +22,8 @@ fits Cockpit's release policy worse than a short workflow of our own. The policy
   #120 removes them; then `cargo update --workspace` and a `--locked` build.
 - **Bundle layout and manifest.** `cockpit-v<version>-<platform>.tar.gz` holds
   `cockpit-v<version>-<platform>/bin/{cockpit,cockpit-daemon}`, `share/cockpit/manifest.json`,
-  `LICENSE` and `README.md`, not `CHANGELOG.md`, which lags the tag until release-plz
-  regenerates it (#101; the notes are on the Release); owner and timestamps are zeroed so a rebuild gives the
+  `LICENSE` and `README.md`, not `CHANGELOG.md` (the notes are on the Release; #192
+  generates the review draft changelog); owner and timestamps are zeroed so a rebuild gives the
   same bytes (the gzip header's time too). The manifest (schema 1) names version, channel, platform, source revision,
   helpers (`{}`) and instruction bundle (`null`) until #64 and #97 ship them, and the SHA-256 of
   every file. `cockpit version --all` prints it from `<prefix>/share/cockpit/manifest.json`,
@@ -38,10 +38,11 @@ fits Cockpit's release policy worse than a short workflow of our own. The policy
   lists report 13's other checks with no job yet; `publish` refuses while one applies to the
   channel, so the release stays a draft with every asset and attestation. An alpha skips only
   the upgrade check, as the policy says.
-- **git-cliff now, release-plz later.** `cliff.toml` groups conventional subjects by type and
+- **git-cliff notes and release-plz proposals.** `cliff.toml` groups conventional subjects by type and
   puts the earlier, unconventional ones under "Other" rather than dropping them. release-plz
-  joins with the first stable release PR (#101); before it, `next-prerelease` refuses once a
-  stable tag exists instead of guessing the release PR's version. Alpha notes append
+  now generates local draft proposals under #192; its history-preserving orchestration is
+  recorded in [the later decision](2026-11-02-192-history-preserving-proposals.md).
+  Pre-release calculation follows the newer #389 bootstrap rule. Alpha notes append
   `docs/KNOWN-GAPS.md` (#97); the workflow refuses an alpha without it.
 - **Only tags are attested.** Dry runs (pull requests, nightlies, dispatches) never get
   `id-token` or `attestations: write`, so no unreleased build verifies as this repository's.
