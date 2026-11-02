@@ -33,7 +33,7 @@ pub fn check(
     }
     if config
         .get("tui")
-        .is_some_and(|tui| !tui["keymap"].is_null())
+        .is_some_and(|tui| has_keymap_override(&tui["keymap"]))
     {
         return Err("custom TUI keymaps need a separate conformance plan; no turn started");
     }
@@ -124,6 +124,16 @@ pub fn check(
         return Err("a signed-in OpenAI account is required; no turn started");
     }
     Ok(())
+}
+
+fn has_keymap_override(value: &Value) -> bool {
+    // 0.166.0 serializes unused binding slots as null after a TUI has run.
+    // Arrays (including empty unbindings) and every concrete value are overrides.
+    match value {
+        Value::Null => false,
+        Value::Object(fields) => fields.values().any(has_keymap_override),
+        _ => true,
+    }
 }
 
 fn no_rules(folder: &Path) -> Result<(), &'static str> {

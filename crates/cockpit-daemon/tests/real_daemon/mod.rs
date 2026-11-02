@@ -241,7 +241,7 @@ impl Home {
             ),
             // Answering only `--version`, as the adapters' conformance versions, so a real
             // `codex` or `opencode` on the host never answers (#411, #415).
-            ("codex", "#!/bin/sh\necho 'codex-cli 0.161.0'\n".to_owned()),
+            ("codex", "#!/bin/sh\necho 'codex-cli 0.166.0'\n".to_owned()),
             ("opencode", "#!/bin/sh\necho '1.19.5'\n".to_owned()),
         ] {
             let program = match name {

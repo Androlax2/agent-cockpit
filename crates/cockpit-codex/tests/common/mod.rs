@@ -29,9 +29,8 @@ pub fn codex() -> Codex {
 }
 
 pub fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(format!("codex-{CONFORMANCE_VERSION}"))
+    // Captures retain their original provenance when the capability pin advances.
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex-0.161.0")
 }
 
 pub fn fixture(name: &str) -> String {
