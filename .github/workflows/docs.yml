@@ -131,13 +131,7 @@ jobs:
       - name: Assemble the complete version set
         env:
           VERSIONS: ${{ needs.catalog.outputs.versions }}
-        run: |
-          mkdir versions
-          for source in builds/docs-*; do
-            name=${source##*/docs-}
-            mv -- "$source" "versions/$name"
-          done
-          node site/scripts/versions.mjs assemble versions pages "$VERSIONS"
+        run: node site/scripts/versions.mjs assemble builds pages "$VERSIONS"
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: pages

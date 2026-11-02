@@ -34,9 +34,14 @@ export function assemble(builds, out, names) {
     throw new Error("Build and output directories must not overlap");
   if (new Set(names).size !== names.length || names[0] !== "latest")
     throw new Error("Catalog must start with latest and contain unique versions");
+  const flat = existsSync(path.join(builds, "build.json"));
+  if (flat && names.length !== 1)
+    throw new Error("A flat artifact cannot contain multiple versions");
+  const sources = new Map();
   for (const name of names) {
     validateVersion(name);
-    const source = path.join(builds, name);
+    // download-artifact v8 flattens a sole match, even with merge-multiple false.
+    const source = flat ? builds : path.join(builds, `docs-${name}`);
     if (
       !existsSync(path.join(source, "index.html")) ||
       !existsSync(path.join(source, "build.json"))
@@ -49,12 +54,12 @@ export function assemble(builds, out, names) {
       JSON.stringify(manifest.versions) !== JSON.stringify(names)
     )
       throw new Error(`Build catalog/prefix mismatch: ${name}`);
+    sources.set(name, source);
   }
   // Validate the complete catalog before replacing an assembled tree.
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
-  for (const name of names)
-    cpSync(path.join(builds, name), path.join(out, name), { recursive: true });
+  for (const [name, source] of sources) cpSync(source, path.join(out, name), { recursive: true });
   writeFileSync(path.join(out, ".nojekyll"), "");
   writeFileSync(path.join(out, "versions.json"), `${JSON.stringify(names)}\n`);
   writeFileSync(

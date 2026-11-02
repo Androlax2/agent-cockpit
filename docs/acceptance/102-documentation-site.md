@@ -62,3 +62,11 @@ and the real static site export passed. One isolation fixture failed because its
 the deliberately cleared PATH. The fixture now names the running Node executable
 with `process.execPath`; production environment isolation remains unchanged. All
 eight focused content tests pass locally; the subsequent hosted outcome is recorded in PR #507 checks.
+
+The complete site gate passed in [run 41386339863](https://github.com/Androlax2/agent-cockpit/actions/runs/41386339863).
+Assembly exposed the pinned download action's flat layout for a single artifact,
+confirmed in its [exact source](https://github.com/actions/download-artifact/blob/9000827ccba6bdab643e8b6fd33ac0654aef8333/src/download-artifact.ts).
+The assembler now accepts that layout and the named directories used for multiple
+artifacts. A real CLI fixture with spaces in its paths passes. Downloading this
+run's actual artifact, assembling it locally and checking its complete repository
+prefix also passed: 15,186 links, 901 unique, zero errors. No publication occurred.

@@ -74,6 +74,31 @@
       "command": "Parse docs.yml with installed yaml and bash -n each run step",
       "exit_code": 0,
       "result": "6 Bash run steps syntax-checked without executing installations/host commands"
+    },
+    {
+      "command": "node --test site/tests/versions.test.mjs",
+      "exit_code": 0,
+      "result": "3 passed, including CLI with a spaced fixture path and flat single artifact; new cases failed before the fix"
+    },
+    {
+      "command": "gh run download 41386339863 --repo Androlax2/agent-cockpit --name docs-latest --dir /tmp/cockpit-102-ci-artifact-eef8dbb",
+      "exit_code": 0,
+      "result": "Downloaded this PR hosted build artifact into a temporary task directory"
+    },
+    {
+      "command": "node site/scripts/versions.mjs assemble /tmp/cockpit-102-ci-artifact-eef8dbb /tmp/cockpit-102-ci-pages-eef8dbb '[\"latest\"]' ",
+      "exit_code": 0,
+      "result": "Actual hosted static output assembled successfully"
+    },
+    {
+      "command": "node site/scripts/links.mjs /tmp/cockpit-102-ci-pages-eef8dbb /agent-cockpit/",
+      "exit_code": 0,
+      "result": "Assembled actual hosted artifact: 15,186 links, 901 unique, zero errors"
+    },
+    {
+      "command": "make site-ci",
+      "exit_code": 0,
+      "result": "After artifact-layout fix: 14 tests, zero failures/skips, CLI build, both type projects and rendered links passed"
     }
   ],
   "unavailable_checks": [
@@ -140,6 +165,15 @@
       "stage": "Isolated reference fake-binary test; actual CLI/site build passed, 12 of 13 tests passed",
       "error": "Reference command --help failed: env: 'node': No such file or directory",
       "fix": "Use process.execPath in the fake executable shebang. Production reference generation keeps HOME temporary and PATH fixed to /usr/bin:/bin; no environment isolation was relaxed."
+    },
+    {
+      "run": 41386339863,
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41386339863",
+      "conclusion": "failure",
+      "stage": "Assembly; the complete site gate and artifact upload passed",
+      "error": "mv: cannot stat 'builds/docs-*': No such file or directory",
+      "cause": "Pinned actions/download-artifact v8 flattens a sole matching artifact, even when merge-multiple is false. Verified its source at 9000827ccba6bdab643e8b6fd33ac0654aef8333, src/download-artifact.ts (artifacts.length === 1).",
+      "fix": "Assembler accepts the actual flat-single or named-multiple artifact layout; no unvalidated shell renaming. Real CLI fixture and downloaded hosted artifact both pass."
     }
   ],
   "host_bootstrap_push": {
