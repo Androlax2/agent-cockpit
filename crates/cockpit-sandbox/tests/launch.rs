@@ -109,6 +109,7 @@ fn a_hosts_denied_path_reaches_the_profile() {
         HostPaths {
             read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
             denied: vec![PathBuf::from("/run/user/1000/cockpit/daemon.sock")],
+            denied_write: Vec::new(),
             owner_uid: OWNER_UID,
             mount_sources: PathBuf::from(MOUNT_SOURCES),
         },

@@ -35,6 +35,7 @@ pub fn no_host_paths() -> HostPaths {
     HostPaths {
         read_only: Vec::new(),
         denied: Vec::new(),
+        denied_write: Vec::new(),
         owner_uid: OWNER_UID,
         mount_sources: PathBuf::from(MOUNT_SOURCES),
     }
@@ -122,6 +123,7 @@ pub fn profile_request(working_dir: &str) -> ProfileRequest {
         owner_uid: OWNER_UID,
         read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
         denied: vec![PathBuf::from("/home/owner/.local/state/cockpit/cockpit.db")],
+        denied_write: Vec::new(),
         allow_hosts: Vec::new(),
         environment: vec![("PATH".into(), "/usr/bin".into())],
         secrets: vec![launch_token()],

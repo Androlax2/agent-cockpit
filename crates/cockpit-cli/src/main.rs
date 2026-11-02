@@ -39,6 +39,7 @@ mod profile;
 mod projects;
 mod queue;
 mod resources;
+mod sandbox_install;
 mod sessions;
 mod todo;
 mod tui;
@@ -89,6 +90,7 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit session revoke SESSION observe-sessions|message-sessions|start-sessions
        cockpit session grants SESSION
        cockpit session sandbox SESSION
+       cockpit sandbox install
        cockpit sandbox show DIR [--agent NAME]
        cockpit provider list
        cockpit desktop-session import
@@ -232,6 +234,8 @@ fn main() -> ExitCode {
             Ok(command) => sessions::run(command),
             Err(problem) => usage_error(Some(problem)),
         },
+        [Some("sandbox"), Some("install")] => sandbox_install::run(&arguments[2..])
+            .unwrap_or_else(|problem| usage_error(Some(problem))),
         [Some("sandbox"), ..] => match sessions::parse_sandbox(&arguments[1..]) {
             Ok(command) => sessions::run(command),
             Err(problem) => usage_error(Some(problem)),

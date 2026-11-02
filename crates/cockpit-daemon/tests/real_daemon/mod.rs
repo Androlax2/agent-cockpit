@@ -239,9 +239,19 @@ impl Home {
             ("codex", "#!/bin/sh\necho 'codex-cli 0.161.0'\n".to_owned()),
             ("opencode", "#!/bin/sh\necho '1.19.5'\n".to_owned()),
         ] {
-            let program = home.path().join("bin").join(name);
+            let program = match name {
+                "greywall" => home.path().join("engine-fixtures/greywall"),
+                "greyproxy" => home.path().join("engine-fixtures/greyproxy"),
+                _ => home.path().join("bin").join(name),
+            };
+            std::fs::create_dir_all(program.parent().unwrap()).unwrap();
             std::fs::write(&program, script).unwrap();
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for name in ["greywall", "greyproxy"] {
+            let decoy = home.path().join("bin").join(name);
+            std::fs::write(&decoy, "#!/bin/sh\nexit 99\n").unwrap();
+            std::fs::set_permissions(decoy, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         home
     }
@@ -404,7 +414,7 @@ impl Home {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
         search.extend(std::env::split_paths(&path));
-        self.spawn(search, extra, None)
+        self.spawn(search, extra, None, true)
     }
 
     /// [`Home::start`] with `--profile profile`; it is ready on that profile's socket.
@@ -412,14 +422,25 @@ impl Home {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
         search.extend(std::env::split_paths(&path));
-        self.spawn(search, &[], Some(profile))
+        self.spawn(search, &[], Some(profile), true)
+    }
+
+    /// A fresh named profile before its managed engines have been installed.
+    pub fn start_profile_without_greywall(&self, profile: &str) -> Daemon {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut search = vec![self.path().join("bin")];
+        search.extend(std::env::split_paths(&path));
+        self.spawn(search, &[], Some(profile), false)
     }
 
     /// [`Home::start`] on a host without Greywall: neither stand-in, and no folder of the
     /// caller's `PATH` that holds a real one.
     pub fn start_without_greywall(&self) -> Daemon {
-        for program in ["greywall", "greyproxy"] {
-            std::fs::remove_file(self.path().join("bin").join(program)).unwrap();
+        let engines = cockpit_sandbox::install::programs(&self.state_dir()).unwrap();
+        for program in [engines.greywall, engines.greyproxy] {
+            if program.exists() {
+                std::fs::remove_file(program).unwrap();
+            }
         }
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut search = vec![self.path().join("bin")];
@@ -427,16 +448,36 @@ impl Home {
             std::env::split_paths(&path)
                 .filter(|dir| !dir.join("greywall").exists() && !dir.join("greyproxy").exists()),
         );
-        self.spawn(search, &[], None)
+        self.spawn(search, &[], None, false)
     }
 
-    fn spawn(&self, search: Vec<PathBuf>, extra: &[(&str, &str)], profile: Option<&str>) -> Daemon {
+    fn spawn(
+        &self,
+        search: Vec<PathBuf>,
+        extra: &[(&str, &str)],
+        profile: Option<&str>,
+        engines: bool,
+    ) -> Daemon {
         let profile_dir = match profile {
             None => BUILD_PROFILE_DIR.to_owned(),
             Some(profile) => cockpit_config::Profile::parse(profile)
                 .expect("a profile name")
                 .qualified_name(),
         };
+        if engines {
+            let state = self.path().join("state").join(&profile_dir);
+            let programs = cockpit_sandbox::install::programs(&state).unwrap();
+            for (name, path) in [
+                ("greywall", programs.greywall),
+                ("greyproxy", programs.greyproxy),
+            ] {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                if !path.exists() {
+                    std::fs::copy(self.path().join("engine-fixtures").join(name), path).unwrap();
+                }
+            }
+            std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let mut child = Process::new(env!("CARGO_BIN_EXE_cockpit-daemon"))
             .args(
                 profile

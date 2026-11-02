@@ -117,6 +117,8 @@ pub struct ProfileRequest {
     pub read_only: Vec<PathBuf>,
     /// Cockpit's own files no agent may read, even inside a folder it may.
     pub denied: Vec<PathBuf>,
+    /// Host-owned paths whose write denial overrides any broader writable grant.
+    pub denied_write: Vec<PathBuf>,
     /// Hosts (`host` or `host:port`) the agent may reach beyond its provider's own.
     pub allow_hosts: Vec<String>,
     pub environment: Vec<(OsString, OsString)>,
@@ -252,6 +254,9 @@ impl Profile {
         for path in request.read_only.iter() {
             check_absolute(path, "read-only")?;
         }
+        for path in &request.denied_write {
+            check_absolute(path, "denied-write")?;
+        }
         check_absolute(&request.mount_dir, "folder")?;
         let folder_mounts = folder_mounts(&request.provider, &request.mount_dir, request.owner_uid);
         let desktop_endpoints = match request.desktop {
@@ -315,6 +320,12 @@ impl Profile {
             denied_write_patterns: BASELINE_DENIED_WRITE
                 .iter()
                 .map(|rule| rule.to_string())
+                .chain(
+                    request
+                        .denied_write
+                        .iter()
+                        .map(|path| path.display().to_string()),
+                )
                 .collect(),
             allow_hosts: request.allow_hosts,
             environment,

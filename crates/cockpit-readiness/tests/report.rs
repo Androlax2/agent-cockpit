@@ -14,6 +14,7 @@ use tempfile::TempDir;
 
 fn ready_host() -> HostFacts {
     HostFacts {
+        profile: cockpit_config::Profile::parse("next").unwrap(),
         platform: Platform::Linux,
         tmux: Ok("3.5".to_owned()),
         sandbox_engine: Ok(SandboxEngine {
@@ -167,6 +168,27 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
         );
     }
     assert!(!report.is_ready());
+}
+
+#[test]
+fn a_missing_sandbox_names_the_managed_installer() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let host = HostFacts {
+        sandbox_engine: Err("no managed greywall installation".to_owned()),
+        ..ready_host()
+    };
+    let report = fixture.report(&host, &fixture.facts());
+    let sandbox = requirement(&report, "sandbox");
+    assert_eq!(sandbox.status, Status::MissingPrerequisite);
+    assert!(
+        sandbox
+            .next
+            .as_deref()
+            .unwrap()
+            .contains("cockpit --profile next sandbox install"),
+        "{sandbox:?}"
+    );
 }
 
 /// Each case: host facts changed from a ready host, the requirement and the status it gets.
