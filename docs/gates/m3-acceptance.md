@@ -3,6 +3,12 @@
 Status: **prepared, not accepted**. No Theo run is recorded. Issues [#137](https://github.com/Androlax2/agent-cockpit/issues/137) and [#52](https://github.com/Androlax2/agent-cockpit/issues/52) remain open.
 The `m3` filenames preserve the issue links; Alpha 1 is the current release name.
 
+## Current Alpha 1 platform scope
+
+Theo's [2026-11-02 decision](../decisions/2026-11-02-568-alpha-platform-scope.md) limits Alpha 1 to **Linux and WSL2 through archive installation**. macOS delivery, Homebrew and macOS acceptance are **deferred, not passed**, under #568 (including #527/#564); no restoration milestone is assigned. Other packaging (#562/#563/#565) moves to Alpha 2 and is not an Alpha 1 archive-install prerequisite.
+
+The required onboarding matrix is Linux/WSL2 × Docker present/absent: **four cells**. The two macOS cells are deferred. Linux/WSL2 sandbox enforcement and repeated launches, two-OS-user isolation, provider conformance and live round trips, context measurement, diagnostics, coexistence and Theo/volunteer observations remain required unless separately deferred in writing. Historical results below retain their original platforms and outcomes; they are not current support promises. Ordinary repository-required development checks are unaffected.
+
 ## How to use the preparation
 
 The [guide](../acceptance/m3.md) is in ask-to-guide step format. A facilitator first resolves the prerequisites below and asks for readiness. Do not launch the guide overnight or treat its questions as answered.
@@ -24,11 +30,13 @@ No provider, daemon, installer, desktop command or service manager is launched. 
 | Prerequisite | Owner / exact remaining evidence |
 | --- | --- |
 | Named review of this preparation | Completed on PR #530's full six-file delta through `83193277ecf486c52252bbdc3ab72132525c445b`; the sole finding was the stale unavailable-review claim, corrected here. Independent review remains separate; see the receipt below. |
-| Candidate installation | Release lane #191/#192/#97: final candidate revision, archive digest, published install instructions, platform install/doctor receipts. No publication or installation was performed here. |
-| Sandbox/network | Sandbox lane #495/#433 and macOS #527: clean-home managed proxy lifecycle, endpoint collision refusal, real enforcement and four working consecutive launches. A profile isolates paths, not fixed TCP ports; legacy API port 43080 is documented in `packages/greyproxy/restart.sh`. Do not stop/reconfigure legacy or silently reuse it. |
+| Candidate installation | Release lane #191/#97, using #192's completed tooling evidence: final candidate revision, archive digest, published Linux/WSL2 archive-install instructions and install/doctor receipts. No publication or installation was performed here. |
+| Sandbox/network | Sandbox lane #495/#433 on Linux/WSL2: clean-home managed proxy lifecycle, endpoint collision refusal, real enforcement and four working consecutive launches. macOS #527 is deferred under #568, not an Alpha 1 prerequisite. A profile isolates paths, not fixed TCP ports; legacy API port 43080 is documented in `packages/greyproxy/restart.sh`. Do not stop/reconfigure legacy or silently reuse it. |
 | Providers | Provider lane #51/#419/#436: conformance/provenance matrix, real model sees brief/skills, exact delivered-turn approval destination. Explicit consent and clean-environment sign-in precede account usage. |
 | Requirement clarification | #137 still says “one ACP agent”; merged third provider is OpenCode's HTTP/plugin adapter. #479 owns missing total-context token measurement. Runtime logging override lacks a CLI route at the inspected revision. These are open, not silently waived. |
 | Human observations | #137: Theo; #98: a volunteer with no prior context. Neither has a recorded Alpha walk. #98's separate [walkthrough record](../acceptance/98-user-readme.md) stays with the docs owner. |
+
+Issues #51 and #192 are closed with criterion evidence; consume those receipts rather than treating their issue status as an unresolved prerequisite. Their closure does not establish the separate signed-in provider observations or published archive installation. #99's logo work moves to Beta 3 design and #397's further CI efficiency work to Hardening; neither blocks this Alpha 1 walk.
 
 Morning question, **only after those dependencies are ready or explicitly deferred on #52**:
 
@@ -39,6 +47,7 @@ If dependencies remain open, Chief should present their specific missing receipt
 ## Evidence inventory at the inspected revision
 
 Snapshot: `ea5458970720cf24dd807c21a1cdb808085ed5a4`, 2026-11-02. Source references below are present at that revision; a merged implementation is not live acceptance.
+The remaining-gap column records what was open at that snapshot, including the then-required six-cell matrix. Apply the current scope and status updates above when scheduling Alpha 1; the macOS gaps are deferred, not successful results.
 The expanded [#52 inventory](https://github.com/Androlax2/agent-cockpit/issues/52#issuecomment-6569435976) separates each provider's native evidence and unsupported capabilities.
 
 Baseline [CI run 41388684998](https://github.com/Androlax2/agent-cockpit/actions/runs/41388684998) passed Linux greenfield, macOS, WSL2 and docs. Linux runs the greenfield workspace gate. macOS covers startup/processes/resources/agent identity/TUI; WSL2 covers startup/resources. Neither platform job is a six-cell onboarding or public-install proof. Ignored native tests are not established by a green workspace job.
@@ -57,7 +66,7 @@ Codex's additional native receipt is #512 (`a3b09065`), [approval-routing decisi
 | Diagnostics (#137) | #81 (`ea96cd83`) diagnostics library; `tests/level.rs::an_override_reverts_when_it_expires`, `tests/canary.rs::environment_values_never_reach_logs_or_bundles`, `tests/support_bundle.rs`. CLI `tests/bug_report.rs::new_asks_the_daemon_for_a_draft_and_prints_it` covers the current draft/bundle route. | No `logs level` or `support-bundle` CLI verb in current `src/main.rs`; `config reload` is configuration, not logging reload. Runtime override acceptance stays open pending an owner command or written deferral. |
 | Theo acceptance (#137) | This guide and isolated fixtures are preparation only. Historical M1 runs are recorded separately in [m1-acceptance.md](m1-acceptance.md). | Theo completes the Alpha walk; findings filed, fixed and rerun or explicitly deferred on #52. Gate stays open. |
 
-Repository protection #382 and name/assets #339/#99 are also open Alpha milestone work; they belong to their existing owners and no decision or permission change is implied by this preparation.
+At that snapshot, repository protection #382 and name/assets #339/#99 were also open Alpha milestone work. Their current ownership and milestone status are tracked on the issues; #99 is now deferred to Beta 3 design as noted above.
 
 ## Recorded offline preparation, 2026-11-02
 

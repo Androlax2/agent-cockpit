@@ -6,7 +6,7 @@ Agent Cockpit runs your coding agents in terminal sessions and keeps their work,
 One installation belongs to one person, with a CLI and terminal UI backed by a per-user daemon and tmux.
 Agents work inside a sandbox; you decide which requests may run outside it.
 
-The next release is **Alpha 1**, being built under `crates/` beside the running legacy product.
+The next release is **Alpha 1 for Linux and WSL2**, being built under `crates/` beside the running legacy product.
 Alpha state may reset between releases; keep your work in Git and do not rely on alpha state migrating to beta.
 Existing desktop users can find their commands and demo screenshots in the [legacy operator guide](docs/legacy/README.md).
 
@@ -14,7 +14,8 @@ Existing desktop users can find their commands and demo screenshots in the [lega
 
 Public installation is still being prepared in [#97](https://github.com/Androlax2/agent-cockpit/issues/97).
 The managed Greywall/greyproxy installer and proxy service setup are merged; see the [sandbox guide](crates/cockpit-sandbox/README.md#managed-installation-470).
-A complete public clean-install recipe still waits for #97's published archive and platform acceptance.
+A complete public clean-install recipe still waits for #97's published Linux/WSL2 archive and platform acceptance.
+Alpha 1 uses archive installation; other packaging (#562/#563/#565) is deferred to Alpha 2. macOS delivery and Homebrew are deferred beyond Alpha 1 under [#568](https://github.com/Androlax2/agent-cockpit/issues/568), with no restoration milestone assigned.
 The root `make install` installs the legacy desktop setup; it is not the Alpha installer.
 
 Developers can build the current greenfield binaries with the pinned Rust toolchain:
@@ -36,11 +37,11 @@ The quickstart below starts once those prerequisites are ready.
 | Platform | Target | Current evidence and limits |
 | --- | --- | --- |
 | Linux | Native | Linux CI runs the greenfield gate; public archive onboarding is an Alpha release checkpoint |
-| macOS | Native | Selected crates run in CI and services use launchd. The current pinned engine blocks required-sandbox launches until [public CA isolation is available (#527)](https://github.com/Androlax2/agent-cockpit/issues/527); public archive onboarding remains open |
+| macOS | Deferred beyond Alpha 1 | No Alpha 1 download, Homebrew package or macOS acceptance is promised. [#568](https://github.com/Androlax2/agent-cockpit/issues/568) tracks restoration, including unresolved [public CA isolation (#527)](https://github.com/Androlax2/agent-cockpit/issues/527); existing tests do not establish supported installation |
 | Windows | Inside WSL2, from Windows Terminal | Linux backend inside WSL2; platform checks run in CI for selected crates; no native Windows daemon |
 
 You need Git, tmux, curl, a supported provider CLI, and the Cockpit-pinned Greywall/greyproxy engines.
-Linux service installation uses a systemd user manager; macOS uses launchd.
+Linux/WSL2 service installation requires a systemd user manager.
 Run `cockpit doctor --project /absolute/path/to/project` to check the actual host and project requirements.
 The platform checks are described in [Development](docs/DEVELOPMENT.md#verification-policy); they do not establish a signed-in provider conversation on every platform.
 
