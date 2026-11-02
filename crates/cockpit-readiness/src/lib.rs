@@ -175,6 +175,8 @@ pub struct ControlFacts {
 /// What the daemon knows about this host, each fact from its owner.
 #[derive(Debug, Clone)]
 pub struct HostFacts {
+    /// The daemon's profile, retained in commands that repair its installation.
+    pub profile: cockpit_config::Profile,
     pub platform: Platform,
     /// The tmux version the daemon's start found, or why it refused it.
     pub tmux: Result<String, String>,
@@ -237,7 +239,11 @@ pub fn assess(
 ) -> Report {
     let mut requirements = vec![host::config(config), host::platform(&host.platform)];
     requirements.push(host::tmux(&host.tmux));
-    requirements.push(host::sandbox(&host.sandbox_engine, host.sandbox_setting));
+    requirements.push(host::sandbox(
+        &host.sandbox_engine,
+        host.sandbox_setting,
+        &host.profile,
+    ));
     requirements.extend(host::providers(&host.providers));
     requirements.push(host::resource_controls(&host.controls));
     if let (Some(project), Ok(config)) = (project, config) {

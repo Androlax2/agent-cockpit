@@ -263,13 +263,55 @@ fn detect_reads_both_programs_versions() {
 }
 
 #[test]
-fn programs_are_looked_up_on_path_and_a_missing_one_is_named() {
+fn managed_detection_uses_owned_paths_and_never_path_substitutes() {
     let bin = tempfile::tempdir().unwrap();
     write_program(bin.path(), "greywall", GREYWALL_VERSION_OUTPUT);
+    let reason = Greywall::detect_owned(
+        bin.path(),
+        Platform::Linux,
+        bin.path().join("settings"),
+        "dev",
+        None,
+        None,
+    )
+    .unwrap_err();
+    assert!(reason.contains("engines"), "{reason}");
+}
 
-    let reason = GreywallPrograms::on_path(Some(&bin.path().as_os_str().to_owned())).unwrap_err();
-
-    assert_eq!(reason, "no `greyproxy` on PATH");
+#[test]
+fn development_paths_require_a_debug_build_dev_profile_and_both_absolute_paths() {
+    let bin = tempfile::tempdir().unwrap();
+    let greywall = write_program(
+        bin.path(),
+        "greywall",
+        &GREYWALL_VERSION_OUTPUT.replace(
+            PINNED_GREYWALL_COMMIT,
+            "1111111111111111111111111111111111111111",
+        ),
+    );
+    let greyproxy = write_program(bin.path(), "greyproxy", GREYPROXY_VERSION_OUTPUT);
+    let detect = |profile, wall, proxy| {
+        Greywall::detect_owned(
+            bin.path(),
+            Platform::Linux,
+            bin.path().join("settings"),
+            profile,
+            wall,
+            proxy,
+        )
+    };
+    assert!(detect("next", Some(greywall.clone()), Some(greyproxy.clone())).is_err());
+    assert!(detect("dev", Some(greywall.clone()), None).is_err());
+    assert!(detect("dev", Some("relative".into()), Some(greyproxy.clone())).is_err());
+    let result = detect("dev", Some(greywall), Some(greyproxy));
+    if cfg!(debug_assertions) {
+        assert_eq!(
+            result.unwrap().greywall.commit,
+            "1111111111111111111111111111111111111111"
+        );
+    } else {
+        assert!(result.is_err());
+    }
 }
 
 #[test]
@@ -370,6 +412,35 @@ fn the_settings_deny_reading_by_default_and_list_every_denial() {
     assert!(denied_read.contains(&"~/.ssh/id_*".into()));
     let denied_write = written["filesystem"]["denyWrite"].as_array().unwrap();
     assert!(denied_write.contains(&".git/hooks".into()));
+}
+
+#[test]
+fn the_engine_finds_its_owned_proxy_before_legacy_path_entries_and_cannot_auto_install() {
+    let settings = tempfile::tempdir().unwrap();
+    let mut request = profile_request("/home/owner/app");
+    request
+        .environment
+        .push(("GREYWALL_NO_GREYPROXY_INSTALL".into(), "0".into()));
+    let profile = Profile::build(request, &Platform::Linux).unwrap();
+    let plan = linux_engine(settings.path())
+        .plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
+        .unwrap();
+    let path = plan
+        .environment
+        .iter()
+        .find(|(name, _)| name == "PATH")
+        .unwrap();
+    assert_eq!(
+        std::env::split_paths(&path.1).next().unwrap(),
+        Path::new("/opt/sandbox")
+    );
+    let installer: Vec<_> = plan
+        .environment
+        .iter()
+        .filter(|(name, _)| name == "GREYWALL_NO_GREYPROXY_INSTALL")
+        .collect();
+    assert_eq!(installer.len(), 1);
+    assert_eq!(installer[0].1, "1");
 }
 
 #[test]
@@ -515,6 +586,37 @@ fn plan_on_linux(request: ProfileRequest) -> Result<Plan, Refusal> {
     let settings = tempfile::tempdir().unwrap();
     let profile = Profile::build(request, &Platform::Linux)?;
     linux_engine(settings.path()).plan(&profile, &ClientIdentity::for_launch("s1").unwrap())
+}
+
+#[test]
+fn an_engine_write_denial_survives_a_writable_home_project() {
+    let engines = "/home/owner/.local/state/cockpit/engines";
+    let mut request = profile_request("/home/owner");
+    request.read_only.push(engines.into());
+    request.denied_write.push(engines.into());
+
+    let plan = plan_on_linux(request).unwrap();
+
+    assert!(values_of(&plan, "--allow-path").contains(&"/home/owner".to_owned()));
+    assert!(values_of(&plan, "--allow-read-path").contains(&engines.to_owned()));
+    let settings: serde_json::Value = serde_json::from_str(&plan.settings).unwrap();
+    assert!(
+        settings["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .contains(&engines.into())
+    );
+    assert!(
+        !settings["filesystem"]["denyRead"]
+            .as_array()
+            .unwrap()
+            .contains(&engines.into())
+    );
+    assert!(
+        plan.enforced_by
+            .iter()
+            .any(|(rule, _)| rule == &format!("deny write {engines}"))
+    );
 }
 
 fn codex_plan(can_mount_folders: bool, settings: &Path) -> Plan {

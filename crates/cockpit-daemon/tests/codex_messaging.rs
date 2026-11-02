@@ -86,6 +86,7 @@ exec "$@"
         HostPaths {
             read_only: Vec::new(),
             denied: Vec::new(),
+            denied_write: Vec::new(),
             owner_uid: 1000,
             mount_sources: home.path().join("mounts"),
         },

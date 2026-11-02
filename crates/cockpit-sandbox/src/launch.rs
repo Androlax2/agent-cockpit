@@ -19,6 +19,8 @@ pub struct HostPaths {
     /// Cockpit's own files no agent reads: the host-only socket, the state database, the
     /// logs, the owner's configuration.
     pub denied: Vec<PathBuf>,
+    /// Files an agent may read but never replace, even through a writable ancestor.
+    pub denied_write: Vec<PathBuf>,
     /// The user the daemon runs as, and its agents with it.
     pub owner_uid: u32,
     /// The daemon's folder for what sandboxes mount at another path, one folder per session
@@ -125,6 +127,7 @@ impl Sandbox {
                 owner_uid: host.owner_uid,
                 read_only: host.read_only.clone(),
                 denied: host.denied.clone(),
+                denied_write: host.denied_write.clone(),
                 allow_hosts: Vec::new(),
                 environment: request.environment.clone(),
                 secrets: request.secrets.clone(),

@@ -173,15 +173,83 @@ async fn a_provider_that_does_not_run_is_listed_as_optional_and_exits_0() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_without_greywall_blocks_naming_what_to_install() {
     let home = Home::new();
-    let _daemon = home.start_without_greywall();
+    let _daemon = home.start_profile_without_greywall("next");
 
-    let doctor = home.cockpit(&["doctor"], &[]).await;
+    let doctor = home.cockpit(&["--profile", "next", "doctor"], &[]).await;
 
     let report = text(&doctor.stdout);
     assert_eq!(doctor.status.code(), Some(1), "{report}");
     let (sandbox, next) = requirement(&report, "sandbox");
     assert_eq!(status(sandbox), "missing-prerequisite", "{sandbox}");
-    assert!(next.unwrap().contains("greywall"), "{report}");
+    assert!(
+        next.unwrap()
+            .contains("cockpit --profile next sandbox install"),
+        "{report}"
+    );
+    let init = home.cockpit(&["--profile", "next", "init"], &[]).await;
+    assert!(
+        text(&init.stdout).contains("cockpit --profile next sandbox install"),
+        "{}",
+        text(&init.stdout)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_engine_upgrade_names_the_running_session_that_needs_restart() {
+    let home = Home::new();
+    let daemon = home.start_profile("next");
+    let client = home.connect_to("cockpit-next").await;
+    let (root, _) = home.project(&client, "app").await;
+    let session = real_daemon::new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+    drop(client);
+    daemon.kill();
+    // A previous release's recorded launch, with the real session still alive in tmux.
+    let database = cockpit_turso::Database::open(
+        &home.path().join("state/cockpit-next/state.db"),
+        &cockpit_daemon::MIGRATION_SETS,
+    )
+    .await
+    .unwrap();
+    let write = database.write().await.unwrap();
+    write
+        .execute(
+            "UPDATE sandbox_launches SET engine = 'previous pinned release' WHERE session_id = ?1",
+            [session.id.as_str()],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(database);
+    let _daemon = home.start_profile("next");
+    let output = home.cockpit(&["--profile", "next", "doctor"], &[]).await;
+    let report = text(&output.stdout);
+    assert!(
+        report.contains(&format!(
+            "cockpit --profile next session restart {}",
+            session.id
+        )),
+        "{report}"
+    );
+    let shown = home
+        .cockpit(
+            &["--profile", "next", "session", "sandbox", &session.id],
+            &[],
+        )
+        .await;
+    assert!(
+        text(&shown.stdout).contains(&format!(
+            "cockpit --profile next session restart {}",
+            session.id
+        )),
+        "{}",
+        text(&shown.stdout)
+    );
+    assert_eq!(
+        home.launches_of(&session.id).len(),
+        1,
+        "advice must never restart a running session"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
