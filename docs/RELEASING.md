@@ -1,6 +1,6 @@
 # Releasing
 
-How Cockpit is versioned and shipped (issue #94), modelled on
+How Torlek is versioned and shipped (issue #94), modelled on
 [AprilNEA/OpenLogi](https://github.com/AprilNEA/OpenLogi)'s release system. The release
 bundle itself, its packaging and its gate are [report 13](design/greenfield/13-release-upgrades.md);
 this file is the policy every tag follows. Releases are cut from the greenfield workspace
@@ -187,7 +187,7 @@ A live draft workflow run must be linked separately before claiming live accepta
 
 ## Versions
 
-- Cockpit uses [Semantic Versioning](https://semver.org/) and stays on `0.x` until 1.0.
+- Torlek uses [Semantic Versioning](https://semver.org/) and stays on `0.x` until 1.0.
   Under `0.x`, as in Cargo, a breaking change raises the minor number (`0.3.2` → `0.4.0`)
   and anything else raises the patch number (`0.3.2` → `0.3.3`).
 - There is one version: `[workspace.package] version` in the root `Cargo.toml`, inherited by
@@ -329,8 +329,8 @@ list; beta notes name any upgrade step.
 
 ## Archive TUI smoke check
 
-The archive includes `cockpit-tui` beside `cockpit`. The release install jobs run
+The archive includes `torlek-tui` beside `torlek`. The release install jobs run
 `tools/release.py verify-install` on the unpacked archive; it checks the manifest checksums
-and runs `cockpit tui --version` to execute that sibling and check its compiled version.
+and runs `torlek tui --version` to execute that sibling and check its compiled version.
 This headless check needs no terminal or manager session; interactive TUI coverage remains
 in the existing terminal tests.

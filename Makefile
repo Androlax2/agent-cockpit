@@ -138,7 +138,7 @@ docs-ci: lint-markdown check-links typos ## Check Markdown style, local links an
 .NOTPARALLEL: site-ci
 
 site-reference-binary: ## Build the CLI used for offline documentation references
-	$(build_runner) cargo build --locked -j 2 -p cockpit-cli --bin cockpit
+	$(build_runner) cargo build --locked -j 2 -p cockpit-cli --bin torlek
 
 site-build: ## Generate and build the version-prefixed static documentation
 	npm --prefix site run build

@@ -32,7 +32,7 @@ def rehearse(binary, parent):
         location = scratch / directory
         location.mkdir(mode=0o700)
         environment[variable] = str(location)
-    environment["COCKPIT_PROFILE"] = "next"
+    environment["TORLEK_PROFILE"] = "next"
     project = scratch / "project"
     project.mkdir(mode=0o700)
     record = {
@@ -84,7 +84,7 @@ def rehearse(binary, parent):
                     r"^available\s+config:",
                     r"^missing-prerequisite\s+daemon:",
                     r"^unknown\s+host:",
-                    r"next: start `cockpit-daemon`",
+                    r"next: start `torlek-daemon`",
                 )
             )
         record["commands"].append(
@@ -114,14 +114,14 @@ def main():
         "--parent", type=Path, required=True, help="existing scratch parent directory"
     )
     arguments = parser.parse_args()
-    binary = (arguments.bin_dir / "cockpit").resolve()
+    binary = (arguments.bin_dir / "torlek").resolve()
     parent = arguments.parent.resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         parser.error(f"candidate executable is missing or not executable: {binary}")
     if not parent.is_dir():
         parser.error(f"scratch parent must already be a directory: {parent}")
     # Unix socket paths have a small platform limit, including the random scratch suffix.
-    if len(os.fsencode(parent / "alpha1-12345678/run/cockpit-next/daemon.sock")) >= 104:
+    if len(os.fsencode(parent / "alpha1-12345678/run/torlek-next/daemon.sock")) >= 104:
         parser.error("scratch parent is too long for a daemon socket; choose a shorter path")
     try:
         return rehearse(binary, parent)

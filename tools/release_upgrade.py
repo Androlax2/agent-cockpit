@@ -85,7 +85,7 @@ def checked_manifest(root, revision):
             raise release.Refusal(f"{name}: bundle checksum differs")
     if set(release.bundle_files(root)) != set(contents):
         raise release.Refusal("bundle contents differ from the manifest")
-    if not {"bin/cockpit", "bin/cockpit-daemon"} <= contents.keys():
+    if not {"bin/torlek", "bin/torlek-daemon"} <= contents.keys():
         raise release.Refusal("bundle lacks its CLI or daemon")
     return manifest, text
 
@@ -106,7 +106,7 @@ def fetch_previous(version, channel, platform, directory):
     revision = json.loads(gh("api", f"repos/{REPOSITORY}/commits/{tag}"))["sha"]
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise release.Refusal("invalid previous source revision")
-    name = f"cockpit-{tag}-{platform}"
+    name = f"torlek-{tag}-{platform}"
     archive = directory / (name + ".tar.gz")
     gh(
         "release",
@@ -133,7 +133,7 @@ def unpack_previous(version, platform, directory):
         previous
     ) >= release.version_order(candidate):
         raise release.Refusal("baseline must be an earlier release of the same channel")
-    name = f"cockpit-{tag}-{platform}"
+    name = f"torlek-{tag}-{platform}"
     archive = directory / (name + ".tar.gz")
     checksums = [line.split() for line in (directory / "SHA256SUMS").read_text().splitlines()]
     matching = [parts[0] for parts in checksums if len(parts) == 2 and parts[1] == archive.name]
@@ -180,7 +180,7 @@ def checked_command(command, environment):
 def running_daemon(root, environment):
     with tempfile.TemporaryFile(mode="w+") as stderr:
         process = subprocess.Popen(
-            [str(root / "bin/cockpit-daemon"), "--profile", "release-gate"],
+            [str(root / "bin/torlek-daemon"), "--profile", "release-gate"],
             env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -202,9 +202,7 @@ def running_daemon(root, environment):
                 line = ready.get(timeout=release.COMMAND_TIMEOUT_SECONDS)
             except queue.Empty:
                 line = "startup timeout"
-            expected = str(
-                Path(environment["XDG_RUNTIME_DIR"]) / "cockpit-release-gate/daemon.sock"
-            )
+            expected = str(Path(environment["XDG_RUNTIME_DIR"]) / "torlek-release-gate/daemon.sock")
             if line.strip() == "ready " + expected:
                 yield
                 return
@@ -240,7 +238,7 @@ def verify(candidate, revision, downloaded=None):
         return "upgrade=not-run (alpha: explicit exemption); same-candidate state fixture passed"
     if channel != "beta" or release.parse_tag("v" + manifest["version"])["channel"] != channel:
         raise release.Refusal("candidate is not an enabled release channel")
-    with tempfile.TemporaryDirectory(prefix="cockpit-upgrade-") as downloads:
+    with tempfile.TemporaryDirectory(prefix="torlek-upgrade-") as downloads:
         directory = Path(downloads)
         if downloaded is None:
             fetch_previous(manifest["version"], channel, manifest["platform"], directory)
@@ -300,7 +298,7 @@ def verify_state(old, old_manifest, old_text, candidate, manifest, text):
 
         def cli(root, *arguments):
             return checked_command(
-                [root / "bin/cockpit", "--profile", "release-gate", *arguments], environment
+                [root / "bin/torlek", "--profile", "release-gate", *arguments], environment
             )
 
         title = "retained task before upgrade"

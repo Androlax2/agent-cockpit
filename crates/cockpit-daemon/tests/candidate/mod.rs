@@ -10,14 +10,14 @@ pub fn program(name: &str) -> PathBuf {
             assert!(root.is_absolute(), "the candidate root must be absolute");
             root.join("bin").join(name)
         }
-        None => Path::new(env!("CARGO_BIN_EXE_cockpit-daemon")).with_file_name(name),
+        None => Path::new(env!("CARGO_BIN_EXE_torlek-daemon")).with_file_name(name),
     }
 }
 
 pub fn configure(command: &mut Command) {
     if std::env::var_os("COCKPIT_CANDIDATE_ROOT").is_some() {
         // A release archive normally selects its channel; fixtures own the isolated dev home.
-        command.env("COCKPIT_PROFILE", "dev");
+        command.env("TORLEK_PROFILE", "dev");
     }
 }
 
@@ -26,7 +26,7 @@ pub fn assert_running_candidate(pid: u32) {
     if std::env::var_os("COCKPIT_CANDIDATE_ROOT").is_some() {
         assert_eq!(
             std::fs::read_link(format!("/proc/{pid}/exe")).expect("the running daemon executable"),
-            program("cockpit-daemon")
+            program("torlek-daemon")
                 .canonicalize()
                 .expect("the archived daemon"),
             "the fixture must exercise the archived daemon, not a fresh Cargo build"

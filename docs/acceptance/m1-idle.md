@@ -1,4 +1,4 @@
-# Cockpit M1 live acceptance: sleep after idle
+# Torlek M1 live acceptance: sleep after idle
 
 ## Sleep after idle
 

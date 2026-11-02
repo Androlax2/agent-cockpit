@@ -89,7 +89,7 @@ impl fmt::Display for Error {
             ),
             Self::UnsupportedServerVersion { socket, found } => write!(
                 formatter,
-                "running tmux server at {socket:?} reports {found:?}; Cockpit needs tmux \
+                "running tmux server at {socket:?} reports {found:?}; Torlek needs tmux \
                  {MINIMUM_VERSION} or newer; finish its sessions and restart that private server"
             ),
             Self::CommandFailed {
