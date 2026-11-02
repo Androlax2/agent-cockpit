@@ -59,6 +59,7 @@ jobs:
   proposal:
     needs: check
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: release-proposal
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -96,15 +97,16 @@ jobs:
         if: github.event_name == 'push' || !inputs.dry_run
         id: app
         with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.PROPOSAL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PROPOSAL_APP_PRIVATE_KEY }}
           owner: Androlax2
           repositories: agent-cockpit
-          permission-contents: write
+          permission-contents: read
           permission-pull-requests: write
       - name: Create or reuse the immutable draft and supersede verified older drafts
         if: github.event_name == 'push' || !inputs.dry_run
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          PROPOSAL_GIT_SSH_KEY: ${{ secrets.PROPOSAL_GIT_SSH_KEY }}
           BASE: ${{ github.sha }}
         run: python3 tools/release_pr.py publish --base "$BASE"

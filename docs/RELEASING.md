@@ -20,11 +20,25 @@ pull request starts it only when it changes the release machinery itself (the wo
 
 ## Release App setup
 
-The pre-release workflow consumes the repository Actions variable `RELEASE_APP_CLIENT_ID`
-and secret `RELEASE_APP_PRIVATE_KEY`. Its token requests contents write only. The private
-App also needs pull-request write for the approved #192 release-PR work; that workflow and
-its history-preserving draft workflow are described below. No workflow permission is added
-by this setup script.
+The pre-release workflow consumes repository variable `RELEASE_APP_CLIENT_ID` and
+`RELEASE_APP_PRIVATE_KEY` through the protected `release` environment. Its installation
+token requests contents/write on `Androlax2/agent-cockpit` only. Release App `5573576`
+(`agent-cockpit-release`) is the sole `v*` creation bypass; separate rules prohibit
+every tag update/deletion, including by that App.
+
+Tagging, release drafting and publication reference `release`, whose reviewer is Theo
+(`39646949`), with administrator bypass disabled and only branch `main`/tag `v*` allowed.
+A manual prerelease dry run also requires approval. Different jobs or runs may require
+separate approvals. Automatic proposal drafts use the independent `release-proposal`
+environment and require no reviewer.
+
+The existing Release App is already registered. The bootstrap instructions below describe
+its historical repository-secret setup; do not replay `configure` after migration,
+because its storage contract is repository-level. Preserve its private recovery record.
+The repository key has not yet been migrated or removed: environment references alone
+do not establish environment-only storage. Migration, old-run/token-expiry evidence and
+live negative acceptance remain separately approved work under #382. See the measured
+[repository protections](security/repository.md).
 
 An operator uses [tools/setup_release_app.py](../tools/setup_release_app.py) on their host
 with existing Python 3.11+, OpenSSL and GitHub CLI, authenticated as `Androlax2`. The host
@@ -85,8 +99,21 @@ and [GitHub CLI secret input](https://cli.github.com/manual/gh_secret_set).
 On a push to `main`, [release-plz.yml](../.github/workflows/release-plz.yml) tests the
 proposal code and pinned generators, then prepares a draft using
 [tools/release_pr.py](../tools/release_pr.py). Manual dispatch defaults to a local dry run.
-PR runs test only with read permissions; the App token is created only in the main-only
-proposal job, after generation, with contents/write and pull_requests/write on this repository.
+PR runs test only with read permissions. The main-only `proposal` job references
+`release-proposal`, restricted to branch `main`. It prepares files before creating any
+App token, then uses `PROPOSAL_APP_CLIENT_ID` and `PROPOSAL_APP_PRIVATE_KEY` to mint a
+contents/read + pull_requests/write token for this repository only. Its `GITHUB_TOKEN`
+stays read-only. `PROPOSAL_GIT_SSH_KEY` is injected only into the publication step for
+the fixed-repository SSH branch push, with a pinned GitHub host key, strict checking,
+no agent forwarding and temporary-file cleanup.
+
+The verified proposal App is `5582369`, slug `agent-cockpit-proposal`, bot
+`agent-cockpit-proposal[bot]`, numeric bot ID `351595931`. Its Git-only deploy key is
+`168493357`; it has no ruleset bypass and no release REST credential. Bootstrap and
+scope verification use [tools/setup_proposal_app.py](../tools/setup_proposal_app.py)
+and separate private state `~/.local/state/cockpit-proposal-app`, never the Release
+App's recovery record. Proposal registration, verification and environment-only
+configuration are already complete; do not replay them as setup.
 
 The draft carries the **exact upcoming prerelease** in its title, workspace manifest,
 local lockfile entries and changelog heading: first `0.1.0-alpha.1`, then `.2` after the
@@ -118,8 +145,10 @@ draft stays intact until a verified replacement exists. Use a meaningful transit
 change, not an unrelated commit solely to obtain another SHA.
 
 Only after fetching and verifying the replacement draft does the script cross-link and
-close older drafts owned by `agent-cockpit-release[bot]`, with matching source/head markers
-and an ancestor base. It checks again before closing. Edited, promoted or unrelated drafts
+close older drafts owned by `agent-cockpit-proposal[bot]` with numeric ID `351595931`,
+matching source/head markers and an ancestor base. It checks again before closing.
+Existing old-author drafts require separate exact owner-approved cleanup after replacement
+verification; no old/new author allowlist is introduced. Edited, promoted or unrelated drafts
 are retained. Comments are deduplicated on retries. All old branches and commits remain;
 there is no deletion, force push, rebase, merge or automatic approval. If `main` advances,
 the stale run refuses instead of superseding current work. The workflow serializes its

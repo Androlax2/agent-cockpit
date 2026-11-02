@@ -5,7 +5,8 @@ name: Pre-release
 # default, prints the tag and creates nothing. The tag is created with a GitHub App token,
 # because a tag pushed with GITHUB_TOKEN starts no workflow; release.yml takes it from there.
 # Setup: the App (contents: write on this repository only) has its client ID in the
-# RELEASE_APP_CLIENT_ID variable and its private key in the RELEASE_APP_PRIVATE_KEY secret.
+# RELEASE_APP_CLIENT_ID repository variable and its private key in the release environment's
+# RELEASE_APP_PRIVATE_KEY secret. The environment requires Theo's approval, including dry runs.
 
 on:
   workflow_dispatch:
@@ -30,6 +31,7 @@ defaults:
 
 jobs:
   tag:
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -50,6 +52,8 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: Androlax2
+          repositories: agent-cockpit
           permission-contents: write
       # The Alpha 1 checklist (#52) opens alphas; the Beta 1 checklist (#57) turns them to betas.
       - name: Read the checklist issues

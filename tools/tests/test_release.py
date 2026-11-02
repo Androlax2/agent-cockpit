@@ -136,7 +136,7 @@ class ReleaseTestCase(unittest.TestCase):
             "draft": True,
             "title": f"chore(release): prepare {version}",
             "body": release_pr.proposal_body(version, source, head),
-            "user": {"login": release_pr.BOT, "type": "Bot"},
+            "user": {"login": "agent-cockpit-proposal[bot]", "type": "Bot", "id": 351595931},
             "head": {"sha": head, "ref": branch, "repo": repo},
             "base": {"ref": "main", "repo": repo},
         }

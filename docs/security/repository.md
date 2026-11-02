@@ -1,9 +1,10 @@
 # Repository protection
 
-**Status: partial audit for [#382](https://github.com/Androlax2/agent-cockpit/issues/382),
-not live enforcement acceptance.** Repository settings and workflows were not changed.
-The next priority is to resolve the remaining identity/settings gaps with the owner,
-then review the tag and release-environment proposal below before applying anything.
+**Status: Option A provisioned in part for [#382](https://github.com/Androlax2/agent-cockpit/issues/382),
+not live enforcement acceptance.** Tag rules, environments and proposal credentials have
+approved readback evidence. Workflow source now separates proposal and release credentials;
+release-key migration, old-run expiry, scanners and live negative tests remain open.
+The release boundary is not complete.
 
 ## Ownership and evidence
 
@@ -20,7 +21,52 @@ supported, effective and observed protections to remain distinct.
 - [#376](https://github.com/Androlax2/agent-cockpit/issues/376) owns the plugin security gate.
   Vulnerability reports follow [SECURITY.md](../../SECURITY.md).
 
-**Snapshot:** 2026-11-02, 04:46–04:52 UTC. Source inspected at
+### Approved Option A provisioning
+
+2026-11-02 host approvals established the following metadata. Receipts are approval
+request IDs, not public artifact links; no credential values are recorded here.
+
+| Control | Verified metadata | Receipt |
+| --- | --- | --- |
+| Proposal App | `5582369`, `agent-cockpit-proposal`, bot `agent-cockpit-proposal[bot]`, numeric bot ID `351595931`; installation `177891581`, this repository only; contents/read, pull_requests/write, metadata/read | `5d06c5e7dfb9` |
+| Git-only proposal writer | SSH deploy key `168493357`, repository write access, no ruleset bypass | `3d110843289e` |
+| Immutable release tags | Active ruleset `26382177`, `refs/tags/v*`, update/deletion prohibited, explicit empty bypass list | `56348e08e7b2`, `8d8264c6a5af` |
+| Tag creation | Active ruleset `26382178`, `refs/tags/v*`, sole bypass Integration `5573576` (Release App) | Same receipts |
+| Release approval | Environment `26041162515` (`release`), reviewer Theo `39646949`, self-review allowed, administrator bypass **false**; branch `main` and tag `v*` only | Guide `fdd99b8fdf40`, readback `8d8264c6a5af` |
+| Automatic proposals | Environment `26041165006` (`release-proposal`), branch `main` only, no required reviewer | `8d8264c6a5af` |
+| Proposal credential storage | Environment-only `PROPOSAL_APP_CLIENT_ID`, `PROPOSAL_APP_PRIVATE_KEY`, `PROPOSAL_GIT_SSH_KEY`; no repository copies | `c15acded98c0` |
+| Main protection | Ruleset `26273395` unchanged, including all five checks and empty bypass list | `8d8264c6a5af` |
+
+The [proposal bootstrap](../../tools/setup_proposal_app.py) uses separate owner-private
+recovery state at `~/.local/state/cockpit-proposal-app`. Registration and configuration
+are already complete: do not replay them as new setup. Verification mints a metadata-only
+installation token and revokes it; each such operation needs exact host approval.
+
+The source change routes proposal API calls through the read/PR-only App token and only
+the immutable branch push through the Git-only key. The push pins GitHub's Ed25519 host
+key, rejects Git URL rewrites, disables implicit tag following and removes its temporary
+private files on exit. Generation receives neither credential. Ownership checks use the
+new bot login and numeric ID, including prerelease selection and comment deduplication.
+Old-author drafts require separately approved exact cleanup after replacement verification;
+they are not accepted through an old/new allowlist.
+
+After #523's protected merge, the integrated source also references `release` from
+prerelease tagging, release drafting and publication, preserving all nine publication
+dependencies and the draft-PR guards. Source integration does not prove live enforcement.
+The existing repository
+`RELEASE_APP_PRIVATE_KEY` has **not** been migrated or removed. Old workflows and already
+started runs may still hold publishing credentials. Before protected release use, move
+that key through its separately reviewed migration, verify environment-only storage,
+confirm old-run cleanup/expiry and record Theo's rotation/revocation policy. Preserve the
+existing release recovery state and do not use `setup_release_app.py configure` as migration.
+
+### Initial audit evidence
+
+The remaining snapshot tables and gap analysis below describe the initial audit;
+the provisioning evidence above supersedes their tag/environment/proposal-identity rows.
+Unresolved scanner observations and live acceptance requirements still apply.
+
+**Initial snapshot:** 2026-11-02, 04:46–04:52 UTC. Source inspected at
 [`ea5458970720cf24dd807c21a1cdb808085ed5a4`](https://github.com/Androlax2/agent-cockpit/tree/ea5458970720cf24dd807c21a1cdb808085ed5a4).
 Live metadata was read with the launcher's repository-scoped credential. A successful
 paginated list establishes what that API exposed at that time. HTTP 401/403/404 and
@@ -66,7 +112,7 @@ analyses and the three `release` environment endpoints returned 404. The host co
 Actions policy, scanner configuration and repository secret metadata. Its complete
 ruleset/environment listings still contained only the main ruleset and `github-pages`.
 
-## Observed controls and verification commands
+## Initial controls and verification commands
 
 All commands below are reads. Prefix each endpoint in the tables with
 `repos/Androlax2/agent-cockpit`; for example:
@@ -141,9 +187,10 @@ withholds repository secrets from ordinary fork `pull_request` runs and gives a 
 token. This plus source inspection is design evidence, **not** an exercised fork-secret
 acceptance test. No fork PR was opened, approved or run for this audit.
 
-## Prioritized gaps and proposed external changes
+## Initial gaps and proposed external changes
 
-These are **unapplied proposals**, not newly granted permissions or confirmed exploitation.
+These were the initial proposals. The approved Option A evidence above records the
+applied subset; neither the proposal nor a settings readback establishes live acceptance.
 
 ### 1. Release identity and immutable tags (high-priority control gap)
 
