@@ -6,6 +6,7 @@
 //! An agent writes its session's directory (#437), and a shared desktop session mounts the
 //! display endpoints its variables name (#435).
 
+mod candidate;
 mod real_daemon;
 
 use std::collections::HashSet;

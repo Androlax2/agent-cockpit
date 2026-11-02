@@ -2,6 +2,7 @@
 //! with, finds its workflow, the checks route and the approval route. Through the real daemon
 //! binary, the real `cockpit` program and a stand-in Claude Code.
 
+mod candidate;
 mod real_daemon;
 
 use std::time::{Duration, Instant};

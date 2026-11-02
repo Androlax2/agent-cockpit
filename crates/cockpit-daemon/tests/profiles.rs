@@ -2,6 +2,7 @@
 //! to `cockpit-<name>` in every XDG base and to their own tmux server, through the real daemon
 //! binary, a stand-in Claude Code and the real tmux.
 
+mod candidate;
 mod real_daemon;
 
 use std::path::Path;

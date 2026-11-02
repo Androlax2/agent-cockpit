@@ -4,6 +4,7 @@
 //! so several stalled agents delay the first accepted request by about one grace.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod real_daemon;
 
 use std::time::{Duration, Instant};

@@ -3,6 +3,7 @@
 //! command does bulk work yet, so the fixture gives `subscribe` that role; `ping` stays the
 //! daemon's own control command.
 
+mod candidate;
 mod common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

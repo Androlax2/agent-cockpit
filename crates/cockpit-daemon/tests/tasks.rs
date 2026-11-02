@@ -4,6 +4,7 @@
 //! session's does.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};

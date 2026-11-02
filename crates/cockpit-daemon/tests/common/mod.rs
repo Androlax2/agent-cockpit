@@ -4,8 +4,7 @@
     reason = "each test file uses a different part of the fixture"
 )]
 
-#[path = "../candidate/mod.rs"]
-mod candidate;
+use crate::candidate;
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::DirBuilderExt;

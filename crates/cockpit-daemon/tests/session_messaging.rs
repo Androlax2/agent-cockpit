@@ -1,5 +1,6 @@
 //! Owner send/cancel at the real daemon socket, with a fake provider and isolated tmux.
 #![cfg(target_os = "linux")]
+mod candidate;
 mod common;
 mod messaging_fixture;
 use cockpit_protocol::{Command, ErrorCode, Reply};

@@ -1,5 +1,6 @@
 //! #450: the owner reaches the real Codex adapter through the sandbox's mapped socket.
 #![cfg(target_os = "linux")]
+mod candidate;
 mod common;
 mod messaging_fixture;
 use cockpit_codex::{Bridge, CONFORMANCE_VERSION, Codex};

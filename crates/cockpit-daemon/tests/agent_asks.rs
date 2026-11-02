@@ -4,6 +4,7 @@
 //! Issue #285: once the session ends, what it asked leaves the queue and cannot be approved.
 //! Issue #347: the owner's show verbs read such an ask as expired, as the agent does.
 
+mod candidate;
 mod real_daemon;
 
 use std::time::{Duration, Instant};

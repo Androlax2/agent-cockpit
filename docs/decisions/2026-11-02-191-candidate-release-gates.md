@@ -57,6 +57,19 @@ eight inline angles, deduplication only, no verifier pass, findings `[]`. No act
 correctness or repository-rule findings. It ran no tests, load, edits or Git operations.
 This review does not claim the pending native-platform or sustained CI acceptance.
 
+## CI follow-up
+
+The first PR run failed Linux Clippy before tests (run 41387562381, job 125091720841):
+`launch_root_order` imports both `common` and `real_daemon`, so their private declarations
+loaded `candidate/mod.rs` twice. The preliminary focused lint targets and independent
+review missed that composition. No test or lint was disabled.
+
+Each daemon test entry point now declares `candidate` once; both fixtures import that root
+module. The check expanded to `cargo clippy --locked -j 2 -p cockpit-daemon --tests -- -D warnings`
+and passes, including the previously failing target. The initial mechanical edit missed
+module declarations on line 1; the expanded check caught and resolved those imports before
+push. Relevant archive entry-point tests are rerun for the corrected wiring.
+
 ## Sources
 
 - [GitHub hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)

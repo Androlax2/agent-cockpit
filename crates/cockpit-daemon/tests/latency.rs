@@ -22,6 +22,7 @@
 //! a broken restart.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod real_daemon;
 
 use std::fmt::Write as _;

@@ -5,6 +5,7 @@
 //! --test approvals_poll_cost --run-ignored only --no-capture`.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::Path;

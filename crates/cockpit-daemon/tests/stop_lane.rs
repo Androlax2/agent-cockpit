@@ -12,6 +12,7 @@
 //! `SIGTERM` waits out the stop's grace.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};

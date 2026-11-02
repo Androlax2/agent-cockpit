@@ -3,6 +3,7 @@
 //! pseudo-terminal on the host, its output redacted. This test process plays the agent.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::time::Instant;

@@ -4,6 +4,7 @@
 //! destructor and no runtime shutdown runs, and Claude Code is wired as the binary wires it.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod real_daemon;
 
 use cockpit_protocol::{Command, LaunchKindView, SessionStateView};

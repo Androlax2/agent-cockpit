@@ -1,5 +1,6 @@
 //! #416's daemon handoff: the real adapter receives its original host-retained launch.
 #![cfg(target_os = "linux")]
+mod candidate;
 mod common;
 mod messaging_fixture;
 

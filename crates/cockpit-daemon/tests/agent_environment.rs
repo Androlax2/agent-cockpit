@@ -4,6 +4,7 @@
 //! variables the daemon has, never ones it lacks (#303, #306), unless the owner withholds them
 //! (#305), and as the owner last imported them (#307).
 
+mod candidate;
 mod real_daemon;
 
 use std::time::{Duration, Instant};

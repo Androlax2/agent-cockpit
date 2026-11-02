@@ -1,6 +1,7 @@
 //! Restart contract, steps 2 and 3 (report 03), through the daemon binary: executions left
 //! by a killed daemon are reconciled before the new one accepts requests.
 
+mod candidate;
 mod common;
 
 use std::ffi::OsString;

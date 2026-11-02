@@ -5,6 +5,7 @@
 //! provider, a real state database, real processes and a private tmux server.
 #![cfg(target_os = "linux")]
 
+mod candidate;
 mod common;
 
 use std::path::{Path, PathBuf};
