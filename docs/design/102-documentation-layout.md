@@ -88,7 +88,7 @@ provides them. The framework choice belongs to the
   selection, accessible control names, theme contrast and touch target sizes in
   rendered upstream components. Focus outlines in drawings are not browser tests.
 
-All six exported PNG previews were opened and inspected. No independent design critique,
+During the original proposal preparation, all six exported PNG previews were opened and inspected. No independent design critique,
 automated accessibility audit, browser interaction check or performance
 measurement has run. Dark-theme values exist in the reference variables, but a
 dark browser rendering has not been reviewed. Exact-frame approval remains open.
@@ -133,7 +133,7 @@ The guidance informed familiar navigation, a restrained reading column, real sou
 | Designer's manual inspection of the mobile navigation preview | Product name appeared twice | r2 to r3 hid node `113`, removing the duplicate heading; snapshots also record seven resulting transform changes |
 | Reading the repository README | Public installation remained incomplete | Proposal copy retained that limitation and did not claim successful public onboarding |
 
-These author checks were not an independent critique. Reading `critique.md` or `audit.md` did not produce a formal finding list. Keyboard behavior, browser accessibility, dark rendering, performance and search behavior remain unverified.
+Those original author checks were not an independent critique. Reading `critique.md` or `audit.md` did not produce a formal finding list. Keyboard behavior, browser accessibility, dark rendering, performance and search behavior remain unverified.
 
 ### Evidence locations and verification boundaries
 
@@ -146,3 +146,13 @@ The Designer's inspected discovery paths did not expose a local Impeccable skill
 
 Review these frames before implementation. Approval should identify the saved
 version above; only approved frames may subsequently be marked `readyForDev`.
+
+## Fresh installed Impeccable critique
+
+After Theo installed Impeccable and explicitly authorized a new run, the parent invoked the installed engine and followed the critique workflow with two fresh isolated assessments. The [persisted critique snapshot](../../.impeccable/critique/2026-11-02T02-18-33Z__design-plans-documentation-site-figcraft.md) contains the findings and static-proposal score. The [execution evidence](evidence/102-impeccable-run-2026-11-02.json) records engine/skill versions, exact commands, outcomes, raw context and detector output, target hash and coverage limits.
+
+The installed engine ran (`impeccable-engine 0.1.18`; skill 4.8.0). Active skill/critique guidance matches upstream `e89e3ada3e875a89ac2c5d33d11e65ebef6fe285`; this is not a claim that every installed file matches that revision. The scoped context command succeeded. The actual detector command exited 1 with an `ENOENT` read error for the exact FigCraft path despite a subsequent file listing confirming it exists. One target was requested; none was successfully scanned. Stdout `[]` is not a clean result and the cause is not established.
+
+The independent visual assessment inspected all six PNG previews and found two P2 concerns: the broad desktop prose measure and absence of a visible pointer/touch dismissal control or mobile example in the search drawings. Its Nielsen assessment is 26/36 for static design intent, with interaction efficiency unscored. That score is not a production audit or shipping approval. No design changes were applied, no frames were approved or marked ready for development, and the FigCraft archive hash is unchanged.
+
+No product browser route was available; no overlay, keyboard/accessibility check, dark browser rendering or performance measurement ran. The dependency probe was not substituted for the product. This fresh review is separate from the original revision's manual-guidance-only history above and from the final independent full-delta PR review, which remains pending.
