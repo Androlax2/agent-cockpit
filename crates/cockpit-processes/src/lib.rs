@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod diagnostics;
 mod error;
 mod model;
 mod output;
@@ -9,6 +10,10 @@ mod store;
 mod supervisor;
 mod systemd;
 
+pub use diagnostics::{
+    FinalPresence, ProcessObservation, ProcessRead, ProcessSnapshot, ProcessState, SignalOutcome,
+    SnapshotStatus, TerminationDiagnostics, UnconfirmedReason,
+};
 pub use error::Error;
 pub use model::{
     Containment, EndReason, Escalation, Execution, ExecutionId, HostedLaunch, Identity, LaunchSpec,

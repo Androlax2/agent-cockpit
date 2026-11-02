@@ -62,7 +62,7 @@ pub enum Error {
         session: SessionId,
         operation: &'static str,
     },
-    /// The agent's execution was not observed gone after `SIGKILL`; the session keeps it.
+    /// The agent's execution was not observed gone; the session keeps it, signalled or not.
     StopUnconfirmed {
         session: SessionId,
         execution: ExecutionId,
@@ -177,8 +177,8 @@ impl fmt::Display for Error {
             ),
             Error::StopUnconfirmed { session, execution } => write!(
                 formatter,
-                "session {session}'s agent did not stop: {execution} still has processes \
-                 after SIGKILL; the session keeps it"
+                "session {session}'s agent termination is unconfirmed: {execution} was not \
+                 observed ended; the session keeps it"
             ),
             Error::Provider(error) => write!(formatter, "the agent's provider: {error}"),
             Error::Projects(error) => error.fmt(formatter),

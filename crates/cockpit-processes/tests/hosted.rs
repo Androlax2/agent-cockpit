@@ -4,6 +4,10 @@
 
 mod common;
 
+#[cfg(target_os = "linux")]
+#[path = "common/gated_host.rs"]
+mod gated_host;
+
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
@@ -239,5 +243,229 @@ async fn an_environment_name_env_would_misread_is_refused_before_any_reservation
             .await
             .unwrap(),
         []
+    );
+}
+
+#[cfg(target_os = "linux")]
+const GATED_ESCALATION: cockpit_processes::Escalation = cockpit_processes::Escalation {
+    grace: std::time::Duration::from_millis(100),
+    kill_wait: std::time::Duration::from_millis(200),
+};
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unreaped_hosted_leader_keeps_its_reservation_until_reaped() {
+    tokio::time::timeout(std::time::Duration::from_secs(25), async {
+        let home = Home::new();
+        let database = home.open_database().await;
+        let supervisor = home.process_group_supervisor();
+        let launch = supervisor
+            .prepare_hosted(
+                &database,
+                &shell(&home, "trap '' TERM; echo ready > ready; exec sleep 300"),
+                &[],
+            )
+            .await
+            .unwrap();
+        let mut host = gated_host::GatedHost::start(&launch.command, home.path()).await;
+        supervisor
+            .confirm_hosted(&database, launch.execution)
+            .await
+            .unwrap();
+        supervisor
+            .release_hosted(&database, launch.execution)
+            .await
+            .unwrap();
+        assert!(eventually(|| home.path().join("ready").exists()).await);
+
+        let termination = supervisor
+            .terminate(&database, launch.execution, GATED_ESCALATION)
+            .await
+            .unwrap();
+        assert_eq!(
+            host.exited_without_reaping(host.leader)
+                .await
+                .terminating_signal(),
+            Some(9)
+        );
+        assert!(
+            std::fs::read_to_string(format!("/proc/{}/stat", host.leader.as_raw_nonzero()))
+                .unwrap()
+                .contains(") Z ")
+        );
+        let Termination::Unconfirmed { diagnostics } = termination else {
+            panic!("unreaped leader must remain unconfirmed")
+        };
+        assert_eq!(
+            diagnostics.reason,
+            cockpit_processes::UnconfirmedReason::KillWaitElapsed
+        );
+        assert_eq!(
+            diagnostics.term,
+            Some(cockpit_processes::SignalOutcome::Sent)
+        );
+        assert_eq!(
+            diagnostics.kill,
+            Some(cockpit_processes::SignalOutcome::Sent)
+        );
+        assert!(
+            diagnostics
+                .snapshot
+                .members
+                .iter()
+                .any(|member| member.pid == host.leader.as_raw_nonzero().get()
+                    && member.state == 'Z')
+        );
+        assert!(
+            diagnostics
+                .snapshot
+                .parents
+                .iter()
+                .any(|parent| parent.pid == i32::try_from(std::process::id()).unwrap())
+        );
+        let kept = supervisor
+            .observe(&database, launch.execution)
+            .await
+            .unwrap();
+        assert!(kept.phase.is_occupying() && kept.cancel_requested);
+        assert_eq!(
+            cockpit_processes::occupying_executions(&database)
+                .await
+                .unwrap(),
+            [kept]
+        );
+
+        host.reap(host.leader);
+        assert_eq!(
+            supervisor
+                .observe(&database, launch.execution)
+                .await
+                .unwrap()
+                .phase,
+            Phase::Ended(EndReason::Terminated)
+        );
+        assert_eq!(
+            supervisor
+                .terminate(&database, launch.execution, GATED_ESCALATION)
+                .await
+                .unwrap(),
+            Termination::Confirmed { after: None }
+        );
+    })
+    .await
+    .expect("bounded hosted zombie characterization");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unconfirmed_stop_retains_the_identity_recovered_from_its_leader_file() {
+    tokio::time::timeout(std::time::Duration::from_secs(25), async {
+        let home = Home::new();
+        let database = home.open_database().await;
+        let supervisor = home.process_group_supervisor();
+        let launch = supervisor
+            .prepare_hosted(
+                &database,
+                &shell(&home, "trap '' TERM; echo ready > ready; exec sleep 300"),
+                &[],
+            )
+            .await
+            .unwrap();
+        let mut host = gated_host::GatedHost::start(&launch.command, home.path()).await;
+        // Model a host that ran while confirmation was never committed.
+        supervisor
+            .release_hosted(&database, launch.execution)
+            .await
+            .unwrap();
+        assert!(eventually(|| home.path().join("ready").exists()).await);
+        let leader = std::fs::read_to_string(
+            supervisor
+                .execution_dir(&database, launch.execution)
+                .join("leader"),
+        )
+        .unwrap();
+        let expected_start = leader.lines().nth(1).unwrap();
+        let before = cockpit_processes::execution(&database, launch.execution)
+            .await
+            .unwrap();
+        assert_eq!(before.phase, Phase::Launching);
+        assert_eq!(before.process_group, None);
+        assert_eq!(before.leader_start, None);
+
+        let Termination::Unconfirmed { diagnostics } = supervisor
+            .terminate(&database, launch.execution, GATED_ESCALATION)
+            .await
+            .unwrap()
+        else {
+            panic!("unreaped recovered leader must remain unconfirmed");
+        };
+        assert_eq!(
+            host.exited_without_reaping(host.leader)
+                .await
+                .terminating_signal(),
+            Some(9)
+        );
+        assert_eq!(
+            diagnostics.execution.process_group,
+            Some(host.leader.as_raw_nonzero().get())
+        );
+        assert_eq!(
+            diagnostics.execution.leader_start.as_deref(),
+            Some(expected_start)
+        );
+        assert_eq!(diagnostics.execution.phase, Phase::Running);
+        host.reap(host.leader);
+    })
+    .await
+    .expect("bounded recovered-identity regression");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reaped_leader_does_not_release_or_hide_its_live_descendant() {
+    use rustix::process::{self, Pid, Signal};
+    tokio::time::timeout(std::time::Duration::from_secs(25), async {
+        let home = Home::new();
+        let database = home.open_database().await;
+        let supervisor = home.process_group_supervisor();
+        let launch = supervisor.prepare_hosted(&database, &shell(&home,
+            "trap '' TERM; (echo ready > ready; exec sleep 300) & echo $! > descendant; wait"), &[]).await.unwrap();
+        let mut host = gated_host::GatedHost::start(&launch.command, home.path()).await;
+        supervisor.confirm_hosted(&database, launch.execution).await.unwrap();
+        supervisor.release_hosted(&database, launch.execution).await.unwrap();
+        let descendant = Pid::from_raw(read_pid(&home.path().join("descendant")).await).unwrap();
+        assert!(eventually(|| home.path().join("ready").exists()).await);
+        process::kill_process(host.leader, Signal::KILL).unwrap();
+        host.exited_without_reaping(host.leader).await;
+        assert!(supervisor.observe(&database, launch.execution).await.unwrap().phase.is_occupying());
+        host.reap(host.leader);
+        assert!(supervisor.observe(&database, launch.execution).await.unwrap().phase.is_occupying());
+        assert!(process::waitid(process::WaitId::Pid(descendant), process::WaitIdOptions::EXITED | process::WaitIdOptions::NOHANG | process::WaitIdOptions::NOWAIT).unwrap().is_none());
+
+        assert!(matches!(supervisor.terminate(&database, launch.execution, GATED_ESCALATION).await.unwrap(), Termination::Unconfirmed { .. }));
+        assert_eq!(host.exited_without_reaping(descendant).await.terminating_signal(), Some(9));
+        assert!(supervisor.observe(&database, launch.execution).await.unwrap().phase.is_occupying());
+        host.reap(descendant);
+        assert_eq!(supervisor.observe(&database, launch.execution).await.unwrap().phase, Phase::Ended(EndReason::Terminated));
+    }).await.expect("bounded descendant characterization");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_that_never_reports_ready_is_killed_and_reaped_by_cleanup() {
+    let home = Home::new();
+    let command = ["/bin/sleep".into(), "300".into()];
+    let mut host = gated_host::GatedHost::start(&command, home.path()).await;
+    let ready = tokio::time::timeout(std::time::Duration::from_millis(50), async {
+        while !home.path().join("ready").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(ready.is_err());
+    host.cleanup();
+    assert_eq!(
+        rustix::process::test_kill_process_group(host.leader),
+        Err(rustix::io::Errno::SRCH)
     );
 }

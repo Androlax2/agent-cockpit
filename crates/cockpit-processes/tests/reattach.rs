@@ -210,7 +210,16 @@ async fn an_intent_with_no_identity_and_no_leader_file_stays_charged() {
         .unwrap();
 
     assert_eq!(reconciled, [Reconciled::Uncertain(execution.id)]);
-    assert_eq!(termination, Termination::Unconfirmed);
+    let Termination::Unconfirmed { diagnostics } = termination else {
+        panic!("unidentified execution must remain reserved");
+    };
+    assert_eq!(
+        diagnostics.reason,
+        cockpit_processes::UnconfirmedReason::Unidentified
+    );
+    assert_eq!(diagnostics.term, None);
+    assert_eq!(diagnostics.kill, None);
+    assert!(process_exists(execution.process_group.unwrap()));
     let kept = cockpit_processes::execution(&database, execution.id)
         .await
         .unwrap();
