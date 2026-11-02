@@ -45,7 +45,7 @@ advice. `data_dir` and `unit_path` identify paths to protect at launch.
 - [x] Run the focused sandbox test selection and record the expected failures.
 - [x] Implement the explicit lifecycle using bounded commands, atomic private files and
   an ownership receipt. Keep the service's engine/data paths absolute and profile scoped.
-- [ ] Finish the shared-lock workspace suite after passing the focused sandbox selections; exact outcomes are recorded in PR #528 (final suite still running).
+- [x] Finish the shared-lock workspace suite after passing focused selections: 2242 passed, 33 skipped; exact command and earlier failures are recorded in PR #528.
 - [x] Commit the capability with its tests.
 
 ### Task 2: Product entry points and launch/readiness wiring
@@ -74,7 +74,7 @@ decision evidence. Coordinate workflow edits with the release lane before any wo
 
 - [x] Keep local installer smoke free of service effects; prove real lifecycle/network only
   in isolated CI. Record unavailable platform/capability checks without marking them passed.
-- [ ] Finish the workspace gate (including crate graph); affected fmt, Clippy, rustdoc, Python and docs checks pass with the recorded baseline exception.
+- [x] Finish the local workspace suite (including crate graph), affected fmt, Clippy, rustdoc, Python and docs checks, with the recorded baseline exception. CI remains the merge gate.
 - [x] Invoke the installed Codex `$code-review` skill at medium on the final delta and
   record its revision/findings. Its inline recipe does not replace the lane's separate
   fresh independent full-delta review; preserve each review's actual provenance.
@@ -84,7 +84,7 @@ decision evidence. Coordinate workflow edits with the release lane before any wo
 
 ## Execution evidence
 
-Implementation committed as `2275f3b`; draft PR #528. Native Codex `$code-review medium`
+Implementation committed as `2275f3b`; reviewed follow-up `e7ec55a`; PR #528. Native Codex `$code-review medium`
 ran twice with eight inline angles and recorded findings. Two separately identified fresh
 independent full-delta reviews ran, the second after substantive fixes; its verdict found
 no new critical or important issue and is conditional on final suite/CI success.
@@ -95,11 +95,20 @@ Markdown, links, typos and affected Python checks passed. The full workspace run
 an outdated help snapshot and two exact profile-layout expectations; those were fixed.
 The ambient-PATH failure already tracked by #492 is reproduced and passes with its existing
 clean-PATH workaround. Unchanged repository-wide Python formatting still flags
-`tools/tests/test_acceptance_runner.py`; it is not reported as passing. Final full-suite and
-CI outcomes belong in PR #528 before acceptance.
+`tools/tests/test_acceptance_runner.py`; it is not reported as passing. The final local workspace suite passed 2242 tests with 33 skipped, under the shared lock
+and two workers. CI outcomes belong in PR #528 before acceptance.
 
 Real lifecycle/network proof stays open. The published macOS engine cannot safely expose
 the public CA through private-state denial; #527 tracks its upstream fix/approved release,
 with typed launch refusal in this implementation. The current Greyproxy pin lacks fork
 PR #8 and requires a separately approved published update for concurrent-session proof.
 No workflow, dependency, manifest or host-service changes were made by this lane.
+
+CI on `e7ec55a` exposed a fixture timing race: the Codex owner-send test received explicit
+`Busy` while the periodic lifecycle pass held the same session operation lock. Its bounded
+fixture wait retries only this pre-delivery refusal and returns every other error; the
+exact three-action assertion remains. Production delivery/locking behavior is unchanged.
+The same independent reviewer confirmed this targeted follow-up, including all send/cancel
+call sites, with no remaining findings. Focused Codex messaging: 3 passed, 0 skipped;
+fixture Clippy, fmt and diff checks passed. The two full-delta reviews remain separately
+identified above; final CI still gates acceptance.
