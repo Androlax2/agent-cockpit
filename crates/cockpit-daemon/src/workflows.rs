@@ -42,14 +42,15 @@ pub(crate) struct Context {
 }
 
 /// The route for a workflow command; `routes.rs` sends only those here, after the socket
-/// rules. Agent requests run in the bulk lane like every agent request (#32).
+/// rules. Agent requests and evidence-bound completion run in bulk; completion may read
+/// Git and hash artifacts, so it must not hold a control worker (#328).
 pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
     if matches!(command, Command::WorkflowPresets) {
         return Route::Answer(Outcome::Ok(presets_reply()));
     }
-    let class = match peer {
-        Peer::Agent { .. } => WorkClass::Bulk,
-        Peer::Owner => WorkClass::Control,
+    let class = match (&command, &peer) {
+        (Command::WorkflowComplete { .. }, _) | (_, Peer::Agent { .. }) => WorkClass::Bulk,
+        (_, Peer::Owner) => WorkClass::Control,
     };
     let work = async move {
         match peer {
