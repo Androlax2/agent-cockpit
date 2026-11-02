@@ -31,3 +31,37 @@ Evidence: [isolated orchestration tests](../../tools/tests/test_release_pr.py),
 [real-tool conformance](../../tools/tests/release_pr_conformance.py), and
 [workflow](../../.github/workflows/release-plz.yml). Live draft workflow acceptance is not
 claimed by fixture tests. Workflow pushes remain host-reviewed through `ask-to-run`.
+
+## Generated Markdown correction
+
+The first live draft (#514) and same-base retry preserved the exact branch/head, but
+its docs CI found MD022 (header separation) and MD033 (a historical subject containing
+an angle-bracket placeholder). Fix the shared git-cliff template rather than changing
+the immutable draft, rewriting historical commits, or relaxing Markdown rules. The
+shared postprocessor (`tools/changelog.py`) escapes prose while preserving matching
+backtick code spans, including commands containing placeholders. The real-tool fixture
+exercises both forms; command-entry tests cover escaped/unmatched backticks and multi-backtick
+spans. Both release workflow path filters include the postprocessor. Full-history
+output is checked with the unchanged `make docs-ci` in a disposable checkout before
+review; replacement-draft CI still needs measured evidence.
+
+## Review provenance for the Markdown correction
+
+The first independent fresh-agent review covered the full delta at `8ba5d573a9c55272baf2cc5e5ceddcbe1e4f6b66` and found the
+code-span entity regression. That was a fallback review, not `$code-review`. After
+Theo clarified Codex skill discovery, the skill was found by following
+`~/.codex/skills/code-review/SKILL.md`; the earlier unavailable-workflow report is
+corrected. `$code-review medium` ran its eight inline angles on `570fe35..a9fca50`,
+without subagents or a verifier pass. It found escaped opening backtick runs,
+Markdown links and already escaped angle brackets changed by the postprocessor.
+All three were reproduced with failing command-entry fixtures and corrected; the
+focused tests and real-tool conformance then passed. This inline skill execution
+is recorded separately from independent review.
+
+A second fresh independent context also invoked the actual `$code-review medium`
+workflow on the full delta through `be5a50c`. Its two findings concerned reference-like
+prose incorrectly exempted as a link, and backticks inside link destinations treated
+as code delimiters. Both were reproduced by failing command-entry cases. Link ranges
+now come from the complete line, with reference definitions anchored at its start;
+backticks inside those destinations cannot open a prose code span. Targeted reviewer
+confirmation and replacement-draft CI are still required before acceptance.

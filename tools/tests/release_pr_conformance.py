@@ -48,6 +48,14 @@ def main():
             if version != expected:
                 raise RuntimeError(f"Expected {expected}, found {version}")
         fixture = Fixture(parent)
+        # A historical non-conventional subject broke the first live draft's docs gate.
+        git(fixture.root, "checkout", "-q", "main")
+        (fixture.root / "placeholder.txt").write_text("fixture\n")
+        fixture.base = fixture.commit(
+            "fixture command <repo>: keep `cockpit stack <repo>` readable"
+        )
+        git(fixture.root, "push", "-q", "origin", "main")
+        git(fixture.root, "checkout", "-q", "--detach", fixture.base)
 
         def prepare():
             subprocess.run(
@@ -70,6 +78,13 @@ def main():
         ]
         assert version == "0.1.0", version
         assert "initial fixture" in (fixture.root / "CHANGELOG.md").read_text()
+        changelog = (fixture.root / "CHANGELOG.md").read_text()
+        problems = []
+        if "the title format.\n\n## Unreleased\n" not in changelog:
+            problems.append("generated heading needs a blank line after the header (MD022)")
+        if "fixture command &lt;repo&gt;: keep `cockpit stack <repo>` readable" not in changelog:
+            problems.append("escape prose placeholders (MD033), preserving literal code spans")
+        assert not problems, "; ".join(problems)
 
         def publish():
             with (

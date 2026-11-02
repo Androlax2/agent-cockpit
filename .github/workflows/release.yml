@@ -18,6 +18,7 @@ on:
       - tools/release.py
       - tools/tests/test_release.py
       - cliff.toml
+      - tools/changelog.py
   schedule:
     # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
     - cron: "17 3 * * *"
