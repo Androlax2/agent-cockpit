@@ -67,7 +67,7 @@ pub struct Evidence {
     pub enforcement: Enforcement,
     pub platform: String,
     pub rules: Vec<AppliedRule>,
-    /// The host capabilities the engine reported when it was checked.
+    /// Engine-reported capabilities and separately labelled owner probe attestations.
     pub observed: Vec<String>,
 }
 

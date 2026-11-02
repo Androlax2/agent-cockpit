@@ -78,6 +78,8 @@ jobs:
         run: python3 config/bin/.local/bin/cockpit-game-guard off
       - name: Run the greenfield gate
         run: make greenfield-ci
+      - name: Check enforcement-runner fixtures
+        run: make sandbox-enforcement-fixtures
 
   # The daemon's startup tests on macOS, clean-home start included (M0 gate, #27); the full
   # greenfield gate stays on Linux. Plain cargo: the Makefile's agent-build runner is Linux-only.
@@ -123,6 +125,8 @@ jobs:
         run: command -v tmux || brew install tmux
       - name: Drive the TUI end to end
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-tui --test e2e
+      - name: Check observation ownership and missing macOS engine capability
+        run: make sandbox-enforcement-platform-fixtures
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash

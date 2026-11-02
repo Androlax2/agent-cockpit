@@ -224,17 +224,21 @@ clean installs block it; a beta must upgrade from the previous beta.
 
 | Channel | Opens after | Promise |
 | --- | --- | --- |
-| alpha | the Alpha 1 checklist (#52) closes | Installs on Linux, macOS and WSL2; each release lists its known gaps; data may be reset between releases |
+| alpha | the Alpha 1 checklist (#52) closes | Alpha 1 installs from archives on Linux and WSL2; each release lists its known gaps; data may be reset between releases |
 | beta | the Beta 1 checklist (#57) closes | Everything alpha promises, and upgrades keep state: a beta upgrades in place from the previous beta without losing data |
+
+Theo's [2026-11-02 scope decision](decisions/2026-11-02-568-alpha-platform-scope.md) defers macOS artifacts/installers, Homebrew distribution and macOS acceptance beyond Alpha 1 under #568. No experimental macOS download or restoration milestone is promised; restoration needs evidence and an explicit owner decision. Other packaging (#562/#563/#565) moves to Alpha 2. Linux/WSL2 archive-install, sandbox and human acceptance still gate Alpha 1; historical macOS results and ordinary repository-required development checks remain separate.
 
 Every later release milestone ships on the beta channel. A stable channel and 1.0 are not
 planned: Theo decides them once users have used the betas for a long time.
 
 ## Candidate checks
 
-The release workflow executes the universal archive on both native macOS architectures.
-Its `compatibility` job runs the archive's daemon through protocol-skew and killed-daemon
-restart fixtures, plus linked migration and interrupted-restore tests from the same source
+The Alpha1 release plan selects Linux x86_64 and aarch64 archives; WSL2 uses the x86_64
+archive with separate gates. macOS distribution and acceptance are deferred under #568;
+the retained future macOS jobs do not establish support. The `compatibility` job runs
+the archive's daemon through protocol-skew and killed-daemon restart fixtures, plus
+linked migration and interrupted-restore tests from the same source
 revision. `make release-compatibility` owns those commands.
 
 `make release-responsiveness` is CI-only: five minutes against the verified Linux archive,
@@ -250,7 +254,9 @@ channel and downloads its matching archive and checksums with read-only GitHub a
 `make release-upgrade` verifies the checksum, manifest and source revision, then stops the
 old daemon before starting the candidate in one private temporary home. Project/task state
 must survive, and new writes must work. Tested processes receive no GitHub credentials.
-Linux, both macOS architectures and WSL2 have jobs; publishing needs all of them.
+Alpha1 publication requires successful applicable Linux and WSL2 jobs; their presence
+is not proof of acceptance. Future macOS gates remain pending a separate verified
+restoration decision, alongside the other beta publication requirements.
 
 Alpha keeps its explicit upgrade exemption. Development dry runs have no release channel.
 Both run the state fixture twice with the current candidate and print `upgrade=not-run`;

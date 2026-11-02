@@ -29,6 +29,8 @@ Decision (#61, option C): Cockpit owns the policy, the engine enforces it.
    `agents.sandbox = "off"`), the engine and platform, every rule with what enforced it, and
    the host capabilities observed. `record` stores it in the launch's transaction;
    `latest_for_session` reads it back for `cockpit session sandbox`.
+   `record_observations` appends one bounded owner-measured batch for that exact launch;
+   output labels it `owner probe` to distinguish an attestation from engine capabilities.
 
 Edges: `cockpit-config` (the owner's `DesktopSession` and `AgentSandbox` values) and
 `cockpit-turso` (the evidence table, behind the default `persistence` feature).
@@ -115,3 +117,33 @@ doctor in a temporary home, with fake providers and service managers. The existi
 `greenfield-ci` gate includes it. It does not start a proxy service or prove live sandbox
 enforcement. Greyproxy `v0.4.5-cockpit.1` lacks fork PR #8; concurrent-session acceptance
 requires the separately approved corrected release before #433 can claim it.
+
+## Measured enforcement evidence (#433)
+
+The owner can record a measured batch with
+`cockpit session sandbox-record SESSION --client CLIENT --observed TEXT...`, using the
+latest launch's proxy client identity from `session sandbox`. The daemon refuses agent
+callers, stale identities, unsandboxed launches and conflicting replacement reports. An
+identical retry is idempotent. A batch contains 1–16 unique, nonblank observations of at
+most 512 bytes each, with no control characters. Reports do not change sandbox policy,
+capabilities or grants. They persist with the launch in its existing transaction domain.
+
+`make sandbox-enforcement-fixtures` exercises the isolated runner with fake commands and
+temporary Unix sockets; systemctl endpoint selection never contacts a real user manager.
+The separate `make sandbox-enforcement-ci` requires explicit disposable hosted CI: it
+installs the verified published engines into a temporary home, starts only that profile's
+managed service and daemon, and runs one fake-provider session through four sequential
+launches. Allowed checkout/network controls accompany private-path and destination denials.
+The host reads only its fixture proxy's request decisions through the authenticated API;
+exact launch/client/destination matching prevents a DNS/TLS failure or timeout alone from
+counting as enforcement. Saved artifacts omit tokens and private file contents.
+
+Alpha 1 requires live bootstrap and enforcement evidence on Linux and WSL2 only. Those
+results remain unmeasured until separately approved disposable CI execution with the
+corrected published Greyproxy and approved pins. Ordinary CI runs fixtures, not live
+enforcement. Fixture success is not a live platform pass.
+
+macOS support and its public-CA isolation fix (#527) are deferred beyond Alpha 1 under
+issue #568; they are not Alpha 1 release prerequisites. Keep the macOS capability refusal
+fail-closed and ordinary required development CI intact. Deferral does not erase known
+failures or establish future support.

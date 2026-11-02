@@ -3,6 +3,8 @@
 Issue #98 remains open until a volunteer with no prior Cockpit context installs and starts a session from the README alone.
 This record separates the documentation draft from that live acceptance. No volunteer walk has been recorded.
 
+Alpha 1's supported route is **Linux/WSL2 archive installation**, per [Theo's scope decision](../decisions/2026-11-02-568-alpha-platform-scope.md). macOS delivery, Homebrew and macOS acceptance are deferred beyond Alpha 1 under #568, not passed; other packaging (#562/#563/#565) moves to Alpha 2. The volunteer walk and Linux/WSL2 public archive evidence remain required. Historical documentation and test records below retain their original scope.
+
 ## Source coverage
 
 | README section | Current source or entry-point fixture |
@@ -38,8 +40,8 @@ The README follows #470's installer (`2553ebff48d8c812c8464996fe9a50e27d97fc1d`)
 and #495's managed proxy wiring (`d1f7b0a08f36f0c67c8fb8cbf6da4e9c66900f95`),
 both present in this branch's base `2ebc7f13c10bb0fb6b3fea125cd17a097ebb4d46`.
 The command downloads and verifies engines, then configures and starts the profile's
-proxy before the daemon. The README records curl, service-manager prerequisites,
-fixed-port collision refusal, state locations and the current macOS public-CA
+proxy before the daemon. At that revision, the README recorded curl, service-manager prerequisites,
+fixed-port collision refusal, state locations and the then-current macOS public-CA
 capability blocker (#527). It does not suggest changing the sandbox policy to bypass
 that blocker.
 
