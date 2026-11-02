@@ -485,6 +485,7 @@ jobs:
   # A tag only: build provenance over the checksummed archives, then the draft with every
   # asset. Dry runs never attest, so no unreleased build verifies as this repository's.
   draft:
+    environment: release
     if: needs.plan.outputs.tag != ''
     needs: [plan, notes, assemble]
     runs-on: ubuntu-24.04
@@ -554,6 +555,7 @@ jobs:
   # Publishing is the last step and needs every gate job; a gate check without a job is a
   # named gap that keeps the release a draft (tools/release.py GATE_CHECKS).
   publish:
+    environment: release
     if: needs.plan.outputs.tag != ''
     needs: [plan, draft, gate, install, install-wsl2, compatibility, responsiveness, upgrade, upgrade-wsl2]
     runs-on: ubuntu-24.04
