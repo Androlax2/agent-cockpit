@@ -1,6 +1,6 @@
 # Documentation generator proposal
 
-Issue #102. **Fumadocs visual direction and exact Astro dependency proposal approved by Theo.** Design/frame approval and host workflow pushes, Pages settings and deployment remain separate.
+Issue #102. **Fumadocs visual direction and exact Astro dependency proposal approved by Theo.** Theo subsequently approved exact visual revision `1a19a1c1456`. Host workflow pushes, Pages settings and deployment remain separate.
 
 ## Approval record
 
@@ -45,7 +45,7 @@ The installed Node 26.12.1 and npm 12.2.1 satisfy the inspected framework engine
 
 ## Design handoff
 
-A Designer prepared the [current r4 layout handoff](../design/102-documentation-layout-r4.md) under #499, FigCraft revision `1a19a1c1456`; exact-frame approval remains pending. The original r3 handoff and critique remain as historical evidence. Use standard Fumadocs navigation, document body, table of contents, version selector, search and theme controls. Retain source provenance and pending-reference labels in the content. No new logo, product palette or marketing landing page is requested.
+A Designer prepared the [current r4 layout handoff](../design/102-documentation-layout-r4.md) under #499, FigCraft revision `1a19a1c1456`; Theo approved this exact visual revision for implementation. The original r3 handoff and critique remain as historical evidence. Use standard Fumadocs navigation, document body, table of contents, version selector, search and theme controls. Retain source provenance and pending-reference labels in the content. No new logo, product palette or marketing landing page is requested.
 The approved FigCraft frame revision and Impeccable guidance actually used must be recorded before implementing a new layout. A preferred reference is not an approved frame. Missing design capabilities must be reported rather than silently replaced with invented UI.
 
 ## Intended implementation after approval
@@ -58,7 +58,7 @@ The approved FigCraft frame revision and Impeccable guidance actually used must 
 - Pages settings/deployment, workflow pushes and the repository website field use reviewed `ask-to-run` host approval. No custom domain, tag or release creation.
 - Keep install/session acceptance open until the merged public installer is used successfully by a reader following the site alone. #98's pending volunteer result is not site acceptance.
 
-The dependency approval is recorded above and package installation stays in this sandbox checkout. Exact-frame approval, workflow pushes, Pages settings and deployments retain their separate review requirements.
+The dependency approval is recorded above and package installation stays in this sandbox checkout. Frame approval is recorded in the r4 handoff; workflow pushes, Pages settings and deployment retain their separate host review.
 
 ## Sources
 

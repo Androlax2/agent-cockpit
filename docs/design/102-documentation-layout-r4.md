@@ -1,9 +1,8 @@
 # Documentation layout r4
 
-**Proposed; exact-frame approval remains open.** This separate
+**Approved by Theo for implementation: visual revision `1a19a1c1456`.** This separate
 [r4 board](../../design-plans/documentation-site-r4.figcraft) preserves the original
-r3 file, historical evidence and the selected Fumadocs identity. No frame is
-marked `readyForDev` or completed. Product naming remains unchanged pending #339.
+r3 file, historical evidence and the selected Fumadocs identity. The open r4 file is preserved; a separate approved handoff archive marks the ten approved frames `readyForDev`. Product naming remains unchanged pending #339.
 
 Saved version: `102 documentation proposal r4`, ID `1a19a1c1456`.
 Artifact SHA-256:
@@ -108,3 +107,21 @@ or product implementation was performed by this Designer continuation.
 Host-approved request `adff022749eb` opened this r4 board through the existing verified checkout-specific FigCraft instance on workspace 7 (exit 0). The original r3 document and other windows/documents remained open. Opening the board does not approve it.
 
 The parent inspected desktop light/dark, mobile reading dark and mobile search light previews; the Designer inspected all ten. The native `inspect.readyForDev` check returned an empty list, and PNG headers confirmed the sizes in the table. Markdown, local links and spelling passed. `make docs-ci` passed before the proposal commit. The parent separately captured the installed styles with the existing headless browser, as documented in the linked style-reference evidence; no new product browser acceptance is claimed.
+
+## Approval record
+
+Theo answered yes to the explicit approval request for revision `1a19a1c1456`. The parent recorded readiness in [the approved handoff archive](../../design-plans/documentation-site-approved.figcraft), saved version `1a19a26666d`, without overwriting the open r4 file. The ten frame IDs above are ready for development; visual content is unchanged. The original approved visual archive SHA-256 remains the value above. Workflow pushes, Pages settings and deployment retain separate host approval.
+
+Approved handoff archive SHA-256: `f3ebf4ea6568b4cdd416562e290185b8aedad00aebf43b694156ad531b5f1f41`.
+
+## Rendered accessibility correction
+
+After implementation, computed light descriptions were `rgb(115, 115, 115)` over
+`rgb(245, 245, 245)`: 4.349232:1, below the 4.5:1 requirement for 18 px normal text.
+The Designer reviewed this read-only and recommended one scoped override:
+`:root:not(.dark)` sets `--color-fd-muted-foreground: hsl(0 0% 42%)`.
+Calculated ratios are 4.880922:1 on the page and 4.711267:1 on the `#f1f1f1`
+sidebar; rendered 8-bit values can differ slightly. This keeps the approved
+neutral identity and dark tokens. The Designer found no need for fresh frame
+approval because contrast verification was explicitly outstanding. Approved
+archives remain unchanged; actual browser evidence records the computed result.

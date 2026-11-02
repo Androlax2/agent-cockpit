@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "build:probe": "ASTRO_TELEMETRY_DISABLED=1 astro build --root validation",
-    "test": "node --test tests/*.test.mjs",
-    "check:probe": "tsc --noEmit --project validation/tsconfig.json"
+    "test": "node --test --test-concurrency=2 tests/*.test.mjs",
+    "check:probe": "tsc --noEmit --project validation/tsconfig.json",
+    "stage": "node scripts/content.mjs",
+    "build": "npm run stage && ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "check": "tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
     "fumadocs-core": "16.17.9",

@@ -3,3 +3,6 @@ node_modules/
 dist/
 .validation-*/
 .npm-cache/
+
+content/docs/
+.source-manifest.json

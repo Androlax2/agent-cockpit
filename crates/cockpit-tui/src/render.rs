@@ -19,6 +19,9 @@ use crate::pane::{Pane, Shown, Typing};
 
 /// The help overlay's text: every key the basic TUI has.
 pub const HELP: &str = "\
+Documentation (publication pending)
+  https://androlax2.github.io/agent-cockpit/latest/
+
 Sessions
   j / k, Down / Up   select a session
   Enter              open it in the viewer (wakes it when asleep)

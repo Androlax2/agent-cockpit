@@ -45,6 +45,8 @@ class CiJobSelectionTests(unittest.TestCase):
             "docs/DEVELOPMENT.md": {"docs"},
             "docs/design/greenfield/20-refactoring-plan.md": {"docs"},
             "README.md": {"docs"},
+            "site/src/components/Search.tsx": {"docs"},
+            "site/scripts/content.mjs": {"docs"},
         }
         for path, expected_jobs in cases.items():
             with self.subTest(path=path):

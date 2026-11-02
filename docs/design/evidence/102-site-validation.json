@@ -1,0 +1,82 @@
+{
+  "checks": [
+    {
+      "command": "make site-ci",
+      "exit_code": 0,
+      "result": "12 Node tests, zero failed/skipped; actual CLI build -j 2, both TypeScript projects and offline rendered links passed; 13,572 links, 854 unique, zero errors; two upstream CSS warnings retained"
+    },
+    {
+      "command": "python3 config/bin/.local/bin/agent-build cargo nextest run --locked -j 2 -p cockpit-tui --test keys",
+      "exit_code": 0,
+      "result": "9 passed, zero skipped"
+    },
+    {
+      "command": "python3 -m unittest discover -s tools/tests -p test_ci_jobs.py",
+      "exit_code": 0,
+      "result": "9 passed"
+    },
+    {
+      "command": "biome check --write site/astro.config.mjs site/scripts site/tests site/src",
+      "exit_code": 0,
+      "result": "16 files checked; formatter applied only to lane files"
+    },
+    {
+      "command": "ruff check site/tests/browser.py tools/ci-jobs.py tools/tests/test_ci_jobs.py",
+      "exit_code": 0,
+      "result": "passed"
+    },
+    {
+      "command": "ruff format --check site/tests/browser.py tools/ci-jobs.py tools/tests/test_ci_jobs.py",
+      "exit_code": 0,
+      "result": "3 files already formatted"
+    },
+    {
+      "command": "python3 config/bin/.local/bin/agent-build cargo fmt --all -- --check",
+      "exit_code": 0,
+      "result": "passed"
+    },
+    {
+      "command": "workflow YAML parsed with installed site/node_modules/yaml",
+      "exit_code": 0,
+      "result": "catalog, build, assemble, deploy parsed; not actionlint or hosted CI"
+    },
+    {
+      "command": "gh api repos/Androlax2/agent-cockpit/pages --jq \"{html_url,build_type,status}\"",
+      "exit_code": 1,
+      "result": "gh: Not Found (HTTP 404); Pages availability not established; no setting changed"
+    },
+    {
+      "command": "gh api repos/Androlax2/agent-cockpit --jq \"{homepage,default_branch}\"",
+      "exit_code": 0,
+      "result": "homepage null, default_branch main; read only"
+    }
+  ],
+  "unavailable_checks": [
+    "Full Astro language-service check: package not installed; no installation requested",
+    "actionlint: executable unavailable; no installation requested",
+    "Impeccable rendered URL scan: browser sandbox launch failed; exact evidence separate",
+    "Physical mobile, actual desktop browser zoom, exhaustive assistive technology and performance: not run"
+  ],
+  "existing_failures": [
+    {
+      "command": "make lint-js",
+      "exit_code": 2,
+      "result": "Earlier checkpoint reproduced existing formatting error in unchanged crates/cockpit-opencode/plugin/cockpit-opencode-plugin.js, plus 46 warnings/two infos; focused new files checked separately"
+    }
+  ],
+  "failed_iterations": [
+    "Initial default npm cache: EROFS; approved writable cache succeeded",
+    "Nextest invocation with explicit --test-threads duplicated the agent-build wrapper option; corrected command passed",
+    "Browser script initially used textbox role for upstream combobox; corrected locator",
+    "Browser assertion then found real search focus-restoration bug; callback fix passed",
+    "Mobile navigation dismissal uses upstream Close Sidebar; Escape was not observed to close that drawer",
+    "Review regression tests failed before the three content fixes; all seven content tests passed afterward",
+    "First staged docs gate found missing H1 headings in the two manual site Markdown sources; added source headings, removed them during staging to avoid duplicate page titles; docs gate and real site export passed afterward"
+  ],
+  "docs_gate": {
+    "command": "make docs-ci",
+    "exit_code": 0,
+    "result": "Markdown, offline local source links/anchors and spelling passed on staged lane files"
+  },
+  "independent_review": "pending"
+}
