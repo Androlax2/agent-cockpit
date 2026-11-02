@@ -302,6 +302,8 @@ fn complete_sends_the_typed_handoff_waiving_the_current_steps_requirements() {
         [Command::WorkflowComplete {
             launch_token: None,
             workflow: 7,
+            expected_step: Some(2),
+            expected_attempt: Some(0),
             handoff: WorkflowHandoffView {
                 changed: "Reviewed by hand".to_owned(),
                 checked: "commit def456".to_owned(),
@@ -495,4 +497,39 @@ fn an_approval_pane_that_takes_focus_keeps_its_keys_while_the_view_is_open() {
     ));
 
     assert_eq!(declined, [Command::ApprovalDecline { request: 1 }]);
+}
+
+#[test]
+fn a_handoff_keeps_its_attempt_identity_when_the_same_step_is_reassigned() {
+    let now = Instant::now();
+    let mut app = opened(code_change(), packet(Some(goal())), now);
+    press(&mut app, &[Key::Char('a')], now);
+    typing(&mut app, "a", now);
+    press(&mut app, &[Key::Tab], now);
+    typing(&mut app, "b", now);
+    press(&mut app, &[Key::Tab], now);
+    typing(&mut app, "c", now);
+    let mut replacement = code_change();
+    replacement.steps[0].attempts = 2;
+    answer(
+        &mut app,
+        Command::WorkflowShow {
+            launch_token: None,
+            workflow: 7,
+        },
+        Reply::Workflow {
+            workflow: Box::new(replacement),
+        },
+        now,
+    );
+    let completed = sent(&press(&mut app, &[Key::Enter], now));
+    let Command::WorkflowComplete {
+        expected_step,
+        expected_attempt,
+        ..
+    } = &completed[0]
+    else {
+        panic!("completion expected")
+    };
+    assert_eq!((*expected_step, *expected_attempt), (Some(1), Some(1)));
 }

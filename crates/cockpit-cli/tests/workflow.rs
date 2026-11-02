@@ -103,7 +103,10 @@ fn the_packet_carries_the_goal_and_the_previous_steps_handoff() {
         "handoff from step 1 investigate (completed): changed: Rewrote the validation; \
          checked: commit abc123; outcome: 12 passed"
     );
-    assert_eq!(the_line(&packet, "step "), "step 2 synthesize (ready)");
+    assert_eq!(
+        the_line(&packet, "step "),
+        "step 2 synthesize (ready) [--step 2 --attempt 0]"
+    );
 }
 
 #[test]
@@ -320,11 +323,36 @@ async fn a_multi_line_checkpoint_note_never_reads_as_the_workflows_next_line() {
 
     let shown = text(&output.stdout);
     assert!(
-        shown.contains("step 1 implement (active, s0123456789ab): tests pass\n  next: docs\n"),
+        shown.contains("step 1 implement (active, s0123456789ab) [--step 1 --attempt 1]: tests pass\n  next: docs\n"),
         "{shown}"
     );
     assert_eq!(
         the_line(&shown, "next:"),
         "next: session s0123456789ab works on step 1"
     );
+}
+
+#[tokio::test]
+async fn completion_sends_the_original_step_and_attempt_without_refreshing_them() {
+    let sandbox = Sandbox::new();
+    let daemon = scripted_daemon(&sandbox.agent_socket(), answered_with_workflow());
+    let output = sandbox
+        .cockpit(
+            &[
+                &["workflow", "complete", "3", "--step", "1", "--attempt", "2"][..],
+                &HANDOFF,
+            ]
+            .concat(),
+        )
+        .await;
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let Command::WorkflowComplete {
+        expected_step,
+        expected_attempt,
+        ..
+    } = daemon.await.unwrap()
+    else {
+        panic!("completion expected")
+    };
+    assert_eq!((expected_step, expected_attempt), (Some(1), Some(2)));
 }

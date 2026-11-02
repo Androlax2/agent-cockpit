@@ -74,12 +74,40 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
             }
         }
         ("complete", [id, rest @ ..]) => {
-            let mut flags = Flags::parse(rest, &HANDOFF_FLAGS, &["--evidence", "--waive"], &[])?;
+            let mut flags = Flags::parse(
+                rest,
+                &[
+                    "--changed",
+                    "--checked",
+                    "--outcome",
+                    "--needs-human",
+                    "--step",
+                    "--attempt",
+                ],
+                &["--evidence", "--waive"],
+                &[],
+            )?;
             flags.no_positional()?;
             let waive = flags.many("--waive");
             Command::WorkflowComplete {
                 launch_token: token,
                 workflow: workflow_id(id)?,
+                expected_step: flags
+                    .take("--step")
+                    .map(|value| {
+                        value
+                            .parse::<u32>()
+                            .map_err(|_| "--step needs an unsigned integer".to_owned())
+                    })
+                    .transpose()?,
+                expected_attempt: flags
+                    .take("--attempt")
+                    .map(|value| {
+                        value
+                            .parse::<u32>()
+                            .map_err(|_| "--attempt needs an unsigned integer".to_owned())
+                    })
+                    .transpose()?,
                 handoff: handoff(&mut flags)?,
                 waive,
             }
@@ -229,6 +257,10 @@ fn step_line(step: &WorkflowStepView) -> String {
         text.push_str(&format!(", {session}"));
     }
     text.push(')');
+    text.push_str(&format!(
+        " [--step {} --attempt {}]",
+        step.position, step.attempts
+    ));
     if let Some(checkpoint) = &step.checkpoint {
         text.push_str(&format!(": {}", prose(&checkpoint.note)));
     }

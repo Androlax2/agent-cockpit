@@ -603,7 +603,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit workflow presets | start ITEM [--preset NAME] | cancel ID\n       \
                  cockpit workflow list [--project P] [--all] | show ID | packet ID\n       \
                  cockpit workflow begin ID | checkpoint ID NOTE | unblock ID\n       \
-                 cockpit workflow complete ID --changed T --checked T --outcome T \
+                 cockpit workflow complete ID [--step N --attempt N] --changed T --checked T --outcome T \
                  [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...\n       \
                  cockpit workflow release ID [--changed T --checked T --outcome T \
                  [--needs-human T] [--evidence REF]...]\n       \
