@@ -90,7 +90,7 @@ async fn crash_window(delivered: bool) {
     home.database.lock().unwrap().take();
     let restarted = home.start().await;
     let client = connect(&restarted).await;
-    // Explicit passes provide a deterministic delivery/retry barrier; no settling sleep.
+    // Explicit passes drive delivery, but startup's immediate pass may already own it.
     for _ in 0..2 {
         let reply = request(&client, Command::QueueDispatch).await.unwrap();
         let Reply::QueueDispatched { placed, .. } = reply else {
@@ -99,15 +99,28 @@ async fn crash_window(delivered: bool) {
         assert!(placed.is_empty(), "no second reservation: {placed:?}");
     }
     let database = home.database();
-    let read = database.read().await.unwrap();
+    let deadline = Instant::now() + GENEROUS;
+    let (read, recovered) = loop {
+        let read = database.read().await.unwrap();
+        let recovered = cockpit_messaging::envelope(&read, envelope.id)
+            .await
+            .unwrap()
+            .unwrap();
+        if recovered.state != DeliveryState::Submitting {
+            break (read, recovered);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "delivery never finished: {recovered:?}"
+        );
+        // Release this snapshot so the background pass can commit its receipt.
+        drop(read);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert_eq!(
         cockpit_scheduling::placements(&read).await.unwrap(),
         std::slice::from_ref(&placement)
     );
-    let recovered = cockpit_messaging::envelope(&read, envelope.id)
-        .await
-        .unwrap()
-        .unwrap();
     assert_eq!(recovered.effect_key, envelope.effect_key);
     assert_eq!(
         recovered.state,
