@@ -1,7 +1,7 @@
 name: Pre-release
 
 # Theo dispatches this on main to cut the next alpha or beta (docs/RELEASING.md, Tags):
-# tools/release.py computes the tag and refuses every case the policy lists. A dry run, the
+# tools/release.py verifies the open draft's exact version and all policy gates. A dry run, the
 # default, prints the tag and creates nothing. The tag is created with a GitHub App token,
 # because a tag pushed with GITHUB_TOKEN starts no workflow; release.yml takes it from there.
 # Setup: the App (contents: write on this repository only) has its client ID in the
@@ -18,6 +18,7 @@ on:
 permissions:
   contents: read
   issues: read
+  pull-requests: read
 
 concurrency:
   group: prerelease
@@ -42,7 +43,14 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Test the release tool
-        run: python3 -m unittest discover -s tools/tests -p test_release.py
+        run: python3 -m unittest discover -s tools/tests -p 'test_release*.py'
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        if: ${{ !inputs.dry_run }}
+        id: app
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
       # The Alpha 1 checklist (#52) opens alphas; the Beta 1 checklist (#57) turns them to betas.
       - name: Read the checklist issues
         id: checklists
@@ -54,31 +62,31 @@ jobs:
           beta=$(gh issue view 57 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
           echo "alpha=$alpha" | tee -a "$GITHUB_OUTPUT"
           echo "beta=$beta" | tee -a "$GITHUB_OUTPUT"
-      - name: Compute the next pre-release tag
+      - name: Verify the open draft, freeze the snapshot and optionally tag
         id: next
         env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TOKEN: ${{ steps.app.outputs.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
           ALPHA_CHECKLIST: ${{ steps.checklists.outputs.alpha }}
           BETA_CHECKLIST: ${{ steps.checklists.outputs.beta }}
         run: |
-          python3 tools/release.py next-prerelease --main origin/main \
-            --alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST" \
-            | tee -a "$GITHUB_OUTPUT"
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        if: ${{ !inputs.dry_run }}
-        id: app
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-      - name: Create the tag
-        if: ${{ !inputs.dry_run }}
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          TAG: ${{ steps.next.outputs.tag }}
-          REVISION: ${{ steps.next.outputs.revision }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$REVISION"
-          echo "tagged $REVISION as $TAG; the Release workflow builds it"
+          snapshot=$(python3 tools/release.py next-prerelease --main origin/main \
+            --alpha-checklist "$ALPHA_CHECKLIST" --beta-checklist "$BETA_CHECKLIST"
+          )
+          printf '%s\n' "$snapshot" | tee -a "$GITHUB_OUTPUT"
+          while IFS='=' read -r key value; do
+            case "$key" in
+              tag) tag=$value ;;
+              revision) revision=$value ;;
+            esac
+          done <<< "$snapshot"
+          : "${tag:?missing snapshot tag}" "${revision:?missing snapshot revision}"
+          if [ "$DRY_RUN" = false ]; then
+            GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$tag" -f sha="$revision"
+            echo "tagged frozen source $revision as $tag; the Release workflow builds it"
+          fi
       - name: Report the dry run
         if: ${{ inputs.dry_run }}
         env:
