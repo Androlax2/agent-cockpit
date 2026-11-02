@@ -11,30 +11,21 @@ import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
-from test_release_pr import ROOT, Fixture, git, proposal
-
-
-def fixture_environment(parent):
-    environment = dict(os.environ)
-    for key in ("GH_TOKEN", "GITHUB_TOKEN", "GIT_TOKEN", "GH_DEBUG"):
-        environment.pop(key, None)
-    # Keep the already-installed compiler reachable when HOME changes on rustup-based CI.
-    # Cargo configuration/cache/credentials stay isolated; no toolchain auto-install is allowed.
-    rustup = Path(environment.get("RUSTUP_HOME", str(Path.home() / ".rustup"))).resolve()
-    environment.update(
-        HOME=str(parent / "home"),
-        CARGO_HOME=str(parent / "cargo"),
-        RUSTUP_HOME=str(rustup),
-        RUSTUP_AUTO_INSTALL="0",
-        CARGO_NET_OFFLINE="true",
-        GIT_CONFIG_GLOBAL="/dev/null",
-        GIT_CONFIG_NOSYSTEM="1",
-    )
-    return environment
+from test_release_pr import (
+    ROOT,
+    Fixture,
+    fixture_environment,
+    git,
+    proposal,
+    ssh_fixture_environment,
+)
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="release-pr-conformance-") as directory:
+    with (
+        tempfile.TemporaryDirectory(prefix="release-pr-conformance-") as directory,
+        patch.dict(os.environ, fixture_environment(Path(directory)), clear=True),
+    ):
         parent = Path(directory)
         (parent / "home").mkdir()
         environment = fixture_environment(parent)
@@ -48,6 +39,7 @@ def main():
             if version != expected:
                 raise RuntimeError(f"Expected {expected}, found {version}")
         fixture = Fixture(parent)
+        publication_environment = {**environment, **ssh_fixture_environment(fixture, parent)}
         # A historical non-conventional subject broke the first live draft's docs gate.
         git(fixture.root, "checkout", "-q", "main")
         (fixture.root / "placeholder.txt").write_text("fixture\n")
@@ -92,6 +84,7 @@ def main():
             with (
                 patch.object(proposal, "api", fixture.api.call),
                 patch.object(proposal, "ORIGIN", str(fixture.remote)),
+                patch.dict(os.environ, publication_environment, clear=True),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 assert proposal.main(["publish", "--base", fixture.base], cwd=fixture.root) == 0

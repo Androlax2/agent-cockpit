@@ -4,6 +4,7 @@ import contextlib
 import copy
 import importlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -18,12 +19,43 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 proposal = importlib.import_module("release_pr")
+github_api = proposal.api
 
 
 def git(root, *args):
     return subprocess.run(
-        ["git", *args], cwd=root, check=True, capture_output=True, text=True
+        ["git", "-c", "core.hooksPath=/dev/null", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
+
+
+def fixture_environment(parent):
+    environment = dict(os.environ)
+    for key in list(environment):
+        if key.startswith("GIT_") or key in (
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_DEBUG",
+            "PROPOSAL_GIT_SSH_KEY",
+            "SSH_AUTH_SOCK",
+        ):
+            environment.pop(key)
+    # Keep the installed compiler reachable, while isolating Cargo config/cache/credentials.
+    rustup = Path(environment.get("RUSTUP_HOME", str(Path.home() / ".rustup"))).resolve()
+    environment.update(
+        HOME=str(parent / "home"),
+        CARGO_HOME=str(parent / "cargo"),
+        RUSTUP_HOME=str(rustup),
+        RUSTUP_AUTO_INSTALL="0",
+        CARGO_NET_OFFLINE="true",
+        GIT_CONFIG_GLOBAL="/dev/null",
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CONFIG_COUNT="0",
+    )
+    return environment
 
 
 class Fixture:
@@ -73,6 +105,44 @@ class Fixture:
         git(self.root, "checkout", "-q", "--detach", self.base)
 
 
+def ssh_fixture_environment(fixture, parent):
+    directory = parent / "ssh transport"
+    directory.mkdir(exist_ok=True)
+    executable = directory / "ssh"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "arguments = sys.argv[1:]\n"
+        "assert not os.environ.get('GH_TOKEN')\n"
+        "assert not os.environ.get('GITHUB_TOKEN')\n"
+        "assert not os.environ.get('PROPOSAL_GIT_SSH_KEY')\n"
+        "assert arguments[-2:] == ['git@github.com', \"git-receive-pack 'Androlax2/agent-cockpit.git'\"]\n"
+        "assert arguments[arguments.index('-F') + 1] == '/dev/null'\n"
+        "for required in ('StrictHostKeyChecking=yes', 'IdentitiesOnly=yes', 'IdentityAgent=none', 'ForwardAgent=no', 'BatchMode=yes', 'GlobalKnownHostsFile=/dev/null', 'HostKeyAlgorithms=ssh-ed25519'):\n"
+        "    assert required in arguments, required\n"
+        "private = pathlib.Path(arguments[arguments.index('-i') + 1])\n"
+        "assert private.read_text() == 'fixture-ssh-key\\n'\n"
+        "assert private.stat().st_mode & 0o777 == 0o600\n"
+        "known = pathlib.Path(next(value.split('=', 1)[1] for value in arguments if value.startswith('UserKnownHostsFile=')))\n"
+        "assert known.read_text() == 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\\n'\n"
+        "pathlib.Path(os.environ['FIXTURE_SSH_RECORD']).write_text(json.dumps([str(private), str(known)]))\n"
+        "if os.environ.get('FIXTURE_SSH_FAIL') == '1':\n"
+        "    print('fixture-ssh-key', file=sys.stderr)\n"
+        "    sys.exit(1)\n"
+        "os.execvp('git-receive-pack', ['git-receive-pack', os.environ['FIXTURE_GIT_REMOTE']])\n"
+    )
+    executable.chmod(0o700)
+    return {
+        "PATH": str(directory) + os.pathsep + os.environ["PATH"],
+        "GIT_CONFIG_COUNT": "0",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "PROPOSAL_GIT_SSH_KEY": "fixture-ssh-key\n",
+        "FIXTURE_GIT_REMOTE": str(fixture.remote),
+        "FIXTURE_SSH_RECORD": str(parent / "ssh-record.json"),
+    }
+
+
 class FakeGitHub:
     def __init__(self, fixture):
         self.fixture = fixture
@@ -103,7 +173,7 @@ class FakeGitHub:
                 "draft": not self.created_not_draft,
                 "body": data["body"],
                 "html_url": f"https://github.com/{proposal.REPOSITORY}/pull/{number}",
-                "user": {"login": proposal.BOT, "type": "Bot"},
+                "user": {"login": proposal.BOT, "type": "Bot", "id": 351595931},
                 "head": {
                     "ref": data["head"],
                     "sha": head,
@@ -135,7 +205,7 @@ class FakeGitHub:
             if method == "GET":
                 return [copy.deepcopy(self.comments.get(number, []))]
             self.comments.setdefault(number, []).append(
-                {"body": data["body"], "user": {"login": proposal.BOT}}
+                {"body": data["body"], "user": {"login": proposal.BOT, "id": 351595931}}
             )
             self.writes.append(("comment", number))
             return {}
@@ -179,11 +249,48 @@ class ChangelogTests(unittest.TestCase):
                 self.assertEqual(result.stdout, expected)
 
 
+class FixtureIsolationTests(unittest.TestCase):
+    def test_proposal_fixture_never_runs_inherited_git_hooks(self):
+        with tempfile.TemporaryDirectory(prefix="proposal-hook-isolation-") as directory:
+            parent = Path(directory)
+            hooks = parent / "host-hooks"
+            hooks.mkdir()
+            marker = parent / "host-hook-ran"
+            hook = hooks / "post-commit"
+            hook.write_text(
+                f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n"
+            )
+            hook.chmod(0o700)
+            environment = dict(os.environ)
+            environment.update(
+                GIT_CONFIG_COUNT="1",
+                GIT_CONFIG_KEY_0="core.hooksPath",
+                GIT_CONFIG_VALUE_0=str(hooks),
+            )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "ProposalTests.test_first_draft_carries_the_exact_alpha_version_everywhere",
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertFalse(marker.exists(), "fixture setup must not execute inherited host hooks")
+
+
 class ProposalTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="release-pr-tests-")
         self.addCleanup(self.temp.cleanup)
         self.parent = Path(self.temp.name)
+        isolated = patch.dict(os.environ, fixture_environment(self.parent), clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
         self.fixture = Fixture(self.parent)
         self.bin = self.parent / "bin"
         self.bin.mkdir()
@@ -210,7 +317,9 @@ class ProposalTests(unittest.TestCase):
             "p = pathlib.Path('Cargo.lock')\n"
             "p.write_text(p.read_text().replace('version = \\\"0.1.1\\\"', 'version = \\\"' + version + '\\\"').replace('version = \\\"0.1.0\\\"', 'version = \\\"' + version + '\\\"'))\n",
         )
-        env = patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ["PATH"]})
+        environment = ssh_fixture_environment(self.fixture, self.parent)
+        environment["PATH"] = str(self.bin) + os.pathsep + environment["PATH"]
+        env = patch.dict(os.environ, environment)
         env.start()
         self.addCleanup(env.stop)
         for name, value in [("api", self.fixture.api.call), ("ORIGIN", str(self.fixture.remote))]:
@@ -221,7 +330,7 @@ class ProposalTests(unittest.TestCase):
     def fake_program(self, name, body):
         path = self.bin / name
         path.write_text(
-            '#!/usr/bin/env python3\nimport sys, pathlib, os\nassert not os.environ.get("GH_TOKEN")\nassert not os.environ.get("GITHUB_TOKEN")\n'
+            '#!/usr/bin/env python3\nimport sys, pathlib, os\nassert not os.environ.get("GH_TOKEN")\nassert not os.environ.get("GITHUB_TOKEN")\nassert not os.environ.get("PROPOSAL_GIT_SSH_KEY")\n'
             + body
         )
         path.chmod(0o755)
@@ -284,6 +393,159 @@ class ProposalTests(unittest.TestCase):
         lock = tomllib.loads((self.fixture.root / "Cargo.lock").read_text())
         self.assertEqual([p["version"] for p in lock["package"]], ["0.1.0-alpha.1"])
         self.assertIn("\n## 0.1.0-alpha.1 (", (self.fixture.root / "CHANGELOG.md").read_text())
+
+    def test_push_uses_git_only_key_and_cleans_private_files(self):
+        self.prepare()
+        with patch.dict(
+            os.environ, {"GH_TOKEN": "fixture-api-only", "GITHUB_TOKEN": "fixture-reader"}
+        ):
+            self.publish()
+        record = self.parent / "ssh-record.json"
+        self.assertTrue(record.exists(), "publication must use the isolated SSH transport")
+        self.assertTrue(all(not Path(path).exists() for path in json.loads(record.read_text())))
+
+    def test_local_git_helpers_receive_no_publication_credentials(self):
+        self.prepare()
+        record = self.parent / "fsmonitor-environment.json"
+        helper = self.parent / "fixture-fsmonitor"
+        helper.write_text(
+            f"#!{sys.executable}\nimport json, os, pathlib\n"
+            f"pathlib.Path({str(record)!r}).write_text(json.dumps({{name: bool(os.environ.get(name)) for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'PROPOSAL_GIT_SSH_KEY')}}))\n"
+            "print('fixture\\0', end='')\n"
+        )
+        helper.chmod(0o700)
+        git(self.fixture.root, "config", "core.fsmonitor", str(helper))
+        with patch.dict(
+            os.environ, {"GH_TOKEN": "fixture-api-only", "GITHUB_TOKEN": "fixture-reader"}
+        ):
+            self.publish()
+        self.assertEqual(
+            json.loads(record.read_text()),
+            {"GH_TOKEN": False, "GITHUB_TOKEN": False, "PROPOSAL_GIT_SSH_KEY": False},
+        )
+
+    def test_missing_push_key_refuses_before_creating_branch_or_draft(self):
+        self.prepare()
+        with patch.dict(os.environ, {"PROPOSAL_GIT_SSH_KEY": ""}):
+            code, _, error = self.run_main("publish")
+        self.assertEqual(code, 1)
+        self.assertIn("PROPOSAL_GIT_SSH_KEY", error)
+        self.assertEqual(
+            git(
+                self.fixture.remote,
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/release-plz/",
+            ),
+            "",
+        )
+        self.assertFalse(self.fixture.api.writes)
+
+    def test_api_transport_receives_only_api_credentials_during_publication(self):
+        self.prepare()
+        state = self.parent / "github-state.json"
+        executable = self.bin / "gh"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            + textwrap.dedent(f"""\
+                import json, os, pathlib, sys
+                from types import SimpleNamespace
+                sys.path.insert(0, {str(ROOT / "tools/tests")!r})
+                from test_release_pr import FakeGitHub
+                assert os.environ['GH_TOKEN'] == 'fixture-api-only'
+                assert not os.environ.get('PROPOSAL_GIT_SSH_KEY')
+                assert not os.environ.get('GH_DEBUG')
+                assert sys.argv[1:3] == ['api', '--method']
+                state_path = pathlib.Path({str(state)!r})
+                api = FakeGitHub(SimpleNamespace(remote=pathlib.Path({str(self.fixture.remote)!r}), base={self.fixture.base!r}))
+                if state_path.exists():
+                    saved = json.loads(state_path.read_text())
+                    api.pulls = {{int(number): pr for number, pr in saved['pulls'].items()}}
+                    api.writes = saved['writes']
+                payload = json.load(sys.stdin) if '--input' in sys.argv else None
+                result = api.call(sys.argv[3], sys.argv[4], payload, '--paginate' in sys.argv)
+                state_path.write_text(json.dumps({{'pulls': api.pulls, 'writes': api.writes}}))
+                print(json.dumps(result))
+                """)
+        )
+        executable.chmod(0o700)
+        with (
+            patch.object(proposal, "api", github_api),
+            patch.dict(os.environ, {"GH_TOKEN": "fixture-api-only", "GH_DEBUG": "api"}),
+        ):
+            self.publish()
+        saved = json.loads(state.read_text())
+        self.assertEqual(saved["writes"], [["create", 1]])
+        self.assertTrue(saved["pulls"]["1"]["draft"])
+        self.assertEqual(saved["pulls"]["1"]["user"]["id"], 351595931)
+
+    def test_push_does_not_include_tags_from_inherited_follow_tags_setting(self):
+        self.prepare()
+        git(
+            self.fixture.root,
+            "-c",
+            "tag.gpgSign=false",
+            "tag",
+            "-a",
+            "fixture-tag",
+            "-m",
+            "fixture only",
+        )
+        git(self.fixture.root, "config", "push.followTags", "true")
+        self.publish()
+        self.assertEqual(git(self.fixture.remote, "tag", "--list"), "")
+
+    def test_failed_push_removes_private_files_and_redacts_diagnostics(self):
+        self.prepare()
+        with patch.dict(os.environ, {"FIXTURE_SSH_FAIL": "1"}):
+            code, output, error = self.run_main("publish")
+        self.assertEqual(code, 1)
+        self.assertNotIn("fixture-ssh-key", output + error)
+        record = self.parent / "ssh-record.json"
+        self.assertTrue(record.exists())
+        self.assertTrue(all(not Path(path).exists() for path in json.loads(record.read_text())))
+        self.assertFalse(self.fixture.api.writes)
+
+    def test_git_url_rewrites_are_refused_before_ssh_authentication(self):
+        self.prepare()
+        for setting in ("insteadOf", "pushInsteadOf"):
+            for scope in ("local", "environment"):
+                with self.subTest(setting=setting, scope=scope):
+                    name = f"url.ssh://unapproved.invalid/.{setting}"
+                    environment = {}
+                    if scope == "local":
+                        git(self.fixture.root, "config", name, "git@github.com:")
+                    else:
+                        environment = {
+                            "GIT_CONFIG_COUNT": "1",
+                            "GIT_CONFIG_KEY_0": name,
+                            "GIT_CONFIG_VALUE_0": "git@github.com:",
+                        }
+                    try:
+                        with patch.dict(os.environ, environment):
+                            code, _, error = self.run_main("publish")
+                        self.assertEqual(code, 1)
+                        self.assertIn("URL rewrites", error)
+                        self.assertFalse((self.parent / "ssh-record.json").exists())
+                        self.assertFalse(self.fixture.api.writes)
+                    finally:
+                        if scope == "local":
+                            git(self.fixture.root, "config", "--unset", name)
+
+    def test_verified_proposal_identity_replaces_release_bot_without_allowlist(self):
+        self.prepare()
+        self.assertEqual(
+            git(self.fixture.root, "show", "-s", "--format=%an"), "agent-cockpit-proposal[bot]"
+        )
+        self.publish()
+        self.fixture.api.pulls[1]["user"]["login"] = "agent-cockpit-release[bot]"
+        self.assertEqual(self.select_prerelease()[0], 1)
+
+    def test_changed_bot_id_is_not_accepted_even_with_same_login(self):
+        self.prepare()
+        self.publish()
+        self.fixture.api.pulls[1]["user"]["id"] = 999
+        self.assertEqual(self.select_prerelease()[0], 1)
 
     def select_prerelease(self, beta="open"):
         git(self.fixture.root, "checkout", "-q", "--detach", self.fixture.base)
@@ -450,6 +712,7 @@ class ProposalTests(unittest.TestCase):
         )
         environment = dict(os.environ)
         environment.pop("GITHUB_TOKEN", None)
+        environment.pop("PROPOSAL_GIT_SSH_KEY", None)
         environment.update(
             GH_TOKEN="fixture-reader",
             RELEASE_TOKEN="fixture-writer",

@@ -191,6 +191,54 @@ class DraftWorkflowTests(unittest.TestCase):
             self.eligible("ci.yml", context("pull_request", selected="false")), {"changes"}
         )
 
+    def test_proposal_credentials_are_available_only_to_main_publication(self):
+        workflow = self.workflows["release-plz.yml"]
+        check, proposal = workflow.split("\n  proposal:\n", 1)
+        self.assertRegex(proposal, r"(?m)^    environment: release-proposal$")
+        self.assertNotIn("secrets.", check)
+        self.assertNotRegex(workflow, r"(?m)^    (?:contents|pull-requests): write$")
+        for event, ref, expected in (
+            ("push", "refs/heads/main", {"check", "proposal"}),
+            ("workflow_dispatch", "refs/heads/main", {"check", "proposal"}),
+            ("push", "refs/tags/v0.1.0-alpha.1", {"check"}),
+            ("workflow_dispatch", "refs/heads/feature/example", {"check"}),
+            ("pull_request", "refs/pull/1/merge", {"check"}),
+        ):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(
+                    self.eligible("release-plz.yml", context(event, ref=ref)), expected
+                )
+        generation, credential_steps = proposal.split(
+            "      - uses: actions/create-github-app-token@", 1
+        )
+        self.assertNotIn("secrets.", generation)
+        token, publication = credential_steps.split("      - name:", 1)
+        self.assertIn("client-id: ${{ vars.PROPOSAL_APP_CLIENT_ID }}", token)
+        self.assertIn("private-key: ${{ secrets.PROPOSAL_APP_PRIVATE_KEY }}", token)
+        self.assertIn("permission-contents: read", token)
+        self.assertNotIn("permission-contents: write", token)
+        self.assertIn("permission-pull-requests: write", token)
+        self.assertIn("owner: Androlax2", token)
+        self.assertIn("repositories: agent-cockpit", token)
+        self.assertIn("PROPOSAL_GIT_SSH_KEY: ${{ secrets.PROPOSAL_GIT_SSH_KEY }}", publication)
+        self.assertNotIn("RELEASE_APP_", workflow)
+        for step in (token, publication):
+            self.assertIn("if: github.event_name == 'push' || !inputs.dry_run", step)
+
+    def test_prerelease_tagging_requires_release_approval_and_repository_scoped_token(self):
+        workflow = self.workflows["prerelease.yml"]
+        tag = workflow.split("\n  tag:\n", 1)[1]
+        self.assertRegex(tag, r"(?m)^    environment: release$")
+        token = tag.split("      - uses: actions/create-github-app-token@", 1)[1].split(
+            "      - name:", 1
+        )[0]
+        self.assertIn("if: ${{ !inputs.dry_run }}", token)
+        self.assertIn("owner: Androlax2", token)
+        self.assertIn("repositories: agent-cockpit", token)
+        self.assertIn("permission-contents: write", token)
+        self.assertNotIn("permission-pull-requests: write", token)
+        self.assertNotIn("PROPOSAL_", tag)
+
     def test_docs_catalog_still_rejects_ineligible_non_pr_events(self):
         expression = job_conditions(self.workflows["docs.yml"])["catalog"]
         cases = [
