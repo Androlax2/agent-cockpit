@@ -1,0 +1,43 @@
+{
+  "skill_version": "4.8.0",
+  "engine_version": "0.1.18",
+  "upstream_guidance_revision": "e89e3ada3e875a89ac2c5d33d11e65ebef6fe285",
+  "whole_installation_commit": "not established; see original run evidence",
+  "source": {
+    "command": [
+      "/home/theo/.agents/skills/impeccable/scripts/impeccable",
+      "detect",
+      "site/src",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stdout": "[]\n",
+    "stderr": "",
+    "coverage": "Source-directory scan; engine emitted no scanned-file count. Not a rendered accessibility pass."
+  },
+  "file_html": {
+    "command": [
+      "/home/theo/.agents/skills/impeccable/scripts/impeccable",
+      "detect",
+      "site/dist/get-started/first-session/index.html",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stdout": "[]\n",
+    "stderr": "impeccable detect: could not read linked stylesheet /agent-cockpit/latest/_astro/_..ClsaCtlb.css (resolved to /home/theo/IdeaProjects/.parallel/agent-cockpit/greenfield-98-user-documentation/site/dist/get-started/first-session/agent-cockpit/latest/_astro/_..ClsaCtlb.css); color and custom-property rules will be incomplete\n",
+    "coverage": "HTML parsed, but linked stylesheet could not be resolved. Color/custom-property coverage incomplete."
+  },
+  "url": {
+    "command": [
+      "/home/theo/.agents/skills/impeccable/scripts/impeccable",
+      "detect",
+      "http://127.0.0.1:45840/agent-cockpit/latest/get-started/first-session/",
+      "--json"
+    ],
+    "exit_code": 1,
+    "stdout": "[]\n",
+    "stderr": "Error: Failed to launch the browser process! [30547:30547:1102/041728.166034:FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:172] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /opt/google/chrome/chrome-sandbox is owned by root and has mode 4755.\n[1102/041728.169209:ERROR:third_party/crashpad/crashpad/util/linux/scoped_ptrace_attach.cc:27] ptrace: Operation not permitted (1)\n"
+  },
+  "url_coverage": "No completed rendered scan; browser process launch failed. No sandbox configuration or permissions changed. Empty failure stdout is not a pass.",
+  "independent_browser": "Existing headless Playwright Chromium checked the fixture separately; see 102-site-browser.json. This does not convert the failed Impeccable browser run into a pass."
+}

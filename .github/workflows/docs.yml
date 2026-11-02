@@ -1,0 +1,152 @@
+name: Documentation site
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  # Release publishes with GITHUB_TOKEN, which does not emit another release event.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.event_name == 'pull_request' && github.ref || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  catalog:
+    if: >-
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.repository.full_name == github.repository))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      versions: ${{ steps.catalog.outputs.versions }}
+      matrix: ${{ steps.catalog.outputs.matrix }}
+      revision: ${{ steps.catalog.outputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || 'main' }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.0
+      - name: Select latest and every published release
+        id: catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          versions='["latest"]'
+          if [ "$EVENT_NAME" != pull_request ]; then
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+            versions=$(node site/scripts/versions.mjs catalog releases.json)
+          fi
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          revision=$(git rev-parse HEAD)
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          matrix=$(jq -cn --argjson names "$versions" --arg ref "$revision" \
+            '$names | map({version: ., ref: (if . == "latest" then $ref else "refs/tags/" + . end)}) | {include: .}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: catalog
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
+    env:
+      CARGO_BUILD_JOBS: 2
+      COCKPIT_DOCS_VERSION: ${{ matrix.version }}
+      COCKPIT_DOCS_BASE: /agent-cockpit/${{ matrix.version }}/
+      COCKPIT_DOCS_VERSIONS: ${{ needs.catalog.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+      - name: Install the repository's pinned link checker
+        run: |
+          cd "$(mktemp -d)"
+          curl --proto '=https' --tlsv1.2 -fsSLo lychee.tar.gz \
+            https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz
+          sha256sum --check --strict - <<'SUMS'
+          1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  lychee.tar.gz
+          SUMS
+          tar -xzf lychee.tar.gz
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 lychee-x86_64-unknown-linux-gnu/lychee "$HOME/.local/bin/lychee"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Configure hosted runner admission
+        if: runner.environment == 'github-hosted'
+        run: python3 config/bin/.local/bin/cockpit-game-guard off
+      - name: Install only the locked site graph without lifecycle scripts
+        run: npm_config_cache="$PWD/site/.npm-cache" npm --prefix site ci --ignore-scripts --no-audit --no-fund
+      - name: Build and verify this version from its source and lockfile
+        run: make site-ci
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-${{ matrix.version }}
+          path: site/dist
+          if-no-files-found: error
+
+  assemble:
+    needs: [catalog, build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.catalog.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: docs-*
+          path: builds
+      - name: Assemble the complete version set
+        env:
+          VERSIONS: ${{ needs.catalog.outputs.versions }}
+        run: node site/scripts/versions.mjs assemble builds pages "$VERSIONS"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: pages
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: assemble
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        id: deployment

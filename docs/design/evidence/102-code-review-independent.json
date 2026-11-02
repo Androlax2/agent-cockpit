@@ -1,0 +1,50 @@
+{
+  "invocation": "$code-review",
+  "skill_path": "/home/theo/.codex/skills/code-review/SKILL.md",
+  "skill_sha256": "dd5bb20c63d55b3dac6f3b8b4295456c8af9bcc271b18081577176d84b419b35",
+  "effort": "medium",
+  "reviewer": "/root/native_review_102",
+  "independent": true,
+  "base": "6f827521e16a23bca33261bd53779de83f5fd8ed",
+  "head": "0e2308fc055072d74ac90ddabfb1be282b0140f0",
+  "angles": [
+    "A",
+    "B",
+    "C",
+    "Reuse",
+    "Simplification",
+    "Efficiency",
+    "Altitude",
+    "Conventions"
+  ],
+  "method": "All angles inline in reviewer context; candidates frozen before parent self-review record was read; pooled and deduplicated, no verification.",
+  "findings": [
+    {
+      "file": "site/src/components/Search.tsx",
+      "line": 52,
+      "summary": "[P2] Preserve the upstream empty-result status announcement.",
+      "failure_scenario": "A screen-reader user enters a query with no matches while focus remains in the combobox. The custom Empty renderer replaces upstream role=status with an ordinary paragraph, so the no-match message is not announced.",
+      "resolution": "Restore role=status; browser regression asserts the live status element. No physical screen-reader conformance claim."
+    },
+    {
+      "file": ".github/workflows/docs.yml",
+      "line": 106,
+      "summary": "[P3] Move released-version checks into a Make-owned target.",
+      "failure_scenario": "Release builds maintain their own check sequence, which can drift from local verification and violates .agents/rules/ci.md: Make recipes own executable check commands. CI should call those same targets.",
+      "resolution": "Latest and release matrix builds both call make site-ci; the target passed at a fixture prerelease prefix."
+    }
+  ],
+  "outcome": "Two findings addressed; no P0/P1 identified. Small fixes, no second independent review.",
+  "review_did_not_run": [
+    "tests",
+    "verifier agents",
+    "fixes",
+    "posting",
+    "simplify",
+    "installs",
+    "Git mutations",
+    "host actions",
+    "browser interactions",
+    "hosted CI"
+  ]
+}

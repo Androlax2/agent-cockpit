@@ -1,0 +1,73 @@
+{
+  "url": "http://127.0.0.1:45840/agent-cockpit/latest/get-started/first-session/",
+  "browser": "headless Chromium",
+  "checks": [
+    "desktop search: results, no matches, pointer Close, Ctrl+K, Escape and trigger focus restoration",
+    "client navigation and browser Back update content and URL",
+    "ArrowDown and Enter navigate a search result",
+    "200% root text size retains reading layout without horizontal page overflow at 1280px; this is text scaling, not browser zoom",
+    "system dark theme applied",
+    "320px reading, navigation/version selector and touch Close 80x44 without page overflow",
+    "320px system dark theme and long command scrolling without horizontal page overflow",
+    "failed local index gives a usable unavailable state with Close",
+    "No-match content retains upstream role=status; physical screen-reader announcement not measured"
+  ],
+  "errors": [],
+  "light_description_contrast": {
+    "foreground": "rgb(107, 107, 107)",
+    "background": "rgb(245, 245, 245)",
+    "ratio": 4.888149081666193
+  },
+  "command": "/home/theo/.cache/agent-browser/bin/python /home/theo/.agents/skills/webapp-testing/scripts/with_server.py --server \"python3 -m http.server 45840 --bind 127.0.0.1 --directory /tmp/cockpit-102-preview\" --port 45840 -- /home/theo/.cache/agent-browser/bin/python site/tests/browser.py --output design-plans/previews",
+  "exit_code": 0,
+  "server_cleanup": "with_server reported the sole temporary fixture server stopped",
+  "source_state": "Committed implementation 0e2308fc055072d74ac90ddabfb1be282b0140f0 plus small independent review fixes, including the empty-result status role.",
+  "captures": [
+    {
+      "path": "design-plans/previews/102-web-desktop-dark.png",
+      "sha256": "0c864d873eb94c1732c14079bdac78cc5ceea82e928e97f54cd9427e9b077415"
+    },
+    {
+      "path": "design-plans/previews/102-web-desktop-light.png",
+      "sha256": "1ebd06ba78af7c21a56f8cbddbf7962c622662664235a675639563af8d03216e"
+    },
+    {
+      "path": "design-plans/previews/102-web-mobile-dark.png",
+      "sha256": "47898e21fa4bbca3b9954d52f3adca0b1ac2280fe05b15861647e8f9f19e70d6"
+    },
+    {
+      "path": "design-plans/previews/102-web-mobile-light.png",
+      "sha256": "4b2c23c586aaf451e408e8a6403659cea423d8fae0f3f8009e251ff8e68ca240"
+    },
+    {
+      "path": "design-plans/previews/102-web-mobile-navigation.png",
+      "sha256": "85e0a55e2a1a9cdd9eaf71d1f46069941a3e30be6cda202364bebd3d30160e54"
+    },
+    {
+      "path": "design-plans/previews/102-web-mobile-search.png",
+      "sha256": "04ac99fb814174cd26429c1471abe3b8589d32fd908d1c2ac262cdf6053d41a3"
+    },
+    {
+      "path": "design-plans/previews/102-web-search-empty.png",
+      "sha256": "0261b827ccf0542d18efc310891cabf7f81a9eec970407015d0024f0ac7bd4f5"
+    },
+    {
+      "path": "design-plans/previews/102-web-search-results.png",
+      "sha256": "1d694c1ec0f3d6be0c772c3111c4e79a927f4b164ef1a5e0f1b1f44dacf136b5"
+    },
+    {
+      "path": "design-plans/previews/102-web-search-unavailable.png",
+      "sha256": "15a6f078f268a610ec1e4490ea12729a8f1ecab28a007601a174a1f048096b42"
+    }
+  ],
+  "version_fixture": {
+    "versions": [
+      "latest",
+      "v0.1.0-alpha.1"
+    ],
+    "source": "same branch working tree, fixture prefixes only; no release/tag created",
+    "build_result": "After independent fixes, make site-ci passed at the fixture prerelease prefix: 12 tests, both type projects, real CLI and rendered links",
+    "browser_result": "PASS latest -> v0.1.0-alpha.1 -> latest; selected values and install heading checked",
+    "limits": "No published-version preservation or Pages deployment measured"
+  }
+}

@@ -1,0 +1,20 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* The upstream light token falls below 4.5:1 on the page and sidebar. */
+:root:not(.dark) {
+  --color-fd-muted-foreground: hsl(0 0% 42%);
+}
+
+#nd-page {
+  min-width: 0;
+}
+#nd-page .prose {
+  width: 100%;
+  max-width: 70ch;
+  overflow-wrap: anywhere;
+}
+#nd-page pre {
+  overflow-x: auto;
+}

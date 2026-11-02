@@ -1,0 +1,185 @@
+{
+  "checks": [
+    {
+      "command": "make site-ci",
+      "exit_code": 0,
+      "result": "12 Node tests, zero failed/skipped; actual CLI build -j 2, both TypeScript projects and offline rendered links passed; 13,572 links, 854 unique, zero errors; two upstream CSS warnings retained"
+    },
+    {
+      "command": "python3 config/bin/.local/bin/agent-build cargo nextest run --locked -j 2 -p cockpit-tui --test keys",
+      "exit_code": 0,
+      "result": "9 passed, zero skipped"
+    },
+    {
+      "command": "python3 -m unittest discover -s tools/tests -p test_ci_jobs.py",
+      "exit_code": 0,
+      "result": "9 passed"
+    },
+    {
+      "command": "biome check --write site/astro.config.mjs site/scripts site/tests site/src",
+      "exit_code": 0,
+      "result": "16 files checked; formatter applied only to lane files"
+    },
+    {
+      "command": "ruff check site/tests/browser.py tools/ci-jobs.py tools/tests/test_ci_jobs.py",
+      "exit_code": 0,
+      "result": "passed"
+    },
+    {
+      "command": "ruff format --check site/tests/browser.py tools/ci-jobs.py tools/tests/test_ci_jobs.py",
+      "exit_code": 0,
+      "result": "3 files already formatted"
+    },
+    {
+      "command": "python3 config/bin/.local/bin/agent-build cargo fmt --all -- --check",
+      "exit_code": 0,
+      "result": "passed"
+    },
+    {
+      "command": "workflow YAML parsed with installed site/node_modules/yaml",
+      "exit_code": 0,
+      "result": "catalog, build, assemble, deploy parsed; not actionlint or hosted CI"
+    },
+    {
+      "command": "gh api repos/Androlax2/agent-cockpit/pages --jq \"{html_url,build_type,status}\"",
+      "exit_code": 1,
+      "result": "gh: Not Found (HTTP 404); Pages availability not established; no setting changed"
+    },
+    {
+      "command": "gh api repos/Androlax2/agent-cockpit --jq \"{homepage,default_branch}\"",
+      "exit_code": 0,
+      "result": "homepage null, default_branch main; read only"
+    },
+    {
+      "command": "COCKPIT_DOCS_BASE=/agent-cockpit/v0.1.0-alpha.1/ COCKPIT_DOCS_VERSION=v0.1.0-alpha.1 COCKPIT_DOCS_VERSIONS='[\"latest\",\"v0.1.0-alpha.1\"]' make site-ci",
+      "exit_code": 0,
+      "result": "12 tests, zero failures/skips, both type projects and offline rendered links after independent review fixes; fixture prefix only"
+    },
+    {
+      "command": "make site-ci",
+      "exit_code": 0,
+      "result": "Final source: 13 tests, zero failures/skips, both type projects, CLI and rendered links. Includes the extra CRLF closing-fence regression."
+    },
+    {
+      "command": "python3 -m unittest discover -s tools/tests -p test_workflow_syntax.py",
+      "exit_code": 0,
+      "result": "2 workflow syntax regression tests passed"
+    },
+    {
+      "command": "python3 -m unittest discover -s tools/tests -p test_ci_bootstrap.py",
+      "exit_code": 0,
+      "result": "5 passed; checksum/pin contract now covers both docs jobs; the added contract failed before the bootstrap fix"
+    },
+    {
+      "command": "Parse docs.yml with installed yaml and bash -n each run step",
+      "exit_code": 0,
+      "result": "6 Bash run steps syntax-checked without executing installations/host commands"
+    },
+    {
+      "command": "node --test site/tests/versions.test.mjs",
+      "exit_code": 0,
+      "result": "3 passed, including CLI with a spaced fixture path and flat single artifact; new cases failed before the fix"
+    },
+    {
+      "command": "gh run download 41386339863 --repo Androlax2/agent-cockpit --name docs-latest --dir /tmp/cockpit-102-ci-artifact-eef8dbb",
+      "exit_code": 0,
+      "result": "Downloaded this PR hosted build artifact into a temporary task directory"
+    },
+    {
+      "command": "node site/scripts/versions.mjs assemble /tmp/cockpit-102-ci-artifact-eef8dbb /tmp/cockpit-102-ci-pages-eef8dbb '[\"latest\"]' ",
+      "exit_code": 0,
+      "result": "Actual hosted static output assembled successfully"
+    },
+    {
+      "command": "node site/scripts/links.mjs /tmp/cockpit-102-ci-pages-eef8dbb /agent-cockpit/",
+      "exit_code": 0,
+      "result": "Assembled actual hosted artifact: 15,186 links, 901 unique, zero errors"
+    },
+    {
+      "command": "make site-ci",
+      "exit_code": 0,
+      "result": "After artifact-layout fix: 14 tests, zero failures/skips, CLI build, both type projects and rendered links passed"
+    }
+  ],
+  "unavailable_checks": [
+    "Full Astro language-service check: package not installed; no installation requested",
+    "actionlint: executable unavailable; no installation requested",
+    "Impeccable rendered URL scan: browser sandbox launch failed; exact evidence separate",
+    "Physical mobile, actual desktop browser zoom, exhaustive assistive technology and performance: not run"
+  ],
+  "existing_failures": [
+    {
+      "command": "make lint-js",
+      "exit_code": 2,
+      "result": "Earlier checkpoint reproduced existing formatting error in unchanged crates/cockpit-opencode/plugin/cockpit-opencode-plugin.js, plus 46 warnings/two infos; focused new files checked separately"
+    }
+  ],
+  "failed_iterations": [
+    "Initial default npm cache: EROFS; approved writable cache succeeded",
+    "Nextest invocation with explicit --test-threads duplicated the agent-build wrapper option; corrected command passed",
+    "Browser script initially used textbox role for upstream combobox; corrected locator",
+    "Browser assertion then found real search focus-restoration bug; callback fix passed",
+    "Mobile navigation dismissal uses upstream Close Sidebar; Escape was not observed to close that drawer",
+    "Review regression tests failed before the three content fixes; all seven content tests passed afterward",
+    "First staged docs gate found missing H1 headings in the two manual site Markdown sources; added source headings, removed them during staging to avoid duplicate page titles; docs gate and real site export passed afterward",
+    "No-match browser status assertion initially matched two upstream status elements; narrowed it to the message text and the complete browser check passed",
+    "Closing-fence CRLF regression failed before allowing a terminal carriage return; all eight focused content tests passed afterward"
+  ],
+  "docs_gate": {
+    "command": "make docs-ci",
+    "exit_code": 0,
+    "result": "Markdown, offline local source links/anchors and spelling passed on staged lane files"
+  },
+  "independent_review": {
+    "skill": "$code-review",
+    "reviewer": "/root/native_review_102",
+    "head": "0e2308fc055072d74ac90ddabfb1be282b0140f0",
+    "findings": 2,
+    "outcome": "addressed; small fixes; see 102-code-review-independent.json"
+  },
+  "asset_measurement": {
+    "scope": "Sum of every exported JS asset, not a per-page transfer or performance benchmark",
+    "js_files": 18,
+    "raw_bytes": 650394,
+    "gzip_bytes": 215411
+  },
+  "host_workflow_push": {
+    "request": "e502524693a6",
+    "head": "9cb3de82287b76bc58ac05734e0911302536814b",
+    "exit_code": 0,
+    "effect": "Normal push to own feature branch only; PR checks started, no Pages deployment"
+  },
+  "hosted_ci": [
+    {
+      "run": 41385306721,
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41385306721",
+      "conclusion": "failure",
+      "stage": "Link-checker bootstrap, before npm/site build",
+      "error": "install-action does not support lychee@0.24.2; aborting because fallback is disabled by 'fallback: none' input option",
+      "fix": "Reuse the existing ci.yml checksum-verified lychee 0.24.2 download, without changing the tool/site pins or enabling compilation fallback."
+    },
+    {
+      "run": 41385864682,
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41385864682",
+      "conclusion": "failure",
+      "stage": "Isolated reference fake-binary test; actual CLI/site build passed, 12 of 13 tests passed",
+      "error": "Reference command --help failed: env: 'node': No such file or directory",
+      "fix": "Use process.execPath in the fake executable shebang. Production reference generation keeps HOME temporary and PATH fixed to /usr/bin:/bin; no environment isolation was relaxed."
+    },
+    {
+      "run": 41386339863,
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41386339863",
+      "conclusion": "failure",
+      "stage": "Assembly; the complete site gate and artifact upload passed",
+      "error": "mv: cannot stat 'builds/docs-*': No such file or directory",
+      "cause": "Pinned actions/download-artifact v8 flattens a sole matching artifact, even when merge-multiple is false. Verified its source at 9000827ccba6bdab643e8b6fd33ac0654aef8333, src/download-artifact.ts (artifacts.length === 1).",
+      "fix": "Assembler accepts the actual flat-single or named-multiple artifact layout; no unvalidated shell renaming. Real CLI fixture and downloaded hosted artifact both pass."
+    }
+  ],
+  "host_bootstrap_push": {
+    "request": "b7aba8ec4699",
+    "head": "6e02725b9fd4bb9b69e14082dd873d7614bb6f18",
+    "exit_code": 0,
+    "effect": "Normal own-branch push of the checksum bootstrap correction; no Pages action"
+  }
+}

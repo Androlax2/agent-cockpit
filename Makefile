@@ -111,6 +111,23 @@ typos: ## Check spelling in tracked files
 
 docs-ci: lint-markdown check-links typos ## Check Markdown style, local links and spelling (CI's docs job)
 
+.PHONY: site-reference-binary site-build site-check site-ci
+.NOTPARALLEL: site-ci
+
+site-reference-binary: ## Build the CLI used for offline documentation references
+	$(build_runner) cargo build --locked -j 2 -p cockpit-cli --bin cockpit
+
+site-build: ## Generate and build the version-prefixed static documentation
+	npm --prefix site run build
+
+site-check: ## Check site tests, types and rendered links (dependencies and CLI must exist)
+	npm --prefix site test
+	npm --prefix site run check
+	npm --prefix site run check:probe
+	node site/scripts/links.mjs
+
+site-ci: site-reference-binary site-check ## Run the documentation-site gate without installing dependencies
+
 ci: fmt-check clippy doc lint-python lint-shell lint-js lint-markdown lint-lua check-links typos deny test ## Run the quality and regression gate for apps/, config/ and tools/ (CI's legacy job)
 
 lint-lua: ## Check Lua syntax without executing desktop configuration

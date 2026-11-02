@@ -1,0 +1,305 @@
+{
+  "scope": "Isolated installed Fumadocs MDX/CSS style fixture; not the product layout",
+  "viewport": {
+    "width": 1100,
+    "height": 1000
+  },
+  "container": "Temporary 70ch body container with 32px margin and 24px padding",
+  "capture": "Existing Python Playwright; headless Chromium; local fixture server; no host desktop",
+  "samples": {
+    "light": {
+      "body": {
+        "background": "rgb(245, 245, 245)",
+        "color": "rgb(10, 10, 10)",
+        "font": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\""
+      },
+      "tokens": [
+        {
+          "text": "[agents]",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "[",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "agents",
+          "color": "rgb(111, 66, 193)"
+        },
+        {
+          "text": "]",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "sandbox = \"required\"",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "sandbox = ",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "\"required\"",
+          "color": "rgb(3, 47, 98)"
+        },
+        {
+          "text": "desktop_session = \"withheld\"",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "desktop_session = ",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "\"withheld\"",
+          "color": "rgb(3, 47, 98)"
+        },
+        {
+          "text": "cockpit project add \"$HOME/cockpit-example\" --name example",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "cockpit",
+          "color": "rgb(111, 66, 193)"
+        },
+        {
+          "text": " project",
+          "color": "rgb(3, 47, 98)"
+        },
+        {
+          "text": " add",
+          "color": "rgb(3, 47, 98)"
+        },
+        {
+          "text": " \"",
+          "color": "rgb(3, 47, 98)"
+        },
+        {
+          "text": "$HOME",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "/cockpit-example\"",
+          "color": "rgb(3, 47, 98)"
+        },
+        {
+          "text": " --name",
+          "color": "rgb(0, 92, 197)"
+        },
+        {
+          "text": " example",
+          "color": "rgb(3, 47, 98)"
+        },
+        {
+          "text": "cockpit session list",
+          "color": "rgb(36, 41, 46)"
+        },
+        {
+          "text": "cockpit",
+          "color": "rgb(111, 66, 193)"
+        },
+        {
+          "text": " session",
+          "color": "rgb(3, 47, 98)"
+        },
+        {
+          "text": " list",
+          "color": "rgb(3, 47, 98)"
+        }
+      ],
+      "themeVariables": [
+        {
+          "name": "--color-fd-background",
+          "value": "#f5f5f5"
+        },
+        {
+          "name": "--color-fd-foreground",
+          "value": "#0a0a0a"
+        },
+        {
+          "name": "--color-fd-muted",
+          "value": "#f5f5f5"
+        },
+        {
+          "name": "--color-fd-muted-foreground",
+          "value": "#737373"
+        },
+        {
+          "name": "--color-fd-primary",
+          "value": "#171717"
+        }
+      ]
+    },
+    "dark": {
+      "body": {
+        "background": "rgb(18, 18, 18)",
+        "color": "rgb(235, 235, 235)",
+        "font": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\""
+      },
+      "tokens": [
+        {
+          "text": "[agents]",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "[",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "agents",
+          "color": "rgb(179, 146, 240)"
+        },
+        {
+          "text": "]",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "sandbox = \"required\"",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "sandbox = ",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "\"required\"",
+          "color": "rgb(158, 203, 255)"
+        },
+        {
+          "text": "desktop_session = \"withheld\"",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "desktop_session = ",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "\"withheld\"",
+          "color": "rgb(158, 203, 255)"
+        },
+        {
+          "text": "cockpit project add \"$HOME/cockpit-example\" --name example",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "cockpit",
+          "color": "rgb(179, 146, 240)"
+        },
+        {
+          "text": " project",
+          "color": "rgb(158, 203, 255)"
+        },
+        {
+          "text": " add",
+          "color": "rgb(158, 203, 255)"
+        },
+        {
+          "text": " \"",
+          "color": "rgb(158, 203, 255)"
+        },
+        {
+          "text": "$HOME",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "/cockpit-example\"",
+          "color": "rgb(158, 203, 255)"
+        },
+        {
+          "text": " --name",
+          "color": "rgb(121, 184, 255)"
+        },
+        {
+          "text": " example",
+          "color": "rgb(158, 203, 255)"
+        },
+        {
+          "text": "cockpit session list",
+          "color": "rgb(225, 228, 232)"
+        },
+        {
+          "text": "cockpit",
+          "color": "rgb(179, 146, 240)"
+        },
+        {
+          "text": " session",
+          "color": "rgb(158, 203, 255)"
+        },
+        {
+          "text": " list",
+          "color": "rgb(158, 203, 255)"
+        }
+      ],
+      "themeVariables": [
+        {
+          "name": "--color-fd-background",
+          "value": "#121212"
+        },
+        {
+          "name": "--color-fd-foreground",
+          "value": "#ebebeb"
+        },
+        {
+          "name": "--color-fd-muted",
+          "value": "#212121"
+        },
+        {
+          "name": "--color-fd-muted-foreground",
+          "value": "#b3b3b3cc"
+        },
+        {
+          "name": "--color-fd-primary",
+          "value": "#fafafa"
+        }
+      ]
+    }
+  },
+  "packages": {
+    "fumadocs-ui": "16.17.9",
+    "fumadocs-core": "16.17.9",
+    "@fumadocs/astro": "0.1.1",
+    "astro": "7.4.4"
+  },
+  "style_sources": [
+    "site/node_modules/fumadocs-ui/css/neutral.css",
+    "site/node_modules/fumadocs-ui/css/lib/default-colors.css",
+    "site/node_modules/fumadocs-ui/css/lib/shiki.css"
+  ],
+  "build_exit_code": 0,
+  "browser_capture_exit_code": 0,
+  "server_cleanup": "with_server.py stopped the sole local fixture server",
+  "detector_diagnostic": {
+    "scope": "Detector diagnostic against an isolated rendered style fixture, not the product site or FigCraft proposal",
+    "target_exists": true,
+    "command": [
+      "/home/theo/.agents/skills/impeccable/scripts/impeccable",
+      "detect",
+      "/home/theo/IdeaProjects/.parallel/agent-cockpit/greenfield-98-user-documentation/site/.validation-style-u3ksjpxv/dist/index.html",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stdout": "[]\n",
+    "stderr": ""
+  },
+  "limitations": [
+    "No product layout or interactive browser acceptance",
+    "No FigCraft detector pass inferred from HTML fixture",
+    "No host desktop captured",
+    "No new dependency, installation or product palette"
+  ],
+  "build_warnings": [
+    "Two upstream CSS optimization warnings about ::highlight(fd-search); retained and not suppressed"
+  ],
+  "build_command": [
+    "/home/theo/IdeaProjects/.parallel/agent-cockpit/greenfield-98-user-documentation/site/node_modules/astro/bin/astro.mjs",
+    "build",
+    "--root",
+    "/home/theo/IdeaProjects/.parallel/agent-cockpit/greenfield-98-user-documentation/site/.validation-style-u3ksjpxv"
+  ],
+  "build_environment": {
+    "ASTRO_TELEMETRY_DISABLED": "1"
+  },
+  "capture_script": "/tmp/cockpit-102-capture-styles.py",
+  "server_command": "python3 -m http.server 45839 --bind 127.0.0.1 --directory /home/theo/IdeaProjects/.parallel/agent-cockpit/greenfield-98-user-documentation/site/.validation-style-u3ksjpxv/dist",
+  "capture_helper": "/home/theo/.agents/skills/webapp-testing/scripts/with_server.py"
+}
