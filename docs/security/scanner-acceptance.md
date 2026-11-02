@@ -21,13 +21,22 @@ See GitHub's [compiled-language build options](https://docs.github.com/en/code-s
 
 [Scorecard](../../.github/workflows/scorecard.yml) runs only on main pushes and the
 weekly schedule with the default read-only token. It uploads JSON as an Actions
-artifact and sets `publish_results: false`. It requests no OIDC or security-events
+artifact and sets `INPUT_PUBLISH_RESULTS: 'false'`. It requests no OIDC or security-events
 write permission, and does not use an administrator PAT to improve its score.
 
-Actions are pinned to commits. The pinned Scorecard action internally selects the
-container tag `ghcr.io/ossf/scorecard-action:v2.5.0`; this is not a verified immutable
-image digest. Record that transitive dependency in activation review. Do not invent
-a digest or silently substitute a different image.
+Repository actions are pinned to commits. Scorecard uses the same official upstream
+v2.5.0 container directly, pinned to its observed Linux/amd64 manifest digest; the
+workflow explicitly supplies the original action metadata defaults as input environment
+variables. This avoids the upstream metadata's mutable tag lookup without rebuilding,
+vendoring or changing registries. The image labels identify upstream commit
+`fa7117db83c52d787ae5a89f350999701505d78e`; labels are not signed provenance.
+
+The registry manifest and configuration digests were recomputed from public metadata;
+no image layers were downloaded and no image was executed during preparation. Source
+review and authorized execution remain required. Keep publication disabled: this direct
+container invocation is not the official repository-action identity required by the
+Scorecard public-results workflow allowlist. A future badge/publication proposal must
+resolve that compatibility explicitly rather than enabling publication on this step.
 
 ## Local proof and its limits
 
@@ -92,7 +101,7 @@ The following are inspection priorities, not measured findings or granted waiver
 | --- | --- |
 | Dangerous-Workflow, Token-Permissions | Inspect each reported workflow and credential path; correct unsafe execution or excess permission before acceptance. |
 | Branch-Protection, Code-Review | Compare evidence with the approved sole-maintainer policy. Do not add approvals, strict freshness or a merge queue for points; Theo must explicitly dispose of conflicts. |
-| Pinned-Dependencies | Inspect action and transitive container references, including Scorecard's image tag; report unresolved mutable dependencies. |
+| Pinned-Dependencies | Inspect action and transitive container references, including Scorecard's pinned image; report unresolved mutable dependencies. |
 | Vulnerabilities, Dependency-Update-Tool, SAST | Link real alerts/configuration/analysis evidence; absence of readable data is not absence of vulnerabilities. |
 | Signed-Releases, Packaging | Source preparation is not a release. Coordinate actual attestation/publication evidence with the release owner; no test release is authorized here. |
 | Remaining returned checks | Preserve every reason and assign an owner; do not omit inconvenient or unscored results. |
