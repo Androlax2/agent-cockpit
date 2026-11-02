@@ -1,0 +1,59 @@
+{
+  "issue": 98,
+  "kind": "Fictional fixture rendered by the current greenfield TUI library; not a live provider/daemon/TTY capture",
+  "renderer_revision": "959696eec83de94d710f04c97d28e3a314f1a2c5",
+  "source_hashes": {
+    "crates/cockpit-tui/src/render.rs": "dc4a7119d771d5224b8d712529ce5e031dd79671f941a438869fd3030a7652de",
+    "crates/cockpit-tui/tests/fixtures/two-projects.feed": "659d38654abe79c66fe8fb2505fc80300e1be74287417a387e443d2b0819f382",
+    "crates/cockpit-tui/tests/common/mod.rs": "424e600e3b2e77c09e3387179ba96f723fc6e20714de53fd759bc0c378606e75",
+    "crates/cockpit-tui/examples/readme_demo.rs": "006829c4c0c8eb8aff01631476f527e7266c6b54c3766ce175f372389ce18b86"
+  },
+  "capture": {
+    "command": "make readme-screenshot",
+    "exit_code": 0,
+    "surface": "80 columns by 24 rows, real App/draw output via Ratatui TestBackend",
+    "data": "Existing two-projects.feed plus existing fake approval/manager-focus reply helpers",
+    "terminal_presentation": "Neutral black/white, monospace; reset colors, bold and reverse from the buffer. These are capture defaults, not new product design tokens.",
+    "rasterizer": "Already installed ImageMagick; temporary HOME/font cache, MAGICK_THREAD_LIMIT=2; metadata stripped",
+    "image": "assets/readme/greenfield-tui.png",
+    "width": 1000,
+    "height": 520,
+    "sha256": "68cee6e438e153d92b0a50f49ec63bed4acabeb45dc3625384d90439f27c02d0",
+    "inspection": "Opened and visually inspected; both projects, session states, approval details and key legend are visible"
+  },
+  "checks": {
+    "entrypoint": "Missing readme_demo example observed before implementation; then cargo run succeeded, including an output path containing spaces",
+    "self_checks": "Recorded batches must parse/apply; rendered text must contain demo profile, both projects, request, command and approval key; unsupported styles fail instead of silently changing appearance",
+    "reproducibility": "Second isolated regeneration produced the same PNG SHA-256: 68cee6e438e153d92b0a50f49ec63bed4acabeb45dc3625384d90439f27c02d0",
+    "clippy": "cargo clippy --locked -j 2 -p cockpit-tui --example readme_demo -- -D warnings: exit 0",
+    "docs": "make docs-ci: exit 0",
+    "spaced_temp_path": "make readme-screenshot with TMPDIR containing spaces: exit 0; PNG SHA-256 unchanged",
+    "site": "make site-ci: exit 0; 14 tests, TypeScript and probe checks passed; 15,187 rendered links checked with 0 errors; two existing upstream CSS optimizer warnings remain"
+  },
+  "failed_iteration": "Initial ImageMagick run exited 0 but emitted Fontconfig error: No writable cache directories. The final recipe isolates HOME/XDG cache; final capture emitted no warning.",
+  "limits": [
+    "No daemon connection, provider invocation, real model usage, host command or user state read by the fixture exporter",
+    "The pending request is fictional and its displayed command is not executed",
+    "No volunteer or public-archive onboarding acceptance is claimed"
+  ],
+  "review": {
+    "workflow": "native installed $code-review",
+    "invocation": "$code-review medium 959696eec83de94d710f04c97d28e3a314f1a2c5..039abcde8e9b3abcd5dcf3d4b0c1a707231ec450",
+    "skill_path": "/home/theo/.codex/skills/code-review/SKILL.md",
+    "skill_sha256": "dd5bb20c63d55b3dac6f3b8b4295456c8af9bcc271b18081577176d84b419b35",
+    "independent_reviewer": "native_review_98_screenshot (fresh context)",
+    "angles": [
+      "A",
+      "B",
+      "C",
+      "Reuse",
+      "Simplification",
+      "Efficiency",
+      "Altitude",
+      "Conventions"
+    ],
+    "recipe": "Eight inline angles in sequence; dedup only; no verifier, tests or product execution",
+    "findings": [],
+    "outcome": "No actionable findings; no source fixes required. Image, source and reproduction recipe inspected; recorded commands were not independently rerun by reviewer."
+  }
+}

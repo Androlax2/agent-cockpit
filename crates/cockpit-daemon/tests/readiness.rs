@@ -53,6 +53,52 @@ fn declare_docker(root: &Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_refreshes_proxy_health_separately_from_verified_engine_builds() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let initial = home.cockpit(&["doctor"], &[]).await;
+    assert_eq!(
+        status(requirement(&text(&initial.stdout), "sandbox proxy").0),
+        "available"
+    );
+    let control = home.path().join("proxy-fixture/dev");
+    for name in ["unhealthy", "stopped"] {
+        std::fs::write(control.join(name), "fixture").unwrap();
+        let output = home.cockpit(&["doctor"], &[]).await;
+        let report = text(&output.stdout);
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(
+            status(requirement(&report, "sandbox").0),
+            "available",
+            "{report}"
+        );
+        let (proxy, next) = requirement(&report, "sandbox proxy");
+        assert_eq!(status(proxy), "missing-prerequisite", "{report}");
+        assert!(
+            next.unwrap()
+                .contains("cockpit --profile dev sandbox restart"),
+            "{report}"
+        );
+        std::fs::remove_file(control.join(name)).unwrap();
+    }
+    let recovered = home.cockpit(&["doctor"], &[]).await;
+    assert_eq!(
+        status(requirement(&text(&recovered.stdout), "sandbox proxy").0),
+        "available"
+    );
+    std::fs::remove_dir_all(home.state_dir().join("greyproxy")).unwrap();
+    let missing = home.cockpit(&["doctor"], &[]).await;
+    let report = text(&missing.stdout);
+    assert!(
+        requirement(&report, "sandbox proxy")
+            .1
+            .unwrap()
+            .contains("cockpit --profile dev sandbox install"),
+        "{report}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn doctor_reports_each_sign_in_answer_and_refreshes_without_a_restart() {
     let home = Home::new();
     let program = home.path().join("bin/claude");

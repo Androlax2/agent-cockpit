@@ -181,10 +181,18 @@ pub struct HostFacts {
     /// The tmux version the daemon's start found, or why it refused it.
     pub tmux: Result<String, String>,
     pub sandbox_engine: Result<SandboxEngine, String>,
+    /// A fresh health observation, separately from the pinned engine build.
+    pub sandbox_proxy: Result<String, ProxyUnavailable>,
     /// The owner's `agents.sandbox` as the daemon applies it now.
     pub sandbox_setting: AgentSandbox,
     pub providers: Vec<ProviderFacts>,
     pub controls: Vec<ControlFacts>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProxyUnavailable {
+    pub detail: String,
+    pub next: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +251,10 @@ pub fn assess(
         &host.sandbox_engine,
         host.sandbox_setting,
         &host.profile,
+    ));
+    requirements.push(host::sandbox_proxy(
+        &host.sandbox_proxy,
+        host.sandbox_setting,
     ));
     requirements.extend(host::providers(&host.providers));
     requirements.push(host::resource_controls(&host.controls));

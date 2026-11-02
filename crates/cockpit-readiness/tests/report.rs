@@ -22,6 +22,7 @@ fn ready_host() -> HostFacts {
             observations: vec!["landlock: yes".to_owned()],
         }),
         sandbox_setting: AgentSandbox::Required,
+        sandbox_proxy: Ok("owned proxy healthy".into()),
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
             found: Ok(ProviderFound {
@@ -129,6 +130,7 @@ fn a_ready_host_reports_every_host_requirement_available() {
             "platform",
             "tmux",
             "sandbox",
+            "sandbox proxy",
             "provider claude",
             "provider claude sign-in",
             "resource controls"
