@@ -4,7 +4,7 @@
 
 **Goal:** Fix #192 draft #514's generated Markdown failures at their source.
 
-**Architecture:** Keep git-cliff as the generator; correct its header separation and render angle-bracket subject text literally. Exercise the real pinned generator with a historical-style fixture subject and check the full generated history with the unchanged docs gate.
+**Architecture:** Keep git-cliff as the generator; correct its header separation and render angle-bracket prose literally with a shared postprocessor that preserves code spans. Exercise the real pinned generator with a historical-style fixture subject and check the full generated history with the unchanged docs gate.
 
 **Tech stack:** Existing git-cliff 2.14.2, Python fixtures and docs-ci tools.
 
@@ -21,7 +21,7 @@
 
 - [x] Extend real-tool conformance with a non-conventional subject containing an angle-bracket placeholder and an inline command.
 - [x] Observe both missing separator and raw HTML failures before changing cliff.toml.
-- [x] Correct the template and rerun conformance plus the 17 orchestration tests.
+- [x] Correct the template and rerun conformance plus the 18 focused tests.
 
 ## Task 2: Validate and deliver
 

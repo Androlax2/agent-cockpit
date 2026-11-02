@@ -9,6 +9,7 @@ on:
       - .github/workflows/release-plz.yml
       - release-plz.toml
       - cliff.toml
+      - tools/changelog.py
       - tools/release_pr.py
       - tools/tests/test_release_pr.py
       - tools/tests/release_pr_conformance.py

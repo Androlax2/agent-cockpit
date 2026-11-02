@@ -828,6 +828,7 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "tools/release.py",
                 "tools/tests/test_release.py",
                 "cliff.toml",
+                "tools/changelog.py",
             },
         )
 

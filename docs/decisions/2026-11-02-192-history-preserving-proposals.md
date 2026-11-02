@@ -38,6 +38,9 @@ The first live draft (#514) and same-base retry preserved the exact branch/head,
 its docs CI found MD022 (header separation) and MD033 (a historical subject containing
 an angle-bracket placeholder). Fix the shared git-cliff template rather than changing
 the immutable draft, rewriting historical commits, or relaxing Markdown rules. The
-real-tool fixture now includes that subject shape and an inline command. Full-history
+shared postprocessor (`tools/changelog.py`) escapes prose while preserving matching
+backtick code spans, including commands containing placeholders. The real-tool fixture
+exercises both forms; command-entry tests cover escaped/unmatched backticks and multi-backtick
+spans. Both release workflow path filters include the postprocessor. Full-history
 output is checked with the unchanged `make docs-ci` in a disposable checkout before
 review; replacement-draft CI still needs measured evidence.

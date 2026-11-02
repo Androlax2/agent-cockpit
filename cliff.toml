@@ -21,11 +21,13 @@ body = """
 ### {{ group | striptags | trim }}
 {% for commit in commits %}
 - {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
-{{ commit.message | split(pat="\n") | first | trim | replace(from="<", to="&lt;") | replace(from=">", to="&gt;") }}\
+{{ commit.message | split(pat="\n") | first | trim }}\
 {% endfor %}
 {% endfor %}
 """
 trim = true
+# Process the complete output once, so release notes and proposals share the same escaping.
+postprocessors = [{ pattern = '(?s)^.+$', replace_command = 'python3 tools/changelog.py' }]
 
 [git]
 conventional_commits = true

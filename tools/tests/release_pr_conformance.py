@@ -51,7 +51,9 @@ def main():
         # A historical non-conventional subject broke the first live draft's docs gate.
         git(fixture.root, "checkout", "-q", "main")
         (fixture.root / "placeholder.txt").write_text("fixture\n")
-        fixture.base = fixture.commit("fixture command <repo>: keep `--help` readable")
+        fixture.base = fixture.commit(
+            "fixture command <repo>: keep `cockpit stack <repo>` readable"
+        )
         git(fixture.root, "push", "-q", "origin", "main")
         git(fixture.root, "checkout", "-q", "--detach", fixture.base)
 
@@ -80,8 +82,8 @@ def main():
         problems = []
         if "the title format.\n\n## Unreleased\n" not in changelog:
             problems.append("generated heading needs a blank line after the header (MD022)")
-        if "fixture command &lt;repo&gt;: keep `--help` readable" not in changelog:
-            problems.append("subject placeholders must remain text, not inline HTML (MD033)")
+        if "fixture command &lt;repo&gt;: keep `cockpit stack <repo>` readable" not in changelog:
+            problems.append("escape prose placeholders (MD033), preserving literal code spans")
         assert not problems, "; ".join(problems)
 
         def publish():

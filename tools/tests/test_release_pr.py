@@ -49,6 +49,8 @@ class Fixture:
         )
         for name in ("release-plz.toml", "cliff.toml"):
             shutil.copyfile(ROOT / name, self.root / name)
+        (self.root / "tools").mkdir()
+        shutil.copyfile(ROOT / "tools/changelog.py", self.root / "tools/changelog.py")
         self.base = self.commit("feat: initial fixture")
         git(self.root, "push", "-q", "origin", "main")
         git(self.root, "checkout", "-q", "--detach", self.base)
@@ -135,6 +137,28 @@ class FakeGitHub:
             self.writes.append(("comment", number))
             return {}
         raise AssertionError((method, path, data))
+
+
+class ChangelogTests(unittest.TestCase):
+    def test_prose_is_escaped_without_changing_code_spans(self):
+        cases = [
+            ("- <repo> and `cockpit <repo>`\n", "- &lt;repo&gt; and `cockpit <repo>`\n"),
+            ("- ``a ` b <repo>`` <text>\n", "- ``a ` b <repo>`` &lt;text&gt;\n"),
+            ("- unmatched ` <repo>\n", "- unmatched ` &lt;repo&gt;\n"),
+            ("- \\` <repo> `\n", "- \\` &lt;repo&gt; `\n"),
+            ("- \\\\`<repo>`\n", "- \\\\`<repo>`\n"),
+            ("- `<repo>\n- <repo>`\n", "- `&lt;repo&gt;\n- &lt;repo&gt;`\n"),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "tools/changelog.py")],
+                    input=source,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(result.stdout, expected)
 
 
 class ProposalTests(unittest.TestCase):
