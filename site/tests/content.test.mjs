@@ -57,7 +57,7 @@ test("reference generation uses an empty home and cleared environment", async ()
     const binary = join(dir, "fake cockpit");
     writeFileSync(
       binary,
-      `#!/usr/bin/env node
+      `#!${process.execPath}
 if (process.env.COCKPIT_DOCS_TEST_SENTINEL) process.exit(17);
 const args = process.argv.slice(2).join(' ');
 if (args === '--help') { console.log('usage: cockpit VERB'); process.exit(2); }

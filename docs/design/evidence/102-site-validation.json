@@ -132,6 +132,20 @@
       "stage": "Link-checker bootstrap, before npm/site build",
       "error": "install-action does not support lychee@0.24.2; aborting because fallback is disabled by 'fallback: none' input option",
       "fix": "Reuse the existing ci.yml checksum-verified lychee 0.24.2 download, without changing the tool/site pins or enabling compilation fallback."
+    },
+    {
+      "run": 41385864682,
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41385864682",
+      "conclusion": "failure",
+      "stage": "Isolated reference fake-binary test; actual CLI/site build passed, 12 of 13 tests passed",
+      "error": "Reference command --help failed: env: 'node': No such file or directory",
+      "fix": "Use process.execPath in the fake executable shebang. Production reference generation keeps HOME temporary and PATH fixed to /usr/bin:/bin; no environment isolation was relaxed."
     }
-  ]
+  ],
+  "host_bootstrap_push": {
+    "request": "b7aba8ec4699",
+    "head": "6e02725b9fd4bb9b69e14082dd873d7614bb6f18",
+    "exit_code": 0,
+    "effect": "Normal own-branch push of the checksum bootstrap correction; no Pages action"
+  }
 }

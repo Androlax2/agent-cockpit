@@ -33,8 +33,9 @@ remains historical evidence; no empty array from a failed scan counts as a pass.
 
 ## Open release checkpoints
 
-- Host-reviewed workflow push, CI site build, Pages enablement/environment policy,
-  deployment and repository website field; no custom domain before #339.
+- Pages enablement/environment policy, deployment and repository website field;
+  no custom domain before #339. Host workflow-push approvals are recorded in the
+  validation evidence; successful hosted checks remain the PR merge gate.
 - Final public installation instructions following the merged installer/release
   implementation. Main's engine-install work #470 has progressed independently;
   it is not a measured public onboarding result for this branch.
@@ -53,4 +54,11 @@ failed before the Node install/build: the pinned install-action did not support
 lychee 0.24.2 with fallback disabled. The correction reuses the existing `ci.yml`
 checksum-verified download of that exact lychee release. The shared bootstrap
 regression now covers both jobs (five tests pass); no site package pin, compiler
-fallback or local installation changed. Hosted success remains pending a new run.
+fallback or local installation changed. Hosted success was not observed in that checkpoint; consult PR #507 checks for the final outcome.
+
+The corrected bootstrap passed in [run 41385864682](https://github.com/Androlax2/agent-cockpit/actions/runs/41385864682),
+and the real static site export passed. One isolation fixture failed because its
+`/usr/bin/env node` shebang could not find setup-node's tool-cache executable in
+the deliberately cleared PATH. The fixture now names the running Node executable
+with `process.execPath`; production environment isolation remains unchanged. All
+eight focused content tests pass locally; the subsequent hosted outcome is recorded in PR #507 checks.
