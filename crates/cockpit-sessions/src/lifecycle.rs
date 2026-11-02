@@ -1558,6 +1558,32 @@ impl Sessions {
         )
     }
 
+    /// Record the owner's measurements for the exact latest sandbox launch, serialized
+    /// with restarts. A claim never changes a profile, capability or session grant.
+    pub async fn record_sandbox_observations(
+        &self,
+        id: &SessionId,
+        client_identity: &str,
+        observations: &[String],
+    ) -> Result<cockpit_sandbox::Evidence, Error> {
+        let Ok(_guard) = Arc::clone(&self.session_lock(id).operation).try_lock_owned() else {
+            return Err(Error::SessionBusy {
+                session: id.clone(),
+            });
+        };
+        let write = self.database.write().await?;
+        store::session(&write, id).await?;
+        cockpit_sandbox::record_observations(&write, id.as_str(), client_identity, observations)
+            .await?;
+        let evidence = cockpit_sandbox::latest_for_session(&write, id.as_str())
+            .await?
+            .ok_or_else(|| Error::InvalidStoredRow {
+                reason: "recorded sandbox observation has no launch".into(),
+            })?;
+        write.commit().await?;
+        Ok(evidence)
+    }
+
     /// How the session's latest launch ran (#61), or `None` before its first launch.
     pub async fn sandbox_evidence(
         &self,

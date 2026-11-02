@@ -356,6 +356,7 @@ impl Handler for Routes {
                 | Command::SessionEndFinished { .. }
                 | Command::SessionLink { .. }
                 | Command::SessionSandbox { .. }
+                | Command::SessionSandboxRecord { .. }
                 | Command::SandboxShow { .. }),
                 peer,
             ) => match peer {

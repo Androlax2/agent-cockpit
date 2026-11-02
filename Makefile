@@ -79,6 +79,23 @@ sandbox-install-smoke: ## Verify pinned engine installation and doctor in a fres
 	$(build_runner) cargo build --locked -j 2 -p cockpit-cli -p cockpit-daemon
 	python3 tools/verify-engine-install.py
 
+.PHONY: sandbox-enforcement-fixtures sandbox-enforcement-platform-fixtures sandbox-enforcement-ci
+
+sandbox-enforcement-fixtures: ## Check enforcement-runner fixtures without services or network
+	python3 -m unittest discover -s tools/tests -p test_verify_sandbox_enforcement.py
+
+sandbox-enforcement-platform-fixtures: ## Check owner observations and macOS capability refusal with fake engines
+	CARGO_BUILD_JOBS=2 cargo nextest run --locked -p cockpit-daemon --test sandbox --test sandbox_observations -E 'binary(sandbox_observations) | test(a_macos_engine_without_public_ca_isolation)' --test-threads 2
+
+SANDBOX_ENFORCEMENT_OUTPUT ?= .outgoing/sandbox-enforcement
+
+# Deliberately excluded from greenfield-ci and local full suites. The script refuses a
+# non-disposable runner before creating a home or starting any service; workflow approval
+# is separate. Plain Cargo also works on macOS, where agent-build is unavailable.
+sandbox-enforcement-ci: ## Measure real-engine enforcement in an approved disposable CI job
+	cargo build --locked -j 2 -p cockpit-cli -p cockpit-daemon -p cockpit-claude -p cockpit-codex -p cockpit-opencode
+	python3 tools/verify-sandbox-enforcement.py --ci --output "$(SANDBOX_ENFORCEMENT_OUTPUT)"
+
 greenfield-ci: crates-fmt-check crates-clippy crates-doc crates-deny typos crates-test sandbox-install-smoke ## Run the greenfield workspace's gate (CI's greenfield job)
 
 .PHONY: lint-python lint-shell lint-js lint-markdown lint-lua
