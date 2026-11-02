@@ -21,6 +21,8 @@ ignore = true
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Unpublished internal path dependencies inherit the workspace version (#120).
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
