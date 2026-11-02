@@ -431,6 +431,29 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("external dependencies", error)
 
+    def test_conformance_keeps_installed_toolchain_while_isolating_cargo_home(self):
+        import release_pr_conformance
+
+        host = self.parent / "fixture-host"
+        toolchain = host / ".rustup"
+        toolchain.mkdir(parents=True)
+        (toolchain / "installed").write_text("fixture toolchain")
+        cargo = self.bin / "fixture-cargo"
+        cargo.write_text(
+            '#!/usr/bin/env python3\nimport os, pathlib\nroot = pathlib.Path(os.environ.get("RUSTUP_HOME", str(pathlib.Path.home() / ".rustup")))\nassert (root / "installed").is_file(), "installed toolchain hidden by temporary HOME"\nassert os.environ["RUSTUP_AUTO_INSTALL"] == "0"\n'
+        )
+        cargo.chmod(0o755)
+        with patch.dict(os.environ, {"HOME": str(host)}, clear=False):
+            previous = os.environ.pop("RUSTUP_HOME", None)
+            try:
+                env = release_pr_conformance.fixture_environment(self.parent / "isolated")
+            finally:
+                if previous is not None:
+                    os.environ["RUSTUP_HOME"] = previous
+        subprocess.run([str(cargo)], env=env, check=True)
+        self.assertNotEqual(env["HOME"], str(host))
+        self.assertEqual(env["CARGO_HOME"], str(self.parent / "isolated/cargo"))
+
 
 if __name__ == "__main__":
     unittest.main()

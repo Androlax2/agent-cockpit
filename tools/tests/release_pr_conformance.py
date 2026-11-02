@@ -14,21 +14,30 @@ from unittest.mock import patch
 from test_release_pr import ROOT, Fixture, git, proposal
 
 
+def fixture_environment(parent):
+    environment = dict(os.environ)
+    for key in ("GH_TOKEN", "GITHUB_TOKEN", "GIT_TOKEN", "GH_DEBUG"):
+        environment.pop(key, None)
+    # Keep the already-installed compiler reachable when HOME changes on rustup-based CI.
+    # Cargo configuration/cache/credentials stay isolated; no toolchain auto-install is allowed.
+    rustup = Path(environment.get("RUSTUP_HOME", str(Path.home() / ".rustup"))).resolve()
+    environment.update(
+        HOME=str(parent / "home"),
+        CARGO_HOME=str(parent / "cargo"),
+        RUSTUP_HOME=str(rustup),
+        RUSTUP_AUTO_INSTALL="0",
+        CARGO_NET_OFFLINE="true",
+        GIT_CONFIG_GLOBAL="/dev/null",
+        GIT_CONFIG_NOSYSTEM="1",
+    )
+    return environment
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="release-pr-conformance-") as directory:
         parent = Path(directory)
-        home = parent / "home"
-        home.mkdir()
-        environment = dict(os.environ)
-        for key in ("GH_TOKEN", "GITHUB_TOKEN", "GIT_TOKEN", "GH_DEBUG"):
-            environment.pop(key, None)
-        environment.update(
-            HOME=str(home),
-            CARGO_HOME=str(parent / "cargo"),
-            CARGO_NET_OFFLINE="true",
-            GIT_CONFIG_GLOBAL="/dev/null",
-            GIT_CONFIG_NOSYSTEM="1",
-        )
+        (parent / "home").mkdir()
+        environment = fixture_environment(parent)
         for tool, expected in [
             ("release-plz", "release-plz 0.4.2"),
             ("git-cliff", "git-cliff 2.14.2"),
