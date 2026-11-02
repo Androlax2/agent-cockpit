@@ -45,7 +45,7 @@ The installed Node 26.12.1 and npm 12.2.1 satisfy the inspected framework engine
 
 ## Design handoff
 
-A Designer prepared the [Fumadocs layout handoff](../design/102-documentation-layout.md) under #499, FigCraft revision `1a199ed781f`; exact-frame approval remains pending. Use standard Fumadocs navigation, document body, table of contents, version selector, search and theme controls. Retain source provenance and pending-reference labels in the content. No new logo, product palette or marketing landing page is requested.
+A Designer prepared the [current r4 layout handoff](../design/102-documentation-layout-r4.md) under #499, FigCraft revision `1a19a1c1456`; exact-frame approval remains pending. The original r3 handoff and critique remain as historical evidence. Use standard Fumadocs navigation, document body, table of contents, version selector, search and theme controls. Retain source provenance and pending-reference labels in the content. No new logo, product palette or marketing landing page is requested.
 The approved FigCraft frame revision and Impeccable guidance actually used must be recorded before implementing a new layout. A preferred reference is not an approved frame. Missing design capabilities must be reported rather than silently replaced with invented UI.
 
 ## Intended implementation after approval

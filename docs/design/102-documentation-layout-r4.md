@@ -102,3 +102,9 @@ the future site. Remaining checks include actual dismissal/focus restoration,
 keyboard search, 320 px layout, 200% zoom, long content and contrast in rendered
 components. No deployment, package install, live desktop operation, Git mutation
 or product implementation was performed by this Designer continuation.
+
+## Desktop review and checks
+
+Host-approved request `adff022749eb` opened this r4 board through the existing verified checkout-specific FigCraft instance on workspace 7 (exit 0). The original r3 document and other windows/documents remained open. Opening the board does not approve it.
+
+The parent inspected desktop light/dark, mobile reading dark and mobile search light previews; the Designer inspected all ten. The native `inspect.readyForDev` check returned an empty list, and PNG headers confirmed the sizes in the table. Markdown, local links and spelling passed. `make docs-ci` passed before the proposal commit. The parent separately captured the installed styles with the existing headless browser, as documented in the linked style-reference evidence; no new product browser acceptance is claimed.

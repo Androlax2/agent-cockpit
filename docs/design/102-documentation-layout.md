@@ -1,6 +1,7 @@
 # Documentation layout proposal
 
 Issue #102. **Proposed; awaiting Theo's review of these exact frames.**
+The current proposal is the separate [r4 handoff](102-documentation-layout-r4.md); this file retains the r3 history and verification evidence.
 Theo's preference for Fumadocs establishes the visual direction. It does not approve
 these layouts, implementation, deployment or a new product identity. Theo separately approved
 the exact site-only dependencies and build validation in decision commit `fd9194c`.
