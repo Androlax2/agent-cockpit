@@ -4,6 +4,9 @@
     reason = "each test file uses a different part of the fixture"
 )]
 
+#[path = "../candidate/mod.rs"]
+mod candidate;
+
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -123,7 +126,7 @@ impl TestHome {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_cockpit-daemon"));
+        let mut command = Command::new(candidate::program("cockpit-daemon"));
         command
             .env_clear()
             .env("HOME", self.home())
@@ -147,6 +150,7 @@ impl TestHome {
         if let Some(shell) = &self.shell {
             command.env("SHELL", shell);
         }
+        candidate::configure(&mut command);
         command
     }
 
@@ -172,6 +176,7 @@ impl TestHome {
                 .map(|mut pipe| pipe.read_to_string(&mut stderr));
             panic!("the daemon did not report ready: stdout {line:?}, stderr {stderr:?}");
         }
+        candidate::assert_running_candidate(daemon.child.id());
         daemon
     }
 

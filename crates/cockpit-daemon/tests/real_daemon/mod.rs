@@ -7,6 +7,9 @@
     reason = "each test file uses a different part of the fixture"
 )]
 
+#[path = "../candidate/mod.rs"]
+mod candidate;
+
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -353,6 +356,7 @@ impl Home {
             .env("HOME", self.path())
             .env("XDG_RUNTIME_DIR", self.path().join("run"))
             .envs(extra.iter().copied());
+        candidate::configure(&mut command);
         tokio::task::spawn_blocking(move || command.output().expect("cockpit runs"))
             .await
             .unwrap()
@@ -478,7 +482,8 @@ impl Home {
             }
             std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let mut child = Process::new(env!("CARGO_BIN_EXE_cockpit-daemon"))
+        let mut command = Process::new(candidate::program("cockpit-daemon"));
+        command
             .args(
                 profile
                     .map(|profile| ["--profile", profile])
@@ -501,9 +506,9 @@ impl Home {
                     .append(true)
                     .open(self.stderr_log())
                     .expect("the daemon's standard error file opens"),
-            )
-            .spawn()
-            .expect("the daemon binary runs");
+            );
+        candidate::configure(&mut command);
+        let mut child = command.spawn().expect("the daemon binary runs");
         let stdout = child.stdout.take().expect("stdout is piped");
         let (lines, ready) = mpsc::channel();
         std::thread::spawn(move || {
@@ -518,6 +523,7 @@ impl Home {
             let stderr = std::fs::read_to_string(self.stderr_log()).unwrap_or_default();
             panic!("the daemon did not report ready: stdout {line:?}, stderr {stderr:?}");
         }
+        candidate::assert_running_candidate(daemon.child.id());
         daemon
     }
 
@@ -626,7 +632,7 @@ pub struct Daemon {
 /// builds it there for the workspace run (`make crates-test`), not for a run of this
 /// package alone.
 pub fn cockpit_program() -> PathBuf {
-    Path::new(env!("CARGO_BIN_EXE_cockpit-daemon")).with_file_name("cockpit")
+    candidate::program("cockpit")
 }
 
 impl Daemon {

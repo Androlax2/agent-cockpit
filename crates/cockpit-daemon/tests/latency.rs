@@ -55,6 +55,7 @@ struct Workload {
     duration: Duration,
     build_processes: usize,
     writers: usize,
+    enforce_targets: bool,
 }
 
 impl Workload {
@@ -63,6 +64,7 @@ impl Workload {
             duration: Duration::from_secs(3),
             build_processes: 1,
             writers: 1,
+            enforce_targets: false,
         }
     }
 
@@ -77,6 +79,7 @@ impl Workload {
             duration: Duration::from_secs(seconds),
             build_processes: std::thread::available_parallelism().map_or(1, usize::from),
             writers: 2,
+            enforce_targets: false,
         }
     }
 }
@@ -90,6 +93,32 @@ async fn control_requests_are_answered_while_every_load_runs_and_a_restart_reatt
 #[ignore = "the recorded run of docs/gates/m1-latency.md: 30 minutes on every CPU"]
 async fn recorded_latency_run() {
     run(Workload::recorded()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "bounded release CI only: five minutes against the verified archive"]
+async fn release_candidate_responsiveness() {
+    assert_eq!(std::env::var("CI").as_deref(), Ok("true"), "CI only");
+    let root = std::env::var("COCKPIT_CANDIDATE_ROOT").expect("the verified archive root");
+    let revision =
+        std::env::var("COCKPIT_CANDIDATE_REVISION").expect("the verified source revision");
+    std::env::var("COCKPIT_LATENCY_REPORT").expect("a persistent report path");
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(Path::new(&root).join("share/cockpit/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest["source_revision"].as_str(),
+        Some(revision.as_str())
+    );
+    run(Workload {
+        duration: Duration::from_secs(300),
+        build_processes: std::thread::available_parallelism()
+            .map_or(1, |count| usize::from(count).min(2)),
+        writers: 2,
+        enforce_targets: true,
+    })
+    .await;
 }
 
 async fn run(workload: Workload) {
@@ -180,6 +209,16 @@ async fn run(workload: Workload) {
             .get(restart.launches_before.len()..)
             .unwrap_or_default()
     );
+    if workload.enforce_targets {
+        assert!(
+            release_loads_completed(&tallies),
+            "candidate loads must complete operations without failures: {tallies:?}"
+        );
+        assert!(
+            release_targets_met(&samples),
+            "candidate missed responsiveness targets; see the recorded report"
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -579,12 +618,17 @@ impl Report<'_> {
     fn to_markdown(&self) -> String {
         let mut text = String::new();
         let workload = self.workload;
+        if let Ok(revision) = std::env::var("COCKPIT_CANDIDATE_REVISION") {
+            let _ = writeln!(text, "Candidate source revision: `{revision}`\n");
+        }
         let _ = writeln!(
             text,
             "## Latency run\n\n- Profile: {}\n- Load for {} s; a control request every {} ms on a held \
              connection, a new connection's ping every {} s\n- Build processes: {}; item \
              writers: {}\n",
-            if cfg!(debug_assertions) {
+            if workload.enforce_targets {
+                "packaged release daemon (test harness profile is irrelevant)"
+            } else if cfg!(debug_assertions) {
                 "debug (not comparable with the release daemon a user installs)"
             } else {
                 "release"
@@ -706,6 +750,97 @@ fn percentile(sorted: &[Duration], fraction: f64) -> Duration {
     }
     let rank = (fraction * sorted.len() as f64).ceil() as usize;
     sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
+fn release_targets_met(samples: &[Sample]) -> bool {
+    let held: Vec<_> = samples
+        .iter()
+        .filter(|sample| sample.request != FRESH_PING)
+        .collect();
+    let latencies = sorted_latencies(&held);
+    !held.is_empty()
+        && samples.iter().any(|sample| sample.request == FRESH_PING)
+        && samples
+            .iter()
+            .all(|sample| sample.error.is_none() && sample.latency <= STALL)
+        && percentile(&latencies, 0.95) <= P95_TARGET
+        && percentile(&latencies, 0.99) <= P99_TARGET
+}
+
+fn release_loads_completed(tallies: &[Tally]) -> bool {
+    !tallies.is_empty()
+        && tallies
+            .iter()
+            .all(|tally| tally.answered > 0 && tally.failed == 0)
+}
+
+#[test]
+fn release_targets_require_successful_loads() {
+    let mut tally = Tally::new("fixture load");
+    assert!(!release_loads_completed(&[]));
+    assert!(!release_loads_completed(std::slice::from_ref(&tally)));
+    tally.busy = 1;
+    assert!(!release_loads_completed(std::slice::from_ref(&tally)));
+    tally.answered = 1;
+    assert!(release_loads_completed(std::slice::from_ref(&tally)));
+    tally.failed = 1;
+    assert!(!release_loads_completed(&[tally]));
+}
+
+#[test]
+fn release_targets_accept_the_documented_boundaries() {
+    let mut samples: Vec<_> = (0..100)
+        .map(|index| Sample {
+            request: "ping",
+            latency: Duration::from_millis(if index < 95 { 100 } else { 250 }),
+            error: None,
+        })
+        .collect();
+    samples.push(Sample {
+        request: FRESH_PING,
+        latency: STALL,
+        error: None,
+    });
+    assert!(release_targets_met(&samples));
+}
+
+#[test]
+fn release_targets_reject_missing_failed_or_slow_samples() {
+    let samples = |held: Vec<u64>, fresh, error: Option<&str>| {
+        let mut samples: Vec<_> = held
+            .into_iter()
+            .map(|milliseconds| Sample {
+                request: "ping",
+                latency: Duration::from_millis(milliseconds),
+                error: error.map(str::to_owned),
+            })
+            .collect();
+        if let Some(milliseconds) = fresh {
+            samples.push(Sample {
+                request: FRESH_PING,
+                latency: Duration::from_millis(milliseconds),
+                error: None,
+            });
+        }
+        samples
+    };
+    for (name, samples) in [
+        ("empty", vec![]),
+        ("no fresh connections", samples(vec![1; 100], None, None)),
+        ("no held connections", samples(vec![], Some(1), None)),
+        ("p95", samples(vec![101; 100], Some(1), None)),
+        (
+            "p99",
+            samples([vec![1; 98], vec![251; 2]].concat(), Some(1), None),
+        ),
+        ("fresh stall", samples(vec![1; 100], Some(1001), None)),
+        (
+            "failed request",
+            samples(vec![1; 100], Some(1), Some("refused")),
+        ),
+    ] {
+        assert!(!release_targets_met(&samples), "must refuse {name}");
+    }
 }
 
 fn milliseconds(duration: Duration) -> String {

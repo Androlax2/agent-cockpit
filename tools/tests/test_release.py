@@ -785,17 +785,46 @@ class VerifyInstallTests(PackagingTestCase):
 
 
 class GateGapTests(unittest.TestCase):
+    def test_native_intel_install_and_compatibility_are_executable_gates(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        install = workflow.split("\n  install:\n", 1)[1].split("\n  install-wsl2:\n", 1)[0]
+        self.assertRegex(install, r"platform: macos-universal\s+runner: macos-26-intel")
+        self.assertEqual(
+            release.GATE_CHECKS["clean install runs the macOS universal archive's x86_64 slice"][0],
+            "install",
+        )
+        self.assertEqual(
+            release.GATE_CHECKS["version-skew and interrupted-action fixtures"][0],
+            "compatibility",
+        )
+        compatibility = workflow.split("\n  compatibility:\n", 1)[1].split("\n  ", 1)[0]
+        self.assertIn("needs: [plan, build]", compatibility)
+        self.assertIn("make release-compatibility", workflow)
+
     def test_an_unproven_gate_check_blocks_publishing_by_name(self):
-        code, _outputs, error = run("gate-gaps", "beta", cwd=ROOT)
+        with patch.dict(release.GATE_CHECKS, {"unproven fixture gate": (None, ())}):
+            error = io.StringIO()
+            stdout = io.StringIO()
+            with contextlib.redirect_stderr(error), contextlib.redirect_stdout(stdout):
+                code = release.main(["gate-gaps", "beta"], cwd=ROOT)
+            self.assertEqual(code, 1)
+            self.assertIn("unproven fixture gate", stdout.getvalue())
+            self.assertIn("publishing waits", error.getvalue())
+
+    def test_unmeasured_cross_version_sessions_still_block_beta_publication(self):
+        stdout, error = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(error):
+            code = release.main(["gate-gaps", "beta"], cwd=ROOT)
         self.assertEqual(code, 1)
-        self.assertIn("publishing waits", error)
+        self.assertIn("running sessions survive a previous-channel upgrade", stdout.getvalue())
+        self.assertIn("publishing waits", error.getvalue())
 
     def test_an_alpha_is_not_blocked_by_the_upgrade_check(self):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
             release.main(["gate-gaps", "alpha"], cwd=ROOT)
         self.assertNotIn("upgrade", stdout.getvalue())
-        self.assertIn("gap: sustained responsiveness run", stdout.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
 
     def test_publishing_waits_for_every_gate_job_of_the_release_workflow(self):
         workflow = RELEASE_WORKFLOW.read_text()
@@ -829,6 +858,17 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "tools/tests/test_release.py",
                 "cliff.toml",
                 "tools/changelog.py",
+                "Makefile",
+                "tools/release_upgrade.py",
+                "tools/tests/test_release_upgrade.py",
+                "crates/cockpit-daemon/tests/candidate/mod.rs",
+                "crates/cockpit-daemon/tests/common/mod.rs",
+                "crates/cockpit-daemon/tests/real_daemon/mod.rs",
+                "crates/cockpit-daemon/tests/latency.rs",
+                "crates/cockpit-daemon/tests/protocol.rs",
+                "crates/cockpit-daemon/tests/restart_reattach.rs",
+                "crates/cockpit-daemon/tests/session_restore_crash.rs",
+                "crates/cockpit-turso/tests/migrations.rs",
             },
         )
 
@@ -856,7 +896,10 @@ class WorkflowMatrixTests(unittest.TestCase):
                 body = re.search(rf"\n  {job}:\n((?:    [^\n]*\n|\n)*)", workflow)
                 self.assertIsNotNone(body, f"expected the {job} job")
                 listed = re.findall(r"- platform: (\S+)", body[1])
-                self.assertEqual(sorted(listed), sorted(release.PLATFORMS))
+                expected = [*release.PLATFORMS]
+                if job == "install":
+                    expected.append("macos-universal")  # ARM and native Intel execute one archive.
+                self.assertEqual(sorted(listed), sorted(expected))
 
     def test_the_build_gathers_every_bundled_binary(self):
         workflow = RELEASE_WORKFLOW.read_text()

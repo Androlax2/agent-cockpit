@@ -191,6 +191,34 @@ clean installs block it; a beta must upgrade from the previous beta.
 Every later release milestone ships on the beta channel. A stable channel and 1.0 are not
 planned: Theo decides them once users have used the betas for a long time.
 
+## Candidate checks
+
+The release workflow executes the universal archive on both native macOS architectures.
+Its `compatibility` job runs the archive's daemon through protocol-skew and killed-daemon
+restart fixtures, plus linked migration and interrupted-restore tests from the same source
+revision. `make release-compatibility` owns those commands.
+
+`make release-responsiveness` is CI-only: five minutes against the verified Linux archive,
+with at most two build stand-ins and two database writers. It requires successful load
+operations, held-connection p95 ≤ 100 ms and p99 ≤ 250 ms, and every measured response within
+one second. The workflow uploads `candidate-responsiveness.md`, including the candidate
+revision, even when a target fails. Do not run it as a local stress loop.
+
+`make release-upgrade-fetch` selects the newest published earlier release of the same
+channel and downloads its matching archive and checksums with read-only GitHub access.
+`make release-upgrade` verifies the checksum, manifest and source revision, then stops the
+old daemon before starting the candidate in one private temporary home. Project/task state
+must survive, and new writes must work. Tested processes receive no GitHub credentials.
+Linux, both macOS architectures and WSL2 have jobs; publishing needs all of them.
+
+Alpha keeps its explicit upgrade exemption. Development dry runs have no release channel.
+Both run the state fixture twice with the current candidate and print `upgrade=not-run`;
+that is orchestration coverage, not proof of a previous-release upgrade. A beta without a
+published earlier beta fails by name. Cross-version running-session retention is not yet
+covered by this fixture and remains a named beta publication blocker in `GATE_CHECKS`;
+same-candidate restart tests are separate evidence. Track these
+unmeasured outcomes in [#191](https://github.com/Androlax2/agent-cockpit/issues/191).
+
 ## Changelog
 
 [CHANGELOG.md](../CHANGELOG.md) is the only changelog. **git-cliff** generates it from the

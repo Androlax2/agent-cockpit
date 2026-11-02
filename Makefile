@@ -274,3 +274,25 @@ release-pr-check: ## Check release proposal retries with isolated Git and fake G
 
 release-pr-conformance: ## Prove pinned release-plz/git-cliff generation in a throwaway workspace
 	python3 tools/tests/release_pr_conformance.py
+
+.PHONY: release-compatibility release-responsiveness
+release-compatibility: ## Check archived protocol/restart plus source migration/crash fixtures
+	@test -n "$${COCKPIT_CANDIDATE_ROOT:-}" || { echo "COCKPIT_CANDIDATE_ROOT is required"; exit 2; }
+	$(build_runner) cargo nextest run --locked --build-jobs 2 --test-threads 2 -p cockpit-daemon --test protocol --test restart_reattach --test session_restore_crash
+	$(build_runner) cargo nextest run --locked --build-jobs 2 --test-threads 2 -p cockpit-turso --test migrations
+
+release-responsiveness: ## Measure the archived daemon for five minutes in bounded CI only
+	@test "$${CI:-}" = true || { echo "release responsiveness runs in bounded CI only"; exit 2; }
+	@test -n "$${COCKPIT_CANDIDATE_ROOT:-}" && test -n "$${COCKPIT_CANDIDATE_REVISION:-}" && test -n "$${COCKPIT_LATENCY_REPORT:-}"
+	$(build_runner) cargo nextest run --locked --build-jobs 2 --test-threads 1 -p cockpit-daemon --test latency --run-ignored only --no-capture -E 'test(=release_candidate_responsiveness)'
+
+.PHONY: release-check release-upgrade-fetch release-upgrade
+release-check: ## Check release packaging and upgrade orchestration with isolated fixtures
+	python3 -m unittest discover -s tools/tests -p test_release.py
+	python3 -m unittest discover -s tools/tests -p test_release_upgrade.py
+
+release-upgrade-fetch: ## Download the previous published channel archives without running them
+	python3 tools/release_upgrade.py fetch --version "$$VERSION" --channel "$$CHANNEL" --platform "$$PLATFORM" --out "$$BASELINE_DOWNLOADS"
+
+release-upgrade: ## Verify state retention between unpacked channel releases in a private home
+	python3 tools/release_upgrade.py verify --candidate "$$COCKPIT_CANDIDATE_ROOT" --revision "$$REVISION" --downloads "$$BASELINE_DOWNLOADS"

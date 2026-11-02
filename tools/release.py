@@ -84,10 +84,12 @@ GATE_CHECKS = {
     "real CLI, terminal and provider-contract tests": ("gate", ()),
     "clean install on Linux x86_64, Linux aarch64 and macOS arm64": ("install", ()),
     "clean install of the Linux x86_64 archive inside WSL2": ("install-wsl2", ()),
-    "clean install runs the macOS universal archive's x86_64 slice": (None, ()),
-    "version-skew and interrupted-action fixtures": (None, ()),
-    "sustained responsiveness run (report 03) against the candidate": (None, ()),
-    "upgrade from the previous release of the channel": (None, ("alpha",)),
+    "clean install runs the macOS universal archive's x86_64 slice": ("install", ()),
+    "version-skew and interrupted-action fixtures": ("compatibility", ()),
+    "sustained responsiveness run (report 03) against the candidate": ("responsiveness", ()),
+    "upgrade from the previous release of the channel": ("upgrade", ("alpha",)),
+    "upgrade from the previous release of the channel inside WSL2": ("upgrade-wsl2", ("alpha",)),
+    "running sessions survive a previous-channel upgrade": (None, ("alpha",)),
 }
 CHANNELS = ("alpha", "beta")
 
