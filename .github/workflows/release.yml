@@ -299,6 +299,8 @@ jobs:
       - name: Verify the unpacked candidate and run compatibility fixtures
         env:
           REVISION: ${{ needs.plan.outputs.revision }}
+          COCKPIT_CANDIDATE_REVISION: ${{ needs.plan.outputs.revision }}
+          COCKPIT_COMPATIBILITY_REPORT: ${{ github.workspace }}/candidate-compatibility.md
         run: |
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
@@ -306,6 +308,12 @@ jobs:
           export COCKPIT_CANDIDATE_ROOT="${roots[0]}"
           python3 tools/release.py verify-install "$COCKPIT_CANDIDATE_ROOT" --revision "$REVISION"
           make release-compatibility
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: candidate-compatibility
+          path: candidate-compatibility.md
+          if-no-files-found: warn
 
   # A fixed five-minute run, at most two build stand-ins, against the same archive.
   responsiveness:
