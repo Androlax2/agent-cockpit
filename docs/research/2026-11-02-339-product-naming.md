@@ -1,12 +1,21 @@
-# Narrow the alpha shortlist before renaming
+# Name the product before the alpha
 
-**Proposed only — Theo's choice is NOT MADE.** As of **2026-11-02**, **Crewkiln and
-Runlark are the strongest provisional candidates**, pending unresolved checks.
-Recommend Crewkiln for its agent-team/craft meaning; Runlark is the shorter, lighter alternative.
-The other six candidates have actual software or software-repository collisions; exclusion is recommended below.
-Bounded agent research is finalized, but #339 acceptance remains open: follow-up package checks
-returned bounded negatives and all eight `.dev` lookups returned authoritative RDAP 404s, not purchase availability.
-No candidate/class trademark query executed; `.sh`, registrar eligibility and legal assessment remain incomplete.
+**Theo chose Torlek on 2026-11-02**
+([decision record](../decisions/2026-11-02-339-product-name.md)). Theo was not keen on the eight
+proposals studied below, and Torlek came out of a later second-opinion pass. Its checked table,
+sources and limits are in [the Torlek appendix](339/torlek.md). In short:
+
+- **Packages:** no package on crates.io, npm or PyPI, in Homebrew, in Arch (official or AUR), or in
+  Debian, Ubuntu or Fedora.
+- **Trademarks:** USPTO, TMview and WIPO returned no marks.
+- **Domains:** no product domain will be bought.
+- **Not established:** legal clearance, the official Nix index, `.sh` and a native-speaker check.
+
+The rename itself is [#560](https://github.com/Androlax2/agent-cockpit/issues/560).
+
+The rest of this report is the **eight-name study that preceded the choice**, kept as evidence.
+Its rankings were provisional: Crewkiln and Runlark survived its checks, and the other six had
+software collisions. They were not chosen.
 
 The four original candidate appendices remain **historical initial attempts**. Their unavailable
 package/domain observations are superseded where specified by the [package follow-up](339/package-followup.md)
@@ -151,9 +160,10 @@ and exact/similar USPTO/EUIPO marks in classes 9/42 with owners, status, identif
 No trademark counts or legal clearance are established. Successful package and RDAP negatives do not
 reverse software collisions: these are **eight evaluated proposals, not eight cleared names**.
 
-## Rename only after Theo decides and a separate implementation is approved
+## Rename in this order once the follow-up is approved
 
-The following ordered plan is a **future proposal, not an execution instruction**.
+The following ordered plan is a **proposal for [#560](https://github.com/Androlax2/agent-cockpit/issues/560),
+not an execution instruction**.
 Repository guidance keeps installed legacy commands, `apps/target/release`, protocol validation,
 state ownership and host authority stable ([engineering guide](../../AGENTS.md),
 [architecture](../ARCHITECTURE.md)). No new dependencies or manifest edits are authorized here.
@@ -161,20 +171,21 @@ state ownership and host authority stable ([engineering guide](../../AGENTS.md),
 Owns: the proposed product identity and coordinated rename order for #339. Dependencies:
 Theo's choice precedes the rename and #99 design; #134/#196 profile isolation must survive;
 Issue #97 needs the approved identity before the first alpha tag. Product naming can precede #209.
+The chosen name is **Torlek** (`torlek` / `TORLEK`); the spelling map below uses it.
 
-Proposed spelling map, using `<name>` / `<NAME>` as **unselected placeholders**:
+Proposed spelling map for **Torlek**:
 
 | Surface | Proposed target after separate approval |
 | --- | --- |
-| Repository and greenfield crate packages | `Androlax2/<name>`; `crates/<name>-*` and matching Cargo package/import identifiers |
-| Public CLI / daemon entry | `<name>` and `<name> daemon`; inventory any separately shipped daemon executable before deciding its replacement |
-| Profiles and XDG namespaces | Default `<name>`, named `<name>-next` / `<name>-dev` directory components; preserve `dev` build-default semantics, not a mandatory separate dev binary |
-| Units and service identity | `<name>[-<profile>].service`, corresponding launchd labels and explicit ownership markers; retain legacy recognition |
-| Environment variables | Inventory every `COCKPIT_*` producer/consumer and propose `<NAME>_*` atomically, including profile/log-level variables |
+| Repository and greenfield crate packages | `Androlax2/torlek`; `crates/torlek-*` and matching Cargo package/import identifiers |
+| Public CLI / daemon entry | `torlek` and `torlek daemon`; inventory any separately shipped daemon executable before deciding its replacement |
+| Profiles and XDG namespaces | Default `torlek`, named `torlek-next` / `torlek-dev` directory components; preserve `dev` build-default semantics, not a mandatory separate dev binary |
+| Units and service identity | `torlek[-<profile>].service`, corresponding launchd labels and explicit ownership markers; retain legacy recognition |
+| Environment variables | Inventory every `COCKPIT_*` producer/consumer and propose `TORLEK_*` atomically, including profile/log-level variables |
 | Distribution and docs | Release asset names, bundle paths, package metadata, installer/update URLs, examples and help text; preserve historical decision records |
 
 The base names are shell-safe ASCII and fit XDG components; these examples do not establish
-exclusivity or tested socket-path lengths. Prefer a daemon subcommand to an extra `<name>d`
+exclusivity or tested socket-path lengths. Prefer a daemon subcommand to an extra `torlekd`
 command; the recommendation does not authorize changing an existing process boundary.
 
 Proposed ownership handoff, using the existing overnight lanes. These are coordination targets,
@@ -189,15 +200,14 @@ not accepted new assignments; Chief must confirm scope with each owner before im
 | Managed sandbox integration references (#495/#433) and provider/context consumers (#419/#436/#51) | Existing lanes `greenfield-470-managed-sandbox` and `greenfield-436-provider-validation` respectively | Audit only naming references affected by the approved rename; avoid duplicating their functional work |
 | GitHub repository/settings/required checks; later greenfield cleanup (#209) | Theo performs/approves protected operations; #209 executor **unassigned** | Release/docs owners verify URL dependencies first; #209 keeps its cutover dependency |
 
-1. **Theo chooses provisionally and records the decision.** After an actual choice, add one dated
-   issue-specific record under `docs/decisions/`, naming Theo, rationale, rejected alternatives and
-   outstanding conditions; do not fabricate a decision today. Resolve remaining publication/domain
-   eligibility and trademark conditions and obtain final spelling approval before implementation
-   ([decision-record convention](../decisions/README.md)).
-2. **Create an Alpha 1 rename follow-up, then carry the approved name into #99/#209/#97 planning.**
-   Assign owners and acceptance criteria there. #99 remains pending naming/design; research does
-   not unblock design by itself. Keep greenfield-cleanup #209 separate: its execution depends on
-   cutover, while product naming before alpha can precede that cleanup.
+1. **Done: Theo chose Torlek and the decision is recorded**
+   ([decision record](../decisions/2026-11-02-339-product-name.md)). Theo decided not to buy a
+   domain. Legal clearance remains a condition before a public launch, not a prerequisite for the
+   internal rename.
+2. **Done: the Alpha 1 rename follow-up exists, and #99, #209 and #97 carry the name.**
+   [#560](https://github.com/Androlax2/agent-cockpit/issues/560) owns the rename and its acceptance.
+   #99 designs the mark for Torlek. Keep greenfield-cleanup #209 separate: its execution depends on
+   cutover, while the product rename before alpha can precede that cleanup.
 3. **Use a feature branch and inventory the current greenfield surface.** Enumerate crate/package
    and binary names, imports, profiles, filesystem layout, protocol identifiers, environment
    variables, tests, docs, release assets and generated references before editing. Retain `apps/`
@@ -225,18 +235,20 @@ not accepted new assignments; Chief must confirm scope with each owner before im
    rename the remote before references are verified. Actual repository/settings/ruleset changes
    are a separately approved operation, followed by verification of links and required checks.
 
-## Morning choice and workflow status
+## Workflow status
 
-**Morning choice, subject to unresolved checks:** Option A — **Crewkiln** (recommended): stronger
-agent-team/craft identity, but harder French pronunciation. Option B — **Runlark**: one letter shorter
-and lighter in tone, but less clear about orchestration. Theo can state a preference in under two
-minutes; that preference is not research completion, legal clearance or rename authorization.
+**#339's research is complete.** Theo chose Torlek, the
+[decision record](../decisions/2026-11-02-339-product-name.md) holds the checked table and the
+reasons, and [#560](https://github.com/Androlax2/agent-cockpit/issues/560) owns the rename.
 
-**Bounded agent research finalized; #339 acceptance remains open.** Chief's remaining blockers are
-USPTO's JS interface plus the sandboxed-browser failure (`1820d58f`), EUIPO's CloudFront 403/access
-stop, domain reservation/premium/registrar eligibility, and trademark
-assessment. One naming preference from Theo is still pending, followed by its decision record and
-separately approved rename follow-up/#99/#209/#97 coordination; #99 remains pending naming/design.
-The `.dev` lookup meets the issue's `.dev`/`.sh` research scope; actual `.sh` results are needed only
-if that suffix is preferred. Review and verification evidence belongs in PR #534.
-Documentation verification cannot choose a name or complete #339 acceptance.
+The eight-name study's earlier "morning choice" between Crewkiln and Runlark is **superseded**.
+Its trademark and browser blockers (`1820d58f`) still describe what the sandbox could not reach;
+Theo ran the USPTO, TMview and WIPO searches for Torlek in his own browser.
+
+**Still open (conditions, not blockers to the rename):**
+
+- legal clearance before a public launch
+- the official Nix index and `.sh`
+- a native-speaker slang check
+
+Review and verification evidence belongs in PR #534.
