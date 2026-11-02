@@ -76,3 +76,9 @@ exception found CA initialization/access, namespace-table bounds, reload recover
 CLI usage fixture. Those required substantive fixes; their final review/check evidence
 belongs in the implementation PR. The macOS release requirement remains open, explicitly
 fail-closed, rather than being represented as proven platform enforcement.
+The second fresh independent full-delta review covered commit `2275f3b` and the subsequent
+exact profile-footprint expectations (combined SHA256
+`17e29870b635b6317f8e3a32762589143c517846ef3c413e076cf7f5db074cd1`). It found no new critical
+or important issue and approved a `Part of #495` PR conditional on the final required suite
+and CI. It did not run tests or probe services. The new macOS negative daemon test is not
+selected by the existing platform job; executing it remains part of #433's approved CI work.

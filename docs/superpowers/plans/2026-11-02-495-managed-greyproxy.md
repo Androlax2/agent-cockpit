@@ -1,6 +1,6 @@
 # Managed Greyproxy Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** A fresh Cockpit profile can configure and start its pinned proxy, diagnose failures,
 and refuse sandbox launches when that owned proxy cannot serve them.
@@ -39,14 +39,14 @@ modify `crates/cockpit-sandbox/src/lib.rs` and `README.md`.
 `install`, `restart`, `stop`, `health` return typed failures with stable codes and repair
 advice. `data_dir` and `unit_path` identify paths to protect at launch.
 
-- [ ] Write failing tests for owned configuration and units on Linux/macOS/WSL2, unconfigured
+- [x] Write failing tests for owned configuration and units on Linux/macOS/WSL2, unconfigured
   and unhealthy proxies, occupied TCP/UDP endpoints, tamper/symlink refusal, idempotency,
   command/output deadlines, private token handling, and authenticated health.
-- [ ] Run the focused sandbox test selection and record the expected failures.
-- [ ] Implement the explicit lifecycle using bounded commands, atomic private files and
+- [x] Run the focused sandbox test selection and record the expected failures.
+- [x] Implement the explicit lifecycle using bounded commands, atomic private files and
   an ownership receipt. Keep the service's engine/data paths absolute and profile scoped.
-- [ ] Run `CARGO_BUILD_JOBS=2 cargo nextest run --locked -p cockpit-sandbox --test-threads 2`.
-- [ ] Commit the capability with its tests.
+- [ ] Finish the shared-lock workspace suite after passing the focused sandbox selections; exact outcomes are recorded in PR #528 (final suite still running).
+- [x] Commit the capability with its tests.
 
 ### Task 2: Product entry points and launch/readiness wiring
 
@@ -58,13 +58,13 @@ advice. `data_dir` and `unit_path` identify paths to protect at launch.
 `sandbox stop`. Sandbox carries managed proxy context; health is checked before a required
 launch and reported separately by doctor. Greywall receives only the owned data path.
 
-- [ ] Add CLI tests that prove offline status and validation through the real binary;
+- [x] Add CLI tests that prove offline status and validation through the real binary;
   daemon tests prove health refresh, launch refusal before execution and profile repair advice.
-- [ ] Run each new test and record its expected failure before implementation.
-- [ ] Wire callers without changing wire fields or database transaction ownership. Add
+- [x] Run each new test and record its expected failure before implementation.
+- [x] Wire callers without changing wire fields or database transaction ownership. Add
   explicit proxy state/unit denial even for a broad writable checkout. Preserve dry runs.
-- [ ] Run focused CLI, sandbox, readiness and daemon tests with two build/test workers.
-- [ ] Commit the wiring and fixture updates.
+- [x] Run focused CLI, sandbox, readiness and daemon tests with two build/test workers.
+- [x] Commit the wiring and fixture updates.
 
 ### Task 3: Evidence, supported-platform validation and review
 
@@ -72,12 +72,34 @@ launch and reported separately by doctor. Greywall receives only the owned data 
 add a bounded isolated lifecycle/probe smoke as appropriate; update the coverage map and
 decision evidence. Coordinate workflow edits with the release lane before any workflow push.
 
-- [ ] Keep local installer smoke free of service effects; prove real lifecycle/network only
+- [x] Keep local installer smoke free of service effects; prove real lifecycle/network only
   in isolated CI. Record unavailable platform/capability checks without marking them passed.
-- [ ] Run affected fmt, Clippy, rustdoc, crate graph, Python and docs checks once on final code.
-- [ ] Invoke the installed Codex `$code-review` skill at medium on the final delta and
+- [ ] Finish the workspace gate (including crate graph); affected fmt, Clippy, rustdoc, Python and docs checks pass with the recorded baseline exception.
+- [x] Invoke the installed Codex `$code-review` skill at medium on the final delta and
   record its revision/findings. Its inline recipe does not replace the lane's separate
   fresh independent full-delta review; preserve each review's actual provenance.
-- [ ] Fix review findings with focused regression checks; open a PR with `Closes` only for
+- [x] Fix review findings with focused regression checks; open a PR with `Closes` only for
   measured acceptance, otherwise `Part of`. Track remaining #61/#433 evidence explicitly.
-- [ ] Normal push, verify CI, then repository-authorized squash auto-merge after review/checks.
+- [ ] Verify final CI, then repository-authorized squash auto-merge after review/checks. Normal push and draft PR #528 are complete.
+
+## Execution evidence
+
+Implementation committed as `2275f3b`; draft PR #528. Native Codex `$code-review medium`
+ran twice with eight inline angles and recorded findings. Two separately identified fresh
+independent full-delta reviews ran, the second after substantive fixes; its verdict found
+no new critical or important issue and is conditional on final suite/CI success.
+
+Focused final checks: 106 passed/0 skipped across proxy, CLI usage and daemon wiring, plus
+2 passed/0 skipped profile-footprint regressions. Clippy, fmt, rustdoc, dependency policy,
+Markdown, links, typos and affected Python checks passed. The full workspace runs caught
+an outdated help snapshot and two exact profile-layout expectations; those were fixed.
+The ambient-PATH failure already tracked by #492 is reproduced and passes with its existing
+clean-PATH workaround. Unchanged repository-wide Python formatting still flags
+`tools/tests/test_acceptance_runner.py`; it is not reported as passing. Final full-suite and
+CI outcomes belong in PR #528 before acceptance.
+
+Real lifecycle/network proof stays open. The published macOS engine cannot safely expose
+the public CA through private-state denial; #527 tracks its upstream fix/approved release,
+with typed launch refusal in this implementation. The current Greyproxy pin lacks fork
+PR #8 and requires a separately approved published update for concurrent-session proof.
+No workflow, dependency, manifest or host-service changes were made by this lane.
