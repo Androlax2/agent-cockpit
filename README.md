@@ -107,6 +107,10 @@ Use the same profile throughout. To keep a preview beside an existing installati
    In the TUI, use its help for available keys. From the CLI, `cockpit session show ID` opens a session; replace `ID` with the identifier from `session list`.
    `cockpit session end ID` stops it. `cockpit init` shows when the first-session step is complete.
 
+![Alpha TUI demo with api and web sessions and an approval pane](assets/readme/greenfield-tui.png)
+
+Alpha TUI, rendered from the checked-in demo fixture with fictional projects and agents.
+
 ## Approvals
 
 Inside a launched session, an agent can request an outside-sandbox command with
