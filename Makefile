@@ -61,6 +61,12 @@ crates-build: ## Build the greenfield workspace in crates/ (debug profile, into 
 crates-test: ## Run the greenfield workspace's tests
 	$(build_runner) cargo nextest run --locked --cargo-quiet --status-level fail --manifest-path Cargo.toml --workspace
 
+.PHONY: provider-conformance
+
+provider-conformance: ## Check the three provider adapters with account-free fixtures (cached dependencies required)
+	env -u OPENCODE_CONFIG_CONTENT CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 $(build_runner) cargo nextest run --locked --offline -j 2 -p cockpit-provider-api -p cockpit-claude -p cockpit-codex -p cockpit-opencode
+	env -u OPENCODE_CONFIG_CONTENT CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 $(build_runner) cargo nextest run --locked --offline -j 2 -p cockpit-daemon --test provider_conformance
+
 crates-fmt-check: ## Check the greenfield workspace's formatting without changing source
 	$(build_runner) cargo fmt --manifest-path Cargo.toml --all -- --check
 
