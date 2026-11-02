@@ -7,10 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
-cockpit-authorization = { path = "../cockpit-authorization", version = "0.1.0" }
-cockpit-processes = { path = "../cockpit-processes", version = "0.1.0" }
-cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+cockpit-authorization = { path = "../cockpit-authorization" }
+cockpit-processes = { path = "../cockpit-processes" }
+cockpit-turso = { path = "../cockpit-turso" }
 # Pinned (docs/decisions/2026-10-31-34-approvals-dependencies.md): secret redaction, the
 # action digest and the PTY a run gets. A change must arrive as a reviewed bump.
 regex = "=1.13.1"

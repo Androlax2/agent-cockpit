@@ -24,7 +24,9 @@ pull request starts it only when it changes the release machinery itself (the wo
   Under `0.x`, as in Cargo, a breaking change raises the minor number (`0.3.2` → `0.4.0`)
   and anything else raises the patch number (`0.3.2` → `0.3.3`).
 - There is one version: `[workspace.package] version` in the root `Cargo.toml`, inherited by
-  every crate (`version.workspace = true`). Nobody edits it by hand. It stays the bootstrap's
+  every crate (`version.workspace = true`). Internal path dependencies have no version pins.
+  `tools/release.py stamp VERSION` changes only that root version line; Cargo then updates
+  workspace package entries in `Cargo.lock`. Nobody edits the version by hand. It stays the bootstrap's
   `0.1.0` while no stable tag exists: a **release-plz** release PR (#192) may prepare the next
   version and `CHANGELOG.md`, but merging it tags a stable `vX.Y.Z`, so nobody merges it until
   Theo decides on a stable release.

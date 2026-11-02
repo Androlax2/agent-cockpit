@@ -418,7 +418,7 @@ class DryRunVersionTests(ReleaseTestCase):
 
 
 class StampTests(unittest.TestCase):
-    def test_stamping_moves_the_workspace_version_and_internal_pins_only(self):
+    def test_stamping_changes_only_the_workspace_version_line(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "Cargo.toml").write_text(WORKSPACE_MANIFEST.format(version="0.1.0"))
@@ -429,11 +429,13 @@ class StampTests(unittest.TestCase):
             self.assertEqual(code, 0, error)
             self.assertEqual(outputs, {"version": "0.1.0-alpha.7", "previous": "0.1.0"})
             self.assertEqual(release.workspace_version(root), "0.1.0-alpha.7")
-            stamped = member.read_text()
-            self.assertIn('path = "../cockpit-client", version = "0.1.0-alpha.7"', stamped)
-            self.assertIn('serde = { version = "0.1.0" }', stamped)
+            self.assertEqual(member.read_text(), MEMBER_MANIFEST.format(version="0.1.0"))
+            self.assertEqual(
+                (root / "Cargo.toml").read_text(),
+                WORKSPACE_MANIFEST.format(version="0.1.0-alpha.7"),
+            )
 
-    def test_every_internal_pin_in_this_workspace_is_stamped(self):
+    def test_stamping_leaves_member_manifests_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             shutil.copy(ROOT / "Cargo.toml", root / "Cargo.toml")
@@ -441,13 +443,11 @@ class StampTests(unittest.TestCase):
                 copy = root / member.relative_to(ROOT)
                 copy.parent.mkdir(parents=True)
                 shutil.copy(member, copy)
+            before = {p: p.read_bytes() for p in root.glob("crates/*/Cargo.toml")}
             code, _outputs, error = run("stamp", "9.9.9-alpha.1", cwd=root)
             self.assertEqual(code, 0, error)
-            for member in root.glob("crates/*/Cargo.toml"):
-                for table in re.findall(r"\{[^}\n]*\bpath = [^}\n]*\}", member.read_text()):
-                    with self.subTest(member=member.parent.name, dependency=table):
-                        pin = re.search(r'\bversion = "([^"]*)"', table)
-                        self.assertTrue(pin is None or pin[1] == "9.9.9-alpha.1")
+            for member, contents in before.items():
+                self.assertEqual(member.read_bytes(), contents, str(member))
 
 
 # Stand-ins for the built binaries: the real ones are proven by the release workflow's

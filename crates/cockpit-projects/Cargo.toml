@@ -7,8 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-# A version keeps cargo-deny's wildcard ban satisfied for this path dependency.
-cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+cockpit-turso = { path = "../cockpit-turso" }
 tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]

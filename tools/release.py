@@ -310,11 +310,7 @@ def dry_run_version(cwd):
 
 
 def stamp(version, cwd):
-    """Write VERSION into the workspace and every internal path-dependency pin, uncommitted.
-
-    The pins (`cockpit-x = { path = ..., version = "0.1.0" }`, #120) would reject a
-    pre-release version, so they move with it. Cargo rewrites Cargo.lock on the next build.
-    """
+    """Write only the workspace version, uncommitted; Cargo updates the lockfile afterward."""
     root = Path(cwd)
     old_version = workspace_version(cwd)
     root_manifest = root / "Cargo.toml"
@@ -330,15 +326,6 @@ def stamp(version, cwd):
     root_manifest.write_text(
         text[: package_table.start()] + stamped_table + text[package_table.end() :]
     )
-    path_dependency = re.compile(r"\{[^}\n]*\bpath = [^}\n]*\}")
-    pin = f'version = "{old_version}"'
-
-    def stamp_pin(table):
-        return table[0].replace(pin, f'version = "{version}"')
-
-    for member_manifest in sorted(root.glob("crates/*/Cargo.toml")):
-        member_text = member_manifest.read_text()
-        member_manifest.write_text(path_dependency.sub(stamp_pin, member_text))
     return {"version": version, "previous": old_version}
 
 

@@ -15,8 +15,7 @@ name = "cockpit-codex-session"
 path = "src/bin/cockpit-codex-session.rs"
 
 [dependencies]
-# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
-cockpit-provider-api = { path = "../cockpit-provider-api", version = "0.1.0" }
+cockpit-provider-api = { path = "../cockpit-provider-api" }
 serde_json = "1.0.154"
 # Codex's hook trust hash (`hooks::trusted_hash`); the version the workspace already pins.
 sha2 = "=0.10.9"

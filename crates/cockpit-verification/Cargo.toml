@@ -7,8 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-# Versions keep cargo-deny's wildcard ban satisfied for these path dependencies.
-cockpit-turso = { path = "../cockpit-turso", version = "0.1.0" }
+cockpit-turso = { path = "../cockpit-turso" }
 # The pin `cockpit-approvals` already carries (docs/decisions/2026-10-31-34-approvals-dependencies.md):
 # artifact fingerprints (docs/decisions/2026-11-01-40-verification-receipts.md).
 sha2 = "=0.10.9"

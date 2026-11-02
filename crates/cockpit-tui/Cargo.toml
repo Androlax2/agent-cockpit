@@ -11,9 +11,9 @@ name = "cockpit-tui"
 path = "src/main.rs"
 
 [dependencies]
-cockpit-client = { path = "../cockpit-client", version = "0.1.0" }
-cockpit-diagnostics = { path = "../cockpit-diagnostics", version = "0.1.0" }
-cockpit-protocol = { path = "../cockpit-protocol", version = "0.1.0" }
+cockpit-client = { path = "../cockpit-client" }
+cockpit-diagnostics = { path = "../cockpit-diagnostics" }
+cockpit-protocol = { path = "../cockpit-protocol" }
 # Keys are read through this crossterm, polled level-triggered on the terminal (stdin, or
 # /dev/tty): the default mio reader can hold a key that arrives with a resize until the next
 # key (#356). Keep it the version ratatui uses, so the terminal has one crossterm.
