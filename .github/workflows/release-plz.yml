@@ -11,9 +11,12 @@ on:
       - cliff.toml
       - tools/changelog.py
       - tools/release_pr.py
+      - tools/release.py
+      - tools/tests/test_release.py
       - tools/tests/test_release_pr.py
       - tools/tests/release_pr_conformance.py
       - Makefile
+      - .github/workflows/prerelease.yml
   workflow_dispatch:
     inputs:
       dry_run:
@@ -23,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 concurrency:
   group: release-proposal-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
@@ -70,10 +74,22 @@ jobs:
           tool: release-plz@0.4.2,git-cliff@2.14.2
       - name: Fetch locked dependencies for offline version calculation
         run: cargo fetch --locked
+      - name: Read the proposal channel
+        id: channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          beta=$(gh issue view 57 --repo "$GITHUB_REPOSITORY" --json state --jq '.state | ascii_downcase')
+          case "$beta" in
+            open) echo "value=alpha" >> "$GITHUB_OUTPUT" ;;
+            closed) echo "value=beta" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::unknown Beta 1 checklist state"; exit 1 ;;
+          esac
       - name: Prepare files and a local proposal commit
         env:
           BASE: ${{ github.sha }}
-        run: python3 tools/release_pr.py prepare --base "$BASE"
+          CHANNEL: ${{ steps.channel.outputs.value }}
+        run: python3 tools/release_pr.py prepare --base "$BASE" --channel "$CHANNEL"
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         if: github.event_name == 'push' || !inputs.dry_run
         id: app

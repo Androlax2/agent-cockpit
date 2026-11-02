@@ -63,6 +63,8 @@ def main():
                     sys.executable,
                     str(ROOT / "tools/release_pr.py"),
                     "prepare",
+                    "--channel",
+                    "alpha",
                     "--base",
                     fixture.base,
                 ],
@@ -76,11 +78,11 @@ def main():
         version = tomllib.loads((fixture.root / "Cargo.toml").read_text())["workspace"]["package"][
             "version"
         ]
-        assert version == "0.1.0", version
+        assert version == "0.1.0-alpha.1", version
         assert "initial fixture" in (fixture.root / "CHANGELOG.md").read_text()
         changelog = (fixture.root / "CHANGELOG.md").read_text()
         problems = []
-        if "the title format.\n\n## Unreleased\n" not in changelog:
+        if "the title format.\n\n## 0.1.0-alpha.1 (" not in changelog:
             problems.append("generated heading needs a blank line after the header (MD022)")
         if "fixture command &lt;repo&gt;: keep `cockpit stack <repo>` readable" not in changelog:
             problems.append("escape prose placeholders (MD033), preserving literal code spans")
@@ -100,13 +102,13 @@ def main():
         publish()
         assert len(fixture.api.pulls) == 1
         # This tag belongs only to a disposable fixture, never the real repository.
-        git(fixture.root, "tag", "v0.1.0", fixture.base)
+        git(fixture.root, "tag", "v0.1.0-alpha.1", fixture.base)
         fixture.next_base()
         prepare()
         version = tomllib.loads((fixture.root / "Cargo.toml").read_text())["workspace"]["package"][
             "version"
         ]
-        assert version == "0.1.1", version
+        assert version == "0.1.0-alpha.2", version
         assert "fixture value" in (fixture.root / "CHANGELOG.md").read_text()
         assert "initial fixture" in (fixture.root / "CHANGELOG.md").read_text(), (
             "keep previous release history"
@@ -119,7 +121,7 @@ def main():
             == first
         )
         print(
-            "PASS: initial version, fix bump, changelog, draft replacement and deterministic retry; fake GitHub only."
+            "PASS: alpha.1/alpha.2 versions, changelog, draft replacement and deterministic retry; fake GitHub only."
         )
 
 
