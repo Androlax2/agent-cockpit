@@ -1,6 +1,6 @@
 # Documentation site acceptance
 
-Issue #102; PR #507 is **Part of**, pending publication and reader acceptance.
+Issue #102; PR #507 merged as **Part of**, with reader and released-version acceptance still open.
 The exact design approval is recorded in the [r4 handoff](../design/102-documentation-layout-r4.md).
 
 ## Implemented evidence
@@ -31,11 +31,26 @@ separates its source scan, incomplete file-HTML scan and failed URL browser laun
 from the successful Playwright interactions. The earlier FigCraft detector failure
 remains historical evidence; no empty array from a failed scan counts as a pass.
 
+## Measured first publication
+
+Host-approved request `f24491c5f806` configured Pages in Actions mode without a
+custom domain, set the repository website and squash-merged PR #507. The
+[first main deployment](https://github.com/Androlax2/agent-cockpit/actions/runs/41388685000)
+succeeded; Linux, macOS, WSL2 and documentation checks passed. A separate
+host-approved anonymous HTTP check (`20389aa6abf8`) returned 200 for the build
+metadata, quickstart and static search index, and verified source revision
+`ea5458970720cf24dd807c21a1cdb808085ed5a4`.
+
+[Publication evidence](../design/evidence/102-pages-publication.json) retains the
+exact command, outcomes and unavailable sandbox checks. Local TLS/browser requests
+timed out and web retrieval was unavailable; no network permission changed.
+Interactive browser results come from the isolated build, not a public browser
+pass. No install/session walkthrough or live release-tag deployment is claimed.
+
 ## Open release checkpoints
 
-- Pages enablement/environment policy, deployment and repository website field;
-  no custom domain before #339. Host workflow-push approvals are recorded in the
-  validation evidence; successful hosted checks remain the PR merge gate.
+- A released version publishes its tagged copy without losing older copies. The
+  catalog/paths are fixture-tested; no release tag existed at first publication.
 - Final public installation instructions following the merged installer/release
   implementation. Main's engine-install work #470 has progressed independently;
   it is not a measured public onboarding result for this branch.
