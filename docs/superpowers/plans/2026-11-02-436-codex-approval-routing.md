@@ -46,10 +46,10 @@ and `docs/decisions/2026-11-02-436-approval-routing-evidence.md`.
 
 - [x] Document measurements separately from unmeasured acceptance; use `Part of #436`
   unless the signed-in criterion is also proven.
-- [ ] Prepare one bounded signed-in run with usage and host effects stated; request host
+- [x] Prepare one bounded signed-in run with usage and host effects stated; request host
   approval only after the command and isolated harness are reviewable.
 - [x] Run final affected tests, formatting and lint checks with modest parallelism.
-- [ ] Obtain one native full-delta review, or explicitly report its absence and use the
+- [x] Obtain one native full-delta review, or explicitly report its absence and use the
   authorized fresh-agent review. Commit, normal push, open the PR, then arm squash
   auto-merge after review and focused checks. Never rewrite pushed history.
 
@@ -83,3 +83,8 @@ and `docs/decisions/2026-11-02-436-approval-routing-evidence.md`.
   native tests passed (seven skipped, including the signed-in test). Formatting, Clippy
   with warnings denied, and `make docs-ci` passed. The decision-record target passed its
   three tests. The full workspace and supported-platform gates remain CI's responsibility.
+- Both independent review passes and follow-through are complete. PR #512 contains the
+  reviewed harness. The host approved request `d139c002664e` on 2026-11-02; the compiled
+  signed-in test exited 101 at the custom-TUI-keymap guard before a thread/model turn.
+  No account usage was consumed. Keep #436 open; a different live-run plan needs review
+  and host approval, without editing the owner's keymaps to bypass the guard.

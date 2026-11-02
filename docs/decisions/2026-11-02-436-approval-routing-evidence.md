@@ -9,7 +9,8 @@ Issue #436. Decided by the worker within the authorized isolated-conformance sco
   a persistent approval owner or refusing delivery on this version.
 - **Keep provenance separate.** These measurements use a local scripted Responses model,
   not an account. The older capability pin stays 0.161.0. Signed-in acceptance remains
-  open in #436; the separately gated live test does not count until host-approved execution.
+  open in #436. One host-approved run on 2026-11-02 exited 101 at the custom-keymap guard
+  before any thread/model turn; it is a refusal, not signed-in routing evidence.
 - **Record, never answer.** The test proxy forwards bytes unchanged. Only the actual TUI
   supplies a cancellation, and the test checks its connection and request ID. A fixture
   created from a protocol schema alone would not prove this routing.

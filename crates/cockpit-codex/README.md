@@ -166,3 +166,8 @@ tmux commands have deadlines and bounded output, including teardown. Live transc
 and server diagnostics are withheld from test output. The environment marker is an opt-in,
 not a substitute for host authorization. No signed-in result is claimed until this command
 has actually run with approval; keep #436 open meanwhile.
+
+On 2026-11-02, the host approved one run of the compiled signed-in test on 0.166.0.
+It exited **101** with `custom TUI keymaps need a separate conformance plan; no turn
+started`. The configured home was not changed to bypass that guard. No model turn ran;
+signed-in routing remains unmeasured, so #436 stays open.
