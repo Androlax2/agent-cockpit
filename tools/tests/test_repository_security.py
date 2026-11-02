@@ -104,6 +104,63 @@ class RepositorySecurityTests(unittest.TestCase):
         observations = json.loads(result.stdout)["observations"]
         self.assertEqual(observations["ruleset:8"]["pages"], [{"id": 8, "target": "tag"}])
 
+    def test_selected_actions_policy_is_included_in_the_report(self):
+        self.responses[f"{REPOSITORY}/actions/permissions"] = [
+            {"enabled": True, "allowed_actions": "selected"}
+        ]
+        self.responses[f"{REPOSITORY}/actions/permissions/selected-actions"] = [
+            {
+                "github_owned_allowed": True,
+                "verified_allowed": False,
+                "patterns_allowed": ["example/action@0123456789abcdef"],
+            }
+        ]
+        result = self.collect()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observations = json.loads(result.stdout)["observations"]
+        self.assertIn("selected_actions", observations)
+        self.assertEqual(
+            observations["selected_actions"]["pages"],
+            [
+                {
+                    "github_owned_allowed": True,
+                    "verified_allowed": False,
+                    "patterns_allowed": ["example/action@0123456789abcdef"],
+                }
+            ],
+        )
+
+    def test_unreadable_selected_actions_policy_keeps_collection_incomplete(self):
+        self.responses[f"{REPOSITORY}/actions/permissions"] = [
+            {"enabled": True, "allowed_actions": "selected"}
+        ]
+        self.responses[f"{REPOSITORY}/actions/permissions/selected-actions"] = {
+            "exit": 1,
+            "stderr": "gh: DO_NOT_PRINT (HTTP 403)",
+        }
+        result = self.collect()
+        self.assertEqual(result.returncode, 1)
+        report = json.loads(result.stdout)
+        self.assertFalse(report["collection_complete"])
+        self.assertEqual(report["observations"]["selected_actions"]["state"], "unknown")
+        self.assertEqual(report["observations"]["actions"]["state"], "observed")
+        self.assertNotIn("DO_NOT_PRINT", result.stdout + result.stderr)
+
+    def test_other_actions_policies_do_not_request_an_inapplicable_allowlist(self):
+        for policy in ("all", "local_only"):
+            with self.subTest(policy=policy):
+                self.responses[f"{REPOSITORY}/actions/permissions"] = [
+                    {"enabled": True, "allowed_actions": policy}
+                ]
+                self.responses[f"{REPOSITORY}/actions/permissions/selected-actions"] = {
+                    "exit": 1,
+                    "stderr": "gh: not applicable (HTTP 409)",
+                }
+                result = self.collect()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("selected_actions", json.loads(result.stdout)["observations"])
+                self.assertNotIn("selected-actions", self.log.read_text())
+
     def test_unrelated_metadata_fields_are_not_printed(self):
         self.responses[REPOSITORY] = [
             {

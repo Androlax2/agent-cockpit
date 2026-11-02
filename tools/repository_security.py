@@ -136,6 +136,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args()
     observations = {name: collect(PREFIX + suffix) for name, suffix in QUERIES}
+    if any(
+        isinstance(page, dict) and page.get("allowed_actions") == "selected"
+        for page in observations["actions"]["pages"]
+    ):
+        observations["selected_actions"] = collect(f"{PREFIX}/actions/permissions/selected-actions")
     rulesets = observations["rulesets"]
     for page in rulesets["pages"]:
         if not isinstance(page, list) or any(

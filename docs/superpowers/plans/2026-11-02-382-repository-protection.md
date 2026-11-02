@@ -40,16 +40,23 @@ external changes remain proposed and unapplied.
 unknowns for fixed repository `Androlax2/agent-cockpit`; exits 1 for incomplete
 collection, 0 for complete collection, never for policy acceptance. No setup mode.
 
-- [ ] Write CLI tests with a fake `gh` on PATH: GET-only repository scope,
+- [x] Write CLI tests with a fake `gh` on PATH: GET-only repository scope,
   multiple pages, discovered ruleset detail, missing access, redacted errors,
   malformed JSON and absent executable.
-- [ ] Run the focused unittest file and observe failure before implementation.
-- [ ] Implement the collector using argument arrays, bounded subprocess calls,
+- [x] Run the focused unittest file and observe failure before implementation.
+- [x] Implement the collector using argument arrays, bounded subprocess calls,
   explicit metadata projections and pagination; retain partial evidence on errors.
-- [ ] Run focused tests, Ruff and formatting; collect live read-only metadata.
-- [ ] Write the dated source/API snapshot, per-setting verification commands,
+- [x] Run focused tests, Ruff and formatting; collect live read-only metadata.
+- [x] Write the dated source/API snapshot, per-setting verification commands,
   source-grounded CodeQL/Scorecard capabilities, token inventory and proposed setup.
-- [ ] Run docs checks and independent full-delta review. Record the unavailable
-  named `code-review medium` workflow separately; do not substitute or arm merge.
-- [ ] Commit/push this issue branch and open a draft PR with exact evidence and
+- [x] Run docs checks and independent full-delta review. Run the installed OpenCode
+  `code-review medium` command separately; record its actual recipe and findings.
+- [x] Commit/push this issue branch and open a draft PR with exact evidence and
   `Part of #382`; hand off remaining host verification and enforcement acceptance.
+
+The initial review-discovery blocker `16931cb8` is resolved. The command lives at
+`/home/theo/.config/opencode/commands/code-review.md`, outside the skill trees.
+Its eight-angle medium review found the missing selected-actions policy collection;
+the follow-up adds that conditional GET and real-CLI success/error/non-selected tests.
+The approved 09:00:56 UTC host metadata read informs the audit; it grants no settings
+changes or live enforcement probes. Exact verification evidence is recorded on PR #532.
