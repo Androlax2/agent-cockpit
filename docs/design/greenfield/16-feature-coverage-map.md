@@ -123,6 +123,12 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 | Demo fixture + screenshot capture, Arch package staging, `make ci` quality gates | keep | release (13) |
 | Greywall/greyproxy forks built from `packages/` with patches | keep | Cockpit's own forks, pinned and built by the release bundle (11, 13); the pins `cockpit-sandbox` accepts equal the commits in `engine-pins.json` by `cockpit-sandbox` `greywall::the_pins_are_the_commits_the_release_manifest_names`, the previous greywall refused naming the new pin by `greywall::the_previous_greywall_build_is_refused_naming_the_new_pin` (#476; installation of the pinned fork releases is #470), another build refused naming both commits by `greywall::a_greywall_build_other_than_the_pinned_one_is_refused_naming_both_commits` (#61); readiness reports the engine with both pinned commits by `cockpit-daemon` `readiness::a_host_with_its_programs_reports_them_available_and_exits_0`, and a missing engine as blocking by `readiness::a_host_without_greywall_blocks_naming_what_to_install` (#50) |
 
+## User documentation
+
+| Feature | Verdict | Owner |
+| --- | --- | --- |
+| Product README and first project/session quickstart | change | user documentation (#98): source-grounded front page, legacy operator guide retained under `docs/legacy/`; Markdown, local links and spelling checked by `make docs-ci`; current CLI fixture pointers and still-pending public install, greenfield screenshot and volunteer acceptance recorded in [README acceptance](../../acceptance/98-user-readme.md). No live onboarding claim |
+
 ## Gaps this map found in reports 01–15
 
 - No owner for usage/quota/accounts, GitHub integration, audit log, settings/config, desktop
