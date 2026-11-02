@@ -261,3 +261,10 @@ agent-dashboard-tailnet: ## [sudo] Publish greyproxy's dashboard to the phone, o
 
 agent-dashboard-tailnet-off: ## [sudo] Stop publishing greyproxy's dashboard on the tailnet
 	sudo tailscale serve --https=$(DASHBOARD_TAILNET_PORT) off
+
+.PHONY: release-pr-check release-pr-conformance
+release-pr-check: ## Check release proposal retries with isolated Git and fake GitHub
+	python3 -m unittest discover -s tools/tests -p test_release_pr.py
+
+release-pr-conformance: ## Prove pinned release-plz/git-cliff generation in a throwaway workspace
+	python3 tools/tests/release_pr_conformance.py

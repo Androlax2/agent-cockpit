@@ -1,0 +1,91 @@
+name: Release proposal
+
+# Version/changelog drafts only. The local generator never receives the App token.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/release-plz.yml
+      - release-plz.toml
+      - cliff.toml
+      - tools/release_pr.py
+      - tools/tests/test_release_pr.py
+      - tools/tests/release_pr_conformance.py
+      - Makefile
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Generate locally without pushing or changing pull requests
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-proposal-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
+        with:
+          fallback: none
+          tool: release-plz@0.4.2,git-cliff@2.14.2
+      - run: make release-pr-check
+      - run: make release-pr-conformance
+
+  proposal:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
+        with:
+          fallback: none
+          tool: release-plz@0.4.2,git-cliff@2.14.2
+      - name: Fetch locked dependencies for offline version calculation
+        run: cargo fetch --locked
+      - name: Prepare files and a local proposal commit
+        env:
+          BASE: ${{ github.sha }}
+        run: python3 tools/release_pr.py prepare --base "$BASE"
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        if: github.event_name == 'push' || !inputs.dry_run
+        id: app
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: Androlax2
+          repositories: agent-cockpit
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Create or reuse the immutable draft and supersede verified older drafts
+        if: github.event_name == 'push' || !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BASE: ${{ github.sha }}
+        run: python3 tools/release_pr.py publish --base "$BASE"
