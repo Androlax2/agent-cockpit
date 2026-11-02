@@ -22,7 +22,7 @@ Documentation checks and actual test outcomes belong in the PR's commands record
 
 - [ ] Replace the README's install status with #97's merged public archive/installer instructions, including the merged engine lifecycle from #470. Coordinate with their owners; do not edit their release files.
 - [ ] Check provider table and platform evidence against the final merged Alpha release. Coordinate live capability claims with the provider lane.
-- [ ] Add a screenshot from a greenfield demo fixture once one is available. Existing legacy demo screenshots remain labelled in the legacy guide.
+- [x] Add a greenfield fixture render with fictional data. [Capture evidence](98-demo-screenshot.json) identifies source hashes, real renderer, isolated capture and inspection; legacy screenshots stay in the legacy guide.
 - [ ] Chief arranges a volunteer with no prior context, on a supported platform, using an isolated clean home. Record consent for any live provider usage and host effects through the approval workflow before the walk.
 - [ ] Record exact release version/revision, platform, starting environment, README revision, commands followed, deviations and resulting session ID (redact private data). Confirm the volunteer used the README alone.
 - [ ] Correct any onboarding failures and repeat the affected steps; link the measured result here and in #98 before closing it.
@@ -30,3 +30,26 @@ Documentation checks and actual test outcomes belong in the PR's commands record
 ## Volunteer result
 
 Pending. A fixture run cannot satisfy the volunteer acceptance criterion, nor prove public archive onboarding across all supported platforms.
+
+## Greenfield demo image
+
+The README image comes from the existing `two-projects.feed`, existing fake
+approval helpers and the same `cockpit_tui::draw` function used by the binary.
+`crates/cockpit-tui/examples/readme_demo.rs` renders an 80 × 24 cell frame through
+Ratatui's test backend, using only fictional data. It completes a fake focus
+reply and advances fixture time past the TUI's reading grace; no returned command is executed.
+The SVG projection retains the current default-color/bold/reverse cell styling
+and rejects unsupported styles. ImageMagick rasterizes it with a temporary home
+and font cache. This is a fixture render, not a live terminal/provider capture.
+
+Regenerate with the pinned Rust toolchain and an already installed ImageMagick:
+
+```sh
+make readme-screenshot
+```
+
+The target installs nothing and changes only the generated image. Its self-checks
+exercise the actual renderer and require the expected projects, request and keys.
+The image is labeled as fictional data. This completes the image checkpoint,
+while public installation, final provider evidence and volunteer acceptance stay
+open. No new product layout, design tokens or dependencies were introduced.

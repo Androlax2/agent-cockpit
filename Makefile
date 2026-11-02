@@ -128,6 +128,14 @@ site-check: ## Check site tests, types and rendered links (dependencies and CLI 
 
 site-ci: site-reference-binary site-check ## Run the documentation-site gate without installing dependencies
 
+.PHONY: readme-screenshot
+
+readme-screenshot: ## Render the README's fictional TUI fixture (requires installed ImageMagick)
+	@set -eu; capture_home=$$(mktemp -d); trap 'rm -rf "$$capture_home"' EXIT; \
+	$(build_runner) cargo run --locked -j 2 -p cockpit-tui --example readme_demo -- "$$capture_home/demo.svg"; \
+	HOME="$$capture_home" XDG_CACHE_HOME="$$capture_home/.cache" MAGICK_THREAD_LIMIT=2 \
+		magick "$$capture_home/demo.svg" -strip assets/readme/greenfield-tui.png
+
 ci: fmt-check clippy doc lint-python lint-shell lint-js lint-markdown lint-lua check-links typos deny test ## Run the quality and regression gate for apps/, config/ and tools/ (CI's legacy job)
 
 lint-lua: ## Check Lua syntax without executing desktop configuration
