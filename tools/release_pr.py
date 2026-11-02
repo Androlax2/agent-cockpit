@@ -140,9 +140,7 @@ def prepare(base, cwd):
         raise Refusal("prepare needs full Git history")
     env = generation_environment()
     run(["release-plz", "update", "--config", "release-plz.toml"], cwd, env=env)
-    changelog = run(
-        ["git-cliff", "--offline", "--config", "cliff.toml", "--unreleased"], cwd, env=env
-    )
+    changelog = run(["git-cliff", "--offline", "--config", "cliff.toml"], cwd, env=env)
     (cwd / "CHANGELOG.md").write_text(changelog + "\n")
     paths = set(git("diff", "--name-only", "--no-renames", cwd=cwd).splitlines())
     paths.update(git("ls-files", "--others", "--exclude-standard", cwd=cwd).splitlines())

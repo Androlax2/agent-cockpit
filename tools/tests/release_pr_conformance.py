@@ -84,6 +84,9 @@ def main():
         ]
         assert version == "0.1.1", version
         assert "fixture value" in (fixture.root / "CHANGELOG.md").read_text()
+        assert "initial fixture" in (fixture.root / "CHANGELOG.md").read_text(), (
+            "keep previous release history"
+        )
         publish()
         assert fixture.api.pulls[1]["state"] == "closed"
         assert fixture.api.pulls[2]["draft"]
