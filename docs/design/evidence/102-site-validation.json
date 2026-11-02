@@ -64,6 +64,16 @@
       "command": "python3 -m unittest discover -s tools/tests -p test_workflow_syntax.py",
       "exit_code": 0,
       "result": "2 workflow syntax regression tests passed"
+    },
+    {
+      "command": "python3 -m unittest discover -s tools/tests -p test_ci_bootstrap.py",
+      "exit_code": 0,
+      "result": "5 passed; checksum/pin contract now covers both docs jobs; the added contract failed before the bootstrap fix"
+    },
+    {
+      "command": "Parse docs.yml with installed yaml and bash -n each run step",
+      "exit_code": 0,
+      "result": "6 Bash run steps syntax-checked without executing installations/host commands"
     }
   ],
   "unavailable_checks": [
@@ -107,5 +117,21 @@
     "js_files": 18,
     "raw_bytes": 650394,
     "gzip_bytes": 215411
-  }
+  },
+  "host_workflow_push": {
+    "request": "e502524693a6",
+    "head": "9cb3de82287b76bc58ac05734e0911302536814b",
+    "exit_code": 0,
+    "effect": "Normal push to own feature branch only; PR checks started, no Pages deployment"
+  },
+  "hosted_ci": [
+    {
+      "run": 41385306721,
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41385306721",
+      "conclusion": "failure",
+      "stage": "Link-checker bootstrap, before npm/site build",
+      "error": "install-action does not support lychee@0.24.2; aborting because fallback is disabled by 'fallback: none' input option",
+      "fix": "Reuse the existing ci.yml checksum-verified lychee 0.24.2 download, without changing the tool/site pins or enabling compilation fallback."
+    }
+  ]
 }

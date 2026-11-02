@@ -45,3 +45,12 @@ remains historical evidence; no empty array from a failed scan counts as a pass.
 
 The [build guide](../../site/README.md) owns executable commands and tooling limits.
 This record does not close either issue's live-validation criteria.
+
+## Hosted CI bootstrap correction
+
+The first site run [41385306721](https://github.com/Androlax2/agent-cockpit/actions/runs/41385306721)
+failed before the Node install/build: the pinned install-action did not support
+lychee 0.24.2 with fallback disabled. The correction reuses the existing `ci.yml`
+checksum-verified download of that exact lychee release. The shared bootstrap
+regression now covers both jobs (five tests pass); no site package pin, compiler
+fallback or local installation changed. Hosted success remains pending a new run.
