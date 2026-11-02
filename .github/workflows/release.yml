@@ -272,7 +272,7 @@ jobs:
   compatibility:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     needs: [plan, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -293,6 +293,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes tmux
+          tmux -V
       - name: Configure hosted runner admission
         if: runner.environment == 'github-hosted'
         run: python3 config/bin/.local/bin/cockpit-game-guard off
@@ -319,7 +320,7 @@ jobs:
   responsiveness:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     needs: [plan, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -340,6 +341,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes tmux
+          tmux -V
       - name: Configure hosted runner admission
         if: runner.environment == 'github-hosted'
         run: python3 config/bin/.local/bin/cockpit-game-guard off
@@ -542,6 +544,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes tmux
+          tmux -V
       - name: Configure hosted runner admission
         if: runner.environment == 'github-hosted'
         run: python3 config/bin/.local/bin/cockpit-game-guard off

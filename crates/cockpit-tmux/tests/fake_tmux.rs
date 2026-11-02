@@ -21,6 +21,14 @@ impl FakeTmux {
 
     /// A fake whose `-V` prints `version` and whose other commands print `output`.
     fn printing(version: &str, output: &str) -> FakeTmux {
+        FakeTmux::printing_server(version, version.trim_start_matches("tmux "), output)
+    }
+
+    fn printing_server(version: &str, server_version: &str, output: &str) -> FakeTmux {
+        Self::with_server_response(version, &format!("echo '{server_version}'"), output)
+    }
+
+    fn with_server_response(version: &str, response: &str, output: &str) -> FakeTmux {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let log = directory.path().join("calls");
         let script = format!(
@@ -28,7 +36,10 @@ impl FakeTmux {
              if [ \"$1\" = -V ]; then echo '{version}'; exit 0; fi\n\
              for argument in \"$@\"; do printf '%s\\n' \"$argument\"; done >> '{log}'\n\
              echo >> '{log}'\n\
-             echo '{output}'\n",
+             case \"$*\" in\n\
+               *' display-message -p #{{version}}') {response} ;;\n\
+               *) echo '{output}' ;;\n\
+             esac\n",
             log = log.display()
         );
         let binary = directory.path().join("tmux");
@@ -69,28 +80,35 @@ impl FakeTmux {
 }
 
 #[test]
-fn a_tmux_older_than_3_2_is_refused_naming_the_minimum() {
-    let fake = FakeTmux::printing_version("tmux 3.1c");
+fn a_tmux_before_stable_3_6_is_refused_before_configuring_the_server() {
+    for release in ["3.4", "3.1c", "3.2", "3.3a", "3.5a", "next-3.6", "3.6-rc2"] {
+        let fake = FakeTmux::printing_version(&format!("tmux {release}"));
 
-    let error = Server::open(fake.spec(Socket::cockpit())).expect_err("3.1 is too old");
+        let error = Server::open(fake.spec(Socket::cockpit())).expect_err(release);
 
-    assert!(
-        matches!(error, Error::TmuxTooOld { ref found, .. } if found == "3.1c"),
-        "{error:?}"
-    );
-    assert!(
-        error.to_string().contains("needs tmux 3.2 or newer"),
-        "{error}"
-    );
+        assert!(
+            matches!(error, Error::TmuxTooOld { ref found, .. } if found == release),
+            "{release}: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("needs tmux 3.6 or newer"),
+            "{error}"
+        );
+        assert!(
+            !fake.config_path().exists(),
+            "{release}: config was written"
+        );
+        assert!(fake.calls().is_empty(), "{release}: server commands ran");
+    }
 }
 
 #[test]
-fn every_release_spelling_from_3_2_on_is_accepted() {
+fn stable_3_6_and_newer_release_spellings_are_accepted() {
     for printed in [
-        "tmux 3.2",
-        "tmux 3.2-rc2",
-        "tmux 3.3a",
-        "tmux next-3.6",
+        "tmux 3.6",
+        "tmux 3.6a",
+        "tmux 3.7-rc2",
+        "tmux next-3.7",
         "tmux 4.0",
     ] {
         let fake = FakeTmux::printing_version(printed);
@@ -131,10 +149,80 @@ fn a_missing_tmux_is_refused_naming_the_binary() {
 }
 
 #[test]
-fn opening_writes_cockpits_own_config_private_to_the_user() {
-    let fake = FakeTmux::printing_version("tmux 3.4");
+fn upgrading_the_binary_does_not_accept_an_unsupported_running_server() {
+    for release in ["3.4", "3.5a", "next-3.6", "3.6-rc2", "master", ""] {
+        let fake = FakeTmux::printing_server("tmux 3.8", release, "%7");
 
-    Server::open(fake.spec(Socket::cockpit())).expect("3.4 is recent");
+        let error = Server::open(fake.spec(Socket::cockpit())).expect_err(release);
+
+        assert!(error.to_string().contains("running tmux server"), "{error}");
+        assert!(!fake.config_path().exists(), "{release}");
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(&calls[0][4..], ["display-message", "-p", "#{version}"]);
+    }
+}
+
+#[test]
+fn opening_without_a_live_server_still_writes_the_next_servers_config() {
+    for message in [
+        "no server running on /fixture",
+        "error connecting to /fixture (No such file or directory)",
+        "error connecting to /fixture (Connection refused)",
+        "server exited unexpectedly",
+        "lost server",
+    ] {
+        let fake = FakeTmux::with_server_response(
+            "tmux 3.6",
+            &format!("echo '{message}' >&2; exit 1"),
+            "%7",
+        );
+
+        Server::open(fake.spec(Socket::cockpit())).expect(message);
+
+        assert_eq!(
+            fs::read_to_string(fake.config_path()).expect("config"),
+            CONFIG
+        );
+    }
+}
+
+#[test]
+fn a_failed_server_version_query_is_not_treated_as_an_absent_server() {
+    for message in [
+        "error connecting to /fixture (Permission denied)",
+        "error connecting to /fixture (Not a directory)",
+        "permission denied",
+    ] {
+        for existing in [None, Some("existing server configuration\n")] {
+            let fake = FakeTmux::with_server_response(
+                "tmux 3.6",
+                &format!("echo '{message}' >&2; exit 1"),
+                "%7",
+            );
+            if let Some(contents) = existing {
+                fs::write(fake.config_path(), contents).expect("existing config");
+            }
+
+            let error = Server::open(fake.spec(Socket::cockpit())).expect_err(message);
+
+            assert!(matches!(error, Error::CommandFailed { .. }), "{error:?}");
+            assert!(error.to_string().contains(message), "{error}");
+            if let Some(contents) = existing {
+                assert_eq!(fs::read_to_string(fake.config_path()).unwrap(), contents);
+            } else {
+                assert!(!fake.config_path().exists());
+            }
+            assert_eq!(fake.calls().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn opening_writes_cockpits_own_config_private_to_the_user() {
+    let fake = FakeTmux::printing_version("tmux 3.6");
+
+    Server::open(fake.spec(Socket::cockpit())).expect("3.6 is supported");
 
     assert_eq!(
         fs::read_to_string(fake.config_path()).expect("written"),
@@ -149,21 +237,32 @@ fn opening_writes_cockpits_own_config_private_to_the_user() {
 
 #[test]
 fn opening_applies_the_config_to_a_running_server() {
-    let fake = FakeTmux::printing_version("tmux 3.4");
+    let fake = FakeTmux::printing_version("tmux 3.6");
 
     Server::open(fake.spec(Socket::cockpit())).expect("opens");
 
     let config = fake.config_path().display().to_string();
     assert_eq!(
         fake.calls(),
-        [[
-            "-f",
-            config.as_str(),
-            "-L",
-            "cockpit",
-            "source-file",
-            config.as_str()
-        ]]
+        vec![
+            vec![
+                "-f",
+                config.as_str(),
+                "-L",
+                "cockpit",
+                "display-message",
+                "-p",
+                "#{version}",
+            ],
+            vec![
+                "-f",
+                config.as_str(),
+                "-L",
+                "cockpit",
+                "source-file",
+                config.as_str()
+            ]
+        ]
     );
 }
 
@@ -180,7 +279,7 @@ fn launch(name: &str, working_dir: &Path) -> SessionLaunch {
 
 #[test]
 fn every_command_uses_the_private_cockpit_server_and_its_config() {
-    let fake = FakeTmux::printing_version("tmux 3.4");
+    let fake = FakeTmux::printing_version("tmux 3.6");
     let server = fake.open();
 
     server
@@ -195,7 +294,7 @@ fn every_command_uses_the_private_cockpit_server_and_its_config() {
 
 #[test]
 fn a_new_session_runs_its_command_without_tmux_variables_with_its_environment() {
-    let fake = FakeTmux::printing_version("tmux 3.4");
+    let fake = FakeTmux::printing_version("tmux 3.6");
     let server = fake.open();
 
     server
@@ -233,7 +332,7 @@ fn a_new_session_runs_its_command_without_tmux_variables_with_its_environment() 
 
 #[test]
 fn sessions_are_targeted_by_exact_name_never_by_prefix() {
-    let fake = FakeTmux::printing_version("tmux 3.4");
+    let fake = FakeTmux::printing_version("tmux 3.6");
     let server = fake.open();
     let session = SessionName::new("agent-1").expect("a valid name");
 
@@ -269,7 +368,7 @@ fn a_session_name_tmux_would_read_as_a_target_is_refused() {
 
 #[test]
 fn an_environment_name_that_is_not_a_shell_name_is_refused() {
-    let fake = FakeTmux::printing_version("tmux 3.4");
+    let fake = FakeTmux::printing_version("tmux 3.6");
     let server = fake.open();
     let mut bad_launch = launch("agent-1", fake.directory.path());
     bad_launch.environment = vec![("A=B".to_string(), "x".into())];
@@ -282,7 +381,7 @@ fn an_environment_name_that_is_not_a_shell_name_is_refused() {
 
 #[test]
 fn a_session_in_a_missing_directory_is_refused_before_tmux_runs() {
-    let fake = FakeTmux::printing_version("tmux 3.4");
+    let fake = FakeTmux::printing_version("tmux 3.6");
     let server = fake.open();
 
     let error = server
@@ -299,7 +398,7 @@ fn a_session_in_a_missing_directory_is_refused_before_tmux_runs() {
 #[test]
 fn an_exited_pane_has_no_pid_even_where_tmux_still_prints_the_old_one() {
     // Some tmux releases (CI's Ubuntu tmux; not 3.8) still print the ended process's pid.
-    let fake = FakeTmux::printing("tmux 3.4", "%3 4242 1 7");
+    let fake = FakeTmux::printing("tmux 3.6", "%3 4242 1 7");
     let server = fake.open();
 
     let panes = server
@@ -313,7 +412,7 @@ fn an_exited_pane_has_no_pid_even_where_tmux_still_prints_the_old_one() {
 
 #[test]
 fn the_attach_command_names_the_private_server_and_the_exact_session() {
-    let fake = FakeTmux::printing_version("tmux 3.4");
+    let fake = FakeTmux::printing_version("tmux 3.6");
     let server = fake.open();
 
     let attach = server.attach_command(&SessionName::new("cockpit").unwrap());

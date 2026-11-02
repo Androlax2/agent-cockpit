@@ -72,6 +72,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes tmux
+          tmux -V
       - name: Configure hosted runner admission
         if: runner.environment == 'github-hosted'
         # Disposable hosted runners have no workstation game-guard daemon.

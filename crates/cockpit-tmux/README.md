@@ -17,8 +17,11 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
 
 ## Contract
 
-- **Readiness.** [`Server::open`] runs `tmux -V` and refuses anything older than tmux 3.2
-  ([`MINIMUM_VERSION`]) or a version it cannot read (`tmux master`), naming the binary. It
+- **Readiness.** [`Server::open`] runs `tmux -V` and refuses anything older than tmux 3.6
+  ([`MINIMUM_VERSION`]), `next-3.6`/`3.6-rc…`, or a version it cannot read (`tmux master`).
+  It queries the private running server's `#{version}` before writing configuration:
+  upgrading the client alone does not replace the server that reaps agents. An old or
+  unknown server is refused without ending sessions; an absent/exiting server is allowed. It
   writes [`CONFIG`] (mode 0600), applies it to a server already running (`source-file`, so
   an upgrade's config reaches the sessions it holds; #308) and starts nothing.
 - **Private server.** Every command is `tmux -f <Cockpit's config> -L cockpit` ([`Socket`];
