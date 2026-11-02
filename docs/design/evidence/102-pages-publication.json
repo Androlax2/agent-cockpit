@@ -1,0 +1,58 @@
+{
+  "date": "2026-11-02",
+  "implementation_pr": "https://github.com/Androlax2/agent-cockpit/pull/507",
+  "merged_revision": "ea5458970720cf24dd807c21a1cdb808085ed5a4",
+  "public_url": "https://androlax2.github.io/agent-cockpit/",
+  "host_publication_approval": {
+    "request": "f24491c5f806",
+    "exit_code": 0,
+    "effects": [
+      "Pages configured in Actions mode, public true, HTTPS enforced, no custom domain",
+      "Repository website field set to the public URL",
+      "PR #507 marked ready and squash auto-merged with exact-head/green-check guards"
+    ]
+  },
+  "checks": {
+    "pr_ci": {
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41387507413",
+      "result": "All jobs passed: Linux greenfield, macOS, WSL2, docs and changes"
+    },
+    "main_ci": {
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41388684998",
+      "result": "success"
+    },
+    "deployment": {
+      "url": "https://github.com/Androlax2/agent-cockpit/actions/runs/41388685000",
+      "result": "catalog, build, assemble and deploy all succeeded"
+    }
+  },
+  "anonymous_http": {
+    "host_request": "20389aa6abf8",
+    "command": "python3 -c 'import json, urllib.request\nbase = \"https://androlax2.github.io/agent-cockpit/latest/\"\ndef get(path):\n    request = urllib.request.Request(base + path, headers={\"User-Agent\": \"Cockpit-docs-publication-check\"})\n    with urllib.request.urlopen(request, timeout=15) as response:\n        data = response.read()\n        print(path + \": HTTP \" + str(response.status), flush=True)\n        return data\nmanifest = json.loads(get(\"build.json\"))\nif manifest[\"revision\"] != \"ea5458970720cf24dd807c21a1cdb808085ed5a4\" or manifest[\"version\"] != \"latest\":\n    raise SystemExit(\"Unexpected published revision/version\")\nhtml = get(\"get-started/first-session/\").decode()\nif \"First project and session\" not in html or \"Register a Git repository\" not in html:\n    raise SystemExit(\"Expected quickstart content missing\")\nsearch = json.loads(get(\"search.json\"))\nif search.get(\"type\") != \"simple\":\n    raise SystemExit(\"Unexpected search index type\")\nprint(\"Verified merged main revision, quickstart content and static search index\", flush=True)\n'",
+    "exit_code": 0,
+    "stdout": "build.json: HTTP 200\nget-started/first-session/: HTTP 200\nsearch.json: HTTP 200\nVerified merged main revision, quickstart content and static search index\n",
+    "stderr": "",
+    "credentials": "No authentication header, cookies, provider account or user state used"
+  },
+  "unavailable_sandbox_checks": [
+    {
+      "tool": "Python urllib, 20-second timeout",
+      "result": "urllib.error.URLError: <urlopen error _ssl.c:1064: The handshake operation timed out>"
+    },
+    {
+      "command": "/home/theo/.cache/agent-browser/bin/python /tmp/cockpit-102-public-smoke.py",
+      "result": "playwright._impl._errors.TimeoutError: Page.goto: Timeout 30000ms exceeded. Navigating to https://androlax2.github.io/agent-cockpit/"
+    },
+    {
+      "tool": "web retrieval",
+      "result": "The quickstart and build.json URLs were not accessible via that tool"
+    }
+  ],
+  "limits": [
+    "Host HTTP checks establish those three public responses and revision/content assertions; no public browser interaction or physical-device pass is claimed",
+    "Interactive browser evidence remains the separate isolated Chromium run in 102-site-browser.json",
+    "No published release tags existed; released-version deployment remains fixture-proven, not a measured live release",
+    "No reader or volunteer has installed and started a session from the site; #97 and #98 acceptance remain open",
+    "No tag, product release or running legacy Cockpit application was performed"
+  ]
+}

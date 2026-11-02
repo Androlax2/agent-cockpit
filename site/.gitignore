@@ -1,0 +1,8 @@
+node_modules/
+.astro/
+dist/
+.validation-*/
+.npm-cache/
+
+content/docs/
+.source-manifest.json

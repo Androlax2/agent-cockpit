@@ -88,19 +88,34 @@ proposal code and pinned generators, then prepares a draft using
 PR runs test only with read permissions; the App token is created only in the main-only
 proposal job, after generation, with contents/write and pull_requests/write on this repository.
 
-`release-plz update` 0.4.2 calculates the inherited workspace version in git-only mode;
-`git-cliff` 2.14.2 writes the unreleased changelog. No matching stable tag means an initial
-candidate at `0.1.0`, not an invented bump. A fixture with a previous tag and a conventional
-fix proves the later `0.1.0` to `0.1.1` bump. Semver checks and dependency updates are off;
-member manifests and external lockfile dependencies may not change. Local generation runs
-offline after fetching the existing locked dependencies. Both commands must already exist;
-the script never installs tools itself.
+The draft carries the **exact upcoming prerelease** in its title, workspace manifest,
+local lockfile entries and changelog heading: first `0.1.0-alpha.1`, then `.2` after the
+first tag. Ordinary commits and replacement drafts do not consume numbers. A tag consumes
+its number even if publication fails. Beta numbering starts separately at `0.1.0-beta.1`.
+The workflow reads the Beta 1 checklist (#57) to select its channel; alpha proposals can
+exist while #52 is open, but actual alpha tagging still waits for #52 to close.
+
+`release-plz update` 0.4.2 runs in git-only mode, then the shared release numbering policy
+stamps the exact version and `cargo update --workspace --offline` updates local lock entries.
+`git-cliff` 2.14.2 generates the complete versioned changelog; its proposed release timestamp
+is fixed to the source commit before rendering. Semver checks and dependency updates are off;
+member manifests and external lockfile dependencies may not change. Generation runs offline
+after fetching existing locked dependencies. Tools must already exist; the script installs nothing.
 
 The prepared commit uses the base commit's timestamp, so a fresh checkout of the same base
 reproduces the same head. It is pushed normally to `release-plz/<full-base-sha>`. A repeat
 reuses only the exact branch and open automation-owned draft; a different head, closed PR,
 human author or promoted non-draft target causes refusal. An interrupted push or PR creation
 can resume without replacing history. A lost response is not proof that the write failed.
+
+**A channel transition requires a deliberate new main commit.** After the Beta 1
+checklist (#57) closes, merge a reviewed beta-transition change, such as its release
+policy or known-gap update, through the normal protected PR process. That push to
+main triggers generation of `0.1.0-beta.1` at a new `release-plz/<full-base-sha>`
+identity. Closing #57 alone does not regenerate a proposal. A manual beta proposal
+for an already-used alpha source refuses rather than rewriting its branch; the alpha
+draft stays intact until a verified replacement exists. Use a meaningful transition
+change, not an unrelated commit solely to obtain another SHA.
 
 Only after fetching and verifying the replacement draft does the script cross-link and
 close older drafts owned by `agent-cockpit-release[bot]`, with matching source/head markers
@@ -113,12 +128,31 @@ runs; operators should leave automation branches untouched and put feedback on t
 These are review proposals, not releases. `release-plz release-pr` is never called, since
 its update path rewrites history. Tag creation, registry publication and GitHub Releases
 are disabled in [release-plz.toml](../release-plz.toml), and there is no merge-triggered
-publication workflow. Pre-release tagging continues to follow #389 below; candidate drafts
-do not change its bootstrap version rule.
+publication workflow. Do not merge the draft: pre-release dispatch verifies and consumes
+its version, tags its exact main source and lets the build stamp that version. Dispatch
+requires exactly one open proposal, verified App ownership, repository, immutable head,
+marker, parent, current source, title, version files and changelog. Missing, multiple,
+edited, stale or wrong-version proposals refuse; there is no bootstrap fallback. Older
+stable-shaped proposals can be retired after a verified replacement, but cannot be consumed.
+
+**The final successful verification freezes a release snapshot**, not a transaction
+across GitHub resources. For live tagging, the workflow obtains its write token first, reads the checklist
+states and validates the sole proposal, including its final metadata, branch head and
+current main. It records `tag`, `channel`, `revision`, `proposal_number` and `proposal_head`
+in the workflow output, then uses that captured revision for the tag request in the same
+shell step. A failed verification prevents the request. Dry runs record the same snapshot
+without requesting a tag.
+
+Changes observed during verification refuse selection. Once verification succeeds, later
+main advancement or proposal edits, closure or replacement do **not** revoke that snapshot;
+the tag still names its captured source. This is Theo's approved snapshot boundary, not a
+claim of atomic latest-main selection. GitHub reads and create-reference are separate
+operations; an Actions concurrency group does not lock human edits or merges. Existing
+tag uniqueness and publication/checklist gates still apply.
 
 Verification: `make release-pr-check` uses real temporary Git repositories, a bare remote
 and fake GitHub; `make release-pr-conformance` additionally runs both pinned tools on a
-throwaway unpublished workspace and verifies initial version, bump, changelog, draft
+throwaway unpublished workspace and verifies alpha `.1`/`.2`, changelog, draft
 replacement and deterministic retry. It creates tags only in that disposable fixture.
 A live draft workflow run must be linked separately before claiming live acceptance.
 
@@ -130,10 +164,9 @@ A live draft workflow run must be linked separately before claiming live accepta
 - There is one version: `[workspace.package] version` in the root `Cargo.toml`, inherited by
   every crate (`version.workspace = true`). Internal path dependencies have no version pins.
   `tools/release.py stamp VERSION` changes only that root version line; Cargo then updates
-  workspace package entries in `Cargo.lock`. Nobody edits the version by hand. It stays the bootstrap's
-  `0.1.0` while no stable tag exists: a **release-plz** release PR (#192) may prepare the next
-  version and `CHANGELOG.md`. Nobody merges that draft until Theo decides the release policy;
-  the proposal workflow has no tag or publication step, even after a merge.
+  workspace package entries in `Cargo.lock`. Nobody edits the version by hand. Main retains
+  the bootstrap core `0.1.0`; the unmerged release proposal carries the exact upcoming
+  prerelease version and `CHANGELOG.md`. The proposal workflow has no tag or publication step.
 - The release workflow owns the GitHub Release: it creates a draft, attaches every asset, runs
   report 13's release gate on the tagged commit, and publishes last, so an immutable release
   never locks before its assets exist.
@@ -154,21 +187,27 @@ release workflow refuses every `vX.Y.Z` tag with that reason, whoever made it.
 **The base** is the greenfield bootstrap commit `d2d8604` (issue #18). A refused `vX.Y.Z` tag
 left on `main` is not a release and never the base.
 
-- **A pre-release tags `main` without a version bump.** `X.Y.Z` is the workspace's current
-  `0.1.0`, and no release PR is needed.
-- **`N` is the commit count since the base**, `git rev-list --count <base>..<commit>`: at
-  least 1 and growing with `main`, with at most one pre-release per commit.
+- **A pre-release tags the verified proposal's main source.** `X.Y.Z` remains `0.1.0`;
+  the open draft must carry the exact `X.Y.Z-alpha.N` or `X.Y.Z-beta.N` version being tagged.
+- **`N` is sequential per core and channel**, starting at 1 and advancing after a tag,
+  with at most one pre-release per commit. Failed tagged attempts consume their numbers;
+  a conflicting existing tag is refused, never moved. This supersedes #389's commit-count
+  numbering ([decision](decisions/2026-11-02-192-exact-prerelease-proposals.md)).
+  Nightly `dev.N` builds still count commits since the bootstrap.
 - **Nobody tags by hand.** Theo dispatches the prerelease workflow on `main`; it tags the
   commit it was dispatched on, with an app token (a tag pushed with `GITHUB_TOKEN` starts no
   workflow). A dry run prints the tag and creates nothing. The suffix is `-alpha` until the
   Beta 1 checklist (#57) closes, `-beta` after. It refuses:
   - an alpha while the Alpha 1 checklist (#52) is open;
+  - a source other than current `main`, or an absent/unverified open proposal;
   - a shallow clone;
   - a commit that already has a pre-release tag;
   - a version other than the workspace's `0.1.0`;
   - a tag not above the newest pre-release, or a commit that does not descend from it.
 - **The release workflow checks the tag first.** It refuses a pre-release tag in every case
-  above, however the tag was made, and a beta tag while the Beta 1 checklist is open. On a
+   above that apply to tagged history, however the tag was made, and a beta tag while the Beta 1 checklist is open.
+   Tag checking uses Git history, not a currently open draft, so closing a proposal does not
+   invalidate its tag. On a
   pre-release, the workspace version must still be the base's `0.1.0`. A pre-release build
   stamps its own version into `Cargo.toml` and `Cargo.lock` before compiling, and commits
   nothing.

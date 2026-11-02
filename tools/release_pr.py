@@ -12,8 +12,11 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
+
+import release
 
 REPOSITORY = "Androlax2/agent-cockpit"
 ORIGIN = f"https://github.com/{REPOSITORY}.git"
@@ -21,6 +24,7 @@ BOT = "agent-cockpit-release[bot]"
 ALLOWED = {"Cargo.toml", "Cargo.lock", "CHANGELOG.md"}
 SHA = r"[0-9a-f]{40}"
 MARKER = re.compile(rf"<!-- cockpit-release-proposal v1 base=({SHA}) head=({SHA}) -->")
+VERSION = r"0\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:alpha|beta)\.[1-9][0-9]*)?"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -92,8 +96,8 @@ def endpoint(path):
 
 def workspace_version(text):
     version = tomllib.loads(text)["workspace"]["package"]["version"]
-    if not re.fullmatch(r"0\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
-        raise Refusal("proposal must have a stable-shaped 0.x workspace version; no 1.0")
+    if not re.fullmatch(VERSION, version):
+        raise Refusal("proposal must have a 0.x alpha/beta or legacy core version; no 1.0")
     return version
 
 
@@ -126,21 +130,48 @@ def validate_delta(base, head, cwd):
             package["version"] = old["version"]
     if normalized != before_lock:
         raise Refusal("proposal changes lockfile fields beyond workspace package versions")
-    if not git("show", f"{head}:CHANGELOG.md", cwd=cwd).startswith("# Changelog"):
+    changelog = git("show", f"{head}:CHANGELOG.md", cwd=cwd)
+    if not changelog.startswith("# Changelog"):
         raise Refusal("proposal needs a generated CHANGELOG.md")
+    if "-" in version:
+        headings = re.findall(r"(?m)^## (.+)$", changelog)
+        expected = rf"{re.escape(version)}(?: \([^\n]+\))?"
+        if (
+            not headings
+            or not re.fullmatch(expected, headings[0])
+            or sum(bool(re.fullmatch(expected, heading)) for heading in headings) != 1
+        ):
+            raise Refusal("proposal changelog must start with its exact prerelease version once")
     return version
 
 
-def prepare(base, cwd):
+def prepare(base, cwd, channel):
     if git("rev-parse", "HEAD", cwd=cwd) != base or git("status", "--porcelain", cwd=cwd):
         raise Refusal("prepare needs a clean disposable checkout at the exact base")
     if git("symbolic-ref", "--quiet", "HEAD", cwd=cwd, ok=(0, 1)):
         raise Refusal("prepare needs a detached disposable checkout, not a working branch")
     if git("rev-parse", "--is-shallow-repository", cwd=cwd) != "false":
         raise Refusal("prepare needs full Git history")
+    version = release.next_version(
+        release.workspace_version(cwd, base), channel, release.release_tags(cwd, base)
+    )
+    if release.git_succeeds("show-ref", "--verify", "--quiet", f"refs/tags/v{version}", cwd=cwd):
+        raise Refusal(f"v{version} already exists; never reuse or move a tag")
     env = generation_environment()
     run(["release-plz", "update", "--config", "release-plz.toml"], cwd, env=env)
-    changelog = run(["git-cliff", "--offline", "--config", "cliff.toml"], cwd, env=env)
+    release.stamp(version, cwd)
+    run(["cargo", "update", "--workspace", "--offline"], cwd, env=env)
+    stamp = git("show", "-s", "--format=%ct", base, cwd=cwd)
+    cliff = ["git-cliff", "--offline", "--config", "cliff.toml"]
+    context = json.loads(run([*cliff, "--tag", f"v{version}", "--context"], cwd, env=env))
+    if not context or context[0]["version"] != f"v{version}":
+        raise Refusal("changelog generator did not produce the proposed version")
+    # A synthetic tag otherwise uses wall-clock time and changes the immutable retry commit.
+    context[0]["timestamp"] = int(stamp)
+    with tempfile.TemporaryDirectory(prefix="release-changelog-") as directory:
+        context_file = Path(directory) / "context.json"
+        context_file.write_text(json.dumps(context))
+        changelog = run([*cliff, "--from-context", str(context_file)], cwd, env=env)
     (cwd / "CHANGELOG.md").write_text(changelog + "\n")
     paths = set(git("diff", "--name-only", "--no-renames", cwd=cwd).splitlines())
     paths.update(git("ls-files", "--others", "--exclude-standard", cwd=cwd).splitlines())
@@ -149,7 +180,6 @@ def prepare(base, cwd):
     git("add", "--", *sorted(ALLOWED), cwd=cwd)
     tree = git("write-tree", cwd=cwd)
     version = validate_delta(base, tree, cwd)
-    stamp = git("show", "-s", "--format=%ct", base, cwd=cwd)
     env.update(
         GIT_AUTHOR_NAME=BOT,
         GIT_COMMITTER_NAME=BOT,
@@ -201,6 +231,14 @@ def current_main(base):
 
 
 def proposal_body(version, base, head):
+    if "-" in version:
+        return (
+            f"Next prerelease: `v{version}`. Generated locally with release-plz update and git-cliff.\n\n"
+            "Draft for review only; prerelease dispatch verifies this version and tags its main source. "
+            "Do not merge this draft. Separate release approval and all release gates still apply. "
+            "The branch and commit are retained when superseded.\n\n"
+            f"<!-- cockpit-release-proposal v1 base={base} head={head} -->"
+        )
     return (
         f"Candidate workspace version: `{version}`. Generated locally with release-plz update and git-cliff.\n\n"
         "Draft for review only. Do not merge until Theo decides the release policy. "
@@ -211,9 +249,7 @@ def proposal_body(version, base, head):
 
 def owned_draft(pr):
     marker = MARKER.findall(pr.get("body") or "")
-    title = re.fullmatch(
-        r"chore\(release\): prepare (0\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))", pr.get("title", "")
-    )
+    title = re.fullmatch(rf"chore\(release\): prepare ({VERSION})", pr.get("title", ""))
     return (
         len(marker) == 1
         and title is not None
@@ -243,6 +279,55 @@ def unchanged_old_commit(pr, cwd):
     except Refusal:
         return False
     return pr["title"] == f"chore(release): prepare {version}"
+
+
+def verified_open_proposal(base, cwd):
+    """Capture the verified draft identity; later changes do not revoke this snapshot."""
+    if git("remote", "get-url", "origin", cwd=cwd) not in (ORIGIN, ORIGIN.removesuffix(".git")):
+        raise Refusal("origin is not the authorized repository")
+    current_main(base)
+    pages = api("GET", endpoint("pulls?state=open&base=main&per_page=100"), paginate=True)
+    drafts = [
+        pr
+        for page in pages
+        for pr in page
+        if pr["state"] == "open" and pr["head"]["ref"].startswith("release-plz/")
+    ]
+    if len(drafts) != 1:
+        raise Refusal("prerelease selection needs exactly one open release proposal")
+    pr = drafts[0]
+    if not owned_draft(pr):
+        raise Refusal("open release proposal is edited, non-draft or not App-owned")
+    if MARKER.findall(pr["body"])[0][0] != base:
+        raise Refusal("open release proposal is not based on current main")
+    if not unchanged_old_commit(pr, cwd):
+        raise Refusal("open release proposal commit, title or version files are inconsistent")
+    version = workspace_version(git("show", f"{pr['head']['sha']}:Cargo.toml", cwd=cwd))
+    if release.parse_tag(f"v{version}")["channel"] == "stable":
+        raise Refusal("open release proposal must carry an exact alpha or beta version")
+    fresh = verify_replacement(pr["number"], pr["head"]["ref"], pr["head"]["sha"], base, cwd)
+    if fresh["title"] != pr["title"] or fresh["body"] != pr["body"]:
+        raise Refusal("open release proposal changed during selection")
+    pages = api("GET", endpoint("pulls?state=open&base=main&per_page=100"), paginate=True)
+    remaining = [
+        candidate
+        for page in pages
+        for candidate in page
+        if candidate["state"] == "open" and candidate["head"]["ref"].startswith("release-plz/")
+    ]
+    if [candidate["number"] for candidate in remaining] != [pr["number"]]:
+        raise Refusal("open release proposal set changed during selection")
+    latest = remaining[0]
+    if (
+        not owned_draft(latest)
+        or latest["title"] != pr["title"]
+        or latest["body"] != pr["body"]
+        or latest["head"]["sha"] != pr["head"]["sha"]
+        or remote_head(pr["head"]["ref"], cwd) != pr["head"]["sha"]
+    ):
+        raise Refusal("open release proposal changed during final verification")
+    current_main(base)
+    return {"version": version, "number": pr["number"], "head": pr["head"]["sha"]}
 
 
 def verify_replacement(number, branch, head, base, cwd):
@@ -278,15 +363,20 @@ def publish(base, cwd):
     if git("rev-list", "--parents", "-n", "1", head, cwd=cwd).split() != [head, base]:
         raise Refusal("proposal must be exactly one new commit on the requested base")
     version = validate_delta(base, head, cwd)
+    if release.parse_tag(f"v{version}")["channel"] == "stable":
+        raise Refusal("new proposals must carry an exact alpha or beta version")
     branch = "release-plz/" + base
     current_main(base)
     pages = api("GET", endpoint("pulls?state=all&base=main&per_page=100"), paginate=True)
     pulls = [pr for page in pages for pr in page]
     targets = [pr for pr in pulls if pr["head"]["ref"] == branch]
-    if len(targets) > 1 or (
-        targets and (not owned_draft(targets[0]) or targets[0]["head"]["sha"] != head)
-    ):
+    if len(targets) > 1 or (targets and not owned_draft(targets[0])):
         raise Refusal("existing target PR is closed, edited, non-draft or not automation-owned")
+    if targets and targets[0]["head"]["sha"] != head:
+        raise Refusal(
+            "existing immutable proposal has a different head; "
+            "channel transitions require a deliberate new main commit"
+        )
     remote = remote_head(branch, cwd)
     if remote and remote != head:
         raise Refusal("existing branch has an unexpected head; never overwrite it")
@@ -346,15 +436,31 @@ def main(argv=None, cwd=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "publish"))
     parser.add_argument("--base", required=True)
+    parser.add_argument("--channel", choices=release.CHANNELS)
     args = parser.parse_args(argv)
     try:
         if not re.fullmatch(SHA, args.base):
             raise Refusal("base must be a full commit SHA")
         directory = Path.cwd() if cwd is None else Path(cwd)
-        {"prepare": prepare, "publish": publish}[args.command](args.base, directory)
-    except (Refusal, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        if args.command == "prepare":
+            if args.channel is None:
+                raise Refusal("prepare requires an explicit --channel")
+            prepare(args.base, directory, args.channel)
+        else:
+            publish(args.base, directory)
+    except (
+        Refusal,
+        release.Refusal,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as error:
         message = (
-            str(error) if isinstance(error, Refusal) else "invalid metadata or unavailable command"
+            str(error)
+            if isinstance(error, (Refusal, release.Refusal))
+            else "invalid metadata or unavailable command"
         )
         print(f"release proposal refused: {message}", file=sys.stderr)
         return 1

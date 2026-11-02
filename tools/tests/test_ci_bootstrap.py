@@ -97,18 +97,20 @@ class CiBootstrapTests(unittest.TestCase):
         self.assertEqual(workflow.count("Swatinem/rust-cache@"), 2, "reviewed for these two jobs")
 
     def test_docs_job_installs_the_reviewed_lychee_release_instead_of_compiling_it(self):
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        steps = ci_job(workflow, "docs")
-        self.assertIn(
-            "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/"
-            "lychee-x86_64-unknown-linux-gnu.tar.gz",
-            steps,
-        )
-        self.assertRegex(
-            steps,
-            r"\n +1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  lychee\.tar\.gz\n",
-        )
-        self.assertNotIn("cargo install", workflow)
+        for filename, job in [("ci.yml", "docs"), ("docs.yml", "build")]:
+            with self.subTest(workflow=filename, job=job):
+                workflow = (ROOT / ".github/workflows" / filename).read_text()
+                steps = ci_job(workflow, job)
+                self.assertIn(
+                    "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/"
+                    "lychee-x86_64-unknown-linux-gnu.tar.gz",
+                    steps,
+                )
+                self.assertRegex(
+                    steps,
+                    r"\n +1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  lychee\.tar\.gz\n",
+                )
+                self.assertNotIn("cargo install", workflow)
 
     def test_wsl_job_installs_the_reviewed_nextest_release(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

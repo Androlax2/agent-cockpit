@@ -111,7 +111,11 @@ impl SystemdTools {
     }
 
     /// Signals every process of the scope's cgroup, whatever process group it is in.
-    pub(crate) async fn signal(&self, unit: &str, signal: Signal) -> Result<(), Error> {
+    pub(crate) async fn signal(
+        &self,
+        unit: &str,
+        signal: Signal,
+    ) -> Result<crate::SignalOutcome, Error> {
         let name = match signal {
             Signal::Term => "--signal=SIGTERM",
             Signal::Kill => "--signal=SIGKILL",
@@ -120,9 +124,9 @@ impl SystemdTools {
             .systemctl(&["--user", "kill", "--kill-who=all", name, unit])
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(crate::SignalOutcome::CommandAccepted),
             // A collected scope is already empty: what termination waits for.
-            Err(_) if !self.is_active(unit).await? => Ok(()),
+            Err(_) if !self.is_active(unit).await? => Ok(crate::SignalOutcome::ScopeInactive),
             Err(error) => Err(error),
         }
     }

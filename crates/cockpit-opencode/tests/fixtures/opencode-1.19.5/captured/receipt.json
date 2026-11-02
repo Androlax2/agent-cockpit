@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-11-02T03:09:36.116282+00:00",
+  "version": "1.19.5",
+  "runtime": {
+    "bun": "1.4.4",
+    "serverUrl": "http://127.0.0.1:<launch-port>/"
+  },
+  "events": 19,
+  "model_requests": 4,
+  "permission_decision": "reject",
+  "unauthenticated_permission_reply": 401,
+  "account_usage": "none; local fixture model",
+  "plugin_sha256": "b37fc122723a9045ec0bf2ebfe762cb85b22eb0156d494b6e0721346e737a095",
+  "fixture_sha256": "0ac66d200d27e6069ffb5b3817b0ead05289c27afdef9114efaf742f37b56d95",
+  "binary_sha256": "7df4e4136301f16589b0f30bf91a61380fca5f8ef22dd36570f5ebe1d4ec802c",
+  "raw_events_sha256": "70d20da8394f2445b9edebe1c29e3b1ada8493fa160a270f30f0d6fe2f37cd6c",
+  "raw_reports_sha256": "03f869a488cd5cfc0f0bda1fcf5a4cc7025a4aa42dbeb0bccb3b5d25b814a512",
+  "redactions": [
+    "fixture root -> /fixture; relative root -> fixture",
+    "IDs -> stable equal-length IDs preserving references; slug -> fixture-session",
+    "timestamps -> milliseconds from first session.created + 1; launch port -> <launch-port>"
+  ]
+}

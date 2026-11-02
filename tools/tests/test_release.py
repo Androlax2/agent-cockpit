@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -13,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 SPEC = importlib.util.spec_from_file_location("release", ROOT / "tools/release.py")
 release = importlib.util.module_from_spec(SPEC)
@@ -55,6 +57,9 @@ class Repository:
         self.git("config", "tag.gpgSign", "false")
         self.git("config", "commit.gpgSign", "false")
         self.write_version(version)
+        (self.path / "Cargo.lock").write_text(
+            f'version = 4\n\n[[package]]\nname = "cockpit-cli"\nversion = "{version}"\n'
+        )
         (self.path / "docs").mkdir()
         (self.path / release.KNOWN_GAPS).write_text("## Known gaps\n")
         self.commit_count = 0
@@ -96,16 +101,69 @@ class ReleaseTestCase(unittest.TestCase):
     def run_release(self, *arguments):
         return run(*arguments, cwd=self.repository.path)
 
-    def next_prerelease(self, alpha_checklist="closed", beta_checklist="open", main="main"):
-        return self.run_release(
-            "next-prerelease",
-            "--main",
-            main,
-            "--alpha-checklist",
-            alpha_checklist,
-            "--beta-checklist",
-            beta_checklist,
+    def next_prerelease(
+        self, alpha_checklist="closed", beta_checklist="open", main="main", version=None
+    ):
+        import release_pr
+
+        repository = self.repository
+        source = repository.git("rev-parse", "HEAD")
+        version = version or ("0.1.0-beta.1" if beta_checklist == "closed" else "0.1.0-alpha.1")
+        paths = [repository.path / name for name in ("Cargo.toml", "Cargo.lock", "CHANGELOG.md")]
+        before = {path: path.read_bytes() if path.exists() else None for path in paths}
+        repository.write_version(version)
+        paths[1].write_text(
+            f'version = 4\n\n[[package]]\nname = "cockpit-cli"\nversion = "{version}"\n'
         )
+        paths[2].write_text(f"# Changelog\n\n## {version}\n\n- Fixture change\n")
+        repository.git("add", ".")
+        tree = repository.git("write-tree")
+        head = repository.git("commit-tree", tree, "-p", source, "-m", "fixture draft")
+        repository.git("read-tree", "HEAD")
+        for path, content in before.items():
+            if content is None:
+                path.unlink()
+            else:
+                path.write_bytes(content)
+        branch = "release-plz/" + source
+        repository.git("update-ref", "refs/heads/" + branch, head)
+        if "origin" not in repository.git("remote").splitlines():
+            repository.git("remote", "add", "origin", str(repository.path))
+        repo = {"full_name": release_pr.REPOSITORY}
+        pr = {
+            "number": 1,
+            "state": "open",
+            "draft": True,
+            "title": f"chore(release): prepare {version}",
+            "body": release_pr.proposal_body(version, source, head),
+            "user": {"login": release_pr.BOT, "type": "Bot"},
+            "head": {"sha": head, "ref": branch, "repo": repo},
+            "base": {"ref": "main", "repo": repo},
+        }
+
+        def api(method, path, data=None, paginate=False):
+            self.assertEqual(method, "GET")
+            if path.endswith("git/ref/heads/main"):
+                return {"object": {"sha": repository.git("rev-parse", main)}}
+            if "pulls?" in path:
+                return [[pr]]
+            if path.endswith("pulls/1"):
+                return pr
+            self.fail(f"unexpected fixture API request {path}")
+
+        with (
+            patch.object(release_pr, "api", api),
+            patch.object(release_pr, "ORIGIN", str(repository.path)),
+        ):
+            return self.run_release(
+                "next-prerelease",
+                "--main",
+                main,
+                "--alpha-checklist",
+                alpha_checklist,
+                "--beta-checklist",
+                beta_checklist,
+            )
 
     def check_tag(self, tag, alpha_checklist="closed", beta_checklist="open", main="main"):
         return self.run_release(
@@ -141,29 +199,29 @@ class TagGrammarTests(ReleaseTestCase):
 
 
 class CheckTagTests(ReleaseTestCase):
-    def test_an_alpha_before_the_first_stable_counts_from_the_bootstrap_commit(self):
+    def test_the_first_alpha_is_one_regardless_of_commit_count(self):
         revision = self.repository.commits(3)
-        self.repository.tag("v0.1.0-alpha.3")
-        code, outputs, error = self.check_tag("v0.1.0-alpha.3")
+        self.repository.tag("v0.1.0-alpha.1")
+        code, outputs, error = self.check_tag("v0.1.0-alpha.1")
         self.assertEqual(code, 0, error)
         self.assertEqual(
             outputs,
             {
-                "tag": "v0.1.0-alpha.3",
+                "tag": "v0.1.0-alpha.1",
                 "channel": "alpha",
-                "version": "0.1.0-alpha.3",
+                "version": "0.1.0-alpha.1",
                 "prerelease": "true",
                 "revision": revision,
-                "notes_range": f"{self.repository.bootstrap}..v0.1.0-alpha.3",
+                "notes_range": f"{self.repository.bootstrap}..v0.1.0-alpha.1",
             },
         )
 
-    def test_a_pre_release_whose_number_is_not_the_commit_count_is_refused(self):
+    def test_a_pre_release_that_skips_the_next_number_is_refused(self):
         self.repository.commits(3)
         self.repository.tag("v0.1.0-alpha.2")
         code, _outputs, error = self.check_tag("v0.1.0-alpha.2")
         self.assertEqual(code, 1)
-        self.assertIn("which is 3", error)
+        self.assertIn("next sequential version is 0.1.0-alpha.1", error)
 
     def test_a_pre_release_on_a_bumped_workspace_is_refused(self):
         self.repository.write_version("0.2.0")
@@ -175,12 +233,12 @@ class CheckTagTests(ReleaseTestCase):
 
     def test_pre_release_notes_start_at_the_highest_lower_release_it_descends_from(self):
         self.repository.commits(2)
-        self.repository.tag("v0.1.0-alpha.2")
+        self.repository.tag("v0.1.0-alpha.1")
         self.repository.commits(3)
-        self.repository.tag("v0.1.0-alpha.5")
-        code, outputs, error = self.check_tag("v0.1.0-alpha.5")
+        self.repository.tag("v0.1.0-alpha.2")
+        code, outputs, error = self.check_tag("v0.1.0-alpha.2")
         self.assertEqual(code, 0, error)
-        self.assertEqual(outputs["notes_range"], "v0.1.0-alpha.2..v0.1.0-alpha.5")
+        self.assertEqual(outputs["notes_range"], "v0.1.0-alpha.1..v0.1.0-alpha.2")
 
     def test_a_shallow_clone_is_refused(self):
         self.repository.commits(2)
@@ -302,21 +360,54 @@ class CheckTagTests(ReleaseTestCase):
         self.repository.tag("v0.1.0-alpha.5")
         self.repository.git("checkout", "--quiet", "main")
         self.repository.commits(2)
-        self.repository.tag("v0.1.0-alpha.2")
-        code, _outputs, error = self.check_tag("v0.1.0-alpha.2")
+        self.repository.tag("v0.1.0-alpha.1")
+        code, _outputs, error = self.check_tag("v0.1.0-alpha.1")
         self.assertEqual(code, 0, error)
 
 
 class NextPrereleaseTests(ReleaseTestCase):
-    def test_after_the_alpha_1_checklist_the_next_alpha_numbers_the_commits_since_the_bootstrap(
+    def test_after_the_alpha_1_checklist_the_first_alpha_is_one(
         self,
     ):
         revision = self.repository.commits(7)
         code, outputs, error = self.next_prerelease(alpha_checklist="closed", beta_checklist="open")
         self.assertEqual(code, 0, error)
         self.assertEqual(
-            outputs, {"tag": "v0.1.0-alpha.7", "channel": "alpha", "revision": revision}
+            outputs,
+            {
+                "tag": "v0.1.0-alpha.1",
+                "channel": "alpha",
+                "revision": revision,
+                "proposal_number": "1",
+                "proposal_head": self.repository.git(
+                    "rev-parse", "refs/heads/release-plz/" + revision
+                ),
+            },
         )
+
+    def test_additional_commits_do_not_consume_an_alpha_number(self):
+        self.repository.commits(7)
+        self.assertEqual(self.next_prerelease()[1]["tag"], "v0.1.0-alpha.1")
+        self.repository.commits(4)
+        self.assertEqual(self.next_prerelease()[1]["tag"], "v0.1.0-alpha.1")
+
+    def test_a_tag_consumes_its_number_even_without_publication(self):
+        self.repository.commits(7)
+        self.repository.tag("v0.1.0-alpha.1")
+        self.repository.commits(4)
+        code, outputs, error = self.next_prerelease(version="0.1.0-alpha.2")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(outputs["tag"], "v0.1.0-alpha.2")
+
+    def test_a_conflicting_next_tag_outside_main_is_refused(self):
+        self.repository.git("checkout", "--quiet", "-b", "side")
+        self.repository.commits(2)
+        self.repository.tag("v0.1.0-alpha.1")
+        self.repository.git("checkout", "--quiet", "main")
+        self.repository.commits(3)
+        code, _, error = self.next_prerelease()
+        self.assertEqual(code, 1)
+        self.assertIn("v0.1.0-alpha.1 already exists", error)
 
     def test_no_alpha_without_its_known_gaps(self):
         (self.repository.path / release.KNOWN_GAPS).unlink()
@@ -339,7 +430,7 @@ class NextPrereleaseTests(ReleaseTestCase):
             alpha_checklist="closed", beta_checklist="closed"
         )
         self.assertEqual(code, 0, error)
-        self.assertEqual(outputs["tag"], "v0.1.0-beta.2")
+        self.assertEqual(outputs["tag"], "v0.1.0-beta.1")
 
     def test_a_commit_that_already_has_a_pre_release_is_refused(self):
         self.repository.commits(2)
@@ -358,7 +449,7 @@ class NextPrereleaseTests(ReleaseTestCase):
         self.repository.commits(2)
         code, outputs, error = self.next_prerelease(alpha_checklist="closed", beta_checklist="open")
         self.assertEqual(code, 0, error)
-        self.assertEqual(outputs["tag"], "v0.1.0-alpha.2")
+        self.assertEqual(outputs["tag"], "v0.1.0-alpha.1")
 
     def test_a_commit_outside_main_is_refused(self):
         self.repository.git("checkout", "--quiet", "-b", "side")
@@ -378,7 +469,7 @@ class NextPrereleaseTests(ReleaseTestCase):
             alpha_checklist="closed", beta_checklist="open"
         )
         self.assertEqual(code, 1)
-        self.assertIn("not above the newest pre-release v0.1.0-alpha.4", error)
+        self.assertIn("current main", error)
 
     def test_a_pre_release_not_above_the_newest_one_is_refused(self):
         self.repository.commits(2)
@@ -387,7 +478,7 @@ class NextPrereleaseTests(ReleaseTestCase):
             alpha_checklist="closed", beta_checklist="open"
         )
         self.assertEqual(code, 1)
-        self.assertIn("v0.1.0-alpha.2 is not above the newest pre-release v0.1.0-beta.1", error)
+        self.assertIn("not above the newest pre-release v0.1.0-beta.1", error)
 
     def test_a_refused_stable_tag_left_on_main_is_not_the_base(self):
         self.repository.commits(2)
@@ -395,7 +486,7 @@ class NextPrereleaseTests(ReleaseTestCase):
         self.repository.commits(1)
         code, outputs, error = self.next_prerelease()
         self.assertEqual(code, 0, error)
-        self.assertEqual(outputs["tag"], "v0.1.0-alpha.3")
+        self.assertEqual(outputs["tag"], "v0.1.0-alpha.1")
 
 
 class DryRunVersionTests(ReleaseTestCase):

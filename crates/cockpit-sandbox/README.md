@@ -61,8 +61,50 @@ Restart a daemon that was already running when engines were installed. Its launc
 only its own release's paths. `doctor` and `init` name the install command when absent;
 `doctor` and `session sandbox` flag running sessions whose recorded engines differ, without
 restarting them. Greywall receives its owned engine directories first on PATH and has its
-upstream installer disabled. Greyproxy startup, configuration and health are #495;
-installation readiness alone does not prove enforcement (#433).
+upstream installer disabled. Installation readiness alone does not prove enforcement (#433).
+
+## Managed proxy (#495)
+
+`cockpit sandbox install` also configures and starts this profile's Greyproxy. Use
+`--engines-only` for an offline binary installation. Linux and WSL2 need the user's
+systemd manager; macOS needs the user's login launchd domain. Commands never install these
+prerequisites or repair the host automatically. Health uses curl and process ownership
+metadata (`readlink`, `cat`, `ls` on Linux/WSL2; macOS's `lsof`). Missing capabilities fail
+closed with a reason and a next action.
+
+Configuration, the API token and proxy data stay in `<profile-state>/greyproxy`. The
+service is `cockpit-greyproxy-<profile>.service` in the user's systemd configuration or
+`io.github.androlax2.cockpit.greyproxy.<profile>.plist` in `~/Library/LaunchAgents`.
+Authentication and launch secrets are required; anonymous clients and exemptions are
+disabled. Managed setup disables conversation capture, notifications and Docker discovery.
+It generates a profile-local CA pair using the verified engine's bounded `cert generate`
+command, stages both files with the configuration, and preserves an existing pair. It
+never runs `cert install` or changes the OS trust store. The private key remains unreadable
+inside agent sandboxes.
+
+The pinned Greywall uses fixed management port 43080. One profile can own the loopback
+ports at a time (43080 API, 43051 HTTP, 43052 SOCKS, 43053 TCP/UDP DNS). An occupied endpoint
+is refused without adopting or stopping its listener. This limits simultaneous Cockpit
+profiles, not the number of sessions in a profile.
+
+`cockpit --profile NAME sandbox status` checks current health without a daemon;
+`sandbox restart` restarts only the owned service; `sandbox stop` stops it. Restart or stop
+interrupts that profile's agent networking. Reinstall preserves an already healthy service. When pins change, it reports an explicit
+restart requirement; `sandbox restart` upgrades the previous owned service to the new pair.
+`doctor` reports matching engine builds separately from proxy health and refreshes the
+health on every request. Required-sandbox launches check it before execution reservation;
+dry runs still show their planned profile. The launch denies reads/writes to proxy state
+and denies writes to the service directory, including through a writable ancestor.
+The published macOS Greywall cannot expose only the public CA through that private-state
+denial. The proxy service may run, but doctor and required launches return
+`proxy-engine-capability` until a verified engine reports `public CA isolation`.
+[Issue #527](https://github.com/Androlax2/agent-cockpit/issues/527) tracks the upstream fix
+and separately approved release. This capability is absent from today's pin; fixture
+engines advertise it only to test later wiring. No private-state grant is relaxed.
+
+Temporary-home tests replace service managers, process metadata and HTTP commands. They
+prove the wiring and refusal paths; actual systemd/launchd startup and a real network probe
+remain open acceptance on #495, to be measured with #433's isolated platform CI.
 
 To test an unreleased local fork, a **debug build in profile `dev` only** accepts both
 `COCKPIT_DEV_GREYWALL` and `COCKPIT_DEV_GREYPROXY` as absolute paths. This explicitly bypasses

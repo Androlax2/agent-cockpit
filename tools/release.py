@@ -34,7 +34,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# Pre-releases count from the greenfield bootstrap (#18, #94): no stable tag is a base (#389).
+# The bootstrap fixes the core and initial notes range; nightly builds count commits from it.
 BOOTSTRAP_COMMIT = "d2d860474e55d0e6f815ee33e50162351bbb1495"
 CORE_PATTERN = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 # The release milestones' checklist issues that open each pre-release channel (#389); both
@@ -163,7 +163,7 @@ def workspace_version(cwd, revision=None):
 
 
 def base_of(cwd):
-    """The bootstrap commit: pre-releases count from it while no stable tag exists (#389)."""
+    """The bootstrap core and initial notes boundary; stable releases remain disabled."""
     return {"ref": BOOTSTRAP_COMMIT, "version": workspace_version(cwd, BOOTSTRAP_COMMIT)}
 
 
@@ -256,14 +256,26 @@ def refuse_prerelease(candidate, commit, version_at_commit, tags, base, cwd):
             f"a pre-release must still carry the base's {base['version']}"
         )
     refuse_core_against_base(candidate["core"], base)
-    count = commits_since(base["ref"], commit, cwd)
-    if candidate["number"] != count:
-        raise Refusal(f"{tag}: N must be the commit count since {base['ref']}, which is {count}")
-    if not tags:
-        return
-    newest = max(tags, key=version_order)
-    if version_order(candidate) <= version_order(newest):
-        raise Refusal(f"{tag} is not above the newest pre-release {newest['tag']}")
+    if tags:
+        newest = max(tags, key=version_order)
+        if version_order(candidate) <= version_order(newest):
+            raise Refusal(f"{tag} is not above the newest pre-release {newest['tag']}")
+    expected = next_version(candidate["core"], candidate["channel"], tags)
+    if tag != f"v{expected}":
+        raise Refusal(f"{tag}: next sequential version is {expected}")
+
+
+def next_version(core, channel, tags):
+    """Tagged attempts consume numbers; commits and draft replacements do not."""
+    if not re.fullmatch(CORE_PATTERN, core) or not core.startswith("0."):
+        raise Refusal("prereleases need a stable-shaped 0.x core; no 1.0")
+    if channel not in CHANNELS:
+        raise Refusal(f"{channel}: not a prerelease channel")
+    number = 1 + max(
+        (tag["number"] for tag in tags if tag["core"] == core and tag["channel"] == channel),
+        default=0,
+    )
+    return f"{core}-{channel}.{number}"
 
 
 def refuse_core_against_base(core, base):
@@ -285,14 +297,39 @@ def next_prerelease(main_ref, alpha_checklist, beta_checklist, cwd):
     refuse_shallow(cwd)
     commit = git("rev-parse", "HEAD", cwd=cwd)
     refuse_off_main(commit, main_ref, cwd)
+    if commit != git("rev-parse", main_ref, cwd=cwd):
+        raise Refusal("prerelease selection requires current main")
     # Every tag on main, not only HEAD's: a re-run on an older commit meets the newer tags.
     tags = release_tags(cwd, main_ref)
     base = base_of(cwd)
     version = workspace_version(cwd, commit)
-    number = commits_since(base["ref"], commit, cwd)
-    candidate = parse_tag(f"v{version}-{channel}.{number}")
+    candidate = parse_tag(f"v{next_version(version, channel, tags)}")
     refuse_prerelease(candidate, commit, version, tags, base, cwd)
-    return {"tag": candidate["tag"], "channel": channel, "revision": commit}
+    if git_succeeds("show-ref", "--verify", "--quiet", f"refs/tags/{candidate['tag']}", cwd=cwd):
+        raise Refusal(f"{candidate['tag']} already exists; never reuse or move a tag")
+    import release_pr
+
+    try:
+        proposal = release_pr.verified_open_proposal(commit, cwd)
+    except (
+        release_pr.Refusal,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as error:
+        raise Refusal(f"cannot verify open release proposal: {error}") from error
+    proposed_version = proposal["version"]
+    if f"v{proposed_version}" != candidate["tag"]:
+        raise Refusal(f"proposal version {proposed_version}; expected {candidate['tag'][1:]}")
+    return {
+        "tag": f"v{proposed_version}",
+        "channel": channel,
+        "revision": commit,
+        "proposal_number": proposal["number"],
+        "proposal_head": proposal["head"],
+    }
 
 
 def dry_run_version(cwd):

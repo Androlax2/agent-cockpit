@@ -258,3 +258,144 @@ async fn ending_a_failed_session_whose_agent_is_already_gone_ends_it() {
 
     assert_eq!(ended.state, SessionStateView::Ended);
 }
+
+/// The second group is owned by this fixture, not by the session's terminal. A mismatched
+/// leader file models an interrupted identity write without disabling database constraints.
+struct UnidentifiedGroup(std::process::Child);
+
+impl UnidentifiedGroup {
+    fn start() -> Self {
+        use std::os::unix::process::CommandExt;
+        Self(
+            Process::new("/bin/sleep")
+                .arg("300")
+                .env("STOP_DIAGNOSTIC_SECRET", "must-not-log-537")
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+        )
+    }
+}
+
+impl Drop for UnidentifiedGroup {
+    fn drop(&mut self) {
+        self.0
+            .kill()
+            .expect("kill fixture-owned unidentified process");
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while self.0.try_wait().expect("reap fixture process").is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "fixture process cleanup timed out"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unidentified_restart_retains_its_execution_and_checkout_without_claiming_sigkill() {
+    let home = Home::new();
+    let logs = home.path().join("diagnostics");
+    let diagnostics = cockpit_diagnostics::start(cockpit_diagnostics::Options::new(
+        logs.clone(),
+        cockpit_diagnostics::Directives::from_env_value(Some("warn")).unwrap(),
+    ))
+    .unwrap();
+    tracing::dispatcher::set_global_default(diagnostics.dispatch().clone()).unwrap();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    let started = session_reply(
+        &client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: Some("stop-537".to_owned()),
+        },
+    )
+    .await;
+    home.launches(1).await;
+    assert!(started.holds_checkout);
+    let database = home.database.lock().unwrap().clone().unwrap();
+    let execution_id = {
+        let read = database.read().await.unwrap();
+        let row = read.prepare("SELECT execution_id FROM session_launches WHERE session_id = ?1 ORDER BY id DESC LIMIT 1").await.unwrap()
+            .query_row([started.id.as_str()]).await.unwrap();
+        cockpit_processes::ExecutionId(row.get(0).unwrap())
+    };
+    let original = cockpit_processes::execution(&database, execution_id)
+        .await
+        .unwrap();
+    let mut unidentified = UnidentifiedGroup::start();
+    let write = database.write().await.unwrap();
+    write.execute(
+        "UPDATE process_executions SET phase = 'launching', containment = 'process-group', unit = NULL, process_group = ?1, leader_start = NULL WHERE id = ?2",
+        (i64::from(unidentified.0.id()), execution_id.0),
+    ).await.unwrap();
+    write.commit().await.unwrap();
+
+    let refused = client
+        .request(
+            Command::SessionRestart {
+                session: started.id.clone(),
+            },
+            Duration::from_secs(30),
+        )
+        .await;
+    let Reply::Sessions { sessions } = request(&client, Command::SessionList { ended: true }).await
+    else {
+        panic!("session list reply")
+    };
+    let retained = sessions
+        .into_iter()
+        .find(|session| session.id == started.id)
+        .unwrap();
+    let occupying = cockpit_processes::execution(&database, execution_id)
+        .await
+        .unwrap();
+    let was_signalled = unidentified.0.try_wait().unwrap().is_some();
+    let launches = FakeProvider::launches(&home.path().join("agent.log"));
+
+    // Put the real identity back before teardown; cleanup owns the other group separately.
+    let write = database.write().await.unwrap();
+    write.execute("UPDATE process_executions SET phase = 'running', process_group = ?1, leader_start = ?2 WHERE id = ?3",
+        (i64::from(original.process_group.unwrap()), original.leader_start.unwrap(), execution_id.0)).await.unwrap();
+    write.commit().await.unwrap();
+    assert!(diagnostics.shutdown(Duration::from_secs(1)));
+    let records = std::fs::read_to_string(logs.join("cockpit.log")).unwrap();
+
+    let Err(cockpit_client::ClientError::Daemon(error)) = refused else {
+        panic!("unidentified restart must refuse: {refused:?}")
+    };
+    assert_eq!(error.code, cockpit_protocol::ErrorCode::Conflict);
+    assert!(!error.message.contains("SIGKILL"), "{error:?}");
+    assert_eq!(retained.state, SessionStateView::Running);
+    assert_eq!(retained.checkout, started.checkout);
+    assert!(retained.holds_checkout);
+    assert_eq!(retained.launch, started.launch);
+    assert!(occupying.phase.is_occupying() && occupying.cancel_requested);
+    assert!(!was_signalled);
+    assert_eq!(launches.len(), 1);
+    assert!(!retained.reason.unwrap().contains("SIGKILL"));
+    let events: Vec<serde_json::Value> = records
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let event = events
+        .iter()
+        .find(|event| event["fields"]["message"] == "a session's agent termination is unconfirmed")
+        .expect("correlated stop diagnostic");
+    assert_eq!(event["fields"]["session"], started.id);
+    assert_eq!(event["fields"]["execution"], execution_id.0);
+    let evidence = event["fields"]["diagnostics"].as_str().unwrap();
+    assert!(
+        evidence.contains("Unidentified")
+            && evidence.contains("term: None")
+            && evidence.contains("kill: None")
+    );
+    assert!(!records.contains("must-not-log-537"));
+}

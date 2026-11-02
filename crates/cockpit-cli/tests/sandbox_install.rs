@@ -4,6 +4,30 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 #[test]
+fn proxy_status_is_offline_and_names_the_selected_profiles_setup_command() {
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_cockpit"))
+        .args(["--profile", "next", "sandbox", "status"])
+        .env_clear()
+        .env("HOME", home.path())
+        .env("PATH", home.path())
+        .output()
+        .unwrap();
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert!(report.contains("proxy-not-configured"), "{report}");
+    assert!(
+        report.contains("cockpit --profile next sandbox install"),
+        "{report}"
+    );
+    assert!(!report.contains("daemon.sock"), "{report}");
+}
+
+#[test]
 fn install_reports_a_download_failure_without_connecting_to_a_daemon() {
     let home = tempfile::tempdir().unwrap();
     let bin = home.path().join("bin");

@@ -98,6 +98,8 @@ async fn an_agent_of_a_profile_reports_to_its_daemon_and_leaves_the_legacy_layou
         profile_entries(&home),
         [
             "config/cockpit",
+            #[cfg(target_os = "linux")]
+            "config/systemd",
             "run/cockpit",
             "run/cockpit-next",
             "state/cockpit",
@@ -143,6 +145,8 @@ fn legacy_layout(home: &Home) -> Vec<(std::path::PathBuf, &'static str)> {
 async fn the_default_profile_and_a_dev_build_run_side_by_side_each_with_its_own_sessions() {
     assert_cockpit_built(&cockpit_program());
     let home = Home::new();
+    // Fake managers prove profile routing here. They do not claim that two real
+    // managed proxies can own the fixed ports at once.
     let _installed = home.start_profile("cockpit");
     let _dev = home.start();
     let installed = home.connect_to("cockpit").await;
@@ -165,6 +169,8 @@ async fn the_default_profile_and_a_dev_build_run_side_by_side_each_with_its_own_
     assert_eq!(
         profile_entries(&home),
         [
+            #[cfg(target_os = "linux")]
+            "config/systemd".to_owned(),
             "run/cockpit".to_owned(),
             format!("run/{BUILD_PROFILE_DIR}"),
             "state/cockpit".to_owned(),

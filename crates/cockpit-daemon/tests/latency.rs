@@ -24,6 +24,8 @@
 
 mod candidate;
 mod real_daemon;
+#[path = "latency/termination_evidence.rs"]
+mod termination_evidence;
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -148,6 +150,15 @@ async fn run(workload: Workload) {
     }
     progress("preparing isolated daemon and projects");
     let home = Home::new();
+    // Drop after report rewrites, but before Home removes the daemon's log directory.
+    let mut evidence = workload.enforce_targets.then(|| {
+        termination_evidence::TerminationEvidence::new(
+            home.state_dir().join("logs/daemon"),
+            std::env::var_os("COCKPIT_LATENCY_REPORT")
+                .expect("a persistent report path")
+                .into(),
+        )
+    });
     let daemon = home.start();
     let client = home.connect().await;
     let (flood_dir, _) = home.project(&client, FLOOD_PROJECT).await;
@@ -272,6 +283,9 @@ async fn run(workload: Workload) {
             release_targets_met(&samples),
             "candidate missed responsiveness targets; see the recorded report"
         );
+    }
+    if let Some(evidence) = &mut evidence {
+        evidence.finish().expect("termination evidence is retained");
     }
     progress("complete: all required assertions passed");
 }

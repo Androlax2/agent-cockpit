@@ -171,3 +171,25 @@ fn the_bridge_answers_its_version() {
         cockpit_opencode::bridge_version_line()
     );
 }
+
+#[test]
+fn every_captured_native_event_replays_its_recorded_bridge_report() {
+    let cockpit = FakeCockpit::exiting_with(0);
+    let events = common::captured("events.jsonl");
+    let reports = common::captured("reports.jsonl");
+    assert_eq!(events.lines().count(), reports.lines().count());
+    assert!(!events.is_empty());
+    for (event, report) in events.lines().zip(reports.lines()) {
+        // Remove the previous report so an event silently dropped by the bridge fails.
+        let arguments = cockpit.dir.path().join("arguments");
+        if arguments.exists() {
+            std::fs::remove_file(arguments).unwrap();
+        }
+        let output = run_bridge(&cockpit.program(), event);
+        assert!(output.status.success(), "{event}: {output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let expected: Vec<String> = serde_json::from_str(report).unwrap();
+        assert_eq!(cockpit.arguments(), Some(expected), "{event}");
+        assert_eq!(cockpit.token(), "token-1");
+    }
+}

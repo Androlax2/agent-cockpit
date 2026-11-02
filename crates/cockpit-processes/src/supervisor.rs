@@ -17,8 +17,9 @@ use crate::output::{OutputKind, OutputLimits, OutputStream};
 use crate::platform::{self, HOSTED_LAUNCH_SCRIPT, LAUNCH_SCRIPT};
 use crate::systemd::SystemdTools;
 use crate::{
-    Containment, EndReason, Error, Escalation, Execution, ExecutionId, HostedLaunch, Identity,
-    LaunchSpec, Phase, Reconciled, Signal, Termination, store,
+    Containment, EndReason, Error, Escalation, Execution, ExecutionId, FinalPresence, HostedLaunch,
+    Identity, LaunchSpec, Phase, Reconciled, Signal, SignalOutcome, Termination,
+    TerminationDiagnostics, UnconfirmedReason, store,
 };
 
 const LEADER_FILE: &str = "leader";
@@ -680,26 +681,84 @@ impl Supervisor {
         id: ExecutionId,
         escalation: Escalation,
     ) -> Result<Termination, Error> {
+        let started = std::time::Instant::now();
         store::record_cancel_requested(database, id).await?;
-        let (execution, presence) = self.identify_for_termination(database, id).await?;
+        let (mut execution, presence) = self.identify_for_termination(database, id).await?;
         let process_group = match presence {
             Presence::Gone(_) => return Ok(Termination::Confirmed { after: None }),
-            Presence::Unidentified => return Ok(Termination::Unconfirmed),
-            Presence::Ours { process_group, .. } => process_group,
+            Presence::Unidentified => {
+                let snapshot =
+                    crate::diagnostics::snapshot(&execution.containment, execution.process_group)
+                        .await;
+                return Ok(Termination::Unconfirmed {
+                    diagnostics: Box::new(TerminationDiagnostics {
+                        reason: UnconfirmedReason::Unidentified,
+                        final_phase: execution.phase.clone(),
+                        final_presence: FinalPresence::Unidentified,
+                        execution,
+                        term: None,
+                        kill: None,
+                        elapsed: started.elapsed(),
+                        snapshot,
+                    }),
+                });
+            }
+            Presence::Ours {
+                process_group,
+                leader_start,
+            } => {
+                // Identification can recover identity and record Running after the row was read.
+                execution.process_group = process_group;
+                execution.leader_start = leader_start;
+                if execution.phase == Phase::Launching
+                    && execution.process_group.is_some()
+                    && execution.leader_start.is_some()
+                {
+                    execution.phase = Phase::Running;
+                }
+                process_group
+            }
         };
+        let mut term = None;
+        let mut kill = None;
+        let mut final_phase = execution.phase.clone();
+        let mut final_presence = FinalPresence::Identified;
         for (signal, wait) in [
             (Signal::Term, escalation.grace),
             (Signal::Kill, escalation.kill_wait),
         ] {
-            self.signal(&execution.containment, process_group, signal)
+            let outcome = self
+                .signal(&execution.containment, process_group, signal)
                 .await?;
-            if self.wait_until_ended(database, id, wait).await? {
-                return Ok(Termination::Confirmed {
-                    after: Some(signal),
-                });
+            match signal {
+                Signal::Term => term = Some(outcome),
+                Signal::Kill => kill = Some(outcome),
             }
+            let (observed, presence) = self.wait_until_ended(database, id, wait).await?;
+            final_phase = observed.phase;
+            final_presence = match presence {
+                Presence::Gone(_) => {
+                    return Ok(Termination::Confirmed {
+                        after: Some(signal),
+                    });
+                }
+                Presence::Ours { .. } => FinalPresence::Identified,
+                Presence::Unidentified => FinalPresence::Unidentified,
+            };
         }
-        Ok(Termination::Unconfirmed)
+        let snapshot = crate::diagnostics::snapshot(&execution.containment, process_group).await;
+        Ok(Termination::Unconfirmed {
+            diagnostics: Box::new(TerminationDiagnostics {
+                execution,
+                reason: UnconfirmedReason::KillWaitElapsed,
+                final_phase,
+                final_presence,
+                term,
+                kill,
+                elapsed: started.elapsed(),
+                snapshot,
+            }),
+        })
     }
 
     /// The execution's presence for a stop request. One that is still launching gets up to
@@ -727,7 +786,7 @@ impl Supervisor {
         containment: &Containment,
         process_group: Option<i32>,
         signal: Signal,
-    ) -> Result<(), Error> {
+    ) -> Result<SignalOutcome, Error> {
         match containment {
             Containment::SystemdScope { unit } => self.systemd.signal(unit, signal).await,
             Containment::ProcessGroup => platform::signal_group(
@@ -737,21 +796,19 @@ impl Supervisor {
         }
     }
 
-    /// Observes until the execution ended or `wait` passed; true when it ended.
+    /// Observes until the execution ended or `wait` passed; retains the last observation.
     async fn wait_until_ended(
         &self,
         database: &Database,
         id: ExecutionId,
         wait: Duration,
-    ) -> Result<bool, Error> {
+    ) -> Result<(Execution, Presence), Error> {
         let deadline = tokio::time::Instant::now() + wait;
         loop {
             let execution = store::execution(database, id).await?;
-            if let Presence::Gone(_) = self.record_presence(database, &execution).await? {
-                return Ok(true);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Ok(false);
+            let presence = self.record_presence(database, &execution).await?;
+            if matches!(presence, Presence::Gone(_)) || tokio::time::Instant::now() >= deadline {
+                return Ok((execution, presence));
             }
             tokio::time::sleep(OBSERVE_INTERVAL).await;
         }

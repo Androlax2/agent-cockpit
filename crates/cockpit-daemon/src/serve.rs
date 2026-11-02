@@ -289,6 +289,7 @@ fn sandbox(
     .flatten()
     .collect();
     let engines = options.state_dir.join("engines");
+    let proxy = cockpit_sandbox::ManagedProxy::new(environment, &platform);
     cockpit_sandbox::Sandbox::new(
         platform,
         engine,
@@ -311,6 +312,7 @@ fn sandbox(
             mount_sources: options.mount_sources(),
         },
     )
+    .with_managed_proxy(proxy)
 }
 
 /// Those of `names` the daemon's own environment sets, never invented (#303).

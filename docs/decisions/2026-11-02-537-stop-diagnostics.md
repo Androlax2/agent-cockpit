@@ -1,0 +1,11 @@
+# Unconfirmed termination carries evidence, not a weaker termination rule
+
+Issue #537. Decided by Theo through approval of the bounded characterization and diagnostic plan.
+
+- **Process ownership remains observation-based.** Zombie leaders and descendants retain an execution's reservation until the existing containment probe observes it empty. A missing leader does not release a live descendant. The gated-host tests in `crates/cockpit-processes/tests/hosted.rs` characterize these rules through the real supervisor; they do not establish why the release candidate failed.
+- **Return evidence to the caller that can log it.** `Termination::Unconfirmed` carries the identification or post-KILL timeout reason, identity, final observation, elapsed time and actual signal outcomes. `cockpit-sessions` adds its session ID through the existing tracing pipeline. The public refusal and stored session reason make no unconditional claim that SIGKILL ran. No wire schema or persistence schema changes are needed.
+- **Sample only on failure, with limits.** Linux process-group evidence permits one collector, no admission queue, a 100 ms caller budget, at most 4096 directory entries, 32 members and 32 parent records, and at most 4096 bytes per accepted stat record. A blocking worker retains its admission slot after its caller times out. The sample exposes truncation, admission, read and parsing failures; it is non-atomic and never authorizes signalling or release.
+- **Record only kernel metadata.** PID, PPID, PGID, SID, state and start ticks identify sampled members and possible reapers. Command names, command lines, environment and hosted output are excluded. Missing or unreadable parent records remain explicit. macOS and systemd-containment snapshots report unsupported evidence; they still carry the termination phase and signal outcomes.
+- **Rejected:** ignoring zombies, extending production stop timeouts, treating signal success as exit proof, adding a logging dependency, and persisting separate diagnostic sidecars. None is required to characterize or explain the current refusal.
+
+The release worker retains ownership of #523's bounded candidate gate. A later lifecycle remedy requires evidence matching its actual failed path and a separately authorized corrected-candidate run.

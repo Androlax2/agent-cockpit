@@ -69,7 +69,7 @@ JOB_PATHS = {
         "Cargo.lock",
         ".github/workflows/ci.yml",
     ],
-    "docs": ["docs/**", "**/*.md"],
+    "docs": ["docs/**", "site/**", "**/*.md"],
 }
 
 

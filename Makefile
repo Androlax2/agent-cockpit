@@ -61,6 +61,12 @@ crates-build: ## Build the greenfield workspace in crates/ (debug profile, into 
 crates-test: ## Run the greenfield workspace's tests
 	$(build_runner) cargo nextest run --locked --cargo-quiet --status-level fail --manifest-path Cargo.toml --workspace
 
+.PHONY: provider-conformance
+
+provider-conformance: ## Check the three provider adapters with account-free fixtures (cached dependencies required)
+	env -u OPENCODE_CONFIG_CONTENT CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 $(build_runner) cargo nextest run --locked --offline -j 2 -p cockpit-provider-api -p cockpit-claude -p cockpit-codex -p cockpit-opencode
+	env -u OPENCODE_CONFIG_CONTENT CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 $(build_runner) cargo nextest run --locked --offline -j 2 -p cockpit-daemon --test provider_conformance
+
 crates-fmt-check: ## Check the greenfield workspace's formatting without changing source
 	$(build_runner) cargo fmt --manifest-path Cargo.toml --all -- --check
 
@@ -110,6 +116,31 @@ typos: ## Check spelling in tracked files
 .NOTPARALLEL: ci greenfield-ci docs-ci
 
 docs-ci: lint-markdown check-links typos ## Check Markdown style, local links and spelling (CI's docs job)
+
+.PHONY: site-reference-binary site-build site-check site-ci
+.NOTPARALLEL: site-ci
+
+site-reference-binary: ## Build the CLI used for offline documentation references
+	$(build_runner) cargo build --locked -j 2 -p cockpit-cli --bin cockpit
+
+site-build: ## Generate and build the version-prefixed static documentation
+	npm --prefix site run build
+
+site-check: ## Check site tests, types and rendered links (dependencies and CLI must exist)
+	npm --prefix site test
+	npm --prefix site run check
+	npm --prefix site run check:probe
+	node site/scripts/links.mjs
+
+site-ci: site-reference-binary site-check ## Run the documentation-site gate without installing dependencies
+
+.PHONY: readme-screenshot
+
+readme-screenshot: ## Render the README's fictional TUI fixture (requires installed ImageMagick)
+	@set -eu; capture_home=$$(mktemp -d); trap 'rm -rf "$$capture_home"' EXIT; \
+	$(build_runner) cargo run --locked -j 2 -p cockpit-tui --example readme_demo -- "$$capture_home/demo.svg"; \
+	HOME="$$capture_home" XDG_CACHE_HOME="$$capture_home/.cache" MAGICK_THREAD_LIMIT=2 \
+		magick "$$capture_home/demo.svg" -strip assets/readme/greenfield-tui.png
 
 ci: fmt-check clippy doc lint-python lint-shell lint-js lint-markdown lint-lua check-links typos deny test ## Run the quality and regression gate for apps/, config/ and tools/ (CI's legacy job)
 
