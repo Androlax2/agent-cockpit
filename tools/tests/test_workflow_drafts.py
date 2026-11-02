@@ -71,7 +71,8 @@ class DraftWorkflowTests(unittest.TestCase):
 
     def test_ready_event_and_ordinary_pr_updates_are_subscribed(self):
         self.assertEqual(
-            set(self.pr_workflows), {"ci.yml", "docs.yml", "release.yml", "release-plz.yml"}
+            set(self.pr_workflows),
+            {"ci.yml", "docs.yml", "release.yml", "release-plz.yml", "codeql.yml"},
         )
         for name, text in self.pr_workflows.items():
             with self.subTest(workflow=name):
@@ -92,6 +93,8 @@ class DraftWorkflowTests(unittest.TestCase):
 
     def test_ready_prs_execute_checks_but_never_publish(self):
         expected = {
+            "codeql.yml": {"analyze"},
+            "scorecard.yml": set(),
             "ci.yml": {"changes", "greenfield", "greenfield-macos", "greenfield-wsl2", "docs"},
             "docs.yml": {"catalog", "build", "assemble"},
             "release.yml": {
