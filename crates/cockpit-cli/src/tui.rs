@@ -15,6 +15,14 @@ use crate::daemon::{CONTROL_DEADLINE, fail, request, unexpected};
 const TUI_BINARY: &str = "cockpit-tui";
 
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
+    if arguments == ["--version"] {
+        let tui = match tui_binary() {
+            Ok(tui) => tui,
+            Err(problem) => return Ok(fail(&problem)),
+        };
+        let error = std::process::Command::new(&tui).arg("--version").exec();
+        return Ok(fail(&format!("cannot run {tui}: {error}")));
+    }
     if let Some(extra) = arguments.first() {
         return Err(format!("unknown argument {}", extra.to_string_lossy()));
     }

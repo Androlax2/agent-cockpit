@@ -456,6 +456,7 @@ class StampTests(unittest.TestCase):
 FAKE_COCKPIT = """#!/bin/sh
 if [ "$1" = provider ]; then cat "$HOME/providers"; exit; fi
 prefix=$(cd "$(dirname "$0")/.." && pwd)
+if [ "$1" = tui ]; then shift; exec "$prefix/bin/cockpit-tui" "$@"; fi
 echo "cockpit 0.1.0-alpha.7 (revision 0123abcd)"
 echo "bundle manifest $prefix/share/cockpit/manifest.json:"
 cat "$prefix/share/cockpit/manifest.json"
@@ -503,6 +504,10 @@ class PackagingTestCase(unittest.TestCase):
         self.binaries.mkdir()
         self.write_fake("cockpit", FAKE_COCKPIT)
         self.write_fake("cockpit-daemon", FAKE_DAEMON)
+        self.write_fake(
+            "cockpit-tui",
+            '#!/bin/sh\n[ "$1" = --version ] || exit 2\necho "cockpit-tui 0.1.0-alpha.7"\n',
+        )
         for helper in release.HELPERS:
             self.write_fake(helper, FAKE_HOOK_BRIDGE)
         self.out = self.root / "dist"
@@ -551,6 +556,7 @@ class PackageTests(PackagingTestCase):
             {
                 f"{prefix}/bin/cockpit",
                 f"{prefix}/bin/cockpit-daemon",
+                f"{prefix}/bin/cockpit-tui",
                 f"{prefix}/share/cockpit/manifest.json",
                 f"{prefix}/LICENSE",
                 f"{prefix}/README.md",
@@ -631,6 +637,33 @@ class VerifyInstallTests(PackagingTestCase):
         self.assertEqual(code, 0, error)
         self.assertEqual(verified["version"], "0.1.0-alpha.7")
 
+    def test_the_unpacked_archive_runs_its_tui(self):
+        code, outputs, error = self.package()
+        self.assertEqual(code, 0, error)
+        unpacked = self.root / "unpacked"
+        with tarfile.open(outputs["archive"]) as bundle:
+            bundle.extractall(unpacked, filter="data")
+        root = unpacked / Path(outputs["root"]).name
+        code, _, error = self.verify(root)
+        self.assertEqual(code, 0, error)
+        # Even if both packaging and its manifest omit the TUI, executing the
+        # installed CLI must detect the missing sibling.
+        (root / "bin/cockpit-tui").unlink(missing_ok=True)
+        self.edit_manifest(root, lambda m: m["contents"].pop("bin/cockpit-tui", None))
+        with patch.object(
+            release, "BINARIES", tuple(b for b in release.BINARIES if b != "cockpit-tui")
+        ):
+            code, _, error = self.verify(root)
+        self.assertEqual(code, 1)
+        self.assertIn("cockpit tui --version", error)
+
+    def test_a_tui_that_cannot_run_fails_the_install_check(self):
+        self.write_fake("cockpit-tui", "#!/bin/sh\nexit 126\n")
+        _, outputs, _ = self.package()
+        code, _, error = self.verify(outputs["root"])
+        self.assertEqual(code, 1)
+        self.assertIn("cockpit tui --version", error)
+
     def test_a_missing_or_changed_file_fails_naming_it(self):
         _code, outputs, _error = self.package()
         root = Path(outputs["root"])
@@ -657,7 +690,8 @@ class VerifyInstallTests(PackagingTestCase):
             with self.subTest(helper=helper):
                 _code, outputs, _error = self.package()
                 self.edit_manifest(
-                    outputs["root"], lambda manifest: manifest["contents"].pop(f"bin/{helper}")
+                    outputs["root"],
+                    lambda manifest, helper=helper: manifest["contents"].pop(f"bin/{helper}"),
                 )
                 (Path(outputs["root"]) / f"bin/{helper}").unlink()
                 code, _verified, error = self.verify(outputs["root"])
@@ -671,7 +705,9 @@ class VerifyInstallTests(PackagingTestCase):
         self.edit_manifest(outputs["root"], lambda manifest: manifest.update(helpers={}))
         code, _verified, error = self.verify(outputs["root"])
         self.assertEqual(code, 1)
-        self.assertIn(f"helpers: {{}}, expected {release.helper_versions('0.1.0-alpha.7')!r}", error)
+        self.assertIn(
+            f"helpers: {{}}, expected {release.helper_versions('0.1.0-alpha.7')!r}", error
+        )
 
     def test_a_file_the_manifest_does_not_list_fails_naming_it(self):
         _code, outputs, _error = self.package()
@@ -684,7 +720,7 @@ class VerifyInstallTests(PackagingTestCase):
         self.write_fake(
             "cockpit-daemon",
             "#!/bin/sh\nfor provider in claude codex opencode; do\n"
-            "  printf '%s\\tresume\\tevents\\n' \"$provider\" >> \"$HOME/providers\"\ndone\n"
+            '  printf \'%s\\tresume\\tevents\\n\' "$provider" >> "$HOME/providers"\ndone\n'
             'sleep 600 &\necho "ready $HOME/daemon.sock"\nexec sleep 600\n',
         )
         _code, outputs, _error = self.package()
