@@ -12,7 +12,7 @@ The current environment has Node, but no `mdbook`, `mkdocs` or `hugo` command.
 
 | Option | Search, dark mode and editing | Versioning and checks | Cost |
 | --- | --- | --- | --- |
-| Fumadocs (Theo's selected visual reference) | Standard documentation layout, light/dark themes, search dialog and source links | Configure static output and browser-side search; build version trees and retain source/rendered link checks | React framework, Fumadocs packages, CSS build tooling and a documentation-only manifest/lockfile |
+| Fumadocs (Theo's selected visual reference) | Standard documentation layout, light/dark themes, search dialog and source links | Configure static output and browser-side search; build version trees and retain source/rendered link checks | Site framework with React integration, Fumadocs packages, CSS build tooling and a documentation-only manifest/lockfile |
 | mdBook, standard theme (rejected by Theo) | Built-in browser search, light/dark themes and edit links | Build separate `latest/` and release-tag trees; retain existing Markdown/link/spelling checks and check rendered links | Small build toolchain, but its UI does not meet Theo's preference |
 | Starlight | Built-in Pagefind search, theme switching and edit links | Same version-tree publishing requirement; same source checks plus site build | Astro/Node package manifest and dependency lockfile; more frontend tooling than this Alpha guide needs |
 | Plain static generator | Small HTML output; search, dark mode and edit links would need implementation or extra tooling | Same version-tree publishing requirement; retain existing source checks | Less external tooling can mean more custom renderer/navigation/search code to maintain |
@@ -23,18 +23,18 @@ The worker recommends implementing that direction with Fumadocs UI itself, rathe
 
 ## Proposed technical choice
 
-Use Fumadocs UI and MDX with Next.js static export under `site/`, isolated from the Rust product manifests. This follows Fumadocs' documented Next.js integration and static build path. Search indexes are emitted at build time and queried in the browser; Pages must not require a Node server or search service.
+Use Fumadocs UI with Astro static output under `site/`, isolated from the Rust product manifests. Its documented integration uses Astro content collections for documents and React islands for Fumadocs UI. Search indexes are emitted at build time and queried in the browser; Pages must not require a Node server or search service.
 
-The other supported path considered is Astro with React islands. Its current Fumadocs adapter is `@fumadocs/astro` 0.1.1; the worker prefers the direct Next.js integration for this first site, while keeping the published output fully static. This is a recommendation, not a measured comparison of bundles or framework performance.
+The worker initially favored Next.js because its Fumadocs integration is more established than the current `@fumadocs/astro` 0.1.1 adapter. Theo questioned that choice. There is no measured bundle-size or performance advantage supporting it, and this site needs static documentation rather than server functionality. The revised recommendation is Astro, subject to proving its Fumadocs integration at the pinned versions. Next.js static export remains a fallback to discuss if that validation fails, not a dependency to install alongside Astro.
 
 Candidate direct packages, queried read-only from the npm registry on 2026-11-02:
 
 | Purpose | Proposed exact versions |
 | --- | --- |
-| Docs and content | `fumadocs-core` 16.17.9, `fumadocs-ui` 16.17.9, `fumadocs-mdx` 15.4.10 |
-| Framework | `next` 16.4.3, `react` 19.3.1, `react-dom` 19.3.1 |
+| Docs and content | `fumadocs-core` 16.17.9, `fumadocs-ui` 16.17.9, `@fumadocs/astro` 0.1.1 |
+| Framework | `astro` 7.4.4, `@astrojs/react` 7.1.2, `react` 19.3.1, `react-dom` 19.3.1 |
 | Local search and content schema | `@orama/core` 1.2.19, `zod` 4.6.7 |
-| CSS build | `tailwindcss` 4.3.3, `@tailwindcss/postcss` 4.3.3 |
+| CSS build | `tailwindcss` 4.3.3, `@tailwindcss/vite` 4.3.3 |
 | Type checks | `typescript` 7.0.2, `@types/node` 26.6.6, `@types/react` 19.3.0, `@types/react-dom` 19.3.0, `@types/mdx` 2.0.14 |
 
 The installed Node 26.12.1 and npm 12.2.1 satisfy the inspected framework engine requirements. The full dependency lockfile has not been resolved and no build has run. Resolve it only after approval, with exact direct pins and `npm --prefix site install --ignore-scripts --no-audit --no-fund`; do not install a global generator or run an automatic project scaffold.
