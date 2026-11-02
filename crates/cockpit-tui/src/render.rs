@@ -487,6 +487,11 @@ fn run_lines(run: &RunRequestView, pane: &Pane) -> Vec<String> {
                 .to_owned(),
         );
     }
+    if let Some(shell) = &run.unchecked_shell {
+        lines.push(format!(
+            "Warning: not syntax-checked: {shell} has no known parse-only mode"
+        ));
+    }
     if let Some(files) = run
         .changed_build_files
         .as_ref()

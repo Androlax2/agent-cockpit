@@ -20,7 +20,7 @@ pub use guides::{
     shown_guide,
 };
 pub use hints::{build_files_run, timeout_without_foreground};
-pub use pty::{NoResult, Output, Ran, RunSettings, Runner, present};
+pub use pty::{NoResult, Output, Ran, RunSettings, Runner, Syntax, present};
 pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
 pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};

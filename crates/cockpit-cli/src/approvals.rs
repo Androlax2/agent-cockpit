@@ -190,7 +190,8 @@ fn hidden_name(kind: HiddenView) -> &'static str {
 }
 
 /// What the owner should weigh before approving, beyond the text: build files the session
-/// changed that the command runs, and a `timeout` that would take the terminal from it.
+/// changed that the command runs, a `timeout` that would take the terminal from it, and a
+/// shell that could not check the command.
 fn run_hints(run: &RunRequestView) -> String {
     let mut text = String::new();
     if let Some(files) = &run.changed_build_files {
@@ -208,6 +209,12 @@ fn run_hints(run: &RunRequestView) -> String {
         text.push_str(
             "  ! timeout without --foreground: a prompt in the command (sudo, read) stops it \
              instead of reading the terminal; ask for timeout --foreground\n",
+        );
+    }
+    if let Some(shell) = &run.unchecked_shell {
+        let _ = writeln!(
+            text,
+            "  ! not syntax-checked: {shell} has no known parse-only mode"
         );
     }
     text

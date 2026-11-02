@@ -110,6 +110,7 @@ fn request(state: RunStateView) -> RunRequestView {
         outside_project: true,
         folded_command: None,
         timeout_without_foreground: false,
+        unchecked_shell: None,
         changed_build_files: Some(Vec::new()),
         digest: "d".repeat(64),
         asked_at: 1,
@@ -545,6 +546,20 @@ async fn the_owner_gets_the_timeout_hint_before_approving() {
     .await;
 
     assert!(shown.contains("! timeout without --foreground:"), "{shown}");
+}
+
+#[tokio::test]
+async fn the_owner_is_told_when_the_shell_could_not_check_the_command() {
+    let shown = shown_to_owner(RunRequestView {
+        unchecked_shell: Some("/usr/bin/nu".to_owned()),
+        ..request(RunStateView::Asking)
+    })
+    .await;
+
+    assert!(
+        shown.contains("! not syntax-checked: /usr/bin/nu has no known parse-only mode"),
+        "{shown}"
+    );
 }
 
 #[tokio::test]

@@ -151,6 +151,7 @@ fn a_finished_run_request_reply_round_trips() {
             outside_project: false,
             folded_command: None,
             timeout_without_foreground: false,
+            unchecked_shell: None,
             changed_build_files: Some(Vec::new()),
             digest: "d".repeat(64),
             asked_at: 1,

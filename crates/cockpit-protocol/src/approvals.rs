@@ -89,6 +89,10 @@ pub struct RunRequestView {
     /// The command runs `timeout` without `--foreground`: a prompt in it would stop it.
     #[serde(default)]
     pub timeout_without_foreground: bool,
+    /// The approval shell, when it has no parse-only mode the daemon knows (nushell's `-n`
+    /// is not one): the command reached the owner without a syntax check (#494).
+    #[serde(default)]
+    pub unchecked_shell: Option<String>,
     /// Build files and scripts changed in the project's checkout outside its default branch that the
     /// command runs (Makefiles for `make`, `build.rs` for `cargo`, files it names). Read for
     /// the owner's views of an asking request; `None` when it was not or could not be read.

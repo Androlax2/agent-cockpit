@@ -42,8 +42,8 @@ the wire. Report 14 treats this contract as stable from the first release.
    `approval-edit` (a new revision) and `approval-input`; guides with `guide-answer` and
    `guide-stuck` (naming the step shown) and `guide-close`. Views carry the display rules'
    `ShownText` beside the exact text, with the kinds escaped as `warnings`; a run request
-   carries `folded_command`, `timeout_without_foreground` and, in the owner's views of an
-   asking request, `changed_build_files` (#156). An approval within the daemon's grace after
+   carries `folded_command`, `timeout_without_foreground`, `unchecked_shell` (#494) and,
+   in the owner's views of an asking request, `changed_build_files` (#156). An approval within the daemon's grace after
    the request appeared or changed is refused with code `refused`.
 6. Sessions (#31): `session-new` (an absolute `dir`, optional `agent`, `prompt` and
    `clone` branch), `session-list` (`ended` adds the ended ones), `session-restart`,
