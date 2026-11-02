@@ -258,11 +258,11 @@ impl Agent {
 }
 
 /// The project's declared checks, read from the checkout's configuration and the owner's.
-async fn declared_checks(
-    context: &Context,
+pub(crate) async fn declared_checks(
+    environment: &cockpit_config::Environment,
     checkout: &Path,
 ) -> Result<Vec<cockpit_config::Check>, Failed> {
-    let environment = context.environment.clone();
+    let environment = environment.clone();
     let checkout = checkout.to_path_buf();
     let loaded = tokio::task::spawn_blocking(move || {
         cockpit_config::load(&environment, Some(&checkout), &[])
@@ -280,7 +280,7 @@ async fn declared_checks(
     Ok(config.checks.into_iter().map(|check| check.value).collect())
 }
 
-fn definition(check: &cockpit_config::Check) -> CheckDefinition {
+pub(crate) fn definition(check: &cockpit_config::Check) -> CheckDefinition {
     CheckDefinition {
         name: check.name.clone(),
         command: check.command.clone(),
@@ -308,8 +308,8 @@ fn declared<'checks>(
 }
 
 /// The checkout's head and uncommitted changes, read by the daemon's own Git.
-async fn source(context: &Context, checkout: &Path) -> Result<Source, Failed> {
-    let git = context.git.clone();
+pub(crate) async fn source(git: &cockpit_projects::Git, checkout: &Path) -> Result<Source, Failed> {
+    let git = git.clone();
     let checkout = checkout.to_path_buf();
     let state = tokio::task::spawn_blocking(move || git.source_state(&checkout))
         .await
@@ -331,7 +331,7 @@ async fn source(context: &Context, checkout: &Path) -> Result<Source, Failed> {
 
 /// Starts `check` in `target` and answers with its run; the receipt is recorded when it ends.
 async fn run(context: &Context, target: Target, check: &str) -> Answer {
-    let checks = declared_checks(context, &target.path).await?;
+    let checks = declared_checks(&context.environment, &target.path).await?;
     let check = declared(&checks, check, &target.project)?.clone();
     let definition = definition(&check);
     definition.validate()?;
@@ -346,7 +346,7 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
             UnblockedBy::Owner,
         ));
     }
-    let source = source(context, &target.path).await?;
+    let source = source(&context.git, &target.path).await?;
     let (artifacts, git_config) = {
         let git = context.git.clone();
         let checkout = target.path.clone();
@@ -522,7 +522,7 @@ async fn receipt(context: &Context, project: &str, run: &str) -> Answer {
 
 /// The gate of every check the project declares on the checkout's current result.
 async fn gate(context: &Context, target: Target) -> Answer {
-    let checks: Vec<CheckDefinition> = declared_checks(context, &target.path)
+    let checks: Vec<CheckDefinition> = declared_checks(&context.environment, &target.path)
         .await?
         .iter()
         .map(definition)
@@ -535,7 +535,7 @@ async fn gate(context: &Context, target: Target) -> Answer {
             UnblockedBy::Owner,
         ));
     }
-    let source = source(context, &target.path).await?;
+    let source = source(&context.git, &target.path).await?;
     let evidence = {
         let read = context.database.read().await?;
         cockpit_verification::evidence(&read, &target.project, &source, &checks).await?
@@ -559,9 +559,9 @@ async fn claim(
     statement: String,
 ) -> Answer {
     let agent = Agent::identified(context, connector, launch_token).await?;
-    let checks = declared_checks(context, &agent.target.path).await?;
+    let checks = declared_checks(&context.environment, &agent.target.path).await?;
     declared(&checks, &check, &agent.target.project)?;
-    let source = source(context, &agent.target.path).await?;
+    let source = source(&context.git, &agent.target.path).await?;
     let write = context.database.write().await?;
     authorize(&write, &agent.session).await?;
     let claimed = cockpit_verification::record_claim(
