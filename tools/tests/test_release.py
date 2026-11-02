@@ -629,6 +629,12 @@ class PackagingTestCase(unittest.TestCase):
 
 
 class PackageTests(PackagingTestCase):
+    def test_alpha1_refuses_a_macos_payload_before_creating_an_archive(self):
+        code, _, error = self.package(platform="macos-universal")
+        self.assertEqual(code, 1)
+        self.assertIn("Alpha1", error)
+        self.assertEqual(list(self.out.iterdir()), [])
+
     def test_the_archive_follows_the_naming_contract_and_holds_the_bundle(self):
         code, outputs, error = self.package()
         self.assertEqual(code, 0, error)
@@ -876,10 +882,14 @@ class VerifyInstallTests(PackagingTestCase):
 
 
 class GateGapTests(unittest.TestCase):
-    def test_native_intel_install_and_compatibility_are_executable_gates(self):
+    def test_future_native_intel_install_and_current_compatibility_keep_their_wiring(self):
         workflow = RELEASE_WORKFLOW.read_text()
         install = workflow.split("\n  install:\n", 1)[1].split("\n  install-wsl2:\n", 1)[0]
-        self.assertRegex(install, r"platform: macos-universal\s+runner: macos-26-intel")
+        self.assertIn("matrix: ${{ fromJSON(needs.plan.outputs.install_matrix) }}", install)
+        self.assertIn(
+            'if [ "$NATIVE_RUNNER" = macos-26-intel ]; then test "$(uname -m)" = x86_64; fi',
+            install,
+        )
         self.assertEqual(
             release.GATE_CHECKS["clean install runs the macOS universal archive's x86_64 slice"][0],
             "install",
@@ -888,9 +898,17 @@ class GateGapTests(unittest.TestCase):
             release.GATE_CHECKS["version-skew and interrupted-action fixtures"][0],
             "compatibility",
         )
-        compatibility = workflow.split("\n  compatibility:\n", 1)[1].split("\n  ", 1)[0]
+        compatibility = re.search(r"\n  compatibility:\n((?:    [^\n]*\n|\n)*)", workflow)[1]
         self.assertIn("needs: [plan, build]", compatibility)
         self.assertIn("make release-compatibility", workflow)
+
+    def test_beta_keeps_the_macos_restoration_and_running_session_gaps(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            code = release.main(["gate-gaps", "beta"], cwd=ROOT)
+        self.assertEqual(code, 1)
+        self.assertIn("#568", stdout.getvalue())
+        self.assertIn("running sessions", stdout.getvalue())
 
     def test_an_unproven_gate_check_blocks_publishing_by_name(self):
         with patch.dict(release.GATE_CHECKS, {"unproven fixture gate": (None, ())}):
@@ -947,6 +965,7 @@ class ReleaseTriggerTests(unittest.TestCase):
                 ".github/workflows/prerelease.yml",
                 "tools/release.py",
                 "tools/tests/test_release.py",
+                "tools/tests/test_release_plan.py",
                 "cliff.toml",
                 "tools/changelog.py",
                 "Makefile",
@@ -956,6 +975,7 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "crates/cockpit-daemon/tests/common/mod.rs",
                 "crates/cockpit-daemon/tests/real_daemon/mod.rs",
                 "crates/cockpit-daemon/tests/latency.rs",
+                "crates/cockpit-daemon/tests/latency/termination_evidence.rs",
                 "crates/cockpit-daemon/tests/protocol.rs",
                 "crates/cockpit-daemon/tests/restart_reattach.rs",
                 "crates/cockpit-daemon/tests/session_restore_crash.rs",
@@ -980,17 +1000,30 @@ class ReleaseTriggerTests(unittest.TestCase):
 
 
 class WorkflowMatrixTests(unittest.TestCase):
-    def test_build_and_install_cover_every_platform(self):
+    def test_build_and_install_cover_every_platform_in_the_reviewed_plan(self):
         workflow = RELEASE_WORKFLOW.read_text()
-        for job in ("build", "install"):
-            with self.subTest(job=job):
-                body = re.search(rf"\n  {job}:\n((?:    [^\n]*\n|\n)*)", workflow)
-                self.assertIsNotNone(body, f"expected the {job} job")
-                listed = re.findall(r"- platform: (\S+)", body[1])
-                expected = [*release.PLATFORMS]
-                if job == "install":
-                    expected.append("macos-universal")  # ARM and native Intel execute one archive.
-                self.assertEqual(sorted(listed), sorted(expected))
+        for channel in ("alpha", "beta"):
+            code, outputs, error = run(
+                "release-plan", "--version", f"0.1.0-{channel}.1", "--channel", channel, cwd=ROOT
+            )
+            self.assertEqual(code, 0, error)
+            for job in ("build", "install"):
+                with self.subTest(job=job, channel=channel):
+                    body = re.search(rf"\n  {job}:\n((?:    [^\n]*\n|\n)*)", workflow)
+                    self.assertIsNotNone(body, f"expected the {job} job")
+                    self.assertIn(
+                        "matrix: ${{ fromJSON(needs.plan.outputs." + job + "_matrix) }}", body[1]
+                    )
+                    listed = [
+                        entry["platform"]
+                        for entry in json.loads(outputs[job + "_matrix"])["include"]
+                    ]
+                    expected = list(
+                        release.ALPHA1_PLATFORMS if channel == "alpha" else release.PLATFORMS
+                    )
+                    if job == "install" and channel == "beta":
+                        expected.append("macos-universal")
+                    self.assertEqual(sorted(listed), sorted(expected))
 
     def test_the_build_gathers_every_bundled_binary(self):
         workflow = RELEASE_WORKFLOW.read_text()

@@ -1,5 +1,6 @@
 """Upgrade entry points against fake GitHub and isolated executable bundle fixtures."""
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -10,12 +11,15 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools/release_upgrade.py"
 SPEC = importlib.util.spec_from_file_location("release", ROOT / "tools/release.py")
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
+sys.path.insert(0, str(ROOT / "tools"))
+release_upgrade = importlib.import_module("release_upgrade")
 
 
 class UpgradeTests(unittest.TestCase):
@@ -214,6 +218,62 @@ time.sleep(60)
         result = self.verify(candidate)
         self.assertEqual(result.returncode, 1)
         self.assertIn("checksum", result.stderr)
+        self.assertFalse(self.events.exists())
+
+    def test_a_failed_startup_signals_and_reaps_its_process_group_only_once(self):
+        candidate, _ = self.bundle("0.1.0-alpha.2", "2" * 40, fail_start=True)
+        with (
+            patch.object(
+                release_upgrade.release, "stop_group", wraps=release_upgrade.release.stop_group
+            ) as stop,
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            code = release_upgrade.main(
+                ["verify", "--candidate", str(candidate), "--revision", "2" * 40]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("fixture startup failure", errors.getvalue())
+        daemons = [call.args[0] for call in stop.call_args_list if "--profile" in call.args[0].args]
+        self.assertEqual(len(daemons), 1)
+        self.assertIsNotNone(daemons[0].returncode)
+
+    def test_candidate_files_are_hashed_once_before_execution(self):
+        candidate, _ = self.bundle("0.1.0-alpha.2", "2" * 40)
+        with (
+            patch.object(
+                release_upgrade.release, "sha256_of", wraps=release_upgrade.release.sha256_of
+            ) as hashes,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = release_upgrade.main(
+                ["verify", "--candidate", str(candidate), "--revision", "2" * 40]
+            )
+        self.assertEqual(code, 0)
+        names = [str(call.args[0].relative_to(candidate)) for call in hashes.call_args_list]
+        self.assertEqual(sorted(names), sorted(release.bundle_files(candidate)))
+
+    def test_candidate_still_requires_every_binary_and_helper_manifest(self):
+        candidate, _ = self.bundle("0.1.0-alpha.2", "2" * 40)
+        manifest_path = candidate / release.MANIFEST_PATH
+        original = json.loads(manifest_path.read_text())
+        for binary in release.BINARIES:
+            with self.subTest(binary=binary):
+                manifest = json.loads(json.dumps(original))
+                manifest["contents"].pop(f"bin/{binary}")
+                program = candidate / "bin" / binary
+                contents = program.read_bytes()
+                program.unlink()
+                manifest_path.write_text(json.dumps(manifest))
+                result = self.verify(candidate)
+                program.write_bytes(contents)
+                program.chmod(0o755)
+                self.assertEqual(result.returncode, 1)
+                self.assertFalse(self.events.exists())
+        original["helpers"] = {}
+        manifest_path.write_text(json.dumps(original))
+        result = self.verify(candidate)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("helpers", result.stderr)
         self.assertFalse(self.events.exists())
 
     def test_alpha_explicitly_reports_its_exemption_without_github_access(self):

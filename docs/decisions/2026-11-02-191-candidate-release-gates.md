@@ -2,6 +2,83 @@
 
 Date: 2026-11-02. Status: implemented; candidate CI and previous-release evidence pending.
 
+## Alpha1 platform scope amendment
+
+Theo selected Linux and WSL2 only for Alpha1 on 2026-11-02 (#191/#97). This
+supersedes the macOS distribution/acceptance requirements below for this release;
+the earlier measurements remain historical evidence. #527 and #564 stay open,
+deferred under #568. Public support/guide documentation is owned by the separate
+documentation change for #568.
+
+`release-plan` selects only Linux x86_64 and aarch64 build/install matrices for the
+current `0.1.0-alpha.N` attempts and `0.1.0-dev.N` candidates. WSL2 installs the
+x86_64 archive and retains its independent checks. Baseline fetching and upgrade
+matrices consume that same plan. Packaging refuses a macOS Alpha1 payload before
+creating output; no experimental macOS download is promised. Other alpha cores
+are refused pending a reviewed scope decision, rather than inheriting this exemption.
+
+The future macOS matrix definitions and native-Intel execution check remain. Beta
+retains those requirements and now explicitly waits for owner-approved, verified
+macOS restoration (#568), as well as the unproven previous-channel running-session
+upgrade. Stable remains disabled. Ordinary developer CI, including its required
+macOS context, is unchanged by this policy.
+
+Publication still depends on all nine existing prerequisite jobs succeeding. The
+new `verify-gates` entry point also checks their actual `needs` results: skipped,
+failed, cancelled or absent Linux/WSL2, compatibility, responsiveness, gate or
+same-candidate state checks are refused. macOS has no Alpha1 matrix entry and no
+separate publication dependency. The existing tag-only publication predicates,
+draft guards and ready-for-review triggers remain in place.
+
+## Bounded termination-evidence retention
+
+The latency candidate explicitly captures the fixture daemon's four known rotating
+logs before its temporary home disappears, including panic unwinding. Only the two
+correlated #537 lifecycle messages qualify; retained JSON contains timestamp,
+session, execution and diagnostics, never arbitrary logger fields or provider output.
+The report is appended after its last rewrite (or during unwinding), preserving the
+original verdict. Reads are capped at 4 MiB plus one overflow byte per file; output
+is capped at 32 records and 256 KiB, including status text.
+
+Missing/unreadable current logs, malformed/partial/uncorrelated records and truncation
+are labelled incomplete. A normal capture error fails visibly; the unwind fallback
+reports an artifact-write failure without replacing the original panic. A clean scan
+with no matching records is explicitly not a successful-termination verdict.
+
+Verification before final review: six new fixture tests failed against the stub;
+all twelve retention/verdict/deadline/cleanup fixtures then passed, as did latency
+Clippy and Rust formatting (host approval `65e6b8e7bf02`). Offline resolution first
+failed in the session (`tempfile`) and host (`crc32fast 1.5.4`); host approval
+`e578c814cf23` authorized the locked dependency fetch and focused compile. No
+sustained workload was selected. #537's historical root cause remains unproven.
+
+The Alpha1 plan/publication contract tests initially failed (52 assertions), then
+`make release-check` passed: 71 release tests, 10 plan/publication tests and 13
+upgrade tests. Eight workflow tests and changed-file Ruff checks pass. The draft
+integration initially exposed ten expected failures for the five added candidate
+jobs; their explicit guards now pass. An existing workflow-test parser read only
+the first job property; it now reads the whole job when checking dependencies.
+Actionlint is unavailable and **NOT RUN**. Final review and the separately approved
+single 300-second candidate execution remain required before delivery acceptance.
+
+The independent full-delta `code-review medium` against `63a8194`, staged tree
+`a8a9404`, found missing `candidate` module wiring in the incoming native-instruction
+test, retryable evidence capture, duplicate failed-startup cleanup and duplicate
+candidate hashing. Regression fixtures reproduced both Python failures; host request
+`b1132950199f` reproduced the missing-module compile error and failed capture-retry
+fixture. Capture now consumes its one attempt before reads/output, startup cleanup
+has one owner, and candidate hashing runs once while required binaries/helpers remain
+checked. Native-instruction module wiring is explicit.
+
+Host request `c57df3de6e44` passed the native-instruction compile check, all 13 focused
+release fixtures (three other tests skipped), all-target daemon Clippy with warnings
+denied, and workspace formatting, offline with two build jobs and one test thread.
+The combined release Python suite passed 135 tests; changed-file Ruff check/format
+and diff checks passed. The first Ruff check caught import order and a late import
+in the new regression tests; both were corrected. The session's identical missing
+`tempfile` failure after approved restart `8e18098dd17e` remains separate evidence;
+no repeated restart or candidate workload was used to obtain these results.
+
 ## Decision
 
 Use the archive produced by the release workflow for native Intel macOS execution,

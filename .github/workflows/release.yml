@@ -17,6 +17,7 @@ on:
       - .github/workflows/prerelease.yml
       - tools/release.py
       - tools/tests/test_release.py
+      - tools/tests/test_release_plan.py
       - cliff.toml
       - tools/changelog.py
       - Makefile
@@ -26,10 +27,12 @@ on:
       - crates/cockpit-daemon/tests/common/mod.rs
       - crates/cockpit-daemon/tests/real_daemon/mod.rs
       - crates/cockpit-daemon/tests/latency.rs
+      - crates/cockpit-daemon/tests/latency/termination_evidence.rs
       - crates/cockpit-daemon/tests/protocol.rs
       - crates/cockpit-daemon/tests/restart_reattach.rs
       - crates/cockpit-daemon/tests/session_restore_crash.rs
       - crates/cockpit-turso/tests/migrations.rs
+    types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
     - cron: "17 3 * * *"
@@ -56,6 +59,7 @@ defaults:
 jobs:
   # The tag's version and channel, checked against every rule on the tagged commit.
   plan:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -66,6 +70,9 @@ jobs:
       revision: ${{ steps.version.outputs.revision }}
       notes_range: ${{ steps.version.outputs.notes_range }}
       notes_tag: ${{ steps.version.outputs.notes_tag }}
+      platforms: ${{ steps.platforms.outputs.platforms }}
+      build_matrix: ${{ steps.platforms.outputs.build_matrix }}
+      install_matrix: ${{ steps.platforms.outputs.install_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,9 +99,16 @@ jobs:
           else
             python3 tools/release.py dry-run-version | tee -a "$GITHUB_OUTPUT"
           fi
+      - name: Select the reviewed release platform scope
+        id: platforms
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHANNEL: ${{ steps.version.outputs.channel }}
+        run: python3 tools/release.py release-plan --version "$VERSION" --channel "$CHANNEL" | tee -a "$GITHUB_OUTPUT"
   # git-cliff's notes over the range release.py chose; only the draft waits for them.
   notes:
     needs: plan
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -129,20 +143,10 @@ jobs:
   # One archive per platform: the stamped version, built from the checked commit.
   build:
     needs: plan
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          # Linux builds on the oldest supported runner image, so its glibc floor stays low.
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-            targets: x86_64-unknown-linux-gnu
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-            targets: aarch64-unknown-linux-gnu
-          - platform: macos-universal
-            runner: macos-26
-            targets: aarch64-apple-darwin,x86_64-apple-darwin
+      matrix: ${{ fromJSON(needs.plan.outputs.build_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -204,18 +208,10 @@ jobs:
   # manifest, `cockpit version --all`, and the daemon's start on an empty home.
   install:
     needs: [plan, build]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - platform: macos-universal
-            runner: macos-26
-          - platform: macos-universal
-            runner: macos-26-intel
+      matrix: ${{ fromJSON(needs.plan.outputs.install_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -240,6 +236,7 @@ jobs:
   # ci.yml's greenfield-wsl2 job (docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md).
   install-wsl2:
     needs: [plan, build]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: windows-2025
     timeout-minutes: 30
     defaults:
@@ -273,6 +270,7 @@ jobs:
 
   # Protocol skew/restart use the archive; migration/crash fixtures use its source revision.
   compatibility:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -311,6 +309,7 @@ jobs:
 
   # A fixed five-minute run, at most two build stand-ins, against the same archive.
   responsiveness:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -357,6 +356,7 @@ jobs:
 
   # Baseline assets are fetched with read-only credentials, outside any tested daemon.
   upgrade-baseline:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -369,8 +369,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
           CHANNEL: ${{ needs.plan.outputs.channel }}
+          PLATFORMS: ${{ needs.plan.outputs.platforms }}
         run: |
-          for platform in linux-x86_64 linux-aarch64 macos-universal; do
+          platforms=$(python3 -c 'import json, os; print(" ".join(json.loads(os.environ["PLATFORMS"])))')
+          for platform in $platforms; do
             PLATFORM="$platform" BASELINE_DOWNLOADS="baseline/$platform" make release-upgrade-fetch
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -380,19 +382,11 @@ jobs:
           if-no-files-found: error
 
   upgrade:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     needs: [plan, build, upgrade-baseline]
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - platform: macos-universal
-            runner: macos-26
-          - platform: macos-universal
-            runner: macos-26-intel
+      matrix: ${{ fromJSON(needs.plan.outputs.install_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
@@ -418,6 +412,7 @@ jobs:
           COCKPIT_CANDIDATE_ROOT="${roots[0]}" make release-upgrade
 
   upgrade-wsl2:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     needs: [plan, build, upgrade-baseline]
     runs-on: windows-2025
     timeout-minutes: 20
@@ -456,6 +451,7 @@ jobs:
   # Checksums over every archive; with the archive-* artifacts, the nightly's download.
   assemble:
     needs: [plan, build]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -560,10 +556,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Refuse while a gate check has no job
+      - name: Require every applicable gate and successful prerequisite
         env:
           CHANNEL: ${{ needs.plan.outputs.channel }}
-        run: python3 tools/release.py gate-gaps "$CHANNEL"
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 tools/release.py verify-gates --channel "$CHANNEL" --results "$NEEDS_JSON"
       - name: Publish the draft
         env:
           GH_TOKEN: ${{ github.token }}

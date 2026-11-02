@@ -320,6 +320,7 @@ release-responsiveness: ## Measure the archived daemon for five minutes in bound
 .PHONY: release-check release-upgrade-fetch release-upgrade
 release-check: ## Check release packaging and upgrade orchestration with isolated fixtures
 	python3 -m unittest discover -s tools/tests -p test_release.py
+	python3 -m unittest discover -s tools/tests -p test_release_plan.py
 	python3 -m unittest discover -s tools/tests -p test_release_upgrade.py
 
 release-upgrade-fetch: ## Download the previous published channel archives without running them

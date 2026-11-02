@@ -205,21 +205,28 @@ def running_daemon(root, environment):
             expected = str(
                 Path(environment["XDG_RUNTIME_DIR"]) / "cockpit-release-gate/daemon.sock"
             )
-            if line.strip() != "ready " + expected:
-                release.stop_group(process)
-                stderr.seek(0)
-                raise release.Refusal(f"daemon did not become ready: {line!r}; {stderr.read()}")
-            yield
+            if line.strip() == "ready " + expected:
+                yield
+                return
         finally:
             release.stop_group(process)
             reader.join(timeout=10)
             process.stdout.close()
+        stderr.seek(0)
+        raise release.Refusal(f"daemon did not become ready: {line!r}; {stderr.read()}")
 
 
 def verify(candidate, revision, downloaded=None):
     candidate = candidate.resolve()
     manifest, text = checked_manifest(candidate, revision)
-    release.refuse_changed_contents(candidate, manifest)
+    if not {f"bin/{binary}" for binary in release.BINARIES} <= manifest["contents"].keys():
+        raise release.Refusal("candidate lacks a required binary")
+    # A previous release may carry older helpers; only the candidate requires the current set.
+    expected_helpers = release.helper_versions(manifest["version"])
+    if manifest.get("helpers") != expected_helpers:
+        raise release.Refusal(
+            f"helpers: {manifest.get('helpers')!r}, expected {expected_helpers!r}"
+        )
     channel = manifest["channel"]
     if channel == "dev" and re.fullmatch(
         r"[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+", manifest["version"]

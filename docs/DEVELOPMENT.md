@@ -134,6 +134,14 @@ required check counts as passed. The Linux jobs run on Ubuntu 26.04 runners with
 Node and checker versions, read-only repository permissions and immutable action revisions.
 Linux runtime libraries, fish and Lua come from that Ubuntu release. Local fixture tests do
 not establish live desktop or browser integration coverage.
+PR-triggered jobs skip draft pull requests, including generated release proposals. Marking
+a PR ready triggers `ready_for_review`; opened, synchronized and reopened non-draft PRs
+retain their normal checks and path filters. GitHub may record skipped runs without
+allocating runners. Skipped draft checks are not verification: wait for the ready event's
+actual required checks on the exact head before merging. Main pushes, tag releases and
+explicit non-PR workflows keep their existing behavior. See the
+[draft CI decision](decisions/2026-11-02-397-draft-ci.md).
+
 Formatting checks should be read-only; formatting writes remain deliberate commands.
 Tool versions and source selection must match locally and in CI, including extensionless
 scripts and TypeScript integrations.

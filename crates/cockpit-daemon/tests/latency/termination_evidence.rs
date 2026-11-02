@@ -10,7 +10,7 @@ const REPORT_BYTES: usize = 256 * 1024;
 pub(super) struct TerminationEvidence {
     logs: PathBuf,
     report: PathBuf,
-    captured: bool,
+    attempted: bool,
 }
 
 impl TerminationEvidence {
@@ -18,17 +18,22 @@ impl TerminationEvidence {
         Self {
             logs,
             report,
-            captured: false,
+            attempted: false,
         }
     }
 
     pub(super) fn finish(&mut self) -> io::Result<()> {
+        if self.attempted {
+            return Err(io::Error::other(
+                "termination evidence capture already attempted",
+            ));
+        }
+        self.attempted = true;
         let (evidence, incomplete) = collect(&self.logs);
         OpenOptions::new()
             .append(true)
             .open(&self.report)?
             .write_all(evidence.as_bytes())?;
-        self.captured = true;
         if incomplete {
             return Err(io::Error::other(
                 "termination evidence incomplete; see report",
@@ -40,7 +45,7 @@ impl TerminationEvidence {
 
 impl Drop for TerminationEvidence {
     fn drop(&mut self) {
-        if !self.captured
+        if !self.attempted
             && let Err(error) = self.finish()
         {
             // A failed artifact write must never replace the original candidate panic.
@@ -346,6 +351,24 @@ mod tests {
         let retained = fs::read_to_string(report).unwrap();
         assert!(retained.contains("No matching termination records"));
         assert!(retained.contains("not a lifecycle verdict"));
+    }
+
+    #[test]
+    fn release_termination_evidence_never_retries_a_failed_capture() {
+        let logs = tempfile::tempdir().unwrap();
+        fs::write(
+            logs.path().join("cockpit.log"),
+            record(MESSAGE, "Unidentified"),
+        )
+        .unwrap();
+        let report = logs.path().join("absent/report.md");
+        let mut evidence = TerminationEvidence::new(logs.path().to_owned(), report.clone());
+        assert!(evidence.finish().is_err());
+        fs::create_dir(report.parent().unwrap()).unwrap();
+        fs::write(&report, VERDICT).unwrap();
+        assert!(evidence.finish().is_err());
+        drop(evidence);
+        assert_eq!(fs::read_to_string(report).unwrap(), VERDICT);
     }
 
     #[test]
