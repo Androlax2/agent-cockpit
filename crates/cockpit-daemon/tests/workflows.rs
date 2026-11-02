@@ -12,6 +12,8 @@
 
 mod candidate;
 mod common;
+#[path = "workflows/durability.rs"]
+mod durability;
 
 use std::path::{Path, PathBuf};
 
@@ -270,6 +272,8 @@ async fn a_restart_mid_step_resumes_at_the_checkpoint_through_the_agent_socket()
             .as_agent(Command::WorkflowComplete {
                 launch_token: workflows.token(),
                 workflow: run,
+                expected_step: Some(1),
+                expected_attempt: Some(1),
                 handoff: handoff("Rewrote the form validation"),
                 waive: Vec::new(),
             })
@@ -420,6 +424,8 @@ async fn a_step_with_requirements_completes_only_with_the_owners_waiver() {
     let complete = |waive: Vec<String>| Command::WorkflowComplete {
         launch_token: None,
         workflow: run,
+        expected_step: None,
+        expected_attempt: None,
         handoff: handoff("Rewrote the form validation"),
         waive,
     };
@@ -541,14 +547,18 @@ async fn evidence_scenario(preset: &'static cockpit_workflows::Preset, second: &
     }
     workflows.daemon = Some(workflows.home.start());
     let token = workflows.token();
+    let position = std::cell::Cell::new(if preset.name == "design-led" { 2 } else { 1 });
     let complete = || Command::WorkflowComplete {
         launch_token: token.clone(),
         workflow: run,
+        expected_step: Some(position.get()),
+        expected_attempt: Some(1),
         handoff: handoff("Checked the implementation"),
         waive: Vec::new(),
     };
     workflow(workflows.as_agent(complete()).await);
     workflows.daemon.take().unwrap().kill();
+    position.set(position.get() + 1);
     // Begin check directly, like the fixture's initial step: no live session is needed.
     {
         let database = workflows.home.open_state().await;
@@ -769,6 +779,8 @@ async fn owner_workflow_completion_uses_bulk_admission_while_reads_stay_responsi
             Command::WorkflowComplete {
                 launch_token: None,
                 workflow: 1,
+                expected_step: None,
+                expected_attempt: None,
                 handoff: handoff("Checked the implementation"),
                 waive: Vec::new(),
             },

@@ -28,6 +28,8 @@ fn a_workflow_complete_round_trips_with_only_the_fields_it_was_given() {
         Command::WorkflowComplete {
             launch_token: Some("token".to_owned()),
             workflow: 4,
+            expected_step: None,
+            expected_attempt: None,
             handoff: WorkflowHandoffView {
                 changed: "Rewrote the form validation".to_owned(),
                 checked: "commit abc123".to_owned(),

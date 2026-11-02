@@ -36,6 +36,7 @@ pub enum WorkflowConfirm {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandoffEntry {
     pub(crate) position: Option<u32>,
+    pub(crate) attempt: Option<u32>,
     pub(crate) waive: Vec<String>,
     /// Changed, checked, outcome.
     pub(crate) fields: [String; 3],
@@ -238,6 +239,7 @@ impl Workflows {
         });
         HandoffEntry {
             position: current.map(|step| step.position),
+            attempt: current.map(|step| step.attempts),
             waive: current
                 .map(|step| step.requirements.clone())
                 .unwrap_or_default(),
@@ -270,6 +272,8 @@ impl Workflows {
         let command = Command::WorkflowComplete {
             launch_token: None,
             workflow: run.id,
+            expected_step: entry.position,
+            expected_attempt: entry.attempt,
             handoff: WorkflowHandoffView {
                 changed,
                 checked,

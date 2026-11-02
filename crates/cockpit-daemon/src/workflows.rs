@@ -161,7 +161,11 @@ async fn complete(
     sender: Option<&Sender>,
 ) -> Answer {
     let Command::WorkflowComplete {
-        workflow, waive, ..
+        workflow,
+        waive,
+        expected_step,
+        expected_attempt,
+        ..
     } = &command
     else {
         unreachable!("only completion uses verification");
@@ -175,6 +179,21 @@ async fn complete(
         };
         (run, checkout)
     };
+    // A result is bound before it is prepared, not to whichever attempt is current now.
+    // Owner commands without a binding retain the explicit current-step override.
+    if sender.is_some() || expected_step.is_some() || expected_attempt.is_some() {
+        let matches = run.current_step().is_some_and(|step| {
+            Some(step.position) == *expected_step && Some(step.attempts) == *expected_attempt
+        });
+        if !matches {
+            return Err(refused(
+                ErrorCode::StaleRevision,
+                "completion needs the step and attempt from the original task packet".into(),
+                "use --step and --attempt from the packet this result was prepared for",
+                UnblockedBy::Agent,
+            ));
+        }
+    }
     let required = run
         .current_step()
         .map_or(&[][..], |step| step.definition.requirements);

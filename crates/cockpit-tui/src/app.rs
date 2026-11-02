@@ -291,7 +291,7 @@ impl App {
                 PaneOutcome::IgnoredInGrace => Step::used("approval-ignored-in-grace"),
                 PaneOutcome::Handled { used, send } => Step {
                     used: Some(used),
-                    send: send.into_iter().collect(),
+                    send: send.into_iter().map(|command| *command).collect(),
                 },
                 PaneOutcome::NotMine => Step::used("unbound"),
             };

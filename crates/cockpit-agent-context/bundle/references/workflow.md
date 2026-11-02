@@ -8,9 +8,11 @@ or the owner), requirements, and the provider capabilities it needs.
 - `torlek workflow begin ID` takes the ready agent step. One step at a time per session.
 - `torlek workflow checkpoint ID NOTE` records progress. The latest checkpoint survives a
   restart, a release and a new session: whoever continues starts there.
-- `torlek workflow complete ID --changed T --checked T --outcome T [--needs-human T]
+- `torlek workflow complete ID --step N --attempt N --changed T --checked T --outcome T [--needs-human T]
   [--evidence REF]...` ends the step with a handoff. Each requirement must be satisfied by
-  evidence (see `checks`) or waived by the owner; prose never meets one.
+  evidence (see `checks`) or waived by the owner; prose never meets one. Copy `--step` and
+  `--attempt` from the packet you worked on. A stale or missing identity is refused; do not
+  relabel an old result with a newer packet identity.
 - `torlek workflow release ID --changed T --checked T --outcome T` hands the step back
   mid-way, with what you did.
 - `torlek workflow block ID ACTION --detail TEXT` stops the run on one next action:

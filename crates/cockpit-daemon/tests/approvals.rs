@@ -5,6 +5,8 @@
 
 mod candidate;
 mod common;
+#[path = "approvals/durability.rs"]
+mod durability;
 
 use std::time::Instant;
 

@@ -590,20 +590,20 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   torlek daemon install\n       \
                   torlek todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \
                  [--priority 1-6] [--after ID]...\n       \
-                  torlek todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]\n       \
-                  torlek todo blocked TITLE --why TEXT [--notes TEXT]\n       \
-                  torlek todo list [--project P] [--all] | show ID | delete ID\n       \
-                  torlek todo start ID | done ID [--summary TEXT] | reopen ID\n       \
-                  torlek todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]\n       \
-                  torlek todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID\n       \
-                  torlek todo after ID ON... | unwait ID ON...\n       \
-                  torlek todo image add ID FILE | image get ID NUMBER FILE\n       \
-                  torlek todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]\n       \
-                  torlek todo drafts | draft discard (ID | --new PROJECT)\n       \
-                  torlek workflow presets | start ITEM [--preset NAME] | cancel ID\n       \
-                  torlek workflow list [--project P] [--all] | show ID | packet ID\n       \
-                  torlek workflow begin ID | checkpoint ID NOTE | unblock ID\n       \
-                  torlek workflow complete ID --changed T --checked T --outcome T \
+                 torlek todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]\n       \
+                 torlek todo blocked TITLE --why TEXT [--notes TEXT]\n       \
+                 torlek todo list [--project P] [--all] | show ID | delete ID\n       \
+                 torlek todo start ID | done ID [--summary TEXT] | reopen ID\n       \
+                 torlek todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]\n       \
+                 torlek todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID\n       \
+                 torlek todo after ID ON... | unwait ID ON...\n       \
+                 torlek todo image add ID FILE | image get ID NUMBER FILE\n       \
+                 torlek todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]\n       \
+                 torlek todo drafts | draft discard (ID | --new PROJECT)\n       \
+                 torlek workflow presets | start ITEM [--preset NAME] | cancel ID\n       \
+                 torlek workflow list [--project P] [--all] | show ID | packet ID\n       \
+                 torlek workflow begin ID | checkpoint ID NOTE | unblock ID\n       \
+                 torlek workflow complete ID [--step N --attempt N] --changed T --checked T --outcome T \
                  [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...\n       \
                   torlek workflow release ID [--changed T --checked T --outcome T \
                  [--needs-human T] [--evidence REF]...]\n       \
