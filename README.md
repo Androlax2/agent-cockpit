@@ -13,8 +13,8 @@ Existing desktop users can find their commands and demo screenshots in the [lega
 ## Install status
 
 Public installation is still being prepared in [#97](https://github.com/Androlax2/agent-cockpit/issues/97).
-The pinned Greywall/greyproxy engine installer is tracked in [#470](https://github.com/Androlax2/agent-cockpit/issues/470).
-Until those land, there is no complete public clean-install recipe here.
+The managed Greywall/greyproxy installer and proxy service setup are merged; see the [sandbox guide](crates/cockpit-sandbox/README.md#managed-installation-470).
+A complete public clean-install recipe still waits for #97's published archive and platform acceptance.
 The root `make install` installs the legacy desktop setup; it is not the Alpha installer.
 
 Developers can build the current greenfield binaries with the pinned Rust toolchain:
@@ -36,10 +36,10 @@ The quickstart below starts once those prerequisites are ready.
 | Platform | Target | Current evidence and limits |
 | --- | --- | --- |
 | Linux | Native | Linux CI runs the greenfield gate; public archive onboarding is an Alpha release checkpoint |
-| macOS | Native | Platform checks run in CI for selected crates; the service is a launchd agent; public archive onboarding remains a release checkpoint |
+| macOS | Native | Selected crates run in CI and services use launchd. The current pinned engine blocks required-sandbox launches until [public CA isolation is available (#527)](https://github.com/Androlax2/agent-cockpit/issues/527); public archive onboarding remains open |
 | Windows | Inside WSL2, from Windows Terminal | Linux backend inside WSL2; platform checks run in CI for selected crates; no native Windows daemon |
 
-You need Git, tmux, a supported provider CLI, and the Cockpit-pinned Greywall/greyproxy engines.
+You need Git, tmux, curl, a supported provider CLI, and the Cockpit-pinned Greywall/greyproxy engines.
 Linux service installation uses a systemd user manager; macOS uses launchd.
 Run `cockpit doctor --project /absolute/path/to/project` to check the actual host and project requirements.
 The platform checks are described in [Development](docs/DEVELOPMENT.md#verification-policy); they do not establish a signed-in provider conversation on every platform.
@@ -48,17 +48,22 @@ The platform checks are described in [Development](docs/DEVELOPMENT.md#verificat
 
 Run these commands in your own terminal. For a source build, the default profile is `dev`; release bundles default to `cockpit`.
 `cockpit config show` and `cockpit doctor` show which profile and paths you are using.
-Use the same profile throughout. To keep a preview beside an existing installation, use `cockpit --profile next VERB` for every command, including `daemon install`.
+Use the same profile throughout. To isolate a preview's state from an existing installation, use `cockpit --profile next VERB` for every command, including `sandbox install` and `daemon install`.
+The proxy uses fixed loopback ports (43080, 43051, 43052 and 43053); another profile or legacy proxy can occupy them.
+Setup refuses an occupied endpoint. A separate profile does not provide separate proxy ports; follow the reported next action without stopping another installation's service.
 
-1. Start the daemon as your user service, then read the first-run checklist:
+1. Install the pinned engines and start this profile's proxy, then start the daemon and read the checklist:
 
    ```sh
+   cockpit sandbox install
    cockpit daemon install
    cockpit doctor
    cockpit init
    ```
 
-   `daemon install` writes and starts a user service. `init` writes nothing: it shows `done`, `todo`, `waits` or `unknown` and ends with the next action.
+   `sandbox install` downloads and verifies the release's pinned engines into Cockpit's state directory, then configures and starts a per-user proxy service.
+   It does not install host packages or change the OS trust store. `daemon install` writes and starts the daemon's user service.
+   `init` writes nothing: it shows `done`, `todo`, `waits` or `unknown` and ends with the next action.
    Repeat it after completing that action. An `unknown` sign-in needs the manual check it names.
 
 2. Open the owner configuration path printed by `cockpit config show` and add the following settings, preserving any existing settings:
@@ -144,7 +149,7 @@ The following table describes the adapters in this checkout, not a promise that 
 
 Adapters label a capability `tested` only at their exact capability pin; other or unknown versions are `discovered` (unverified).
 Fixture tests and help/flag checks do not establish a live signed-in end-to-end conversation.
-In particular, Codex delivered-turn approvals and in-session resume/fork still have unmeasured behavior; see its adapter's known gaps.
+Codex delivered-turn approval routing has local fake-model evidence on 0.166.0; signed-in acceptance, the older 0.161.0 target and in-session resume/fork remain unmeasured. See its adapter's known gaps.
 Receiving a prompt is not evidence that an agent completed its task.
 
 ## Configuration and state
@@ -162,6 +167,9 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | Cache | `~/.cache/cockpit/` |
 | Sockets and instance lock | `$XDG_RUNTIME_DIR/cockpit/`, or the state directory's `run/` when unset |
 
+Managed engines live under the profile's state directory in `engines/`; proxy configuration, its private CA and data live in `greyproxy/`.
+`cockpit sandbox status` checks proxy health without the daemon.
+
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` override their respective base directories.
 Named profiles replace the `cockpit` directory component with `cockpit-NAME` (for example `cockpit-dev`).
 Use the paths printed by your binary; keep private state and provider credentials out of Git and support messages.
@@ -171,7 +179,8 @@ Use the paths printed by your binary; keep private state and provider credential
 Start with `cockpit doctor`, `cockpit version --all` and `cockpit init`.
 The [CLI guide](crates/cockpit-cli/README.md) lists current verbs.
 `cockpit docs` lists the installed agent instruction topics; `cockpit docs TOPIC` reads one and `cockpit --skill` prints the full agent manual through the daemon.
-Generated CLI/config references and the protocol schema site are tracked in [#102](https://github.com/Androlax2/agent-cockpit/issues/102) and [#295](https://github.com/Androlax2/agent-cockpit/issues/295).
+The [latest published user guide](https://androlax2.github.io/agent-cockpit/latest/) includes generated CLI help and effective configuration defaults, with source and binary provenance.
+The generated protocol schema is still planned in [#295](https://github.com/Androlax2/agent-cockpit/issues/295).
 
 For a Cockpit problem, create and inspect a local bug-report draft:
 

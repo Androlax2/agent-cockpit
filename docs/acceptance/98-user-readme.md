@@ -9,6 +9,7 @@ This record separates the documentation draft from that live acceptance. No volu
 | --- | --- |
 | First-run checklist | `crates/cockpit-cli/src/onboarding.rs`; `crates/cockpit-cli/tests/onboarding.rs` |
 | Profile and daemon service | `crates/cockpit-cli/src/profile.rs`, `daemon_install.rs`; `crates/cockpit-cli/tests/profiles.rs` |
+| Managed engine/proxy setup and status | `crates/cockpit-cli/src/sandbox_install.rs`, `crates/cockpit-cli/tests/sandbox_install.rs`; `crates/cockpit-sandbox/README.md`; `crates/cockpit-sandbox/tests/managed_proxy.rs` |
 | Project and first session | `crates/cockpit-cli/tests/projects.rs`; `crates/cockpit-cli/tests/sessions.rs` |
 | Approvals | `crates/cockpit-cli/src/approvals.rs`; `crates/cockpit-cli/tests/ask.rs` |
 | Configuration and directories | `crates/cockpit-config/src/lib.rs`, `layout.rs`; `crates/cockpit-cli/tests/config_show.rs` |
@@ -20,7 +21,7 @@ Documentation checks and actual test outcomes belong in the PR's commands record
 
 ## Release checkpoints
 
-- [ ] Replace the README's install status with #97's merged public archive/installer instructions, including the merged engine lifecycle from #470. Coordinate with their owners; do not edit their release files.
+- [ ] Replace the README's install status with #97's final public archive instructions. The merged #470 installer and #495 proxy setup are documented from source; public release and platform acceptance still need the release owners' evidence. Do not edit their release files.
 - [ ] Check provider table and platform evidence against the final merged Alpha release. Coordinate live capability claims with the provider lane.
 - [x] Add a greenfield fixture render with fictional data. [Capture evidence](98-demo-screenshot.json) identifies source hashes, real renderer, isolated capture and inspection; legacy screenshots stay in the legacy guide.
 - [ ] Chief arranges a volunteer with no prior context, on a supported platform, using an isolated clean home. Record consent for any live provider usage and host effects through the approval workflow before the walk.
@@ -30,6 +31,27 @@ Documentation checks and actual test outcomes belong in the PR's commands record
 ## Volunteer result
 
 Pending. A fixture run cannot satisfy the volunteer acceptance criterion, nor prove public archive onboarding across all supported platforms.
+
+## Merged setup documentation
+
+The README follows #470's installer (`2553ebff48d8c812c8464996fe9a50e27d97fc1d`)
+and #495's managed proxy wiring (`d1f7b0a08f36f0c67c8fb8cbf6da4e9c66900f95`),
+both present in this branch's base `2ebc7f13c10bb0fb6b3fea125cd17a097ebb4d46`.
+The command downloads and verifies engines, then configures and starts the profile's
+proxy before the daemon. The README records curl, service-manager prerequisites,
+fixed-port collision refusal, state locations and the current macOS public-CA
+capability blocker (#527). It does not suggest changing the sandbox policy to bypass
+that blocker.
+
+Provider wording follows the current adapter READMEs. Codex's local fake-model
+approval-routing result on 0.166.0 is separate from its 0.161.0 capability pin and
+the unmeasured signed-in and resume/fork checks. No provider conformance was rerun
+for this documentation update.
+
+The published guide already contains generated CLI help and effective configuration
+defaults; the protocol schema remains planned under #295. `make site-ci` checks
+the actual generated pages and version-prefixed links. None of these source or
+build checks measures public-archive installation or a volunteer session.
 
 ## Greenfield demo image
 
