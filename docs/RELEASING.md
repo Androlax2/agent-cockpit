@@ -18,6 +18,67 @@ build before a tag, run it as a dry run: built and installed, never attested or 
 pull request starts it only when it changes the release machinery itself (the workflow's
 `pull_request` paths); `ci.yml` builds and tests crate changes.
 
+## Release App setup
+
+The pre-release workflow consumes the repository Actions variable `RELEASE_APP_CLIENT_ID`
+and secret `RELEASE_APP_PRIVATE_KEY`. Its token requests contents write only. The private
+App also needs pull-request write for the approved #192 release-PR work; that workflow and
+its history-preserving update strategy are still pending. No workflow permission is added
+by this setup script.
+
+An operator uses [tools/setup_release_app.py](../tools/setup_release_app.py) on their host
+with existing Python 3.11+, OpenSSL and GitHub CLI, authenticated as `Androlax2`. The host
+credential must be able to read repository Actions variables/secret metadata and create
+the variable/secret. The App itself gets no Actions, secrets or administration permission.
+Run one operator at a time, with no concurrent credential/settings changes. The script
+supports POSIX hosts with `fcntl`; Windows users need WSL. It installs nothing.
+
+For agents, each host command requires `ask-to-run`. Ask browser readiness through
+`cockpit-needs-input` before `ask-to-guide`. Registration and installation each need human
+browser confirmation; this is not unattended App creation.
+
+1. Run `python3 tools/setup_release_app.py register` through host approval. Open its loopback
+   URL on the same host, signed into GitHub as `Androlax2`, then confirm registration.
+   The form registers a private App with contents/write and pull_requests/write only
+   (GitHub adds metadata/read), no events and an inactive webhook. GitHub may require a
+   unique App name; the returned identity is recorded, not guessed.
+2. Use the printed App installation link. Select **Only select repositories**, choose only
+   `agent-cockpit`, and confirm installation. Do not select all repositories.
+3. Run `python3 tools/setup_release_app.py configure` through host approval. It authenticates
+   the saved key, verifies App/installation permissions and owner, and requires exactly one
+   selected repository: `Androlax2/agent-cockpit`. A temporary metadata-only installation
+   token checks the complete installation repository list and is revoked before configuration.
+   The client ID becomes the repository variable; `gh secret set` receives the PEM on stdin
+   and encrypts it locally. No key, token, conversion code or raw API/CLI error is printed.
+
+The private recovery record is `~/.local/state/cockpit-release-app/state.json` (directory
+0700, file 0600); `--state-dir` can choose another private location outside Git checkouts.
+Keep it private and backed up according to the host's credential policy. It retains the
+App key for scope checks and recovery; unused client/webhook secrets are discarded. A
+crash while signing may leave a private `.signing-key-*` file in that directory. Never
+paste or commit these files, and do not display the record during troubleshooting.
+
+Repeated successful registration prints the existing installation link. Repeated
+configuration verifies scope and the recorded secret timestamp, without writing anything.
+GitHub cannot return secret values, so this is not a claim that an existing secret's value
+was read or compared. Mismatched variables, unrecorded secrets and changed configuration
+are refused. An interruption during registration/conversion or secret upload also refuses
+automatic retry: inspect GitHub App settings and repository configuration, preserve the
+private record, and obtain a reviewed recovery action. Do not delete the record and rerun
+blindly; a registered App or uploaded secret may already exist. No credential rotation or
+deletion is automated. GitHub secret writes have no conditional-create operation; the
+preflight check cannot protect against a different operator writing concurrently.
+
+This setup creates no tags, release PRs or releases and dispatches no workflows. Fixture
+tests cover the command entry points and transports; live registration and installation
+must be recorded separately after host approval.
+
+Official API references: [manifest registration](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest),
+[App REST endpoints](https://docs.github.com/en/rest/apps/apps),
+[App installation](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app),
+[JWT signing](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app),
+and [GitHub CLI secret input](https://cli.github.com/manual/gh_secret_set).
+
 ## Versions
 
 - Cockpit uses [Semantic Versioning](https://semver.org/) and stays on `0.x` until 1.0.
