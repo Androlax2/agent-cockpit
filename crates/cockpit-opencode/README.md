@@ -84,6 +84,12 @@ provider and nothing above the contract sees an OpenCode type (#47).
   plugin, and refuses anything else.
 - `tests/plugin.rs`: the plugin, run by Node.js, forwards what it must, in order, to a fake
   bridge.
+- `tests/plugin_conformance.rs`: ignored native OpenCode 1.19.5 capture through the real
+  launch, Bun plugin and built bridge, using a local model and fresh HOME/XDG without
+  account access or package installation (#417). Proves a completed read, an authenticated
+  permission refusal and an aborted turn without an outcome. Recorded events and bridge
+  reports replay in ordinary CI; exact version/digest, reproduction and remaining
+  schema-only cases are in the [fixture provenance](tests/fixtures/opencode-1.19.5/README.md).
 - `tests/server.rs`: the server API and provider contract against a fake OpenCode server on
   the loopback, including literal inbox delivery, commands and fail-closed boundaries.
 - `tests/discover.rs`: finding `opencode` and its version.

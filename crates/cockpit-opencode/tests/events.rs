@@ -222,3 +222,53 @@ fn every_forwarded_event_type_has_a_pinned_event() {
         assert!(fixtures.iter().any(|name| name == forwarded), "{forwarded}");
     }
 }
+
+#[test]
+fn the_native_capture_proves_tool_permission_completion_and_abort_semantics() {
+    let capture = common::captured("events.jsonl");
+    let events: Vec<_> = capture
+        .lines()
+        .map(|raw| events::normalize(raw).unwrap())
+        .collect();
+    let count = |kind: EventKind| events.iter().filter(|event| event.kind == kind).count();
+    assert_eq!(
+        count(EventKind::ToolUsed {
+            tool: "read".to_owned()
+        }),
+        1
+    );
+    assert_eq!(
+        count(EventKind::ToolUsed {
+            tool: "bash".to_owned()
+        }),
+        1
+    );
+    assert_eq!(
+        count(EventKind::NeedsYou {
+            question: Some(
+                "OpenCode asks permission to bash /usr/bin/printf cockpit-permission-fixture"
+                    .to_owned()
+            )
+        }),
+        1
+    );
+    assert_eq!(
+        count(EventKind::TurnEnded {
+            outcome: TurnOutcome::Completed
+        }),
+        1
+    );
+    assert_eq!(count(EventKind::Unknown), 0);
+    let aborted: Vec<_> = events
+        .iter()
+        .filter(|event| event.raw.contains("MessageAbortedError"))
+        .collect();
+    assert_eq!(aborted.len(), 1);
+    assert_eq!(aborted[0].kind, EventKind::Idle);
+    assert!(!events.iter().any(|event| matches!(
+        event.kind,
+        EventKind::TurnEnded {
+            outcome: TurnOutcome::Failed { .. }
+        }
+    )));
+}
