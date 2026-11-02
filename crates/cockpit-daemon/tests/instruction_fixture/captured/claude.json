@@ -1,0 +1,18 @@
+{
+  "brief": true,
+  "main_request_number": 1,
+  "main_request_sha256": "ad970f775edb5b0bb49b1fc584578592892311ba3c219be2010ae3b6e6991a78",
+  "mcp": "deferred",
+  "mode": "native-print",
+  "native_cockpit_skill": true,
+  "observed": {
+    "captured_at": "2026-11-02T04:27:46.486934+00:00",
+    "fixture_sha256": "d4c353d556e28864f10c151ae811ea22398d193c117b2ea5ed4b25727d6f8c77",
+    "program_name": "2.1.316",
+    "program_sha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+    "version_output": "2.1.316 (Claude Code)"
+  },
+  "provider": "claude",
+  "signed_in_validation": "not run",
+  "transport": "loopback canned model; real daemon and agent channel; fake sandbox engines"
+}

@@ -1,0 +1,18 @@
+{
+  "brief": true,
+  "main_request_number": 1,
+  "main_request_sha256": "9c51ee87a82786539a2eb2172097cb6bcccfe9e2395247eb89f09032acd0d1fa",
+  "mcp": "inline",
+  "mode": "native-tui",
+  "native_cockpit_skill": false,
+  "observed": {
+    "captured_at": "2026-11-02T04:27:47.515957+00:00",
+    "fixture_sha256": "d4c353d556e28864f10c151ae811ea22398d193c117b2ea5ed4b25727d6f8c77",
+    "program_name": "codex.js",
+    "program_sha256": "e14fc83739c13c1074b12bd1acce4010c893c7f6fbfc1593b4a31d74cabb57af",
+    "version_output": "codex-cli 0.166.0"
+  },
+  "provider": "codex",
+  "signed_in_validation": "not run",
+  "transport": "loopback canned model; real daemon and agent channel; fake sandbox engines"
+}

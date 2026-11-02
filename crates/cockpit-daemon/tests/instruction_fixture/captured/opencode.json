@@ -1,0 +1,18 @@
+{
+  "brief": true,
+  "main_request_number": 2,
+  "main_request_sha256": "cc15b4490201fcd903ba28bbc3b3e20f2902eebe794e47a767a603a1782d29e1",
+  "mcp": "inline",
+  "mode": "native-tui",
+  "native_cockpit_skill": true,
+  "observed": {
+    "captured_at": "2026-11-02T04:27:49.323533+00:00",
+    "fixture_sha256": "d4c353d556e28864f10c151ae811ea22398d193c117b2ea5ed4b25727d6f8c77",
+    "program_name": "opencode",
+    "program_sha256": "7df4e4136301f16589b0f30bf91a61380fca5f8ef22dd36570f5ebe1d4ec802c",
+    "version_output": "1.19.5"
+  },
+  "provider": "opencode",
+  "signed_in_validation": "not run",
+  "transport": "loopback canned model; real daemon and agent channel; fake sandbox engines"
+}
