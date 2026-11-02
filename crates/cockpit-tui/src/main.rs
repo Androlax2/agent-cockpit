@@ -28,13 +28,17 @@ const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 const USAGE: &str =
-    "usage: cockpit-tui --column --socket PATH --profile NAME --state-dir DIR | --viewer
+    "usage: cockpit-tui --column --socket PATH --profile NAME --state-dir DIR | --viewer | --version
 Start it with `cockpit tui`, which opens the manager session.";
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     match words.as_slice() {
+        ["--version"] => {
+            println!("cockpit-tui {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         [
             "--column",
             "--socket",

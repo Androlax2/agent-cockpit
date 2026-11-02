@@ -116,3 +116,11 @@ list; beta notes name any upgrade step.
   [Channels](#channels-and-what-each-promises)), and decides when a stable release exists.
 - The release workflow builds, runs report 13's gate on the tagged commit, signs and
   publishes.
+
+## Archive TUI smoke check
+
+The archive includes `cockpit-tui` beside `cockpit`. The release install jobs run
+`tools/release.py verify-install` on the unpacked archive; it checks the manifest checksums
+and runs `cockpit tui --version` to execute that sibling and check its compiled version.
+This headless check needs no terminal or manager session; interactive TUI coverage remains
+in the existing terminal tests.

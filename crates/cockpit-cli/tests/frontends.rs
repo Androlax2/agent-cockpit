@@ -231,3 +231,26 @@ async fn tui_without_cockpit_tui_beside_it_exits_1_naming_the_missing_file() {
 fn path_text(path: &Path) -> String {
     path.to_str().unwrap().to_owned()
 }
+
+#[tokio::test]
+async fn tui_version_executes_the_installed_sibling_without_a_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = Home::new();
+    let cockpit = home.installed_cockpit(true);
+    let tui = cockpit.with_file_name("cockpit-tui");
+    std::fs::write(&tui, "#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = --version ] || exit 2\necho sibling-version\nexit 7\n").unwrap();
+    std::fs::set_permissions(&tui, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = home.run(cockpit, &["tui", "--version"]).await;
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(text(&output.stdout), "sibling-version\n");
+}
+
+#[tokio::test]
+async fn tui_version_requires_the_sibling_binary() {
+    let home = Home::new();
+    let cockpit = home.installed_cockpit(false);
+    let output = home.run(cockpit, &["tui", "--version"]).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(text(&output.stderr).contains("install cockpit-tui beside cockpit"));
+}

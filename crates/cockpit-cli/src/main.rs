@@ -94,7 +94,7 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit desktop-session import
        cockpit init
        cockpit doctor [--project DIR]
-       cockpit tui
+       cockpit tui [--version]
        cockpit version [--all]
        cockpit daemon install
        cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...

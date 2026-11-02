@@ -582,7 +582,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit desktop-session import\n       \
                  cockpit init\n       \
                  cockpit doctor [--project DIR]\n       \
-                 cockpit tui\n       \
+                 cockpit tui [--version]\n       \
                  cockpit version [--all]\n       \
                  cockpit daemon install\n       \
                  cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] \

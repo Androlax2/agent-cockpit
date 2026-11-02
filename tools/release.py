@@ -54,7 +54,7 @@ HELPERS = (
     "cockpit-codex-session",
     "cockpit-opencode-bridge",
 )
-BINARIES = ("cockpit", "cockpit-daemon", *HELPERS)
+BINARIES = ("cockpit", "cockpit-daemon", "cockpit-tui", *HELPERS)
 # No CHANGELOG.md: the committed file lags the tag (release-plz regenerates it, #101); the
 # release notes are on the GitHub Release.
 DOCUMENTS = ("LICENSE", "README.md")
@@ -424,7 +424,7 @@ def package(version, channel, platform, revision, binaries, out, cwd):
 
 
 def verify_install(root, revision):
-    """The clean-install check on an unpacked bundle: contents, version --all, daemon start."""
+    """The clean-install check on an unpacked bundle: contents, CLI/TUI versions, daemon start."""
     root = Path(root)
     manifest_file = root / MANIFEST_PATH
     if not manifest_file.is_file():
@@ -440,6 +440,12 @@ def verify_install(root, revision):
     home = tempfile.mkdtemp(prefix="cockpit-home-", dir="/tmp")
     environment = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     refuse_wrong_version_output(root, manifest, manifest_text, revision, environment)
+    code, stdout, stderr = run_bounded([str(root / "bin/cockpit"), "tui", "--version"], environment)
+    expected = f"cockpit-tui {manifest['version']}"
+    if code != 0 or stdout.strip() != expected:
+        raise Refusal(
+            f"cockpit tui --version: exit {code}, expected {expected!r}, got {stdout!r} {stderr!r}"
+        )
     # Stand-in providers, so the daemon checks each bridge it ships (#203, #411, #415).
     stand_in_dir = Path(home) / "stand-in-bin"
     stand_in_dir.mkdir()
@@ -541,7 +547,9 @@ def refuse_daemon_not_ready(root, environment):
             listed = None
             if first_line.startswith("ready "):
                 try:
-                    listed = run_bounded([str(root / "bin/cockpit"), "provider", "list"], environment)
+                    listed = run_bounded(
+                        [str(root / "bin/cockpit"), "provider", "list"], environment
+                    )
                 except Refusal as timed_out:
                     # Raised once the daemon's log is read, which says why it hung.
                     listed = timed_out
@@ -585,7 +593,9 @@ def run_bounded(command, environment):
         try:
             process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as timeout:
-            raise Refusal(f"{' '.join(command[1:])} did not finish in {timeout.timeout}s") from timeout
+            raise Refusal(
+                f"{' '.join(command[1:])} did not finish in {timeout.timeout}s"
+            ) from timeout
         finally:
             stop_group(process)
         stdout_file.seek(0)
