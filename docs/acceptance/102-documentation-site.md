@@ -3,6 +3,8 @@
 Issue #102; PR #507 merged as **Part of**, with reader and released-version acceptance still open.
 The exact design approval is recorded in the [r4 handoff](../design/102-documentation-layout-r4.md).
 
+Alpha 1's public install/quickstart covers **Linux/WSL2 archive installation**, following [Theo's scope decision](../decisions/2026-11-02-568-alpha-platform-scope.md). macOS delivery, Homebrew and macOS acceptance are deferred beyond Alpha 1 under #568, not passed; other packaging (#562/#563/#565) moves to Alpha 2. The site stages this policy from the canonical README. Historical macOS CI results below remain test evidence, not an Alpha 1 support or installation claim. Linux/WSL2 installation and the reader's live session remain required.
+
 ## Implemented evidence
 
 | Requirement | Proof |
