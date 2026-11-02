@@ -42,6 +42,13 @@ pub fn fixture(name: &str) -> String {
         .to_owned()
 }
 
+pub fn captured(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(format!("opencode-{CONFORMANCE_VERSION}/captured/{name}"));
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
 /// An executable `sh` script named `name` in `dir`, running `body`.
 pub fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
