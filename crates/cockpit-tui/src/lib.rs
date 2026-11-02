@@ -7,6 +7,8 @@ mod feed;
 mod form;
 mod pane;
 mod render;
+mod task_form;
+mod tasks;
 mod workflows;
 
 pub use app::{App, Confirm, Focus, Key, Overlay, Step};

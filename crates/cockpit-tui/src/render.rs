@@ -31,6 +31,8 @@ Sessions
   r                  restart the selected session (confirm with y)
   x                  exit the selected session (confirm with y)
   X                  exit every finished session (confirm with y)
+Tasks
+  T                  tasks; a add, e edit, h hand to session, Q queue, ? explanation
 Workflows
   F                  the running workflows; j / k select, Enter opens one
   a                  complete its step, waiving the step's requirements (type the handoff)
@@ -80,7 +82,10 @@ pub fn draw(app: &App, frame: &mut Frame<'_>, now: Instant) {
         (Some(form), ..) => draw_form(form, frame, main),
         (None, Some(form), _) => draw_bug_form(form, frame, main),
         (None, None, Some(workflows)) => workflows.draw(frame, main),
-        (None, None, None) => draw_list(app, frame, main),
+        (None, None, None) => match &app.tasks {
+            Some(tasks) => tasks.draw(frame, main),
+            None => draw_list(app, frame, main),
+        },
     }
     if pane_height > 0 {
         draw_pane(app, frame, pane, now);
@@ -172,7 +177,7 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
 
 /// The fewest rows to scroll so `rows` end on screen; a card taller than the list shows its
 /// first rows.
-fn scroll_to_show(rows: &std::ops::Range<usize>, height: usize) -> usize {
+pub(crate) fn scroll_to_show(rows: &std::ops::Range<usize>, height: usize) -> usize {
     rows.end.saturating_sub(height).min(rows.start)
 }
 
@@ -188,7 +193,7 @@ fn push_wrapped(lines: &mut Vec<Line<'_>>, text: &str, width: usize, indent: &st
 /// word alone is wider). Rows after the first start with `indent`, so a wrapped line stays
 /// under its card's indent instead of returning to column 0 (#291). Runs of spaces inside a
 /// row are kept; those a break falls on are dropped.
-fn wrapped(text: &str, width: usize, indent: &str) -> Vec<String> {
+pub(crate) fn wrapped(text: &str, width: usize, indent: &str) -> Vec<String> {
     let width = width.max(columns(indent) + 1);
     let body = text.trim_start_matches(' ');
     let mut rows = Vec::new();

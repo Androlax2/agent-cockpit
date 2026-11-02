@@ -418,6 +418,14 @@ pub enum Command {
     TaskDecline {
         item: i64,
     },
+    /// Owner only: place this exact item snapshot on the selected session launch.
+    TaskHandoff {
+        item: i64,
+        intent_revision: i64,
+        state_revision: i64,
+        session: String,
+        expected_launch: i64,
+    },
     TaskStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         launch_token: Option<String>,

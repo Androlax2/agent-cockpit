@@ -106,6 +106,8 @@ const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
        cockpit todo blocked TITLE --why TEXT [--notes TEXT]
        cockpit todo list [--project P] [--all] | show ID | delete ID
        cockpit todo start ID | done ID [--summary TEXT] | reopen ID
+       cockpit todo targets
+       cockpit todo handoff ID SESSION --revision R --state-revision R --launch N
        cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]
        cockpit todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID
        cockpit todo after ID ON... | unwait ID ON...

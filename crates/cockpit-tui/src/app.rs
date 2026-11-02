@@ -11,6 +11,7 @@ use crate::board::{Board, FeedError};
 use crate::bug_form::BugForm;
 use crate::form::{Form, FormOutcome};
 use crate::pane::{Pane, PaneOutcome};
+use crate::tasks::{TaskOutcome, Tasks};
 use crate::workflows::{Workflows, WorkflowsOutcome};
 
 /// The log view keeps this many entries.
@@ -99,6 +100,7 @@ pub struct App {
     pub(crate) form: Option<Form>,
     pub(crate) bug_form: Option<BugForm>,
     pub(crate) workflows: Option<Workflows>,
+    pub(crate) tasks: Option<Tasks>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) confirm: Option<Confirm>,
     pub(crate) log: VecDeque<String>,
@@ -147,6 +149,9 @@ impl App {
 
     /// What keeps the views open on screen current, sent with every refresh.
     pub fn view_refresh_commands(&self) -> Vec<Command> {
+        if let Some(tasks) = &self.tasks {
+            return tasks.refresh_commands();
+        }
         self.workflows
             .as_ref()
             .map(Workflows::refresh_commands)
@@ -244,6 +249,21 @@ impl App {
                 FormOutcome::Submit(command) => Step::sending("bug-report-new", command),
             };
         }
+        if let Some(tasks) = &mut self.tasks
+            && self.focus == Focus::List
+            && (key != Key::Tab || tasks.is_typing())
+        {
+            return match tasks.key(key, &self.board) {
+                TaskOutcome::Closed => {
+                    self.tasks = None;
+                    Step::used("tasks-close")
+                }
+                TaskOutcome::Handled { used, send } => Step {
+                    used: Some(used),
+                    send,
+                },
+            };
+        }
         // The approval pane keeps its keys while the view is open, and Tab moves to it.
         if let Some(workflows) = &mut self.workflows
             && self.focus == Focus::List
@@ -301,6 +321,10 @@ impl App {
 
     fn list_key(&mut self, key: Key) -> Step {
         match key {
+            Key::Char('T') => {
+                self.tasks = Some(Tasks::default());
+                Step::sending("tasks-open", crate::tasks::list_command())
+            }
             Key::Char('j') | Key::Down => {
                 self.move_selection(1);
                 Step::used("move")
@@ -468,6 +492,15 @@ impl App {
             }
             return None;
         }
+        if let Some(tasks) = &mut self.tasks
+            && tasks.answer(command, &reply)
+        {
+            return if matches!(reply, Reply::Task { .. }) {
+                Some(crate::tasks::list_command())
+            } else {
+                None
+            };
+        }
         match reply {
             Reply::Workflows { .. } | Reply::Workflow { .. } | Reply::WorkflowPacket { .. } => {
                 // The answer to a workflow view closed since.
@@ -555,6 +588,9 @@ impl App {
             if self.taken_keys == TakenKeys::Asking {
                 self.taken_keys = TakenKeys::NotTaken;
             }
+        }
+        if let Some(tasks) = &mut self.tasks {
+            tasks.failed(command, &problem);
         }
         if let Some(workflows) = &mut self.workflows {
             workflows.failed(command, &problem);
@@ -654,6 +690,7 @@ impl App {
             || self.bug_form.is_some()
             || self.confirm.is_some()
             || self.workflows.is_some()
+            || self.tasks.is_some()
             || self.overlay.is_some();
         if is_owner_in_column {
             self.keep_keys();

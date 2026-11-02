@@ -11,6 +11,8 @@ mod candidate;
 mod common;
 #[path = "scheduling/durability.rs"]
 mod durability;
+#[path = "scheduling/handoff.rs"]
+mod handoff;
 
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;

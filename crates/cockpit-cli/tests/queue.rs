@@ -6,6 +6,8 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::process::Output;
 
+#[path = "queue/handoff.rs"]
+mod handoff;
 mod scripted;
 
 use cockpit_protocol::{

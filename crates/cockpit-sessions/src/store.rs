@@ -249,10 +249,8 @@ async fn query_sessions(
 }
 
 /// Every session, or only those not ended, by creation.
-pub(crate) async fn sessions(
-    connection: &Connection,
-    include_ended: bool,
-) -> Result<Vec<Session>, Error> {
+/// Session snapshots read within the caller's transaction.
+pub async fn sessions(connection: &Connection, include_ended: bool) -> Result<Vec<Session>, Error> {
     let filter = if include_ended {
         "1"
     } else {
@@ -278,7 +276,8 @@ pub(crate) async fn sessions_in(
     .await
 }
 
-pub(crate) async fn session(connection: &Connection, id: &SessionId) -> Result<Session, Error> {
+/// One session snapshot read within the caller's transaction.
+pub async fn session(connection: &Connection, id: &SessionId) -> Result<Session, Error> {
     query_sessions(connection, "s.id = ?1", [id.as_str()])
         .await?
         .pop()
