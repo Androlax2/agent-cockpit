@@ -76,7 +76,8 @@ provider and nothing above the contract sees a Codex type (#48).
   sandbox shows a folder of the session's own there, through a greywall fork feature, and
   without it the daemon refuses delivery naming that feature (#446). Where the approval
   requests of a delivered turn go is measured with a local fake model on 0.166.0 below;
-  signed-in acceptance remains unmeasured (#436). Older versions are unverified.
+  signed-in delivered-start acceptance passed on Linux with 0.166.0
+  ([#436 receipt](../../docs/acceptance/436-codex-approval-routing.md)). Older versions are unverified.
 
 ## Dependency edges
 
@@ -147,7 +148,9 @@ A configured notification sentinel
 does not run during the isolated turn. The probe records a disconnect only after shutting
 down its upstream socket and matches the connection carrying the specific start or steer.
 
-The signed-in test is **not part of this proof**. Run it only after explicit host approval
+The signed-in test is **separate from the account-free proof**. It passed on Linux
+on 2026-11-02; see the [acceptance receipt](../../docs/acceptance/436-codex-approval-routing.md).
+Run it only after explicit host approval
 (agents use `ask-to-run`), with the exact installed version and an existing signed-in home:
 
 ```sh
@@ -173,15 +176,21 @@ plan, not edits to the owner's policy or credentials. The probe sets read-only s
 and human approval, only cancels through the TUI, and never accepts a command. Version and
 tmux commands have deadlines and bounded output, including teardown. Live transcripts
 and server diagnostics are withheld from test output. The environment marker is an opt-in,
-not a substitute for host authorization. No signed-in result is claimed until this command
-has actually run with approval; keep #436 open meanwhile.
+not a substitute for host authorization. Each additional run needs fresh approval;
+the recorded success covers its exact version, platform and configuration.
 
 On 2026-11-02, the host approved one run of the compiled signed-in test on 0.166.0.
 It exited **101** with `custom TUI keymaps need a separate conformance plan; no turn
 started`. The configured home was not changed to bypass that guard. No model turn ran;
-signed-in routing remains unmeasured, so #436 stays open.
+that receipt remains a failed attempt.
 
 Subsequent account-free resume checks showed that 0.166.0 serializes default keymap
 slots as null after a TUI session. The guard now accepts only object/null defaults;
 concrete bindings and arrays (including empty unbindings) remain refused. This repair
 does not reclassify the earlier refused signed-in attempt or authorize a retry.
+
+After PR #576 merged, a separately approved run refused inherited execution rules
+before a turn. Theo then selected a private validation home, signed in through the
+official CLI, and approved one new run: `edeea0394e55` passed (1 passed, 19 skipped,
+exit 0). The delivered start reached the persistent TUI, which returned `cancel`;
+the matching turn ended interrupted. Both earlier refusals remain historical.

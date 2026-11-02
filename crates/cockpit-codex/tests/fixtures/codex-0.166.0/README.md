@@ -60,3 +60,12 @@ run. Full ordinary Codex tests: 137 passed / 21 skipped; daemon consumers:
 start/steer approvals on the persistent TUI after delivery disconnects, followed
 by TUI cancellation and the matching interrupted turn. Its signed-in test needs
 separate approval; these account-free observations do not complete #436 or #419.
+
+## Separately approved signed-in observation
+
+After source PR #576 merged, receipt `edeea0394e55` passed the signed-in delivered
+start on Linux with the configured `gpt-6.1-sol`: **1 passed, 19 skipped**, exit 0.
+The persistent TUI received the approval and returned `cancel`; the matching turn
+ended interrupted. See the [acceptance record](../../../../../docs/acceptance/436-codex-approval-routing.md)
+for exact approvals, command, earlier refusals and the separate signed-in home.
+This establishes #436's delivered-start criterion, not #419 or WSL2 acceptance.
