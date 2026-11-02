@@ -90,6 +90,8 @@ provider and nothing above the contract sees an OpenCode type (#47).
   permission refusal and an aborted turn without an outcome. Recorded events and bridge
   reports replay in ordinary CI; exact version/digest, reproduction and remaining
   schema-only cases are in the [fixture provenance](tests/fixtures/opencode-1.19.5/README.md).
+  The capture exposed #516: a trailing busy event clears the persisted completed outcome.
+  Native capture is proven; owner-visible completion persistence remains open.
 - `tests/server.rs`: the server API and provider contract against a fake OpenCode server on
   the loopback, including literal inbox delivery, commands and fail-closed boundaries.
 - `tests/discover.rs`: finding `opencode` and its version.

@@ -55,6 +55,14 @@ observed shapes agree with the original fixtures on every field the adapter cons
 the captured stream also retains native metadata those examples omitted. No adapter or
 plugin behavior change was necessary.
 
+The capture also exposes a pre-existing outcome-persistence bug, tracked in
+[#516](https://github.com/Androlax2/agent-cockpit/issues/516): records 7–9 emit completed,
+then busy, then idle before the next prompt. The adapter reports busy as working with
+`--prompt`, which clears the stored completion in `cockpit-sessions`. These tests prove
+native event capture and bridge reports; they do **not** prove that a completed outcome
+remains visible to the owner. The original sequence is retained for that follow-up's
+session-boundary regression and #51's conformance accounting.
+
 ## Schema-derived edge cases
 
 The individual `.json` files directly in this directory remain **written from 1.19.5's

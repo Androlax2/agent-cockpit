@@ -22,6 +22,10 @@ approved the official OpenCode 1.19.5 archive download and extraction under `.ou
   schema-derived examples, so no production change is needed. Captured records replay
   through the bridge in CI. Unobserved forms (questions, child sessions, retry and API
   errors) remain schema-derived and are not promoted to captured evidence.
+- **Track the exposed persistence bug separately.** Native completion is followed by a
+  busy status before idle. The adapter calls that a new prompt, clearing the session's
+  stored outcome. #516 retains this evidence for a provider/session-boundary regression;
+  #417 proves capture, not persistent completion. #51 must preserve that distinction.
 - **Rejected:** running the installed newer binary as proof of the pin, synthesizing
   native bus events, accepting a command to finish the probe, or consuming signed-in
   account usage when a local model proves this issue's plugin/event behavior.

@@ -58,8 +58,8 @@ provider row, and `docs/decisions/2026-11-02-417-opencode-event-capture.md`.
   outcomes. Keep remaining schema-derived fixtures explicitly labelled.
 - [x] Run focused tests while iterating, then the affected crate, formatting, Clippy and
   script/docs checks once the source settles. Let CI prove supported platforms.
-- [ ] Obtain the required fresh review, commit and normal-push this issue's branch, open
-  one PR, and arm squash auto-merge only after review and focused checks pass.
+- [x] Obtain the required fresh review, commit and normal-push this issue's branch, open
+  one PR. Squash auto-merge is permitted after review and focused checks pass.
 
 ## Execution record
 
@@ -84,5 +84,12 @@ provider row, and `docs/decisions/2026-11-02-417-opencode-event-capture.md`.
   exposed a writer/count race; the final capture waits for terminal idle and snapshots
   matched records. Ruff formatting/import failures were corrected. Initial helper and
   replay tests failed before their files/fixtures existed, then passed with real captures.
-- Native `/code-review` is unavailable in this toolset. Use the user's authorized fresh
-  independent agent review for the complete branch delta; review remains pending here.
+- Native `/code-review` is unavailable in this toolset. The user's authorized fresh
+  independent agent reviewed `a3b0906..b987863` and the documentation correction: ready,
+  no capture/isolation blocker. Independent captured-replay/bounded-runner checks passed
+  four tests; existing session outcome clear/preserve checks passed two tests. PR #515
+  uses a normal push; CI and repository squash auto-merge remain the integration gate.
+- The fresh review exposed a pre-existing semantic bug: completion → busy → idle clears
+  the persisted completion because every busy event becomes working/new-prompt. Filed
+  #516 in Hardening with the native trace, affected state rule and real-session acceptance.
+  The capture and README retain/disclose the gap; persistent completion is not claimed.
