@@ -23,7 +23,7 @@ No provider, daemon, installer, desktop command or service manager is launched. 
 
 | Prerequisite | Owner / exact remaining evidence |
 | --- | --- |
-| Named review of this preparation | `code-review medium` is unavailable in this OpenCode installation; independent review is separate. Do not arm auto-merge on a substitute. |
+| Named review of this preparation | Completed on PR #530's full six-file delta through `83193277ecf486c52252bbdc3ab72132525c445b`; the sole finding was the stale unavailable-review claim, corrected here. Independent review remains separate; see the receipt below. |
 | Candidate installation | Release lane #191/#192/#97: final candidate revision, archive digest, published install instructions, platform install/doctor receipts. No publication or installation was performed here. |
 | Sandbox/network | Sandbox lane #495/#433 and macOS #527: clean-home managed proxy lifecycle, endpoint collision refusal, real enforcement and four working consecutive launches. A profile isolates paths, not fixed TCP ports; legacy API port 43080 is documented in `packages/greyproxy/restart.sh`. Do not stop/reconfigure legacy or silently reuse it. |
 | Providers | Provider lane #51/#419/#436: conformance/provenance matrix, real model sees brief/skills, exact delivered-turn approval destination. Explicit consent and clean-environment sign-in precede account usage. |
@@ -79,7 +79,15 @@ Focused runner fixtures also cover inherited credentials/profile/socket removal,
 
 Final focused fixture command: `python3 -m unittest discover -s tools/tests -p '*acceptance*.py'` — `Ran 23 tests`, `OK` (exit 0). `make docs-ci`, Ruff check and the new Python files' format check passed. Initial fixture absence (six failures), formatting differences (two files) and a reproduced long-TMPDIR test failure were corrected; no checks were disabled.
 
-Independent review session `ses_e65626149ffeThnxo6Pcao1q8O` inspected the full six-file delta. No blocking isolation/evidence defect was found. Its test-portability finding was reproduced red and fixed by using a short fixture temporary parent; the regression now passes. This remains separate from the unavailable `code-review medium` workflow. No merge is authorized by this review receipt.
+Independent review session `ses_e65626149ffeThnxo6Pcao1q8O` inspected the full six-file delta. No blocking isolation/evidence defect was found. Its test-portability finding was reproduced red and fixed by using a short fixture temporary parent; the regression now passes. This remains separate from the named review below.
+
+### Named review receipt, 2026-11-02
+
+`code-review medium 530` followed the installed OpenCode command definition at `~/.config/opencode/commands/code-review.md`, not a skill. The earlier unavailable-workflow report was a discovery error, resolved under cockpit blocker `650e9d2b`; no restart or installation was needed.
+
+Scope: the complete six-file delta `ea5458970720cf24dd807c21a1cdb808085ed5a4..83193277ecf486c52252bbdc3ab72132525c445b`. All eight angles ran sequentially inline: A, B, C, Reuse, Simplification, Efficiency, Altitude and Conventions, followed by deduplication. No subagents, verifier runs or simplify were part of this named review. Its only finding was the stale unavailable-review claim in this handoff; this documentation follow-up corrects it and the implementation plan. The original review made no edits or GitHub posts; the follow-up was separately requested.
+
+The preparation review gate is satisfied. Human acceptance, published installation and the live prerequisites above remain separate; this receipt does not close #137 or #52.
 
 ## Live run record
 

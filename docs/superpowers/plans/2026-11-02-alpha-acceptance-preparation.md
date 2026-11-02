@@ -16,7 +16,7 @@
 - Profile `next`; scratch HOME, XDG directories, tmux and temporary files.
 - No manifests, workflows, release-owner or README-owner file changes.
 - One issue per PR; #52 receives an evidence comment, not a second implementation.
-- Independent review is separate from the unavailable named code-review medium gate.
+- Independent review is separate from the named code-review medium gate; both receipts are recorded in docs/gates/m3-acceptance.md.
 
 ## Review focus
 
@@ -33,7 +33,7 @@
 - [x] Run `python3 -m unittest discover -s tools/tests -p 'test_alpha_acceptance.py'` green.
 - [x] Add `docs/acceptance/m3.md` in guide format and `docs/gates/m3-acceptance.md` with preparation status, dependencies, source evidence and an empty live-run record.
 - [x] Run focused lint, guide-format checks and existing acceptance-runner regressions.
-- [ ] Obtain a bounded independent full-delta review, address findings, commit and open a preparation PR. Do not arm merge without the named review gate.
+- [x] Obtain a bounded independent full-delta review, address findings, commit and open preparation PR #530. Complete the separate named medium review and correct its stale review-gate finding.
 
 ## Task 2: Gate evidence handoff
 
