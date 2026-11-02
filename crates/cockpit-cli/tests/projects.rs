@@ -50,7 +50,7 @@ fn a_relative_project_path_is_resolved_by_the_cli_before_the_daemon_sees_it() {
     let _daemon = home.start();
     let root = home.project("app");
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"))
         .current_dir(root.parent().unwrap())
         .env_clear()
         .env("HOME", home.home())
@@ -692,7 +692,7 @@ fn a_claim_with_an_unreadable_owner_config_is_refused_before_it_is_recorded() {
     let _daemon = home.start();
     let root = home.project("app");
     let main = id_of(&home.cockpit_ok(&["project", "add", root.to_str().unwrap()]));
-    let config = home.home().join("config/cockpit-dev/config.toml");
+    let config = home.home().join("config/torlek-dev/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(&config, "[projects\n").unwrap();
 

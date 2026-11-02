@@ -79,7 +79,7 @@ impl fmt::Display for Error {
             ),
             Self::TmuxTooOld { binary, found } => write!(
                 formatter,
-                "`{}` is tmux {found}; Cockpit needs tmux {MINIMUM_VERSION} or newer",
+                "`{}` is tmux {found}; Torlek needs tmux {MINIMUM_VERSION} or newer",
                 binary.display()
             ),
             Self::CommandFailed {

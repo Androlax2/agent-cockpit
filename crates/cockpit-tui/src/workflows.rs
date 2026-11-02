@@ -386,7 +386,7 @@ impl Workflows {
             })
             .collect();
         if lines.is_empty() {
-            lines.push("No running workflow: cockpit workflow start ITEM".to_owned());
+            lines.push("No running workflow: torlek workflow start ITEM".to_owned());
         }
         lines.push(String::new());
         lines.push("j / k select  Enter open  Esc close".to_owned());

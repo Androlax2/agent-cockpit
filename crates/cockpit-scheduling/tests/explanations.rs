@@ -23,7 +23,7 @@ async fn a_paused_queue_holds_queued_work_until_the_owner_resumes_it() {
     assert_eq!(explanation.reason, Reason::QueuePaused);
     assert_eq!(
         explanation.action,
-        "resume the queue: `cockpit resources resume-queue`"
+        "resume the queue: `torlek resources resume-queue`"
     );
     assert_eq!(explanation.action_by, ActionBy::Owner);
 }
@@ -84,7 +84,7 @@ async fn a_project_without_sessions_asks_the_owner_to_start_one() {
     assert_eq!(explanation.reason, Reason::NoSession);
     assert_eq!(
         explanation.action,
-        "start a session in project a: `cockpit session new DIR`"
+        "start a session in project a: `torlek session new DIR`"
     );
 }
 
@@ -99,7 +99,7 @@ async fn an_unqueued_item_is_explained_with_the_command_that_queues_it() {
     assert_eq!(explanation.reason, Reason::NotQueued);
     assert_eq!(
         explanation.action,
-        format!("queue it: `cockpit todo queue {}`", item.id.0)
+        format!("queue it: `torlek todo queue {}`", item.id.0)
     );
     assert_eq!(explanation.waiting_since, None);
 }

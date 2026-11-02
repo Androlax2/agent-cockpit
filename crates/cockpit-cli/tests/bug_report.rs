@@ -36,7 +36,7 @@ impl Home {
 
     /// Where the daemon puts a socket, `relative` to its socket directory.
     fn socket(&self, relative: &str) -> PathBuf {
-        let path = self.runtime_dir().join("cockpit-dev").join(relative);
+        let path = self.runtime_dir().join("torlek-dev").join(relative);
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -73,7 +73,7 @@ impl Home {
 
     /// Runs `cockpit` with `arguments` in this home, with only the stand-ins on `PATH`.
     async fn cockpit(&self, arguments: &[&str], variables: &[(&str, &Path)]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
@@ -162,7 +162,7 @@ async fn an_agents_report_goes_to_the_agent_socket_with_its_kind_and_token() {
                 "approvals",
                 "--requested-by-owner",
             ],
-            &[("COCKPIT_LAUNCH_TOKEN", Path::new("the-token"))],
+            &[("TORLEK_LAUNCH_TOKEN", Path::new("the-token"))],
         )
         .await;
 
@@ -247,7 +247,7 @@ async fn new_asks_the_daemon_for_a_draft_and_prints_it() {
         "{printed}"
     );
     assert!(
-        printed.contains("Nothing is sent until you run `cockpit bug-report send 7`."),
+        printed.contains("Nothing is sent until you run `torlek bug-report send 7`."),
         "{printed}"
     );
     assert_eq!(
@@ -308,8 +308,7 @@ async fn send_opens_the_drafts_issue_url_in_the_browser_and_leaves_it_a_draft() 
         "{printed}"
     );
     assert!(
-        printed
-            .contains("once submitted, record it: cockpit bug-report send 7 --filed ISSUE_URL\n"),
+        printed.contains("once submitted, record it: torlek bug-report send 7 --filed ISSUE_URL\n"),
         "{printed}"
     );
     assert_eq!(

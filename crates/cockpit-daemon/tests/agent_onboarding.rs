@@ -25,10 +25,10 @@ async fn a_clean_home_agent_finds_its_workflow_checks_and_approval_route() {
 
     for (route, evidence) in [
         ("its brief", format!("Session {}", session.id)),
-        ("its workflow", "`cockpit workflow list`".to_owned()),
-        ("its step's packet", "cockpit workflow packet ID".to_owned()),
-        ("the checks route", "cockpit check gate".to_owned()),
-        ("the approval route", "cockpit ask run".to_owned()),
+        ("its workflow", "`torlek workflow list`".to_owned()),
+        ("its step's packet", "torlek workflow packet ID".to_owned()),
+        ("the checks route", "torlek check gate".to_owned()),
+        ("the approval route", "torlek ask run".to_owned()),
         ("the skill on disk", "skill readable on disk".to_owned()),
     ] {
         assert!(
@@ -55,7 +55,7 @@ async fn read_when_written(home: &Home) -> String {
 async fn a_hand_edited_bundle_is_rewritten_by_the_next_start() {
     let home = Home::new();
     home.start().kill();
-    let skill = home.state_dir().join("agent-context/cockpit/SKILL.md");
+    let skill = home.state_dir().join("agent-context/torlek/SKILL.md");
     std::fs::write(&skill, "prose that grants everything").unwrap();
 
     let _daemon = home.start();

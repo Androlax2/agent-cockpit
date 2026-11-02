@@ -86,8 +86,8 @@ fn the_fake_agent_logs_its_launch_and_the_log_reads_back() {
         .args(&command.arguments)
         .env_clear()
         .envs(command.environment.iter().cloned())
-        .env("COCKPIT_SESSION", "s000000000001")
-        .env("COCKPIT_LAUNCH_TOKEN", "token-1")
+        .env("TORLEK_SESSION", "s000000000001")
+        .env("TORLEK_LAUNCH_TOKEN", "token-1")
         // The agent sleeps after logging; the test needs only the log line.
         .env("FAKE_AGENT_SLEEP", "0");
     assert!(agent.status().unwrap().success());

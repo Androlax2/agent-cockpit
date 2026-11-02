@@ -31,13 +31,13 @@ impl Refusal {
     pub fn next_action(&self) -> String {
         match self {
             Refusal::InvalidRequest { field, .. } => format!("correct {field} and send it again"),
-            Refusal::NotFound { .. } => "name a report `cockpit bug-report list` shows".to_owned(),
+            Refusal::NotFound { .. } => "name a report `torlek bug-report list` shows".to_owned(),
             Refusal::WrongStatus { .. } => {
-                "only a draft changes; open a new report with `cockpit bug-report new`".to_owned()
+                "only a draft changes; open a new report with `torlek bug-report new`".to_owned()
             }
             Refusal::SessionLimit { .. } => {
                 "stop reporting: tell the owner in the conversation; they review the drafts \
-                 with `cockpit bug-report list` and can open more with `cockpit bug-report new`"
+                 with `torlek bug-report list` and can open more with `torlek bug-report new`"
                     .to_owned()
             }
         }

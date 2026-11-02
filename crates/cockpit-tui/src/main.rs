@@ -1,4 +1,4 @@
-//! `cockpit-tui`: the two panes of the manager tmux session that `cockpit tui` opens.
+//! `torlek-tui`: the two panes of the manager tmux session that `torlek tui` opens.
 //!
 //! - `--column --socket PATH --profile NAME --state-dir DIR`: the TUI itself, talking to the
 //!   daemon at `PATH`, naming its profile and logging under that profile's state directory.
@@ -28,15 +28,15 @@ const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 const USAGE: &str =
-    "usage: cockpit-tui --column --socket PATH --profile NAME --state-dir DIR | --viewer | --version
-Start it with `cockpit tui`, which opens the manager session.";
+    "usage: torlek-tui --column --socket PATH --profile NAME --state-dir DIR | --viewer | --version
+Start it with `torlek tui`, which opens the manager session.";
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["--version"] => {
-            println!("cockpit-tui {}", env!("CARGO_PKG_VERSION"));
+            println!("torlek-tui {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         [
@@ -54,7 +54,7 @@ fn main() -> ExitCode {
         ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(problem) => {
-                eprintln!("cockpit-tui: {problem}");
+                eprintln!("torlek-tui: {problem}");
                 ExitCode::FAILURE
             }
         },

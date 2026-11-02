@@ -325,7 +325,7 @@ async fn registered(connection: &Connection, project: Option<&str>) -> Result<()
         Err(cockpit_projects::Error::UnknownProject { .. }) => Err(refused(
             ErrorCode::NotFound,
             format!("no registered project {project}"),
-            "name a project `cockpit project list` shows",
+            "name a project `torlek project list` shows",
             UnblockedBy::Agent,
         )),
         Err(error) => Err(internal(&error)),

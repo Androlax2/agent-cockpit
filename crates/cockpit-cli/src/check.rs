@@ -1,6 +1,6 @@
 //! `cockpit check`: the project's declared checks and the gate their receipts make (#313).
 //! Running a check is the owner's, on the host-only socket: the daemon runs it and records the
-//! receipt. A launched session (one with `COCKPIT_LAUNCH_TOKEN`) asks for the gate of the
+//! receipt. A launched session (one with `TORLEK_LAUNCH_TOKEN`) asks for the gate of the
 //! checkout it works in and files claims, on the agent socket; a claim is never a pass.
 
 use std::ffi::OsString;

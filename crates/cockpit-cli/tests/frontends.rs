@@ -25,7 +25,7 @@ impl Home {
     }
 
     fn daemon_socket(&self) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit-dev/daemon.sock");
+        let path = self.dir.path().join("run/torlek-dev/daemon.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -35,7 +35,7 @@ impl Home {
     }
 
     async fn cockpit(&self, arguments: &[&str]) -> Output {
-        self.run(PathBuf::from(env!("CARGO_BIN_EXE_cockpit")), arguments)
+        self.run(PathBuf::from(env!("CARGO_BIN_EXE_torlek")), arguments)
             .await
     }
 
@@ -44,10 +44,10 @@ impl Home {
     fn installed_cockpit(&self, with_tui: bool) -> PathBuf {
         let bin = self.dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let cockpit = bin.join("cockpit");
-        std::fs::copy(env!("CARGO_BIN_EXE_cockpit"), &cockpit).unwrap();
+        let cockpit = bin.join("torlek");
+        std::fs::copy(env!("CARGO_BIN_EXE_torlek"), &cockpit).unwrap();
         if with_tui {
-            std::fs::write(bin.join("cockpit-tui"), "").unwrap();
+            std::fs::write(bin.join("torlek-tui"), "").unwrap();
         }
         cockpit
     }
@@ -151,7 +151,7 @@ async fn session_show_without_a_manager_exits_1_with_the_daemons_fix() {
         &home.daemon_socket(),
         Outcome::Error(ProtocolError::new(
             ErrorCode::NotFound,
-            "no manager session is open: run `cockpit tui`",
+            "no manager session is open: run `torlek tui`",
         )),
     );
 
@@ -160,7 +160,7 @@ async fn session_show_without_a_manager_exits_1_with_the_daemons_fix() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "cockpit: not-found: no manager session is open: run `cockpit tui`\n"
+        "torlek: not-found: no manager session is open: run `torlek tui`\n"
     );
 }
 
@@ -171,7 +171,7 @@ async fn provider_with_anything_but_list_is_a_usage_error() {
     let output = home.cockpit(&["provider", "add", "claude"]).await;
 
     assert_eq!(output.status.code(), Some(2));
-    assert!(text(&output.stderr).starts_with("cockpit: unknown provider arguments\nusage:"));
+    assert!(text(&output.stderr).starts_with("torlek: unknown provider arguments\nusage:"));
 }
 
 #[tokio::test]
@@ -191,7 +191,7 @@ async fn tui_opens_the_manager_with_the_tui_beside_cockpit_and_attaches_to_it() 
 
     assert!(output.status.success(), "{}", text(&output.stderr));
     assert_eq!(text(&output.stdout), "attached\n");
-    let tui = path_text(&cockpit.with_file_name("cockpit-tui"));
+    let tui = path_text(&cockpit.with_file_name("torlek-tui"));
     assert_eq!(
         daemon.await.unwrap(),
         Command::ManagerOpen {
@@ -204,7 +204,7 @@ async fn tui_opens_the_manager_with_the_tui_beside_cockpit_and_attaches_to_it() 
                 "--profile".to_owned(),
                 "dev".to_owned(),
                 "--state-dir".to_owned(),
-                path_text(&home.dir.path().join(".local/state/cockpit-dev")),
+                path_text(&home.dir.path().join(".local/state/torlek-dev")),
             ],
             viewer: vec![tui, "--viewer".to_owned()],
         }
@@ -222,8 +222,8 @@ async fn tui_without_cockpit_tui_beside_it_exits_1_naming_the_missing_file() {
     assert_eq!(
         text(&output.stderr),
         format!(
-            "cockpit: {} is missing: install cockpit-tui beside cockpit\n",
-            cockpit.with_file_name("cockpit-tui").display()
+            "torlek: {} is missing: install torlek-tui beside torlek\n",
+            cockpit.with_file_name("torlek-tui").display()
         )
     );
 }
@@ -238,7 +238,7 @@ async fn tui_version_executes_the_installed_sibling_without_a_daemon() {
 
     let home = Home::new();
     let cockpit = home.installed_cockpit(true);
-    let tui = cockpit.with_file_name("cockpit-tui");
+    let tui = cockpit.with_file_name("torlek-tui");
     std::fs::write(&tui, "#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = --version ] || exit 2\necho sibling-version\nexit 7\n").unwrap();
     std::fs::set_permissions(&tui, std::fs::Permissions::from_mode(0o755)).unwrap();
     let output = home.run(cockpit, &["tui", "--version"]).await;
@@ -252,5 +252,5 @@ async fn tui_version_requires_the_sibling_binary() {
     let cockpit = home.installed_cockpit(false);
     let output = home.run(cockpit, &["tui", "--version"]).await;
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stderr).contains("install cockpit-tui beside cockpit"));
+    assert!(text(&output.stderr).contains("install torlek-tui beside torlek"));
 }

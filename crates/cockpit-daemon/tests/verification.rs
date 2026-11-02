@@ -89,8 +89,8 @@ fn git(dir: &Path, arguments: &[&str]) {
 
 fn committed_repository(home: &Path, name: &str) -> PathBuf {
     let root = home.join("projects").join(name);
-    std::fs::create_dir_all(root.join(".cockpit")).unwrap();
-    std::fs::write(root.join(".cockpit/config.toml"), CHECKS).unwrap();
+    std::fs::create_dir_all(root.join(".torlek")).unwrap();
+    std::fs::write(root.join(".torlek/config.toml"), CHECKS).unwrap();
     std::fs::write(root.join("ok"), "present\n").unwrap();
     git(&root, &["init", "--quiet"]);
     git(&root, &["add", "--all"]);
@@ -199,7 +199,7 @@ async fn a_check_that_exits_non_zero_is_recorded_failed_with_its_output() {
     let verification = started().await;
     std::fs::remove_file(verification.root.join("ok")).unwrap();
     std::fs::write(
-        verification.root.join(".cockpit/config.toml"),
+        verification.root.join(".torlek/config.toml"),
         CHECKS.replace("artifacts = [\"ok\"]\n", ""),
     )
     .unwrap();

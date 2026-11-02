@@ -24,7 +24,7 @@ Items being done (an active step, a `doing` item without a run) are not waiting.
 
 `dispatch` runs in the caller's write transaction, so what it reads, the work it takes and
 the records it writes commit together. The daemon runs one every 30 seconds and on
-`cockpit queue dispatch`; no Chief turn is involved (report 10, "routine dispatch").
+`torlek queue dispatch`; no Chief turn is involved (report 10, "routine dispatch").
 
 1. **Settle.** A placement ends when its session no longer does its work (the item is not
    `doing` by it, the step not `active` by it), or when its session is gone (ended).
@@ -61,8 +61,8 @@ the records it writes commit together. The daemon runs one every 30 seconds and 
 
 A placement's envelope (producer `scheduling`, effect key `placement-<id>`, destination the
 session) carries one line, `Placement::brief`: for an item, where to read it
-(`cockpit todo show`) and how to finish it; for a step, its task packet
-(`cockpit workflow packet`). The work itself is read from its durable records, so the line
+(`torlek todo show`) and how to finish it; for a step, its task packet
+(`torlek workflow packet`). The work itself is read from its durable records, so the line
 never goes stale. The daemon types it to the agent after the pass commits. Typing twice
 would start the work twice, so the envelope is never redelivered after an unconfirmed
 attempt; a delivery that fails for good (`delivery_failed`) ends the placement
@@ -77,7 +77,7 @@ name), the sentence, what limits it (a resource and its capacity, a control on t
 each session of the project and why it cannot take it, the item it waits behind, what it
 would charge (headroom included), its priority and aging, when it entered the queue, when it
 was evaluated and when the next pass looks again, and the available action with who does it
-(`owner`, or `cockpit` when time or capacity moves it). `cockpit queue explain [ITEM]` prints
+(`owner`, or `cockpit` when time or capacity moves it). `torlek queue explain [ITEM]` prints
 them.
 
 ## Durable state

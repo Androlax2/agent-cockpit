@@ -6,7 +6,7 @@ through cockpit-client.
 Deliberately basic until M6 (decision 17, report 05): the session list grouped by project,
 open, next needing you, new session (`N`, the one form), restart, exit, the approval pane,
 the workflow view (`F`, #330), bug report drafts (one needs-you card, the `B` list and the `b`
-form, #471; review and send stay in `cockpit bug-report`), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
+form, #471; review and send stay in `torlek bug-report`), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
 capabilities only; no key reaches them here.
 
 ## Dependency edges
@@ -16,14 +16,14 @@ capabilities only; no key reaches them here.
   `cockpit-workspace-rules/tests/crate_graph.rs`), `ratatui` (with its Crossterm backend),
   `crossterm` itself for the key reader, with `use-dev-tty` (#356), `tokio`, `tracing`,
   `serde`, `serde_json`.
-- Used by: nothing; it is a frontend. `cockpit tui` (the CLI) opens the manager session that
+- Used by: nothing; it is a frontend. `torlek tui` (the CLI) opens the manager session that
   runs it.
 
 ## How it runs
 
-`cockpit tui` asks the daemon for the manager tmux session (`manager-open`) on the private
-server and attaches the terminal to it. Its left pane runs `cockpit-tui --column --socket
-PATH`, the pane beside it `cockpit-tui --viewer` until Enter shows a session there
+`torlek tui` asks the daemon for the manager tmux session (`manager-open`) on the private
+server and attaches the terminal to it. Its left pane runs `torlek-tui --column --socket
+PATH`, the pane beside it `torlek-tui --viewer` until Enter shows a session there
 (`session-show`, a nested attach the daemon makes, waking an asleep session). Closing or
 detaching the terminal leaves everything running.
 
@@ -38,7 +38,7 @@ detaching the terminal leaves everything running.
   `approval-queue`. A command's answer never takes a session back to an older revision nor
   brings back one the feed took off.
 - **Usage.** Every key counts as one named command (`open`, `restart`, `approval-approve`,
-  `unbound`…) in `$XDG_STATE_HOME/cockpit/logs/tui/cockpit.log`: the name only, never what
+  `unbound`…) in `$XDG_STATE_HOME/torlek/logs/tui/cockpit.log`: the name only, never what
   was typed, so M6 prunes on data.
 
 ## Approval pane (#166, a region of the TUI by #178)
@@ -82,7 +82,7 @@ detaching the terminal leaves everything running.
 - `tests/usage.rs`: each key's command reaches the TUI's log by name.
 - `tests/coordination.rs`: the card's coordinator grants and inbound message line (#410).
 - `tests/e2e/` (#300): the TUI end to end, the way Playwright drives a browser. A real
-  daemon on a scratch home under `/tmp`, `cockpit tui` attached in a pane of a test-owned
+  daemon on a scratch home under `/tmp`, `torlek tui` attached in a pane of a test-owned
   tmux server (the owner's terminal), a fake `claude` that reports through the agent channel
   and runs `!`-prefixed lines as commands. `press`, `type_text`, `screen`, `wait_for`,
   `click` (the owner's click on the list or the viewer) and `snapshot` (files under

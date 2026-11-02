@@ -121,15 +121,15 @@ impl Recorder {
         common::script(
             dir.path(),
             "cockpit",
-            "{ printf '%s\\n' \"$COCKPIT_LAUNCH_TOKEN\" \"$@\"; echo; } >> \"$(dirname \"$0\")/reports\"",
+            "{ printf '%s\\n' \"$TORLEK_LAUNCH_TOKEN\" \"$@\"; echo; } >> \"$(dirname \"$0\")/reports\"",
         );
         Recorder { dir }
     }
 
     fn bridge(&self) -> Bridge {
         Bridge {
-            session_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-session")),
-            hook_program: PathBuf::from(env!("CARGO_BIN_EXE_cockpit-codex-hook")),
+            session_program: PathBuf::from(env!("CARGO_BIN_EXE_torlek-codex-session")),
+            hook_program: PathBuf::from(env!("CARGO_BIN_EXE_torlek-codex-hook")),
             cockpit_program: self.dir.path().join("cockpit"),
         }
     }
@@ -176,7 +176,7 @@ impl LiveServer {
             ))
             .current_dir(work.path())
             .env("CODEX_HOME", home.path())
-            .env("COCKPIT_LAUNCH_TOKEN", "token-live")
+            .env("TORLEK_LAUNCH_TOKEN", "token-live")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -428,7 +428,7 @@ fn the_session_launcher_runs_a_conversation_in_its_terminal() {
         "-e".into(),
         format!("CODEX_HOME={}", home.path().display()).into(),
         "-e".into(),
-        "COCKPIT_LAUNCH_TOKEN=token-session".into(),
+        "TORLEK_LAUNCH_TOKEN=token-session".into(),
         command.program.clone().into(),
     ];
     words.extend(command.arguments.iter().cloned());

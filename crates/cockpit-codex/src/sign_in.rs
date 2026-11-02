@@ -51,7 +51,7 @@ impl crate::Codex {
                 SignInStatus::SignedIn
             } else {
                 SignInStatus::NotSignedIn {
-                    next: "run `codex login` in a terminal, then run `cockpit doctor` again"
+                    next: "run `codex login` in a terminal, then run `torlek doctor` again"
                         .to_owned(),
                 }
             },

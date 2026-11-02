@@ -18,7 +18,7 @@ provider and nothing above the contract sees a Codex type (#48).
   outcome are `tested` only when the running Codex is `CONFORMANCE_VERSION`; on any other or
   unknown version they are `discovered` (unverified). Effort, compact, billing, commands,
   evidence, remote control and screen reading are untested and not reported.
-- **Launch with the bridge** (#407). The session runs `cockpit-codex-session`, which starts
+- **Launch with the bridge** (#407). The session runs `torlek-codex-session`, which starts
   the session's private app-server, `codex app-server --listen unix://<session dir>/codex.sock
   --enable hooks --config <hook>…` (`server_arguments`), then the TUI against it, `codex
   [resume] --remote unix://<socket> [-- [<thread id>] [<first message>]]` (`tui_arguments`).
@@ -38,15 +38,15 @@ provider and nothing above the contract sees a Codex type (#48).
   them under its session-flags source, so they apply to this session's server only, never to
   a nested `codex` a tool starts, and the owner's persisted trust and the project's untrusted
   hooks stay as they are; `--dangerously-bypass-hook-trust` is never passed.
-- **Hook bridge.** `cockpit-codex-hook <cockpit>` runs on `SessionStart`, `UserPromptSubmit`,
+- **Hook bridge.** `torlek-codex-hook <torlek>` runs on `SessionStart`, `UserPromptSubmit`,
   `PostToolUse`, `PermissionRequest`, `Stop` and `Interrupt`, normalizes the payload
-  (`hooks::normalize`) and reports through `cockpit agent report`, naming the thread it comes
+  (`hooks::normalize`) and reports through `torlek agent report`, naming the thread it comes
   from (`--conversation`, the payload's `session_id`). A permission request reports a plain
   `--dialog` question, never the tool input; `Stop` reports `waiting --outcome completed`,
   `Interrupt` reports `waiting`. It prints nothing on standard output, so it never answers a
   permission request, and never exits 2. A subagent's (`agent_id`) activity and a
   `SessionStart` after a compaction report nothing; a subagent's permission request still
-  reports `--dialog`. `cockpit-codex-hook --version` and `cockpit-codex-session --version`
+  reports `--dialog`. `torlek-codex-hook --version` and `torlek-codex-session --version`
   answer their name and version for `Bridge::check`.
 - **Failed turns** (`turns`). A failed turn sends no hook. It leaves its thread
   `systemError`, which the app-server announces to every connection; the launcher's watcher
@@ -84,7 +84,7 @@ provider and nothing above the contract sees a Codex type (#48).
   `provider adapters -> provider-api only`), `serde_json` for hook payloads and JSON-RPC,
   `sha2` for the hook trust hash, `rustix` for the launcher's `SIGTERM`.
 - Used by: the daemon's wiring only (`capabilities -> provider adapters`), which comes with
-  #411 together with shipping `cockpit-codex-hook` and `cockpit-codex-session` in the release.
+  #411 together with shipping `torlek-codex-hook` and `torlek-codex-session` in the release.
 
 ## Tests
 
@@ -93,7 +93,7 @@ provider and nothing above the contract sees a Codex type (#48).
 - `tests/hooks.rs`: conformance with the payloads and hook input schemas pinned in
   `tests/fixtures/codex-0.161.0/`, and the reports they become.
 - `tests/trust.rs`: the subscription's `--config` values and the trust hash.
-- `tests/bridge.rs`: the hook bridge as a process against a fake `cockpit`.
+- `tests/bridge.rs`: the hook bridge as a process against a fake `torlek`.
 - `tests/clear.rs`: repeated clears, duplicate and late hooks, failed handoff retries and
   launch isolation against a channel double enforcing conversation changes.
 - `tests/bridge_check.rs`: `Bridge::check` passes the built programs and refuses one that

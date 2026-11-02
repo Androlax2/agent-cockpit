@@ -58,7 +58,7 @@ fn the_manual_holds_every_document_once_in_catalog_order() {
 fn the_manual_starts_with_the_version_stamp() {
     assert!(
         manual().starts_with(&format!(
-            "<!-- Cockpit {} instruction bundle",
+            "<!-- Torlek {} instruction bundle",
             env!("CARGO_PKG_VERSION")
         )),
         "{}",
@@ -75,7 +75,7 @@ fn the_overview_is_an_agent_skill_with_a_name_and_description() {
         .and_then(|rest| rest.split_once("\n---\n"))
         .map(|(frontmatter, _)| frontmatter)
         .expect("SKILL.md opens with YAML frontmatter");
-    assert!(frontmatter.lines().any(|line| line == "name: cockpit"));
+    assert!(frontmatter.lines().any(|line| line == "name: torlek"));
     let description = frontmatter
         .lines()
         .find_map(|line| line.strip_prefix("description: "))
@@ -96,16 +96,16 @@ fn the_manifest_names_every_file_with_its_hash_and_product_provenance() {
     assert_eq!(
         paths,
         [
-            "cockpit/SKILL.md",
-            "cockpit/references/workflow.md",
-            "cockpit/references/checks.md",
-            "cockpit/references/approvals.md",
-            "cockpit/references/coordination.md",
-            "cockpit/references/sandbox.md",
+            "torlek/SKILL.md",
+            "torlek/references/workflow.md",
+            "torlek/references/checks.md",
+            "torlek/references/approvals.md",
+            "torlek/references/coordination.md",
+            "torlek/references/sandbox.md",
         ]
     );
     for (entry, document) in manifest.entries.iter().zip(documents()) {
-        assert_eq!(entry.source, "cockpit");
+        assert_eq!(entry.source, "torlek");
         assert_eq!(entry.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(entry.scope, Scope::Product);
         assert_eq!(entry.trust, Trust::Product);

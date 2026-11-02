@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "cockpit-daemon"
+name = "torlek-daemon"
 path = "src/main.rs"
 
 [dependencies]

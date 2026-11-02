@@ -71,8 +71,7 @@ exec "$@"
             cockpit_sandbox::PINNED_GREYPROXY_COMMIT
         ),
     );
-    let owned =
-        cockpit_sandbox::install::programs(&home.path().join("state/cockpit-test")).unwrap();
+    let owned = cockpit_sandbox::install::programs(&home.path().join("state/torlek-test")).unwrap();
     std::fs::create_dir_all(owned.greyproxy.parent().unwrap()).unwrap();
     std::fs::set_permissions(
         home.path().join("state"),
@@ -274,7 +273,7 @@ else:
 listener = socket.socket(socket.AF_UNIX)
 listener.bind(entry)
 listener.listen()
-(folder / 'ready.partial').write_text(json.dumps({'pid': os.getpid(), 'token': os.environ['COCKPIT_LAUNCH_TOKEN']}))
+(folder / 'ready.partial').write_text(json.dumps({'pid': os.getpid(), 'token': os.environ['TORLEK_LAUNCH_TOKEN']}))
 (folder / 'ready.partial').rename(folder / 'ready')
 active = False
 

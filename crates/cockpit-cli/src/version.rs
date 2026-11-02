@@ -14,7 +14,7 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         [flag] if flag == "--all" => true,
         _ => return Err("version takes no argument but --all".to_string()),
     };
-    outln!("cockpit {} ({})", env!("CARGO_PKG_VERSION"), revision());
+    outln!("torlek {} ({})", env!("CARGO_PKG_VERSION"), revision());
     if !shows_all {
         return Ok(ExitCode::SUCCESS);
     }
@@ -26,7 +26,7 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     }) {
         Ok(path) => path,
         Err(problem) => {
-            eprintln!("cockpit: cannot locate this binary's bundle: {problem}");
+            eprintln!("torlek: cannot locate this binary's bundle: {problem}");
             return Ok(ExitCode::FAILURE);
         }
     };
@@ -40,17 +40,17 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
             manifest_path.display()
         ),
         Err(error) => {
-            eprintln!("cockpit: {}: {error}", manifest_path.display());
+            eprintln!("torlek: {}: {error}", manifest_path.display());
             return Ok(ExitCode::FAILURE);
         }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The release workflow sets `COCKPIT_SOURCE_REVISION` while compiling; rustc tracks it, so a
+/// The release workflow sets `TORLEK_SOURCE_REVISION` while compiling; rustc tracks it, so a
 /// changed revision rebuilds.
 fn revision() -> String {
-    match option_env!("COCKPIT_SOURCE_REVISION") {
+    match option_env!("TORLEK_SOURCE_REVISION") {
         Some(revision) => format!("revision {revision}"),
         None => "revision unknown: not a release build".to_string(),
     }

@@ -31,7 +31,7 @@ impl Home {
 
     /// Where the daemon puts a socket, `relative` to its socket directory.
     fn socket(&self, relative: &str) -> PathBuf {
-        let path = self.runtime_dir().join("cockpit-dev").join(relative);
+        let path = self.runtime_dir().join("torlek-dev").join(relative);
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -42,7 +42,7 @@ impl Home {
 
     /// Runs `cockpit` with `arguments` in this home, off the test's runtime threads.
     async fn cockpit(&self, arguments: &[&str], variables: &[(&str, &Path)]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
@@ -92,7 +92,7 @@ async fn a_report_goes_to_the_agent_socket_with_the_launch_token() {
                 "--state",
                 "working",
             ],
-            &[("COCKPIT_LAUNCH_TOKEN", Path::new("the-token"))],
+            &[("TORLEK_LAUNCH_TOKEN", Path::new("the-token"))],
         )
         .await;
 
@@ -125,7 +125,7 @@ async fn without_a_launch_token_the_report_carries_none() {
     let output = home
         .cockpit(
             &["agent", "report", "--label", "Agent channel issue"],
-            &[("COCKPIT_AGENT_SOCKET", &socket)],
+            &[("TORLEK_AGENT_SOCKET", &socket)],
         )
         .await;
 
@@ -159,8 +159,8 @@ async fn a_refusal_exits_1_saying_what_unblocks_it() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "cockpit: refused: the session holds no change-state grant for this\n\
-         cockpit: to unblock (the owner): the owner grants change-state over session s1\n"
+        "torlek: refused: the session holds no change-state grant for this\n\
+         torlek: to unblock (the owner): the owner grants change-state over session s1\n"
     );
 }
 

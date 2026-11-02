@@ -70,7 +70,7 @@ fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {
     let urls: Vec<&str> = urls.lines().collect();
     let [remote_url] = urls.as_slice() else {
         return refuse(format!(
-            "origin has {} URLs ({urls:?}); Cockpit pushes only to one GitHub repository URL",
+            "origin has {} URLs ({urls:?}); Torlek pushes only to one GitHub repository URL",
             urls.len()
         ));
     };
@@ -90,7 +90,7 @@ fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {
     let push_urls: Vec<&str> = push_urls.lines().collect();
     let [push_url] = push_urls.as_slice() else {
         return refuse(format!(
-            "origin pushes to {} URLs ({push_urls:?}); Cockpit pushes only to one GitHub \
+            "origin pushes to {} URLs ({push_urls:?}); Torlek pushes only to one GitHub \
              repository URL",
             push_urls.len()
         ));
@@ -99,7 +99,7 @@ fn push_branch(git: &Git, checkout: &std::path::Path) -> Result<Pushed, Error> {
     for url in [&remote_url, &push_url] {
         if !is_github_url(url) {
             return refuse(format!(
-                "origin is {url:?}; Cockpit pushes only to a GitHub repository URL"
+                "origin is {url:?}; Torlek pushes only to a GitHub repository URL"
             ));
         }
     }

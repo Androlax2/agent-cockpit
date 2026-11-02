@@ -37,11 +37,11 @@ provider and nothing above the contract sees an OpenCode type (#47).
   `plugin/cockpit-opencode-plugin.js` (`PLUGIN_SOURCE`, written by the daemon where
   `Bridge::plugin` says) on top of the owner's configuration (an `OPENCODE_CONFIG_CONTENT`
   the owner set is kept, the plugin joining its list; one it cannot join refuses the launch), and tells it the bridge, the
-  `cockpit` program and its server's port. The plugin forwards `session.created`,
+  `torlek` program and its server's port. The plugin forwards `session.created`,
   `session.status` (`busy`, `idle`), `permission.asked`, `question.asked`, a tool part that
   completed or failed, and an assistant message that ended its turn, in order, to
-  `cockpit-opencode-bridge <cockpit>`, which normalizes the event (`events::normalize`) and
-  reports through `cockpit agent report --conversation <session>`. Subagents' child sessions
+  `torlek-opencode-bridge <torlek>`, which normalizes the event (`events::normalize`) and
+  reports through `torlek agent report --conversation <session>`. Subagents' child sessions
   are dropped, except the permission and question dialogs they open, which wait in the same
   terminal and are reported under the root session. The plugin stays silent in an `opencode` whose server is not its launch's.
   A turn ends `completed` when the assistant message finishes for a reason OpenCode's loop
@@ -79,7 +79,7 @@ provider and nothing above the contract sees an OpenCode type (#47).
 - `tests/launch.rs`, `tests/capabilities.rs`, `tests/input.rs`: the contract's words.
 - `tests/events.rs`: conformance with the events pinned in `tests/fixtures/opencode-1.19.5/`,
   and the reports they become.
-- `tests/bridge.rs`: the bridge as a process against a fake `cockpit`.
+- `tests/bridge.rs`: the bridge as a process against a fake `torlek`.
 - `tests/bridge_check.rs`: `Bridge::check` passes the built bridge and this release's
   plugin, and refuses anything else.
 - `tests/plugin.rs`: the plugin, run by Node.js, forwards what it must, in order, to a fake

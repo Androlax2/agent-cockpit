@@ -6,7 +6,7 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 
 fn doctor(home: &TempDir, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cockpit"))
+    Command::new(env!("CARGO_BIN_EXE_torlek"))
         .arg("doctor")
         .args(arguments)
         .env_clear()
@@ -35,7 +35,7 @@ fn without_a_daemon_the_daemon_is_the_missing_prerequisite() {
         line(&report, "daemon").starts_with("missing-prerequisite"),
         "{report}"
     );
-    assert!(report.contains("next: start `cockpit-daemon`"), "{report}");
+    assert!(report.contains("next: start `torlek-daemon`"), "{report}");
     assert!(line(&report, "config").starts_with("available"), "{report}");
     assert!(line(&report, "host").starts_with("unknown"), "{report}");
 }
@@ -44,9 +44,9 @@ fn without_a_daemon_the_daemon_is_the_missing_prerequisite() {
 fn without_a_daemon_an_invalid_project_file_names_its_line() {
     let home = TempDir::new().unwrap();
     let project = home.path().join("app");
-    std::fs::create_dir_all(project.join(".cockpit")).unwrap();
+    std::fs::create_dir_all(project.join(".torlek")).unwrap();
     std::fs::write(
-        project.join(".cockpit/config.toml"),
+        project.join(".torlek/config.toml"),
         "[execution]\nenvironment = \"vm\"\n",
     )
     .unwrap();

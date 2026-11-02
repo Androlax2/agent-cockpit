@@ -53,11 +53,11 @@ pub(crate) fn agent_report(arguments: &[OsString]) -> Result<ExitCode, String> {
         }
         Err(ClientError::Connect { source, .. }) => {
             eprintln!(
-                "cockpit: cannot reach the daemon at {}: {source}",
+                "torlek: cannot reach the daemon at {}: {source}",
                 socket.display()
             );
             eprintln!(
-                "cockpit: no draft was opened: tell the owner in the conversation what happened"
+                "torlek: no draft was opened: tell the owner in the conversation what happened"
             );
             ExitCode::FAILURE
         }
@@ -322,7 +322,7 @@ fn report_text(report: &BugReportView) -> String {
     }
     if report.status == BugStatusView::Draft {
         text.push_str(&format!(
-            "\nNothing is sent until you run `cockpit bug-report send {}`.\n",
+            "\nNothing is sent until you run `torlek bug-report send {}`.\n",
             report.id
         ));
     }
@@ -396,7 +396,7 @@ fn send_report(send: &Send) -> ExitCode {
                 outln!("attach the support bundle to the issue: {path}");
             }
             outln!(
-                "once submitted, record it: cockpit bug-report send {} --filed ISSUE_URL",
+                "once submitted, record it: torlek bug-report send {} --filed ISSUE_URL",
                 report.id
             );
             return ExitCode::SUCCESS;
@@ -465,8 +465,8 @@ fn offers_existing_issue(issue: &BugIssueView, report: i64) -> bool {
     }
     outln!("an issue with this fingerprint exists; add to it instead of filing a duplicate:");
     out!("{listed}");
-    outln!("once added there, record it: cockpit bug-report send {report} --filed ISSUE_URL");
-    outln!("to file a new one anyway: cockpit bug-report send {report} --anyway");
+    outln!("once added there, record it: torlek bug-report send {report} --filed ISSUE_URL");
+    outln!("to file a new one anyway: torlek bug-report send {report} --anyway");
     true
 }
 

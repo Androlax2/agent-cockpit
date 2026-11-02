@@ -27,14 +27,14 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   never moves into Claude Code's shared background daemon (`LAUNCH_ENVIRONMENT`, #184), and
   `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS=10000`, so a `SessionEnd` hook has the report's
   deadline instead of being killed after 1.5 s (#219).
-- **Hook bridge.** `cockpit-claude-hook <cockpit>` runs on `SessionStart`,
+- **Hook bridge.** `torlek-claude-hook <torlek>` runs on `SessionStart`,
   `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop`, `StopFailure` and `SessionEnd`,
-  normalizes the payload (`hooks::normalize`) and reports through `cockpit agent report`.
+  normalizes the payload (`hooks::normalize`) and reports through `torlek agent report`.
   Every report names the conversation it comes from (`--conversation`, the payload's
   `session_id`); a `SessionEnd` of `/clear` or an in-session `/resume` reports
   `--conversation-ends` for the conversation that ends, so the daemon follows the next one
   and refuses a report of any other (#219).
-  It prints nothing on standard output and never exits 2. `cockpit-claude-hook --version`
+  It prints nothing on standard output and never exits 2. `torlek-claude-hook --version`
   answers its name and version: `Bridge::check`, run by the daemon at its start, proves the
   bridge runs here (#203). A question the agent channel
   would refuse is replaced by a plain one; line breaks become spaces and a long one is cut
@@ -62,7 +62,7 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - `tests/hooks.rs`: conformance with the hook payloads pinned in
   `tests/fixtures/claude-code-2.1.316/`, and the reports they become.
 - `tests/screen.rs`: the screen-reading fallback.
-- `tests/bridge.rs`: the hook bridge as a process against a fake `cockpit`.
+- `tests/bridge.rs`: the hook bridge as a process against a fake `torlek`.
 - `tests/bridge_check.rs`: `Bridge::check` passes the built bridge and refuses one that
   cannot run or is another program.
 - `tests/conversation.rs`: the conversation each report names, and the end a `/clear` or an

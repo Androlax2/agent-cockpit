@@ -90,10 +90,10 @@ def smoke(programs, home):
         PATH=f"{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin",
         LANG="C.UTF-8",
     )
-    cockpit = programs / "cockpit"
+    cockpit = programs / "torlek"
     installed = run(cockpit, "--profile", "smoke", "sandbox", "install", "--engines-only", env=env)
     print(installed, end="")
-    if "cockpit --profile smoke doctor" not in installed:
+    if "torlek --profile smoke doctor" not in installed:
         raise RuntimeError("installer advice lost the selected profile")
     paths = dict(
         line.split(": ", 1)
@@ -128,14 +128,14 @@ def smoke(programs, home):
             raise RuntimeError(f"{name} did not report the exact pinned commit")
     with (home / "daemon.log").open("w+") as log:
         daemon = subprocess.Popen(
-            [str(programs / "cockpit-daemon"), "--profile", "smoke", "--foreground"],
+            [str(programs / "torlek-daemon"), "--profile", "smoke", "--foreground"],
             env=env,
             stdout=log,
             stderr=log,
         )
         try:
             deadline = time.monotonic() + 30
-            while not (runtime / "cockpit-smoke/daemon.sock").exists():
+            while not (runtime / "torlek-smoke/daemon.sock").exists():
                 if daemon.poll() is not None or time.monotonic() >= deadline:
                     log.seek(0)
                     raise RuntimeError(f"fixture daemon did not become ready:\n{log.read()}")

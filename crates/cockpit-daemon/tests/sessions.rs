@@ -1358,7 +1358,7 @@ async fn the_agent_socket_refuses_every_session_command() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_owner_configured_idle_window_decides_when_a_waiting_agent_sleeps() {
     let home = Home::new();
-    let config_dir = home.path().join("home/.config/cockpit");
+    let config_dir = home.path().join("home/.config/torlek");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("config.toml"),

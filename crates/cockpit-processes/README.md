@@ -60,7 +60,7 @@ plain shell names.
 
 A `LaunchSpec` with a `Terminal` runs in a pseudo-terminal instead (#163; approved runs of
 `cockpit-approvals`). The execution is the terminal's session: the spec's session leader
-(`run_session_leader`, which the daemon runs as `cockpit-daemon --run-leader`) calls
+(`run_session_leader`, which the daemon runs as `torlek-daemon --run-leader`) calls
 `setsid`, takes the terminal as controlling terminal and execs the launch script, so the
 program keeps its pid, leads the session and its process group, and its exit status is the
 one `Launched::exit` reports. Until the leader's `setsid`, its pid sits in the daemon's group

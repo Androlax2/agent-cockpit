@@ -38,7 +38,7 @@ impl crate::ClaudeCode {
                 SignInStatus::SignedIn
             } else {
                 SignInStatus::NotSignedIn {
-                    next: "run `claude auth login` in a terminal, then run `cockpit doctor` again"
+                    next: "run `claude auth login` in a terminal, then run `torlek doctor` again"
                         .to_owned(),
                 }
             },

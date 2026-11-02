@@ -74,5 +74,5 @@ owner's.
   revisions on a real state database.
 - `tests/attachments.rs`: images and drafts.
 - `tests/finished_by.rs`: the finishing session and `session_work`.
-- `cockpit todo` end to end: `cockpit-cli/tests/todo.rs` (owner) and
+- `torlek todo` end to end: `cockpit-cli/tests/todo.rs` (owner) and
   `cockpit-daemon/tests/tasks.rs` (agent socket).

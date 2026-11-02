@@ -12,7 +12,7 @@ use cockpit_protocol::{Command, Reply};
 
 use crate::daemon::{CONTROL_DEADLINE, fail, request, unexpected};
 
-const TUI_BINARY: &str = "cockpit-tui";
+const TUI_BINARY: &str = "torlek-tui";
 
 pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     if arguments == ["--version"] {
@@ -80,7 +80,7 @@ fn tui_binary() -> Result<String, String> {
     let tui = cockpit.with_file_name(TUI_BINARY);
     if !tui.is_file() {
         return Err(format!(
-            "{} is missing: install {TUI_BINARY} beside cockpit",
+            "{} is missing: install {TUI_BINARY} beside torlek",
             tui.display()
         ));
     }

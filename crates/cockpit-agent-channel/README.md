@@ -8,7 +8,7 @@ the kernel (the agent socket's peer credentials) and this crate decides which se
 process acts for:
 
 1. The launcher calls `mint` for a session and passes the token to its agent
-   (`COCKPIT_LAUNCH_TOKEN`), then `record_root` with the process it started.
+   (`TORLEK_LAUNCH_TOKEN`), then `record_root` with the process it started.
 2. The first request carrying that token binds the launch, but only from the recorded root
    or one of its descendants, and spends the token. A token presented from another tree is
    refused and stays unspent.

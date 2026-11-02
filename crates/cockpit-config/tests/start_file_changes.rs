@@ -130,7 +130,7 @@ fn a_file_declared_after_launch_is_reported_because_the_session_cannot_have_it()
 #[test]
 fn the_declared_list_from_configuration_drives_detection() {
     let home = TempDir::new().unwrap();
-    let config_dir = home.path().join(".config/cockpit");
+    let config_dir = home.path().join(".config/torlek");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(
         config_dir.join("config.toml"),

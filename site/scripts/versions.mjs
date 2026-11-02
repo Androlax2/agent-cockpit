@@ -64,7 +64,7 @@ export function assemble(builds, out, names) {
   writeFileSync(path.join(out, "versions.json"), `${JSON.stringify(names)}\n`);
   writeFileSync(
     path.join(out, "index.html"),
-    '<!doctype html><html lang="en"><meta charset="utf-8"><title>Agent Cockpit documentation</title><meta http-equiv="refresh" content="0;url=latest/get-started/install/"><a href="latest/get-started/install/">Latest documentation</a></html>\n',
+    '<!doctype html><html lang="en"><meta charset="utf-8"><title>Torlek documentation</title><meta http-equiv="refresh" content="0;url=latest/get-started/install/"><a href="latest/get-started/install/">Latest documentation</a></html>\n',
   );
 }
 

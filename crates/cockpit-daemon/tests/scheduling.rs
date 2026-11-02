@@ -367,8 +367,8 @@ async fn queue_dispatch_types_the_placed_item_to_its_agent() {
     assert_eq!(
         home.messages_of(&idle.id, 1).await,
         [format!(
-            "Cockpit gives you item {item}: read it with `cockpit todo show {item}`, do it, then \
-             finish it with `cockpit todo done {item} --summary '<what you did>'`."
+            "Torlek gives you item {item}: read it with `torlek todo show {item}`, do it, then \
+             finish it with `torlek todo done {item} --summary '<what you did>'`."
         )]
     );
 }

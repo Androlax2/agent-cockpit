@@ -179,7 +179,7 @@ fn the_owners_inline_config_is_kept_and_the_plugin_joins_its_plugins() {
         serde_json::json!({
             "model": "anthropic/claude-sonnet-5-5",
             "plugin": ["their-plugin", bridge.plugin.to_str().unwrap()],
-            "mcp": { "cockpit": { "type": "local", "command": ["/opt/cockpit/bin/cockpit", "mcp"] } },
+            "mcp": { "torlek": { "type": "local", "command": ["/opt/cockpit/bin/cockpit", "mcp"] } },
         })
     );
 }
@@ -201,7 +201,7 @@ fn a_launch_with_the_bridge_registers_cockpits_mcp_server_beside_the_owners() {
         config["mcp"],
         serde_json::json!({
             "theirs": { "type": "remote", "url": "https://example.invalid/mcp" },
-            "cockpit": { "type": "local", "command": ["/opt/cockpit/bin/cockpit", "mcp"] },
+            "torlek": { "type": "local", "command": ["/opt/cockpit/bin/cockpit", "mcp"] },
         })
     );
 }
@@ -271,7 +271,7 @@ fn an_owners_inline_config_the_plugin_cannot_join_is_refused() {
         "[]",
         r#"{"plugin":"one"}"#,
         r#"{"mcp":[]}"#,
-        r#"{"mcp":{"cockpit":{"type":"local","command":["theirs"]}}}"#,
+        r#"{"mcp":{"torlek":{"type":"local","command":["theirs"]}}}"#,
     ] {
         let refusal = common::opencode()
             .inline_config(Some(OsStr::new(owner)))

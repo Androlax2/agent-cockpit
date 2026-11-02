@@ -98,7 +98,7 @@ export function rewriteLinks(markdown, source, pages, base, revision, anchors = 
 }
 
 export function readReferences(binary) {
-  const home = mkdtempSync(path.join(tmpdir(), "cockpit-docs-"));
+  const home = mkdtempSync(path.join(tmpdir(), "torlek-docs-"));
   try {
     const env = { HOME: home, PATH: "/usr/bin:/bin" };
     const run = (args, expected) => {
@@ -115,10 +115,10 @@ export function readReferences(binary) {
       return (result.stdout + result.stderr).replaceAll(home, "~").trim();
     };
     const help = run(["--help"], 2);
-    if (!help.startsWith("usage: cockpit")) throw new Error("CLI did not return cockpit help");
+    if (!help.startsWith("usage: torlek")) throw new Error("CLI did not return torlek help");
     return {
       help,
-      config: run(["--profile", "cockpit", "config", "show"], 0),
+      config: run(["--profile", "torlek", "config", "show"], 0),
       version: run(["version", "--all"], 0),
       binaryHash: digest(readFileSync(binary)),
     };
@@ -130,7 +130,7 @@ export function readReferences(binary) {
 export function stage({
   root = repository,
   out = path.join(site, "content/docs"),
-  binary = path.join(root, "target/debug/cockpit"),
+  binary = path.join(root, "target/debug/torlek"),
   base = "/agent-cockpit/latest/",
   version = "latest",
   versions = ["latest"],
@@ -207,7 +207,7 @@ export function stage({
     "crates/cockpit-cli/src/main.rs",
     "reference/cli",
     "CLI reference",
-    reference("cockpit --help", refs.help, "Help exits 2, as usage output."),
+    reference("torlek --help", refs.help, "Help exits 2, as usage output."),
     { generated: true },
   );
   add(
@@ -215,7 +215,7 @@ export function stage({
     "reference/configuration",
     "Configuration defaults",
     reference(
-      "cockpit --profile cockpit config show",
+      "torlek --profile torlek config show",
       refs.config,
       "Captured offline in an empty isolated home. These are effective defaults, not a complete configuration schema. Home paths are normalized to `~`.",
     ),
@@ -230,7 +230,7 @@ export function stage({
   add(
     "site/content/comparison.md",
     "project/comparison",
-    "Where Cockpit fits",
+    "Where Torlek fits",
     read("site/content/comparison.md").replace(/^# .+\n/, ""),
   );
   const pages = new Map(entries.map((entry) => [entry.source, entry.route]));
@@ -260,7 +260,7 @@ export function stage({
     mkdirSync(path.dirname(file), { recursive: true });
     const header = {
       title: entry.title,
-      description: `${entry.title} for Agent Cockpit`,
+      description: `${entry.title} for Torlek`,
       sourcePath: entry.source,
       sourceRevision: revision,
       sourceHash: entry.sourceHash,
@@ -304,11 +304,11 @@ export function stage({
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const manifest = stage({
-    binary: process.env.COCKPIT_DOCS_BINARY,
-    base: process.env.COCKPIT_DOCS_BASE,
-    version: process.env.COCKPIT_DOCS_VERSION,
-    versions: process.env.COCKPIT_DOCS_VERSIONS
-      ? JSON.parse(process.env.COCKPIT_DOCS_VERSIONS)
+    binary: process.env.TORLEK_DOCS_BINARY,
+    base: process.env.TORLEK_DOCS_BASE,
+    version: process.env.TORLEK_DOCS_VERSION,
+    versions: process.env.TORLEK_DOCS_VERSIONS
+      ? JSON.parse(process.env.TORLEK_DOCS_VERSIONS)
       : undefined,
   });
   console.log(`Staged ${manifest.pages.length} source-grounded pages at ${manifest.base}`);

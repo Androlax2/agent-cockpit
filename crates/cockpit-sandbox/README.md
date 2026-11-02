@@ -28,7 +28,7 @@ Decision (#61, option C): Cockpit owns the policy, the engine enforces it.
 4. `Evidence` says what one launch got: enforced or unsandboxed (only by the owner's
    `agents.sandbox = "off"`), the engine and platform, every rule with what enforced it, and
    the host capabilities observed. `record` stores it in the launch's transaction;
-   `latest_for_session` reads it back for `cockpit session sandbox`.
+   `latest_for_session` reads it back for `torlek session sandbox`.
    `record_observations` appends one bounded owner-measured batch for that exact launch;
    output labels it `owner probe` to distinguish an attestation from engine capabilities.
 
@@ -44,8 +44,8 @@ cutover.
 
 ## Managed installation (#470)
 
-Run `cockpit sandbox install` before starting the daemon, selecting the same profile with
-`cockpit --profile NAME sandbox install` when needed. The command needs curl for HTTPS;
+Run `torlek sandbox install` before starting the daemon, selecting the same profile with
+`torlek --profile NAME sandbox install` when needed. The command needs curl for HTTPS;
 it never compiles or installs a system package. It downloads the two host assets from the
 embedded pin file, verifies both SHA-256 values before extraction, validates their exact
 commits, and publishes the pair with one directory rename. A checksum, archive, commit or
@@ -67,7 +67,7 @@ upstream installer disabled. Installation readiness alone does not prove enforce
 
 ## Managed proxy (#495)
 
-`cockpit sandbox install` also configures and starts this profile's Greyproxy. Use
+`torlek sandbox install` also configures and starts this profile's Greyproxy. Use
 `--engines-only` for an offline binary installation. Linux and WSL2 need the user's
 systemd manager; macOS needs the user's login launchd domain. Commands never install these
 prerequisites or repair the host automatically. Health uses curl and process ownership
@@ -75,8 +75,8 @@ metadata (`readlink`, `cat`, `ls` on Linux/WSL2; macOS's `lsof`). Missing capabi
 closed with a reason and a next action.
 
 Configuration, the API token and proxy data stay in `<profile-state>/greyproxy`. The
-service is `cockpit-greyproxy-<profile>.service` in the user's systemd configuration or
-`io.github.androlax2.cockpit.greyproxy.<profile>.plist` in `~/Library/LaunchAgents`.
+service is `torlek-greyproxy-<profile>.service` in the user's systemd configuration or
+`io.github.androlax2.torlek.greyproxy.<profile>.plist` in `~/Library/LaunchAgents`.
 Authentication and launch secrets are required; anonymous clients and exemptions are
 disabled. Managed setup disables conversation capture, notifications and Docker discovery.
 It generates a profile-local CA pair using the verified engine's bounded `cert generate`
@@ -89,7 +89,7 @@ ports at a time (43080 API, 43051 HTTP, 43052 SOCKS, 43053 TCP/UDP DNS). An occu
 is refused without adopting or stopping its listener. This limits simultaneous Cockpit
 profiles, not the number of sessions in a profile.
 
-`cockpit --profile NAME sandbox status` checks current health without a daemon;
+`torlek --profile NAME sandbox status` checks current health without a daemon;
 `sandbox restart` restarts only the owned service; `sandbox stop` stops it. Restart or stop
 interrupts that profile's agent networking. Reinstall preserves an already healthy service. When pins change, it reports an explicit
 restart requirement; `sandbox restart` upgrades the previous owned service to the new pair.
@@ -109,7 +109,7 @@ prove the wiring and refusal paths; actual systemd/launchd startup and a real ne
 remain open acceptance on #495, to be measured with #433's isolated platform CI.
 
 To test an unreleased local fork, a **debug build in profile `dev` only** accepts both
-`COCKPIT_DEV_GREYWALL` and `COCKPIT_DEV_GREYPROXY` as absolute paths. This explicitly bypasses
+`TORLEK_DEV_GREYWALL` and `TORLEK_DEV_GREYPROXY` as absolute paths. This explicitly bypasses
 commit pins and logs a warning; release builds and other profiles refuse the override.
 
 `make sandbox-install-smoke` verifies the real published assets through installation and
@@ -121,7 +121,7 @@ requires the separately approved corrected release before #433 can claim it.
 ## Measured enforcement evidence (#433)
 
 The owner can record a measured batch with
-`cockpit session sandbox-record SESSION --client CLIENT --observed TEXT...`, using the
+`torlek session sandbox-record SESSION --client CLIENT --observed TEXT...`, using the
 latest launch's proxy client identity from `session sandbox`. The daemon refuses agent
 callers, stale identities, unsandboxed launches and conflicting replacement reports. An
 identical retry is idempotent. A batch contains 1–16 unique, nonblank observations of at

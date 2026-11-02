@@ -50,7 +50,7 @@ export function Docs({
       <DocsLayout
         tree={data.tree}
         tabs={false}
-        nav={{ title: "Agent Cockpit", url: `${base}get-started/install/` }}
+        nav={{ title: "Torlek", url: `${base}get-started/install/` }}
         githubUrl="https://github.com/Androlax2/agent-cockpit"
         sidebar={{
           collapsible: false,

@@ -30,7 +30,7 @@ impl Home {
     }
 
     fn daemon_socket(&self) -> PathBuf {
-        let path = self.runtime_dir().join("cockpit-dev/daemon.sock");
+        let path = self.runtime_dir().join("torlek-dev/daemon.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -40,7 +40,7 @@ impl Home {
     }
 
     async fn cockpit(&self, arguments: &[&str]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
@@ -208,7 +208,7 @@ async fn resources_check_without_a_demand_is_a_usage_error() {
 
     assert_eq!(output.status.code(), Some(2));
     assert!(
-        text(&output.stderr).starts_with("cockpit: check needs --memory MIB\n"),
+        text(&output.stderr).starts_with("torlek: check needs --memory MIB\n"),
         "{}",
         text(&output.stderr)
     );

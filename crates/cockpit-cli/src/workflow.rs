@@ -1,5 +1,5 @@
 //! `cockpit workflow`: an item's workflow, its steps and the task packet (#39). A launched
-//! session (one with `COCKPIT_LAUNCH_TOKEN`) works its step on the agent socket, where the
+//! session (one with `TORLEK_LAUNCH_TOKEN`) works its step on the agent socket, where the
 //! daemon identifies it; everyone else is the owner, on the host-only socket. Beginning and
 //! checkpointing a step are a session's only, so they always go to the agent socket. The
 //! daemon decides what each may do.
@@ -336,6 +336,6 @@ fn next(next: &WorkflowNextView) -> String {
             session: None,
         } => format!("step {position} is in progress"),
         WorkflowNextView::Nothing => "nothing: it is closed".to_owned(),
-        WorkflowNextView::Unknown => "unknown to this cockpit version".to_owned(),
+        WorkflowNextView::Unknown => "unknown to this torlek version".to_owned(),
     }
 }

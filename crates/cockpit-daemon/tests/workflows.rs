@@ -38,15 +38,15 @@ struct Workflows {
 }
 
 /// A home whose owner registered project `app` with `project_config` as its
-/// `.cockpit/config.toml`, with session `s0123456789ab` launched from this process and working in it.
+/// `.torlek/config.toml`, with session `s0123456789ab` launched from this process and working in it.
 /// The daemon is not started yet.
 async fn prepared(project_config: &str) -> Workflows {
     let cwd = WORKING_DIRECTORY.lock().await;
     let home = TestHome::new();
     std::fs::create_dir_all(home.home().join("config/cockpit")).unwrap();
     let root = repository(home.home(), "app");
-    std::fs::create_dir_all(root.join(".cockpit")).unwrap();
-    std::fs::write(root.join(".cockpit/config.toml"), project_config).unwrap();
+    std::fs::create_dir_all(root.join(".torlek")).unwrap();
+    std::fs::write(root.join(".torlek/config.toml"), project_config).unwrap();
     let database = home.open_state().await;
     cockpit_projects::register_project(&database, &cockpit_projects::Git::from_path(), &root, None)
         .await

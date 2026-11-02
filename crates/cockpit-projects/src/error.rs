@@ -171,7 +171,7 @@ impl fmt::Display for Error {
                 reason,
             } => write!(
                 formatter,
-                "checkout {checkout} at {} was replaced outside Cockpit ({reason}); \
+                "checkout {checkout} at {} was replaced outside Torlek ({reason}); \
                  it is not the recorded incarnation",
                 path.display()
             ),

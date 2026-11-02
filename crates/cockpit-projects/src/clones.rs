@@ -282,11 +282,11 @@ fn install_lefthook_runners(clone: &Path) -> Result<(), Error> {
 fn lefthook_runner(hook: &str) -> String {
     format!(
         "#!/bin/sh\n\
-         # Installed by Cockpit in a parallel clone: it runs lefthook, nothing else.\n\
+         # Installed by Torlek in a parallel clone: it runs lefthook, nothing else.\n\
          [ \"${{LEFTHOOK:-1}}\" = 0 ] && exit 0\n\
          if [ -n \"$LEFTHOOK_BIN\" ]; then exec \"$LEFTHOOK_BIN\" run {hook} \"$@\"; fi\n\
          if command -v lefthook >/dev/null 2>&1; then exec lefthook run {hook} \"$@\"; fi\n\
          if [ -x node_modules/.bin/lefthook ]; then exec node_modules/.bin/lefthook run {hook} \"$@\"; fi\n\
-         echo \"cockpit: lefthook is not installed; the {hook} hook did not run\" >&2\n"
+         echo \"torlek: lefthook is not installed; the {hook} hook did not run\" >&2\n"
     )
 }

@@ -64,11 +64,11 @@ async fn opencode_receives_the_daemon_brief_and_native_skill() {
 async fn probe(provider: &str, variable: &str, version: &str) {
     let program = std::fs::canonicalize(std::env::var_os(variable).expect(variable)).unwrap();
     for sibling in [
-        "cockpit",
-        "cockpit-claude-hook",
-        "cockpit-codex-hook",
-        "cockpit-codex-session",
-        "cockpit-opencode-bridge",
+        "torlek",
+        "torlek-claude-hook",
+        "torlek-codex-hook",
+        "torlek-codex-session",
+        "torlek-opencode-bridge",
     ] {
         assert!(
             cockpit_program().with_file_name(sibling).is_file(),
@@ -187,10 +187,10 @@ async fn probe(provider: &str, variable: &str, version: &str) {
     };
     let context = captured["context"].as_str().unwrap();
     for expected in [
-        "# Cockpit launch brief",
+        "# Torlek launch brief",
         &format!("Session {}", session.id),
         project.to_str().unwrap(),
-        "cockpit ask run --reason TEXT COMMAND",
+        "torlek ask run --reason TEXT COMMAND",
         &cockpit_agent_context::manifest().id,
         "Prose grants nothing",
         "profile dev",

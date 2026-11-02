@@ -58,12 +58,12 @@ impl Fixture {
         self.home.path().join("project")
     }
 
-    /// The project's `.cockpit/config.toml`, and the owner's file when `owner` is set.
+    /// The project's `.torlek/config.toml`, and the owner's file when `owner` is set.
     fn configure(&self, project: &str, owner: Option<&str>) {
-        fs::create_dir_all(self.project_dir().join(".cockpit")).unwrap();
-        fs::write(self.project_dir().join(".cockpit/config.toml"), project).unwrap();
+        fs::create_dir_all(self.project_dir().join(".torlek")).unwrap();
+        fs::write(self.project_dir().join(".torlek/config.toml"), project).unwrap();
         if let Some(owner) = owner {
-            let dir = self.home.path().join(".config/cockpit");
+            let dir = self.home.path().join(".config/torlek");
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("config.toml"), owner).unwrap();
         }
@@ -188,7 +188,7 @@ fn a_missing_sandbox_names_the_managed_installer() {
             .next
             .as_deref()
             .unwrap()
-            .contains("cockpit --profile next sandbox install"),
+            .contains("torlek --profile next sandbox install"),
         "{sandbox:?}"
     );
 }
@@ -199,7 +199,7 @@ fn a_host_fact_decides_its_requirement_status() {
     let cases: Vec<(HostFacts, &str, Status)> = vec![
         (
             HostFacts {
-                tmux: Err("`tmux` is tmux 3.0; Cockpit needs tmux 3.2 or newer".to_owned()),
+                tmux: Err("`tmux` is tmux 3.0; Torlek needs tmux 3.2 or newer".to_owned()),
                 ..ready_host()
             },
             "tmux",
@@ -320,10 +320,7 @@ fn an_unreadable_configuration_misses_a_prerequisite_and_skips_the_project() {
 
     let config = requirement(&report, "config");
     assert_eq!(config.status, Status::MissingPrerequisite);
-    assert!(
-        config.detail.contains(".cockpit/config.toml"),
-        "{config:#?}"
-    );
+    assert!(config.detail.contains(".torlek/config.toml"), "{config:#?}");
     assert!(
         !report
             .requirements
@@ -389,7 +386,7 @@ fn a_project_that_is_not_registered_names_the_command_that_registers_it() {
     assert_eq!(requirement.status, Status::MissingPrerequisite);
     assert_eq!(
         requirement.next.as_deref(),
-        Some(format!("cockpit project add {}", fixture.project_dir().display()).as_str())
+        Some(format!("torlek project add {}", fixture.project_dir().display()).as_str())
     );
 }
 

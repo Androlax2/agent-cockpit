@@ -76,9 +76,9 @@ jobs:
       matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
     env:
       CARGO_BUILD_JOBS: 2
-      COCKPIT_DOCS_VERSION: ${{ matrix.version }}
-      COCKPIT_DOCS_BASE: /agent-cockpit/${{ matrix.version }}/
-      COCKPIT_DOCS_VERSIONS: ${{ needs.catalog.outputs.versions }}
+      TORLEK_DOCS_VERSION: ${{ matrix.version }}
+      TORLEK_DOCS_BASE: /agent-cockpit/${{ matrix.version }}/
+      TORLEK_DOCS_VERSIONS: ${{ needs.catalog.outputs.versions }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

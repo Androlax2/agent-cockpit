@@ -159,7 +159,7 @@ impl Sandbox {
     }
 
     fn agent_socket(&self) -> PathBuf {
-        let path = self.dir.path().join("run/cockpit-dev/agent/agent.sock");
+        let path = self.dir.path().join("run/torlek-dev/agent/agent.sock");
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -170,7 +170,7 @@ impl Sandbox {
 
     /// Runs `cockpit` with `environment`, off the test's runtime threads.
     async fn cockpit_with(&self, arguments: &[&str], environment: &[(&str, &str)]) -> Output {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
@@ -184,7 +184,7 @@ impl Sandbox {
 
     /// Runs `cockpit` as an agent launched with `the-token`.
     async fn cockpit(&self, arguments: &[&str]) -> Output {
-        self.cockpit_with(arguments, &[("COCKPIT_LAUNCH_TOKEN", "the-token")])
+        self.cockpit_with(arguments, &[("TORLEK_LAUNCH_TOKEN", "the-token")])
             .await
     }
 }

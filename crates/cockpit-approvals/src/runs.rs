@@ -360,7 +360,7 @@ pub fn validate_start(dir: &Path, start: &StartSession) -> Result<String, Refusa
 /// How the owner reads a start request: the `cockpit session new` that does the same, each
 /// value quoted for a POSIX shell. The digest an approval binds covers it, and so every field.
 fn start_command(dir: &Path, start: &StartSession) -> Result<String, Refusal> {
-    let mut command = format!("cockpit session new {}", shell_quoted(text_of(dir)?));
+    let mut command = format!("torlek session new {}", shell_quoted(text_of(dir)?));
     if let Some(agent) = &start.agent {
         command.push_str(&format!(" --agent {}", shell_quoted(agent)));
     }

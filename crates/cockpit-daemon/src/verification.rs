@@ -145,7 +145,7 @@ async fn owner_checkout(
             return Err(refused(
                 ErrorCode::NotFound,
                 format!("project {project} is not registered"),
-                "register it with `cockpit project add`",
+                "register it with `torlek project add`",
                 UnblockedBy::Owner,
             ));
         }
@@ -164,7 +164,7 @@ async fn owner_checkout(
                     "{} is not a registered checkout of {project}",
                     wanted.display()
                 ),
-                "name a path `cockpit checkout list` shows",
+                "name a path `torlek checkout list` shows",
                 UnblockedBy::Owner,
             )
         })
@@ -243,7 +243,7 @@ impl Agent {
             refused(
                 ErrorCode::NotFound,
                 "the session does not work in a registered checkout".to_owned(),
-                "work in a checkout `cockpit project add` registered",
+                "work in a checkout `torlek project add` registered",
                 UnblockedBy::Owner,
             )
         })?;
@@ -301,7 +301,7 @@ fn declared<'checks>(
             refused(
                 ErrorCode::NotFound,
                 format!("project {project} declares no check `{name}`"),
-                "declare it under `[[checks]]` in the project's .cockpit/config.toml",
+                "declare it under `[[checks]]` in the project's .torlek/config.toml",
                 UnblockedBy::Owner,
             )
         })
@@ -418,7 +418,7 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         // A launch whose confirmation timed out may still run: its outcome is unknown, and
         // the gate asks for the check again.
         Err(error) => {
-            pending.output = format!("cockpit lost the run: the check may have started: {error}");
+            pending.output = format!("torlek lost the run: the check may have started: {error}");
             let output_bytes = pending.output.len() as u64;
             record(context, pending, output_bytes).await;
         }
@@ -456,11 +456,11 @@ async fn record_when_ended(
             bytes
         }
         Ok(Err(error)) => {
-            receipt.output = format!("cockpit could not read the output: {error}");
+            receipt.output = format!("torlek could not read the output: {error}");
             receipt.output.len() as u64
         }
         Err(error) => {
-            receipt.output = format!("cockpit could not read the output: {error}");
+            receipt.output = format!("torlek could not read the output: {error}");
             receipt.output.len() as u64
         }
     };
@@ -531,7 +531,7 @@ async fn gate(context: &Context, target: Target) -> Answer {
         return Err(refused(
             ErrorCode::Refused,
             format!("project {} declares no checks", target.project),
-            "declare them under `[[checks]]` in the project's .cockpit/config.toml",
+            "declare them under `[[checks]]` in the project's .torlek/config.toml",
             UnblockedBy::Owner,
         ));
     }

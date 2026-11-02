@@ -1,5 +1,5 @@
-//! The `b` form (#471): the owner reports a Cockpit bug, `cockpit bug-report new` in the TUI.
-//! It only drafts: review, edit and send stay in the CLI (`cockpit bug-report show|send`).
+//! The `b` form (#471): the owner reports a Torlek bug, `torlek bug-report new` in the TUI.
+//! It only drafts: review, edit and send stay in the CLI (`torlek bug-report show|send`).
 
 use cockpit_protocol::Command;
 

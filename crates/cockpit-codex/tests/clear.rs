@@ -45,13 +45,13 @@ state_path.write_text(json.dumps(state))
         let payload = serde_json::json!({
             "hook_event_name": name, "session_id": id, "source": source,
         });
-        let mut child = Command::new(env!("CARGO_BIN_EXE_cockpit-codex-hook"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_torlek-codex-hook"))
             .arg(self.dir.path().join("cockpit"))
             .env(
-                "COCKPIT_CODEX_REPORT_STATE",
+                "TORLEK_CODEX_REPORT_STATE",
                 self.dir.path().join("reports-state"),
             )
-            .env("COCKPIT_LAUNCH_TOKEN", "isolated-test-token")
+            .env("TORLEK_LAUNCH_TOKEN", "isolated-test-token")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

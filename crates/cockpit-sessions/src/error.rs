@@ -154,7 +154,7 @@ impl fmt::Display for Error {
             ),
             Error::NotInProject { dir } => write!(
                 formatter,
-                "{} is in no registered project; register it with `cockpit project add`",
+                "{} is in no registered project; register it with `torlek project add`",
                 dir.display()
             ),
             Error::WrongState {

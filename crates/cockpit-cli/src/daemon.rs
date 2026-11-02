@@ -94,6 +94,6 @@ pub(crate) fn unexpected(reply: &Reply) -> ExitCode {
 }
 
 pub(crate) fn fail(problem: &str) -> ExitCode {
-    eprintln!("cockpit: {problem}");
+    eprintln!("torlek: {problem}");
     ExitCode::FAILURE
 }

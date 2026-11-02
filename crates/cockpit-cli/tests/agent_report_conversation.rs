@@ -16,7 +16,7 @@ fn runtime_dir(home: &Path) -> PathBuf {
 }
 
 fn agent_socket(home: &Path) -> PathBuf {
-    let path = runtime_dir(home).join("cockpit-dev/agent/agent.sock");
+    let path = runtime_dir(home).join("torlek-dev/agent/agent.sock");
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -26,7 +26,7 @@ fn agent_socket(home: &Path) -> PathBuf {
 }
 
 async fn cockpit(home: &Path, arguments: &[&str]) -> Output {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit"));
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
     command
         .args(arguments)
         .env_clear()

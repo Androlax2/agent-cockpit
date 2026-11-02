@@ -132,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 server = HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler)
-(folder / 'ready.partial').write_text(json.dumps({'pid': os.getpid(), 'token': os.environ['COCKPIT_LAUNCH_TOKEN']}))
+(folder / 'ready.partial').write_text(json.dumps({'pid': os.getpid(), 'token': os.environ['TORLEK_LAUNCH_TOKEN']}))
 (folder / 'ready.partial').rename(folder / 'ready')
 server.serve_forever()
 "#;

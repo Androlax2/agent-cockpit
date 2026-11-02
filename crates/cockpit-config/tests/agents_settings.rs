@@ -12,7 +12,7 @@ use cockpit_config::{
 use tempfile::TempDir;
 
 fn write_user_config(home: &Path, contents: &str) {
-    let config_dir = home.join(".config/cockpit");
+    let config_dir = home.join(".config/torlek");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(config_dir.join("config.toml"), contents).unwrap();
 }
@@ -72,9 +72,9 @@ fn an_unknown_desktop_session_value_fails_to_parse() {
 fn a_project_file_cannot_set_the_agents_settings() {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-    fs::create_dir_all(project.path().join(".cockpit")).unwrap();
+    fs::create_dir_all(project.path().join(".torlek")).unwrap();
     fs::write(
-        project.path().join(".cockpit/config.toml"),
+        project.path().join(".torlek/config.toml"),
         "[agents]\ndesktop_session = \"shared\"\n",
     )
     .unwrap();
@@ -150,9 +150,9 @@ fn an_unknown_sandbox_value_fails_to_parse() {
 fn a_project_file_cannot_turn_the_sandbox_off() {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-    fs::create_dir_all(project.path().join(".cockpit")).unwrap();
+    fs::create_dir_all(project.path().join(".torlek")).unwrap();
     fs::write(
-        project.path().join(".cockpit/config.toml"),
+        project.path().join(".torlek/config.toml"),
         "[agents]\nsandbox = \"off\"\n",
     )
     .unwrap();

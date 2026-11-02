@@ -56,7 +56,7 @@ fn location(project: &ProjectFacts, platform: &Platform) -> Requirement {
                 "{dir} is on the Windows drive {}, which the sandbox denies to agents",
                 drive.display()
             ),
-            "move the project under your Linux home in WSL, then `cockpit project add` it there",
+            "move the project under your Linux home in WSL, then `torlek project add` it there",
         );
     }
     match &project.checkout {
@@ -68,7 +68,7 @@ fn location(project: &ProjectFacts, platform: &Platform) -> Requirement {
             "project",
             Status::MissingPrerequisite,
             format!("{dir} is not a registered project"),
-            format!("cockpit project add {dir}"),
+            format!("torlek project add {dir}"),
         ),
     }
 }
@@ -129,7 +129,7 @@ fn preset(config: &EffectiveConfig, presets: &[PresetFacts], host: &HostFacts) -
             "workflow preset",
             Status::MissingPrerequisite,
             format!("{name} needs a provider that reports {needed}; none available does"),
-            "install a provider that does; `cockpit provider list` shows what each reports",
+            "install a provider that does; `torlek provider list` shows what each reports",
         );
     }
     Requirement::available(
@@ -179,7 +179,7 @@ fn execution_environment(config: &EffectiveConfig, host: &HostFacts) -> Option<R
                 "the project expects the sandbox ({source}); the owner runs agents unsandboxed"
             ),
             format!(
-                "remove agents.sandbox = \"off\" from {owner_file} and run `cockpit config reload`"
+                "remove agents.sandbox = \"off\" from {owner_file} and run `torlek config reload`"
             ),
         ),
     };

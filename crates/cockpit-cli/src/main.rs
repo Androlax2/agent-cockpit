@@ -51,83 +51,83 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: cockpit [--profile NAME] VERB ...
-       cockpit config show [--project DIR] [--set KEY=VALUE]...
-       cockpit config reload
-       cockpit agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
-       cockpit agent reports
-       cockpit agent sessions [--watch]
-       cockpit agent message SESSION TEXT
-       cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
-       cockpit agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] [--component NAME] [--steps TEXT] [--requested-by-owner]
-       cockpit bug-report new DESCRIPTION [--title TEXT] [--steps TEXT]
-       cockpit bug-report list [--all] | show ID | discard ID
-       cockpit bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]
-       cockpit bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL
-       cockpit project add DIR [--name NAME]
-       cockpit project list
-       cockpit checkout list [PROJECT]
-       cockpit checkout clone PROJECT BRANCH
-       cockpit checkout review PROJECT PULL_REQUEST
-       cockpit checkout claim CHECKOUT HOLDER
-       cockpit checkout release CHECKOUT HOLDER
-       cockpit checkout sweep [--dry-run]
-       cockpit checkout push CHECKOUT
-       cockpit ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
-       cockpit ask guide [--cwd DIR] < GUIDE | --wait ID
-       cockpit approval list | show ID | decline ID | input ID < LINE
-       cockpit approval approve ID --revision REVISION --digest DIGEST
-       cockpit approval edit ID --revision REVISION COMMAND
-       cockpit guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
-       cockpit session send ID MESSAGE | cancel ID
-       cockpit session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
-       cockpit session list [--ended]
-       cockpit session restart SESSION|--all
-       cockpit session sleep|wake|resume|end|show SESSION
-       cockpit session end --finished
-       cockpit session link SESSION URL
-       cockpit session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]]
-       cockpit session revoke SESSION observe-sessions|message-sessions|start-sessions
-       cockpit session grants SESSION
-       cockpit session sandbox SESSION
-       cockpit session sandbox-record SESSION --client CLIENT --observed TEXT...
-       cockpit sandbox install [--engines-only]
-       cockpit sandbox status|restart|stop
-       cockpit sandbox show DIR [--agent NAME]
-       cockpit provider list
-       cockpit desktop-session import
-       cockpit init
-       cockpit doctor [--project DIR]
-       cockpit tui [--version]
-       cockpit version [--all]
-       cockpit daemon install
-       cockpit todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...
-       cockpit todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]
-       cockpit todo blocked TITLE --why TEXT [--notes TEXT]
-       cockpit todo list [--project P] [--all] | show ID | delete ID
-       cockpit todo start ID | done ID [--summary TEXT] | reopen ID
-       cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]
-       cockpit todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID
-       cockpit todo after ID ON... | unwait ID ON...
-       cockpit todo image add ID FILE | image get ID NUMBER FILE
-       cockpit todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]
-       cockpit todo drafts | draft discard (ID | --new PROJECT)
-       cockpit workflow presets | start ITEM [--preset NAME] | cancel ID
-       cockpit workflow list [--project P] [--all] | show ID | packet ID
-       cockpit workflow begin ID | checkpoint ID NOTE | unblock ID
-       cockpit workflow complete ID --changed T --checked T --outcome T [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...
-       cockpit workflow release ID [--changed T --checked T --outcome T [--needs-human T] [--evidence REF]...]
-       cockpit workflow block ID ACTION --detail TEXT
-       cockpit check run CHECK --project P [--checkout PATH] | gate [--project P] [--checkout PATH]
-       cockpit check claim CHECK STATEMENT
-       cockpit resources status | profile normal|foreground | pause-queue | resume-queue
-       cockpit resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...
-       cockpit resources checkpoint RESERVATION | stop RESERVATION
-       cockpit queue explain [ITEM] | dispatch
-       cockpit --skill
-       cockpit docs [TOPIC]
-       cockpit brief [--measure]
-       cockpit mcp";
+const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
+       torlek config show [--project DIR] [--set KEY=VALUE]...
+       torlek config reload
+       torlek agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
+       torlek agent reports
+       torlek agent sessions [--watch]
+       torlek agent message SESSION TEXT
+       torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
+       torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] [--component NAME] [--steps TEXT] [--requested-by-owner]
+       torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT]
+       torlek bug-report list [--all] | show ID | discard ID
+       torlek bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]
+       torlek bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL
+       torlek project add DIR [--name NAME]
+       torlek project list
+       torlek checkout list [PROJECT]
+       torlek checkout clone PROJECT BRANCH
+       torlek checkout review PROJECT PULL_REQUEST
+       torlek checkout claim CHECKOUT HOLDER
+       torlek checkout release CHECKOUT HOLDER
+       torlek checkout sweep [--dry-run]
+       torlek checkout push CHECKOUT
+       torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
+       torlek ask guide [--cwd DIR] < GUIDE | --wait ID
+       torlek approval list | show ID | decline ID | input ID < LINE
+       torlek approval approve ID --revision REVISION --digest DIGEST
+       torlek approval edit ID --revision REVISION COMMAND
+       torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID
+       torlek session send ID MESSAGE | cancel ID
+       torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
+       torlek session list [--ended]
+       torlek session restart SESSION|--all
+       torlek session sleep|wake|resume|end|show SESSION
+       torlek session end --finished
+       torlek session link SESSION URL
+       torlek session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]]
+       torlek session revoke SESSION observe-sessions|message-sessions|start-sessions
+       torlek session grants SESSION
+       torlek session sandbox SESSION
+       torlek session sandbox-record SESSION --client CLIENT --observed TEXT...
+       torlek sandbox install [--engines-only]
+       torlek sandbox status|restart|stop
+       torlek sandbox show DIR [--agent NAME]
+       torlek provider list
+       torlek desktop-session import
+       torlek init
+       torlek doctor [--project DIR]
+       torlek tui [--version]
+       torlek version [--all]
+       torlek daemon install
+       torlek todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...
+       torlek todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]
+       torlek todo blocked TITLE --why TEXT [--notes TEXT]
+       torlek todo list [--project P] [--all] | show ID | delete ID
+       torlek todo start ID | done ID [--summary TEXT] | reopen ID
+       torlek todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]
+       torlek todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID
+       torlek todo after ID ON... | unwait ID ON...
+       torlek todo image add ID FILE | image get ID NUMBER FILE
+       torlek todo draft save (ID | --new PROJECT) [--title T] [--notes TEXT] [--revision R]
+       torlek todo drafts | draft discard (ID | --new PROJECT)
+       torlek workflow presets | start ITEM [--preset NAME] | cancel ID
+       torlek workflow list [--project P] [--all] | show ID | packet ID
+       torlek workflow begin ID | checkpoint ID NOTE | unblock ID
+       torlek workflow complete ID --changed T --checked T --outcome T [--needs-human T] [--evidence REF]... [--waive REQUIREMENT]...
+       torlek workflow release ID [--changed T --checked T --outcome T [--needs-human T] [--evidence REF]...]
+       torlek workflow block ID ACTION --detail TEXT
+       torlek check run CHECK --project P [--checkout PATH] | gate [--project P] [--checkout PATH]
+       torlek check claim CHECK STATEMENT
+       torlek resources status | profile normal|foreground | pause-queue | resume-queue
+       torlek resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...
+       torlek resources checkpoint RESERVATION | stop RESERVATION
+       torlek queue explain [ITEM] | dispatch
+       torlek --skill
+       torlek docs [TOPIC]
+       torlek brief [--measure]
+       torlek mcp";
 
 fn main() -> ExitCode {
     let mut all_arguments = std::env::args_os();
@@ -146,7 +146,7 @@ fn main() -> ExitCode {
         arguments.drain(..2);
     }
     if let Err(problem) = profile::select(flag.as_deref(), command_name.as_deref()) {
-        eprintln!("cockpit: {problem}");
+        eprintln!("torlek: {problem}");
         return ExitCode::from(2);
     }
     let verb: Vec<Option<&str>> = arguments.iter().take(2).map(|word| word.to_str()).collect();
@@ -276,17 +276,14 @@ fn write_stdout(text: std::fmt::Arguments) {
         std::process::exit(141);
     }
     // `eprintln!` would panic if stderr is broken too; exit 1 still reports the failure.
-    let _ = writeln!(
-        std::io::stderr(),
-        "cockpit: cannot write to stdout: {error}"
-    );
+    let _ = writeln!(std::io::stderr(), "torlek: cannot write to stdout: {error}");
     std::process::exit(1);
 }
 
 /// Exit 2 with the usage line, after naming the rejected argument when there is one.
 fn usage_error(problem: Option<String>) -> ExitCode {
     if let Some(problem) = problem {
-        eprintln!("cockpit: {problem}");
+        eprintln!("torlek: {problem}");
     }
     eprintln!("{USAGE}");
     ExitCode::from(2)
@@ -364,14 +361,14 @@ fn config_show(flags: &[OsString]) -> ExitCode {
             out!("{}", cockpit_config::render(&config));
             // The daemon read the file at its start (#354); stdout stays the values alone.
             eprintln!(
-                "cockpit: a running daemon applies a changed agents.desktop_session, \
+                "torlek: a running daemon applies a changed agents.desktop_session, \
                  sessions.idle_sleep_after_minutes or sessions.asleep_expiry_days after \
-                 `cockpit config reload`, and start files from its next start"
+                 `torlek config reload`, and start files from its next start"
             );
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("cockpit: {error}");
+            eprintln!("torlek: {error}");
             ExitCode::FAILURE
         }
     }
