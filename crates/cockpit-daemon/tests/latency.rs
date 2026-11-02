@@ -26,6 +26,7 @@ mod candidate;
 mod real_daemon;
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as Process};
 use std::sync::Arc;
@@ -122,7 +123,30 @@ async fn release_candidate_responsiveness() {
     .await;
 }
 
+fn progress(phase: &str) {
+    eprintln!("latency harness: {phase}");
+    if let Some(path) = std::env::var_os("COCKPIT_LATENCY_REPORT") {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("the progress report is writable");
+        writeln!(file, "\nHarness phase: {phase}").unwrap();
+    }
+}
+
 async fn run(workload: Workload) {
+    if let Some(path) = std::env::var_os("COCKPIT_LATENCY_REPORT") {
+        std::fs::write(
+            path,
+            format!(
+                "# Latency harness\n\nCandidate source revision: `{}`\n\nMeasurement incomplete; no acceptance verdict yet.\n",
+                std::env::var("COCKPIT_CANDIDATE_REVISION").unwrap_or_else(|_| "local source fixture".to_owned()),
+            ),
+        )
+        .expect("the initial report is writable");
+    }
+    progress("preparing isolated daemon and projects");
     let home = Home::new();
     let daemon = home.start();
     let client = home.connect().await;
@@ -130,6 +154,7 @@ async fn run(workload: Workload) {
     let (stall_dir, _) = home.project(&client, STALL_PROJECT).await;
     let (churn_dir, _) = home.project(&client, "churn").await;
     let (_, tasks_project) = home.project(&client, "tasks").await;
+    progress("starting fixture agents and stalled viewer");
     let flood = new_session(&client, &flood_dir).await;
     let stall = new_session(&client, &stall_dir).await;
     let flood_agent = home.wait_for_launches(&flood.id, 1).await[0].clone();
@@ -138,18 +163,22 @@ async fn run(workload: Workload) {
 
     let stop = Arc::new(AtomicBool::new(false));
     let memory = MemorySampler::start(daemon.pid(), Arc::clone(&stop));
-    let builds = Builds::start(workload.build_processes);
+    let mut builds = Builds::start(workload.build_processes);
+    progress("sampling under load");
     let probe = probe(home.socket_path(), workload.duration);
     let restarts = tokio::spawn(restart_back_to_back(
         home.connect().await,
         stall.id.clone(),
         Arc::clone(&stop),
     ));
-    let mut loads = vec![tokio::spawn(start_and_end_back_to_back(
-        home.connect().await,
-        churn_dir.clone(),
-        Arc::clone(&stop),
-    ))];
+    let mut loads = vec![
+        restarts,
+        tokio::spawn(start_and_end_back_to_back(
+            home.connect().await,
+            churn_dir.clone(),
+            Arc::clone(&stop),
+        )),
+    ];
     for _ in 0..workload.writers {
         loads.push(tokio::spawn(add_and_delete_back_to_back(
             home.connect().await,
@@ -161,12 +190,34 @@ async fn run(workload: Workload) {
         .await
         .unwrap();
     stop.store(true, Ordering::SeqCst);
-    let mut tallies = vec![restarts.await.expect("the restart load ran")];
-    for load in loads {
-        tallies.push(load.await.expect("a load task ran"));
-    }
-    drop(builds);
     let memory = memory.finish();
+    Report {
+        workload: &workload,
+        samples: &samples,
+        tallies: &[],
+        memory,
+        restart: None,
+    }
+    .write();
+    progress("draining load requests (at most two request deadlines)");
+    let drained = tokio::time::timeout(LOAD_DEADLINE * 2 + GENEROUS, async {
+        let mut tallies = Vec::new();
+        for load in &mut loads {
+            tallies.push(load.await.expect("a load task ran"));
+        }
+        tallies
+    })
+    .await;
+    for load in &loads {
+        load.abort();
+    }
+    progress("stopping build process groups");
+    let builds_stopped = builds.stop();
+    let tallies = drained.expect("load tasks drain within two request deadlines plus grace");
+    assert!(
+        builds_stopped,
+        "build process groups stop within the cleanup deadline"
+    );
 
     let flood_kept_writing = is_alive(flood_agent.pid);
     let mut report = Report {
@@ -181,8 +232,10 @@ async fn run(workload: Workload) {
     // A restart the client gave up on may still run in the daemon: wait until it settled.
     // Counting the stalled agent's launches would not do: a restart back to back can end
     // the new agent before it logged its launch.
+    progress("waiting for the final stalled-agent restart");
     wait_for_running(&client, &stall.id).await;
     tokio::time::sleep(SETTLE).await;
+    progress("restarting the daemon with sessions running");
     let restart = restart_with_sessions_running(&home, daemon, &[&flood.id, &stall.id]).await;
     report.restart = Some(&restart);
     report.write();
@@ -220,6 +273,7 @@ async fn run(workload: Workload) {
             "candidate missed responsiveness targets; see the recorded report"
         );
     }
+    progress("complete: all required assertions passed");
 }
 
 #[derive(Debug)]
@@ -266,10 +320,18 @@ fn probe(socket: PathBuf, duration: Duration) -> std::thread::JoinHandle<Vec<Sam
 }
 
 async fn probe_held_connection(socket: &Path, duration: Duration) -> Vec<Sample> {
-    let client = Connection::open(socket, GENEROUS)
-        .await
-        .expect("the probe connects");
     let start = tokio::time::Instant::now();
+    let deadline = start + duration + STALL;
+    let client = match tokio::time::timeout_at(deadline, Connection::open(socket, GENEROUS)).await {
+        Ok(Ok(client)) => client,
+        answer => {
+            return vec![Sample {
+                request: "ping",
+                latency: start.elapsed(),
+                error: Some(format!("held probe could not connect: {answer:?}")),
+            }];
+        }
+    };
     let mut samples = Vec::new();
     for index in 0.. {
         if PROBE_INTERVAL * index >= duration {
@@ -278,18 +340,35 @@ async fn probe_held_connection(socket: &Path, duration: Duration) -> Vec<Sample>
         let due = start + PROBE_INTERVAL * index;
         tokio::time::sleep_until(due).await;
         let (request, command) = probe_command(index);
-        let answer = client.request(command, GENEROUS).await;
+        if tokio::time::Instant::now() >= deadline {
+            samples.push(Sample {
+                request,
+                latency: due.elapsed(),
+                error: Some("sampling deadline exceeded; remaining probes incomplete".to_owned()),
+            });
+            break;
+        }
+        let answer = tokio::time::timeout_at(deadline, client.request(command, GENEROUS)).await;
         samples.push(Sample {
             request,
             latency: due.elapsed(),
-            error: answer.err().map(|error| error.to_string()),
+            error: match &answer {
+                Ok(answer) => answer.as_ref().err().map(ToString::to_string),
+                Err(_) => {
+                    Some("sampling deadline exceeded; remaining probes incomplete".to_owned())
+                }
+            },
         });
+        if answer.is_err() {
+            break;
+        }
     }
     samples
 }
 
 async fn probe_fresh_connections(socket: &Path, duration: Duration) -> Vec<Sample> {
     let start = tokio::time::Instant::now();
+    let deadline = start + duration + STALL;
     let mut samples = Vec::new();
     for index in 0.. {
         if FRESH_CONNECTION_INTERVAL * index >= duration {
@@ -297,15 +376,32 @@ async fn probe_fresh_connections(socket: &Path, duration: Duration) -> Vec<Sampl
         }
         let due = start + FRESH_CONNECTION_INTERVAL * index;
         tokio::time::sleep_until(due).await;
-        let answer = match Connection::open(socket, GENEROUS).await {
-            Ok(client) => client.request(Command::Ping, GENEROUS).await.map(drop),
-            Err(error) => Err(error),
-        };
+        if tokio::time::Instant::now() >= deadline {
+            samples.push(Sample {
+                request: FRESH_PING,
+                latency: due.elapsed(),
+                error: Some("sampling deadline exceeded; remaining probes incomplete".to_owned()),
+            });
+            break;
+        }
+        let answer = tokio::time::timeout_at(deadline, async {
+            let client = Connection::open(socket, GENEROUS).await?;
+            client.request(Command::Ping, GENEROUS).await.map(drop)
+        })
+        .await;
         samples.push(Sample {
             request: FRESH_PING,
             latency: due.elapsed(),
-            error: answer.err().map(|error| error.to_string()),
+            error: match &answer {
+                Ok(answer) => answer.as_ref().err().map(ToString::to_string),
+                Err(_) => {
+                    Some("sampling deadline exceeded; remaining probes incomplete".to_owned())
+                }
+            },
         });
+        if answer.is_err() {
+            break;
+        }
     }
     samples
 }
@@ -493,16 +589,43 @@ impl Builds {
             .collect();
         Builds { processes }
     }
+
+    fn stop(&mut self) -> bool {
+        let mut stopped = true;
+        for process in &mut self.processes {
+            let status = Process::new("kill")
+                .args(["-KILL", "--"])
+                .arg(format!("-{}", process.id()))
+                .status();
+            if !status.is_ok_and(|status| status.success()) {
+                stopped = false;
+                let _ = process.kill();
+            }
+        }
+        let deadline = Instant::now() + GENEROUS;
+        for process in &mut self.processes {
+            loop {
+                match process.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    _ => {
+                        stopped = false;
+                        break;
+                    }
+                }
+            }
+        }
+        self.processes.clear();
+        stopped
+    }
 }
 
 impl Drop for Builds {
     fn drop(&mut self) {
-        for process in &mut self.processes {
-            let _ = Process::new("kill")
-                .arg("-KILL")
-                .arg(format!("-{}", process.id()))
-                .status();
-            let _ = process.wait();
+        if !self.stop() {
+            eprintln!("latency harness: build process cleanup failed");
         }
     }
 }
@@ -617,7 +740,7 @@ impl Report<'_> {
     }
 
     fn to_markdown(&self) -> String {
-        let mut text = String::new();
+        let mut text = String::from("Harness incomplete until the final assertion verdict.\n\n");
         let workload = self.workload;
         if let Ok(revision) = std::env::var("COCKPIT_CANDIDATE_REVISION") {
             let _ = writeln!(text, "Candidate source revision: `{revision}`\n");
@@ -685,6 +808,9 @@ impl Report<'_> {
             "### Loads\n\n| Load | Answered | Busy | Failed | First failure |\n| --- | --- | \
              --- | --- | --- |"
         );
+        if self.tallies.is_empty() {
+            let _ = writeln!(text, "\nLoad results pending.\n");
+        }
         for tally in self.tallies {
             let _ = writeln!(
                 text,
@@ -788,6 +914,45 @@ fn release_targets_require_successful_loads() {
     assert!(!release_loads_completed(&[tally]));
 }
 
+/// A sleeping fake peer, not a workload: one handshake, then no replies.
+#[tokio::test]
+async fn release_probe_deadline_bounds_a_stalled_peer() {
+    for fresh in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let socket = home.path().join("peer.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = tokio::io::BufReader::new(stream);
+            let mut hello = String::new();
+            stream.read_line(&mut hello).await.unwrap();
+            stream
+                .get_mut()
+                .write_all(
+                    b"{\"outcome\":\"accepted\",\"protocol_version\":1,\"capabilities\":[]}\n",
+                )
+                .await
+                .unwrap();
+            let mut request = String::new();
+            stream.read_line(&mut request).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let samples = tokio::time::timeout(Duration::from_secs(2), async {
+            if fresh {
+                probe_fresh_connections(&socket, Duration::from_millis(100)).await
+            } else {
+                probe_held_connection(&socket, Duration::from_millis(100)).await
+            }
+        })
+        .await;
+        peer.abort();
+        let _ = peer.await;
+        let samples = samples.expect("the sampling window plus one-second grace bounds the probe");
+        assert!(samples.iter().any(|sample| sample.error.is_some()));
+        assert!(!release_targets_met(&samples));
+    }
+}
+
 #[test]
 fn release_targets_accept_the_documented_boundaries() {
     let mut samples: Vec<_> = (0..100)
@@ -850,4 +1015,46 @@ fn milliseconds(duration: Duration) -> String {
 
 fn verdict(met: bool) -> &'static str {
     if met { "met" } else { "missed" }
+}
+
+/// Idle process only: exercise the same process-group cleanup used by CI's build stand-ins.
+#[test]
+fn release_cleanup_stops_an_owned_idle_process_group() {
+    use std::os::unix::process::CommandExt;
+    let child = Process::new("sleep")
+        .arg("30")
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut builds = Builds {
+        processes: vec![child],
+    };
+    let started = Instant::now();
+    assert!(builds.stop());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(builds.stop(), "cleanup is idempotent");
+}
+
+#[test]
+fn release_partial_report_does_not_claim_a_completed_run() {
+    let report = Report {
+        workload: &Workload::smoke(),
+        samples: &[Sample {
+            request: "ping",
+            latency: STALL,
+            error: Some("stalled peer".to_owned()),
+        }],
+        tallies: &[],
+        memory: Memory {
+            first_kib: 1,
+            peak_kib: 1,
+            last_kib: 1,
+        },
+        restart: None,
+    }
+    .to_markdown();
+    assert!(report.contains("Harness incomplete"));
+    assert!(report.contains("Load results pending"));
+    assert!(report.contains("Restart with sessions running: not done yet"));
+    assert!(!report.contains("complete: all required assertions passed"));
 }

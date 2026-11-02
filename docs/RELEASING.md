@@ -202,7 +202,9 @@ revision. `make release-compatibility` owns those commands.
 with at most two build stand-ins and two database writers. It requires successful load
 operations, held-connection p95 ≤ 100 ms and p99 ≤ 250 ms, and every measured response within
 one second. The workflow uploads `candidate-responsiveness.md`, including the candidate
-revision, even when a target fails. Do not run it as a local stress loop.
+revision, even when a target fails. It records phase progress before setup and saves samples
+before shutdown. Sampling stops at the window plus one second; incomplete probes fail the
+gate. Load draining and build cleanup are bounded. Do not run it as a local stress loop.
 
 `make release-upgrade-fetch` selects the newest published earlier release of the same
 channel and downloads its matching archive and checksums with read-only GitHub access.

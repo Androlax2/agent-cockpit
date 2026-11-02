@@ -70,6 +70,36 @@ and passes, including the previously failing target. The initial mechanical edit
 module declarations on line 1; the expanded check caught and resolved those imports before
 push. Relevant archive entry-point tests are rerun for the corrected wiring.
 
+## Responsiveness timeout follow-up
+
+At revision `b87cf3e`, required CI passed (run 41388141390), after one host-approved macOS
+rerun for the existing #483 TUI failure. Release run 41388141560 passed every archive,
+install, compatibility and same-candidate state job, including native Intel macOS and WSL2.
+The responsiveness job 125098073369 exhausted its 25-minute limit: compilation took 85
+seconds, then the test ran for over 23 minutes without a report. This is not acceptance.
+Auto-merge remains off until the corrected candidate jobs are measured.
+
+An idle fake socket reproduced an independent harness deadline bug: a 100 ms sampling
+window kept waiting beyond two seconds. The loops previously drained all scheduled
+requests even after the measurement window, each with a ten-second timeout. They now
+stop at the window plus one second and record incomplete sampling as a failure. Thresholds
+and workload stay unchanged. Both held and fresh connection paths have fixture coverage.
+
+Phase progress is persisted before setup, sampling and cleanup. Samples are saved before
+load shutdown; load joins have a common two-request deadline plus grace. Build groups use
+an explicit negative-PID delimiter and bounded reaping. The existing kill syntax worked
+in the local idle-process experiment; it is not claimed as the CI timeout's cause. An idle
+process fixture verifies cleanup, and a report fixture rejects a completed-run claim while
+load/restart results are pending. No local workload or stress test was run. The precise CI
+stall phase remains unknown until the next instrumented run.
+
+A second fresh independent `$code-review medium` was warranted by the substantial harness
+follow-up. It reviewed the full `5820574..b87cf3e` PR delta plus the four changed working
+files (latency source SHA-256 `ceb680819a31906e0531089e9272473b272ce5efd2a37b77e9176d8bd6289d23`).
+It ran all eight inline angles, deduplication only, no verifier, and returned `[]`.
+Six focused fixture/verdict tests and latency Clippy pass; formatting, docs and diff checks
+pass. The measured candidate CI result is still required.
+
 ## Sources
 
 - [GitHub hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
