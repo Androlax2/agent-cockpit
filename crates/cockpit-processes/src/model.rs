@@ -176,13 +176,15 @@ pub enum Signal {
 
 /// The two facts of a stop request (report 03): the request is always recorded; the
 /// termination counts only once the execution was observed empty.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Termination {
     /// Observed empty; `after` is the last signal sent, `None` when it was already empty.
     Confirmed { after: Option<Signal> },
     /// Still not observed empty after `SIGKILL` and `kill_wait`, or no identity to signal
     /// yet: the execution keeps its reservation.
-    Unconfirmed,
+    Unconfirmed {
+        diagnostics: Box<crate::TerminationDiagnostics>,
+    },
 }
 
 /// What startup reconciliation decided for one execution (report 03, restart contract).

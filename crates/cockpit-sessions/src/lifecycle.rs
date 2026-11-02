@@ -1163,17 +1163,12 @@ impl Sessions {
         let session = self.get(id).await?;
         let stopping = SessionState::Stopping { to };
         if let Err(error) = self.stop_previous_agent(&session).await {
-            if let Error::StopUnconfirmed { execution, .. } = &error {
-                tracing::warn!(
-                    session = %id,
-                    execution = execution.0,
-                    "a session's agent did not stop after SIGKILL"
-                );
+            if let Error::StopUnconfirmed { .. } = &error {
                 self.transition(
                     id,
                     &[stopping],
                     SessionState::Running,
-                    Some("its agent did not stop after SIGKILL"),
+                    Some("its agent termination could not be confirmed"),
                     "stop",
                 )
                 .await?;
@@ -1233,7 +1228,13 @@ impl Sessions {
                 .processes
                 .terminate(&self.database, launch.execution, self.settings.stop)
                 .await?;
-            if termination == Termination::Unconfirmed {
+            if let Termination::Unconfirmed { diagnostics } = termination {
+                tracing::warn!(
+                    session = %session.id,
+                    execution = launch.execution.0,
+                    ?diagnostics,
+                    "a session's agent termination is unconfirmed"
+                );
                 return Err(Error::StopUnconfirmed {
                     session: session.id.clone(),
                     execution: launch.execution,
@@ -1623,9 +1624,10 @@ impl Sessions {
         };
         match stopped.await {
             Ok(Termination::Confirmed { .. }) => {}
-            Ok(Termination::Unconfirmed) => tracing::warn!(
+            Ok(Termination::Unconfirmed { diagnostics }) => tracing::warn!(
                 session = %id,
                 execution = execution.0,
+                ?diagnostics,
                 "a failed launch's agent may still run; resume stops it first"
             ),
             Err(error) => tracing::warn!(

@@ -6,7 +6,7 @@ use std::time::Duration;
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal as OsSignal};
 
-use crate::{Error, Signal};
+use crate::{Error, Signal, SignalOutcome};
 
 /// How long a host query (`ps`, `sysctl`, `systemctl`) may take before it counts as failed.
 pub(crate) const HOST_COMMAND_DEADLINE: Duration = Duration::from_secs(5);
@@ -147,16 +147,17 @@ pub(crate) fn process_exists(pid: i32) -> bool {
 
 /// Sends `signal` to every member of `process_group`. An empty group is not an error: it is
 /// what termination waits for.
-pub(crate) fn signal_group(process_group: i32, signal: Signal) -> Result<(), Error> {
+pub(crate) fn signal_group(process_group: i32, signal: Signal) -> Result<SignalOutcome, Error> {
     let Some(pid) = Pid::from_raw(process_group) else {
-        return Ok(());
+        return Ok(SignalOutcome::InvalidGroup);
     };
     let os_signal = match signal {
         Signal::Term => OsSignal::TERM,
         Signal::Kill => OsSignal::KILL,
     };
     match rustix::process::kill_process_group(pid, os_signal) {
-        Ok(()) | Err(Errno::SRCH) => Ok(()),
+        Ok(()) => Ok(SignalOutcome::Sent),
+        Err(Errno::SRCH) => Ok(SignalOutcome::NoSuchGroup),
         Err(errno) => Err(Error::HostCommand {
             command: format!("kill -{os_signal:?} -{process_group}"),
             reason: errno.to_string(),
