@@ -108,3 +108,9 @@ test("image raw query precedes its fragment", () => {
     "![Diagram](https://github.com/Androlax2/agent-cockpit/blob/abc123/diagram.svg?raw=true#detail)",
   );
 });
+
+test("CRLF closing fences return to prose conversion", () => {
+  const result = content.toMdx("```text\r\n{inside}\r\n```\r\n{outside}\r\n");
+  assert.ok(result.includes("{inside}"));
+  assert.ok(result.includes("&#123;outside&#125;"));
+});

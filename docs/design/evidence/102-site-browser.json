@@ -9,7 +9,8 @@
     "system dark theme applied",
     "320px reading, navigation/version selector and touch Close 80x44 without page overflow",
     "320px system dark theme and long command scrolling without horizontal page overflow",
-    "failed local index gives a usable unavailable state with Close"
+    "failed local index gives a usable unavailable state with Close",
+    "No-match content retains upstream role=status; physical screen-reader announcement not measured"
   ],
   "errors": [],
   "light_description_contrast": {
@@ -20,23 +21,23 @@
   "command": "/home/theo/.cache/agent-browser/bin/python /home/theo/.agents/skills/webapp-testing/scripts/with_server.py --server \"python3 -m http.server 45840 --bind 127.0.0.1 --directory /tmp/cockpit-102-preview\" --port 45840 -- /home/theo/.cache/agent-browser/bin/python site/tests/browser.py --output design-plans/previews",
   "exit_code": 0,
   "server_cleanup": "with_server reported the sole temporary fixture server stopped",
-  "source_state": "Working implementation on bf73b73693ae, after the recorded inline review fixes. Not a released build.",
+  "source_state": "Committed implementation 0e2308fc055072d74ac90ddabfb1be282b0140f0 plus small independent review fixes, including the empty-result status role.",
   "captures": [
     {
       "path": "design-plans/previews/102-web-desktop-dark.png",
-      "sha256": "4f57adaa4a10c5e0dca1b60464c511302ec4d7d00b0854f03bd81f468ed6878b"
+      "sha256": "0c864d873eb94c1732c14079bdac78cc5ceea82e928e97f54cd9427e9b077415"
     },
     {
       "path": "design-plans/previews/102-web-desktop-light.png",
-      "sha256": "9f1c5270b299249a27ec5d9e6bf0dec50ac4a41d5838e275646334412858bbcc"
+      "sha256": "1ebd06ba78af7c21a56f8cbddbf7962c622662664235a675639563af8d03216e"
     },
     {
       "path": "design-plans/previews/102-web-mobile-dark.png",
-      "sha256": "54537976695a01f975873639e57aa5528a1505b07dbeb73442a0e01d5f71dcc2"
+      "sha256": "47898e21fa4bbca3b9954d52f3adca0b1ac2280fe05b15861647e8f9f19e70d6"
     },
     {
       "path": "design-plans/previews/102-web-mobile-light.png",
-      "sha256": "d446042be2e718a136ddeec9eb5bed8c24eb4217d0623a87e2541243721f737b"
+      "sha256": "4b2c23c586aaf451e408e8a6403659cea423d8fae0f3f8009e251ff8e68ca240"
     },
     {
       "path": "design-plans/previews/102-web-mobile-navigation.png",
@@ -48,15 +49,15 @@
     },
     {
       "path": "design-plans/previews/102-web-search-empty.png",
-      "sha256": "e1d0dd171f4e6536485ce6ba96185ff5ed902b23a3140410574eec1d1159e702"
+      "sha256": "0261b827ccf0542d18efc310891cabf7f81a9eec970407015d0024f0ac7bd4f5"
     },
     {
       "path": "design-plans/previews/102-web-search-results.png",
-      "sha256": "fab6dc214cde1fd646310550b905f18dc1d8a47a119f48b29f2bd00af0a4fcbe"
+      "sha256": "1d694c1ec0f3d6be0c772c3111c4e79a927f4b164ef1a5e0f1b1f44dacf136b5"
     },
     {
       "path": "design-plans/previews/102-web-search-unavailable.png",
-      "sha256": "59b669efab6e4d581193455fff4f7218a6d131981d0200afcce0fab5dd8410b7"
+      "sha256": "15a6f078f268a610ec1e4490ea12729a8f1ecab28a007601a174a1f048096b42"
     }
   ],
   "version_fixture": {
@@ -65,7 +66,7 @@
       "v0.1.0-alpha.1"
     ],
     "source": "same branch working tree, fixture prefixes only; no release/tag created",
-    "build_result": "nine Node tests passed at the prerelease-shaped prefix before later content regression tests were added",
+    "build_result": "After independent fixes, make site-ci passed at the fixture prerelease prefix: 12 tests, both type projects, real CLI and rendered links",
     "browser_result": "PASS latest -> v0.1.0-alpha.1 -> latest; selected values and install heading checked",
     "limits": "No published-version preservation or Pages deployment measured"
   }

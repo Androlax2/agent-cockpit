@@ -49,7 +49,7 @@ export default function Search(props: SharedProps) {
         ) : (
           <SearchDialogList
             Empty={() => (
-              <p className="p-4">
+              <p role="status" className="p-4">
                 No matches. Try another term or close search to browse the navigation.
               </p>
             )}

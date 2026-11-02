@@ -53,12 +53,13 @@
 - [ ] Run affected tests, site build/type checks, source/rendered link checks and docs quality gate. Report the existing global JS formatting failure separately; do not hide warnings.
 - [x] Run installed Impeccable against actual implemented web source/rendered evidence and record exact coverage. Preserve the earlier FigCraft read failure as historical evidence.
 - [x] Update coverage evidence and PR acceptance. Keep volunteer/public-install validation open until measured.
-- [ ] Obtain one fresh independent full-delta review. Fix significant findings and verify them.
+- [x] Obtain one fresh independent full-delta review. Fix significant findings and verify them.
 - [ ] Prepare final host-reviewed workflow push and Pages settings/deployment commands. No public deployment, setting or release without that approval.
 
 ## Current review checkpoint
 
 The requested Codex `$code-review` medium workflow ran inline and found six items;
 fixes and exact scope are in the [review record](../../acceptance/102-code-review.md).
-Final documentation checks, one fresh independent full-delta review and host-reviewed
-workflow publication remain. Pages and volunteer acceptance are not complete.
+Final documentation checks and the one fresh independent native `$code-review`
+are recorded in the acceptance evidence. Its two small findings are fixed.
+Host-reviewed workflow publication remains. Pages and volunteer acceptance are not complete.

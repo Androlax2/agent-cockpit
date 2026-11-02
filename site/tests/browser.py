@@ -58,6 +58,7 @@ with sync_playwright() as p:
     page.screenshot(path=str(shots / "102-web-search-results.png"))
     field.fill("zzzznonexistent102")
     expect(dialog.get_by_text("No matches.", exact=False)).to_be_visible()
+    expect(dialog.get_by_role("status").filter(has_text="No matches.")).to_be_visible()
     page.screenshot(path=str(shots / "102-web-search-empty.png"))
     page.get_by_role("button", name="Close search", exact=True).click()
     expect(dialog).not_to_be_visible()

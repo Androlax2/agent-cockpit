@@ -37,7 +37,7 @@ function outsideFences(markdown, transform) {
         marker &&
         marker[1][0] === fence[0] &&
         marker[1].length >= fence.length &&
-        /^[\t ]*$/.test(line.slice(marker[0].length))
+        /^[\t ]*\r?$/.test(line.slice(marker[0].length))
       )
         fence = null;
     } else if (marker) {

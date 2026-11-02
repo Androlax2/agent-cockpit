@@ -49,6 +49,21 @@
       "command": "gh api repos/Androlax2/agent-cockpit --jq \"{homepage,default_branch}\"",
       "exit_code": 0,
       "result": "homepage null, default_branch main; read only"
+    },
+    {
+      "command": "COCKPIT_DOCS_BASE=/agent-cockpit/v0.1.0-alpha.1/ COCKPIT_DOCS_VERSION=v0.1.0-alpha.1 COCKPIT_DOCS_VERSIONS='[\"latest\",\"v0.1.0-alpha.1\"]' make site-ci",
+      "exit_code": 0,
+      "result": "12 tests, zero failures/skips, both type projects and offline rendered links after independent review fixes; fixture prefix only"
+    },
+    {
+      "command": "make site-ci",
+      "exit_code": 0,
+      "result": "Final source: 13 tests, zero failures/skips, both type projects, CLI and rendered links. Includes the extra CRLF closing-fence regression."
+    },
+    {
+      "command": "python3 -m unittest discover -s tools/tests -p test_workflow_syntax.py",
+      "exit_code": 0,
+      "result": "2 workflow syntax regression tests passed"
     }
   ],
   "unavailable_checks": [
@@ -71,12 +86,26 @@
     "Browser assertion then found real search focus-restoration bug; callback fix passed",
     "Mobile navigation dismissal uses upstream Close Sidebar; Escape was not observed to close that drawer",
     "Review regression tests failed before the three content fixes; all seven content tests passed afterward",
-    "First staged docs gate found missing H1 headings in the two manual site Markdown sources; added source headings, removed them during staging to avoid duplicate page titles; docs gate and real site export passed afterward"
+    "First staged docs gate found missing H1 headings in the two manual site Markdown sources; added source headings, removed them during staging to avoid duplicate page titles; docs gate and real site export passed afterward",
+    "No-match browser status assertion initially matched two upstream status elements; narrowed it to the message text and the complete browser check passed",
+    "Closing-fence CRLF regression failed before allowing a terminal carriage return; all eight focused content tests passed afterward"
   ],
   "docs_gate": {
     "command": "make docs-ci",
     "exit_code": 0,
     "result": "Markdown, offline local source links/anchors and spelling passed on staged lane files"
   },
-  "independent_review": "pending"
+  "independent_review": {
+    "skill": "$code-review",
+    "reviewer": "/root/native_review_102",
+    "head": "0e2308fc055072d74ac90ddabfb1be282b0140f0",
+    "findings": 2,
+    "outcome": "addressed; small fixes; see 102-code-review-independent.json"
+  },
+  "asset_measurement": {
+    "scope": "Sum of every exported JS asset, not a per-page transfer or performance benchmark",
+    "js_files": 18,
+    "raw_bytes": 650394,
+    "gzip_bytes": 215411
+  }
 }
