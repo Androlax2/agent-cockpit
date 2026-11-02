@@ -66,16 +66,28 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: false
-      - name: Install tmux for cockpit-tmux's real-server tests
+      - name: Install tmux and the pinned engines' system prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes tmux
+          sudo apt-get install --no-install-recommends --yes tmux bubblewrap socat iproute2
       - name: Configure hosted runner admission
         if: runner.environment == 'github-hosted'
         # Disposable hosted runners have no workstation game-guard daemon.
         run: python3 config/bin/.local/bin/cockpit-game-guard off
       - name: Run the greenfield gate
         run: make greenfield-ci
+      - name: Check enforcement-runner fixtures
+        run: make sandbox-enforcement-fixtures
+      - name: Measure real sandbox enforcement on Linux
+        timeout-minutes: 15
+        run: make sandbox-enforcement-ci
+      - name: Retain sandbox enforcement evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sandbox-enforcement-linux
+          path: .outgoing/sandbox-enforcement
+          retention-days: 14
 
   # The daemon's startup tests on macOS, clean-home start included (M0 gate, #27); the full
   # greenfield gate stays on Linux. Plain cargo: the Makefile's agent-build runner is Linux-only.
@@ -121,6 +133,18 @@ jobs:
         run: command -v tmux || brew install tmux
       - name: Drive the TUI end to end
         run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-tui --test e2e
+      - name: Check observation ownership and missing macOS engine capability
+        run: make sandbox-enforcement-platform-fixtures
+      - name: Measure real sandbox enforcement on macOS
+        timeout-minutes: 15
+        run: make sandbox-enforcement-ci
+      - name: Retain sandbox enforcement evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sandbox-enforcement-macos
+          path: .outgoing/sandbox-enforcement
+          retention-days: 14
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash
@@ -145,7 +169,7 @@ jobs:
           distribution: Ubuntu-24.04
           wsl-version: 2
           wsl-shell-user: cockpit
-          additional-packages: build-essential ca-certificates curl git
+          additional-packages: build-essential ca-certificates curl git python3 tmux bubblewrap socat iproute2 dbus-user-session
       - name: Refuse to run anywhere but WSL 2, as root
         run: |
           uname -r
@@ -183,6 +207,23 @@ jobs:
           . "$HOME/.cargo/env"
           cd "$HOME/agent-cockpit"
           cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-resource-admission
+      - name: Measure real sandbox enforcement on WSL2
+        timeout-minutes: 15
+        run: |
+          . "$HOME/.cargo/env"
+          task_output="$PWD/.outgoing/sandbox-enforcement"
+          task_runner_temp="$(mktemp -d "$HOME/cockpit-enforcement-ci.XXXXXX")"
+          trap 'rmdir "$task_runner_temp"' EXIT
+          cd "$HOME/agent-cockpit"
+          CI=true GITHUB_ACTIONS=true RUNNER_ENVIRONMENT='${{ runner.environment }}' RUNNER_TEMP="$task_runner_temp" \
+            make sandbox-enforcement-ci SANDBOX_ENFORCEMENT_OUTPUT="$task_output"
+      - name: Retain sandbox enforcement evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sandbox-enforcement-wsl2
+          path: .outgoing/sandbox-enforcement
+          retention-days: 14
 
   # Markdown and spelling, for docs/ and any Markdown file.
   docs:
