@@ -37,6 +37,67 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_macos_engine_without_public_ca_isolation_refuses_doctor_and_launch() {
+    let home = Home::new();
+    let wall = home.path().join("engine-fixtures/greywall");
+    let script = std::fs::read_to_string(&wall).unwrap();
+    // The fixture normally declares this capability to exercise later wiring. The
+    // actual pinned release does not, and must fail before any provider is executed.
+    std::fs::write(&wall, script.replace(" 'public CA isolation'", "")).unwrap();
+    let _daemon = home.start();
+    let report = home.cockpit(&["doctor"], &[]).await;
+    assert_eq!(report.status.code(), Some(1));
+    assert!(text(&report.stdout).contains("proxy-engine-capability"));
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "missing-ca-isolation").await;
+    let output = home
+        .cockpit(
+            &[
+                "session",
+                "new",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
+        .await;
+    assert!(!output.status.success());
+    assert!(text(&output.stderr).contains("proxy-engine-capability"));
+    assert!(home.launches().is_empty());
+    assert!(sandbox_launches(&home).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unhealthy_managed_proxy_refuses_a_launch_before_any_agent_runs() {
+    let home = Home::new();
+    let _daemon = home.start();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "proxy-health").await;
+    let control = home.path().join("proxy-fixture/dev");
+    std::fs::create_dir_all(&control).unwrap();
+    std::fs::write(control.join("stopped"), "fixture").unwrap();
+    let output = home
+        .cockpit(
+            &[
+                "session",
+                "new",
+                root.to_str().unwrap(),
+                "--agent",
+                "claude",
+            ],
+            &[],
+        )
+        .await;
+    let report = format!("{}{}", text(&output.stdout), text(&output.stderr));
+    assert!(!output.status.success(), "{report}");
+    assert!(report.contains("proxy-service-stopped"), "{report}");
+    assert!(home.launches().is_empty());
+    assert!(sandbox_launches(&home).is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_launch_runs_the_agent_inside_greywall_as_its_own_proxy_client() {
     let home = Home::new();
@@ -55,6 +116,42 @@ async fn a_launch_runs_the_agent_inside_greywall_as_its_own_proxy_client() {
         "{launch}"
     );
     assert_eq!(argument_after(launch, "--profile"), "claude");
+    assert_eq!(
+        argument_after(launch, "--proxy"),
+        "socks5://127.0.0.1:43052"
+    );
+    assert_eq!(
+        argument_after(launch, "--http-proxy"),
+        "http://127.0.0.1:43051"
+    );
+    assert_eq!(argument_after(launch, "--dns"), "127.0.0.1:43053");
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("sandbox.log.proxy-home"))
+            .unwrap()
+            .trim(),
+        home.state_dir().join("greyproxy").display().to_string()
+    );
+    let settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(argument_after(launch, "--settings")).unwrap())
+            .unwrap();
+    let unit = if cfg!(target_os = "macos") {
+        home.path()
+            .join("Library/LaunchAgents/io.github.androlax2.cockpit.greyproxy.dev.plist")
+    } else {
+        home.path()
+            .join("config/systemd/user/cockpit-greyproxy-dev.service")
+    };
+    for path in [home.state_dir().join("greyproxy"), unit] {
+        for rule in ["denyRead", "denyWrite"] {
+            assert!(
+                settings["filesystem"][rule]
+                    .as_array()
+                    .unwrap()
+                    .contains(&path.display().to_string().into()),
+                "{path:?}: {settings}"
+            );
+        }
+    }
     assert_eq!(
         argument_after(launch, "--allow-path"),
         root.to_str().unwrap()

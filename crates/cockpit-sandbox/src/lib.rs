@@ -6,6 +6,7 @@ pub mod install;
 mod launch;
 mod platform;
 mod profile;
+mod proxy;
 
 pub use cockpit_config::{AgentSandbox, DesktopSession};
 pub use evidence::{AppliedRule, Enforcement, Evidence};
@@ -23,3 +24,4 @@ pub use profile::{
     DesktopEndpoint, EndpointKind, FolderMount, Profile, ProfileRequest, Refusal, Secret,
     SecretHandling,
 };
+pub use proxy::{ManagedProxy, ProxyError};

@@ -248,7 +248,7 @@ fn readiness_step(facts: &Facts) -> Step {
         }
     }
     if !blocks && lines.is_empty() {
-        lines.push("tmux, the sandbox engine and resource controls are ready".to_owned());
+        lines.push("tmux, the sandbox engine, proxy and resource controls are ready".to_owned());
     }
     lines.push("`cockpit doctor` shows every requirement".to_owned());
     Step {

@@ -2,6 +2,8 @@
 #![cfg(target_os = "linux")]
 mod common;
 mod messaging_fixture;
+#[path = "real_daemon/proxy.rs"]
+mod proxy_fixture;
 use cockpit_codex::{Bridge, CONFORMANCE_VERSION, Codex};
 use cockpit_daemon::Wiring;
 use cockpit_protocol::{Command, ErrorCode};
@@ -68,6 +70,18 @@ exec "$@"
             cockpit_sandbox::PINNED_GREYPROXY_COMMIT
         ),
     );
+    let owned =
+        cockpit_sandbox::install::programs(&home.path().join("state/cockpit-test")).unwrap();
+    std::fs::create_dir_all(owned.greyproxy.parent().unwrap()).unwrap();
+    std::fs::set_permissions(
+        home.path().join("state"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    std::fs::copy(&greyproxy, owned.greyproxy).unwrap();
+    proxy_fixture::commands(home.path());
+    let proxy = proxy_fixture::configure(home.path(), "test")
+        .with_command_directory(&home.path().join("bin"));
     let engine = Greywall::detect(
         GreywallPrograms {
             greywall,
@@ -90,7 +104,8 @@ exec "$@"
             owner_uid: 1000,
             mount_sources: home.path().join("mounts"),
         },
-    );
+    )
+    .with_managed_proxy(Ok(proxy));
     wiring
 }
 

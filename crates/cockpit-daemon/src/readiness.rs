@@ -111,6 +111,24 @@ pub(crate) fn route(project: Option<String>, context: Context) -> Route {
 
 async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, String> {
     let mut host = host_facts(&context);
+    if host.sandbox_setting == cockpit_config::AgentSandbox::Required {
+        let sandbox = context.sandbox.clone();
+        let profile = context.environment.profile.value.clone();
+        host.sandbox_proxy = tokio::task::spawn_blocking(move || match sandbox.proxy() {
+            Ok(proxy) => proxy.launch_health(sandbox.engine().ok()).map_err(|error| {
+                cockpit_readiness::ProxyUnavailable {
+                    detail: error.to_string(),
+                    next: error.next(&profile),
+                }
+            }),
+            Err(reason) => Err(cockpit_readiness::ProxyUnavailable {
+                detail: reason.to_owned(),
+                next: format!("run `cockpit --profile {profile} sandbox install`"),
+            }),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    }
     let providers = context.sign_in_providers.clone();
     host.providers = tokio::task::spawn_blocking(move || {
         let mut facts = host.providers;
@@ -241,6 +259,7 @@ fn host_facts(context: &Context) -> HostFacts {
             })
             .map_err(str::to_owned),
         sandbox_setting: context.sessions.owner_settings().sandbox,
+        sandbox_proxy: Ok("not required".into()),
         providers: context.providers.clone(),
         controls: context
             .admission

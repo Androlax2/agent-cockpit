@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 use cockpit_client::Connection;
 use cockpit_protocol::{Command, Reply, SessionStateView, SessionView};
 
+mod proxy;
+
 /// The profile directory of a daemon this test build runs without `--profile`: a build
 /// outside a release bundle runs profile `dev` (#196).
 pub const BUILD_PROFILE_DIR: &str = "cockpit-dev";
@@ -144,7 +146,9 @@ const FAKE_GREYWALL: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then
   printf 'greywall - stand-in\n  Version: 0.3.7+dotfiles\n  Commit:  @COMMIT@\n'
   printf 'Checking system capabilities:\n'
-  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated'; do
+  # These are fixture capabilities, not claims about the pinned release. In
+  # particular its missing macOS public-CA capability has a separate refusal test.
+  for capability in bubblewrap landlock seccomp 'network isolation' 'D-Bus isolated' 'public CA isolation'; do
     printf '  \342\234\223 %s\n' "$capability"
   done
   exit 0
@@ -154,6 +158,7 @@ if [ "$1" = --help ]; then
   exit 0
 fi
 printf '%s\n' "$*" >> '@LOG@'
+printf '%s\n' "$GREYPROXY_DATA_HOME" >> '@LOG@.proxy-home'
 writable=
 while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
   if [ "$1" = --allow-path ]; then writable="$writable:$2"; fi
@@ -253,6 +258,7 @@ impl Home {
             std::fs::write(&decoy, "#!/bin/sh\nexit 99\n").unwrap();
             std::fs::set_permissions(decoy, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        proxy::commands(&home.path());
         home
     }
 
@@ -477,6 +483,7 @@ impl Home {
                 }
             }
             std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o700)).unwrap();
+            proxy::configure(&self.path(), profile.unwrap_or("dev"));
         }
         let mut child = Process::new(env!("CARGO_BIN_EXE_cockpit-daemon"))
             .args(

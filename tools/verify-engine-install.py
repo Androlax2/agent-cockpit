@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(binary, *arguments, env):
+def run(binary, *arguments, env, expected=0):
     result = subprocess.run(
         [str(binary), *arguments],
         env=env,
@@ -26,11 +26,26 @@ def run(binary, *arguments, env):
         timeout=240,
         check=False,
     )
-    if result.returncode:
+    if result.returncode != expected:
         raise RuntimeError(
             f"{binary.name} {' '.join(arguments)}: {result.returncode}\n{result.stdout}\n{result.stderr}"
         )
     return result.stdout
+
+
+def verify_engines_only_report(report):
+    """An offline install leaves exactly the managed proxy prerequisite open."""
+    blocking = [
+        line.strip()
+        for line in report.splitlines()
+        if line.strip().startswith(("missing-prerequisite ", "unsupported "))
+    ]
+    if (
+        len(blocking) != 1
+        or "  sandbox proxy: " not in blocking[0]
+        or "proxy-not-configured" not in blocking[0]
+    ):
+        raise RuntimeError(f"unexpected prerequisites after binaries-only install:\n{report}")
 
 
 def smoke(programs, home):
@@ -76,7 +91,7 @@ def smoke(programs, home):
         LANG="C.UTF-8",
     )
     cockpit = programs / "cockpit"
-    installed = run(cockpit, "--profile", "smoke", "sandbox", "install", env=env)
+    installed = run(cockpit, "--profile", "smoke", "sandbox", "install", "--engines-only", env=env)
     print(installed, end="")
     if "cockpit --profile smoke doctor" not in installed:
         raise RuntimeError("installer advice lost the selected profile")
@@ -125,7 +140,8 @@ def smoke(programs, home):
                     log.seek(0)
                     raise RuntimeError(f"fixture daemon did not become ready:\n{log.read()}")
                 time.sleep(0.05)
-            report = run(cockpit, "--profile", "smoke", "doctor", env=env)
+            report = run(cockpit, "--profile", "smoke", "doctor", env=env, expected=1)
+            verify_engines_only_report(report)
             sandbox = next(line for line in report.splitlines() if "  sandbox: " in line)
             if not sandbox.strip().startswith("available"):
                 raise RuntimeError(sandbox)
