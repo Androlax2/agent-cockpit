@@ -594,6 +594,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  cockpit todo blocked TITLE --why TEXT [--notes TEXT]\n       \
                  cockpit todo list [--project P] [--all] | show ID | delete ID\n       \
                  cockpit todo start ID | done ID [--summary TEXT] | reopen ID\n       \
+                 cockpit todo targets\n       \
+                 cockpit todo handoff ID SESSION --revision R --state-revision R --launch N\n       \
                  cockpit todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]\n       \
                  cockpit todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID\n       \
                  cockpit todo after ID ON... | unwait ID ON...\n       \
