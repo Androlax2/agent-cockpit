@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Goal:** Measure denied paths and destinations plus allowed controls across four real daemon launches, and retain bounded owner-reported observations with the exact launch.
+**Goal:** Measure denied paths and destinations plus allowed controls across four real daemon launches on Linux and WSL2 for Alpha 1, and retain bounded owner-reported observations with the exact launch. macOS acceptance is deferred under #568.
 
 **Architecture:** `cockpit-sandbox` owns observation validation/storage in the existing launch transaction domain. `cockpit-sessions` serializes recording with lifecycle operations; the daemon's existing owner-only boundary admits the request. A standard-library Python CI harness uses verified published engines and real CLI/daemon/service entry points in an isolated home; local checks use fixtures only.
 
@@ -16,7 +16,10 @@
 - No grants, provider profile domains, client scopes, private-state denials or policy expansion.
 - No workflow push, installation, tags/releases or host setting changes without separate host approval.
 - Existing per-user ownership and launch identity remain the authority. Owner-provided observations are labelled as such; engine capability reports are not represented as enforcement proof.
-- Corrected published Greyproxy after fork PR #8 and the macOS public-CA fix #527 remain release prerequisites. Unsupported capabilities fail closed with a typed reason, and acceptance remains unmeasured.
+- Corrected published Greyproxy after fork PR #8 remains an Alpha 1 prerequisite. macOS
+  support and the public-CA fix #527 are deferred under #568, not Alpha 1 blockers.
+  Unsupported capabilities still fail closed with a typed reason; ordinary required
+  development CI remains intact, and Linux/WSL2 live acceptance remains unmeasured.
 - Fixed managed ports imply one profile per host network namespace. Four launches are sequential, with no stress loop.
 - #397 owns its CI optimization; release lane owns release.yml, tools/release.py and RELEASING. Coordinate any ci.yml delta before its protected push.
 
@@ -55,11 +58,16 @@ Files: tools/verify-sandbox-enforcement.py, tools/tests/test_verify_sandbox_enfo
 
 Files: proposed ci.yml steps coordinated with #397; Make targets; coverage map and dated #433 decision. No release workflow changes.
 
-- [x] Prepare explicit Linux/macOS/WSL2 workflow steps with required tool/capability preflights, modest parallelism, bounded timeout and artifact collection. Include macOS's existing typed-capability-refusal test.
+- [x] Initially prepare Linux/macOS/WSL2 workflow steps with bounded preflights and artifacts.
+  Superseded for source delivery: retain fixtures only in ordinary CI; separately approved
+  Alpha 1 live execution targets Linux+WSL2. macOS acceptance is deferred under #568;
+  preserve its existing typed-capability-refusal fixture and required development checks.
 - [x] Keep the workflow unpushed until a real host ask-to-run approval of the reviewed commit/push. Document any CI package/service prerequisites in that command's effects.
 - [x] Run actual Codex `$code-review medium`, address findings, and one fresh independent full-delta review (second only after substantial fixes).
 - [x] Required affected final checks and one shared-lock full workspace suite. Update coverage with only evidence actually established.
-- [ ] Draft PR uses `Part of #433`, keeps #61/#495 and live platform claims open until measured. Report exact release/approval blockers and current PR through cockpit-session-doing.
+- [ ] Source PR uses `Part of #433`; source delivery finishes after verified merge, while
+  live acceptance remains open until measured. Report exact release/approval blockers
+  and current PR through cockpit-session-doing. Draft skips are not tested-code evidence.
 
 ## Execution ledger
 
@@ -70,4 +78,12 @@ Files: proposed ci.yml steps coordinated with #397; Make targets; coverage map a
 - Native `$code-review medium` completed on base `d1f7b0a` plus full uncommitted delta (SHA256 `4e7479643bc893838876836f6da4c39354f02d4a1951bb25021a3aca5bf87ead`). Five findings: bound output while commands run, preserve cleanup on a second timeout, save the qualifying rule decision, validate malformed decision fields, and put the focused platform check in Make. Runtime regressions were reproduced before fixes; 13 fixture tests passed afterward. No independent-review claim is made for that inline workflow.
 - Fresh independent full-delta review of snapshot `b2b992ddc46b976c7aad14eb88a22ae012d7518b969788009d17afc560db761d` found two runner integration issues: systemd preferred the empty private runtime endpoint, and the manager bus became a desktop delegation. Explicit session-bus routing plus the disposable owner's existing desktop-withheld setting fixed both. Regressions were RED then GREEN (14 passed). The same reviewer approved narrow follow-up `8e05f776fd1fedd4a742edff396dabc1b71086ac2725d5c445a70ef671ba1326`; no second full-delta review was claimed.
 - One shared-lock final workspace run passed 2,250 tests, with 34 skipped (224.208 seconds). Affected Clippy, Rustdoc, no-persistence build, formatting, Python fixtures, CI bootstrap/job-selection fixtures, Markdown, offline links and spelling passed. The new plan's initial Markdown trailing-space error was corrected. No live enforcement run or complete Actions syntax check was performed; actionlint is unavailable.
-- Protected workflow push and corrected engine releases remain separate blockers. The PR stays a partial draft until live acceptance can be measured.
+- The original protected workflow request was terminally abandoned without approval or
+  execution. A fresh exact publication request is required; corrected engine releases,
+  pins and live enforcement remain separate approvals.
+- Source-delivery follow-through preserves main's draft/ready guards from `63a8194`.
+  Ordinary CI runs fixture checks only: the original automatic live steps and their
+  engine-specific package additions were removed before publication because the current
+  pins are not acceptance-ready. `make sandbox-enforcement-ci` remains available for
+  separately approved disposable CI execution; no dispatch is added or invoked here.
+  Source may merge after real ready-event checks pass without claiming live acceptance.

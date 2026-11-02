@@ -42,7 +42,13 @@ CI wiring is a proposal until its separately reviewed host push is approved. No 
 host setting, workflow push, tag or release is authorized by this document. #397 coordinates
 shared CI changes; release.yml and release automation remain with the release lane.
 
-Current acceptance limits: #527 blocks the published macOS engine's public-CA isolation;
-Greyproxy's published pin lacks fork PR #8. Fixture checks and authored CI steps do not
-close live Linux/macOS/WSL2 enforcement, #495, #61 or concurrent-session acceptance. The PR
-must use `Part of #433` until those real measurements and corrected releases exist.
+Theo's 2026-11-02 scope decision makes Alpha 1 Linux+WSL2 only. Greyproxy's published pin
+lacks fork PR #8, which remains a Linux/WSL2 prerequisite; publication and pin consumption
+require separate approval. Fixture checks do not close live enforcement, #495, #61 or
+concurrent-session acceptance. Source delivery can finish after verified merge while
+the PR uses `Part of #433` and actual Linux/WSL2 measurements remain open.
+
+macOS bootstrap/enforcement and #527's public-CA isolation are deferred under #568,
+not Alpha 1 blockers. Preserve known failures, fail-closed capability refusal and ordinary
+required macOS development checks. Ordinary CI executes fixtures only; live execution
+remains separately approved. Deferral grants no publication, pin or live dispatch authority.

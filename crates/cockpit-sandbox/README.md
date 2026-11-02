@@ -138,6 +138,12 @@ The host reads only its fixture proxy's request decisions through the authentica
 exact launch/client/destination matching prevents a DNS/TLS failure or timeout alone from
 counting as enforcement. Saved artifacts omit tokens and private file contents.
 
-Live platform results remain unmeasured until the workflow is approved and executed. The
-current macOS capability refusal (#527) and corrected Greyproxy publication remain explicit
-release prerequisites; fixture success is not a Linux/macOS/WSL2 live pass.
+Alpha 1 requires live bootstrap and enforcement evidence on Linux and WSL2 only. Those
+results remain unmeasured until separately approved disposable CI execution with the
+corrected published Greyproxy and approved pins. Ordinary CI runs fixtures, not live
+enforcement. Fixture success is not a live platform pass.
+
+macOS support and its public-CA isolation fix (#527) are deferred beyond Alpha 1 under
+issue #568; they are not Alpha 1 release prerequisites. Keep the macOS capability refusal
+fail-closed and ordinary required development CI intact. Deferral does not erase known
+failures or establish future support.
