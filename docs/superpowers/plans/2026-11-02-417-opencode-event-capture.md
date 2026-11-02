@@ -1,6 +1,6 @@
 # OpenCode native plugin event capture implementation plan
 
-> **For agentic workers:** Use the executing-plans skill inline; obtain one fresh independent full-delta review before the PR.
+> **For agentic workers:** Use the executing-plans skill inline; run Codex `$code-review medium` and retain the fresh independent full-delta review as separate evidence. `/code-review` in project Markdown is Claude syntax for the same named skill.
 
 **Goal:** Prove that OpenCode 1.19.5 loads Cockpit's plugin through the real launch configuration and emits the tool, permission and aborted-turn events the adapter consumes.
 
@@ -84,8 +84,9 @@ provider row, and `docs/decisions/2026-11-02-417-opencode-event-capture.md`.
   exposed a writer/count race; the final capture waits for terminal idle and snapshots
   matched records. Ruff formatting/import failures were corrected. Initial helper and
   replay tests failed before their files/fixtures existed, then passed with real captures.
-- Native `/code-review` is unavailable in this toolset. The user's authorized fresh
-  independent agent reviewed `a3b0906..b987863` and the documentation correction: ready,
+- The initial claim that the named code-review workflow was unavailable was mistaken:
+  discovery checked tool names and missed the Codex skill symlink. The user's authorized
+  fresh independent agent reviewed `a3b0906..b987863` and the documentation correction: ready,
   no capture/isolation blocker. Independent captured-replay/bounded-runner checks passed
   four tests; existing session outcome clear/preserve checks passed two tests. PR #515
   uses a normal push; CI and repository squash auto-merge remain the integration gate.
@@ -93,3 +94,29 @@ provider row, and `docs/decisions/2026-11-02-417-opencode-event-capture.md`.
   the persisted completion because every busy event becomes working/new-prompt. Filed
   #516 in Hardening with the native trace, affected state rule and real-session acceptance.
   The capture and README retain/disclose the gap; persistent completion is not claimed.
+
+## Codex code-review workflow and correction
+
+- Invoked **`$code-review medium 515`** from
+  `/home/theo/.codex/skills/code-review/SKILL.md`, resolving to
+  `/home/theo/dotfiles/config/codex/.codex/skills/code-review/SKILL.md`.
+  Reviewed revision `137d378c3cba62caeb7b297ed49e418a0e11287a`, full delta from
+  `a3b09065742a58d67d57b17c255ea2abdba87a61`. Followed the medium recipe's eight inline
+  angles and deduplication, with no subagents or verification runs in that workflow.
+  This is distinct from the earlier independent agent review; neither is relabelled as
+  the other. No simplify workflow ran.
+- One P2 finding: `tests/plugin_conformance.rs:96` unwrapped the bounded helper result
+  before restoring the native fixture's read-only config directory. A timeout/output
+  cap kills Python before `finally`, and `TempDir` silently fails to remove the directory.
+- Fixed by restoring permissions in the Rust caller after the process group is stopped,
+  before propagating the result. `a_forced_probe_timeout_leaves_the_fixture_removable`
+  first failed with `PermissionDenied`, then passed with the correction. A test-only
+  double-deletion error during iteration was corrected too.
+- Post-fix `CARGO_BUILD_JOBS=2 NEXTEST_TEST_THREADS=2 cargo nextest run --locked -p cockpit-opencode --test plugin_conformance -j 2`:
+  exit 0, three passed, one native test skipped. `CARGO_BUILD_JOBS=2 cargo clippy --locked -p cockpit-opencode --test plugin_conformance -j 2 -- -D warnings`
+  and `cargo fmt --all -- --check`: exit 0. No repeat native or broad suite was needed
+  for this teardown-only correction. Outcome: the workflow's finding is addressed;
+  previous native evidence and the separate #516 gap remain unchanged.
+- The same independent reviewer inspected this small correction as targeted follow-through,
+  with no new findings. `cargo nextest run --locked --offline -p cockpit-opencode --test plugin_conformance -j 2 -E 'test(a_forced_probe_timeout_leaves_the_fixture_removable)'`:
+  one passed, three excluded. This was not another full-delta review or the named skill.

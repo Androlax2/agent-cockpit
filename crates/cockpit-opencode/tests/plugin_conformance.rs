@@ -5,7 +5,8 @@ mod bounded_command;
 mod common;
 
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
+use std::path::Path;
+use std::process::{Command, Output};
 use std::time::Duration;
 
 use cockpit_opencode::{Bridge, CONFORMANCE_VERSION, OpenCode, PLUGIN_SOURCE};
@@ -93,7 +94,7 @@ fn the_native_plugin_captures_tool_permission_and_aborted_turns() {
     if let Some(record) = std::env::var_os("COCKPIT_OPENCODE_CAPTURE_DIR") {
         command.env("COCKPIT_OPENCODE_CAPTURE_DIR", record);
     }
-    let output = bounded_command::output(&mut command, Duration::from_secs(90)).unwrap();
+    let output = run_probe(&mut command, root, Duration::from_secs(90)).unwrap();
     assert!(
         output.status.success(),
         "{}\n{}",
@@ -101,4 +102,49 @@ fn the_native_plugin_captures_tool_permission_and_aborted_turns() {
         String::from_utf8_lossy(&output.stderr)
     );
     println!("{}", String::from_utf8_lossy(&output.stdout));
+}
+
+fn run_probe(command: &mut Command, root: &Path, timeout: Duration) -> Result<Output, String> {
+    let result = bounded_command::output(command, timeout);
+    // A deadline/output-limit kill skips Python's finally block. Restore permissions
+    // after its entire process group has stopped so TempDir can still remove the fixture.
+    match std::fs::set_permissions(
+        root.join("home/config/opencode"),
+        std::fs::Permissions::from_mode(0o755),
+    ) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "cannot restore fixture config permissions: {error}"
+            ));
+        }
+    }
+    result
+}
+
+#[test]
+fn a_forced_probe_timeout_leaves_the_fixture_removable() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("home/config/opencode");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join(".gitignore"), "node_modules\n").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = run_probe(
+        Command::new("/bin/sh").args(["-c", "sleep 30 & wait"]),
+        dir.path(),
+        Duration::from_millis(150),
+    );
+    let cleanup = std::fs::remove_dir_all(dir.path());
+    // A failing regression must still remove its own deliberately read-only fixture.
+    if cleanup.is_err() {
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir.close().unwrap();
+    }
+    assert!(result.unwrap_err().contains("timed out"));
+    assert!(
+        cleanup.is_ok(),
+        "forced probe stop stranded its fixture: {cleanup:?}"
+    );
 }
