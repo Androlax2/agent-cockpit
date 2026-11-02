@@ -72,9 +72,9 @@
 **Files:** Current #436 decision/evidence documentation and `.handoff/provider-live-acceptance-20261102.md` / `.handoff/chief-remaining-work-20261102.md`.
 
 - [x] Run installed `code-review medium` on the full branch delta and one fresh independent full-delta review. Resolve findings and recheck affected paths.
-- [ ] Request signed-in preflight/live execution only when the exact account/model and effective configuration are approved. Current user config selects `gpt-6.1-sol`; that observation grants no usage permission.
-- [ ] Use the existing signed-in runner with all guards intact: initial READY turn, one delivered approval request, possible title usage, cancellation only, request/connection/turn evidence, deadlines and cleanup. One approved attempt; stop at refusal.
-- [ ] Publish a scoped PR with `Part of #436` until actual acceptance is proven. Run ordinary CI and merge only after required checks pass, with `gh pr merge --squash --match-head-commit <reviewed-head>` under the applicable authorization.
+- [x] Request signed-in preflight/live execution only when the exact account/model and effective configuration are approved. Initial inventory alone granted no usage permission; later host approvals are recorded below.
+- [x] Use the existing signed-in runner with all guards intact: initial READY turn, one delivered approval request, possible title usage, cancellation only, request/connection/turn evidence, deadlines and cleanup. One approved attempt; stop at refusal.
+- [x] Publish a scoped PR with `Part of #436` until actual acceptance is proven. Run ordinary CI and merge only after required checks pass, with `gh pr merge --squash --match-head-commit <reviewed-head>` under the applicable authorization.
 - [ ] Close #436 only after the live criterion and promoted-version evidence are both satisfied. No release, tag or legacy apply.
 - [ ] Resume #419 using the docs owner's real candidate/onboarding sessions. Three provider brief-recognition observations and Claude TUI trust still need separate readiness/account approval; this Codex plan does not complete them.
 
@@ -89,7 +89,20 @@ Focused ordinary commands use `agent-build` when available, `CARGO_BUILD_JOBS=2`
 - [x] Host version-only receipt confirms installed native launcher reports `codex-cli 0.166.0`.
 - [x] Theo reviewed this execution plan and approved inline implementation, focused compilation and verification.
 - [x] Capability revalidation implementation and focused verification.
-- [ ] Signed-in acceptance, source CI and delivery.
+- [x] Signed-in #436 acceptance, source CI and delivery (PR #576; receipt `edeea0394e55`).
+
+## Subsequent source delivery and live acceptance
+
+PR #576 merged as `8d916180cce0a664a94553e7ac735442be51c7ff` after all five
+required checks passed, using exact-head-protected squash merge. The separately
+approved existing-home attempt `9ffb83dbb87e` then refused inherited rules before
+a turn (exit 100). Theo selected a private validation home and approved official
+sign-in (`fa4200cef0fd`, exit 0), without copying credentials or altering the
+existing home. A new exact host approval `edeea0394e55` passed the live criterion:
+1 passed, 19 skipped, exit 0. The TUI returned `cancel` and the matching turn ended
+interrupted. The [acceptance receipt](../../acceptance/436-codex-approval-routing.md)
+records the command, configuration, preserved failures and platform boundaries.
+Issue #419 remains a separate, unfinished acceptance task.
 
 ## Execution evidence
 
