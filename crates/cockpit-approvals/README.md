@@ -12,7 +12,9 @@ request here, so nothing is re-read from the sandbox.
 
 1. `ask_run` files the request after `cockpit-authorization` allows the session
    `run-commands` over itself. The working directory is resolved first (`resolve_cwd`), and
-   the shell must parse the command (`Runner::check_syntax`, `<shell> -n -c`).
+   the shell must parse the command (`Runner::check_syntax`, `<shell> -n -c`), when the
+   program the shell resolves to is known to parse without running under `-n`; any other
+   shell is never given it before approval (`Syntax::NotChecked`, #494).
 2. The owner reads it through `show`: hiding characters escaped as `\u{…}`, runs of blank
    lines collapsed, each kind escaped named in `Shown::warnings` (`Hidden`), non-ASCII
    characters named, a directory outside the asking agent's project flagged

@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cockpit_agent_channel::{PeerAncestry, ProcessError, ProcessIdentity};
 use cockpit_approvals::{
     Approved, GuideId, GuideRequest, GuideState, Hidden, NoResult, Project, Refusal, RunAsk, RunId,
-    RunRequest, RunResult, RunSettings, RunState, Runner, Shown,
+    RunRequest, RunResult, RunSettings, RunState, Runner, Shown, Syntax,
 };
 use cockpit_authorization::SessionId;
 use cockpit_processes::ExecutionId;
@@ -311,9 +311,18 @@ async fn ask_guide(
 }
 
 /// Asked before any transaction: the check runs a shell, which must not hold the database.
+/// A command the shell could not check reaches the owner with `unchecked_shell` set.
 async fn check_syntax(runner: &Runner, command: &str) -> Result<(), Failed> {
     match runner.check_syntax(command).await {
-        Ok(checked) => Ok(checked?),
+        Ok(Ok(Syntax::Parsed)) => Ok(()),
+        Ok(Ok(Syntax::NotChecked)) => {
+            tracing::info!(
+                shell = ?runner.unchecked_shell(),
+                "the approval shell has no known parse-only mode: the command was not checked"
+            );
+            Ok(())
+        }
+        Ok(Err(refused)) => Err(refused.into()),
         Err(error) => Err(internal(&format!(
             "the shell could not check a command: {error}"
         ))),
@@ -416,7 +425,12 @@ pub(crate) fn route_decision(
                 let mut changes = CheckoutChanges::default();
                 let mut views = Vec::with_capacity(runs.len());
                 for run in &runs {
-                    views.push(run_view(run, &waiting, changes.build_files_run(run).await));
+                    views.push(run_view(
+                        run,
+                        &runner,
+                        &waiting,
+                        changes.build_files_run(run).await,
+                    ));
                 }
                 Ok(Reply::ApprovalQueue {
                     runs: views,
@@ -725,7 +739,7 @@ pub(crate) fn now() -> i64 {
 /// A run request as its asking agent reads it.
 pub(crate) fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     Reply::RunRequest {
-        request: Box::new(run_view(run, &runner.waiting_for_input(), None)),
+        request: Box::new(run_view(run, runner, &runner.waiting_for_input(), None)),
     }
 }
 
@@ -734,7 +748,7 @@ pub(crate) fn run_reply(run: &RunRequest, runner: &Runner) -> Reply {
 async fn owner_run_reply(run: &RunRequest, runner: &Runner) -> Reply {
     let changed = CheckoutChanges::default().build_files_run(run).await;
     Reply::RunRequest {
-        request: Box::new(run_view(run, &runner.waiting_for_input(), changed)),
+        request: Box::new(run_view(run, runner, &runner.waiting_for_input(), changed)),
     }
 }
 
@@ -813,6 +827,7 @@ fn shown(text: &str) -> ShownText {
 /// see [`CheckoutChanges::build_files_run`]; agents' views leave it out.
 fn run_view(
     run: &RunRequest,
+    runner: &Runner,
     waiting_for_input: &[RunId],
     changed_build_files: Option<Vec<String>>,
 ) -> RunRequestView {
@@ -840,6 +855,7 @@ fn run_view(
             more_chars: folded.more_chars,
         }),
         timeout_without_foreground: cockpit_approvals::timeout_without_foreground(&run.command),
+        unchecked_shell: runner.unchecked_shell().map(crate::projects::text),
         changed_build_files,
         shown_command,
         shown_cwd: shown(&cwd),

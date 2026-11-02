@@ -38,6 +38,8 @@ pub struct TestHome {
     pub log_level: Option<String>,
     /// The daemon's `PATH`; unset by default, so it finds no agent program.
     pub path: Option<std::ffi::OsString>,
+    /// The daemon's `SHELL`, the approval shell; unset by default, so it is `/bin/sh`.
+    pub shell: Option<PathBuf>,
 }
 
 impl TestHome {
@@ -54,6 +56,7 @@ impl TestHome {
             sets_xdg_dirs: true,
             log_level: None,
             path: None,
+            shell: None,
         }
     }
 
@@ -67,6 +70,7 @@ impl TestHome {
             sets_xdg_dirs: false,
             log_level: None,
             path: None,
+            shell: None,
         }
     }
 
@@ -139,6 +143,9 @@ impl TestHome {
         }
         if let Some(path) = &self.path {
             command.env("PATH", path);
+        }
+        if let Some(shell) = &self.shell {
+            command.env("SHELL", shell);
         }
         command
     }

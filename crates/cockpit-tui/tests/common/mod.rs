@@ -85,6 +85,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         outside_project: false,
         folded_command: None,
         timeout_without_foreground: false,
+        unchecked_shell: None,
         changed_build_files: None,
         digest: format!("digest-{id}-1"),
         asked_at: 1,

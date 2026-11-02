@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -38,12 +38,38 @@ const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 /// input (a prompt).
 const PROMPT_IDLE: Duration = Duration::from_millis(1500);
 const SYNTAX_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+/// The programs whose `-n` reads commands without running them (POSIX `set -n`, fish's
+/// `--no-execute`), by the name of the file a shell path resolves to. Elsewhere `-n` may
+/// mean something else: nushell's is `--no-config-file`, so it would run the command.
+const PARSE_ONLY_SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "ksh93", "mksh", "fish"];
+
+/// What the check before the owner is asked found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Syntax {
+    /// The shell parsed the command without running it.
+    Parsed,
+    /// The shell has no parse-only mode known here, so it was not given the command.
+    NotChecked,
+}
+
+/// The program `shell` resolves to, when it is known to parse without running under `-n`:
+/// judged by the file its symlinks resolve to, so `/bin/sh` is whichever of dash or bash it
+/// is, and a link named `bash` to nushell is nushell. The check starts this resolved file,
+/// so a link retargeted after the judgement cannot swap in another program.
+fn parse_only_program(shell: &Path) -> std::io::Result<Option<PathBuf>> {
+    let program = std::fs::canonicalize(shell)?;
+    let is_parse_only = program
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| PARSE_ONLY_SHELLS.contains(&name));
+    Ok(is_parse_only.then_some(program))
+}
 
 /// How runs are started and bounded.
 #[derive(Debug, Clone)]
 pub struct RunSettings {
-    /// The shell that runs each command as `<shell> -c <command>` and checks it first with
-    /// `<shell> -n -c <command>`.
+    /// The shell that runs each command as `<shell> -c <command>` and, when it is known to
+    /// parse without running under `-n`, checks it first with `<shell> -n -c <command>`.
     pub shell: PathBuf,
     /// The session leader each run starts under (`cockpit_processes::Terminal`).
     pub leader: PathBuf,
@@ -162,11 +188,17 @@ impl Runner {
     }
 
     /// Whether the shell can parse `command`, asked before the owner is: a command that would
-    /// only fail to parse after approval interrupts the owner for nothing. The outer error is
-    /// a check that could not be made.
-    pub async fn check_syntax(&self, command: &str) -> std::io::Result<Result<(), Refusal>> {
-        let mut check = tokio::process::Command::new(&self.settings.shell);
+    /// only fail to parse after approval interrupts the owner for nothing. A shell not known
+    /// to parse without running is never given the command before approval. The outer error
+    /// is a check that could not be made.
+    pub async fn check_syntax(&self, command: &str) -> std::io::Result<Result<Syntax, Refusal>> {
+        let Some(program) = parse_only_program(&self.settings.shell)? else {
+            return Ok(Ok(Syntax::NotChecked));
+        };
+        let mut check = tokio::process::Command::new(program);
+        // The name it is started by: `sh` linked to bash keeps bash in POSIX mode.
         check
+            .arg0(&self.settings.shell)
             .arg("-n")
             .arg("-c")
             .arg(command)
@@ -180,7 +212,7 @@ impl Runner {
             .await
             .map_err(|_| std::io::Error::new(ErrorKind::TimedOut, "the syntax check hung"))??;
         if output.status.success() {
-            return Ok(Ok(()));
+            return Ok(Ok(Syntax::Parsed));
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
         Ok(Err(invalid(
@@ -192,6 +224,16 @@ impl Runner {
                 stderr.trim()
             ),
         )))
+    }
+
+    /// The shell, when [`Runner::check_syntax`] does not give it commands, so they reach the
+    /// owner unchecked. A shell that cannot be resolved is named too: it checks nothing.
+    pub fn unchecked_shell(&self) -> Option<&Path> {
+        let shell = &self.settings.shell;
+        match parse_only_program(shell) {
+            Ok(Some(_)) => None,
+            Ok(None) | Err(_) => Some(shell.as_path()),
+        }
     }
 
     /// Marks `run` running with a newly reserved execution and runs it to its end, every Git

@@ -28,7 +28,10 @@ struct Asking {
 }
 
 async fn started(granted: bool) -> Asking {
-    let home = TestHome::new();
+    started_in(TestHome::new(), granted).await
+}
+
+async fn started_in(home: TestHome, granted: bool) -> Asking {
     let token = home
         .launch(
             "s1",
@@ -373,6 +376,113 @@ async fn a_command_the_shell_cannot_parse_is_refused_before_the_owner_is_asked()
 
     assert_eq!(refusal.code, ErrorCode::InvalidArgument);
     assert_eq!(refusal.unblock.unwrap().by, UnblockedBy::Agent);
+}
+
+/// An approval shell at `<dir>/nu` that appends its arguments to `<dir>/executed` and
+/// succeeds, as nushell does with `-n` (`--no-config-file`): it runs the command.
+fn recording_nushell(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let shell = dir.join("nu");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
+        dir.join("executed").display()
+    );
+    std::fs::write(&shell, script).unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    shell
+}
+
+#[tokio::test]
+async fn an_unknown_shell_receives_the_command_only_after_owner_approval() {
+    let shells = tempfile::tempdir().unwrap();
+    let mut home = TestHome::new();
+    home.shell = Some(recording_nushell(shells.path()));
+    let asking = started_in(home, true).await;
+
+    let request = asking.asked("echo unapproved").await;
+    let record = shells.path().join("executed");
+    assert!(!record.exists(), "the shell ran before owner approval");
+
+    run(asking.approve(&request).await);
+    let ended = asking.ended(request.id).await;
+
+    assert_eq!(ended.state, RunStateView::Finished, "{ended:?}");
+    assert_eq!(
+        std::fs::read_to_string(record).unwrap(),
+        "-c\necho unapproved\n"
+    );
+}
+
+#[tokio::test]
+async fn editing_a_request_does_not_run_an_unknown_shell() {
+    let shells = tempfile::tempdir().unwrap();
+    let mut home = TestHome::new();
+    home.shell = Some(recording_nushell(shells.path()));
+    let asking = started_in(home, true).await;
+    let request = asking.asked("first command").await;
+
+    let edited = run(asking
+        .owner
+        .request(
+            Command::ApprovalEdit {
+                request: request.id,
+                revision: request.revision,
+                command: "edited command".to_owned(),
+            },
+            GENEROUS,
+        )
+        .await);
+
+    assert_eq!(edited.command, "edited command");
+    assert!(!shells.path().join("executed").exists());
+}
+
+#[tokio::test]
+async fn a_guide_does_not_send_its_commands_to_an_unknown_shell() {
+    let shells = tempfile::tempdir().unwrap();
+    let mut home = TestHome::new();
+    home.shell = Some(recording_nushell(shells.path()));
+    let asking = started_in(home, true).await;
+
+    let asked = guide(
+        asking
+            .agent
+            .request(
+                Command::AskGuide {
+                    launch_token: Some(asking.token.as_str().to_owned()),
+                    guide: "# Check\nDo the check\n  run: unapproved command".to_owned(),
+                    cwd: asking.cwd_text(),
+                },
+                GENEROUS,
+            )
+            .await,
+    );
+
+    assert_eq!(asked.state, GuideStateView::Asking);
+    assert!(!shells.path().join("executed").exists());
+}
+
+#[tokio::test]
+async fn the_owner_is_told_the_command_was_not_checked_by_a_shell_without_a_parse_only_mode() {
+    let shells = tempfile::tempdir().unwrap();
+    let shell = recording_nushell(shells.path());
+    let mut home = TestHome::new();
+    home.shell = Some(shell.clone());
+    let asking = started_in(home, true).await;
+    let request = asking.asked("echo unapproved").await;
+
+    let shown = shown_to_owner(&asking, request.id).await;
+
+    assert_eq!(shown.unchecked_shell, Some(shell.display().to_string()));
+}
+
+#[tokio::test]
+async fn a_command_a_parse_only_shell_checked_carries_no_unchecked_shell() {
+    let asking = started(true).await;
+
+    let request = asking.asked("true").await;
+
+    assert_eq!(request.unchecked_shell, None);
 }
 
 #[tokio::test]
