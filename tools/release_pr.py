@@ -200,10 +200,24 @@ def current_main(base):
         raise Refusal("main advanced; leave every existing proposal intact and run on current main")
 
 
+def proposal_body(version, base, head):
+    return (
+        f"Candidate workspace version: `{version}`. Generated locally with release-plz update and git-cliff.\n\n"
+        "Draft for review only. Do not merge until Theo decides the release policy. "
+        "This workflow cannot tag or publish. The branch and commit are retained when superseded.\n\n"
+        f"<!-- cockpit-release-proposal v1 base={base} head={head} -->"
+    )
+
+
 def owned_draft(pr):
     marker = MARKER.findall(pr.get("body") or "")
+    title = re.fullmatch(
+        r"chore\(release\): prepare (0\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))", pr.get("title", "")
+    )
     return (
         len(marker) == 1
+        and title is not None
+        and pr["body"] == proposal_body(title[1], *marker[0])
         and pr["state"] == "open"
         and pr["draft"]
         and pr["user"]["login"] == BOT
@@ -215,6 +229,20 @@ def owned_draft(pr):
         and pr["head"]["ref"] == "release-plz/" + marker[0][0]
         and pr["head"]["sha"] == marker[0][1]
     )
+
+
+def unchanged_old_commit(pr, cwd):
+    base, head = MARKER.findall(pr["body"])[0]
+    if remote_head(pr["head"]["ref"], cwd) != head:
+        return False
+    remote_git("fetch", "--no-tags", "origin", head, cwd=cwd)
+    if git("rev-list", "--parents", "-n", "1", head, cwd=cwd).split() != [head, base]:
+        return False
+    try:
+        version = validate_delta(base, head, cwd)
+    except Refusal:
+        return False
+    return pr["title"] == f"chore(release): prepare {version}"
 
 
 def verify_replacement(number, branch, head, base, cwd):
@@ -273,12 +301,7 @@ def publish(base, cwd):
     if targets:
         number = targets[0]["number"]
     else:
-        body = (
-            f"Candidate workspace version: `{version}`. Generated locally with release-plz update and git-cliff.\n\n"
-            "Draft for review only. Do not merge until Theo decides the release policy. "
-            "This workflow cannot tag or publish. The branch and commit are retained when superseded.\n\n"
-            f"<!-- cockpit-release-proposal v1 base={base} head={head} -->"
-        )
+        body = proposal_body(version, base, head)
         pr = api(
             "POST",
             endpoint("pulls"),
@@ -298,6 +321,8 @@ def publish(base, cwd):
         old_base = MARKER.findall(old["body"])[0][0]
         if git("merge-base", old_base, base, cwd=cwd, ok=(0, 1, 128)) != old_base:
             continue  # Only supersede proposals whose source revision is in this main history.
+        if not unchanged_old_commit(old, cwd):
+            continue
         fresh = api("GET", endpoint(f"pulls/{old['number']}"))
         if not owned_draft(fresh) or fresh["head"]["sha"] != old["head"]["sha"]:
             continue  # Preserve a draft that a human edited/promoted while this run worked.
@@ -308,7 +333,11 @@ def publish(base, cwd):
         )
         verify_replacement(number, branch, head, base, cwd)
         latest = api("GET", endpoint(f"pulls/{old['number']}"))
-        if owned_draft(latest) and latest["head"]["sha"] == old["head"]["sha"]:
+        if (
+            owned_draft(latest)
+            and latest["head"]["sha"] == old["head"]["sha"]
+            and remote_head(latest["head"]["ref"], cwd) == old["head"]["sha"]
+        ):
             api("PATCH", endpoint(f"pulls/{old['number']}"), {"state": "closed"})
     print(f"proposal={replacement['html_url']}")
 

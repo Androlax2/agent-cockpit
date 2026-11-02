@@ -93,6 +93,7 @@ class FakeGitHub:
             head = git(self.fixture.remote, "rev-parse", "refs/heads/" + data["head"])
             pr = {
                 "number": number,
+                "title": data["title"],
                 "state": "open",
                 "draft": not self.created_not_draft,
                 "body": data["body"],
@@ -259,7 +260,7 @@ class ProposalTests(unittest.TestCase):
         self.assertFalse(self.fixture.api.comments)
 
     def test_human_owned_ready_or_modified_older_drafts_are_retained(self):
-        for alteration in ("human", "ready", "head"):
+        for alteration in ("human", "ready", "head", "body", "title"):
             with self.subTest(alteration=alteration):
                 self.fixture.api.pulls.clear()
                 self.fixture.api.comments.clear()
@@ -270,6 +271,10 @@ class ProposalTests(unittest.TestCase):
                     old["user"]["login"] = "human"
                 elif alteration == "ready":
                     old["draft"] = False
+                elif alteration == "body":
+                    old["body"] += "\nHuman review: keep this draft open."
+                elif alteration == "title":
+                    old["title"] = "Keep this proposal for investigation"
                 else:
                     old["head"]["sha"] = "a" * 40
                 self.fixture.next_base()
@@ -295,21 +300,36 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(self.run_main("publish")[0], 1)
 
     def test_stale_main_refuses_before_remote_writes(self):
-        self.prepare()
+        prepared = self.prepare()
         previous = self.fixture.base
         self.fixture.next_base()
-        git(self.fixture.root, "checkout", "-q", "--detach", previous)
-        self.assertEqual(self.run_main("publish", base=previous)[0], 1)
+        git(self.fixture.root, "checkout", "-q", "--detach", prepared)
+        code, _, error = self.run_main("publish", base=previous)
+        self.assertEqual(code, 1)
+        self.assertIn("main advanced", error)
         self.assertFalse(self.fixture.api.writes)
+
+    def test_manual_commit_with_rewritten_marker_is_not_superseded(self):
+        original = self.prepare()
+        self.publish()
+        old = self.fixture.api.pulls[1]
+        with (self.fixture.root / "CHANGELOG.md").open("a") as stream:
+            stream.write("\nHuman amendment; retain for investigation.\n")
+        manual = self.fixture.commit("docs: human amendment")
+        git(self.fixture.root, "push", "-q", "origin", manual + ":refs/heads/" + old["head"]["ref"])
+        old["head"]["sha"] = manual
+        old["body"] = old["body"].replace(original, manual)
+        self.fixture.next_base()
+        self.prepare()
+        self.publish()
+        self.assertEqual(old["state"], "open")
 
     def test_unknown_base_draft_is_not_superseded(self):
         self.prepare()
         self.publish()
         foreign = copy.deepcopy(self.fixture.api.pulls[1])
         foreign["number"] = 2
-        foreign["body"] = (
-            "<!-- cockpit-release-proposal v1 base=" + "a" * 40 + " head=" + "b" * 40 + " -->"
-        )
+        foreign["body"] = proposal.proposal_body("0.1.1", "a" * 40, "b" * 40)
         foreign["head"]["ref"] = "release-plz/" + "a" * 40
         foreign["head"]["sha"] = "b" * 40
         self.fixture.api.pulls[2] = foreign
