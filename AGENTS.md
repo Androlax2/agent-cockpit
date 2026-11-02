@@ -55,6 +55,20 @@ Contribution expectations live in [CONTRIBUTING.md](CONTRIBUTING.md).
 If the client does not discover `.agents/skills/`, read the linked skill explicitly.
 These workflows refer to canonical policy; they do not grant additional permissions.
 
+### Skill invocation by client
+
+Project Markdown may name a skill workflow using Claude Code's `/name` syntax.
+Use `/name` in Claude Code and `$name` in Codex: `/code-review` means
+`$code-review` for a Codex worker. This translation applies to skill invocations,
+not file paths, shell commands or client-specific built-in commands.
+
+Codex workers must invoke `$code-review` for the required review and record what
+actually ran. Check Codex's available skills before declaring it unavailable;
+the absence of `/code-review` alone is not evidence. If the named skill is missing,
+report that exact limitation rather than silently substituting another skill or
+claiming an independent-agent fallback was the requested workflow. Existing
+authorization, review-scope and task-specific restrictions still apply.
+
 ## Compatibility boundaries
 
 - Keep installed command names and `apps/target/release` paths stable.
