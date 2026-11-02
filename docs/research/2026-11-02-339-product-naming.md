@@ -4,9 +4,14 @@
 Runlark are the strongest provisional candidates**, pending unresolved checks.
 Recommend Crewkiln for its agent-team/craft meaning; Runlark is the shorter, lighter alternative.
 The other six candidates have actual software or software-repository collisions; exclusion is recommended below.
-This is partial research for #339, not completed acceptance: registry coverage is uneven,
-all `.dev` registration checks remain unresolved, and every trademark search failed at its entry point.
-No candidate/class trademark query executed, and neither finalist is claimed available or legally cleared.
+Bounded agent research is finalized, but #339 acceptance remains open: follow-up package checks
+returned bounded negatives and all eight `.dev` lookups returned authoritative RDAP 404s, not purchase availability.
+No candidate/class trademark query executed; `.sh`, registrar eligibility and legal assessment remain incomplete.
+
+The four original candidate appendices remain **historical initial attempts**. Their unavailable
+package/domain observations are superseded where specified by the [package follow-up](339/package-followup.md)
+and [domain/trademark follow-up](339/domain-trademark-followup.md), both dated 2026-11-02.
+Their positive collisions and unrefreshed observations remain evidence; no name has been cleared.
 
 ## Two provisional finalists survive the eight-name comparison
 
@@ -52,37 +57,43 @@ Runtide has a fetched coding-playground README; Runhelm has an exact software re
 
 **Legend:** **H** = confirmed exact hit; **A** = successful absence in the stated search/list scope;
 **404** = exact public resource not returned, not registration permission;
-**P** = partial evidence; **U** = unavailable lookup, with no usable status/count;
+**P** = partial evidence; **U** = unavailable substantive result (even if a portal returned HTTP 200/403);
 **N** = no registration lookup documented. A timeout is **U**, never zero or 404.
 Indexed snippets do not establish an origin HTTP response or authoritative database counts.
 
 | Candidate / evidence | crates.io | Homebrew core | Homebrew casks | Arch official | AUR | Debian | Ubuntu | Fedora | Nix | npm | PyPI |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| [Crewkiln](339/crewkiln-runlark.md) | 404 index + A parent | A paths | A paths | A exact | A exact | U | A substring | U | P source | 404 | 404 |
-| [Runlark](339/crewkiln-runlark.md) | 404 index + A parent | A paths | A paths | A exact | A exact | U | A substring | U | P source | 404 | 404 |
-| [Runtide](339/runtide-taskwake.md) | U | U | U | A exact | A exact | U | A substring | U | U | 404 | 404 |
-| [Runhelm](339/runhelm-taskhelm.md) | U | U | U | A query | A name search | U | A substring | U | U | 404 | 404 |
-| [Crewspan](339/crewport-crewspan.md) | U | U | U | A exact | A exact | U | A substring | U | U | 404 | 404 |
-| [Crewport](339/crewport-crewspan.md) | U | U | U | A exact | A exact | U | A substring | U | U | 404 | 404 |
-| [Taskhelm](339/runhelm-taskhelm.md) | U | U | U | A query | A name search | U | A substring | U | U | **H command/package** | **H project** |
-| [Taskwake](339/runtide-taskwake.md) | U | U | U | A exact | A exact | U | A substring | U | U | 404 | 404 |
+| [Crewkiln](339/crewkiln-runlark.md) | 404 index + A parent | A complete paths | A complete paths | A exact | A exact | A substring | A substring | A default query | A indexed substring¹ | 404 | 404 |
+| [Runlark](339/crewkiln-runlark.md) | 404 index + A parent | A complete paths | A complete paths | A exact | A exact | A substring | A substring | A default query | A indexed substring¹ | 404 | 404 |
+| [Runtide](339/runtide-taskwake.md) | 404 exact API | A complete paths | A complete paths | A exact | A exact | A substring | A substring | A default query | A indexed substring¹ | 404 | 404 |
+| [Runhelm](339/runhelm-taskhelm.md) | 404 exact API | A complete paths | A complete paths | A query | A name search | A substring | A substring | A default query | A indexed substring¹ | 404 | 404 |
+| [Crewspan](339/crewport-crewspan.md) | 404 exact API | A complete paths | A complete paths | A exact | A exact | A substring | A substring | A default query | A indexed substring¹ | 404 | 404 |
+| [Crewport](339/crewport-crewspan.md) | 404 exact API | A complete paths | A complete paths | A exact | A exact | A substring | A substring | A default query | A indexed substring¹ | 404 | 404 |
+| [Taskhelm](339/runhelm-taskhelm.md) | 404 exact API | A complete paths | A complete paths | A query | A name search | A substring | A substring | A default query | A indexed substring¹ | **H command/package** | **H project** |
+| [Taskwake](339/runtide-taskwake.md) | 404 exact API | A complete paths | A complete paths | A exact | A exact | A substring | A substring | A default query | A indexed substring¹ | 404 | 404 |
 
-Each row links its literal requests and observations. The finalist crates.io evidence comes from
+¹ Both **stable 26.05 and unstable**. Updated cells use the [package follow-up](339/package-followup.md);
+row links retain initial evidence. Debian's all-suite/section/architecture substring searches returned
+no results. Fedora's default query returned no package results; Runtide's “Did you mean runtime?”
+is a suggestion, not a hit. Fedora tokenization/fuzzy semantics remain unverified.
+The finalist crates.io evidence comes from
 the official Git index: exact-file 404s are corroborated by successful parent listings, not a
 successful direct crates.io API search ([Crewkiln entry](https://api.github.com/repos/rust-lang/crates.io-index/contents/cr/ew/crewkiln),
 [Runlark entry](https://api.github.com/repos/rust-lang/crates.io-index/contents/ru/nl/runlark)).
 That does not check reserved names or publication eligibility.
 
-Both finalist Homebrew checks examined complete, non-truncated source trees for matching paths,
-including alias paths; they did not inspect every formula body or shipped executable
+Refreshed Homebrew checks for **all eight names** examined complete, non-truncated source paths,
+including aliases, with no matches; they did not inspect every formula body or shipped executable
 ([core tree](https://api.github.com/repos/Homebrew/homebrew-core/git/trees/HEAD?recursive=1),
 [cask tree](https://api.github.com/repos/Homebrew/homebrew-cask/git/trees/HEAD?recursive=1)).
 The appendices preserve observed revisions; live HEAD URLs can change.
 
-Finalist Nix coverage is **partial**: the recursive tree was truncated, although the relevant
-by-name directories and `all-packages.nix` were checked successfully at the recorded revision.
-Evaluated package sets, generated attributes, aliases and release channels remain unverified
-([Nix evidence](339/crewkiln-runlark.md)). Debian and Fedora timed out for every candidate.
+Nix's official evaluated-package indexes returned `doc_count:0` for each name in stable 26.05
+and unstable, superseding the earlier partial source-only evidence. These are lowercase wildcard
+substring checks over `package_attr_name`, `package_pname` and `package_programs`, with no
+case-insensitive option. The appendix preserves exact POST payloads, concrete indexes, timestamps,
+counts and controls; this is not an exhaustive overlay/platform/installed-file inventory
+([Nix request evidence](339/package-followup.md#3-was-evaluated-nix-package-evidence-feasible-and-what-remains)).
 Taskhelm's archived AUR package is historical evidence, not a contradiction of today's empty
 current-AUR search ([archived PKGBUILD](https://github.com/aur-archive/taskhelm/blob/master/PKGBUILD)).
 
@@ -105,38 +116,40 @@ Account lookups distinguish the shared user/organization namespace from reposito
 
 | Candidate / evidence | GitHub exact repositories | GitHub account / organization | `.dev` registration | `.sh` registration | USPTO 9/42 | EUIPO 9/42 |
 | --- | --- | --- | --- | --- | --- | --- |
-| [Crewkiln](339/crewkiln-runlark.md) | A public name search | 404 user + org | U timeout | N | U entry point | U entry point |
-| [Runlark](339/crewkiln-runlark.md) | A public name search | 404 user + org | U timeout | N | U entry point | U entry point |
-| [Runtide](339/runtide-taskwake.md) | H: 3 | H user; org 404 | U corrected lookup | N | U entry point | U entry point |
-| [Runhelm](339/runhelm-taskhelm.md) | H: 1 | H organization | U timeout | N; web visibility only | U entry point | U entry point |
-| [Crewspan](339/crewport-crewspan.md) | H: 2, including Paperclip fork | H organization | U timeout | U timeout | U entry point | U entry point |
-| [Crewport](339/crewport-crewspan.md) | H: 3 | H user | U timeout | U timeout | U entry point | U entry point |
-| [Taskhelm](339/runhelm-taskhelm.md) | H: 3 | 404 shared-account lookup | U timeout | N; web visibility only | U entry point | U entry point |
-| [Taskwake](339/runtide-taskwake.md) | H: 4 | 404 user + org | U corrected lookup | N | U entry point | U entry point |
+| [Crewkiln](339/crewkiln-runlark.md) | A public name search | 404 user + org | RDAP 404 | U 200 empty form | U JS shell | U 403 CloudFront |
+| [Runlark](339/crewkiln-runlark.md) | A public name search | 404 user + org | RDAP 404 | U 200 empty form | U JS shell | U 403 CloudFront |
+| [Runtide](339/runtide-taskwake.md) | H: 3 | H user; org 404 | RDAP 404 | N | U JS shell | U 403 CloudFront |
+| [Runhelm](339/runhelm-taskhelm.md) | H: 1 | H organization | RDAP 404 | N; web visibility only | U JS shell | U 403 CloudFront |
+| [Crewspan](339/crewport-crewspan.md) | H: 2, including Paperclip fork | H organization | RDAP 404 | U prior timeout | U JS shell | U 403 CloudFront |
+| [Crewport](339/crewport-crewspan.md) | H: 3 | H user | RDAP 404 | U prior timeout | U JS shell | U 403 CloudFront |
+| [Taskhelm](339/runhelm-taskhelm.md) | H: 3 | 404 shared-account lookup | RDAP 404 | N; web visibility only | U JS shell | U 403 CloudFront |
+| [Taskwake](339/runtide-taskwake.md) | H: 4 | 404 user + org | RDAP 404 | N | U JS shell | U 403 CloudFront |
 
 Finalist repository searches returned successful empty results, while account endpoints returned
 404s; neither response guarantees GitHub registration eligibility
 ([Crewkiln search](https://api.github.com/search/repositories?q=crewkiln+in:name&per_page=100),
 [Runlark search](https://api.github.com/search/repositories?q=runlark+in:name&per_page=100)).
-All `.dev` checks remain unresolved. Initial Runtide/Taskwake lookup-host DNS failures were
-followed by corrected endpoint timeouts; neither is a candidate-domain negative.
+All eight `.dev` results are now **authoritative RDAP 404 / no registration returned**, using the
+Google endpoint obtained from a successful [IANA bootstrap](https://data.iana.org/rdap/dns.json) response.
+This supersedes initial timeouts/DNS errors, not reservation, premium-pricing or registrar checks.
+Finalist `.sh` requests returned HTTP 200 forms with hidden empty results, not executed WHOIS
+negatives; the other six retain their initial scope ([follow-up](339/domain-trademark-followup.md)).
 The `runhelm.sh` reference in Pelorus is a **script filename**, not domain ownership
 ([Pelorus](https://pelorus.readthedocs.io/en/v1.3.0/Install.html)).
 
-**All trademark attempts failed at the entry point; no candidate/class queries executed.**
-USPTO and EUIPO requests timed out before any name or class filter could be submitted
-([USPTO](https://tmsearch.uspto.gov/), [EUIPO eSearch](https://euipo.europa.eu/eSearch/),
-[EUIPO search entry](https://www.euipo.europa.eu/en/search-ip)).
-Classes 9 and 42 are intended research scope, not completed searches. No mark owner, status,
-application/registration number or goods/services record was established for these candidates.
-Supplementary web-index silence is not a register negative or legal clearance.
+**No candidate/class trademark queries executed.** USPTO returned HTTP 200 with a JavaScript
+application shell and no HTML forms. EUIPO eSearch reset (`ECONNRESET`), then its search landing
+page returned HTTP 403, “Request blocked.”, generated by CloudFront; all further EUIPO access stopped
+([USPTO](https://tmsearch.uspto.gov/), [EUIPO](https://www.euipo.europa.eu/en/search-ip)).
+The installed Chromium's isolated safe launch failed with exit **-6 (SIGABRT)**, **“No usable sandbox!”**
+and `ptrace: Operation not permitted (1)`, before any USPTO navigation. No `--no-sandbox` bypass
+was attempted. Capability blocker **`1820d58f`** tracks this limitation; neither failure establishes
+a greyproxy denial ([exact requests and launch evidence](339/domain-trademark-followup.md)).
 
-Before approval, finish missing registry coverage, authoritative `.dev` **or** `.sh` registration
-checks, registrar/reservation checks where relevant, and exact/similar-mark searches in both offices
-for classes 9/42. Preserve dates, queries and actual outcomes; assess owners, status and goods/services.
-Prioritize the finalists, but keep the rejected rows explicitly incomplete unless their remaining
-checks are performed. Fewer viable candidates than the requested 5–8 survive this evidence set;
-this report offers eight evaluated proposals, **not eight cleared names or completed #339 acceptance**.
+Remaining checks are domain reservation/premium/registrar eligibility, actual `.sh` results if needed,
+and exact/similar USPTO/EUIPO marks in classes 9/42 with owners, status, identifiers and goods/services.
+No trademark counts or legal clearance are established. Successful package and RDAP negatives do not
+reverse software collisions: these are **eight evaluated proposals, not eight cleared names**.
 
 ## Rename only after Theo decides and a separate implementation is approved
 
@@ -178,8 +191,8 @@ not accepted new assignments; Chief must confirm scope with each owner before im
 
 1. **Theo chooses provisionally and records the decision.** After an actual choice, add one dated
    issue-specific record under `docs/decisions/`, naming Theo, rationale, rejected alternatives and
-   outstanding conditions; do not fabricate a decision today. Finish registry/domain/trademark
-   research and obtain final spelling approval before implementation
+   outstanding conditions; do not fabricate a decision today. Resolve remaining publication/domain
+   eligibility and trademark conditions and obtain final spelling approval before implementation
    ([decision-record convention](../decisions/README.md)).
 2. **Create an Alpha 1 rename follow-up, then carry the approved name into #99/#209/#97 planning.**
    Assign owners and acceptance criteria there. #99 remains pending naming/design; research does
@@ -219,7 +232,11 @@ agent-team/craft identity, but harder French pronunciation. Option B — **Runla
 and lighter in tone, but less clear about orchestration. Theo can state a preference in under two
 minutes; that preference is not research completion, legal clearance or rename authorization.
 
-**Acceptance remains open:** Theo's choice and decision record, completed outstanding lookups,
-the approved rename follow-up, and updates to #99/#209/#97. Keep #99 pending naming/design.
-Review and verification evidence belongs in this research PR; passing documentation checks
-does not complete #339 or approve a name.
+**Bounded agent research finalized; #339 acceptance remains open.** Chief's remaining blockers are
+USPTO's JS interface plus the sandboxed-browser failure (`1820d58f`), EUIPO's CloudFront 403/access
+stop, domain reservation/premium/registrar eligibility, and trademark
+assessment. One naming preference from Theo is still pending, followed by its decision record and
+separately approved rename follow-up/#99/#209/#97 coordination; #99 remains pending naming/design.
+The `.dev` lookup meets the issue's `.dev`/`.sh` research scope; actual `.sh` results are needed only
+if that suffix is preferred. Review and verification evidence belongs in PR #534.
+Documentation verification cannot choose a name or complete #339 acceptance.
