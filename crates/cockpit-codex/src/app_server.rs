@@ -96,7 +96,8 @@ impl AppServer {
         loop {
             let message = self.receive()?;
             if message.get("method").is_some() {
-                // A request from the server (an approval) is for the TUI, which answers it.
+                // Cockpit never answers approvals. The owner's TUI route is measured
+                // separately by tests/approval_routing.rs; see #436 for the live gap.
                 if message.get("id").is_none() {
                     self.notifications.push_back(notification(message));
                 }
