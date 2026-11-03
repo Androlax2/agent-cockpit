@@ -63,7 +63,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek agent message SESSION TEXT
        torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]
        torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] [--component NAME] [--steps TEXT] [--requested-by-owner]
-       torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT]
+       torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT] [--since 2h|RFC3339]
        torlek bug-report list [--all] | show ID | discard ID
        torlek bug-report edit ID [--title TEXT] [--description TEXT] [--steps TEXT]
        torlek bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL

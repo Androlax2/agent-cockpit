@@ -11,7 +11,7 @@ mod scripted;
 
 use cockpit_protocol::{
     BugBundleView, BugFiledView, BugIssueView, BugKindView, BugOriginView, BugReportView,
-    BugStatusView, Command, Outcome, Reply,
+    BugStatusView, Command, ErrorCode, Outcome, ProtocolError, Reply,
 };
 use scripted::{scripted_conversation, scripted_daemon, text};
 
@@ -221,9 +221,49 @@ async fn an_agent_cannot_report_a_kind_only_the_daemon_observes() {
 }
 
 #[tokio::test]
-async fn new_asks_the_daemon_for_a_draft_and_prints_it() {
+async fn new_files_the_draft_when_the_bundle_cannot_be_listed() {
     let home = Home::new();
-    let daemon = scripted_daemon(&home.socket("daemon.sock"), shown());
+    let unlisted = Outcome::Error(ProtocolError::new(
+        ErrorCode::Refused,
+        "the support bundle cannot be read: permission denied",
+    ));
+    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![unlisted, shown()]);
+
+    let output = home
+        .cockpit(&["bug-report", "new", "the approval pane froze"], &[])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("cannot be listed (refused: the support bundle cannot be read: permission denied); filing the draft anyway"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert!(
+        text(&output.stdout).starts_with("7 draft agent s1 x2 "),
+        "{}",
+        text(&output.stdout)
+    );
+    let received = daemon.await.unwrap();
+    assert!(
+        matches!(
+            received.as_slice(),
+            [
+                Command::BugReportBundlePlan { .. },
+                Command::BugReportNew { .. }
+            ]
+        ),
+        "{received:?}"
+    );
+}
+
+#[tokio::test]
+async fn new_lists_the_bundle_then_asks_the_daemon_for_a_draft_and_prints_it() {
+    let home = Home::new();
+    let planned = Outcome::Ok(Reply::BugBundlePlan {
+        contents: vec!["cockpit-support-bundle/version.txt".to_owned()],
+    });
+    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![planned, shown()]);
 
     let output = home
         .cockpit(
@@ -242,7 +282,8 @@ async fn new_asks_the_daemon_for_a_draft_and_prints_it() {
     let printed = text(&output.stdout);
     assert!(
         printed.starts_with(
-            "7 draft agent s1 x2 cockpit-0.1.0/timeout/approvals: Approval pane froze\n"
+            "A new draft's support bundle will carry:\n  cockpit-support-bundle/version.txt\n\
+             7 draft agent s1 x2 cockpit-0.1.0/timeout/approvals: Approval pane froze\n"
         ),
         "{printed}"
     );
@@ -250,13 +291,19 @@ async fn new_asks_the_daemon_for_a_draft_and_prints_it() {
         printed.contains("Nothing is sent until you run `torlek bug-report send 7`."),
         "{printed}"
     );
+    let installed = home.cockpit(&["version"], &[]).await;
     assert_eq!(
         daemon.await.unwrap(),
-        Command::BugReportNew {
-            description: "the approval pane froze".to_owned(),
-            title: None,
-            steps: "1. open it".to_owned(),
-        }
+        [
+            Command::BugReportBundlePlan { since: None },
+            Command::BugReportNew {
+                description: "the approval pane froze".to_owned(),
+                title: None,
+                steps: "1. open it".to_owned(),
+                since: None,
+                cli_version: Some(text(&installed.stdout).trim_end().to_owned()),
+            }
+        ]
     );
 }
 

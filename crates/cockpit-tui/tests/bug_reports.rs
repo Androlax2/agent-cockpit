@@ -132,6 +132,8 @@ fn b_drafts_a_report_with_bug_report_new_and_closes_once_answered() {
         description: "the list froze".to_owned(),
         title: None,
         steps: "open F twice".to_owned(),
+        since: None,
+        cli_version: None,
     };
     assert_eq!(submitted, std::slice::from_ref(&expected));
     app.answer(

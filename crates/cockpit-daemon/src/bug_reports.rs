@@ -13,7 +13,7 @@ use std::io::ErrorKind;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_bug_reports::{
     Bundle, Edit, Facts, Filed, Kind, NewReport, Origin, Report, ReportId, Source,
@@ -43,6 +43,8 @@ const INTERNAL_WINDOW: Duration = Duration::from_secs(10 * 60);
 const READINESS_DEADLINE: Duration = Duration::from_secs(20);
 /// The long-lived processes whose logs a bundle carries.
 const LOGGED_PROCESSES: [&str; 2] = ["daemon", "tui"];
+/// The files [`bundle_sections`] gathers, in its order.
+const SECTION_NAMES: [&str; 4] = ["version.txt", "readiness.json", "config.txt", "schema.txt"];
 
 /// What the daemon needs to file and serve reports.
 #[derive(Clone)]
@@ -121,7 +123,6 @@ pub(crate) fn facts(
     providers: &[cockpit_readiness::ProviderFacts],
 ) -> Facts {
     let version = env!("CARGO_PKG_VERSION").to_owned();
-    let revision = option_env!("TORLEK_SOURCE_REVISION").unwrap_or("unknown: not a release build");
     let providers = if providers.is_empty() {
         "none".to_owned()
     } else {
@@ -140,7 +141,8 @@ pub(crate) fn facts(
             .join(", ")
     };
     let environment = format!(
-        "torlek {version} (revision {revision})\nplatform: {platform} ({os} {arch})\ntmux: {tmux}\nproviders: {providers}",
+        "{daemon}\nplatform: {platform} ({os} {arch})\ntmux: {tmux}\nproviders: {providers}",
+        daemon = daemon_line(),
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         tmux = tmux.as_deref().unwrap_or("unavailable"),
@@ -149,6 +151,12 @@ pub(crate) fn facts(
         version,
         environment,
     }
+}
+
+/// `torlek VERSION (revision REVISION)` of this daemon.
+fn daemon_line() -> String {
+    let revision = option_env!("TORLEK_SOURCE_REVISION").unwrap_or("unknown: not a release build");
+    format!("torlek {} (revision {revision})", env!("CARGO_PKG_VERSION"))
 }
 
 /// Whether the last run left its marker, then a new marker for this run. Called once the
@@ -186,7 +194,7 @@ pub(crate) async fn detect_forever(
         let Some(new) = detected(fault, &mut internal, Instant::now()) else {
             continue;
         };
-        match file(&context, new).await {
+        match file(&context, new, BundleAsk::default()).await {
             Ok(filed) => tracing::info!(
                 report = filed.report().id.0,
                 filed = filed_view(&filed).as_str(),
@@ -314,7 +322,7 @@ pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
                     .await
                     .map_err(failed)?;
                 write.commit().await?;
-                let filed = with_bundle(&context, filed).await?;
+                let filed = with_bundle(&context, filed, BundleAsk::default()).await?;
                 Ok(Reply::BugReportFiled {
                     report: filed.report().id.0,
                     filed: filed_view(&filed),
@@ -323,7 +331,9 @@ pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
         },
         (command, Peer::Owner) => {
             let class = match command {
-                Command::BugReportNew { .. } => WorkClass::Bulk,
+                Command::BugReportNew { .. } | Command::BugReportBundlePlan { .. } => {
+                    WorkClass::Bulk
+                }
                 _ => WorkClass::Control,
             };
             Route::Run {
@@ -343,6 +353,8 @@ async fn owner(command: Command, context: Context) -> Answer {
             description,
             title,
             steps,
+            since,
+            cli_version,
         } => {
             let new = NewReport {
                 source: Source::Owner,
@@ -352,10 +364,29 @@ async fn owner(command: Command, context: Context) -> Answer {
                 description,
                 steps,
             };
-            let filed = file(&context, new).await?;
+            let ask = BundleAsk {
+                since: since.map(unix_time),
+                cli_version,
+            };
+            let filed = file(&context, new, ask).await?;
             Ok(Reply::BugReport {
                 report: Box::new(view(filed.report(), false)),
             })
+        }
+        Command::BugReportBundlePlan { since } => {
+            let state_dir = context.state_dir.clone();
+            let since = since.map(unix_time);
+            let contents = tokio::task::spawn_blocking(move || planned_contents(&state_dir, since))
+                .await
+                .map_err(|error| format!("reading the bundle's contents failed: {error}"))
+                .and_then(|planned| planned)
+                .map_err(|problem| {
+                    Failed(ProtocolError::new(
+                        ErrorCode::Refused,
+                        format!("the support bundle cannot be read: {problem}"),
+                    ))
+                })?;
+            Ok(Reply::BugBundlePlan { contents })
         }
         Command::BugReportList { all } => {
             let read = context.database.read().await?;
@@ -427,29 +458,45 @@ async fn owner(command: Command, context: Context) -> Answer {
     }
 }
 
+/// What the one asking for a new draft adds to its bundle; the daemon's and an agent's
+/// drafts ask for nothing.
+#[derive(Default)]
+struct BundleAsk {
+    /// Leaves out log files last written before it.
+    since: Option<SystemTime>,
+    /// The asking CLI's version line.
+    cli_version: Option<String>,
+}
+
+fn unix_time(seconds: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
+}
+
 /// Files `new` in a transaction of its own, then writes a new draft's bundle.
-async fn file(context: &Context, new: NewReport) -> Result<Filed, Failed> {
+async fn file(context: &Context, new: NewReport, ask: BundleAsk) -> Result<Filed, Failed> {
     let write = context.database.write().await?;
     let filed = cockpit_bug_reports::file(&write, &context.facts, new, now())
         .await
         .map_err(failed)?;
     write.commit().await?;
-    with_bundle(context, filed).await
+    with_bundle(context, filed, ask).await
 }
 
 /// A new draft with its bundle recorded, written or failed; other answers as they are.
-async fn with_bundle(context: &Context, filed: Filed) -> Result<Filed, Failed> {
+async fn with_bundle(context: &Context, filed: Filed, ask: BundleAsk) -> Result<Filed, Failed> {
     let Filed::Created(report) = filed else {
         return Ok(filed);
     };
     let state_dir = context.state_dir.clone();
-    let sections = bundle_sections(context, report.origin).await;
+    let sections = bundle_sections(context, report.origin, ask.cli_version.as_deref()).await;
     let id = report.id;
-    let bundle = tokio::task::spawn_blocking(move || write_bundle(&state_dir, id, &sections))
-        .await
-        .unwrap_or_else(|error| Bundle::Failed {
-            problem: format!("writing the bundle failed: {error}"),
-        });
+    let since = ask.since;
+    let bundle =
+        tokio::task::spawn_blocking(move || write_bundle(&state_dir, id, since, &sections))
+            .await
+            .unwrap_or_else(|error| Bundle::Failed {
+                problem: format!("writing the bundle failed: {error}"),
+            });
     if let Bundle::Failed { problem } = &bundle {
         tracing::warn!(
             report = id.0,
@@ -513,10 +560,15 @@ async fn readiness_section(context: &Context, origin: Origin) -> serde_json::Val
     }
 }
 
-/// The files a bundle carries beside the logs and the platform facts (report 12): the
-/// version manifest, the readiness report, the owner's configuration and the schema versions.
-/// A part that cannot be gathered says why in its place rather than leaving the bundle.
-async fn bundle_sections(context: &Context, origin: Origin) -> Vec<(&'static str, String)> {
+/// The files a bundle carries beside the logs and the platform facts (report 12), named in
+/// [`SECTION_NAMES`]: the version manifest, the readiness report, the owner's configuration
+/// and the schema versions. A part that cannot be gathered says why in its place rather than
+/// leaving the bundle.
+async fn bundle_sections(
+    context: &Context,
+    origin: Origin,
+    cli_version: Option<&str>,
+) -> Vec<(&'static str, String)> {
     let readiness = readiness_section(context, origin).await;
     let environment = context.readiness.environment.clone();
     let config = tokio::task::spawn_blocking(move || {
@@ -532,37 +584,74 @@ async fn bundle_sections(context: &Context, origin: Origin) -> Vec<(&'static str
         .iter()
         .map(|set| format!("{} {}\n", set.owner, set.migrations.len()))
         .collect();
-    vec![
-        ("version.txt", format!("{}\n", context.facts.environment)),
-        ("readiness.json", format!("{readiness:#}\n")),
-        ("config.txt", config),
-        ("schema.txt", schema),
+    let state_dir = context.state_dir.clone();
+    let facts = Arc::clone(&context.facts);
+    let cli_version = cli_version.map(str::to_owned);
+    let versions = tokio::task::spawn_blocking(move || {
+        version_manifest(&state_dir, &facts.environment, cli_version.as_deref())
+    })
+    .await
+    .unwrap_or_else(|error| format!("unavailable: {error}\n"));
+    SECTION_NAMES
+        .into_iter()
+        .zip([versions, format!("{readiness:#}\n"), config, schema])
+        .collect()
+}
+
+/// `version.txt`: the installed CLI that asked, the running daemon and the instruction
+/// bundles on disk that sessions read, each named apart (report 12), then the platform and
+/// provider facts every draft carries.
+fn version_manifest(state_dir: &Path, environment: &str, cli_version: Option<&str>) -> String {
+    let cli = cli_version
+        .unwrap_or("not reported: filed by the TUI, an agent or the daemon, not the CLI");
+    let skills = cockpit_claude::instruction_skills_dir(&crate::agent_context::claude_skills_root(
+        state_dir,
+    ));
+    let helpers = [
+        (
+            "agent instructions",
+            crate::agent_context::bundle_dir(state_dir),
+        ),
+        ("Claude Code skills", skills),
     ]
+    .map(|(name, dir)| format!("  {name}: {}\n", helper_bundle_version(&dir)))
+    .concat();
+    let daemon = daemon_line();
+    // `facts` starts with this daemon's line; the rest is the platform and providers.
+    let platform = environment
+        .strip_prefix(&format!("{daemon}\n"))
+        .unwrap_or(environment);
+    format!(
+        "installed CLI: {cli}\nrunning daemon: {daemon}\nsession helper bundles:\n{helpers}{platform}\n"
+    )
+}
+
+/// The version and manifest id of the instruction bundle on disk in `dir`, which the daemon
+/// rewrites at each start: a session reads what is there, not what the binary holds.
+fn helper_bundle_version(dir: &Path) -> String {
+    let path = dir.join(cockpit_agent_context::MANIFEST_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => return format!("unavailable: cannot read its manifest: {error}"),
+    };
+    match serde_json::from_str::<cockpit_agent_context::Manifest>(&text) {
+        Ok(manifest) => format!("torlek {} (manifest {})", manifest.version, manifest.id),
+        Err(error) => format!("unavailable: its manifest does not parse: {error}"),
+    }
 }
 
 /// Writes the draft's support bundle: Cockpit's own logs (report 12 keeps prompts, agent
 /// output, repository contents, commands and secrets out of them), `sections`, and the
 /// platform facts the bundle adds itself. The sections pass the approvals redactor: the
 /// owner's settings are names and paths, but one pasted in by mistake may be a token.
-fn write_bundle(state_dir: &Path, id: ReportId, sections: &[(&'static str, String)]) -> Bundle {
+fn write_bundle(
+    state_dir: &Path,
+    id: ReportId,
+    since: Option<SystemTime>,
+    sections: &[(&'static str, String)],
+) -> Bundle {
     let written = || -> Result<Bundle, String> {
-        let mut log_dirs = Vec::new();
-        for process in LOGGED_PROCESSES {
-            let dir = cockpit_diagnostics::log_dir_in(state_dir, process)
-                .map_err(|error| error.to_string())?;
-            if dir.is_dir() {
-                log_dirs.push(dir);
-            }
-        }
-        let mut request = cockpit_diagnostics::BundleRequest::new(log_dirs);
-        for (name, text) in sections {
-            let (redacted, _) = cockpit_approvals::redact_secrets(text);
-            request.sections.push(
-                cockpit_diagnostics::BundleSection::new(name, redacted.into_bytes())
-                    .map_err(|error| error.to_string())?,
-            );
-        }
-        let plan = cockpit_diagnostics::plan_bundle(&request).map_err(|error| error.to_string())?;
+        let plan = plan(state_dir, since, sections)?;
         let dir = state_dir.join(BUG_REPORTS_DIR);
         fs::DirBuilder::new()
             .recursive(true)
@@ -584,6 +673,45 @@ fn write_bundle(state_dir: &Path, id: ReportId, sections: &[(&'static str, Strin
         Ok(Bundle::Written { path, contents })
     };
     written().unwrap_or_else(|problem| Bundle::Failed { problem })
+}
+
+/// The bundle `write_bundle` would write from the logs in the window and `sections`, read in
+/// full and checked against its size bound.
+fn plan(
+    state_dir: &Path,
+    since: Option<SystemTime>,
+    sections: &[(&'static str, String)],
+) -> Result<cockpit_diagnostics::BundlePlan, String> {
+    let mut log_dirs = Vec::new();
+    for process in LOGGED_PROCESSES {
+        let dir = cockpit_diagnostics::log_dir_in(state_dir, process)
+            .map_err(|error| error.to_string())?;
+        if dir.is_dir() {
+            log_dirs.push(dir);
+        }
+    }
+    let mut request = cockpit_diagnostics::BundleRequest::new(log_dirs);
+    request.since = since;
+    for (name, text) in sections {
+        let (redacted, _) = cockpit_approvals::redact_secrets(text);
+        request.sections.push(
+            cockpit_diagnostics::BundleSection::new(name, redacted.into_bytes())
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    cockpit_diagnostics::plan_bundle(&request).map_err(|error| error.to_string())
+}
+
+/// The paths a new draft's bundle would carry. The sections are listed by name, not gathered:
+/// the readiness report alone can take [`READINESS_DEADLINE`].
+fn planned_contents(state_dir: &Path, since: Option<SystemTime>) -> Result<Vec<String>, String> {
+    let sections = SECTION_NAMES.map(|name| (name, String::new()));
+    let plan = plan(state_dir, since, &sections)?;
+    Ok(plan
+        .contents()
+        .iter()
+        .map(|item| item.path.clone())
+        .collect())
 }
 
 async fn remove_bundle(path: &Path) {

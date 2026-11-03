@@ -92,6 +92,8 @@ impl BugForm {
             description: self.description.trim().to_owned(),
             title: Some(self.title.trim().to_owned()).filter(|title| !title.is_empty()),
             steps: self.steps.trim().to_owned(),
+            since: None,
+            cli_version: None,
         };
         self.submitted = Some(command.clone());
         self.problem = None;

@@ -68,6 +68,25 @@ fn the_owner_verbs_round_trip() {
                 description: "it broke".to_owned(),
                 title: None,
                 steps: String::new(),
+                since: None,
+                cli_version: None,
+            },
+        ),
+        (
+            json!({"id": 5, "command": {"kind": "bug-report-new", "description": "it broke",
+                "since": 1_790_000_000, "cli_version": "torlek 0.1.0 (revision abc)"}}),
+            Command::BugReportNew {
+                description: "it broke".to_owned(),
+                title: None,
+                steps: String::new(),
+                since: Some(1_790_000_000),
+                cli_version: Some("torlek 0.1.0 (revision abc)".to_owned()),
+            },
+        ),
+        (
+            json!({"id": 6, "command": {"kind": "bug-report-bundle-plan", "since": 1_790_000_000}}),
+            Command::BugReportBundlePlan {
+                since: Some(1_790_000_000),
             },
         ),
         (

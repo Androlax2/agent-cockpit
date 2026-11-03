@@ -152,11 +152,14 @@ pub fn parse(arguments: &[OsString]) -> Result<Verb, String> {
     };
     Ok(Verb::Daemon(match (verb, rest) {
         ("new", rest) => {
-            let (description, flags) = text_and_flags(rest, &["--title", "--steps"])?;
+            let (description, [title, steps, since]) =
+                text_and_flags(rest, &["--title", "--steps", "--since"])?;
             Command::BugReportNew {
                 description: description.ok_or("say what happened, as one quoted argument")?,
-                title: flags[0].clone(),
-                steps: flags[1].clone().unwrap_or_default(),
+                title,
+                steps: steps.unwrap_or_default(),
+                since: since.as_deref().map(since_seconds).transpose()?,
+                cli_version: Some(crate::version::line()),
             }
         }
         ("list", []) => Command::BugReportList { all: false },
@@ -245,6 +248,42 @@ fn text_and_flags<const N: usize>(
     Ok((text, values))
 }
 
+/// `--since`'s value as Unix seconds: a time ago (`90s`, `30m`, `2h`, `1d`) or an RFC 3339
+/// time (`2026-11-03T09:30:00+01:00`).
+fn since_seconds(value: &str) -> Result<u64, String> {
+    let invalid = || {
+        format!(
+            "--since {value}: give a time ago such as 30m, 2h or 1d, or an RFC 3339 time such as 2026-11-03T09:30:00Z"
+        )
+    };
+    let at = match chrono::DateTime::parse_from_rfc3339(value) {
+        Ok(at) => at.with_timezone(&chrono::Utc),
+        Err(_) => {
+            let split = value.len().saturating_sub(1);
+            let (count, unit) = value.split_at_checked(split).ok_or_else(invalid)?;
+            let count: i64 = count.parse().map_err(|_| invalid())?;
+            let ago = match unit {
+                "s" => chrono::TimeDelta::try_seconds(count),
+                "m" => chrono::TimeDelta::try_minutes(count),
+                "h" => chrono::TimeDelta::try_hours(count),
+                "d" => chrono::TimeDelta::try_days(count),
+                _ => None,
+            }
+            .filter(|ago| *ago >= chrono::TimeDelta::zero())
+            .ok_or_else(invalid)?;
+            chrono::Utc::now()
+                .checked_sub_signed(ago)
+                .ok_or_else(invalid)?
+        }
+    };
+    if at > chrono::Utc::now() {
+        return Err(format!(
+            "--since {value} is in the future: the bundle would carry no logs"
+        ));
+    }
+    u64::try_from(at.timestamp()).map_err(|_| invalid())
+}
+
 fn report_id(word: &str) -> Result<i64, String> {
     word.parse()
         .map_err(|_| format!("{word}: not a bug report number"))
@@ -256,11 +295,11 @@ pub fn run(verb: Verb) -> ExitCode {
         Verb::Daemon(command) => command,
         Verb::Send(send) => return send_report(&send),
     };
-    let deadline = match command {
-        Command::BugReportNew { .. } => DRAFT_DEADLINE,
-        _ => CONTROL_DEADLINE,
+    let reply = match command {
+        command @ Command::BugReportNew { .. } => new_draft(command),
+        command => request(command, CONTROL_DEADLINE),
     };
-    let reply = match request(command, deadline) {
+    let reply = match reply {
         Ok(reply) => reply,
         Err(code) => return code,
     };
@@ -275,6 +314,48 @@ pub fn run(verb: Verb) -> ExitCode {
         _ => return unexpected(&reply),
     }
     ExitCode::SUCCESS
+}
+
+/// Lists what the new draft's support bundle will carry, then asks for the draft, which
+/// writes it (report 12), over one connection.
+fn new_draft(command: Command) -> Result<Reply, ExitCode> {
+    let Command::BugReportNew { since, .. } = command else {
+        unreachable!("new_draft is given bug-report-new, not {command:?}")
+    };
+    let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| fail(&format!("cannot start the client runtime: {error}")))?;
+    let answered = runtime.block_on(async {
+        let connection = Connection::open(&socket, CONTROL_DEADLINE).await?;
+        let started = std::time::Instant::now();
+        let plan = connection
+            .request(Command::BugReportBundlePlan { since }, DRAFT_DEADLINE)
+            .await;
+        match plan {
+            Ok(Reply::BugBundlePlan { contents }) => {
+                outln!("A new draft's support bundle will carry:");
+                for path in contents {
+                    outln!("  {path}");
+                }
+            }
+            Ok(other) => return Ok(other),
+            // A report is never lost to its bundle: an older daemon without the plan, or logs
+            // it cannot read, still get the draft, whose bundle then says why it has none.
+            Err(ClientError::Daemon(error)) => eprintln!(
+                "torlek: the support bundle's contents cannot be listed ({}: {}); filing the draft anyway",
+                error.code.as_str(),
+                error.message
+            ),
+            Err(error) => return Err(error),
+        }
+        let remaining = DRAFT_DEADLINE
+            .checked_sub(started.elapsed())
+            .ok_or(ClientError::DeadlineExceeded)?;
+        connection.request(command, remaining).await
+    });
+    answered.map_err(|error| failed(&error))
 }
 
 /// `ID status origin xN fingerprint: title`.
