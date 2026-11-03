@@ -221,6 +221,17 @@ pub enum ExitStatus {
     Unknown,
 }
 
+impl ExitStatus {
+    /// A non-zero exit code: the agent, or its sandbox wrapper, reported a failure, and its
+    /// session is left `failed` (#632). A signal or an unknown status ends it, as a stop
+    /// from outside would; so does a code a shell or wrapper reports for a signal
+    /// (128 + its number, up to 128 + 31).
+    pub fn is_failure(self) -> bool {
+        const SIGNALLED: std::ops::RangeInclusive<i32> = 129..=159;
+        matches!(self, ExitStatus::Code(code) if code != 0 && !SIGNALLED.contains(&code))
+    }
+}
+
 impl fmt::Display for ExitStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -294,8 +305,10 @@ pub enum Restored {
 /// What one [`crate::Sessions::tick`] changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickReport {
-    /// Sessions whose agent exited by itself.
+    /// Sessions whose agent exited by itself, now ended.
     pub exited: Vec<SessionId>,
+    /// Sessions whose agent exited by itself with a failure status, now failed (#632).
+    pub failed: Vec<SessionId>,
     pub slept: Vec<SessionId>,
     /// Asleep sessions nobody woke within the expiry, now ended.
     pub expired: Vec<SessionId>,
@@ -303,6 +316,17 @@ pub struct TickReport {
     pub restarted: Vec<SessionId>,
     /// Sessions a step failed for, with the reason; the next tick looks again.
     pub errors: Vec<(SessionId, String)>,
+}
+
+impl TickReport {
+    /// Counts a session whose agent exited by itself, by where it went.
+    pub(crate) fn record_exit(&mut self, over: &Session) {
+        if over.state == SessionState::Failed {
+            self.failed.push(over.id.clone());
+        } else {
+            self.exited.push(over.id.clone());
+        }
+    }
 }
 
 /// What [`crate::Sessions::restart_all`] did: only sessions whose start files changed since
@@ -425,6 +449,9 @@ pub struct Settings {
     /// they return: a hung tmux or provider keeps its thread, and the runtime's blocking pool
     /// is shared with every capability (#325, report 03). At least 1.
     pub blocking_steps: usize,
+    /// How long `start` and `resume` watch a new agent before they answer: one that exits
+    /// within it is answered `failed` or `ended`, with its exit, rather than `running` (#632).
+    pub early_exit_window: Duration,
 }
 
 impl Default for Settings {
@@ -452,6 +479,7 @@ impl Default for Settings {
             // An eighth of Tokio's default blocking pool (512), so a hung tmux leaves the
             // rest of the daemon its threads.
             blocking_steps: 64,
+            early_exit_window: Duration::from_millis(500),
         }
     }
 }
@@ -467,4 +495,28 @@ pub(crate) fn validate_link(link: &str) -> Result<(), Error> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_non_zero_code_that_names_no_signal_is_a_failure() {
+        let cases = [
+            (ExitStatus::Code(0), false),
+            (ExitStatus::Code(1), true),
+            (ExitStatus::Code(3), true),
+            (ExitStatus::Code(128), true),
+            (ExitStatus::Code(130), false),
+            (ExitStatus::Code(143), false),
+            (ExitStatus::Code(159), false),
+            (ExitStatus::Code(255), true),
+            (ExitStatus::Signal, false),
+            (ExitStatus::Unknown, false),
+        ];
+        for (status, is_failure) in cases {
+            assert_eq!(status.is_failure(), is_failure, "{status}");
+        }
+    }
 }

@@ -4,7 +4,9 @@
 
 use std::time::Instant;
 
-use cockpit_protocol::{GuideView, HiddenView, RunRequestView, SessionView, ShownText};
+use cockpit_protocol::{
+    GuideView, HiddenView, RunRequestView, SessionStateView, SessionView, ShownText,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -271,11 +273,35 @@ fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> 
     if !details.is_empty() {
         card.push(format!("{CARD_INDENT}{}", details.join(" · ")));
     }
+    if let Some(exit) = exit_line(session) {
+        card.push(format!("{CARD_INDENT}{exit}"));
+    }
     if let Some(coordination) = coordination_line(session) {
         card.push(format!("{CARD_INDENT}{coordination}"));
     }
     card
 }
+
+/// How a failed session's agent exited, and the last line it printed (#632):
+/// `exited with status 3 · Error: …`. A plain line until the card has a design for it.
+fn exit_line(session: &SessionView) -> Option<String> {
+    if session.state != SessionStateView::Failed {
+        return None;
+    }
+    let exit = session.exit.as_ref()?;
+    let status = format!("exited with {}", exit.status);
+    let line = match exit.output.last() {
+        Some(printed) => format!("{status} · {printed}"),
+        None => status,
+    };
+    Some(match line.char_indices().nth(EXIT_LINE_CHARACTERS) {
+        Some((end, _)) => format!("{}…", &line[..end]),
+        None => line,
+    })
+}
+
+/// Characters of [`exit_line`] shown: a few rows at most; `session show` prints it all.
+const EXIT_LINE_CHARACTERS: usize = 120;
 
 /// The coordinator grants a session holds and the latest message a coordinator queued to it,
 /// with its sender (#410): `grants observe,message · ✉ s1a2 (received): "text"`. A plain line

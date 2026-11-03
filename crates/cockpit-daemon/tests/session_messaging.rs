@@ -130,6 +130,26 @@ async fn owner_send_and_cancel_deliver_to_the_named_conversation() {
 }
 
 #[tokio::test]
+async fn the_exit_sweep_never_makes_a_live_session_refuse_a_send_as_busy() {
+    let home = Home::new();
+    let provider = Arc::new(Agent::new(&home, Transport::Direct));
+    let _daemon = home.start(vec![provider]).await;
+    let client = home.connect().await;
+    let root = home.project(&client).await;
+    let session = home.session(&client, &root, "fake").await;
+    home.waiting(&session.id).await;
+
+    // The daemon sweeps for exited agents every second (#632); sends span several sweeps.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        client
+            .request(send(&session.id, "hello"), GENEROUS)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn unsupported_delivery_uses_the_providers_terminal_input_for_send_and_cancel() {
     let home = Home::new();
     let provider = Arc::new(Agent::new(&home, Transport::Terminal));

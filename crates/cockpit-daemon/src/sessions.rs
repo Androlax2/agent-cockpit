@@ -469,32 +469,50 @@ pub(crate) async fn restore(sessions: &Sessions) -> Result<(), Error> {
     Ok(())
 }
 
-/// The sessions' periodic pass: exits, idle sleep, asleep expiry. Runs until aborted.
+/// How often the exits alone are looked at between ticks (#632): a dead agent shows as
+/// failed or ended within about this long.
+const EXIT_SWEEP: Duration = Duration::from_secs(1);
+
+/// The sessions' periodic pass: exits, idle sleep, asleep expiry, every `interval`; the exits
+/// also every [`EXIT_SWEEP`] when `interval` is longer. Runs until aborted.
 pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
     let mut ticks = tokio::time::interval(interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Not at once: two ready intervals would push the first tick, which holds each session's
+    // lock, past startup into the owner's first send or cancel.
+    let mut sweeps = tokio::time::interval_at(tokio::time::Instant::now() + EXIT_SWEEP, EXIT_SWEEP);
+    sweeps.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let is_sweeping = interval > EXIT_SWEEP;
     loop {
-        ticks.tick().await;
-        match sessions.tick().await {
-            Ok(report) => {
-                for id in &report.exited {
-                    tracing::info!(session = %id, "a session's agent exited; it ended");
-                }
-                for id in &report.slept {
-                    tracing::info!(session = %id, "an idle session went to sleep");
-                }
-                for id in &report.expired {
-                    tracing::info!(session = %id, "an asleep session expired; it ended");
-                }
-                for id in &report.restarted {
-                    tracing::info!(session = %id, "a deferred restart ran at the end of a turn");
-                }
-                for (id, reason) in &report.errors {
-                    tracing::warn!(session = %id, reason, "a session's periodic step failed");
-                }
-            }
+        let pass = tokio::select! {
+            _ = ticks.tick() => sessions.tick().await,
+            _ = sweeps.tick(), if is_sweeping => sessions.sweep_exits().await,
+        };
+        match pass {
+            Ok(report) => log_tick(&report),
             Err(error) => tracing::error!(%error, "the sessions' periodic pass failed"),
         }
+    }
+}
+
+fn log_tick(report: &cockpit_sessions::TickReport) {
+    for id in &report.exited {
+        tracing::info!(session = %id, "a session's agent exited; it ended");
+    }
+    for id in &report.failed {
+        tracing::warn!(session = %id, "a session's agent exited with a failure; it failed");
+    }
+    for id in &report.slept {
+        tracing::info!(session = %id, "an idle session went to sleep");
+    }
+    for id in &report.expired {
+        tracing::info!(session = %id, "an asleep session expired; it ended");
+    }
+    for id in &report.restarted {
+        tracing::info!(session = %id, "a deferred restart ran at the end of a turn");
+    }
+    for (id, reason) in &report.errors {
+        tracing::warn!(session = %id, reason, "a session's periodic step failed");
     }
 }
 

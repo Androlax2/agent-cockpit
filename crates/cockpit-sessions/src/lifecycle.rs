@@ -34,6 +34,9 @@ const LAUNCH_TOKEN_VARIABLE: &str = "TORLEK_LAUNCH_TOKEN";
 /// The session a dry run's proxy client identity names: no session launches under it.
 const DRY_RUN_SESSION: &str = "dry-run";
 
+/// How often [`Sessions::after_early_exit`] looks at a new agent within its window.
+const EARLY_EXIT_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Variables of the terminal tmux emulates, kept from the pane: they describe the host.
 const TERMINAL_VARIABLES: [&str; 2] = ["TERM", "COLORTERM"];
 
@@ -341,15 +344,17 @@ impl Sessions {
         }
         write.commit().await?;
         tracing::info!(session = %id, provider = %provider.name(), "starting a session");
-        self.launch(
-            &operation,
-            &id,
-            LaunchKind::Start,
-            LaunchPurpose::Work,
-            Conversation::New,
-            request.first_message.as_deref(),
-        )
-        .await
+        let launched = self
+            .launch(
+                &operation,
+                &id,
+                LaunchKind::Start,
+                LaunchPurpose::Work,
+                Conversation::New,
+                request.first_message.as_deref(),
+            )
+            .await?;
+        self.after_early_exit(launched).await
     }
 
     /// Stops the agent and launches the same conversation again, in place. A session whose
@@ -566,15 +571,17 @@ impl Sessions {
             cockpit_projects::claim(&write, session.checkout, &holder(id)).await?;
         }
         write.commit().await?;
-        self.launch(
-            &operation,
-            id,
-            LaunchKind::Resume,
-            LaunchPurpose::Work,
-            conversation,
-            None,
-        )
-        .await
+        let launched = self
+            .launch(
+                &operation,
+                id,
+                LaunchKind::Resume,
+                LaunchPurpose::Work,
+                conversation,
+                None,
+            )
+            .await?;
+        self.after_early_exit(launched).await
     }
 
     /// Refuses to launch `session`'s conversation while another session's agent of it is
@@ -917,8 +924,8 @@ impl Sessions {
                 }
             };
             match self.end_if_exited(&session).await {
-                Ok(true) => report.exited.push(id),
-                Ok(false) => {
+                Ok(Some(over)) => report.record_exit(&over),
+                Ok(None) => {
                     let agent_report = agent_report.as_ref();
                     if session.restart_pending && turn_refusal(&session, agent_report).is_none() {
                         match self.restart_locked(&operation, &id).await {
@@ -1006,41 +1013,137 @@ impl Sessions {
         Ok(true)
     }
 
-    /// Ends a running session whose agent was observed gone; `true` when it did.
-    async fn end_if_exited(&self, session: &Session) -> Result<bool, Error> {
+    /// Only the exit part of [`Self::tick`], run more often by the daemon (#632): a running
+    /// session whose agent is gone ends, or fails, within seconds rather than at the next
+    /// tick. The same failure handling as the tick. A live agent is looked at without the
+    /// session's lock: the owner's send and cancel refuse a held lock as busy, and the sweep
+    /// runs every second.
+    pub async fn sweep_exits(&self) -> Result<TickReport, Error> {
+        let mut report = TickReport::default();
+        if self.tmux.is_err() {
+            return Ok(report);
+        }
+        let running = {
+            let read = self.database.read().await?;
+            store::sessions_in(&read, &["running"]).await?
+        };
+        for listed in running {
+            let id = listed.id.clone();
+            let Some(launch) = &listed.launch else {
+                continue;
+            };
+            match self
+                .processes
+                .observe(&self.database, launch.execution)
+                .await
+            {
+                Ok(execution) if execution.phase.is_occupying() => continue,
+                Ok(_) => {}
+                // A host query that failed is asked again a second later; the tick reports
+                // a lasting one, without a warning per session every second.
+                Err(
+                    cockpit_processes::Error::HostCommand { .. }
+                    | cockpit_processes::Error::Io { .. },
+                ) => continue,
+                Err(error) => {
+                    report.errors.push((id, error.to_string()));
+                    continue;
+                }
+            }
+            let _operation = self.lock(&id).await;
+            let session = match self.get(&id).await {
+                Ok(session) if session.state == SessionState::Running => session,
+                Ok(_) => continue,
+                Err(error) => {
+                    report.errors.push((id, error.to_string()));
+                    continue;
+                }
+            };
+            match self.end_if_exited(&session).await {
+                Ok(Some(over)) => report.record_exit(&over),
+                Ok(None) => {}
+                Err(error) => report.errors.push((id, error.to_string())),
+            }
+        }
+        Ok(report)
+    }
+
+    /// Answers a launch the way its agent is after the early-exit window: one that exited
+    /// within it leaves the session `failed` or `ended`, with its exit (#632). A check that
+    /// fails is logged: the launch itself succeeded, and the sweep looks again.
+    async fn after_early_exit(&self, launched: Session) -> Result<Session, Error> {
+        let deadline = tokio::time::Instant::now() + self.settings.early_exit_window;
+        loop {
+            match self.end_if_exited(&launched).await {
+                Ok(Some(over)) => return Ok(over),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(session = %launched.id, %error, "a new agent's exit could not be checked");
+                    return Ok(launched);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(launched);
+            }
+            tokio::time::sleep(EARLY_EXIT_POLL).await;
+        }
+    }
+
+    /// Ends a running session whose agent was observed gone, or leaves it `failed` when the
+    /// agent exited with a failure status (#632); the session, when it did.
+    async fn end_if_exited(&self, session: &Session) -> Result<Option<Session>, Error> {
         let Some(launch) = &session.launch else {
-            return Ok(false);
+            return Ok(None);
         };
         let execution = self
             .processes
             .observe(&self.database, launch.execution)
             .await?;
         if execution.phase.is_occupying() {
-            return Ok(false);
+            return Ok(None);
         }
         let exit = self.close_terminal_reading_exit(&session.id).await?;
         let reason = crate::exits::reason(exit.status);
         let write = self.database.write().await?;
-        let ended = store::transition(
-            &write,
-            &session.id,
-            &[SessionState::Running],
-            SessionState::Ended,
-            Some(&reason),
-            "end",
-        )
-        .await?;
+        let over = if exit.status.is_failure() {
+            let failed = store::transition(
+                &write,
+                &session.id,
+                &[SessionState::Running],
+                SessionState::Failed,
+                Some(&reason),
+                "fail",
+            )
+            .await?;
+            // Its agent is gone as with an ended session: it holds nothing until resumed.
+            give_up_on_end(&write, &failed).await?;
+            failed
+        } else {
+            let ended = store::transition(
+                &write,
+                &session.id,
+                &[SessionState::Running],
+                SessionState::Ended,
+                Some(&reason),
+                "end",
+            )
+            .await?;
+            give_up_on_end(&write, &ended).await?;
+            ended
+        };
         store::insert_exit(&write, launch, &exit).await?;
-        give_up_on_end(&write, &ended).await?;
+        // Read again: the snapshot the transition returned predates the exit.
+        let over = store::session(&write, &over.id).await?;
         write.commit().await?;
         self.remove_session_dir(&session.id).await?;
         tracing::info!(
             session = %session.id,
+            state = %over.state,
             status = %exit.status,
             output = ?exit.output,
             "a session's agent exited"
         );
-        Ok(true)
+        Ok(Some(over))
     }
 
     /// Closes the session's terminal like [`Self::close_terminal`], first reading how its
@@ -2053,7 +2156,7 @@ async fn release(
 
 /// What an ended session gives up, in the transaction that ends it: its clone, its self
 /// grants and the coordinator grants the owner gave it (#410). Every move to `ended` calls
-/// this.
+/// this, and the move to `failed` of a session whose agent exited with a failure (#632).
 async fn give_up_on_end(
     write: &cockpit_turso::WriteTransaction<'_>,
     ended: &Session,
