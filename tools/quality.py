@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import shlex
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -113,8 +114,22 @@ def main():
         print(f"quality: missing tool: {error.filename}", file=sys.stderr)
         return 127
     except subprocess.CalledProcessError as error:
-        return error.returncode
+        return report_failure(error)
     return 0
+
+
+def report_failure(error):
+    """Name a failed command on stderr: it may print nothing itself (#681)."""
+    paths = [word for word in error.cmd if word.startswith("./")]
+    command = shlex.join(word for word in error.cmd if word not in paths)
+    target = f"{len(paths)} path{'' if len(paths) == 1 else 's'}"
+    if error.returncode < 0:
+        number = -error.returncode
+        name = signal.Signals(number).name
+        print(f"quality: {command} on {target} was killed by {name}", file=sys.stderr)
+        return 128 + number
+    print(f"quality: {command} on {target} exited with status {error.returncode}", file=sys.stderr)
+    return error.returncode
 
 
 if __name__ == "__main__":
