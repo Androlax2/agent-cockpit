@@ -61,4 +61,8 @@ pub struct InboundMessageView {
     pub delivery: String,
     /// Seconds since 1970.
     pub sent_at: i64,
+    /// Why a `queued` message is not typed yet, as its last attempt found, or why it
+    /// failed, expired or is uncertain (#656).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }

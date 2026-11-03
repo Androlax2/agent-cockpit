@@ -1,10 +1,45 @@
 //! Send and cancel share the session's operation lock and its recorded launch context.
 use super::*;
 use crate::Addressed;
-use cockpit_provider_api::{Action, Activity, Delivered, DeliveryTarget, Key, TerminalInput};
+use crate::model::Launch;
+use cockpit_provider_api::{
+    Action, Activity, ConversationId, Delivered, DeliveryTarget, Key, TerminalInput,
+};
 use cockpit_tmux::Keystroke;
 
 impl Sessions {
+    /// The launch, provider and conversation an action needing `capability` reaches in
+    /// `session`, or why its state rules the action out before the provider is asked: its
+    /// agent does not run, its provider is unknown or lacks `capability`, or it has not named
+    /// its conversation. A coordinator queuing a message learns the same (#656).
+    pub fn delivery_target(
+        &self,
+        session: &Session,
+        capability: Capability,
+    ) -> Result<(Launch, Arc<dyn Provider>, ConversationId), Error> {
+        let Some(launch) = session
+            .launch
+            .clone()
+            .filter(|_| session.state == SessionState::Running)
+        else {
+            return Err(Error::WrongState {
+                session: session.id.clone(),
+                state: session.state,
+                operation: "deliver an action to its agent",
+            });
+        };
+        let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
+        provider.capabilities().require(capability)?;
+        let conversation =
+            session
+                .conversation
+                .clone()
+                .ok_or_else(|| Error::UnknownConversation {
+                    session: session.id.clone(),
+                })?;
+        Ok((launch, provider, conversation))
+    }
+
     /// Delivers to the named conversation, using terminal input only when the provider
     /// explicitly has no delivery transport. Unconfirmed outcomes must not be retried as
     /// fresh messages. A busy session refuses immediately.
@@ -40,29 +75,12 @@ impl Sessions {
         };
         let read = self.database.read().await?;
         let session = store::session(&read, id).await?;
-        let Some(launch) = session
-            .launch
-            .as_ref()
-            .filter(|_| session.state == SessionState::Running)
-        else {
-            return Err(Error::WrongState {
-                session: id.clone(),
-                state: session.state,
-                operation: "deliver an action to its agent",
-            });
-        };
-        let provider = Arc::clone(self.provider(Some(session.provider.as_str()))?);
         let capability = if message.is_some() {
             Capability::Submit
         } else {
             Capability::Cancel
         };
-        provider.capabilities().require(capability)?;
-        let conversation = session
-            .conversation
-            .ok_or_else(|| Error::UnknownConversation {
-                session: id.clone(),
-            })?;
+        let (launch, provider, conversation) = self.delivery_target(&session, capability)?;
         let report = crate::reports::latest_report(&read, &authorization_session(id)?).await?;
         let provider_launch =
             crate::delivery_context::read_launch(&read, launch.execution.0).await?;
@@ -143,4 +161,19 @@ impl Sessions {
             other => other,
         })
     }
+}
+
+/// `text` as one line a card can show: controls become spaces, and invisible or
+/// bidirectional formatting characters, which could make it read as something else, go.
+pub fn visible_line(text: &str) -> String {
+    text.chars()
+        .filter(|character| !crate::reports::is_invisible_format(*character))
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }

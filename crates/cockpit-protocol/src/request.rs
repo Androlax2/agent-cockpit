@@ -825,9 +825,13 @@ pub enum Reply {
         sessions: Vec<ObservedSessionView>,
     },
     /// The message waits for `session`'s next prompt; `message` is its audit entry.
+    /// `waits` says why it cannot be typed yet, when the session's state already rules
+    /// delivery out (#656).
     AgentMessageQueued {
         session: String,
         message: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waits: Option<String>,
     },
     /// A start without confirmation: the session that began.
     AgentStarted {

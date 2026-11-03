@@ -127,9 +127,12 @@ impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::InvalidMessage { reason } => write!(formatter, "invalid message: {reason}"),
-            Error::UnknownConversation { session } => {
-                write!(formatter, "session {session}'s conversation is unknown")
-            }
+            Error::UnknownConversation { session } => write!(
+                formatter,
+                "session {session}'s provider has not named its conversation yet, so nothing \
+                 can be delivered to it; it names it with its agent's first report, which \
+                 may come only after its first turn"
+            ),
             Error::DeliveryUnconfirmed { session, reason } => write!(
                 formatter,
                 "delivery to session {session} was not confirmed; the action may have reached it: {reason}"

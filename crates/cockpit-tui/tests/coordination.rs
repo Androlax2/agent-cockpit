@@ -20,6 +20,7 @@ fn a_card_shows_its_coordinator_grants_and_the_message_queued_to_it() {
         text: "check PR 12".to_owned(),
         delivery: "received".to_owned(),
         sent_at: 3,
+        note: None,
     });
     let app = app_with(&["app"], vec![coordinator, worker], now);
 
@@ -28,6 +29,28 @@ fn a_card_shows_its_coordinator_grants_and_the_message_queued_to_it() {
     assert!(screen.contains("grants observe,message"), "{screen}");
     assert!(
         screen.contains("✉ s00000000000a (received): \"check PR 12\""),
+        "{screen}"
+    );
+}
+
+/// #656: a message that cannot be typed yet says why on its target's card.
+#[test]
+fn a_card_says_why_the_message_queued_to_it_waits() {
+    let now = Instant::now();
+    let mut worker = session("s00000000000b", 1, 2);
+    worker.inbound_message = Some(InboundMessageView {
+        from: "s00000000000a".to_owned(),
+        text: "hello".to_owned(),
+        delivery: "queued".to_owned(),
+        sent_at: 3,
+        note: Some("its conversation is not named yet".to_owned()),
+    });
+    let app = app_with(&["app"], vec![worker], now);
+
+    let screen = screen_text(&app, now);
+
+    assert!(
+        screen.contains("✉ s00000000000a (queued: its conversation is not named yet)"),
         "{screen}"
     );
 }
