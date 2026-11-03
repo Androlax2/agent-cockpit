@@ -35,7 +35,7 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]`, `list [--ended]`, `restart ID\|--all`, `sleep\|wake\|resume\|end ID`, `send ID MESSAGE`, `cancel ID`, `end --finished` (every session the task list says finished, #157), `link ID URL` | no | `cockpit-sessions` |
 | `torlek session grant ID observe-sessions\|message-sessions\|start-sessions [--per-hour N] [--without-confirmation]`, `revoke ID PERMISSION`, `grants ID` (the grants and the audit, newest first), #410 | no | `cockpit-authorization`, through the daemon |
 | `torlek agent sessions [--watch]`, `message ID TEXT`, `start DIR [--prompt TEXT] [--clone BRANCH]` (agent socket, each under its coordinator grant; a confirmed start waits like `ask run`), #410 | no | the daemon's coordinator kit |
-| `torlek session show ID` (in the manager's viewer, waking it when asleep) | no | the daemon's manager session |
+| `torlek session show ID` (in the manager's viewer, waking it when asleep; prints the session, and for an agent that exited by itself its exit status and last lines, #629) | no | the daemon's manager session |
 | `torlek provider list` (the names `--agent` takes, whether each resumes and reports `events`) | no | the daemon's wiring |
 | `torlek tui` (opens the manager session with the `torlek-tui` installed beside `torlek`, then attaches to it) | no | the daemon's manager session |
 | `torlek todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...`, `list [--project P] [--all]`, `show ID`, `start ID`, `done ID [--summary TEXT]`, `delete ID` (agent socket in a launched session, else the owner's) | no | `cockpit-tasks` |

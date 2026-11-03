@@ -6,13 +6,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    AppliedSettingView, Command, DESKTOP_SESSION_VARIABLES, ErrorCode, LaunchKindView, LaunchView,
-    Outcome, ProtocolError, Reply, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView,
-    SessionFailure, SessionStateView, SessionView, StopTargetView,
+    AgentExitView, AppliedSettingView, Command, DESKTOP_SESSION_VARIABLES, ErrorCode,
+    ExitStatusView, LaunchKindView, LaunchView, Outcome, ProtocolError, Reply,
+    SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView,
+    SessionView, StopTargetView,
 };
 use cockpit_sessions::{
-    DesktopSession, Error, LaunchKind, Restored, Session, SessionId, SessionState, Sessions,
-    StartRequest, StopTarget, WakeCause,
+    DesktopSession, Error, ExitStatus, LaunchKind, Restored, Session, SessionId, SessionState,
+    Sessions, StartRequest, StopTarget, WakeCause,
 };
 
 use cockpit_authorization::SessionId as TaskSession;
@@ -563,6 +564,14 @@ fn session_view(
                 LaunchKind::Restore => LaunchKindView::Restore,
             },
             launched_at: launch.launched_at,
+        }),
+        exit: session.exit.as_ref().map(|exit| AgentExitView {
+            status: match exit.status {
+                ExitStatus::Code(code) => ExitStatusView::Code { code },
+                ExitStatus::Signal => ExitStatusView::Signal,
+                ExitStatus::Unknown => ExitStatusView::Unknown,
+            },
+            output: exit.output.clone(),
         }),
         changed_start_files,
         restart_pending: session.restart_pending,

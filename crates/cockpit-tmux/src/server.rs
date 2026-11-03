@@ -529,6 +529,13 @@ impl Server {
         self.run(&capture_arguments(pane, history_lines))
     }
 
+    /// A pane's visible screen plus up to `history_lines` lines above it as plain text, wrapped
+    /// lines joined: what an agent printed before it exited. Untrusted display data.
+    pub fn capture_text(&self, pane: &PaneId, history_lines: u32) -> Result<String, Error> {
+        let printed = self.run(&capture_arguments_as(pane, history_lines, "-J"))?;
+        Ok(String::from_utf8_lossy(&printed).into_owned())
+    }
+
     /// The server's process id, or `None` when no server runs.
     pub fn server_pid(&self) -> Result<Option<u32>, Error> {
         let arguments = words(&["display-message", "-p", "#{pid}"]);
@@ -590,7 +597,13 @@ impl Split {
 }
 
 pub(crate) fn capture_arguments(pane: &PaneId, history_lines: u32) -> Vec<OsString> {
-    let mut arguments = words(&["capture-pane", "-p", "-e", "-t", pane.as_str()]);
+    capture_arguments_as(pane, history_lines, "-e")
+}
+
+/// `capture-pane` printing with `form`: `-e` keeps colors as escape sequences, `-J` joins
+/// wrapped lines as plain text.
+fn capture_arguments_as(pane: &PaneId, history_lines: u32, form: &str) -> Vec<OsString> {
+    let mut arguments = words(&["capture-pane", "-p", form, "-t", pane.as_str()]);
     if history_lines > 0 {
         arguments.extend(words(&["-S", &format!("-{history_lines}")]));
     }

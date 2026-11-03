@@ -204,6 +204,7 @@ fn session() -> SessionView {
             kind: LaunchKindView::Start,
             launched_at: 1,
         }),
+        exit: None,
         changed_start_files: Vec::new(),
         restart_pending: false,
         finished: true,

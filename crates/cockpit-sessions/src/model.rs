@@ -202,6 +202,35 @@ pub struct Launch {
     pub launched_at: i64,
 }
 
+/// How a launch's agent ended, as its terminal showed it just before the session closed it
+/// (#629): kept so an agent that exits at start can be diagnosed after its pane is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentExit {
+    pub status: ExitStatus,
+    /// The last lines its terminal showed, oldest first, without control characters.
+    /// Untrusted display data: never read state from it.
+    pub output: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitStatus {
+    Code(i32),
+    /// Its process was ended by a signal.
+    Signal,
+    /// Its terminal was gone, or still showed it running, when the session ended.
+    Unknown,
+}
+
+impl fmt::Display for ExitStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExitStatus::Code(code) => write!(formatter, "status {code}"),
+            ExitStatus::Signal => formatter.write_str("a signal"),
+            ExitStatus::Unknown => formatter.write_str("an unknown status"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: SessionId,
@@ -222,6 +251,9 @@ pub struct Session {
     pub created_at: i64,
     pub changed_at: i64,
     pub launch: Option<Launch>,
+    /// How the latest launch's agent exited by itself; `None` while it runs, or when it was
+    /// stopped by the lifecycle.
+    pub exit: Option<AgentExit>,
     /// Where the latest launch made to give the session work lies among the database's
     /// commits ([`cockpit_turso::WriteTransaction::commit_order`]): a finish ordered after it
     /// counts for the finished label (#269, decided in #312; #273). `None` before any.

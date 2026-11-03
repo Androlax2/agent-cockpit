@@ -13,7 +13,7 @@ use cockpit_turso::sql::{Connection, Row, Value};
 use cockpit_turso::{Migration, MigrationSet, WriteTransaction};
 
 use crate::model::LaunchPurpose;
-use crate::{Error, Launch, LaunchKind, Session, SessionId, SessionState};
+use crate::{AgentExit, Error, ExitStatus, Launch, LaunchKind, Session, SessionId, SessionState};
 
 /// A session row is never deleted, so an id is never reused and an old reference reads as
 /// ended. `stopping_to` is where a stop under way leads.
@@ -198,6 +198,18 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 PRIMARY KEY (execution_id, position)
             );",
         },
+        // #629: how a launch's agent exited by itself, read from its terminal before the
+        // session closed it; `output` is its last lines, newline-separated.
+        Migration {
+            version: 9,
+            sql: "CREATE TABLE session_exits (
+                launch_id INTEGER PRIMARY KEY,
+                ended_by TEXT NOT NULL CHECK (ended_by IN ('code', 'signal', 'unknown')),
+                code INTEGER,
+                output TEXT NOT NULL,
+                CHECK ((ended_by = 'code') = (code IS NOT NULL))
+            );",
+        },
     ],
 };
 
@@ -223,9 +235,11 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     s.conversation, s.design_link, s.state, s.stopping_to, s.reason, s.revision, s.created_at,
     s.changed_at, l.id, l.kind, l.execution_id, l.launched_at,
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
-    (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id)";
+    (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
+    e.ended_by, e.code, e.output";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
-    (SELECT max(id) FROM session_launches WHERE session_id = s.id)";
+    (SELECT max(id) FROM session_launches WHERE session_id = s.id)
+    LEFT JOIN session_exits e ON e.launch_id = l.id";
 
 async fn query_sessions(
     connection: &Connection,
@@ -445,6 +459,26 @@ pub(crate) async fn entered_asleep_at(
             reason: format!("session {id} is asleep with no transition to asleep"),
         }),
     }
+}
+
+/// Records how the session's latest launch's agent exited.
+pub(crate) async fn insert_exit(
+    write: &WriteTransaction<'_>,
+    launch: &Launch,
+    exit: &AgentExit,
+) -> Result<(), Error> {
+    let (ended_by, code) = match exit.status {
+        ExitStatus::Code(code) => ("code", Value::Integer(i64::from(code))),
+        ExitStatus::Signal => ("signal", Value::Null),
+        ExitStatus::Unknown => ("unknown", Value::Null),
+    };
+    write
+        .execute(
+            "INSERT INTO session_exits (launch_id, ended_by, code, output) VALUES (?1, ?2, ?3, ?4)",
+            (launch.number, ended_by, code, exit.output.join("\n")),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Records a launch and the start files its agent reads, as they were just before it ran.
@@ -717,6 +751,24 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
     };
     let restart_pending = row.get::<i64>(17)? == 1;
     let working_launch_order = row.get(18)?;
+    let exit = match row.get::<Option<String>>(19)? {
+        None => None,
+        Some(ended_by) => {
+            let status = match (ended_by.as_str(), row.get::<Option<i64>>(20)?) {
+                ("code", Some(code)) => ExitStatus::Code(
+                    i32::try_from(code).map_err(|_| invalid(format!("exit code {code}")))?,
+                ),
+                ("signal", None) => ExitStatus::Signal,
+                ("unknown", None) => ExitStatus::Unknown,
+                (ended_by, code) => return Err(invalid(format!("exit {ended_by:?} {code:?}"))),
+            };
+            let output: String = row.get(21)?;
+            Some(AgentExit {
+                status,
+                output: output.lines().map(str::to_owned).collect(),
+            })
+        }
+    };
     Ok(Session {
         id,
         provider,
@@ -731,6 +783,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         created_at: row.get(11)?,
         changed_at: row.get(12)?,
         launch,
+        exit,
         working_launch_order,
         restart_pending,
     })

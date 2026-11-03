@@ -3,6 +3,7 @@
 mod conversations;
 mod delivery_context;
 mod error;
+mod exits;
 mod lifecycle;
 mod model;
 mod reports;
@@ -13,8 +14,8 @@ pub use delivery_context::{ConnectSessionSocket, DeliveryContext};
 pub use error::Error;
 pub use lifecycle::Sessions;
 pub use model::{
-    Addressed, Launch, LaunchKind, RestartAll, Restored, Session, SessionId, SessionState,
-    Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
+    Addressed, AgentExit, ExitStatus, Launch, LaunchKind, RestartAll, Restored, Session, SessionId,
+    SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,
 };
 pub use reports::{
     AgentState, QuestionSource, Report, SessionReport, latest_report, latest_reports, report,
