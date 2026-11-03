@@ -42,7 +42,7 @@ CI runners.
 - **Dependencies:** `libc6 (>= 2.39), libgcc-s1, git, curl, tmux (>= 3.6)`; `Suggests: systemd`.
   The programs are built on `ubuntu-24.04` runners (glibc 2.39), so 2.39 is the version they
   were linked against. `dpkg-shlibdeps` might find a lower bound, but it has not run.
-  `git`, `curl` and `tmux >= 3.6` are the [README](../../README.md#platforms-and-prerequisites)
+  `git`, `curl` and `tmux >= 3.6` are the [user guide](../USER-GUIDE.md#platforms-and-prerequisites)
   prerequisites. `systemd` is needed only for the user services. Provider CLIs are left out.
 - **Maintainer:** `build.py --maintainer 'Name <address>'` is required and has no default.
   Debian policy requires an address, and none has been chosen yet.

@@ -37,7 +37,7 @@ checksums: there is no placeholder or `SKIP` checksum, and no `latest` URL.
   be split across `/usr/bin` and `/usr/share`. The unchanged tree still passes the manifest
   check. The license is linked to `/usr/share/licenses/torlek-bin/LICENSE`.
 - **Dependencies:** `glibc` and `gcc-libs` for the Rust programs, plus the
-  [README](../../README.md#platforms-and-prerequisites)'s prerequisites: `git`, `curl` and `tmux>=3.6`. `systemd`
+  [user guide](../USER-GUIDE.md#platforms-and-prerequisites)'s prerequisites: `git`, `curl` and `tmux>=3.6`. `systemd`
   is optional and needed only for `torlek daemon install` and `torlek sandbox install`.
   Provider CLIs are left out, because their AUR names are not owned here.
 - **License:** Apache-2.0, the archive's `LICENSE`.
