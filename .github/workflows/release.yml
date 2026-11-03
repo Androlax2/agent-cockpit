@@ -32,6 +32,10 @@ on:
       - crates/cockpit-daemon/tests/restart_reattach.rs
       - crates/cockpit-daemon/tests/session_restore_crash.rs
       - crates/cockpit-turso/tests/migrations.rs
+      - packaging/aur/ci-install.sh
+      - packaging/aur/render.py
+      - packaging/aur/torlek-bin/PKGBUILD.in
+      - tools/tests/test_aur_package.py
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     # Nightly from main: a dry run whose archives stay as workflow artifacts (#179).
@@ -231,6 +235,37 @@ jobs:
           prefix=$(mktemp -d)
           tar -xzf dist/*.tar.gz -C "$prefix"
           python3 tools/release.py verify-install "$prefix"/torlek-v* --revision "$REVISION"
+
+  # The torlek-bin AUR recipe on a clean Arch container, from the x86_64 archive and the
+  # checksums (#562, docs/packaging/aur.md). Not in publish's needs: the AUR route does not
+  # gate the tag (docs/decisions/2026-11-03-562-arch-packaging-alpha1.md); the AUR checklist
+  # requires this job's success for the release it submits.
+  install-arch:
+    needs: [plan, assemble]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      # Pinned like the actions; pacman -Syu still brings it to the current Arch.
+      image: archlinux:base-devel@sha256:767de6eaa40dcfeda5263a48737ea03a782caabdf3a403b6e6a203c7fd333681
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archive-linux-x86_64
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: checksums
+          path: dist
+      - name: Build, install, verify and remove torlek-bin
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          REVISION: ${{ needs.plan.outputs.revision }}
+        run: bash packaging/aur/ci-install.sh dist "$VERSION" "$CHANNEL" "$REVISION"
 
   # WSL2 has no archive of its own: it installs the Linux x86_64 one (report 13). Setup as in
   # ci.yml's greenfield-wsl2 job (docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md).

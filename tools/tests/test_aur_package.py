@@ -65,6 +65,15 @@ class PackageVersionTest(unittest.TestCase):
             with self.subTest(tag=tag), self.assertRaisesRegex(render.Refusal, "not a release tag"):
                 render.package_version(tag)
 
+    def test_a_dry_run_version_needs_the_development_option(self):
+        with self.assertRaisesRegex(render.Refusal, "not a release tag"):
+            render.package_version("0.1.0-dev.42")
+        self.assertEqual(render.package_version("0.1.0-dev.42", is_development=True), "0.1.0dev.42")
+
+    def test_the_development_option_refuses_a_release_tag(self):
+        with self.assertRaisesRegex(render.Refusal, "X.Y.Z-dev.N"):
+            render.package_version(TAG, is_development=True)
+
     def test_refuses_a_stable_tag_until_one_exists(self):
         with self.assertRaisesRegex(render.Refusal, "no stable release"):
             render.package_version("0.1.0")

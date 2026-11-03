@@ -16,6 +16,7 @@ no installed path, so both can stay installed.
 | --- | --- |
 | [packaging/aur/torlek-bin/PKGBUILD.in](../../packaging/aur/torlek-bin/PKGBUILD.in) | The reviewed recipe, with the tag and checksums as `@TOKEN@`s |
 | [packaging/aur/render.py](../../packaging/aur/render.py) | `render` fills it from one release's `SHA256SUMS` (and `--pkgrel`), writing `PKGBUILD` and its `makepkg --printsrcinfo` together or neither; `check-srcinfo` refuses a stale `.SRCINFO` |
+| [packaging/aur/ci-install.sh](../../packaging/aur/ci-install.sh) | The release workflow's `install-arch` job, as root in a fresh `archlinux:base-devel` container: render, build as a user, `pacman -U`, `verify-install`, `torlek doctor`, `pacman -R` with the user's files unchanged |
 | [tools/tests/test_aur_package.py](../../tools/tests/test_aur_package.py) | Tag and checksum refusals, `vercmp` order, `.SRCINFO`, and a `makepkg` build of a `tools/release.py` bundle of stand-in programs |
 
 The rendered `PKGBUILD` and `.SRCINFO` are what the AUR repository holds; the template stays here.
@@ -80,15 +81,18 @@ Run it on an Arch host, for each published `vX.Y.Z-alpha.N` tag.
    `python3 packaging/aur/render.py render --tag "$TAG" --sums "$WORK/SHA256SUMS" --out "$WORK/torlek-bin"`
 5. Build it in a clean chroot (`extra-x86_64-build` from `devtools`) and run `namcap` on the
    `PKGBUILD` and the built package. Explain or fix every finding.
-6. On a clean Arch fixture, install the built package with `pacman -U`, then run
-   `torlek doctor` and the #97 onboarding scenario. Remove the package and confirm that the
-   profile's state directories are still there. When an earlier `torlek-bin` was published,
-   also upgrade from it. Record the commands and their output on #562.
-7. Publish, only with Theo's approval: clone `ssh://aur@aur.archlinux.org/torlek-bin.git`, copy
+6. Check that the tag's release run passed `install-arch`: the recipe built, installed, passed
+   `verify-install` and `doctor`, and was removed on a clean Arch container.
+7. On a clean Arch machine or VM with a systemd user manager, which the container lacks,
+   install the built package with `pacman -U` and walk the #97 onboarding scenario
+   (`torlek sandbox install`, `torlek daemon install`, a session). Also run
+   `torlek --profile next daemon install`. When an earlier `torlek-bin` was published,
+   upgrade from it too. Record the commands and their output on #562.
+8. Publish, only with Theo's approval: clone `ssh://aur@aur.archlinux.org/torlek-bin.git`, copy
    in the rendered `PKGBUILD` and `.SRCINFO`, run `render.py check-srcinfo` on the clone,
    then commit and push. This needs Theo's AUR account and its registered SSH key; its name
    replaces the template's `Maintainer` line.
-8. Check the published route on a new fixture: `git clone https://aur.archlinux.org/torlek-bin.git`,
+9. Check the published route on a new fixture: `git clone https://aur.archlinux.org/torlek-bin.git`,
    then `makepkg -si` and `torlek doctor`. Link the evidence from #97.
 
 **Updates:** a new tag goes through the whole checklist, and `pkgrel` starts again at 1. A fix
@@ -99,9 +103,11 @@ to the recipe alone changes the template in this repository, then renders the sa
 
 - No published release exists, so neither the checksums of real archives nor the installed
   programs have run on Arch. The tests build the package from stand-in programs.
-- No clean-chroot build, `namcap` run, clean-fixture install, upgrade or uninstall has run.
-  This sandbox has no Docker for an Arch fixture.
-- `aarch64` is rendered and tested only as recipe text. The fixture build runs on the host's
-  architecture.
-- On a host without `makepkg` (the Ubuntu CI runners), the `.SRCINFO`, `vercmp` and fixture
-  tests report themselves as skipped. They are not passes.
+- `install-arch` runs on nightly and dispatched dry runs, their `-dev.N` archives rendered with
+  `--development`, and on release tags. It does not cover systemd services, providers, the
+  sandbox engines or upgrades: step 7 does, by hand.
+- No clean-chroot build or `namcap` run has run.
+- `aarch64` is rendered and tested only as recipe text. `install-arch` and the fixture build
+  run on x86_64, and there is no official Arch image for aarch64.
+- On the Ubuntu runners, the `.SRCINFO`, `vercmp` and fixture tests report themselves as
+  skipped. `install-arch` runs them on Arch.
