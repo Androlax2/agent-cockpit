@@ -37,8 +37,12 @@ impl crate::ClaudeCode {
             status: if signed_in {
                 SignInStatus::SignedIn
             } else {
+                // `claude auth login` prints its URL and exits without a paste field when no
+                // browser opens; `/login` inside `claude` takes the code (#626).
                 SignInStatus::NotSignedIn {
-                    next: "run `claude auth login` in a terminal, then run `torlek doctor` again"
+                    next: "run `claude` in a terminal as the daemon's user, type `/login` and \
+                           finish there (it takes a pasted code when no browser opens), then \
+                           run `torlek doctor` again"
                         .to_owned(),
                 }
             },

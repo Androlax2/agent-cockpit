@@ -128,7 +128,7 @@ exit "$(cat "$HOME/sign-in.exit")"
             r#"{"loggedIn":false}"#,
             "1",
             "needs-authorization",
-            Some("claude auth login"),
+            Some("`/login`"),
             "todo",
         ),
         (
@@ -160,6 +160,9 @@ exit "$(cat "$HOME/sign-in.exit")"
                 .any(|line| line.contains("Sign in") && line.contains(onboarding)),
             "{checklist}"
         );
+        if let Some(command) = next_command {
+            assert!(checklist.contains(command), "{checklist}");
+        }
     }
 }
 
