@@ -18,7 +18,7 @@ below adds any.
 | Scoop, own bucket | **Supported route, prepared here** | A bucket is any Git repository of JSON manifests; `bin` may be a `.ps1` script |
 | Scoop `main` | Not eligible now | Needs 500 stars or 150 forks and the latest *stable* version; Torlek has 0 and 0, and only prereleases |
 | Scoop `extras` | Not eligible now | Needs 100 stars or 50 forks and the latest *stable* version |
-| WinGet community repository | **Unsupported without a native payload: stopped for Theo's decision** | Scripts are disallowed as installers; a portable installer must be an `.exe` |
+| WinGet community repository | **Unsupported without a native payload: deferred** | Scripts are disallowed as installers; a portable installer must be an `.exe` |
 
 ### WinGet: what the policy and the client require
 
@@ -52,8 +52,8 @@ All read on 2026-11-03.
 
 So a WinGet entry needs a native Windows executable, for example a small `torlek.exe` that only
 runs `wsl.exe`. None exists, and building one is a new Windows build target, release asset and
-signing question. That is a scope decision for Theo, recorded with options in the
-[decision](../decisions/2026-11-03-565-scoop-bucket-winget-needs-native-launcher.md). A
+signing question. Theo deferred WinGet to a later milestone on 2026-11-03
+([decision](../decisions/2026-11-03-565-scoop-bucket-winget-needs-native-launcher.md)). A
 private WinGet REST source does not avoid it: it uses the same manifest types and client.
 
 ### Scoop: what the format and the buckets allow

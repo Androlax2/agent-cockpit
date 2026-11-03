@@ -1,8 +1,8 @@
-# Windows packaging is a Scoop bucket of WSL launchers; WinGet waits for a native-launcher decision
+# Windows packaging is a Scoop bucket of WSL launchers; WinGet is deferred until a native launcher exists
 
 Issue #565. Decided by the worker on 2026-11-03, after Theo moved #565 into Alpha 1 that day,
-from the evidence in [windows.md](../packaging/windows.md#dispositions). WinGet's route needs
-Theo's scope decision and is stopped, not passed.
+from the evidence in [windows.md](../packaging/windows.md#dispositions). Theo deferred WinGet
+on 2026-11-03 (option A below); it is deferred, not passed.
 
 - **Scoop is prepared as an own bucket.** A bucket is any Git repository, and a manifest may
   shim `.ps1` scripts. `main` and `extras` require popularity and a stable release, which Torlek
@@ -28,13 +28,10 @@ Theo's scope decision and is stopped, not passed.
 - **WinGet needs a native Windows executable.** Its community repository forbids script
   installers, and the client accepts only `.exe` as a portable file. Rejected: describing the
   Linux archive or a `.cmd` as an `exe` or `zip` installer, which misrepresents the payload.
-  The options for Theo:
-  - **A (recommended for Alpha 1): defer WinGet** to a later milestone, record the deferral on
-    #97, and ship only the Scoop bucket.
-  - **B: build a native `torlek.exe` launcher** that only runs `wsl.exe` (a new Windows
-    target, release asset, signing and SmartScreen reputation), then submit a `zip` + `portable`
-    manifest. It is a launcher, not native Torlek support.
-  - **C: no Windows package manager at all**; document the archive inside WSL only.
+  **Chosen (Theo, 2026-11-03): defer WinGet** to a later milestone, record the deferral on #97,
+  and ship only the Scoop bucket. Rejected for now: a native `torlek.exe` launcher that only
+  runs `wsl.exe` (a new Windows target, release asset, signing and SmartScreen reputation), and
+  no Windows package manager at all.
 - **Nothing here is verified on Windows.** The checklist in
   [windows.md](../packaging/windows.md#publication-checklist) lists the clean Windows + WSL 2
   run, `torlek doctor` and the #97 onboarding that remain.
