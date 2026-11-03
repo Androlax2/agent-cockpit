@@ -177,18 +177,16 @@ pub fn run(command: Command) -> ExitCode {
         | Command::SandboxShow { .. } => CONTROL_DEADLINE,
         _ => BULK_DEADLINE,
     };
-    let is_show = matches!(command, Command::SessionShow { .. });
     let reply = match request(command, deadline) {
         Ok(reply) => reply,
         Err(code) => return code,
     };
     match &reply {
         Reply::SessionAction { session } => out!("delivered to session {session}\n"),
-        Reply::Session { session } if is_show => {
+        Reply::Session { session } => {
             out!("{}", session_line(session));
             out!("{}", exit_lines(session));
         }
-        Reply::Session { session } => out!("{}", session_line(session)),
         Reply::Sessions { sessions } => sessions.iter().for_each(|session| {
             out!("{}", session_line(session));
         }),
@@ -262,6 +260,7 @@ pub fn run(command: Command) -> ExitCode {
 /// tab-separated. `restart` is `-`, `changed:<start files>` when the session runs on old
 /// start files, or `pending:<start files>` once `restart --all` deferred its restart.
 /// `work` is `finished` when the task list says its work is done (#157), `-` otherwise.
+/// `reason` ends with the last line an agent that exited by itself printed (#629).
 fn session_line(session: &SessionView) -> String {
     let launch = session
         .launch
@@ -274,18 +273,27 @@ fn session_line(session: &SessionView) -> String {
         (false, true) => "-".to_owned(),
     };
     let work = if session.finished { "finished" } else { "-" };
+    let reason = match (&session.reason, last_output(session)) {
+        (Some(reason), Some(line)) => format!("{reason} (last output: {line})"),
+        (Some(reason), None) => reason.clone(),
+        (None, _) => "-".to_owned(),
+    };
     format!(
-        "{}\t{}\t{}\t{launch}\t{}\t{}\t{}\t{restart}\t{work}\n",
+        "{}\t{}\t{}\t{launch}\t{}\t{}\t{reason}\t{restart}\t{work}\n",
         session.id,
         session.state,
         session.agent,
         session.conversation.as_deref().unwrap_or("-"),
         session.working_dir,
-        session.reason.as_deref().unwrap_or("-"),
     )
 }
 
-/// How the session's latest agent exited by itself, for `session show` (#629): `exit:` and
+/// The last line the session's latest agent printed before it exited by itself (#629).
+fn last_output(session: &SessionView) -> Option<&str> {
+    session.exit.as_ref()?.output.last().map(String::as_str)
+}
+
+/// How the session's latest agent exited by itself (#629): `exit:` and
 /// its status, then `output:` and the last lines it printed, indented. Empty when it did not.
 fn exit_lines(session: &SessionView) -> String {
     let Some(exit) = &session.exit else {

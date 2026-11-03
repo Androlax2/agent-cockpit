@@ -996,9 +996,8 @@ impl Sessions {
         if execution.phase.is_occupying() {
             return Ok(false);
         }
-        let exit = self.read_agent_exit(&session.id).await;
-        self.close_terminal(&session.id).await?;
-        let reason = crate::exits::reason(&exit);
+        let exit = self.close_terminal_reading_exit(&session.id).await?;
+        let reason = crate::exits::reason(exit.status);
         let write = self.database.write().await?;
         let ended = store::transition(
             &write,
@@ -1022,26 +1021,24 @@ impl Sessions {
         Ok(true)
     }
 
-    /// How the session's agent exited, read from its terminal before it is closed. A read
-    /// that fails is logged and reads as an unknown exit: the session still ends.
-    async fn read_agent_exit(&self, id: &SessionId) -> AgentExit {
-        let read = async {
-            let tmux = self.tmux()?;
-            let name = terminal_name(id)?;
-            let counted = TerminalStep::start(&self.session_lock(id));
-            self.blocking("read the agent's exit", move || {
-                let _counted = counted;
-                crate::exits::read(&tmux, &name)
-            })
-            .await
-        };
-        match read.await {
-            Ok(exit) => exit,
-            Err(error) => {
-                tracing::warn!(session = %id, %error, "an exited agent's terminal could not be read");
+    /// Closes the session's terminal like [`Self::close_terminal`], first reading how its
+    /// agent exited, in the same step. A read that fails is logged and reads as an unknown
+    /// exit: the session still ends.
+    async fn close_terminal_reading_exit(&self, id: &SessionId) -> Result<AgentExit, Error> {
+        let tmux = self.tmux()?;
+        let name = terminal_name(id)?;
+        let counted = TerminalStep::start(&self.session_lock(id));
+        let session = id.clone();
+        self.blocking("read the agent's exit and close the terminal", move || {
+            let _counted = counted;
+            let exit = crate::exits::read(&tmux, &name).unwrap_or_else(|error| {
+                tracing::warn!(%session, %error, "an exited agent's terminal could not be read");
                 crate::exits::unknown()
-            }
-        }
+            });
+            close_if_open(&tmux, &name)?;
+            Ok(exit)
+        })
+        .await
     }
 
     /// Why the owner may not put `session` to sleep: it is not running, or could not be

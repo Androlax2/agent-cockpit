@@ -13,20 +13,19 @@ const HISTORY_LINES: u32 = 200;
 const KEPT_LINES: usize = 20;
 /// Characters kept of one line; a longer one is cut.
 const LINE_CHARACTERS: usize = 400;
-/// Characters of the last line the session's reason quotes.
-const REASON_CHARACTERS: usize = 200;
 /// What tmux writes into a pane whose process ended under `remain-on-exit`.
 const DEAD_PANE_NOTICE: &str = "Pane is dead (";
 
-/// The agent's exit as its terminal shows it. A terminal that is gone, or whose agent pane
-/// still runs, reads as an unknown status with no output.
+/// The agent's exit as its terminal shows it. A terminal that is gone reads as an unknown
+/// status with no output; a pane tmux still shows running (a wrapper outliving the agent,
+/// or tmux not yet marking it dead) as an unknown status with what it printed.
 pub(crate) fn read(tmux: &Server, name: &SessionName) -> Result<AgentExit, Error> {
     if !tmux.sessions()?.contains(name) {
         return Ok(unknown());
     }
     let pane = crate::lifecycle::agent_pane_info(tmux, name)?;
     let status = match pane.state {
-        PaneState::Running => return Ok(unknown()),
+        PaneState::Running => ExitStatus::Unknown,
         PaneState::Exited { status: Some(code) } => ExitStatus::Code(code),
         PaneState::Exited { status: None } => ExitStatus::Signal,
     };
@@ -44,24 +43,17 @@ pub(crate) fn unknown() -> AgentExit {
     }
 }
 
-/// The session's reason for an agent that exited: its status and the last line it printed.
-pub(crate) fn reason(exit: &AgentExit) -> String {
-    let ended = match exit.status {
-        ExitStatus::Code(code) => format!("its agent exited with status {code}"),
-        ExitStatus::Signal => "its agent exited on a signal".to_owned(),
-        ExitStatus::Unknown => "its agent exited".to_owned(),
-    };
-    match exit.output.last() {
-        Some(line) => format!(
-            "{ended}: {}; resume reopens it",
-            cut(line, REASON_CHARACTERS)
-        ),
-        None => format!("{ended}; resume reopens it"),
+/// The session's reason for an agent that exited: its status only. The reason is daemon
+/// text other agents may read; what the agent printed stays in [`AgentExit::output`].
+pub(crate) fn reason(status: ExitStatus) -> String {
+    match status {
+        ExitStatus::Unknown => "its agent exited; resume reopens it".to_owned(),
+        known => format!("its agent exited with {known}; resume reopens it"),
     }
 }
 
-/// The last [`KEPT_LINES`] lines of a pane's text, without control characters, trailing
-/// blanks or tmux's own dead-pane notice.
+/// The last [`KEPT_LINES`] lines of a pane's text, without control or invisible formatting
+/// characters, trailing blanks or tmux's own dead-pane notice.
 fn last_lines(printed: &str) -> Vec<String> {
     let mut lines: Vec<String> = printed
         .lines()
@@ -69,7 +61,7 @@ fn last_lines(printed: &str) -> Vec<String> {
             let visible: String = line
                 .chars()
                 .map(|character| if character == '\t' { ' ' } else { character })
-                .filter(|character| !character.is_control())
+                .filter(|character| !character.is_control() && !is_invisible_format(*character))
                 .collect();
             cut(visible.trim_end(), LINE_CHARACTERS)
         })
@@ -89,6 +81,15 @@ fn last_lines(printed: &str) -> Vec<String> {
     }
     let first_kept = lines.len().saturating_sub(KEPT_LINES);
     lines.split_off(first_kept)
+}
+
+/// Zero-width and bidirectional formatting characters, which could make a shown line read
+/// as something else.
+fn is_invisible_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
+    )
 }
 
 fn cut(line: &str, characters: usize) -> String {
@@ -125,20 +126,23 @@ mod tests {
     }
 
     #[test]
-    fn the_reason_names_the_status_and_the_last_line() {
-        let exit = AgentExit {
-            status: ExitStatus::Code(1),
-            output: vec!["first".to_owned(), "Error: refusing to start".to_owned()],
-        };
+    fn bidirectional_and_zero_width_characters_are_removed() {
+        assert_eq!(last_lines("ok\u{202E}desrever\u{200B}!"), ["okdesrever!"]);
+    }
 
+    #[test]
+    fn the_reason_names_the_status_only() {
         assert_eq!(
-            reason(&exit),
-            "its agent exited with status 1: Error: refusing to start; resume reopens it"
+            reason(ExitStatus::Code(1)),
+            "its agent exited with status 1; resume reopens it"
         );
     }
 
     #[test]
     fn an_unknown_exit_keeps_the_plain_reason() {
-        assert_eq!(reason(&unknown()), "its agent exited; resume reopens it");
+        assert_eq!(
+            reason(ExitStatus::Unknown),
+            "its agent exited; resume reopens it"
+        );
     }
 }

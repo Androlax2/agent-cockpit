@@ -181,8 +181,8 @@ impl fmt::Display for ExitStatusView {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ExitStatusView::Code { code } => write!(formatter, "status {code}"),
-            ExitStatusView::Signal => formatter.write_str("signal"),
-            ExitStatusView::Unknown => formatter.write_str("unknown"),
+            ExitStatusView::Signal => formatter.write_str("a signal"),
+            ExitStatusView::Unknown => formatter.write_str("an unknown status"),
         }
     }
 }

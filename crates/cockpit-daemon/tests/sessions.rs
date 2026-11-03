@@ -898,7 +898,7 @@ async fn an_agent_that_exits_at_start_keeps_its_exit_status_and_last_lines() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_that_exits_at_start_names_its_status_and_last_line_in_the_reason() {
+async fn an_agent_that_exits_at_start_names_only_its_status_in_the_reason() {
     let home = Home::new();
     let daemon = home.start(REFUSING, settings()).await;
     let client = connect(&daemon).await;
@@ -909,10 +909,7 @@ async fn an_agent_that_exits_at_start_names_its_status_and_last_line_in_the_reas
 
     assert_eq!(
         ended.reason.as_deref(),
-        Some(
-            "its agent exited with status 3: Error: failed to wrap command: refusing to start; \
-             resume reopens it"
-        )
+        Some("its agent exited with status 3; resume reopens it")
     );
 }
 

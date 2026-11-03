@@ -175,7 +175,7 @@ async fn session_list_ended_asks_for_ended_sessions_and_prints_one_line_each() {
 async fn session_show_prints_how_the_agent_exited_and_its_last_lines() {
     let home = Home::new();
     let mut ended = view("s000000000002", SessionStateView::Ended);
-    ended.reason = Some("its agent exited with status 1: refusing to start".to_owned());
+    ended.reason = Some("its agent exited with status 1; resume reopens it".to_owned());
     ended.exit = Some(AgentExitView {
         status: ExitStatusView::Code { code: 1 },
         output: vec!["starting".to_owned(), "Error: refusing to start".to_owned()],
@@ -195,7 +195,8 @@ async fn session_show_prints_how_the_agent_exited_and_its_last_lines() {
     assert_eq!(
         text(&output.stdout),
         "s000000000002\tended\tclaude\tstart\tc-1\t/p/app\t\
-         its agent exited with status 1: refusing to start\t-\t-\n\
+         its agent exited with status 1; resume reopens it \
+         (last output: Error: refusing to start)\t-\t-\n\
          exit: status 1\n\
          output:\n  starting\n  Error: refusing to start\n"
     );
