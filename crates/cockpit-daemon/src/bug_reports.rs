@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cockpit_bug_reports::{Bundle, Edit, Facts, Filed, Kind, NewReport, Report, ReportId, Source};
+use cockpit_bug_reports::{
+    Bundle, Edit, Facts, Filed, Kind, NewReport, Origin, Report, ReportId, Source,
+};
 use cockpit_protocol::{
     BugBundleView, BugFiledView, BugIssueView, BugKindView, BugOriginView, BugReportView,
     BugStatusView, Command, ErrorCode, ProtocolError, Reply, Unblock, UnblockedBy,
@@ -37,6 +39,8 @@ const FAULT_QUEUE: usize = 64;
 /// not a passing failure.
 const INTERNAL_REPEATS: usize = 3;
 const INTERNAL_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// How long a bundle waits for its readiness report, whose sign-in probes have their own.
+const READINESS_DEADLINE: Duration = Duration::from_secs(20);
 /// The long-lived processes whose logs a bundle carries.
 const LOGGED_PROCESSES: [&str; 2] = ["daemon", "tui"];
 
@@ -439,7 +443,7 @@ async fn with_bundle(context: &Context, filed: Filed) -> Result<Filed, Failed> {
         return Ok(filed);
     };
     let state_dir = context.state_dir.clone();
-    let sections = bundle_sections(context).await;
+    let sections = bundle_sections(context, report.origin).await;
     let id = report.id;
     let bundle = tokio::task::spawn_blocking(move || write_bundle(&state_dir, id, &sections))
         .await
@@ -480,14 +484,40 @@ async fn attach(context: &Context, id: ReportId, bundle: &Bundle) -> Result<Repo
     Ok(report)
 }
 
+/// The readiness report for an owner's or the daemon's draft, bounded by
+/// [`READINESS_DEADLINE`]. An agent's report gets none: the report probes sign-in and the
+/// proxy on the host, which an agent may not ask for (`readiness` is owner-only).
+async fn readiness_section(context: &Context, origin: Origin) -> serde_json::Value {
+    if origin == Origin::Agent {
+        return serde_json::json!({
+            "unavailable": "left out of an agent's report; run `torlek doctor`"
+        });
+    }
+    let requirements = tokio::time::timeout(
+        READINESS_DEADLINE,
+        crate::readiness::requirements(None, context.readiness.clone()),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(format!(
+            "the report took longer than {}s",
+            READINESS_DEADLINE.as_secs()
+        ))
+    });
+    match requirements {
+        Ok(requirements) => serde_json::json!({ "requirements": requirements }),
+        Err(problem) => {
+            tracing::warn!(%problem, "a support bundle goes without its readiness report");
+            serde_json::json!({ "unavailable": problem })
+        }
+    }
+}
+
 /// The files a bundle carries beside the logs and the platform facts (report 12): the
 /// version manifest, the readiness report, the owner's configuration and the schema versions.
 /// A part that cannot be gathered says why in its place rather than leaving the bundle.
-async fn bundle_sections(context: &Context) -> Vec<(&'static str, String)> {
-    let readiness = match crate::readiness::requirements(None, context.readiness.clone()).await {
-        Ok(requirements) => serde_json::json!({ "requirements": requirements }),
-        Err(problem) => serde_json::json!({ "unavailable": problem }),
-    };
+async fn bundle_sections(context: &Context, origin: Origin) -> Vec<(&'static str, String)> {
+    let readiness = readiness_section(context, origin).await;
     let environment = context.readiness.environment.clone();
     let config = tokio::task::spawn_blocking(move || {
         cockpit_config::load(&environment, None, &[]).map_or_else(
@@ -497,6 +527,7 @@ async fn bundle_sections(context: &Context) -> Vec<(&'static str, String)> {
     })
     .await
     .unwrap_or_else(|error| format!("unavailable: {error}\n"));
+    // The start applied each set in full or refused the database, so these are its versions.
     let schema: String = crate::MIGRATION_SETS
         .iter()
         .map(|set| format!("{} {}\n", set.owner, set.migrations.len()))
@@ -512,7 +543,7 @@ async fn bundle_sections(context: &Context) -> Vec<(&'static str, String)> {
 /// Writes the draft's support bundle: Cockpit's own logs (report 12 keeps prompts, agent
 /// output, repository contents, commands and secrets out of them), `sections`, and the
 /// platform facts the bundle adds itself. The sections pass the approvals redactor: the
-/// configuration holds the owner's check commands, which may carry a token.
+/// owner's settings are names and paths, but one pasted in by mistake may be a token.
 fn write_bundle(state_dir: &Path, id: ReportId, sections: &[(&'static str, String)]) -> Bundle {
     let written = || -> Result<Bundle, String> {
         let mut log_dirs = Vec::new();
