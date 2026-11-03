@@ -337,30 +337,47 @@ async fn a_session_proposes_on_the_agent_socket_with_its_launch_token() {
 }
 
 #[tokio::test]
-async fn a_session_without_its_launch_token_still_proposes_on_the_agent_socket() {
-    let sandbox = Sandbox::new();
-    let daemon = scripted_daemon(
-        &sandbox.agent_socket(),
-        Outcome::Ok(Reply::Task {
-            task: Box::new(proposed_view()),
-        }),
-    );
+async fn a_session_without_its_launch_token_still_proposes_and_reports_on_the_agent_socket() {
+    let session_requests: [&[&str]; 2] = [
+        &["todo", "propose", "Cache the build", "--why", "slow"],
+        &[
+            "todo",
+            "blocked",
+            "Cannot push",
+            "--why",
+            "the token expired",
+        ],
+    ];
+    for arguments in session_requests {
+        let sandbox = Sandbox::new();
+        let daemon = scripted_daemon(
+            &sandbox.agent_socket(),
+            Outcome::Ok(Reply::Task {
+                task: Box::new(proposed_view()),
+            }),
+        );
 
-    let output = sandbox
-        .cockpit_in_bound_session(&["todo", "propose", "Cache the build", "--why", "slow"])
-        .await;
+        let output = sandbox.cockpit_in_bound_session(arguments).await;
 
-    assert!(output.status.success(), "{}", text(&output.stderr));
-    assert!(
-        matches!(
-            daemon.await.unwrap(),
-            Command::TaskPropose {
-                launch_token: None,
-                ..
-            }
-        ),
-        "the agent socket received it"
-    );
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            text(&output.stderr)
+        );
+        assert!(
+            matches!(
+                daemon.await.unwrap(),
+                Command::TaskPropose {
+                    launch_token: None,
+                    ..
+                } | Command::TaskReportBlocker {
+                    launch_token: None,
+                    ..
+                }
+            ),
+            "{arguments:?} reached the agent socket"
+        );
+    }
 }
 
 #[tokio::test]

@@ -1,9 +1,10 @@
 //! `torlek todo`: the task list (#38). A launched session (one with `TORLEK_LAUNCH_TOKEN`)
 //! files, reads and works items on the agent socket, where the daemon identifies it; everyone
 //! else is the owner, on the host-only socket. Proposals and blocker reports are a session's
-//! only, so they go to the agent socket from inside a session; from the owner's own shell they
-//! go to the host-only socket, whose refusal points at `todo add` (#648). The daemon decides
-//! what each may do.
+//! only: they go to the agent socket also from a session whose token is spent (its launch's
+//! `TORLEK_SESSION` or `TORLEK_AGENT_SOCKET` says it runs in one); from the owner's own shell
+//! they go to the host-only socket, whose refusal points at `todo add` (#648). The daemon
+//! decides what each may do.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
