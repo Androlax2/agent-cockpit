@@ -64,6 +64,33 @@ async fn a_leader_that_fails_leaves_the_run_not_run_with_what_it_printed() {
         panic!("expected a run that never started, got {ended:?}");
     };
     assert!(reason.contains("cannot take the terminal"), "{reason}");
+    let read = fixture.database.read().await.unwrap();
+    let row = read
+        .prepare("SELECT execution FROM process_output_sets")
+        .await
+        .unwrap()
+        .query_row(())
+        .await
+        .unwrap();
+    let execution = cockpit_processes::ExecutionId(row.get(0).unwrap());
+    let facts = cockpit_processes::output_facts(&read, execution)
+        .await
+        .unwrap();
+    assert_eq!(facts.mode, cockpit_processes::OutputMode::Pty);
+    assert_eq!(facts.session.as_deref(), Some("s1"));
+    assert_eq!(
+        facts.origin_epoch.as_deref(),
+        Some(fixture.database.epoch())
+    );
+    assert!(!facts.pending_result);
+    assert!(
+        !dir.path()
+            .join("executions")
+            .join(fixture.database.epoch())
+            .join(execution.0.to_string())
+            .join("stdout")
+            .exists()
+    );
 }
 
 #[test]

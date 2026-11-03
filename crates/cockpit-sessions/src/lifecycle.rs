@@ -1360,6 +1360,7 @@ impl Sessions {
         // fails the launch before anything is reserved. The agent gets its whole checkout,
         // not just the folder it starts in: Git and the project's own files live at its root.
         let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
+        let output_project = checkout.project.as_str().to_owned();
         let prepared = self.prepare_sandbox(
             id.as_str(),
             session.provider.as_str(),
@@ -1407,6 +1408,16 @@ impl Sessions {
                 .processes
                 .reserve(&write, self.database.epoch())
                 .await?;
+            cockpit_processes::attribute_output(
+                &write,
+                execution,
+                self.database.epoch(),
+                Some(&output_project),
+                Some(id.as_str()),
+                cockpit_processes::OutputMode::Hosted,
+                false,
+            )
+            .await?;
             store::insert_launch(&write, id, kind, purpose, execution, &start_files).await?;
             cockpit_sandbox::record(&write, execution.0, id.as_str(), &prepared.evidence).await?;
             let reach = prepared

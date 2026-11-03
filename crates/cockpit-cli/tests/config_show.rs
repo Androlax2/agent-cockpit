@@ -614,6 +614,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  [--needs-human T] [--evidence REF]...]\n       \
                   torlek workflow block ID ACTION --detail TEXT\n       \
                   torlek check run CHECK --project P [--checkout PATH] | gate [--project P] [--checkout PATH]\n       \
+                  torlek check pending --project P [--after N]\n       \
+                  torlek check resolve-pending RUN --project P --revision N --epoch E\n       \
                   torlek check claim CHECK STATEMENT\n       \
                   torlek resources status | profile normal|foreground | pause-queue | resume-queue\n       \
                   torlek resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...\n       \

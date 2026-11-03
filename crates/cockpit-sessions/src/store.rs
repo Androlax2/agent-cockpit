@@ -751,3 +751,27 @@ pub async fn maintenance_sessions(connection: &Connection) -> Result<Vec<Session
     }
     Ok(result)
 }
+
+/// Supplies current live/latest protection in the caller's snapshot. Output facts own the
+/// project/mode; sessions owns whether the attributed session is live and its latest launch.
+/// Unknown session identity is protected, never interpreted as ended.
+pub async fn protects_output(
+    connection: &Connection,
+    output: &cockpit_processes::OutputFacts,
+) -> Result<bool, Error> {
+    let Some(session) = output.session.as_deref() else {
+        return Ok(false);
+    };
+    let mut rows = connection.query("SELECT state, (SELECT max(execution_id) FROM session_launches WHERE session_id=s.id) FROM sessions s WHERE id=?1", [session]).await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(true);
+    };
+    if row.get::<String>(0)? == "ended" {
+        return Ok(false);
+    }
+    let latest: Option<i64> = row.get(1)?;
+    drop(rows);
+    Ok(latest == Some(output.execution.0)
+        || cockpit_processes::latest_file_output(connection, session).await?
+            == Some(output.execution))
+}

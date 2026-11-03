@@ -23,3 +23,5 @@ pub use store::{MIGRATIONS, maintenance_sessions, session, sessions};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("cockpit-sessions supports Linux (WSL2 included) and macOS (report 01)");
+
+pub use store::protects_output;

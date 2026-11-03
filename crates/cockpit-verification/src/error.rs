@@ -5,16 +5,25 @@ use crate::ReceiptId;
 /// Why a request about verification was not carried out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
+    PendingResultChanged,
     /// The request itself is invalid; `field` names the part at fault.
-    InvalidRequest { field: &'static str, reason: String },
+    InvalidRequest {
+        field: &'static str,
+        reason: String,
+    },
     /// This run is already recorded with another result: a runner reusing a run id, or a
     /// rewrite of evidence.
-    RunRecordedDifferently { run_id: String, receipt: ReceiptId },
+    RunRecordedDifferently {
+        run_id: String,
+        receipt: ReceiptId,
+    },
 }
 
 impl fmt::Display for Refusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Refusal::PendingResultChanged => formatter
+                .write_str("pending result changed, is sealed, or needs its producer revision"),
             Refusal::InvalidRequest { field, reason } => write!(formatter, "{field}: {reason}"),
             Refusal::RunRecordedDifferently { run_id, receipt } => write!(
                 formatter,

@@ -12,9 +12,10 @@ use crate::{Containment, EndReason, Error, Execution, ExecutionId, LaunchContain
 /// reason, so a late report can be traced to the execution it came from.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "processes",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE process_executions (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE process_executions (
                 id INTEGER PRIMARY KEY,
                 containment TEXT NOT NULL
                     CHECK (containment IN ('process-group', 'systemd-scope')),
@@ -36,7 +37,12 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             );
             CREATE INDEX process_executions_occupying
                 ON process_executions (id) WHERE phase <> 'ended';",
-    }],
+        },
+        Migration {
+            version: 2,
+            sql: crate::output_catalog::SCHEMA,
+        },
+    ],
 };
 
 /// Records the launch intent in the caller's transaction: once committed, the reservation
@@ -68,6 +74,7 @@ pub(crate) async fn record_intent(
             (id.0, containment_kind, unit, boot_id, now_ms()),
         )
         .await?;
+    write.execute("INSERT INTO process_output_sets (execution, origin_epoch, mode) VALUES (?1, ?2, 'unknown')", (id.0, epoch)).await?;
     Ok(id)
 }
 
@@ -236,7 +243,7 @@ fn execution_from_row(row: &Row) -> Result<Execution, Error> {
     })
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is after 1970");

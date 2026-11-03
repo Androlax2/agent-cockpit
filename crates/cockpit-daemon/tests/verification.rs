@@ -355,3 +355,17 @@ async fn a_check_in_a_checkout_the_owner_does_not_trust_is_refused_before_it_run
     assert_eq!(error.code, ErrorCode::NotAuthorized);
     assert!(error.message.contains("not trusted"), "{error:?}");
 }
+
+#[tokio::test]
+async fn daemon_run_identity_includes_its_database_epoch() {
+    let verification = started().await;
+    let receipt = verification.run("test").await;
+    assert!(
+        receipt.run.matches('-').count() > 1,
+        "run identity must include the origin epoch: {}",
+        receipt.run
+    );
+}
+
+#[path = "verification/pending.rs"]
+mod pending;

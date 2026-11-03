@@ -544,12 +544,16 @@ impl Handler for Routes {
             // Running a check executes the project's command on the host, and only a run the
             // daemon executed yields a receipt: the owner's alone (#313). An agent's word that
             // a check passed is a claim, filed from its session.
-            (command @ (Command::CheckRun { .. } | Command::CheckReceipt { .. }), peer) => {
-                match peer {
-                    Peer::Agent { .. } => Route::Answer(owner_only()),
-                    Peer::Owner => verification::route(command, peer, self.verification.clone()),
-                }
-            }
+            (
+                command @ (Command::CheckRun { .. }
+                | Command::CheckReceipt { .. }
+                | Command::CheckPending { .. }
+                | Command::CheckResolvePending { .. }),
+                peer,
+            ) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => verification::route(command, peer, self.verification.clone()),
+            },
             (command @ Command::CheckClaim { .. }, peer) => match peer {
                 peer @ Peer::Agent { .. } => {
                     verification::route(command, peer, self.verification.clone())

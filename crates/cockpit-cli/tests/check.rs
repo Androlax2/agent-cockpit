@@ -129,3 +129,26 @@ fn a_gate_takes_its_checkout_relative_to_the_working_directory() {
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(report.starts_with("gate open for app at "), "{report}");
 }
+
+#[test]
+fn pending_help_and_empty_owner_listing_do_not_invent_a_result() {
+    let (home, _daemon, _root) = with_checks();
+    let output = home.cockpit_ok(&["check", "pending", "--project", "app"]);
+    assert!(output.contains("current-database-epoch"));
+    assert_eq!(output.lines().count(), 1, "only the header: {output}");
+    let refused = home.cockpit(&[
+        "check",
+        "resolve-pending",
+        "execution-old-1",
+        "--project",
+        "app",
+        "--revision",
+        "1",
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8(refused.stderr)
+            .unwrap()
+            .contains("--epoch")
+    );
+}

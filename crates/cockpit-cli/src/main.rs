@@ -126,6 +126,8 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek workflow release ID [--changed T --checked T --outcome T [--needs-human T] [--evidence REF]...]
        torlek workflow block ID ACTION --detail TEXT
        torlek check run CHECK --project P [--checkout PATH] | gate [--project P] [--checkout PATH]
+       torlek check pending --project P [--after N]
+       torlek check resolve-pending RUN --project P --revision N --epoch E
        torlek check claim CHECK STATEMENT
        torlek resources status | profile normal|foreground | pause-queue | resume-queue
        torlek resources check WORKLOAD --cpu MILLICORES --memory MIB [--require CONTROL]...
