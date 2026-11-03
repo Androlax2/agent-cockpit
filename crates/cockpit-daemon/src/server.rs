@@ -29,7 +29,7 @@ const RETAINED_FRAME_CAPACITY: usize = 64 * 1024;
 /// A failed `accept` (out of descriptors) is retried after this pause instead of spinning.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// The owner may follow the change feed; agents never see the whole state (report 11).
-const OWNER_CAPABILITIES: &[Capability] = &[Capability::ChangeFeed];
+const OWNER_CAPABILITIES: &[Capability] = &[Capability::ChangeFeed, Capability::LogLevelControl];
 
 /// How much the daemon accepts at once. Every bound answers or closes when reached.
 #[derive(Debug, Clone, Copy)]

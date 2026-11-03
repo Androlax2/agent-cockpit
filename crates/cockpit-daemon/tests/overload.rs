@@ -73,15 +73,18 @@ struct FixtureHandler {
 
 impl Handler for FixtureHandler {
     fn route(&self, command: Command, welcome: &Welcome, peer: Peer) -> Route {
-        if !matches!(command, Command::Subscribe { .. }) {
-            return self.routes.route(command, welcome, peer);
-        }
+        let class = match command {
+            Command::Subscribe { .. } => WorkClass::Bulk,
+            // A synthetic held control request for queue-admission tests.
+            Command::ConfigReload => WorkClass::Control,
+            _ => return self.routes.route(command, welcome, peer),
+        };
         let fixture = Arc::clone(&self.fixture);
         if let BulkBehavior::PanicWhileRouting = fixture.behavior {
             panic!("fixture: routing failed");
         }
         Route::Run {
-            class: WorkClass::Bulk,
+            class,
             job: Box::pin(async move {
                 match fixture.behavior {
                     BulkBehavior::PanicInJob => panic!("fixture: the job failed"),
@@ -119,6 +122,7 @@ impl Handler for FixtureHandler {
 struct Running {
     daemon: Daemon,
     _home: tempfile::TempDir,
+    diagnostics: cockpit_diagnostics::Diagnostics,
 }
 
 fn lane(workers: usize, waiting: usize) -> LaneLimits {
@@ -137,13 +141,32 @@ fn options_in(home: &tempfile::TempDir, bulk: LaneLimits) -> Options {
 }
 
 async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
+    start_with_limits(
+        fixture,
+        Limits {
+            bulk,
+            ..Limits::default()
+        },
+    )
+    .await
+}
+
+async fn start_with_limits(fixture: &Arc<Fixture>, limits: Limits) -> Running {
     let home = tempfile::tempdir().unwrap();
-    let daemon = Instance::acquire(options_in(&home, bulk))
+    let diagnostics = cockpit_diagnostics::start(cockpit_diagnostics::Options::new(
+        home.path().join("logs"),
+        "warn".parse().unwrap(),
+    ))
+    .unwrap();
+    let mut options = options_in(&home, limits.bulk);
+    options.limits = limits;
+    let daemon = Instance::acquire(options)
         .unwrap()
         .start(common::wiring_in(home.path(), Vec::new()), |capabilities| {
             Arc::new(FixtureHandler {
                 fixture: Arc::clone(fixture),
-                routes: Routes::new(capabilities, cockpit_config::Environment::default()),
+                routes: Routes::new(capabilities, cockpit_config::Environment::default())
+                    .with_log_level(diagnostics.level().clone()),
             })
         })
         .await
@@ -151,6 +174,7 @@ async fn start(fixture: &Arc<Fixture>, bulk: LaneLimits) -> Running {
     Running {
         daemon,
         _home: home,
+        diagnostics,
     }
 }
 
@@ -205,6 +229,19 @@ async fn control_requests_are_answered_while_bulk_work_saturates_its_workers() {
         let reply = client.request(Command::Ping, CONTROL_DEADLINE).await;
         slowest_control = slowest_control.max(asked.elapsed());
         assert_eq!(reply.unwrap(), Reply::Pong);
+    }
+    for command in [
+        Command::LogsLevelStatus,
+        Command::LogsLevelSet {
+            directives: "debug".into(),
+            duration: Some("1m".into()),
+        },
+        Command::LogsLevelRevert,
+    ] {
+        assert!(matches!(
+            control_client.request(command, CONTROL_DEADLINE).await,
+            Ok(Reply::LogsLevel { .. })
+        ));
     }
     let started_while_saturated = fixture.started.load(Ordering::SeqCst);
     fixture.release();
@@ -319,5 +356,51 @@ fn limits_that_would_serve_nothing_stop_startup() {
             ))
         ),
         "{refused:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_full_control_lane_refuses_a_log_change_without_applying_it() {
+    let fixture = Fixture::new(BulkBehavior::BlockUntilReleased);
+    let running = start_with_limits(
+        &fixture,
+        Limits {
+            control: lane(1, 0),
+            ..Limits::default()
+        },
+    )
+    .await;
+    let connection = connect(&running).await;
+    let held = {
+        let connection = Arc::clone(&connection);
+        tokio::spawn(async move { connection.request(Command::ConfigReload, GENEROUS).await })
+    };
+    fixture.wait_until_started(1).await;
+    let refused = connection
+        .request(
+            Command::LogsLevelSet {
+                directives: "trace".into(),
+                duration: None,
+            },
+            CONTROL_DEADLINE,
+        )
+        .await;
+    fixture.release();
+    held.await.unwrap().unwrap();
+    assert!(
+        matches!(refused, Err(ClientError::Daemon(ref error)) if error.code == ErrorCode::Busy),
+        "{refused:?}"
+    );
+    assert_eq!(
+        running.diagnostics.level().status().directives.to_string(),
+        "warn"
+    );
+    assert!(
+        running
+            .diagnostics
+            .level()
+            .status()
+            .active_override
+            .is_none()
     );
 }

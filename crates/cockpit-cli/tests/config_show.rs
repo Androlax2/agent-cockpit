@@ -537,6 +537,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   usage: torlek [--profile NAME] VERB ...\n       \
                   torlek config show [--project DIR] [--set KEY=VALUE]...\n       \
                   torlek config reload\n       \
+                  torlek logs level [DIRECTIVES [--for Ns|Nm] | --revert]\n       \
                   torlek agent report [--state working|waiting] [--label TEXT] [--doing TEXT] \
                  [--needs-input QUESTION | --dialog QUESTION] [--prompt] \
                  [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] \

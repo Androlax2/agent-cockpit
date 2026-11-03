@@ -21,7 +21,7 @@ async fn open_against(reply: &HandshakeReply) -> Result<Connection, ClientError>
 }
 
 #[tokio::test]
-async fn a_plain_connection_offers_every_version_and_asks_for_no_capability() {
+async fn a_plain_connection_offers_log_control_but_accepts_an_older_daemon() {
     let daemon = FakeDaemon::start();
 
     let (connection, (hello, _peer)) = tokio::join!(
@@ -31,7 +31,7 @@ async fn a_plain_connection_offers_every_version_and_asks_for_no_capability() {
 
     assert_eq!(
         hello,
-        json!({"protocol_versions": SUPPORTED_VERSIONS, "capabilities": []})
+        json!({"protocol_versions": SUPPORTED_VERSIONS, "capabilities": ["log-level-control"]})
     );
     assert_eq!(connection.unwrap().welcome().capabilities, vec![]);
 }
@@ -127,4 +127,29 @@ async fn a_missing_socket_names_its_path() {
         Err(ClientError::Connect { socket_path, .. }) => assert_eq!(socket_path, missing),
         other => panic!("expected a connect error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn an_older_daemons_log_command_refusal_is_preserved() {
+    use cockpit_protocol::{Command, ErrorCode};
+    let daemon = FakeDaemon::start();
+    let (connection, mut peer) = tokio::join!(
+        Connection::open(&daemon.socket_path, GENEROUS),
+        daemon.accept_handshake(&[])
+    );
+    let connection = connection.unwrap();
+    assert!(connection.welcome().capabilities.is_empty());
+    let answer = async {
+        let request = peer.read_request().await;
+        peer.fail(request.id, ErrorCode::UnknownCommand).await;
+        peer
+    };
+    let (reply, _peer) = tokio::join!(
+        connection.request(Command::LogsLevelStatus, GENEROUS),
+        answer
+    );
+    assert!(
+        matches!(reply, Err(ClientError::Daemon(ref error)) if error.code == ErrorCode::UnknownCommand),
+        "{reply:?}"
+    );
 }

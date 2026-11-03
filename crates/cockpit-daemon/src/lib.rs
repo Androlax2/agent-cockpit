@@ -10,6 +10,7 @@ mod error;
 mod feed;
 mod instance;
 mod lanes;
+mod logs;
 mod manager;
 mod projects;
 mod readiness;

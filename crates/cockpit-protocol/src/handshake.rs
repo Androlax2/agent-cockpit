@@ -17,6 +17,8 @@ pub const SUPPORTED_VERSIONS: [ProtocolVersion; 1] = [ProtocolVersion(1)];
 pub enum Capability {
     /// Subscribing to the change feed.
     ChangeFeed,
+    /// Owner-only timed changes to the running daemon log filter.
+    LogLevelControl,
     /// A capability this version does not know, kept as sent. Never build one with a known
     /// name: it would read back as the known variant.
     #[serde(untagged)]

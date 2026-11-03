@@ -45,8 +45,8 @@ struct SharedState {
 impl Connection {
     /// Connects to the daemon at `socket_path` and completes the handshake within `timeout`.
     ///
-    /// It asks for no capability: the change feed is only negotiated by a
-    /// [`crate::Subscription`], so the daemon answers `subscribe` here with `not-negotiated`.
+    /// Offers log-level control. The change feed is only negotiated by a
+    /// [`crate::Subscription`], so `subscribe` here remains `not-negotiated`.
     pub async fn open(socket_path: &Path, timeout: Duration) -> Result<Self, ClientError> {
         Self::open_with_feed(socket_path, timeout, None).await
     }
@@ -59,8 +59,8 @@ impl Connection {
         feed: Option<mpsc::Sender<ChangeBatch>>,
     ) -> Result<Self, ClientError> {
         let capabilities = match feed {
-            Some(_) => vec![Capability::ChangeFeed],
-            None => Vec::new(),
+            Some(_) => vec![Capability::ChangeFeed, Capability::LogLevelControl],
+            None => vec![Capability::LogLevelControl],
         };
         let handshake = handshake(socket_path, capabilities);
         let (welcome, frames, write_half) = tokio::time::timeout(timeout, handshake)
