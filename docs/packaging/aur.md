@@ -104,8 +104,11 @@ to the recipe alone changes the template in this repository, then renders the sa
 - No published release exists, so neither the checksums of real archives nor the installed
   programs have run on Arch. The tests build the package from stand-in programs.
 - `install-arch` runs on nightly and dispatched dry runs, their `-dev.N` archives rendered with
-  `--development`, and on release tags. It does not cover systemd services, providers, the
-  sandbox engines or upgrades: step 7 does, by hand.
+  `--development`, on release tags, and on pull requests that change the recipe, its renderer,
+  this script or their tests (the release workflow's whole build runs then). It is not in
+  `publish`'s needs, so a tag publishes even when it fails: step 6 stops the AUR submission
+  instead ([decision](../decisions/2026-11-03-562-arch-packaging-alpha1.md)). It does not cover
+  systemd services, providers, the sandbox engines or upgrades: step 7 does, by hand.
 - No clean-chroot build or `namcap` run has run.
 - `aarch64` is rendered and tested only as recipe text. `install-arch` and the fixture build
   run on x86_64, and there is no official Arch image for aarch64.

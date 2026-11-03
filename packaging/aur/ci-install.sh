@@ -18,8 +18,10 @@ version=$2
 channel=$3
 revision=$4
 repository=$(realpath "$(dirname "$0")/../..")
-if [ ! -f /.dockerenv ] && [ -z "${container:-}" ]; then
-    printf '%s\n' 'ci-install.sh: refusing to run outside a disposable container' >&2
+# A GitHub Actions job container only: toolbox or distrobox also set $container, but share
+# the user's home and outlive the run.
+if [ "${GITHUB_ACTIONS:-}" != true ] || [ ! -f /.dockerenv ]; then
+    printf '%s\n' 'ci-install.sh: refusing to run outside a GitHub Actions job container' >&2
     exit 1
 fi
 if [ "$(id -u)" -ne 0 ]; then
@@ -27,7 +29,9 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-pacman -Syu --noconfirm --needed git curl tmux python
+# The keyring first: the pinned image's own keyring cannot verify packages signed since.
+pacman -Sy --noconfirm archlinux-keyring
+pacman -Su --noconfirm --needed git curl tmux python
 useradd --create-home builder
 home=/home/builder
 as_builder() {
@@ -42,7 +46,8 @@ as_builder python3 "$repository/packaging/aur/render.py" render "${render_option
 install -o builder -m 0644 "$dist/torlek-v$version-linux-x86_64.tar.gz" "$recipe/"
 # Without --nodeps: makepkg refuses unless every runtime dependency resolves on Arch.
 (cd "$recipe" && as_builder makepkg --noconfirm --noprogressbar)
-as_builder python3 "$repository/packaging/aur/render.py" check-srcinfo "$recipe"
+# check-srcinfo refuses a --development recipe, so compare with makepkg's directly.
+(cd "$recipe" && as_builder makepkg --printsrcinfo) | diff -u - "$recipe/.SRCINFO"
 
 # The recipe's own tests, which skip on the Ubuntu runners for want of makepkg.
 (cd "$home" && as_builder python3 -m unittest discover -s "$repository/tools/tests" \
@@ -54,20 +59,49 @@ test "$(readlink -f /usr/bin/torlek)" = /usr/lib/torlek/bin/torlek
 as_builder python3 "$repository/tools/release.py" verify-install /usr/lib/torlek \
     --revision "$revision"
 
-# No provider or sandbox engine is installed here, so doctor may report a missing
-# prerequisite (exit 1); anything else is a failure of the packaged program.
+# Through the public command: the link must still find the bundle's TUI and manifest.
+expect_line() {
+    local wanted=$1 output=$2
+    if ! grep -qxF -- "$wanted" <<< "$output"; then
+        printf 'expected the line %q in:\n%s\n' "$wanted" "$output" >&2
+        exit 1
+    fi
+}
+version_output=$(cd "$home" && as_builder timeout 60 /usr/bin/torlek version --all)
+expect_line "build release" "$version_output"
+expect_line "bundle manifest /usr/lib/torlek/share/torlek/manifest.json:" "$version_output"
+tui_output=$(cd "$home" && as_builder timeout 60 /usr/bin/torlek tui --version)
+expect_line "torlek-tui $version" "$tui_output"
+
+# No provider or sandbox engine is installed here, so doctor exits 1 for a missing
+# prerequisite; its own lines must still show the packaged release build and profile.
 doctor_status=0
-(cd "$home" && as_builder torlek doctor) || doctor_status=$?
+doctor_output=$(cd "$home" && as_builder timeout 60 torlek doctor) || doctor_status=$?
+printf '%s\n' "$doctor_output"
 if [ "$doctor_status" -gt 1 ]; then
     printf 'torlek doctor exited %s\n' "$doctor_status" >&2
     exit 1
 fi
+expect_line "build release" "$doctor_output"
+config_dir=$(sed -n 's/^config dir //p' <<< "$doctor_output")
+state_dir=$(sed -n 's/^state dir //p' <<< "$doctor_output")
+for directory in "$config_dir" "$state_dir"; do
+    case $directory in
+        "$home"/*) ;;
+        *) printf 'doctor names a profile directory outside the home: %q\n' "$directory" >&2
+           exit 1 ;;
+    esac
+    as_builder mkdir -p "$directory"
+    printf kept | as_builder tee "$directory/kept-on-removal" > /dev/null
+done
 
-install -d -o builder "$home/.config/torlek"
-as_builder touch "$home/.config/torlek/kept-on-removal"
-find "$home" -path "$recipe" -prune -o -print | sort > /tmp/home-before
+home_contents() {
+    find "$home" -path "$recipe" -prune -o -type f -print0 | sort -z | xargs -0 sha256sum
+    find "$home" -path "$recipe" -prune -o -print | sort
+}
+home_contents > /tmp/home-before
 pacman -R --noconfirm torlek-bin
-find "$home" -path "$recipe" -prune -o -print | sort > /tmp/home-after
+home_contents > /tmp/home-after
 diff -u /tmp/home-before /tmp/home-after
 for removed in /usr/bin/torlek /usr/lib/torlek /usr/share/licenses/torlek-bin; do
     if [ -e "$removed" ] || [ -L "$removed" ]; then

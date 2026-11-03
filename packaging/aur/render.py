@@ -22,8 +22,6 @@ from pathlib import Path
 
 TEMPLATE = Path(__file__).resolve().parent / "torlek-bin/PKGBUILD.in"
 RELEASE_TOOL = Path(__file__).resolve().parents[2] / "tools/release.py"
-# release.py dry-run-version's shape: the workspace core and the commits since the base.
-DEVELOPMENT_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+-dev\.(?:0|[1-9][0-9]*)")
 # The Alpha1 plan's archives (tools/release.py ALPHA1_PLATFORMS), keyed by pacman's CARCH.
 ARCHITECTURES = {"x86_64": "linux-x86_64", "aarch64": "linux-aarch64"}
 SUMS_LINE = re.compile(r"([0-9a-f]{64})  (\S+)")
@@ -44,11 +42,12 @@ def package_version(tag, is_development=False):
     """pacman's vercmp puts `0.1.0alpha.1` before `0.1.0beta.1` before `0.1.0`; a hyphen
     is not allowed in pkgver, and `0.1.0_alpha.1` or `0.1.0.alpha.1` would sort after 0.1.0.
     The tag grammar is release.py's; only prereleases exist (docs/RELEASING.md#tags)."""
+    release = release_tool()
     if is_development:
-        if not DEVELOPMENT_VERSION.fullmatch(tag):
+        # release.py dry-run-version's shape: the workspace core, then the commits since the base.
+        if not re.fullmatch(rf"{release.CORE_PATTERN}-dev\.(?:0|[1-9][0-9]*)", tag):
             raise Refusal(f"{tag!r}: --development takes a dry run's X.Y.Z-dev.N")
         return tag.replace("-", "", 1)
-    release = release_tool()
     try:
         channel = release.parse_tag(f"v{tag}")["channel"]
     except release.Refusal as error:
@@ -123,16 +122,21 @@ def render(tag, sums, out, pkgrel=1, is_development=False):
             raise Refusal(f"{out / name} exists; render into a directory without a recipe")
     text = recipe(tag, sums.read_text(), pkgrel, is_development)
     out.mkdir(parents=True, exist_ok=True)
+    pkgver = package_version(tag, is_development)
     with tempfile.TemporaryDirectory(prefix="torlek-aur-", dir=out) as folder:
         staged = Path(folder)
         (staged / "PKGBUILD").write_text(text)
         (staged / ".SRCINFO").write_text(printed_srcinfo(staged))
         (staged / ".SRCINFO").replace(out / ".SRCINFO")
         (staged / "PKGBUILD").replace(out / "PKGBUILD")
+    return f"{pkgver}-{pkgrel}"
 
 
 def check_srcinfo(directory):
+    """Also the last check before an AUR push, so a --development recipe never passes it."""
     recorded = (directory / ".SRCINFO").read_text()
+    if re.search(r"^\tpkgver = \S*dev\.", recorded, re.MULTILINE):
+        raise Refusal(f"{directory}: a --development recipe names no release; never submit it")
     if recorded != printed_srcinfo(directory):
         raise Refusal(f"{directory}/.SRCINFO does not match its PKGBUILD; render it again")
 
@@ -151,15 +155,13 @@ def main():
     arguments = parser.parse_args()
     try:
         if arguments.command == "render":
-            render(
+            version = render(
                 arguments.tag,
                 arguments.sums,
                 arguments.out,
                 arguments.pkgrel,
                 arguments.development,
             )
-            pkgver = package_version(arguments.tag, arguments.development)
-            version = f"{pkgver}-{arguments.pkgrel}"
             print(f"Rendered torlek-bin {version} into {arguments.out}")
         else:
             check_srcinfo(arguments.directory)
