@@ -1,5 +1,9 @@
 #![doc = include_str!("../README.md")]
 
+// Reuse the integration tests' real Git/database fixture for private storage limits/races.
+#[cfg(test)]
+extern crate self as cockpit_projects;
+
 mod clones;
 mod error;
 mod git;
@@ -7,6 +11,7 @@ mod model;
 mod push;
 mod register;
 mod source;
+mod storage;
 mod store;
 mod sweep;
 
@@ -22,6 +27,7 @@ pub use model::{
 pub use push::{Pushed, push};
 pub use register::register_project;
 pub use source::SourceState;
+pub use storage::{CloneStorage, StorageReport, TargetSize, clone_storage};
 pub use store::{MIGRATIONS, checkouts, claim, project_named, projects, release};
 pub use sweep::{Kept, SweepReport, sweep};
 

@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cockpit_projects::{
-    Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Git, Holder, Kept, Trust,
+    Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Git, Holder, Kept, TargetSize, Trust,
 };
 use cockpit_protocol::{
-    CheckoutKindView, CheckoutView, Command, ErrorCode, KeptCheckout, KeptReason, Outcome,
-    ProjectView, Reply, TrustView,
+    CheckoutKindView, CheckoutView, CloneStorageView, Command, ErrorCode, KeptCheckout, KeptReason,
+    Outcome, ProjectView, Reply, TargetSizeView, TrustView,
 };
 use cockpit_turso::Database;
 
@@ -23,6 +23,50 @@ pub(crate) fn route(
     environment: cockpit_config::Environment,
 ) -> Route {
     let (class, job): (WorkClass, crate::Job) = match command {
+        Command::StorageReport => (
+            WorkClass::Bulk,
+            job(async move {
+                let report = cockpit_projects::clone_storage(&database).await?;
+                Ok(Reply::Storage {
+                    clones: report
+                        .clones
+                        .into_iter()
+                        .map(|clone| CloneStorageView {
+                            checkout: clone.checkout.id.0,
+                            project: clone.checkout.project.to_string(),
+                            incarnation: clone.checkout.incarnation,
+                            target: clone
+                                .checkout
+                                .path
+                                .join("target")
+                                .to_string_lossy()
+                                .into_owned(),
+                            holder: clone
+                                .checkout
+                                .occupancy
+                                .map(|occupancy| occupancy.holder.to_string()),
+                            measurement: match clone.measurement {
+                                TargetSize::Complete { apparent_bytes } => {
+                                    TargetSizeView::Complete { apparent_bytes }
+                                }
+                                TargetSize::Missing => TargetSizeView::Missing,
+                                TargetSize::Incomplete {
+                                    apparent_bytes,
+                                    reason,
+                                } => TargetSizeView::Incomplete {
+                                    apparent_bytes,
+                                    reason,
+                                },
+                                TargetSize::Unavailable { reason } => {
+                                    TargetSizeView::Unavailable { reason }
+                                }
+                            },
+                        })
+                        .collect(),
+                    truncated: report.truncated,
+                })
+            }),
+        ),
         Command::ProjectList => (
             WorkClass::Control,
             job(async move {
