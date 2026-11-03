@@ -66,11 +66,11 @@ pub fn trust(checkout: &Checkout, trusted_roots: &[PathBuf]) -> Trust {
     }
 }
 
-/// Why a harness's own folder trust may not be recorded for `checkout` before a launch
-/// there, or the trusted checkout whose trust it inherits (#702, decided in
-/// docs/decisions/0702-claude-folder-trust.md): only a parallel clone of a project the owner
-/// trusts in `projects.trusted`, whose origin is the main checkout's. Never a review clone,
-/// whatever the project is. Runs Git: call it off the async workers.
+/// The trusted checkout whose trust `checkout` inherits, so a harness's own folder trust
+/// may be recorded for it before a launch there; why not, when not (#702, decided in
+/// docs/decisions/2026-11-04-702-claude-folder-trust.md). Only a parallel clone of a project
+/// the owner trusts in `projects.trusted`, whose origin is the main checkout's; never a review
+/// clone, whatever the project is. Runs Git: call it off the async workers.
 pub fn harness_trust_source(
     checkout: &Checkout,
     trusted_roots: &[PathBuf],

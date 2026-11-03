@@ -1,5 +1,5 @@
 //! Claude Code's own folder trust, recorded for a parallel clone before its launch (#702,
-//! decided in docs/decisions/0702-claude-folder-trust.md).
+//! decided in docs/decisions/2026-11-04-702-claude-folder-trust.md).
 //!
 //! Measured on 2.1.317: Claude Code keeps trust as `projects[<git root>].hasTrustDialogAccepted`
 //! in its global config, `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`, and saves that
