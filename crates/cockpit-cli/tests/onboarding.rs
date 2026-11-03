@@ -2,7 +2,7 @@
 //! driven as a process through a clean home, step by step, against a scripted daemon that
 //! answers the readiness report, the projects and the sessions.
 
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::Output;
 
@@ -310,6 +310,49 @@ async fn the_sandbox_step_explains_restrictions_and_approvals_and_asks_for_conse
         next.contains(&home.owner_config().display().to_string()),
         "{next}"
     );
+}
+
+/// #625: on a fresh profile the config folder does not exist, so the action creates it first.
+#[tokio::test]
+async fn on_a_fresh_profile_the_sandbox_action_creates_the_config_folder_first() {
+    let home = Home::new();
+    let folder = home.owner_config().parent().unwrap().to_owned();
+    assert!(!folder.exists());
+
+    let output = home.against(&Daemon::ready(), &["init"]).await;
+
+    let checklist = text(&output.stdout);
+    let next = final_next(&checklist);
+    let create = next
+        .split('`')
+        .find(|part| part.starts_with("mkdir "))
+        .unwrap_or_else(|| panic!("no mkdir command in: {next}"));
+    let created = std::process::Command::new("sh")
+        .args(["-c", create])
+        .status()
+        .unwrap();
+    assert!(created.success(), "{create}");
+    let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700, "{create}");
+    std::fs::write(home.owner_config(), "[agents]\nsandbox = \"required\"\n").unwrap();
+    std::fs::remove_file(home.daemon_socket()).unwrap();
+    let after = home.against(&Daemon::ready(), &["init"]).await;
+    assert!(
+        step(&text(&after.stdout), "Sandbox and approvals").starts_with("[done"),
+        "{}",
+        text(&after.stdout)
+    );
+}
+
+#[tokio::test]
+async fn an_existing_config_folder_is_not_created_again() {
+    let home = Home::new();
+    std::fs::create_dir_all(home.owner_config().parent().unwrap()).unwrap();
+
+    let output = home.against(&Daemon::ready(), &["init"]).await;
+
+    let checklist = text(&output.stdout);
+    assert!(!final_next(&checklist).contains("mkdir"), "{checklist}");
 }
 
 #[tokio::test]

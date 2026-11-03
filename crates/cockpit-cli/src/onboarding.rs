@@ -298,14 +298,23 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
             next: None,
         };
     }
+    let file = &config.user_file.path;
+    // A fresh profile has no config folder yet, and this step writes nothing (#625).
+    let create_folder = match file.parent() {
+        Some(folder) if !folder.is_dir() => format!(
+            "create its folder with `mkdir -p -m 700 {}`, then ",
+            shell_word(&folder.to_string_lossy())
+        ),
+        _ => String::new(),
+    };
     Step {
         title: SANDBOX,
         state: State::Open,
         lines,
         next: Some(format!(
-            "to accept, write `[agents]` and `sandbox = \"required\"` in {} \
+            "to accept, {create_folder}write `[agents]` and `sandbox = \"required\"` in {} \
              (`sandbox = \"off\"` runs agents unsandboxed, with your rights)",
-            config.user_file.path.display()
+            file.display()
         )),
     }
 }
