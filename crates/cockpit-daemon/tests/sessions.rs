@@ -1003,9 +1003,9 @@ async fn an_agent_that_exits_at_start_keeps_its_exit_status_and_last_lines() {
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
 
-    let ended = wait_for_state(&client, &started.id, SessionStateView::Ended).await;
+    let failed = wait_for_state(&client, &started.id, SessionStateView::Failed).await;
 
-    let exit = ended.exit.expect("the agent's exit is kept");
+    let exit = failed.exit.expect("the agent's exit is kept");
     assert_eq!(exit.status, ExitStatusView::Code { code: 3 });
     assert_eq!(
         exit.output.last().map(String::as_str),
@@ -1021,12 +1021,81 @@ async fn an_agent_that_exits_at_start_names_only_its_status_in_the_reason() {
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
 
-    let ended = wait_for_state(&client, &started.id, SessionStateView::Ended).await;
+    let failed = wait_for_state(&client, &started.id, SessionStateView::Failed).await;
 
     assert_eq!(
-        ended.reason.as_deref(),
+        failed.reason.as_deref(),
         Some("its agent exited with status 3; resume reopens it")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_session_whose_agent_exits_at_once_is_answered_failed() {
+    let home = Home::new();
+    let daemon = home.start(REFUSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let started = new_session(&client, &root, None).await;
+
+    assert_eq!(started.state, SessionStateView::Failed);
+    assert_eq!(
+        started.exit.map(|exit| exit.status),
+        Some(ExitStatusView::Code { code: 3 })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_whose_agent_exits_with_a_failure_stays_listed() {
+    let home = Home::new();
+    let daemon = home.start(REFUSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let listed = sessions(&client, false).await;
+
+    assert_eq!(
+        listed
+            .iter()
+            .find(|listed| listed.id == started.id)
+            .map(|listed| listed.state.clone()),
+        Some(SessionStateView::Failed)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_exits_between_ticks_ends_its_session_within_seconds() {
+    let home = Home::new();
+    let mut settings = settings();
+    settings
+        .base_environment
+        .push(("FAKE_AGENT_SLEEP".into(), "1".into()));
+    let daemon = home
+        .start_wired(|| {
+            let mut wiring = home.wiring(BASELINE, settings.clone());
+            wiring.session_tick = Duration::from_secs(600);
+            wiring
+        })
+        .await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    assert_eq!(started.state, SessionStateView::Running);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = sessions(&client, true)
+            .await
+            .into_iter()
+            .find(|session| session.id == started.id)
+            .map(|session| session.state);
+        if state == Some(SessionStateView::Ended) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the session stayed {state:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
