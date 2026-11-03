@@ -18,8 +18,9 @@ open questions are Theo's.
 - **`Depends: tmux (>= 3.6)` as the README states it, even though Ubuntu 24.04 cannot meet it.**
   A weaker dependency would install a Torlek that `torlek doctor` refuses, which hides the gap.
   The supported targets are Ubuntu 26.04 and Debian 13 with `trixie-backports` tmux.
-  **Open question:** does Ubuntu 24.04, including WSL2, need an APT route (for example a
-  backported tmux published beside Torlek), or does the archive stay its only route?
+  Ubuntu 24.04, including WSL2, stays archive-only (Theo, 2026-11-03): publishing a backported
+  tmux would make this project maintain a terminal multiplexer's security updates. Revisit if
+  24.04 users ask for APT.
 - **`libc6 (>= 2.39)`, the glibc of the `ubuntu-24.04` build runners,** until `dpkg-shlibdeps`
   runs on a real build. A lower bound would be a guess.
 - **No maintainer scripts.** Services are per user, written by `torlek daemon install`; a root
@@ -34,10 +35,10 @@ open questions are Theo's.
 - **`verify` follows apt's signature rule, not gpgv's exit code,** so an index signed by an old
   and a new key verifies with either. That is the rotation procedure in
   [deb.md](../packaging/deb.md#signing-key).
-- **Recommended hosting: GitHub Pages of a separate public repository.** This repository's Pages
-  site is replaced by every documentation deploy, and GitHub Release assets cannot form an APT
-  source that updates. **Open question:** create that repository (name and owner), or accept
-  coupling the APT tree to `docs.yml`.
+- **Hosting: GitHub Pages of a separate public repository** (Theo, 2026-11-03). This
+  repository's Pages site is replaced by every documentation deploy, and GitHub Release assets
+  cannot form an APT source that updates. **Open question:** that repository's name and owner;
+  `Androlax2/torlek-apt` is the working name. Nothing is created here.
 - **Open question: where the signing subkey lives,** on Theo's machine or as a secret of the
   publishing workflow's protected environment. No key exists; none is created here.
 - **Publication still needs its own approvals.** This decision grants no tag, repository,

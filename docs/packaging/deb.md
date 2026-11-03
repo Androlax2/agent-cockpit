@@ -60,8 +60,8 @@ tmux 3.6 is not available, instead of installing a Torlek that `torlek doctor` w
 | Debian 12 | 3.3a; 3.5a in backports | 2.36 | No |
 
 Sources: packages.ubuntu.com and sources.debian.org on 2026-11-03. A tmux built from source
-under `/usr/local` does not satisfy a dpkg dependency. Whether Ubuntu 24.04 users get an APT
-route is an open question for Theo
+under `/usr/local` does not satisfy a dpkg dependency. Ubuntu 24.04, including WSL2, stays
+archive-only: this project does not publish a backported tmux
 ([decision](../decisions/2026-11-03-563-deb-apt-packaging.md)).
 
 ### Version order
@@ -131,7 +131,7 @@ Signed-By: /etc/apt/keyrings/torlek.asc
 `androlax2.github.io/agent-cockpit` already serves the documentation site. `docs.yml` deploys a
 new Pages artifact on every run, which replaces the whole site.
 
-- **Option A, recommended: GitHub Pages of a separate public repository** (for example
+- **Option A, chosen: GitHub Pages of a separate public repository** (for example
   `Androlax2/torlek-apt`, which does not exist yet), deployed from an Actions artifact by a
   manually started workflow in a protected environment. No purchased domain, no binaries in Git
   history, and the signing secret stays out of this repository's documentation workflow. Cost:
