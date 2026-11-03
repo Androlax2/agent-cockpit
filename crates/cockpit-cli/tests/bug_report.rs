@@ -11,7 +11,7 @@ mod scripted;
 
 use cockpit_protocol::{
     BugBundleView, BugFiledView, BugIssueView, BugKindView, BugOriginView, BugReportView,
-    BugStatusView, Command, Outcome, Reply,
+    BugStatusView, Command, ErrorCode, Outcome, ProtocolError, Reply,
 };
 use scripted::{scripted_conversation, scripted_daemon, text};
 
@@ -217,6 +217,43 @@ async fn an_agent_cannot_report_a_kind_only_the_daemon_observes() {
         text(&output.stderr).contains("--kind panic: use timeout, unreachable, internal or other"),
         "{}",
         text(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn new_files_the_draft_when_the_bundle_cannot_be_listed() {
+    let home = Home::new();
+    let unlisted = Outcome::Error(ProtocolError::new(
+        ErrorCode::Refused,
+        "the support bundle cannot be read: permission denied",
+    ));
+    let daemon = scripted_conversation(&home.socket("daemon.sock"), vec![unlisted, shown()]);
+
+    let output = home
+        .cockpit(&["bug-report", "new", "the approval pane froze"], &[])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("cannot be listed (refused: the support bundle cannot be read: permission denied); filing the draft anyway"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert!(
+        text(&output.stdout).starts_with("7 draft agent s1 x2 "),
+        "{}",
+        text(&output.stdout)
+    );
+    let received = daemon.await.unwrap();
+    assert!(
+        matches!(
+            received.as_slice(),
+            [
+                Command::BugReportBundlePlan { .. },
+                Command::BugReportNew { .. }
+            ]
+        ),
+        "{received:?}"
     );
 }
 

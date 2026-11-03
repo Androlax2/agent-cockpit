@@ -276,6 +276,11 @@ fn since_seconds(value: &str) -> Result<u64, String> {
                 .ok_or_else(invalid)?
         }
     };
+    if at > chrono::Utc::now() {
+        return Err(format!(
+            "--since {value} is in the future: the bundle would carry no logs"
+        ));
+    }
     u64::try_from(at.timestamp()).map_err(|_| invalid())
 }
 
@@ -312,8 +317,7 @@ pub fn run(verb: Verb) -> ExitCode {
 }
 
 /// Lists what the new draft's support bundle will carry, then asks for the draft, which
-/// writes it (report 12), over one connection. A bundle that cannot be read, too large for
-/// one, stops before the draft: none is filed.
+/// writes it (report 12), over one connection.
 fn new_draft(command: Command) -> Result<Reply, ExitCode> {
     let Command::BugReportNew { since, .. } = command else {
         unreachable!("new_draft is given bug-report-new, not {command:?}")
@@ -328,13 +332,23 @@ fn new_draft(command: Command) -> Result<Reply, ExitCode> {
         let started = std::time::Instant::now();
         let plan = connection
             .request(Command::BugReportBundlePlan { since }, DRAFT_DEADLINE)
-            .await?;
-        let Reply::BugBundlePlan { contents } = &plan else {
-            return Ok(plan);
-        };
-        outln!("A new draft's support bundle will carry:");
-        for path in contents {
-            outln!("  {path}");
+            .await;
+        match plan {
+            Ok(Reply::BugBundlePlan { contents }) => {
+                outln!("A new draft's support bundle will carry:");
+                for path in contents {
+                    outln!("  {path}");
+                }
+            }
+            Ok(other) => return Ok(other),
+            // A report is never lost to its bundle: an older daemon without the plan, or logs
+            // it cannot read, still get the draft, whose bundle then says why it has none.
+            Err(ClientError::Daemon(error)) => eprintln!(
+                "torlek: the support bundle's contents cannot be listed ({}: {}); filing the draft anyway",
+                error.code.as_str(),
+                error.message
+            ),
+            Err(error) => return Err(error),
         }
         let remaining = DRAFT_DEADLINE
             .checked_sub(started.elapsed())

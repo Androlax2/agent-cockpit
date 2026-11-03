@@ -123,7 +123,6 @@ pub(crate) fn facts(
     providers: &[cockpit_readiness::ProviderFacts],
 ) -> Facts {
     let version = env!("CARGO_PKG_VERSION").to_owned();
-    let revision = option_env!("TORLEK_SOURCE_REVISION").unwrap_or("unknown: not a release build");
     let providers = if providers.is_empty() {
         "none".to_owned()
     } else {
@@ -142,7 +141,8 @@ pub(crate) fn facts(
             .join(", ")
     };
     let environment = format!(
-        "torlek {version} (revision {revision})\nplatform: {platform} ({os} {arch})\ntmux: {tmux}\nproviders: {providers}",
+        "{daemon}\nplatform: {platform} ({os} {arch})\ntmux: {tmux}\nproviders: {providers}",
+        daemon = daemon_line(),
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         tmux = tmux.as_deref().unwrap_or("unavailable"),
@@ -151,6 +151,12 @@ pub(crate) fn facts(
         version,
         environment,
     }
+}
+
+/// `torlek VERSION (revision REVISION)` of this daemon.
+fn daemon_line() -> String {
+    let revision = option_env!("TORLEK_SOURCE_REVISION").unwrap_or("unknown: not a release build");
+    format!("torlek {} (revision {revision})", env!("CARGO_PKG_VERSION"))
 }
 
 /// Whether the last run left its marker, then a new marker for this run. Called once the
@@ -375,14 +381,10 @@ async fn owner(command: Command, context: Context) -> Answer {
                 .map_err(|error| format!("reading the bundle's contents failed: {error}"))
                 .and_then(|planned| planned)
                 .map_err(|problem| {
-                    Failed(ProtocolError {
-                        code: ErrorCode::Refused,
-                        message: format!("no support bundle can be read: {problem}"),
-                        unblock: Some(Unblock {
-                            action: "narrow the logs with `--since`".to_owned(),
-                            by: UnblockedBy::Owner,
-                        }),
-                    })
+                    Failed(ProtocolError::new(
+                        ErrorCode::Refused,
+                        format!("the support bundle cannot be read: {problem}"),
+                    ))
                 })?;
             Ok(Reply::BugBundlePlan { contents })
         }
@@ -582,7 +584,14 @@ async fn bundle_sections(
         .iter()
         .map(|set| format!("{} {}\n", set.owner, set.migrations.len()))
         .collect();
-    let versions = version_manifest(context, cli_version);
+    let state_dir = context.state_dir.clone();
+    let facts = Arc::clone(&context.facts);
+    let cli_version = cli_version.map(str::to_owned);
+    let versions = tokio::task::spawn_blocking(move || {
+        version_manifest(&state_dir, &facts.environment, cli_version.as_deref())
+    })
+    .await
+    .unwrap_or_else(|error| format!("unavailable: {error}\n"));
     SECTION_NAMES
         .into_iter()
         .zip([versions, format!("{readiness:#}\n"), config, schema])
@@ -592,30 +601,28 @@ async fn bundle_sections(
 /// `version.txt`: the installed CLI that asked, the running daemon and the instruction
 /// bundles on disk that sessions read, each named apart (report 12), then the platform and
 /// provider facts every draft carries.
-fn version_manifest(context: &Context, cli_version: Option<&str>) -> String {
-    let cli = cli_version.unwrap_or("not reported: the draft was not asked for by the CLI");
+fn version_manifest(state_dir: &Path, environment: &str, cli_version: Option<&str>) -> String {
+    let cli = cli_version
+        .unwrap_or("not reported: filed by the TUI, an agent or the daemon, not the CLI");
     let skills = cockpit_claude::instruction_skills_dir(&crate::agent_context::claude_skills_root(
-        &context.state_dir,
+        state_dir,
     ));
     let helpers = [
         (
             "agent instructions",
-            crate::agent_context::bundle_dir(&context.state_dir),
+            crate::agent_context::bundle_dir(state_dir),
         ),
         ("Claude Code skills", skills),
     ]
     .map(|(name, dir)| format!("  {name}: {}\n", helper_bundle_version(&dir)))
     .concat();
+    let daemon = daemon_line();
+    // `facts` starts with this daemon's line; the rest is the platform and providers.
+    let platform = environment
+        .strip_prefix(&format!("{daemon}\n"))
+        .unwrap_or(environment);
     format!(
-        "installed CLI: {cli}\nrunning daemon: {daemon}\nsession helper bundles:\n{helpers}{environment}\n",
-        daemon = context.facts.environment.lines().next().unwrap_or_default(),
-        environment = context
-            .facts
-            .environment
-            .lines()
-            .skip(1)
-            .collect::<Vec<_>>()
-            .join("\n"),
+        "installed CLI: {cli}\nrunning daemon: {daemon}\nsession helper bundles:\n{helpers}{platform}\n"
     )
 }
 
