@@ -313,17 +313,19 @@ def current_main(base):
 def release_steps(version, base):
     """The copy-paste dispatch and approval steps, and what the dispatch refuses first (#669)."""
     dispatch = f"gh workflow run prerelease.yml -R {REPOSITORY} --ref main -f dry_run="
+    actions = f"https://github.com/{REPOSITORY}/actions/workflows"
     return (
         "## How to release\n\n"
-        f"1. Dry run: `{dispatch}true`, then approve the `release` environment on the run. "
-        f"It prints `dry run: would tag {base} as v{version}` and creates nothing.\n"
+        f"1. Dry run: `{dispatch}true`, then approve the `release` environment on the run "
+        f"({actions}/prerelease.yml). It prints `dry run: would tag {base} as v{version}` "
+        "and creates nothing.\n"
         f"2. Release: `{dispatch}false`, then approve the `release` environment on the run. "
-        f"It tags `{base}` as `v{version}`; the Release workflow builds that tag and asks for "
-        "its own `release` approvals before it drafts and publishes the release.\n\n"
-        f"Runs to approve: https://github.com/{REPOSITORY}/actions/workflows/prerelease.yml\n\n"
-        "The dispatch refuses before tagging unless:\n\n"
-        f"- the channel's checklist is closed: {release.ALPHA_CHECKLIST} for an alpha, "
-        f"{release.BETA_CHECKLIST} for a beta;\n"
+        f"It tags `{base}` as `v{version}`.\n"
+        "3. The tag starts the Release workflow: approve its `release` jobs as its gates pass "
+        f"({actions}/release.yml). It drafts, then publishes the release.\n\n"
+        "Among its checks, the dispatch refuses before tagging unless:\n\n"
+        f"- {release.ALPHA_CHECKLIST} is closed; once {release.BETA_CHECKLIST} closes, "
+        "only a beta is cut;\n"
         f"- an alpha's source carries `{release.KNOWN_GAPS}`;\n"
         f"- `main` is still `{base}` and this is the only open release proposal, unedited;\n"
         f"- `v{version}` is the next prerelease number and no tag has it yet.\n\n"
@@ -357,6 +359,7 @@ def owned_draft(pr, *, supersedable=False):
     if supersedable:
         # Drafts published before #669, such as #689, lack the release steps. Only retiring
         # them accepts that body; dispatch still consumes nothing but the current one.
+        # Remove this, and with_release_steps, once no pre-#669 draft is open.
         accepted_bodies.append(proposal_body(title[1], *marker[0], with_release_steps=False))
     return (
         pr["body"] in accepted_bodies

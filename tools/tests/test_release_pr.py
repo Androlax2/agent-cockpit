@@ -407,6 +407,8 @@ class ProposalTests(unittest.TestCase):
             f"`{dispatch} -f dry_run=false`",
             "approve the `release` environment on the run",
             "https://github.com/Androlax2/agent-cockpit/actions/workflows/prerelease.yml",
+            "approve its `release` jobs as its gates pass",
+            "https://github.com/Androlax2/agent-cockpit/actions/workflows/release.yml",
         ):
             with self.subTest(step=step):
                 self.assertIn(step, body)
