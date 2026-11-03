@@ -177,12 +177,18 @@ pub fn run(command: Command) -> ExitCode {
         | Command::SandboxShow { .. } => CONTROL_DEADLINE,
         _ => BULK_DEADLINE,
     };
+    let is_show = matches!(command, Command::SessionShow { .. });
     let reply = match request(command, deadline) {
         Ok(reply) => reply,
         Err(code) => return code,
     };
     match &reply {
         Reply::SessionAction { session } => out!("delivered to session {session}\n"),
+        Reply::Session { session } if is_show => {
+            out!("{}", session_line(session));
+            out!("{}", exit_lines(session));
+            out!("{}", over_lines(session));
+        }
         Reply::Session { session } => {
             out!("{}", session_line(session));
             out!("{}", exit_lines(session));
@@ -307,6 +313,26 @@ fn exit_lines(session: &SessionView) -> String {
         }
     }
     lines
+}
+
+/// What `session show` adds for an ended or failed session, which has no terminal to show
+/// (#630): how to go on with it. Resume needs the conversation its provider named; without
+/// one, only a new session goes on in its directory. Empty for a session that is not over.
+fn over_lines(session: &SessionView) -> String {
+    if !session.state.is_over() {
+        return String::new();
+    }
+    let profile = &crate::profile::active().value;
+    match &session.conversation {
+        Some(_) => format!(
+            "resume: torlek --profile {profile} session resume {}\n",
+            session.id
+        ),
+        None => format!(
+            "no conversation to resume: torlek --profile {profile} session new {}\n",
+            session.working_dir
+        ),
+    }
 }
 
 /// `grant  permission  id  terms`, tab-separated; `terms` is `per-hour=N confirmed` or

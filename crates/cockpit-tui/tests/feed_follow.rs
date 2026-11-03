@@ -196,3 +196,27 @@ fn a_lost_feed_stays_on_the_status_line_after_a_command_goes_through() {
         screen_text(&app, Instant::now())
     );
 }
+
+#[test]
+fn opening_an_ended_session_says_why_it_ended_instead_of_opened() {
+    let mut ended = session("s-1", 1, 100);
+    ended.state = cockpit_protocol::SessionStateView::Ended;
+    ended.reason = Some("its agent exited; resume reopens it".to_owned());
+    let mut app = common::app_with(&["web"], vec![ended.clone()], Instant::now());
+
+    common::answer(
+        &mut app,
+        Command::SessionShow {
+            session: "s-1".to_owned(),
+        },
+        Reply::Session {
+            session: Box::new(ended),
+        },
+        Instant::now(),
+    );
+
+    assert_eq!(
+        app.log().last(),
+        Some("s-1 is ended: its agent exited; resume reopens it")
+    );
+}

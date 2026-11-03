@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use cockpit_protocol::{Command, ErrorCode, ManagerPaneView, Outcome, ProtocolError, Reply};
-use cockpit_sessions::{SessionId, SessionState, Sessions};
+use cockpit_sessions::{Session, SessionId, SessionState, Sessions, StopTarget};
 use cockpit_tmux::{PaneId, PaneState, SessionLaunch, SessionName, Split};
 
 use crate::routes::{Route, WorkClass, refusal};
@@ -217,7 +217,8 @@ fn manager_state(
 }
 
 /// Shows `session` in the viewer, waking it first when it sleeps (row 18: wake on open).
-/// The viewer is checked first: without one, nobody would see the session it woke.
+/// The viewer is checked first: without one, nobody would see the session it woke. A
+/// session without a terminal is only described, manager or not.
 async fn show(
     sessions: &Sessions,
     manager: Arc<Manager>,
@@ -228,6 +229,9 @@ async fn show(
         .get(&id)
         .await
         .map_err(|error| crate::sessions::protocol_error(&error))?;
+    if is_without_terminal(shown.state) {
+        return describe(sessions, &shown).await;
+    }
     let viewer = {
         let manager = Arc::clone(&manager);
         tmux_blocking(move || Ok(whole_manager(manager.tmux()?)?.viewer)).await?
@@ -240,18 +244,46 @@ async fn show(
     }
     let target = SessionName::new(id.as_str()).map_err(tmux_error)?;
     let showing = Arc::clone(&manager);
-    tmux_blocking(move || {
-        showing
-            .tmux()?
-            .show_in_viewer(&viewer, &target)
-            .map_err(tmux_error)
-    })
-    .await?;
+    let attached =
+        tmux_blocking(move || Ok(showing.tmux()?.show_in_viewer(&viewer, &target))).await?;
+    if let Err(error) = attached {
+        // The session may have ended since it was read: its agent exited, or the owner
+        // ended it. Then its terminal is gone, and the session is described instead.
+        let current = sessions
+            .get(&id)
+            .await
+            .map_err(|error| crate::sessions::protocol_error(&error))?;
+        if is_without_terminal(current.state) {
+            return describe(sessions, &current).await;
+        }
+        return Err(tmux_error(error));
+    }
     *manager
         .shown
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
     crate::sessions::session_reply(sessions, &shown)
+        .await
+        .map_err(|crate::approvals::Failed(error)| error)
+}
+
+/// Whether a session in `state` has, or is about to have, no terminal to attach to (#630):
+/// ended, failed, or being stopped other than for a restart.
+fn is_without_terminal(state: SessionState) -> bool {
+    matches!(
+        state,
+        SessionState::Ended
+            | SessionState::Failed
+            | SessionState::Stopping {
+                to: StopTarget::Ended | StopTarget::Asleep,
+            }
+    )
+}
+
+/// The reply for a session without a terminal: its view, with its state and reason. The
+/// viewer keeps what it showed.
+async fn describe(sessions: &Sessions, session: &Session) -> Result<Reply, ProtocolError> {
+    crate::sessions::session_reply(sessions, session)
         .await
         .map_err(|crate::approvals::Failed(error)| error)
 }

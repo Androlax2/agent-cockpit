@@ -76,6 +76,13 @@ pub enum SessionStateView {
     Unknown,
 }
 
+impl SessionStateView {
+    /// Ended or failed: the session has no agent nor terminal until it is resumed (#630).
+    pub fn is_over(&self) -> bool {
+        matches!(self, SessionStateView::Ended | SessionStateView::Failed)
+    }
+}
+
 /// The wire name, `stopping:<target>` while stopping; what the frontends print.
 impl fmt::Display for SessionStateView {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

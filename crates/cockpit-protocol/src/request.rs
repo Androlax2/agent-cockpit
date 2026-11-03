@@ -675,7 +675,8 @@ pub enum Command {
     },
     /// Owner only: run a scheduling pass now instead of waiting for the next one.
     QueueDispatch,
-    /// Show the session in the manager's viewer pane, waking it first when it is asleep.
+    /// Show the session in the manager's viewer pane, waking it first when it is asleep. An
+    /// ended or failed session has no terminal: the reply only describes it (#630).
     SessionShow {
         session: String,
     },
