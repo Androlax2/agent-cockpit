@@ -364,12 +364,17 @@ fn provider_step(requirements: &[RequirementView], available: &[&str]) -> Step {
         .collect();
     let mut lines: Vec<String> = missing
         .iter()
-        .map(|requirement| match &requirement.next {
-            Some(next) if requirement.status == ReadinessStatusView::Available => {
-                format!("{}: {}; {next}", requirement.name, requirement.detail)
-            }
-            _ => requirement_line(requirement),
-        })
+        .map(
+            |requirement| match (requirement.status, &requirement.next) {
+                (ReadinessStatusView::Available, Some(next)) => {
+                    format!("{}: {}; {next}", requirement.name, requirement.detail)
+                }
+                (ReadinessStatusView::Available, None) => {
+                    format!("{}: {}", requirement.name, requirement.detail)
+                }
+                _ => requirement_line(requirement),
+            },
+        )
         .collect();
     match available {
         [] => Step {
@@ -379,8 +384,12 @@ fn provider_step(requirements: &[RequirementView], available: &[&str]) -> Step {
             next: missing
                 .iter()
                 .find(|requirement| requirement.name == "providers")
-                .or_else(|| missing.first())
-                .and_then(|requirement| requirement.next.clone()),
+                .and_then(|requirement| requirement.next.clone())
+                .or_else(|| {
+                    missing
+                        .iter()
+                        .find_map(|requirement| requirement.next.clone())
+                }),
             lines,
         },
         [only] => {
