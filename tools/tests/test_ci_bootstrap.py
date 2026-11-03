@@ -127,6 +127,69 @@ class CiBootstrapTests(unittest.TestCase):
                 )
                 self.assertNotIn("cargo install", workflow)
 
+    def test_docs_installer_uses_the_local_locked_graph_without_lifecycle_scripts(self):
+        import subprocess
+
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        steps = ci_job(workflow, "docs")
+        install = steps.split("      - name: Install the pinned Markdown and link checkers\n", 1)[1]
+        shell = install.split("        run: |\n", 1)[1].split('          cd "$(mktemp -d)"', 1)[0]
+        shell = "\n".join(line[10:] for line in shell.splitlines())
+        with tempfile.TemporaryDirectory(prefix="docs installer ") as temporary:
+            root = Path(temporary)
+            binary = root / "bin"
+            binary.mkdir()
+            npm = binary / "npm"
+            npm.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$NPM_ARGS"\n')
+            npm.chmod(0o755)
+            path_file = root / "github-path"
+            arguments = root / "npm-arguments"
+            subprocess.run(
+                ["/bin/bash", "-e", "-c", shell],
+                cwd=root,
+                env={
+                    "PATH": str(binary),
+                    "GITHUB_WORKSPACE": str(root),
+                    "GITHUB_PATH": str(path_file),
+                    "NPM_ARGS": str(arguments),
+                },
+                check=True,
+            )
+            args = arguments.read_text().splitlines()
+            self.assertEqual(args[0], "ci")
+            self.assertEqual(args[args.index("--prefix") + 1], "tools/docs-lint")
+            for flag in ["--ignore-scripts", "--no-audit", "--no-fund", "--include=dev"]:
+                self.assertIn(flag, args)
+            self.assertNotIn("--global", args)
+            self.assertEqual(
+                path_file.read_text().strip(), str(root / "tools/docs-lint/node_modules/.bin")
+            )
+
+    def test_docs_lock_records_registry_integrities_for_the_existing_checker(self):
+        from urllib.parse import urlsplit
+
+        folder = ROOT / "tools/docs-lint"
+        manifest = json.loads((folder / "package.json").read_text())
+        lock = json.loads((folder / "package-lock.json").read_text())
+        self.assertIs(manifest["private"], True)
+        self.assertNotIn("scripts", manifest)
+        self.assertEqual(manifest["devDependencies"], {"markdownlint-cli2": "0.24.0"})
+        self.assertEqual(lock["lockfileVersion"], 3)
+        self.assertEqual(lock["packages"][""]["devDependencies"], manifest["devDependencies"])
+        self.assertEqual(lock["packages"]["node_modules/markdownlint-cli2"]["version"], "0.24.0")
+        self.assertEqual(manifest["overrides"], {"re2js": "2.8.7"})
+        self.assertEqual(lock["packages"]["node_modules/re2js"]["version"], "2.8.7")
+        for path, package in lock["packages"].items():
+            if not path:
+                continue
+            with self.subTest(package=path):
+                self.assertFalse(package.get("link"))
+                self.assertRegex(package["version"], r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+                url = urlsplit(package["resolved"])
+                self.assertEqual((url.scheme, url.netloc), ("https", "registry.npmjs.org"))
+                self.assertFalse(url.query or url.fragment)
+                self.assertRegex(package["integrity"], r"^sha512-[A-Za-z0-9+/]+={0,2}$")
+
     def test_wsl_job_installs_the_reviewed_nextest_release(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         reviewed = json.loads(FIXTURE.read_text())["tools"]["cargo-nextest"]
