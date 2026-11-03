@@ -33,6 +33,7 @@ mod desktop_session;
 mod doctor;
 mod installations;
 mod instructions;
+mod logs;
 mod mcp;
 mod onboarding;
 mod profile;
@@ -55,6 +56,7 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek config show [--project DIR] [--set KEY=VALUE]...
        torlek config reload
+       torlek logs level [DIRECTIVES [--for Ns|Nm] | --revert]
        torlek agent report [--state working|waiting] [--label TEXT] [--doing TEXT] [--needs-input QUESTION | --dialog QUESTION] [--prompt] [--outcome completed|failed|quota-stopped] [--outcome-reason TEXT] [--conversation ID [--conversation-ends]]
        torlek agent reports
        torlek agent sessions [--watch]
@@ -252,6 +254,10 @@ fn main() -> ExitCode {
             .unwrap_or_else(|problem| usage_error(Some(problem))),
         [Some("sandbox"), ..] => match sessions::parse_sandbox(&arguments[1..]) {
             Ok(command) => sessions::run(command),
+            Err(problem) => usage_error(Some(problem)),
+        },
+        [Some("logs"), ..] => match logs::parse(&arguments[1..]) {
+            Ok(command) => logs::run(command),
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("desktop-session"), ..] => match desktop_session::parse(&arguments[1..]) {

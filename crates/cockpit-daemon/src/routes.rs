@@ -98,9 +98,16 @@ pub struct Routes {
     readiness: readiness::Context,
     coordination: coordination::Context,
     bug_reports: bug_reports::Context,
+    log_level: Option<cockpit_diagnostics::LevelControl>,
 }
 
 impl Routes {
+    /// Attach the control for the subscriber installed by this daemon's startup.
+    pub fn with_log_level(mut self, control: cockpit_diagnostics::LevelControl) -> Self {
+        self.log_level = Some(control);
+        self
+    }
+
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         let provider_capabilities = Arc::new(capabilities.provider_capabilities);
         Routes {
@@ -160,6 +167,7 @@ impl Routes {
             providers: capabilities.providers,
             environment,
             config_reloads: Arc::default(),
+            log_level: None,
             runner: capabilities.runner,
         }
     }
@@ -543,6 +551,21 @@ impl Handler for Routes {
             (command @ Command::CheckGate { .. }, peer) => {
                 verification::route(command, peer, self.verification.clone())
             }
+            (
+                command @ (Command::LogsLevelStatus
+                | Command::LogsLevelSet { .. }
+                | Command::LogsLevelRevert),
+                peer,
+            ) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner if !welcome.capabilities.contains(&Capability::LogLevelControl) => {
+                    Route::Answer(refusal(
+                        ErrorCode::NotNegotiated,
+                        "log-level-control was not negotiated",
+                    ))
+                }
+                Peer::Owner => crate::logs::route(command, self.log_level.clone()),
+            },
             (Command::ConfigReload, Peer::Owner) => sessions::reload_config(
                 self.environment.clone(),
                 Arc::clone(&self.sessions),

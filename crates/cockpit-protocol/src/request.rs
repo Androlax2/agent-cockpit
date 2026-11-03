@@ -687,6 +687,16 @@ pub enum Command {
     /// invalid file is refused and nothing changes. Start files still count from the next
     /// daemon start.
     ConfigReload,
+    /// Owner only, negotiated log-level-control: the running daemon's effective level.
+    LogsLevelStatus,
+    /// A temporary override; diagnostics validates directives and the optional Ns/Nm duration.
+    LogsLevelSet {
+        directives: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration: Option<String>,
+    },
+    /// Owner only: return to the daemon's startup directives.
+    LogsLevelRevert,
     /// Both sockets: the instruction bundle's topics, each with when to read it (#49).
     InstructionCatalog,
     /// Both sockets: one topic of the instruction bundle, or every topic at once (the one-read
@@ -954,6 +964,11 @@ pub enum Reply {
     /// agents off the desktop session, so none of them gets it (#305).
     DesktopSessionImported {
         withheld: bool,
+    },
+    /// The running filter and its optional temporary override's expiry.
+    LogsLevel {
+        directives: String,
+        expires_at_unix_ms: Option<u64>,
     },
     /// The owner settings the daemon applies now, each with the value it applied before.
     ConfigReloaded {

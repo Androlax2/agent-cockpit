@@ -189,7 +189,10 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
         };
         let daemon = instance
             .start(wiring, |capabilities| {
-                Arc::new(Routes::new(capabilities, environment))
+                Arc::new(
+                    Routes::new(capabilities, environment)
+                        .with_log_level(diagnostics.level().clone()),
+                )
             })
             .await?;
         println!("ready {}", daemon.socket_path().display());
