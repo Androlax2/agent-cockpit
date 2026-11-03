@@ -41,7 +41,7 @@ pub(crate) fn sessions(arguments: &[OsString]) -> Result<ExitCode, String> {
         }) {
             Ok(Reply::AgentSessions { sessions }) => sessions
                 .iter()
-                .map(|session| (session.id.clone(), line(session)))
+                .map(|session| (session.id.clone(), session_line(session)))
                 .collect(),
             other => return Ok(agent.failed(other)),
         };
@@ -163,7 +163,7 @@ fn changes(shown: &[(String, String)], listed: &[(String, String)]) -> String {
 
 /// `id  state  agent  agent-state  working-dir` then the report's `label=… doing=…
 /// needs-input=…` (or `dialog=…`), tab-separated before the report.
-fn line(session: &ObservedSessionView) -> String {
+fn session_line(session: &ObservedSessionView) -> String {
     let report = session.report.as_ref();
     let agent_state = report
         .and_then(|report| report.state)
