@@ -194,11 +194,7 @@ pub(super) fn remove_slice(
                 result.cursor += 1;
                 continue;
             };
-            let metadata = fs::statat(
-                &parent,
-                &name,
-                AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT,
-            );
+            let metadata = mount::stat_child(&parent, &name);
             if matches!(metadata, Err(rustix::io::Errno::NOENT)) {
                 // May be an interrupted unlink before its receipt: never claim freed bytes.
                 result.absent = result
@@ -291,11 +287,7 @@ fn parent(
 }
 
 fn absent(parent: &OwnedFd, name: &std::ffi::CStr) -> Result<bool, String> {
-    match fs::statat(
-        parent,
-        name,
-        AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT,
-    ) {
+    match mount::stat_child(parent, name) {
         Err(rustix::io::Errno::NOENT) => Ok(true),
         Ok(_) => Ok(false),
         Err(error) => Err(error.to_string()),

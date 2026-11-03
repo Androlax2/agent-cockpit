@@ -2,6 +2,29 @@
 
 use std::os::fd::{AsFd, OwnedFd};
 
+/// Keep Linux-only flags behind a compile-time boundary. Unsupported platforms
+/// cannot turn an unavailable no-automount observation into an absent entry.
+#[cfg(target_os = "linux")]
+pub(super) fn stat_child(
+    parent: impl AsFd,
+    name: &std::ffi::CStr,
+) -> rustix::io::Result<rustix::fs::Stat> {
+    use rustix::fs::AtFlags;
+    rustix::fs::statat(
+        parent,
+        name,
+        AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT,
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn stat_child(
+    _parent: impl AsFd,
+    _name: &std::ffi::CStr,
+) -> rustix::io::Result<rustix::fs::Stat> {
+    Err(rustix::io::Errno::NOSYS)
+}
+
 #[cfg(target_os = "linux")]
 pub(super) fn mount_id(fd: impl AsFd) -> Result<u64, String> {
     use rustix::fs::{AtFlags, StatxFlags};
@@ -148,6 +171,11 @@ mod tests {
             .expect("kernel can enforce no mount crossing for an ordinary fixture directory");
         let artifact = open_child(&target, c"artifact", false, id).unwrap();
         assert_eq!(rustix::fs::fstat(&artifact).unwrap().st_size, 7);
+        assert_eq!(stat_child(&target, c"artifact").unwrap().st_size, 7);
+        assert!(matches!(
+            stat_child(&target, c"absent"),
+            Err(rustix::io::Errno::NOENT)
+        ));
         assert!(open_child(&target, c"../target/artifact", false, id).is_err());
         assert!(open_child(&target, c"/artifact", false, id).is_err());
     }
@@ -162,6 +190,10 @@ mod tests {
         let id = mount_id(&root).unwrap();
         assert!(open_child(&root, c"link", true, id).is_err());
         assert!(open_child(&root, c"link", false, id).is_err());
+        assert!(
+            rustix::fs::FileType::from_raw_mode(stat_child(&root, c"link").unwrap().st_mode)
+                .is_symlink()
+        );
         assert!(open_child(&root, c"target", true, id.wrapping_add(1)).is_err());
         assert!(fixture.path().join("target").is_dir());
     }
@@ -184,6 +216,10 @@ mod tests {
         let root = std::fs::File::open(fixture.path()).unwrap();
         assert!(mount_id(&root).is_err());
         assert!(open_child(&root, c"target", true, 1).is_err());
+        assert!(matches!(
+            stat_child(&root, c"absent"),
+            Err(rustix::io::Errno::NOSYS)
+        ));
         assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 0);
     }
 }

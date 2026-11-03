@@ -6,7 +6,7 @@ use super::{
 };
 use crate::store::StoredCheckout;
 use crate::{CheckoutKind, CheckoutState, Git, TargetSize};
-use rustix::fs::{self, AtFlags, Dir};
+use rustix::fs::Dir;
 use std::ffi::{CString, OsStr};
 use std::os::fd::OwnedFd;
 use std::time::{Duration, Instant};
@@ -160,11 +160,7 @@ pub(super) fn observe(stored: &StoredCheckout, name: &[u8]) -> Result<Option<Sna
     let mount_id = mount::mount_id(&root)?;
     let name = CString::new(name).map_err(|e| e.to_string())?;
     if matches!(
-        fs::statat(
-            &root,
-            &name,
-            AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT
-        ),
+        mount::stat_child(&root, &name),
         Err(rustix::io::Errno::NOENT)
     ) {
         return Ok(None);
