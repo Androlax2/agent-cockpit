@@ -18,6 +18,7 @@ fn request(conversation: &Conversation) -> LaunchRequest<'_> {
         conversation,
         first_message: None,
         effort: None,
+        model: None,
         remote_control: false,
     }
 }
@@ -268,6 +269,18 @@ fn an_effort_level_is_refused_naming_the_capability() {
         .unwrap_err();
 
     assert_eq!(refused.reason, "it does not report the `effort` capability");
+}
+
+#[test]
+fn a_model_is_refused_naming_the_capability() {
+    let refused = common::codex()
+        .launch(&LaunchRequest {
+            model: Some("gpt-5"),
+            ..request(&Conversation::New)
+        })
+        .unwrap_err();
+
+    assert_eq!(refused.reason, "it does not report the `model` capability");
 }
 
 #[test]

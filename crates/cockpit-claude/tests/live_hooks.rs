@@ -44,6 +44,7 @@ fn a_live_launch_reports_its_hooks_with_its_own_launch_token() {
             conversation: &Conversation::New,
             first_message: Some("Reply with the single word ok."),
             effort: None,
+            model: None,
             remote_control: false,
         })
         .unwrap();

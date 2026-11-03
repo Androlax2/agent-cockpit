@@ -301,6 +301,8 @@ fn session_new(root: &Path) -> Command {
         agent: Some("fake".to_owned()),
         prompt: None,
         clone: None,
+        model: None,
+        effort: None,
     }
 }
 

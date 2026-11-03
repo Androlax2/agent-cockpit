@@ -404,6 +404,7 @@ fn launch_for(fake: &FakeServer) -> LaunchCommand {
             conversation: &Conversation::New,
             first_message: None,
             effort: None,
+            model: None,
             remote_control: false,
         })
         .unwrap();

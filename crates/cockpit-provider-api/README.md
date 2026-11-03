@@ -18,13 +18,19 @@ Nothing above this contract is keyed on a provider's name, only on its reported
 
 - **Capabilities with provenance** (report 08). Each reported [`Capability`] is `tested`
   against the exact harness version running, or `discovered` (shown as unverified); one not
+<<<<<<< HEAD
   reported is unavailable. Resume, submit, events, cancel, outcome, effort, compact, remote
   control, commands and screen reading have contract behavior; inbox says the adapter's
   bridge collects messages from other sessions itself (#703); evidence and billing are
+=======
+  reported is unavailable. Resume, submit, events, cancel, outcome, effort, model, compact, remote
+  control, commands and screen reading have contract behavior; evidence and billing are
+>>>>>>> 2007179a (feat(sessions): choose the model and effort per session (#701))
   named so a capability report can show them, and get their methods with their first caller.
 - **Launch.** A launch refuses a request that needs a capability the provider does not
-  report ([`LaunchRequest::needed_capabilities`]): a resumed conversation, an effort level,
-  remote control. A provider names the conversation it started when it can
+  report ([`LaunchRequest::needed_capabilities`]): a resumed conversation, an effort level, a
+  model, remote control. The adapter validates an effort or a model in its harness's own
+  words; a launch that only builds words checks them before anything is recorded (#701). A provider names the conversation it started when it can
   ([`LaunchCommand::conversation`]); a session whose conversation is unknown cannot be
   resumed, restarted or put to sleep. A resumed launch keeps the conversation it was asked
   for. Each launch gets the session's private directory ([`LaunchRequest::session_dir`]),

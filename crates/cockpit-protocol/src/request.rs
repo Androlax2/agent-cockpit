@@ -104,8 +104,9 @@ pub enum Command {
     },
     /// Agent socket only (#410): start a session in `dir` (absolute), running `agent`, with
     /// `prompt` as its first message, in a new clone on `clone` when given. `agent` is
-    /// required once the daemon wires more than one. Needs `start-sessions`; waits in the
-    /// `ask run` queue unless the grant says otherwise.
+    /// required once the daemon wires more than one. `model` and `effort` are as
+    /// [`Command::SessionNew`] takes them. Needs `start-sessions`; waits in the `ask run`
+    /// queue unless the grant says otherwise.
     AgentStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         launch_token: Option<String>,
@@ -116,6 +117,10 @@ pub enum Command {
         prompt: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         clone: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
     /// Owner only (#410): give `session` one coordinator grant over every session:
     /// `observe-sessions`, `message-sessions` or `start-sessions`. `without_confirmation` and
@@ -326,7 +331,10 @@ pub enum Command {
     },
     /// Start a session in `dir` (absolute), a directory of a registered project, or in a new
     /// parallel clone of its project on the branch `clone`. `agent` names the provider;
-    /// without it the daemon's only provider is used. `prompt` is the first message.
+    /// without it the daemon's only provider is used. `prompt` is the first message. `model`
+    /// and `effort` are in the provider's own words, kept for every launch of the session;
+    /// a provider without the capability, or that does not know the value, refuses the start
+    /// (#701). Without them the harness's own settings apply.
     SessionNew {
         dir: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -335,6 +343,10 @@ pub enum Command {
         prompt: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         clone: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
     /// Sessions not ended; with `ended`, the ended ones too (recent first is the
     /// client's to sort).

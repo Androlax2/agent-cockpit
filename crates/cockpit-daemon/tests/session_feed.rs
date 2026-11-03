@@ -234,6 +234,8 @@ async fn starting_sleeping_and_ending_a_session_each_reach_a_subscriber() {
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -357,6 +359,8 @@ async fn a_broken_owner_config_holds_back_checkouts_but_not_sessions() {
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: Some("work".to_owned()),
+            model: None,
+            effort: None,
         },
     )
     .await;

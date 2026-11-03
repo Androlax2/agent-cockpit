@@ -263,6 +263,8 @@ async fn new_session(client: &Connection, dir: &Path) -> SessionView {
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await

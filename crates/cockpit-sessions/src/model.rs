@@ -252,6 +252,10 @@ pub struct Session {
     pub working_dir: PathBuf,
     /// Known once the provider named it; without it the session cannot be resumed.
     pub conversation: Option<ConversationId>,
+    /// The model and effort chosen at its start, in its provider's own words; every launch
+    /// of the session passes them again (#701). `None`: the harness's own setting.
+    pub model: Option<String>,
+    pub effort: Option<String>,
     pub design_link: Option<String>,
     pub state: SessionState,
     /// Why the session is in its state, for the owner: a failure, an exit, an expiry.
@@ -283,6 +287,10 @@ pub struct StartRequest {
     pub provider: Option<String>,
     pub first_message: Option<String>,
     pub clone_branch: Option<String>,
+    /// In the provider's own words; the provider refuses one it lacks the capability for or
+    /// does not know, before the session is recorded (#701).
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 /// What [`crate::Sessions::restore`] did with one session at daemon start.

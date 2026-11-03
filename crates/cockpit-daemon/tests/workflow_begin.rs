@@ -234,6 +234,8 @@ async fn launched(owner: &Connection, root: &Path, agent: &str) -> SessionView {
             agent: Some(agent.to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await

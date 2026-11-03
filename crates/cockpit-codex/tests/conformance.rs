@@ -656,6 +656,7 @@ impl TerminalSession {
                 conversation: &conversation,
                 first_message: Some("Reply READY only. Do not use tools."),
                 effort: None,
+                model: None,
                 remote_control: false,
             })
             .unwrap();

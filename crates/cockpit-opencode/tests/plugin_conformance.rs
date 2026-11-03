@@ -71,6 +71,7 @@ fn the_native_plugin_captures_tool_permission_and_aborted_turns() {
             conversation: &Conversation::New,
             first_message: None,
             effort: None,
+            model: None,
             remote_control: false,
         })
         .unwrap();

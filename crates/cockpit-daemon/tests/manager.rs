@@ -232,6 +232,8 @@ async fn the_daemon_opens_its_tmux_server_once_for_the_sessions_and_the_manager(
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -259,6 +261,8 @@ async fn without_tmux_the_manager_and_sessions_are_refused_naming_the_same_cause
                 agent: Some("fake".to_owned()),
                 prompt: None,
                 clone: None,
+                model: None,
+                effort: None,
             },
         )
         .await,
@@ -458,6 +462,8 @@ async fn showing_an_asleep_session_wakes_it_and_attaches_the_viewer_to_it() {
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -501,6 +507,8 @@ async fn showing_a_session_before_the_manager_is_open_is_refused_naming_the_fix(
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -532,6 +540,8 @@ async fn ended_session(client: &Connection, root: &Path) -> SessionView {
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -638,6 +648,8 @@ async fn showing_an_asleep_session_without_a_manager_leaves_it_asleep() {
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;

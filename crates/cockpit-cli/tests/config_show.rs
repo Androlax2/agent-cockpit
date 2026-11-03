@@ -546,7 +546,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   torlek agent sessions [--watch]\n       \
                   torlek agent message SESSION TEXT\n       \
                   torlek agent inbox\n       \
-                  torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
+                  torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]\n       \
                   torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] \
                  [--component NAME] [--steps TEXT] [--requested-by-owner]\n       \
                   torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT] [--since 2h|RFC3339]\n       \
@@ -571,7 +571,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   torlek approval edit ID --revision REVISION COMMAND\n       \
                   torlek guide show ID | answer ID STEP [ANSWER] | stuck ID STEP NOTE | close ID\n       \
                   torlek session send ID MESSAGE | cancel ID\n       \
-                  torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
+                  torlek session new DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]\n       \
                   torlek session list [--ended]\n       \
                   torlek session restart SESSION|--all\n       \
                   torlek session sleep|wake|resume|end|show SESSION\n       \

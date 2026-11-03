@@ -230,7 +230,7 @@ impl Provider for Codex {
     }
 
     /// Resume; with the bridge, also events, submit, cancel and outcome, which its session
-    /// launcher and app-server provide (#407). Not effort, compact, billing, commands,
+    /// launcher and app-server provide (#407). Not effort, model, compact, billing, commands,
     /// evidence, remote control or screen reading: untested.
     fn capabilities(&self) -> Capabilities {
         let provenance = self.provenance();

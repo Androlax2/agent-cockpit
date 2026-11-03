@@ -193,6 +193,8 @@ impl Form {
             agent: Some(agent),
             prompt: Some(self.message.clone()).filter(|message| !message.trim().is_empty()),
             clone,
+            model: None,
+            effort: None,
         })
     }
 }

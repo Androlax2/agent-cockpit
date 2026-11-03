@@ -229,6 +229,8 @@ async fn launched(owner: &Connection, root: &Path) -> String {
             agent: Some("observed".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await

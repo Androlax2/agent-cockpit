@@ -15,6 +15,7 @@ const REPORTED: [Capability; 10] = [
     Capability::Inbox,
     Capability::Cancel,
     Capability::Effort,
+    Capability::Model,
     Capability::Compact,
     Capability::RemoteControl,
     Capability::ScreenReading,

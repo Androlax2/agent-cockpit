@@ -187,6 +187,8 @@ impl Home {
                 agent: Some("fake".to_owned()),
                 prompt: None,
                 clone: None,
+                model: None,
+                effort: None,
             },
         )
         .await;

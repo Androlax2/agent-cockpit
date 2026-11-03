@@ -134,6 +134,48 @@ async fn session_new_sends_an_absolute_dir_with_its_options_and_prints_the_sessi
             agent: Some("claude".to_owned()),
             prompt: Some("fix it".to_owned()),
             clone: Some("feature/x".to_owned()),
+            model: None,
+            effort: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn session_new_sends_the_chosen_model_and_effort_as_typed() {
+    let home = Home::new();
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(view("s0123456789ab", SessionStateView::Running)),
+        }),
+    );
+    let cwd = home.dir.path().canonicalize().unwrap();
+
+    let output = home
+        .cockpit(
+            &cwd,
+            &[
+                "session",
+                "new",
+                "app",
+                "--model",
+                "claude-opus-5-5",
+                "--effort",
+                "xhigh",
+            ],
+        )
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionNew {
+            dir: cwd.join("app").display().to_string(),
+            agent: None,
+            prompt: None,
+            clone: None,
+            model: Some("claude-opus-5-5".to_owned()),
+            effort: Some("xhigh".to_owned()),
         }
     );
 }
@@ -397,12 +439,15 @@ async fn a_refused_session_verb_exits_1_with_the_daemons_reason() {
 #[tokio::test]
 async fn malformed_session_arguments_exit_2_before_any_connection() {
     let home = Home::new();
-    let cases: [&[&str]; 6] = [
+    let cases: [&[&str]; 7] = [
         &["session"],
         &["session", "new"],
         &["session", "new", "app", "--agent"],
         &["session", "new", "app", "--clone", "a", "--clone", "b"],
-        &["session", "new", "app", "--model", "x"],
+        &[
+            "session", "new", "app", "--effort", "low", "--effort", "max",
+        ],
+        &["session", "new", "app", "--sandbox", "x"],
         &["session", "link", "s0123456789ab"],
     ];
     for arguments in cases {

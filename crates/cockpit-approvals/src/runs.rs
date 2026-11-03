@@ -41,7 +41,8 @@ const KIND: &str = "run request";
 const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, project,
         project_root, reason, state, asked_at, expires_at, exit_code, output,
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
-        kind, start_prompt, start_clone, start_agent, decided_at, decided_through";
+        kind, start_prompt, start_clone, start_agent, start_model, start_effort, decided_at,
+        decided_through";
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -200,6 +201,9 @@ pub struct StartSession {
     pub clone: Option<String>,
     /// The agent to run, required once the daemon wires more than one.
     pub agent: Option<String>,
+    /// The model and effort, in the provider's own words (#701).
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 /// What a coordinator session asks to start (#410). `dir` is canonical, like
@@ -344,7 +348,7 @@ pub async fn ask_start(
     stored_run(
         write,
         "UPDATE approvals_runs SET kind = ?2, start_prompt = ?3, start_clone = ?4,
-             start_agent = ?5
+             start_agent = ?5, start_model = ?6, start_effort = ?7
          WHERE id = ?1",
         (
             run.id.0,
@@ -352,6 +356,8 @@ pub async fn ask_start(
             ask.start.prompt.clone(),
             ask.start.clone.clone(),
             ask.start.agent.clone(),
+            ask.start.model.clone(),
+            ask.start.effort.clone(),
         ),
         now,
     )
@@ -396,6 +402,17 @@ pub fn validate_start(dir: &Path, start: &StartSession) -> Result<String, Refusa
             "must be an agent name, without spaces or control characters",
         ));
     }
+    // Only their shape: the provider refuses a value it does not know before the ask.
+    for (field, value) in [("model", &start.model), ("effort", &start.effort)] {
+        if let Some(value) = value
+            && (value.is_empty() || value.chars().any(|c| c.is_control() || c.is_whitespace()))
+        {
+            return Err(invalid(
+                field,
+                "must be one word, without spaces or control characters",
+            ));
+        }
+    }
     let command = start_command(dir, start)?;
     validate_command("start", &command)?;
     Ok(command)
@@ -413,6 +430,12 @@ fn start_command(dir: &Path, start: &StartSession) -> Result<String, Refusal> {
     }
     if let Some(branch) = &start.clone {
         command.push_str(&format!(" --clone {}", shell_quoted(branch)));
+    }
+    if let Some(model) = &start.model {
+        command.push_str(&format!(" --model {}", shell_quoted(model)));
+    }
+    if let Some(effort) = &start.effort {
+        command.push_str(&format!(" --effort {}", shell_quoted(effort)));
     }
     Ok(command)
 }
@@ -929,7 +952,7 @@ pub async fn interrupted_runs(connection: &Connection) -> Result<Vec<Interrupted
     let mut rows = connection
         .query(
             "SELECT id, revision, command, cwd, state, execution, kind, start_prompt,
-                 start_clone, start_agent
+                 start_clone, start_agent, start_model, start_effort
              FROM approvals_runs
              WHERE state IN ('approved', 'running') ORDER BY id",
             (),
@@ -1151,7 +1174,7 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
         note: row.get(17)?,
         asking_grant: row.get(19)?,
         start: start_from(row, 20)?,
-        decision: decision_from(row, stored, 24)?,
+        decision: decision_from(row, stored, 26)?,
     })
 }
 
@@ -1175,20 +1198,27 @@ fn decision_from(row: &Row, stored: RunState, first: usize) -> Result<Option<Run
     }))
 }
 
-/// The start request read from `kind, start_prompt, start_clone, start_agent` at `first`;
-/// `None` for a command.
+/// The start request read from `kind, start_prompt, start_clone, start_agent, start_model,
+/// start_effort` at `first`; `None` for a command.
 fn start_from(row: &Row, first: usize) -> Result<Option<StartSession>, Error> {
     let kind: String = row.get(first)?;
     let prompt: Option<String> = row.get(first + 1)?;
     let clone: Option<String> = row.get(first + 2)?;
     let agent: Option<String> = row.get(first + 3)?;
+    let model: Option<String> = row.get(first + 4)?;
+    let effort: Option<String> = row.get(first + 5)?;
+    let has_start_fields = [&prompt, &clone, &agent, &model, &effort]
+        .iter()
+        .any(|field| field.is_some());
     match kind.as_str() {
         START_KIND => Ok(Some(StartSession {
             prompt,
             clone,
             agent,
+            model,
+            effort,
         })),
-        "command" if prompt.is_none() && clone.is_none() && agent.is_none() => Ok(None),
+        "command" if !has_start_fields => Ok(None),
         "command" => Err(invalid_row(TABLE, "a command with start fields".to_owned())),
         other => Err(invalid_row(TABLE, format!("kind {other:?}"))),
     }

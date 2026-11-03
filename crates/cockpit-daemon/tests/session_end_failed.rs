@@ -196,6 +196,8 @@ async fn session_left_in(assignment: &str) -> LeftBehind {
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: None,
+            model: None,
+            effort: None,
         },
     )
     .await;
@@ -315,6 +317,8 @@ async fn an_unidentified_restart_retains_its_execution_and_checkout_without_clai
             agent: Some("fake".to_owned()),
             prompt: None,
             clone: Some("stop-537".to_owned()),
+            model: None,
+            effort: None,
         },
     )
     .await;

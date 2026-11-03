@@ -95,6 +95,7 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '2.1.316 (Claude Code)'; exit 0; fi
 if [ "$*" = 'auth status' ]; then exit 2; fi
 printf '%s pid=%s\n' "$TORLEK_SESSION" "$$" >> '@LOG@'
+printf '%s %s\n' "$TORLEK_SESSION" "$*" >> '@LOG@.arguments'
 case "${PWD##*/}" in
   @FLOOD@) exec yes 'cockpit latency fixture: one build log line after another, without pause' ;;
   @STALL@) trap '' TERM; while :; do sleep 1; done ;;
@@ -382,6 +383,18 @@ impl Home {
                     pid: pid.parse().unwrap(),
                 }
             })
+            .collect()
+    }
+
+    /// The words each of `session`'s launches gave `claude`, space-joined, oldest first.
+    pub fn arguments_of(&self, session: &str) -> Vec<String> {
+        let mut log = self.launch_log().into_os_string();
+        log.push(".arguments");
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.strip_prefix(&format!("{session} ")))
+            .map(str::to_owned)
             .collect()
     }
 
@@ -682,6 +695,8 @@ pub fn session_new_command(dir: &Path) -> Command {
         agent: Some("claude".to_owned()),
         prompt: None,
         clone: None,
+        model: None,
+        effort: None,
     }
 }
 

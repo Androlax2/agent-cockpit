@@ -44,8 +44,11 @@ audited with your session and the other one.
   named. An agent that collects messages gets it from its own hook when its turn ends, never
   through its prompt; another has it typed at its next prompt. Refused while it has a dialog
   open. `torlek agent sessions` shows its delivery and why it waits.
-- `torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]` (`start-sessions`):
-  `--agent` names the agent to run when Torlek has more than one; waits for
+- `torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL]
+  [--effort LEVEL]` (`start-sessions`):
+  `--agent` names the agent to run when Torlek has more than one; `--model` and `--effort`
+  are in that agent's own words (Claude Code: `opus`, `claude-opus-5-5`; `low` to `max`),
+  kept for every launch of the session, and refused by an agent that cannot set them; waits for
   the owner's approval like `torlek ask run` unless the grant says otherwise, and is capped
   per hour; `torlek ask run --wait ID` goes on waiting.
 

@@ -434,6 +434,94 @@ async fn an_unconfirmed_start_begins_at_once_until_the_hourly_cap() {
     assert_eq!(start.detail.as_deref(), Some("without confirmation"));
 }
 
+/// #701: the owner reads the model and effort a start asks for, and the approved start's
+/// `claude` receives them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_choosing_its_model_and_effort_shows_them_and_launches_claude_with_them() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let (new_root, _) = home.project(&owner, "plain").await;
+    let coordinator = new_session(&owner, &coordinator_root).await.id;
+    grant(&owner, &coordinator, "start-sessions").await;
+    let started = home.command_agent(
+        &coordinator_root,
+        &cockpit_line(&[
+            "agent",
+            "start",
+            &new_root.display().to_string(),
+            "--agent",
+            "claude",
+            "--model",
+            "sonnet",
+            "--effort",
+            "low",
+        ]),
+    );
+    let request = asked_start(&owner, &coordinator).await;
+    assert!(
+        request
+            .command
+            .ends_with(" --agent 'claude' --model 'sonnet' --effort 'low'"),
+        "{}",
+        request.command
+    );
+
+    approve(&owner, &request).await;
+    let printed = home.agent_output(&coordinator_root, started).await;
+
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+    let session = printed
+        .lines()
+        .find_map(|line| line.strip_prefix("started session "))
+        .unwrap_or_else(|| panic!("{printed}"))
+        .to_owned();
+    home.wait_for_launches(&session, 1).await;
+    let words = home.arguments_of(&session);
+    assert!(
+        words[0].contains("--effort low") && words[0].contains("--model sonnet"),
+        "{words:?}"
+    );
+}
+
+/// #701: an effort Claude Code does not have is refused before the owner is asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_with_an_effort_claude_does_not_have_is_refused_before_the_owner_is_asked() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let (new_root, _) = home.project(&owner, "plain").await;
+    let coordinator = new_session(&owner, &coordinator_root).await.id;
+    grant(&owner, &coordinator, "start-sessions").await;
+
+    let printed = as_coordinator(
+        &home,
+        &coordinator_root,
+        &[
+            "agent",
+            "start",
+            &new_root.display().to_string(),
+            "--agent",
+            "claude",
+            "--effort",
+            "extreme",
+        ],
+    )
+    .await;
+
+    assert!(!printed.ends_with("exit=0\n"), "{printed}");
+    assert!(
+        printed.contains("effort \"extreme\" is not one of low, medium, high, xhigh, max"),
+        "{printed}"
+    );
+    let (runs, _) = queue(&owner).await;
+    assert!(runs.is_empty(), "nothing reaches the owner: {runs:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_cards_show_a_coordinators_grants_and_the_message_it_sent() {
     assert_the_cli_is_built();

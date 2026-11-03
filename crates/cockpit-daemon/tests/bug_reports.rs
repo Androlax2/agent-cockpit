@@ -542,6 +542,8 @@ async fn a_draft_and_its_bundle_carry_no_prompt_or_agent_output() {
                 agent: Some("fake".to_owned()),
                 prompt: Some(PROMPT_CANARY.to_owned()),
                 clone: None,
+                model: None,
+                effort: None,
             },
             GENEROUS,
         )
