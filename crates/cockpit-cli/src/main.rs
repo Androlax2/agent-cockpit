@@ -42,6 +42,7 @@ mod queue;
 mod resources;
 mod sandbox_install;
 mod sessions;
+mod storage;
 mod todo;
 mod tui;
 mod version;
@@ -75,6 +76,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek checkout release CHECKOUT HOLDER
        torlek checkout sweep [--dry-run]
        torlek checkout push CHECKOUT
+       torlek storage
        torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check
        torlek ask guide [--cwd DIR] < GUIDE | --wait ID
        torlek approval list | show ID | decline ID | input ID < LINE
@@ -206,6 +208,9 @@ fn main() -> ExitCode {
                 Ok((command, deadline)) => projects::run(command, deadline),
                 Err(problem) => usage_error(Some(problem)),
             }
+        }
+        [Some("storage"), ..] => {
+            storage::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }
         [Some("session"), ..] => match sessions::parse(&arguments[1..]) {
             Ok(command) => sessions::run(command),

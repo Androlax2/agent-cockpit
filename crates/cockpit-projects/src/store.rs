@@ -120,6 +120,11 @@ pub(crate) struct StoredCheckout {
 }
 
 impl StoredCheckout {
+    /// The existing identity marker's name, for callers checking an already-open `.git`.
+    pub(crate) fn marker_name(&self) -> PathBuf {
+        self.identity.marker(Path::new(""))
+    }
+
     /// Refuses when the working copy on disk is not the recorded incarnation. Reads the
     /// disk off the async workers, since the checkout may sit on a slow mount.
     pub(crate) async fn verify_on_disk(&self) -> Result<(), Error> {
@@ -259,6 +264,20 @@ pub(crate) async fn main_checkout(
 /// Every clone (parallel or review) still live or being removed, by id.
 pub(crate) async fn stored_clones(connection: &Connection) -> Result<Vec<StoredCheckout>, Error> {
     query_checkouts(connection, "c.state <> 'removed' AND c.kind <> 'main'", ()).await
+}
+
+/// A bounded inventory; storage reporting does not load every historical checkout.
+pub(crate) async fn stored_clones_limited(
+    connection: &Connection,
+    limit: i64,
+) -> Result<Vec<StoredCheckout>, Error> {
+    query_checkouts(
+        connection,
+        "c.id IN (SELECT id FROM project_checkouts
+         WHERE state <> 'removed' AND kind <> 'main' ORDER BY id LIMIT ?1)",
+        [limit],
+    )
+    .await
 }
 
 /// Paths of every project root and checkout not yet removed, with their project.

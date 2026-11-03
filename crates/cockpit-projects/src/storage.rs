@@ -1,0 +1,300 @@
+//! Bounded metadata-only observations of registered clone build folders.
+
+use std::os::fd::{AsFd, OwnedFd};
+use std::path::{Component, Path};
+use std::time::{Duration, Instant};
+
+use cockpit_turso::Database;
+use rustix::fs::{self, AtFlags, Dir, FileType, Mode, OFlags};
+use rustix::io::Errno;
+
+use crate::store::{StoredCheckout, stored_clones_limited};
+use crate::{Checkout, CheckoutState, Error, blocking};
+
+const MAX_CLONES: usize = 128;
+const MAX_ENTRIES: usize = 100_000;
+const MAX_DEPTH: usize = 64;
+const SCAN_BUDGET: Duration = Duration::from_secs(5);
+const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+// Ancestors and the identity directory are anchors, never enumerated. Linux can open
+// these without directory-read permission; `DIRECTORY` also rejects symlinks with O_PATH.
+#[cfg(target_os = "linux")]
+const ANCHOR_FLAGS: OFlags = OFlags::PATH
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+#[cfg(not(target_os = "linux"))]
+const ANCHOR_FLAGS: OFlags = DIRECTORY_FLAGS;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetSize {
+    Complete { apparent_bytes: u64 },
+    Missing,
+    Incomplete { apparent_bytes: u64, reason: String },
+    Unavailable { reason: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct CloneStorage {
+    /// Registration and occupancy as observed before the filesystem scan.
+    pub checkout: Checkout,
+    pub measurement: TargetSize,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageReport {
+    pub clones: Vec<CloneStorage>,
+    pub truncated: bool,
+}
+
+/// Reports the literal `target/` of at most 128 registered parallel/review clones.
+/// Filesystem work runs off the executor, without holding a database transaction. This is
+/// not an atomic snapshot, allocated-space measurement, or indication that pruning is safe.
+pub async fn clone_storage(database: &Database) -> Result<StorageReport, Error> {
+    let mut stored = {
+        let read = database.read().await?;
+        stored_clones_limited(&read, (MAX_CLONES + 1) as i64).await?
+    };
+    let truncated = stored.len() > MAX_CLONES;
+    stored.truncate(MAX_CLONES);
+    blocking(move || {
+        let mut budget = Budget::new(MAX_ENTRIES, SCAN_BUDGET);
+        let clones = stored
+            .into_iter()
+            .map(|stored| {
+                let measurement = measure(&stored, &mut budget, &mut || {});
+                CloneStorage {
+                    checkout: stored.checkout,
+                    measurement,
+                }
+            })
+            .collect();
+        Ok(StorageReport { clones, truncated })
+    })
+    .await
+}
+
+struct Budget {
+    remaining: usize,
+    deadline: Instant,
+}
+
+impl Budget {
+    fn new(remaining: usize, duration: Duration) -> Self {
+        Self {
+            remaining,
+            deadline: Instant::now() + duration,
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if Instant::now() >= self.deadline {
+            Err("report time budget reached".to_owned())
+        } else if self.remaining == 0 {
+            Err("report directory-entry limit reached".to_owned())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// The hook lets isolated tests replace directories between inspection and opening them.
+/// Production passes a no-op; every open still enforces its own no-follow boundary.
+fn measure(stored: &StoredCheckout, budget: &mut Budget, between: &mut dyn FnMut()) -> TargetSize {
+    match measure_inner(stored, budget, between) {
+        Ok(size) => size,
+        Err(reason) => TargetSize::Unavailable { reason },
+    }
+}
+
+fn measure_inner(
+    stored: &StoredCheckout,
+    budget: &mut Budget,
+    between: &mut dyn FnMut(),
+) -> Result<TargetSize, String> {
+    budget.check()?;
+    if stored.checkout.state != CheckoutState::Live {
+        return Err("checkout removal is in progress".to_owned());
+    }
+    let root = open_root(&stored.checkout.path)?;
+    verify_marker(stored, &root)?;
+    between();
+    let result = match open_directory(&root, "target") {
+        Ok(target) => {
+            let target_identity = fs::fstat(&target).map_err(reason)?;
+            let mut walk = Walk {
+                budget,
+                bytes: 0,
+                issue: None,
+            };
+            // Keep the original descriptor until after the comparison below, preventing
+            // inode reuse if the target is removed as the walk finishes.
+            let walking = target.try_clone().map_err(|error| error.to_string())?;
+            if let Err(error) = walk.directory(walking, 0, between) {
+                walk.record(error);
+            }
+            // A target swapped while traversing it is not a complete observation of the
+            // current target. Do not follow its replacement while checking.
+            match fs::statat(&root, "target", AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(current) if same_directory(&target_identity, &current) => {}
+                _ => walk.record("target directory changed during measurement".to_owned()),
+            }
+            match walk.issue {
+                Some(reason) => TargetSize::Incomplete {
+                    apparent_bytes: walk.bytes,
+                    reason,
+                },
+                None => TargetSize::Complete {
+                    apparent_bytes: walk.bytes,
+                },
+            }
+        }
+        Err(Errno::NOENT) => TargetSize::Missing,
+        Err(error) => {
+            return Err(format!(
+                "target directory cannot be opened without following links: {error}"
+            ));
+        }
+    };
+    // Re-open from /, one segment at a time: an ancestor replacement cannot redirect this
+    // check. Holding the first descriptor prevents inode reuse from hiding replacement.
+    let current = open_root(&stored.checkout.path)?;
+    verify_marker(stored, &current)?;
+    if !same_directory(
+        &fs::fstat(&root).map_err(reason)?,
+        &fs::fstat(&current).map_err(reason)?,
+    ) {
+        return Err("checkout directory changed during measurement".to_owned());
+    }
+    Ok(result)
+}
+
+fn same_directory(first: &fs::Stat, second: &fs::Stat) -> bool {
+    first.st_dev == second.st_dev
+        && first.st_ino == second.st_ino
+        && FileType::from_raw_mode(second.st_mode).is_dir()
+}
+
+fn open_directory(parent: impl AsFd, name: impl rustix::path::Arg) -> Result<OwnedFd, Errno> {
+    fs::openat(parent, name, DIRECTORY_FLAGS, Mode::empty())
+}
+
+fn open_root(path: &Path) -> Result<OwnedFd, String> {
+    if !path.is_absolute() {
+        return Err("registered checkout path is not absolute".to_owned());
+    }
+    let mut directory = fs::open("/", ANCHOR_FLAGS, Mode::empty())
+        .map_err(|error| format!("open root directory: {error}"))?;
+    for (depth, component) in path.components().enumerate() {
+        if depth > MAX_DEPTH {
+            return Err("checkout path depth limit reached".to_owned());
+        }
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = fs::openat(&directory, name, ANCHOR_FLAGS, Mode::empty())
+                    .map_err(|error| format!("open checkout ancestor: {error}"))?
+            }
+            _ => return Err("registered checkout path is not canonical".to_owned()),
+        }
+    }
+    Ok(directory)
+}
+
+fn verify_marker(stored: &StoredCheckout, root: &OwnedFd) -> Result<(), String> {
+    let git = fs::openat(root, ".git", ANCHOR_FLAGS, Mode::empty())
+        .map_err(|error| format!("open identity directory: {error}"))?;
+    let marker = stored.marker_name();
+    // Even a malformed stored marker must remain one name relative to this descriptor.
+    if marker.components().count() != 1 || marker.file_name() != Some(marker.as_os_str()) {
+        return Err("invalid recorded checkout marker".to_owned());
+    }
+    let stat = fs::statat(&git, &marker, AtFlags::SYMLINK_NOFOLLOW).map_err(reason)?;
+    if !FileType::from_raw_mode(stat.st_mode).is_file() {
+        return Err("checkout identity marker is not a regular file".to_owned());
+    }
+    Ok(())
+}
+
+struct Walk<'a> {
+    budget: &'a mut Budget,
+    bytes: u64,
+    issue: Option<String>,
+}
+
+impl Walk<'_> {
+    fn record(&mut self, reason: String) {
+        self.issue.get_or_insert(reason);
+    }
+
+    fn directory(
+        &mut self,
+        directory: OwnedFd,
+        depth: usize,
+        between: &mut dyn FnMut(),
+    ) -> Result<(), String> {
+        let mut entries = Dir::new(directory).map_err(reason)?;
+        loop {
+            self.budget.check()?;
+            let Some(entry) = entries.read() else { break };
+            self.budget.remaining -= 1;
+            let entry = entry.map_err(reason)?;
+            let name = entry.file_name();
+            if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                continue;
+            }
+            let parent = entries.fd().map_err(reason)?;
+            let stat = match fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => stat,
+                Err(error) => {
+                    self.record(reason(error));
+                    continue;
+                }
+            };
+            match FileType::from_raw_mode(stat.st_mode) {
+                FileType::RegularFile => {
+                    let size =
+                        u64::try_from(stat.st_size).map_err(|_| "negative file size".to_owned())?;
+                    self.bytes = self
+                        .bytes
+                        .checked_add(size)
+                        .ok_or("apparent byte count overflow")?;
+                }
+                FileType::Directory => {
+                    if depth >= MAX_DEPTH {
+                        self.record("directory depth limit reached".to_owned());
+                        continue;
+                    }
+                    between();
+                    match open_directory(parent, name) {
+                        Ok(child) => {
+                            let opened = fs::fstat(&child).map_err(reason)?;
+                            if !same_directory(&stat, &opened) {
+                                self.record("directory changed before opening".to_owned());
+                                continue;
+                            }
+                            if let Err(error) = self.directory(child, depth + 1, between) {
+                                self.record(error);
+                            }
+                        }
+                        Err(error) => self.record(reason(error)),
+                    }
+                }
+                FileType::Symlink => self.record("symbolic links are not followed".to_owned()),
+                _ => self.record("non-regular files are not counted".to_owned()),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn reason(error: Errno) -> String {
+    format!("filesystem measurement failed: {error}")
+}
+
+#[cfg(test)]
+#[path = "storage_tests.rs"]
+mod tests;

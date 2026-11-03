@@ -263,6 +263,7 @@ impl Handler for Routes {
             )),
             (
                 command @ (Command::ProjectAdd { .. }
+                | Command::StorageReport
                 | Command::ProjectList
                 | Command::CheckoutList { .. }
                 | Command::CheckoutClone { .. }
