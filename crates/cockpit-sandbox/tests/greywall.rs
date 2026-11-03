@@ -33,7 +33,7 @@ Platform: linux
 ";
 
 const GREYPROXY_VERSION_OUTPUT: &str = "greyproxy 0.4.5 (linux/amd64)
-commit: 1d1e518c59f130198eb57b3310e2db16f3353901
+commit: 15ad5fbfd582d3d85fce79fec09f5a26bb18323e
 ";
 
 #[test]
@@ -253,7 +253,7 @@ fn detect_reads_both_programs_versions() {
 
     assert_eq!(
         engine.engine(),
-        "greywall 0.3.7-cockpit.1 (a9ccc58), greyproxy 0.4.5 (1d1e518)"
+        "greywall 0.3.7-cockpit.1 (a9ccc58), greyproxy 0.4.5 (15ad5fb)"
     );
     assert!(
         engine
