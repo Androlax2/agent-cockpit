@@ -59,6 +59,11 @@ Their units still point at `/usr/lib/torlek/bin`: stop them with `systemctl --us
 before removing the package. An upgrade replaces the programs in place, and a running daemon
 keeps the old one until it restarts.
 
+`/usr/lib/torlek/bin` is root's, so `torlek --profile next daemon install` (the profile proposed
+beside a legacy Cockpit) installs the unit but skips the `torlek-next` command beside the program,
+and says so. Select that profile with `torlek --profile next` or `TORLEK_PROFILE=next`. Never run
+the install as root to get the link: pacman would not own it.
+
 ## Publication checklist
 
 Each step that downloads, installs or publishes needs its own approval; this list grants none.
