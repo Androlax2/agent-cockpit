@@ -18,20 +18,16 @@
     }
   },
   "greyproxy": {
-    "tag": "v0.4.5-cockpit.1",
-    "commit": "1d1e518c59f130198eb57b3310e2db16f3353901",
+    "tag": "v0.4.5-cockpit.3",
+    "commit": "15ad5fbfd582d3d85fce79fec09f5a26bb18323e",
     "assets": {
       "x86_64-unknown-linux-gnu": {
-        "url": "https://github.com/Androlax2/greyproxy/releases/download/v0.4.5-cockpit.1/greyproxy-v0.4.5-cockpit.1-linux-amd64.tar.gz",
-        "sha256": "88028e88d05d20638d9f80378fc9387f22c5ec07120e91c3fceb6016ecfa7225"
+        "url": "https://github.com/Androlax2/greyproxy/releases/download/v0.4.5-cockpit.3/greyproxy-v0.4.5-cockpit.3-linux-amd64.tar.gz",
+        "sha256": "6ff9050b7f8dd0389c97246641f60ed9636eefde6583d94241587d3742963b40"
       },
       "aarch64-unknown-linux-gnu": {
-        "url": "https://github.com/Androlax2/greyproxy/releases/download/v0.4.5-cockpit.1/greyproxy-v0.4.5-cockpit.1-linux-arm64.tar.gz",
-        "sha256": "7fd0c0a9af61817cb79d4bb506894cb73d3f9333e4ca30f2d4b0bf6ee47fbad4"
-      },
-      "aarch64-apple-darwin": {
-        "url": "https://github.com/Androlax2/greyproxy/releases/download/v0.4.5-cockpit.1/greyproxy-v0.4.5-cockpit.1-darwin-arm64.tar.gz",
-        "sha256": "dcebf05d9ad7b3d688a35653c2f4a63b4c2a6f58c3100ae0322dfa48c855e1d4"
+        "url": "https://github.com/Androlax2/greyproxy/releases/download/v0.4.5-cockpit.3/greyproxy-v0.4.5-cockpit.3-linux-arm64.tar.gz",
+        "sha256": "a757eedac9c4a57ea2318085e1dec082f39dc50dc276f54d202f636f394af35d"
       }
     }
   }

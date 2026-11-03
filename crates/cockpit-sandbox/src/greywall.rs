@@ -14,8 +14,8 @@ use crate::{EndpointKind, FolderMount, Platform, Profile, Refusal, SecretHandlin
 /// An installed binary of another commit is refused.
 pub const PINNED_GREYWALL_COMMIT: &str = "a9ccc58c4e57f7ad7aaf7c2ab3779d71cf485baf";
 
-/// The greyproxy fork build in `engine-pins.json` (v0.4.5-cockpit.1).
-pub const PINNED_GREYPROXY_COMMIT: &str = "1d1e518c59f130198eb57b3310e2db16f3353901";
+/// The greyproxy fork build in `engine-pins.json` (v0.4.5-cockpit.3).
+pub const PINNED_GREYPROXY_COMMIT: &str = "15ad5fbfd582d3d85fce79fec09f5a26bb18323e";
 
 pub const GREYWALL_PROGRAM: &str = "greywall";
 pub const GREYPROXY_PROGRAM: &str = "greyproxy";
@@ -247,7 +247,7 @@ impl Greywall {
         })
     }
 
-    /// `greywall 0.3.7-cockpit.1 (a9ccc58), greyproxy 0.4.5 (1d1e518)`.
+    /// `greywall 0.3.7-cockpit.1 (a9ccc58), greyproxy 0.4.5 (15ad5fb)`.
     pub fn engine(&self) -> String {
         format!(
             "greywall {}, greyproxy {}",

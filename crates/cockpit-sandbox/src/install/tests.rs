@@ -69,7 +69,8 @@ fn fixture(extra: Option<(&str, EntryType, &str)>) -> (tempfile::TempDir, [Pin; 
         archive("greywall", crate::PINNED_GREYWALL_COMMIT, extra),
         archive("greyproxy", crate::PINNED_GREYPROXY_COMMIT, None),
     ];
-    let mut pins = pins_for(host_target().unwrap()).unwrap();
+    // Fake archives use a supported fixture target even on hosts without published assets.
+    let mut pins = pins_for("x86_64-unknown-linux-gnu").unwrap();
     for (pin, bytes) in pins.iter_mut().zip(&assets) {
         pin.sha256 = format!("{:x}", Sha256::digest(bytes));
     }
@@ -201,15 +202,13 @@ fn a_verified_archive_with_the_wrong_commit_is_refused_without_activation() {
 
 #[test]
 fn unsupported_target_and_incomplete_pins_are_typed_refusals() {
-    assert!(matches!(
-        pins_for("x86_64-apple-darwin"),
-        Err(InstallError::UnsupportedTarget(_))
-    ));
-    for target in [
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-        "aarch64-apple-darwin",
-    ] {
+    for target in ["x86_64-apple-darwin", "aarch64-apple-darwin"] {
+        assert!(matches!(
+            pins_for(target),
+            Err(InstallError::UnsupportedTarget(_))
+        ));
+    }
+    for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
         let pins = pins_for(target).unwrap();
         assert_eq!(pins[0].commit, crate::PINNED_GREYWALL_COMMIT);
         assert_eq!(pins[1].commit, crate::PINNED_GREYPROXY_COMMIT);
