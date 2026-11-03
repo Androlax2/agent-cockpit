@@ -4,6 +4,7 @@ mod sign_in;
 
 pub mod hooks;
 mod screen;
+pub mod trust;
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -17,6 +18,7 @@ use std::time::{Duration, Instant};
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Key, LaunchCommand,
     LaunchRequest, Observation, Provenance, Provider, ProviderError, ProviderName, TerminalInput,
+    TrustRequest, WorkspaceTrust,
 };
 
 /// The Claude Code version this adapter's conformance tests pin; capabilities are `tested`
@@ -408,6 +410,28 @@ impl Provider for ClaudeCode {
     /// seconds on 2.1.317, MCP servers included.
     fn reports_at_launch(&self) -> bool {
         self.bridge.is_some()
+    }
+
+    fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
+        let refused = |reason: String| ProviderError { reason };
+        let unexpected = trust::unexpected_settings(request.workspace, request.trusted_checkout)
+            .map_err(refused)?;
+        if !unexpected.is_empty() {
+            let names: Vec<String> = unexpected
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            return Err(refused(format!(
+                "the clone's harness settings differ from {}: {}",
+                request.trusted_checkout.display(),
+                names.join(", ")
+            )));
+        }
+        let config = trust::config_file(request.environment).map_err(refused)?;
+        match trust::record(&config, request.workspace).map_err(refused)? {
+            trust::Recorded::AlreadyTrusted => Ok(WorkspaceTrust::AlreadyTrusted),
+            trust::Recorded::Written => Ok(WorkspaceTrust::Recorded),
+        }
     }
 }
 

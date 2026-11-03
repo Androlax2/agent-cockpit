@@ -274,12 +274,46 @@ pub trait Provider: Send + Sync + 'static {
         false
     }
 
+    /// Records the harness's own trust of `request.workspace` before a launch there, so the
+    /// harness does not stop on its folder-trust dialog before its agent runs (#702). Torlek
+    /// calls it only for a parallel clone it checked may inherit its project's trust; the
+    /// adapter refuses, writing nothing, when the clone brings harness settings the trusted
+    /// checkout lacks or the harness's record cannot be written safely. A refusal does not
+    /// stop the launch: the dialog then shows, and the session waits on the owner. Reads and
+    /// writes files: run it off the async workers. The default keeps no trust.
+    fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
+        let _ = request;
+        Ok(WorkspaceTrust::NotKept)
+    }
+
     /// The agent's activity read from the end of its terminal, for when no event says it
     /// ([`Capability::ScreenReading`]). Never proof that a task completed.
     fn read_screen(&self, screen: &str) -> Option<Observation> {
         let _ = screen;
         None
     }
+}
+
+/// A workspace whose harness trust [`Provider::trust_workspace`] records.
+#[derive(Debug, Clone, Copy)]
+pub struct TrustRequest<'a> {
+    /// The parallel clone's root.
+    pub workspace: &'a Path,
+    /// The project's main checkout, whose trust the clone inherits.
+    pub trusted_checkout: &'a Path,
+    /// The environment the agent launches with, which locates the harness's own files.
+    pub environment: &'a [(OsString, OsString)],
+}
+
+/// What [`Provider::trust_workspace`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceTrust {
+    /// The harness keeps no folder trust this adapter records.
+    NotKept,
+    /// The harness already trusted the workspace.
+    AlreadyTrusted,
+    /// The harness's trust of the workspace was recorded.
+    Recorded,
 }
 
 /// The provider cannot launch the request; `reason` says why, for the owner.

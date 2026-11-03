@@ -109,6 +109,24 @@ impl Git {
         command.output().map_err(Error::io("run git in", dir))
     }
 
+    /// The URL of the checkout at `dir`'s `origin` remote; `None` when it has none.
+    pub fn origin_url(&self, dir: &Path) -> Result<Option<String>, Error> {
+        let output = self.output(
+            dir,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("get-url"),
+                OsStr::new("origin"),
+            ],
+        )?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    }
+
     /// Every `key=value` setting a Git started in `dir` must apply over the configuration:
     /// [`SAFE_CONFIG`], then each program-running driver the configuration names, reset. For
     /// Git this crate does not start, such as an approved command's (#34).
