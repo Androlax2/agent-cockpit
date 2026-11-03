@@ -17,6 +17,22 @@ pub struct ObservedSessionView {
     pub working_dir: String,
     /// The agent's latest report: state, label, doing-now, open question, outcome.
     pub report: Option<SessionReport>,
+    /// The latest message a coordinator queued to it, and how its delivery stands (#703).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_message: Option<InboundMessageView>,
+}
+
+/// What one `agent-inbox` request found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum InboxView {
+    /// The next message, now recorded as received; `message` is its audit entry and `line`
+    /// what the agent reads, its sender named.
+    Message { message: i64, line: String },
+    /// Nothing for the agent now: none is queued, or its agent works.
+    Empty,
+    /// A newer waiter took over; this one stops.
+    Superseded,
 }
 
 /// A coordinator grant a session holds.

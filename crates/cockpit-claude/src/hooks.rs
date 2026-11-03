@@ -17,6 +17,25 @@ pub const HOOK_EVENTS: [&str; 7] = [
     "SessionEnd",
 ];
 
+/// The hook events after which the bridge waits for a message from another session (#703):
+/// each new context and each turn's end. Their inbox hook runs in the background
+/// (`asyncRewake`), so it never holds up the agent.
+pub const INBOX_EVENTS: [&str; 2] = ["SessionStart", "Stop"];
+
+/// The bridge argument, after the `cockpit` program, that makes it wait for the session's
+/// next message instead of reporting the event.
+pub const INBOX_FLAG: &str = "--inbox";
+
+/// The `cockpit` arguments that wait for the session's next message and print it.
+pub const INBOX_ARGUMENTS: [&str; 2] = ["agent", "inbox"];
+
+/// How long Claude Code lets an inbox hook wait, in seconds: as long as a message lives.
+pub const INBOX_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
+
+/// The exit status with which an `asyncRewake` hook wakes the model, its standard error the
+/// model's next input (measured on 2.1.317).
+pub const REWAKE_STATUS: u8 = 2;
+
 /// Notification types that wait for the owner's answer.
 const NEEDS_YOU_NOTIFICATIONS: [&str; 5] = [
     "permission_prompt",

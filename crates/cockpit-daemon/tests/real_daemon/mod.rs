@@ -71,7 +71,9 @@ pub const ONBOARD_PROJECT: &str = "onboard";
 /// (#410): a coordinator the test drives through the real `cockpit`.
 pub const COMMANDED_PROJECT: &str = "commanded";
 /// A project of this name runs an agent that reports [`ASKED_QUESTION`] while it waits at its
-/// prompt, then appends each line typed into its terminal to `inbox.log` in its directory.
+/// prompt, then, as the Claude hook bridge's inbox waiter does, collects each message other
+/// sessions send it with `cockpit agent inbox` and appends it to `inbox.log` in its directory
+/// (#703).
 pub const QUESTION_PROJECT: &str = "question";
 /// What the [`QUESTION_PROJECT`] agent asks.
 pub const ASKED_QUESTION: &str = "Which branch should I base the fix on?";
@@ -122,8 +124,7 @@ case "${PWD##*/}" in
     done ;;
   @QUESTION@) '@COCKPIT@' agent report --state waiting --needs-input '@ASKED_QUESTION_TEXT@' \
       >> '@REPORT_LOG@' 2>&1
-    while IFS= read -r line; do printf '%s\n' "$line" >> inbox.log; done
-    exec sleep 3600 ;;
+    while :; do '@COCKPIT@' agent inbox >> inbox.log 2>> inbox.err || sleep 1; done ;;
   @SESSION_DIR@) IFS=:
     for dir in $FAKE_GREYWALL_WRITABLE; do
       case "$dir" in */sessions/"$TORLEK_SESSION") printf 'written\n' > "$dir/probe" ;; esac

@@ -30,6 +30,8 @@ session, within reports 07 and 17. The TUI line was chosen by Theo.
   (target: the new session). Reads under `observe-sessions` are not audited. The owner reads
   it with `cockpit session grants SESSION`.
 - **Messages go through the `cockpit-messaging` outbox and are typed at the next prompt.**
+  (A session whose provider reports `inbox` collects them instead since #703:
+  `2026-11-04-703-claude-message-inbox.md`.)
   The provider-native delivery is #431. Until then, the daemon queues each message as an
   envelope (producer `coordinator`, effect key `coordinator-message:<audit id>`, never
   redelivered). A delivery loop submits it with `Sessions::submit` as a collaborator's

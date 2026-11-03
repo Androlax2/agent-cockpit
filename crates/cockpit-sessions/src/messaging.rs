@@ -40,6 +40,14 @@ impl Sessions {
         Ok((launch, provider, conversation))
     }
 
+    /// Whether `session`'s agent collects messages from other sessions itself, through its
+    /// bridge's hooks ([`Capability::Inbox`], #703), instead of having them typed at its
+    /// prompt. Refused when its provider is not one this daemon runs.
+    pub fn collects_messages(&self, session: &Session) -> Result<bool, Error> {
+        let provider = self.provider(Some(session.provider.as_str()))?;
+        Ok(provider.capabilities().supports(Capability::Inbox))
+    }
+
     /// Delivers to the named conversation, using terminal input only when the provider
     /// explicitly has no delivery transport. Unconfirmed outcomes must not be retried as
     /// fresh messages. A busy session refuses immediately.

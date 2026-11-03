@@ -36,10 +36,14 @@ pub enum Capability {
     /// Read its activity from its terminal when no event says it
     /// ([`crate::Provider::read_screen`]); a fallback with recorded confidence.
     ScreenReading,
+    /// Its in-sandbox bridge collects messages from other sessions through the agent channel
+    /// and gives each to the model as input of its own, never through the terminal's prompt
+    /// (#703).
+    Inbox,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 13] = [
         Capability::Resume,
         Capability::Submit,
         Capability::Events,
@@ -52,6 +56,7 @@ impl Capability {
         Capability::Compact,
         Capability::RemoteControl,
         Capability::ScreenReading,
+        Capability::Inbox,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -68,6 +73,7 @@ impl Capability {
             Capability::Compact => "compact",
             Capability::RemoteControl => "remote-control",
             Capability::ScreenReading => "screen-reading",
+            Capability::Inbox => "inbox",
         }
     }
 }

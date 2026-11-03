@@ -36,7 +36,7 @@ pub use change_feed::{
     EntityRevision, FeedPosition,
 };
 pub use coordination::{
-    CoordinatorAuditView, CoordinatorGrantView, InboundMessageView, ObservedSessionView,
+    CoordinatorAuditView, CoordinatorGrantView, InboundMessageView, InboxView, ObservedSessionView,
 };
 pub use error::{ErrorCode, ProtocolError, Unblock, UnblockedBy};
 pub use handshake::{

@@ -15,8 +15,8 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
 - **Capabilities with provenance.** Resume, submit, events, outcome, cancel, effort,
   compact, remote control and screen reading are `tested` only when the running Claude Code
   is `CONFORMANCE_VERSION`; on any other or unknown version they are `discovered`
-  (unverified). `events` and `outcome` need the hook bridge: an adapter wired without it
-  subscribes no hooks. Commands, evidence and billing are not reported until their contract
+  (unverified). `events`, `outcome` and `inbox` need the hook bridge: an adapter wired
+  without it subscribes no hooks. Commands, evidence and billing are not reported until their contract
   methods exist.
 - **Launch.** A new conversation runs under a `--session-id` UUID the adapter mints, so it
   is named from the start; a resumed one runs `--resume <id>`. `--remote-control` comes
@@ -43,7 +43,12 @@ Everything specific to Claude Code lives here; the daemon wires it in as a
   `StopFailure` `rate_limit` is `failed`, never `quota-stopped`: Claude Code sends it for a
   spent plan window and a transient 429 alike (#212). A `SessionStart` after a compaction
   reports nothing: an automatic one happens in the middle of a turn.
-- **Terminal actions.** A message is typed then entered at the prompt, queued with Ctrl-X
+- **Inbox (#703).** On `SessionStart` and `Stop`, a second hook runs in the background
+  (`asyncRewake`): `torlek-claude-hook <torlek> --inbox` waits on `torlek agent inbox` for a
+  message from another session and wakes the model with it on standard error, exit status 2,
+  never through the terminal. A newer waiter supersedes an older one, which ends quietly; a
+  failure exits 1. Decided in `docs/decisions/2026-11-04-703-claude-message-inbox.md`.
+- **Terminal actions.** The owner's message is typed then entered at the prompt, queued with Ctrl-X
   Enter during a turn, and refused while a dialog is open or the activity is unknown.
   Cancel presses Escape; compact types `/compact` at the prompt only.
 - **Screen reading** is a fallback with recorded confidence (report 05): a permission dialog

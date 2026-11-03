@@ -216,14 +216,7 @@ pub async fn claim_due(
     now: i64,
     limit: usize,
 ) -> Result<Vec<Claim>, Error> {
-    write
-        .execute(
-            "UPDATE messaging_envelopes SET state = 'expired',
-                 note = 'expired before it could be delivered', updated_at = ?1
-             WHERE state = 'queued' AND expires_at IS NOT NULL AND expires_at <= ?1",
-            [now],
-        )
-        .await?;
+    expire_stale(write, now).await?;
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let due = envelopes_where(
         write,
@@ -233,25 +226,69 @@ pub async fn claim_due(
     .await?;
     let mut claims = Vec::with_capacity(due.len());
     for envelope in due {
-        let attempt = envelope.attempts + 1;
-        write
-            .execute(
-                "UPDATE messaging_envelopes SET state = 'submitting', attempts = ?2,
-                     updated_at = ?3
-                 WHERE id = ?1",
-                (envelope.id.0, i64::from(attempt), now),
-            )
-            .await?;
-        claims.push(Claim {
-            id: envelope.id,
-            attempt,
-            effect_key: envelope.effect_key,
-            producer: envelope.producer,
-            destination: envelope.destination,
-            payload: envelope.payload,
-        });
+        claims.push(claim(write, envelope, now).await?);
     }
     Ok(claims)
+}
+
+/// Marks queued envelopes past their expiry `expired`, then takes the oldest of `producer`'s
+/// due envelopes to `destination`, for a receiver that collects its own (#703). The caller
+/// records the outcome in the same transaction, so nothing is left `submitting`.
+pub async fn claim_next_for(
+    write: &WriteTransaction<'_>,
+    producer: &str,
+    destination: &str,
+    now: i64,
+) -> Result<Option<Claim>, Error> {
+    expire_stale(write, now).await?;
+    let next = envelopes_where(
+        write,
+        "state = 'queued' AND due_at <= ?1 AND producer = ?2 AND destination = ?3
+         ORDER BY id LIMIT 1",
+        (now, producer, destination),
+    )
+    .await?
+    .pop();
+    match next {
+        Some(envelope) => Ok(Some(claim(write, envelope, now).await?)),
+        None => Ok(None),
+    }
+}
+
+async fn expire_stale(write: &WriteTransaction<'_>, now: i64) -> Result<(), Error> {
+    write
+        .execute(
+            "UPDATE messaging_envelopes SET state = 'expired',
+                 note = 'expired before it could be delivered', updated_at = ?1
+             WHERE state = 'queued' AND expires_at IS NOT NULL AND expires_at <= ?1",
+            [now],
+        )
+        .await?;
+    Ok(())
+}
+
+async fn claim(
+    write: &WriteTransaction<'_>,
+    envelope: StoredEnvelope,
+    now: i64,
+) -> Result<Claim, Error> {
+    let attempt = envelope.attempts + 1;
+    write
+        .execute(
+            "UPDATE messaging_envelopes SET state = 'submitting', attempts = ?2,
+                 updated_at = ?3
+             WHERE id = ?1",
+            (envelope.id.0, i64::from(attempt), now),
+        )
+        .await?;
+    Ok(Claim {
+        id: envelope.id,
+        attempt,
+        effect_key: envelope.effect_key,
+        producer: envelope.producer,
+        destination: envelope.destination,
+        payload: envelope.payload,
+    })
 }
 
 /// What a delivery attempt observed.
@@ -581,6 +618,24 @@ pub async fn has_earlier_queued(connection: &Connection, claim: &Claim) -> Resul
                 claim.destination.as_str(),
                 claim.id.0,
             ),
+        )
+        .await?;
+    Ok(rows.next().await?.is_some())
+}
+
+/// Whether `producer` has an envelope to `destination` still `queued`: a receiver that
+/// collects its own asks on a read connection before taking the writer (#703).
+pub async fn has_queued_for(
+    connection: &Connection,
+    producer: &str,
+    destination: &str,
+) -> Result<bool, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT 1 FROM messaging_envelopes
+             WHERE producer = ?1 AND destination = ?2 AND state = 'queued'
+             LIMIT 1",
+            (producer, destination),
         )
         .await?;
     Ok(rows.next().await?.is_some())

@@ -177,6 +177,14 @@ impl Agent {
         }
     }
 
+    /// Opens a new connection in place of a closed one, such as after a daemon restart.
+    pub(crate) fn reconnect(&mut self) -> Result<(), ClientError> {
+        self.connection = self
+            .runtime
+            .block_on(Connection::open(&self.socket, DEADLINE))?;
+        Ok(())
+    }
+
     pub(crate) fn request(&self, command: Command) -> Result<Reply, ClientError> {
         self.request_within(command, DEADLINE)
     }

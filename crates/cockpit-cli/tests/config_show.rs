@@ -545,6 +545,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   torlek agent reports\n       \
                   torlek agent sessions [--watch]\n       \
                   torlek agent message SESSION TEXT\n       \
+                  torlek agent inbox\n       \
                   torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]\n       \
                   torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] \
                  [--component NAME] [--steps TEXT] [--requested-by-owner]\n       \

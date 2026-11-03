@@ -1,7 +1,8 @@
 //! `cockpit agent sessions|message|start`: a coordinator session observes, messages and
 //! starts other sessions on the agent socket, under the grants the owner gave it with
 //! `cockpit session grant` (#410). The daemon identifies the sender and refuses each verb
-//! without its grant.
+//! without its grant. `cockpit agent inbox` is the other end: a session's hook waits there
+//! for the next message sent to it (#703).
 //!
 //! Exit codes follow `cockpit ask run`: a start waiting for the owner exits 124 when the wait
 //! ends first (`cockpit ask run --wait ID` goes on), 125 when declined, 126 when the daemon
@@ -11,13 +12,16 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use cockpit_protocol::{Command, ObservedSessionView, Reply};
+use cockpit_client::ClientError;
+use cockpit_protocol::{Command, InboxView, ObservedSessionView, Reply};
 
 use crate::ask::Agent;
 use crate::daemon::{absolute_dir, utf8_words};
 
 /// How often `--watch` reads the sessions again.
 const WATCH_EVERY: Duration = Duration::from_secs(2);
+/// How often `agent inbox` asks again while nothing is handed over.
+const INBOX_EVERY: Duration = Duration::from_secs(2);
 /// A start launches an agent, which can take longer than a request usually may.
 const START_DEADLINE: Duration = Duration::from_secs(120);
 
@@ -54,7 +58,8 @@ pub(crate) fn sessions(arguments: &[OsString]) -> Result<ExitCode, String> {
     }
 }
 
-/// `cockpit agent message SESSION TEXT`: queued now, typed at the session's next prompt.
+/// `cockpit agent message SESSION TEXT`: queued now, then collected by the session's hook or
+/// typed at its next prompt, as its provider delivers (#703).
 pub(crate) fn message(arguments: &[OsString]) -> Result<ExitCode, String> {
     let (session, text) = match utf8_words(arguments)?.as_slice() {
         [session, text] => ((*session).to_owned(), (*text).to_owned()),
@@ -74,12 +79,21 @@ pub(crate) fn message(arguments: &[OsString]) -> Result<ExitCode, String> {
                 session,
                 message,
                 waits,
+                collected,
             }) => {
-                match waits {
-                    Some(why) => outln!(
+                match (collected, waits) {
+                    (true, Some(why)) => outln!(
+                        "queued message {message} to session {session}; held: {why}; \
+                         `torlek agent sessions` shows its delivery"
+                    ),
+                    (true, None) => outln!(
+                        "queued message {message} to session {session}; its hook hands it to \
+                         the agent within seconds; `torlek agent sessions` shows its delivery"
+                    ),
+                    (false, Some(why)) => outln!(
                         "queued message {message} to session {session}; it is not typed yet: {why}"
                     ),
-                    None => outln!(
+                    (false, None) => outln!(
                         "queued message {message} to session {session}; it is typed once its \
                          agent waits at its prompt; if it cannot be typed, its card says why"
                     ),
@@ -89,6 +103,52 @@ pub(crate) fn message(arguments: &[OsString]) -> Result<ExitCode, String> {
             other => agent.failed(other),
         },
     )
+}
+
+/// `cockpit agent inbox`: waits for the next message another session sent to this one and
+/// prints it, one line, once the daemon recorded it as received; prints nothing when a newer
+/// `agent inbox` of the same session takes over. Run by the session's hook bridge (#703).
+/// A lost connection, such as a daemon restart, is opened again: an idle agent has no other
+/// waiter until its next turn ends.
+pub(crate) fn inbox(arguments: &[OsString]) -> Result<ExitCode, String> {
+    if !utf8_words(arguments)?.is_empty() {
+        return Err("agent inbox takes no arguments".to_owned());
+    }
+    let mut agent = match Agent::connect() {
+        Ok(agent) => agent,
+        Err(code) => return Ok(code),
+    };
+    let mut waiter = None;
+    loop {
+        let asked = agent.request(Command::AgentInbox {
+            launch_token: crate::agent::launch_token(),
+            waiter,
+        });
+        let (current, inbox) = match asked {
+            Ok(Reply::AgentInbox { waiter, inbox }) => (waiter, inbox),
+            Err(
+                ClientError::Closed(_)
+                | ClientError::Connect { .. }
+                | ClientError::DeadlineExceeded,
+            ) => {
+                std::thread::sleep(INBOX_EVERY);
+                // Still unreachable: asked again on the next round.
+                let _ = agent.reconnect();
+                continue;
+            }
+            other => return Ok(agent.failed(other)),
+        };
+        match inbox {
+            InboxView::Message { line, .. } => {
+                outln!("{line}");
+                return Ok(ExitCode::SUCCESS);
+            }
+            InboxView::Superseded => return Ok(ExitCode::SUCCESS),
+            InboxView::Empty => {}
+        }
+        waiter = Some(current);
+        std::thread::sleep(INBOX_EVERY);
+    }
 }
 
 /// `cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]`: starts at once when the grant
@@ -162,7 +222,8 @@ fn changes(shown: &[(String, String)], listed: &[(String, String)]) -> String {
 }
 
 /// `id  state  agent  agent-state  working-dir` then the report's `label=… doing=…
-/// needs-input=…` (or `dialog=…`), tab-separated before the report.
+/// needs-input=…` (or `dialog=…`) and the latest message this session queued to it,
+/// `message-from=… message=<delivery> message-note=…` (#703), tab-separated.
 fn session_line(session: &ObservedSessionView) -> String {
     let report = session.report.as_ref();
     let agent_state = report
@@ -185,6 +246,15 @@ fn session_line(session: &ObservedSessionView) -> String {
             if let Some(value) = value {
                 line.push_str(&format!("\t{key}={value:?}"));
             }
+        }
+    }
+    if let Some(message) = &session.inbound_message {
+        line.push_str(&format!(
+            "\tmessage-from={}\tmessage={}",
+            message.from, message.delivery
+        ));
+        if let Some(note) = &message.note {
+            line.push_str(&format!("\tmessage-note={note:?}"));
         }
     }
     line.push('\n');
