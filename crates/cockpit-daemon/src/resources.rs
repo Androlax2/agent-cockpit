@@ -35,6 +35,8 @@ pub(crate) struct Resources {
     /// Held from a profile's commit until its limits are applied, so two concurrent changes
     /// cannot leave running work under the limits of the profile that lost.
     pub(crate) profile_change: Arc<tokio::sync::Mutex<()>>,
+    /// Wakes the scheduling pass that rewrites what `queue explain` says (#646).
+    pub(crate) queue_changed: Arc<tokio::sync::Notify>,
 }
 
 impl Resources {
@@ -76,6 +78,7 @@ pub(crate) fn route(command: Command, resources: Resources) -> Route {
             let write = resources.database.write().await?;
             cockpit_resource_admission::set_queue_paused(&write, paused, now()).await?;
             write.commit().await?;
+            resources.queue_changed.notify_one();
             status(&resources).await
         }),
         Command::ResourceCheck {

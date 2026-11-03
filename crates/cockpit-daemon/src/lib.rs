@@ -149,6 +149,8 @@ pub struct Capabilities {
     pub sign_in_providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
     /// Notified when a coordinator queues a message, to wake its delivery (#410).
     pub messages_queued: Arc<tokio::sync::Notify>,
+    /// Notified when the owner pauses or resumes the queue, to wake a scheduling pass (#646).
+    pub queue_changed: Arc<tokio::sync::Notify>,
     /// What every bug report draft carries about this daemon (#427).
     pub bug_report_facts: Arc<cockpit_bug_reports::Facts>,
     /// `$XDG_STATE_HOME/cockpit`, where bug report bundles are written beside the logs.
@@ -349,6 +351,7 @@ impl Instance {
         }
         let limits = options.limits;
         let messages_queued = Arc::new(tokio::sync::Notify::new());
+        let queue_changed = Arc::new(tokio::sync::Notify::new());
         let delivered = coordination::Context {
             database: Arc::clone(&database),
             sessions: Arc::clone(&sessions),
@@ -398,6 +401,7 @@ impl Instance {
                 provider_facts,
                 sign_in_providers,
                 messages_queued,
+                queue_changed: Arc::clone(&queue_changed),
                 bug_report_facts: Arc::clone(&bug_report_facts),
                 state_dir: options.state_dir.clone(),
             }),
@@ -422,6 +426,7 @@ impl Instance {
             manager,
             provider_capabilities: Arc::new(provider_capabilities),
             settings: wiring.scheduling,
+            queue_changed,
         };
         let dispatching = tokio::spawn(supervisor::supervise(
             "scheduling",

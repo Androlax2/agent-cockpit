@@ -1,4 +1,5 @@
-//! Runs `cockpit-scheduling`'s pass (#43): every `interval` and on `cockpit queue dispatch`,
+//! Runs `cockpit-scheduling`'s pass (#43): every `interval`, on `cockpit queue dispatch` and
+//! once the owner pauses or resumes the queue,
 //! over the sessions as this daemon sees them, then types each placement to its session's
 //! agent (#385), and answers `cockpit queue explain` from the records the last pass wrote.
 //! This file gathers the inputs, delivers and maps to the wire; the rules live in the
@@ -34,6 +35,9 @@ pub(crate) struct Context {
     pub(crate) manager: Arc<Manager>,
     pub(crate) provider_capabilities: Arc<BTreeMap<String, Capabilities>>,
     pub(crate) settings: cockpit_scheduling::Settings,
+    /// Wakes the periodic pass early: `queue explain` answers from the last pass's records,
+    /// which a pause or resume makes wrong until the next one (#646).
+    pub(crate) queue_changed: Arc<tokio::sync::Notify>,
 }
 
 /// The route for a queue command; `routes.rs` sends only the owner's here. Both are small
@@ -69,13 +73,16 @@ pub(crate) fn route(command: Command, context: Context) -> Route {
     }
 }
 
-/// Runs a pass every `settings.interval`, for as long as the daemon runs. A failed pass is
-/// logged and the next one tries again.
+/// Runs a pass every `settings.interval` and whenever the queue is paused or resumed, for as
+/// long as the daemon runs. A failed pass is logged and the next one tries again.
 pub(crate) async fn dispatch_forever(context: Context) {
     let mut ticks = tokio::time::interval(context.settings.interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        ticks.tick().await;
+        tokio::select! {
+            _ = ticks.tick() => {}
+            () = context.queue_changed.notified() => {}
+        }
         if let Err(Failed(error)) = pass(&context).await {
             tracing::error!(error = %error.message, "the scheduling pass failed");
         }
