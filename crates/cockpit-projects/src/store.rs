@@ -16,9 +16,10 @@ use crate::{
 /// working copy's `.git` directory: a copy replaced outside Cockpit at the same path lacks it.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "projects",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE projects (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE projects (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE CHECK (name <> ''),
                 root TEXT NOT NULL UNIQUE CHECK (root <> ''),
@@ -46,7 +47,9 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
                 holder TEXT NOT NULL CHECK (holder <> ''),
                 claimed_at INTEGER NOT NULL
             );",
-    }],
+        },
+        crate::target_prune::MIGRATION,
+    ],
 };
 
 /// A random marker file Cockpit writes into a working copy's `.git` directory when it records
@@ -280,6 +283,16 @@ pub(crate) async fn stored_clones_limited(
     .await
 }
 
+/// One bounded page for rotating owner-policy maintenance, never main checkouts.
+pub async fn target_prune_candidates(
+    connection: &Connection,
+    after: CheckoutId,
+) -> Result<Vec<Checkout>, Error> {
+    Ok(query_checkouts(connection,
+        "c.id IN (SELECT id FROM project_checkouts WHERE state='live' AND kind<>'main' AND id>?1 ORDER BY id LIMIT 128)",
+        [after.0]).await?.into_iter().map(|stored| stored.checkout).collect())
+}
+
 /// Paths of every project root and checkout not yet removed, with their project.
 pub(crate) async fn occupied_paths(
     connection: &Connection,
@@ -400,6 +413,7 @@ pub async fn claim(
     id: CheckoutId,
     holder: &Holder,
 ) -> Result<Checkout, Error> {
+    crate::target_prune::require_checkout_available(write, id).await?;
     let stored = stored_checkout(write, id).await?;
     let mut checkout = stored.checkout.clone();
     if checkout.state != CheckoutState::Live {
@@ -460,7 +474,9 @@ pub(crate) async fn mark_removing(
         .execute(
             "UPDATE project_checkouts SET state = 'removing'
              WHERE id = ?1 AND state = 'live'
-               AND NOT EXISTS (SELECT 1 FROM checkout_occupancy WHERE checkout_id = ?1)",
+               AND NOT EXISTS (SELECT 1 FROM checkout_occupancy WHERE checkout_id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM project_target_prune_guards g
+                   JOIN project_target_prunes p ON p.id = g.operation WHERE p.checkout_id = ?1)",
             [id.0],
         )
         .await?;

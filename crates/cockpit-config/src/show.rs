@@ -56,6 +56,45 @@ pub fn render(config: &EffectiveConfig) -> String {
         .to_string(),
         &config.trusted_projects.source,
     ));
+    let storage = &config.storage;
+    lines.push(line(
+        "storage.target_prune_automatic",
+        &storage.automatic.value.to_string(),
+        &storage.automatic.source,
+    ));
+    lines.push(line(
+        "storage.target_prune_projects",
+        &Value::Array(
+            storage
+                .projects
+                .value
+                .iter()
+                .cloned()
+                .map(Value::from)
+                .collect(),
+        )
+        .to_string(),
+        &storage.projects.source,
+    ));
+    lines.push(line(
+        "storage.target_prune_confirm_above_mib",
+        &storage.confirm_above_mib.value.to_string(),
+        &storage.confirm_above_mib.source,
+    ));
+    lines.push(line(
+        "storage.target_prune_interval_minutes",
+        &storage.interval_minutes.value.to_string(),
+        &storage.interval_minutes.source,
+    ));
+    lines.push(line(
+        "storage.target_prune_base_ref",
+        &storage
+            .base_ref
+            .value
+            .as_ref()
+            .map_or(UNSET.to_owned(), |v| Value::from(v.as_str()).to_string()),
+        &storage.base_ref.source,
+    ));
     lines.push(line(
         "workflow.preset",
         &config

@@ -362,6 +362,22 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
     let artifacts = artifacts?;
     let git_config = git_config.map_err(|error| internal(&error))?;
     let write = context.database.write().await?;
+    cockpit_projects::require_execution_start_allowed(&write)
+        .await
+        .map_err(|error| {
+            Failed(ProtocolError::new(
+                crate::projects::error_code(&error),
+                error.to_string(),
+            ))
+        })?;
+    cockpit_projects::require_working_directory_available(&write, &target.path)
+        .await
+        .map_err(|error| {
+            Failed(ProtocolError::new(
+                crate::projects::error_code(&error),
+                error.to_string(),
+            ))
+        })?;
     let execution = context
         .processes
         .reserve(&write, context.database.epoch())

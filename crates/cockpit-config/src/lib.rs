@@ -10,6 +10,8 @@ mod layout;
 mod profile;
 mod show;
 mod start_files;
+mod storage;
+pub use storage::StorageSettings;
 
 use std::fmt;
 use std::io::ErrorKind;
@@ -118,6 +120,7 @@ pub struct ConfigFile {
 
 #[derive(Clone, Debug)]
 pub struct EffectiveConfig {
+    pub storage: StorageSettings,
     pub layout: Layout,
     pub user_file: ConfigFile,
     pub project_file: Option<ConfigFile>,
@@ -314,6 +317,7 @@ impl std::error::Error for ConfigError {}
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsFile {
+    storage: Option<Spanned<storage::StorageTable>>,
     projects: Option<Spanned<ProjectsTable>>,
     workflow: Option<WorkflowTable>,
     start_files: Option<Spanned<Vec<Spanned<StartFileEntry>>>>,
@@ -472,6 +476,7 @@ pub fn load(
     }
 
     Ok(EffectiveConfig {
+        storage: storage::settings(&layers)?,
         layout,
         user_file,
         project_file,
@@ -534,6 +539,7 @@ fn read_layer(
 fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
     // Exhaustive on purpose: a new setting must be classified here as owner or describing.
     let SettingsFile {
+        storage,
         projects,
         start_files,
         tasks,
@@ -545,6 +551,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         needs: _,
         results: _,
     } = &layer.settings;
+    if let Some(storage) = storage {
+        return Err(ConfigError::OwnerOnly {
+            key: "storage",
+            source: layer.source_at(storage.span()),
+        });
+    }
     if let Some(tasks) = tasks {
         return Err(ConfigError::OwnerOnly {
             key: "tasks",

@@ -22,7 +22,8 @@ the capability crates whose verbs must work without the daemon, listed in
 | `torlek checkout clone PROJECT BRANCH`, `torlek checkout review PROJECT PULL_REQUEST` | no | `cockpit-projects` |
 | `torlek checkout claim CHECKOUT HOLDER`, `torlek checkout release CHECKOUT HOLDER` | no | `cockpit-projects` |
 | `torlek checkout sweep [--dry-run]`, `torlek checkout push CHECKOUT` | no | `cockpit-projects` |
-| `torlek storage`: registered clone `target/` apparent bytes; read-only, owner-only; exits 1 for incomplete, unavailable or truncated results; no prune verb | no | `cockpit-projects` |
+| `torlek storage`: registered clone `target/` apparent bytes; read-only, owner-only; exits 1 for incomplete, unavailable or truncated results | no | `cockpit-projects` |
+| `torlek storage prune`: preview/prepare, explicitly confirm an immutable plan, inspect its status, or abandon inactive cleanup while retaining all files; Linux mount proof and owner policy required; no whole-clone cleanup | no | `cockpit-projects` |
 | `torlek ask run [--cwd DIR] [--no-wait] --reason TEXT COMMAND`, `--wait ID`, `--check` (agent socket) | no | `cockpit-approvals` |
 | `torlek ask guide [--cwd DIR]` (steps on standard input), `--wait ID` (agent socket) | no | `cockpit-approvals` |
 | `torlek approval list`, `show ID`, `approve ID --revision R --digest D`, `decline ID`, `edit ID --revision R COMMAND`, `input ID` (the line typed comes from standard input) | no | `cockpit-approvals` |

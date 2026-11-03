@@ -22,6 +22,7 @@ mod server;
 mod session_feed;
 mod session_sockets;
 mod sessions;
+mod storage;
 mod supervisor;
 mod tasks;
 mod verification;
@@ -118,6 +119,7 @@ fn owner_session_settings(
 /// The capabilities a started daemon serves, for the [`Handler`] its caller builds.
 #[derive(Clone)]
 pub struct Capabilities {
+    pub(crate) storage: storage::Context,
     pub database: Arc<cockpit_turso::Database>,
     pub git: cockpit_projects::Git,
     pub sessions: Arc<cockpit_sessions::Sessions>,
@@ -167,6 +169,8 @@ pub struct Daemon {
     dispatching: tokio::task::JoinHandle<()>,
     delivering: tokio::task::JoinHandle<()>,
     detecting: tokio::task::JoinHandle<()>,
+    pruning: tokio::task::JoinHandle<()>,
+    prune_stop: Arc<std::sync::atomic::AtomicBool>,
     _database: Arc<cockpit_turso::Database>,
     _instance: Instance,
 }
@@ -228,6 +232,19 @@ impl Instance {
         let run_settings = Arc::new(wiring.run_settings.clone());
         let runner = cockpit_approvals::Runner::new(wiring.run_settings, processes.clone());
         reconcile(&database, &processes, &runner).await?;
+        {
+            let write = database.write().await?;
+            cockpit_projects::recover_target_prunes(&write)
+                .await
+                .map_err(StartError::Storage)?;
+            write.commit().await?;
+        }
+        let storage = storage::Context {
+            database: Arc::clone(&database),
+            git: wiring.git.clone(),
+            policy: Arc::new(storage::policy(wiring.environment.clone()).await?),
+            stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
         let admission = Arc::new(
             cockpit_resource_admission::Backend::detect(
                 cockpit_resource_admission::HostTools::from_host(
@@ -354,6 +371,7 @@ impl Instance {
                 faults.clone(),
             ),
             handler: routes(Capabilities {
+                storage: storage.clone(),
                 database: Arc::clone(&database),
                 git: wiring.git,
                 sessions: Arc::clone(&sessions),
@@ -443,6 +461,13 @@ impl Instance {
             },
         ));
         let accepting = accept(&listener, &shared, server::Socket::HostOnly, &faults);
+        let storage_shared = Arc::clone(&shared);
+        let prune_stop = Arc::clone(&storage.stopping);
+        let pruning = tokio::spawn(supervisor::supervise(
+            "target-pruning",
+            faults.clone(),
+            move || storage::maintain_forever(storage.clone(), Arc::clone(&storage_shared)),
+        ));
         let accepting_agents = accept(&agent_listener, &shared, server::Socket::Agent, &faults);
         tracing::info!(
             socket = %socket_path.display(),
@@ -462,6 +487,8 @@ impl Instance {
             dispatching,
             delivering,
             detecting,
+            pruning,
+            prune_stop,
             _database: database,
             _instance: self,
         })
@@ -572,6 +599,8 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
+        self.prune_stop
+            .store(true, std::sync::atomic::Ordering::Release);
         self.accepting.abort();
         self.accepting_agents.abort();
         self.ticking.abort();
@@ -582,6 +611,7 @@ impl Drop for Daemon {
         self.dispatching.abort();
         self.delivering.abort();
         self.detecting.abort();
+        self.pruning.abort();
         bug_reports::mark_stopped(&self._instance.options.state_dir);
     }
 }

@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cockpit_projects::{
-    Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Git, Holder, Kept, TargetSize, Trust,
+    Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Git, Holder, Kept, Trust,
 };
 use cockpit_protocol::{
     CheckoutKindView, CheckoutView, CloneStorageView, Command, ErrorCode, KeptCheckout, KeptReason,
-    Outcome, ProjectView, Reply, TargetSizeView, TrustView,
+    Outcome, ProjectView, Reply, TrustView,
 };
 use cockpit_turso::Database;
 
@@ -45,22 +45,7 @@ pub(crate) fn route(
                                 .checkout
                                 .occupancy
                                 .map(|occupancy| occupancy.holder.to_string()),
-                            measurement: match clone.measurement {
-                                TargetSize::Complete { apparent_bytes } => {
-                                    TargetSizeView::Complete { apparent_bytes }
-                                }
-                                TargetSize::Missing => TargetSizeView::Missing,
-                                TargetSize::Incomplete {
-                                    apparent_bytes,
-                                    reason,
-                                } => TargetSizeView::Incomplete {
-                                    apparent_bytes,
-                                    reason,
-                                },
-                                TargetSize::Unavailable { reason } => {
-                                    TargetSizeView::Unavailable { reason }
-                                }
-                            },
+                            measurement: crate::storage::measurement(clone.measurement),
                         })
                         .collect(),
                     truncated: report.truncated,
@@ -234,7 +219,7 @@ pub(crate) fn error_code(error: &Error) -> ErrorCode {
         | Error::Occupied { .. }
         | Error::NotOccupant { .. }
         | Error::BeingRemoved { .. } => ErrorCode::Conflict,
-        Error::Replaced { .. } => ErrorCode::StaleRevision,
+        Error::Replaced { .. } | Error::StalePrune { .. } => ErrorCode::StaleRevision,
         Error::Refused { .. } => ErrorCode::Refused,
         _ => ErrorCode::Internal,
     }

@@ -30,6 +30,8 @@ pub enum StartError {
     Reconcile(cockpit_processes::Error),
     /// Ending the runs a stopped daemon left approved or running failed.
     Approvals(cockpit_approvals::Error),
+    /// Recovering durable target-cleanup guards failed before session restore.
+    Storage(cockpit_projects::Error),
     /// Settling the deliveries a stopped daemon left in flight failed.
     Messaging(cockpit_messaging::Error),
     /// Cockpit's tmux server could not be set up although tmux runs.
@@ -79,6 +81,7 @@ impl fmt::Display for StartError {
             Self::Database(error) => write!(formatter, "state database: {error}"),
             Self::Reconcile(error) => write!(formatter, "reconciling executions: {error}"),
             Self::Approvals(error) => write!(formatter, "reconciling approved runs: {error}"),
+            Self::Storage(error) => write!(formatter, "reconciling target cleanup: {error}"),
             Self::Messaging(error) => write!(formatter, "reconciling deliveries: {error}"),
             Self::Tmux(error) => write!(formatter, "tmux: {error}"),
             Self::Restore(error) => write!(formatter, "restoring sessions: {error}"),

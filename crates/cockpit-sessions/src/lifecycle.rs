@@ -1399,6 +1399,8 @@ impl Sessions {
         // with it, so a launch the database names always says how its agent ran.
         let (token, execution) = {
             let write = self.database.write().await?;
+            cockpit_projects::require_execution_start_allowed(&write).await?;
+            cockpit_projects::require_checkout_available(&write, session.checkout).await?;
             let token = cockpit_agent_channel::mint(&write, &channel_session).await?;
             grant_self_permissions(&write, &channel_session).await?;
             let execution = self

@@ -314,6 +314,8 @@ pub(crate) async fn insert_session(
     write: &WriteTransaction<'_>,
     new: &NewSession<'_>,
 ) -> Result<(), Error> {
+    cockpit_projects::require_execution_start_allowed(write).await?;
+    cockpit_projects::require_checkout_available(write, new.checkout).await?;
     let at = now();
     write
         .execute(
@@ -366,7 +368,13 @@ pub(crate) async fn transition(
     reason: Option<&str>,
     operation: &'static str,
 ) -> Result<Session, Error> {
+    if to == SessionState::Launching {
+        cockpit_projects::require_execution_start_allowed(write).await?;
+    }
     let current = session(write, id).await?;
+    if to == SessionState::Launching {
+        cockpit_projects::require_checkout_available(write, current.checkout).await?;
+    }
     if !from.contains(&current.state) {
         return Err(Error::WrongState {
             session: id.clone(),
@@ -726,4 +734,20 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         working_launch_order,
         restart_pending,
     })
+}
+
+/// Bounded current lifecycle evidence on the maintenance reservation's own connection.
+/// A full sentinel page is uncertainty, never proof that omitted sessions ended.
+pub async fn maintenance_sessions(connection: &Connection) -> Result<Vec<Session>, Error> {
+    let mut rows = connection
+        .query(
+            &format!("SELECT {SESSION_COLUMNS} FROM {SESSION_FROM} ORDER BY s.id LIMIT 4097"),
+            (),
+        )
+        .await?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.next().await? {
+        result.push(session_from_row(&row)?);
+    }
+    Ok(result)
 }

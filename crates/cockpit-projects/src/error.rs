@@ -65,6 +65,10 @@ pub enum Error {
     Refused {
         reason: String,
     },
+    /// An owner decision no longer names the current observed target.
+    StalePrune {
+        reason: String,
+    },
     /// Git ran and failed.
     Git {
         arguments: Vec<String>,
@@ -175,7 +179,7 @@ impl fmt::Display for Error {
                  it is not the recorded incarnation",
                 path.display()
             ),
-            Error::Refused { reason } => formatter.write_str(reason),
+            Error::Refused { reason } | Error::StalePrune { reason } => formatter.write_str(reason),
             Error::Git {
                 arguments,
                 status,
