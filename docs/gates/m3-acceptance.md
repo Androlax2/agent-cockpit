@@ -9,6 +9,14 @@ Theo's [2026-11-02 decision](../decisions/2026-11-02-568-alpha-platform-scope.md
 
 The required onboarding matrix is Linux/WSL2 × Docker present/absent: **four cells**. The two macOS cells are deferred. Linux/WSL2 sandbox enforcement and repeated launches, two-OS-user isolation, provider conformance and live round trips, context measurement, diagnostics, coexistence and Theo/volunteer observations remain required unless separately deferred in writing. Historical results below retain their original platforms and outcomes; they are not current support promises. Ordinary repository-required development checks are unaffected.
 
+## Acceptance and publication order
+
+The coordinator's 2026-11-03 source-order clarification applies [#97's explicit staged-before/public-after policy](https://github.com/Androlax2/agent-cockpit/issues/97) to this guide. It corrects the stale requirement to publish before the #137/#52 walk; it grants no release or live-operation approval and records no completed acceptance.
+
+1. **Before tagging/publication:** use the exact approved staged candidate for the required installation, provider, sandbox and guide observations. All prerequisites below, the four onboarding cells, two-OS-user isolation and Theo's actual readiness-confirmed walk remain required. Record findings and successful reruns or Theo's explicit written #52 dispositions. Source delivery, CI and the offline rehearsal cannot complete #137 or justify early #52 closure.
+2. **After actual #52 acceptance, before publication approval:** the release owner revalidates the final tagged artifacts, recording their archive/binary digests, manifest, source revision, version, architecture and applicable release-gate results. A staged `dev.N` build and a final `alpha.N` build have different version identities and may have different bytes; matching source does not establish identical artifacts. Re-run affected acceptance steps and findings whenever different bytes, source, behavior or check inputs invalidate the staged evidence. Keep both identities and the comparison/rerun receipts; do not silently transfer acceptance. This later release phase does not authorize a candidate dispatch, tag, release-draft merge or publication.
+3. **After separately approved publication:** independently verify the exact public archive and documented install route on Linux and WSL2 for #97, and the public README/site routes and human observations for #98/#102, before closing those issues. A staged walk or final pre-publication check cannot supply that public-install proof. These later records remain distinct from the pre-publication #137/#52 walk.
+
 ## How to use the preparation
 
 The [guide](../acceptance/m3.md) is in ask-to-guide step format. A facilitator first resolves the prerequisites below and asks for readiness. Do not launch the guide overnight or treat its questions as answered.
@@ -30,11 +38,13 @@ No provider, daemon, installer, desktop command or service manager is launched. 
 | Prerequisite | Owner / exact remaining evidence |
 | --- | --- |
 | Named review of this preparation | Completed on PR #530's full six-file delta through `83193277ecf486c52252bbdc3ab72132525c445b`; the sole finding was the stale unavailable-review claim, corrected here. Independent review remains separate; see the receipt below. |
-| Candidate installation | Release lane #191/#97, using #192's completed tooling evidence: final candidate revision, archive digest, published Linux/WSL2 archive-install instructions and install/doctor receipts. No publication or installation was performed here. |
+| Candidate installation | Release lane #191/#97, using #192's completed tooling evidence: exact approved staged candidate source/version/architecture, archive and binary digests, reviewed Linux/WSL2 installation instructions and install/doctor receipts. Final tagged-artifact revalidation and independent public-install proof follow in their separate phases above. No publication or installation was performed here. |
 | Sandbox/network | Sandbox lane #495/#433 on Linux/WSL2: clean-home managed proxy lifecycle, endpoint collision refusal, real enforcement and four working consecutive launches. macOS #527 is deferred under #568, not an Alpha 1 prerequisite. A profile isolates paths, not fixed TCP ports; legacy API port 43080 is documented in `packages/greyproxy/restart.sh`. Do not stop/reconfigure legacy or silently reuse it. |
 | Providers | Provider lane #51/#419/#436: conformance/provenance matrix, real model sees brief/skills, exact delivered-turn approval destination. Explicit consent and clean-environment sign-in precede account usage. |
-| Requirement clarification | #137 still says “one ACP agent”; merged third provider is OpenCode's HTTP/plugin adapter. #479 owns missing total-context token measurement. Runtime logging override lacked a CLI route at the original inventory revision; the source follow-up below supplies it, while the exact released candidate and Theo's observation remain required. The remaining requirements are open, not silently waived. |
-| Human observations | #137: Theo; #98: a volunteer with no prior context. Neither has a recorded Alpha walk. #98's separate [walkthrough record](../acceptance/98-user-readme.md) stays with the docs owner. |
+| Requirement clarification | #137 still says “one ACP agent”; merged third provider is OpenCode's HTTP/plugin adapter. #479 owns missing total-context token measurement. Runtime logging override lacked a CLI route at the original inventory revision; the source follow-up below supplies it, while the exact staged candidate and Theo's observation remain required. The remaining requirements are open, not silently waived. |
+| Theo's participation | #137: readiness and explicit consent for the approved staged candidate, then Theo's actual observations during the walk. No Theo Alpha walk is recorded. |
+
+The separate #98 volunteer walk uses the public install route after publication; it is required before #98 closure, not a prerequisite for starting the staged #137 walk. No such walk is recorded. Its [walkthrough record](../acceptance/98-user-readme.md) stays with the docs owner.
 
 Issues #51 and #192 are closed with criterion evidence; consume those receipts rather than treating their issue status as an unresolved prerequisite. Their closure does not establish the separate signed-in provider observations or published archive installation. #99's logo work moves to Beta 3 design and #397's further CI efficiency work to Hardening; neither blocks this Alpha 1 walk.
 
@@ -102,8 +112,9 @@ The preparation review gate is satisfied. Human acceptance, published installati
 
 **No live Alpha acceptance has run.** After Theo participates, append one dated entry with:
 
-- Candidate tag/revision, binary digest, archive digest, guide revision, OS and Docker mode.
+- Phase (staged guide, final tagged-artifact revalidation or public install), candidate version/tag if any, source revision, binary digest, archive digest, manifest, architecture, guide revision, OS and Docker mode.
 - Consent/readiness and actual environment isolation; no credentials or personal paths in public evidence.
 - Each section: passed, failed, blocked or not run, with the person's observations and command receipts.
 - Finding issue URLs, explicit #52 deferrals and exact successful reruns.
+- For a later artifact, its comparison with the staged identity, invalidated evidence and affected acceptance/finding reruns; public-install evidence stays separate.
 - Gate comment linking this run. Never prepopulate a successful transcript.
