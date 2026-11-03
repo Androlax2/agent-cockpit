@@ -176,6 +176,15 @@ pub(crate) fn launch_token() -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+/// Whether this process runs in a session Torlek launched: every launch sets `TORLEK_SESSION`
+/// (`cockpit-sessions`' lifecycle) and a sandbox the agent socket's path, with or without a
+/// launch token.
+pub(crate) fn is_in_a_session() -> bool {
+    ["TORLEK_SESSION", AGENT_SOCKET_VARIABLE]
+        .into_iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
 /// The daemon's socket directory, or exit 1 when the environment cannot place it.
 pub(crate) fn socket_dir() -> Result<PathBuf, ExitCode> {
     locate_socket_dir().map_err(|error| {

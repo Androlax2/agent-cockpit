@@ -173,6 +173,46 @@ fn the_owner_cannot_file_in_an_unregistered_project() {
 }
 
 #[test]
+fn the_owner_proposing_or_reporting_a_blocker_from_their_own_shell_is_told_to_add_the_item() {
+    let (home, _daemon) = with_app();
+    let session_requests: [&[&str]; 2] = [
+        &[
+            "todo",
+            "propose",
+            "Cache the build",
+            "--why",
+            "it is slow",
+            "--project",
+            "app",
+        ],
+        &[
+            "todo",
+            "blocked",
+            "Cannot push",
+            "--why",
+            "the token expired",
+        ],
+    ];
+
+    for arguments in session_requests {
+        let refusal = home.cockpit_err(arguments);
+
+        assert!(
+            refusal.contains("proposing and reporting a blocker are a session's requests"),
+            "{arguments:?}: {refusal}"
+        );
+        assert!(
+            refusal.contains("`torlek todo add`"),
+            "{arguments:?}: {refusal}"
+        );
+        assert!(
+            !refusal.contains("restart the session"),
+            "{arguments:?}: {refusal}"
+        );
+    }
+}
+
+#[test]
 fn a_flag_another_verb_takes_is_a_usage_error() {
     let home = TestHome::new();
 
@@ -206,13 +246,24 @@ impl Sandbox {
 
     /// Runs `cockpit` as an agent launched with `the-token`, off the test's runtime threads.
     async fn cockpit(&self, arguments: &[&str]) -> Output {
+        self.cockpit_with(arguments, ("TORLEK_LAUNCH_TOKEN", "the-token"))
+            .await
+    }
+
+    /// Runs `cockpit` in a session whose token is spent: the daemon knows it by its process
+    /// tree, and the launch's `TORLEK_SESSION` is all its environment says.
+    async fn cockpit_in_bound_session(&self, arguments: &[&str]) -> Output {
+        self.cockpit_with(arguments, ("TORLEK_SESSION", "s1")).await
+    }
+
+    async fn cockpit_with(&self, arguments: &[&str], (name, value): (&str, &str)) -> Output {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_torlek"));
         command
             .args(arguments)
             .env_clear()
             .env("HOME", self.dir.path())
             .env("XDG_RUNTIME_DIR", self.dir.path().join("run"))
-            .env("TORLEK_LAUNCH_TOKEN", "the-token");
+            .env(name, value);
         tokio::task::spawn_blocking(move || command.output().unwrap())
             .await
             .unwrap()
@@ -283,6 +334,50 @@ async fn a_session_proposes_on_the_agent_socket_with_its_launch_token() {
         the_line(&text(&output.stdout), "next:"),
         "next: the owner approves or declines the proposal"
     );
+}
+
+#[tokio::test]
+async fn a_session_without_its_launch_token_still_proposes_and_reports_on_the_agent_socket() {
+    let session_requests: [&[&str]; 2] = [
+        &["todo", "propose", "Cache the build", "--why", "slow"],
+        &[
+            "todo",
+            "blocked",
+            "Cannot push",
+            "--why",
+            "the token expired",
+        ],
+    ];
+    for arguments in session_requests {
+        let sandbox = Sandbox::new();
+        let daemon = scripted_daemon(
+            &sandbox.agent_socket(),
+            Outcome::Ok(Reply::Task {
+                task: Box::new(proposed_view()),
+            }),
+        );
+
+        let output = sandbox.cockpit_in_bound_session(arguments).await;
+
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            text(&output.stderr)
+        );
+        assert!(
+            matches!(
+                daemon.await.unwrap(),
+                Command::TaskPropose {
+                    launch_token: None,
+                    ..
+                } | Command::TaskReportBlocker {
+                    launch_token: None,
+                    ..
+                }
+            ),
+            "{arguments:?} reached the agent socket"
+        );
+    }
 }
 
 #[tokio::test]
