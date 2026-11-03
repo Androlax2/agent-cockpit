@@ -9,7 +9,7 @@ use std::sync::Arc;
 use cockpit_protocol::{ErrorCode, Outcome, ReadinessStatusView, Reply, RequirementView};
 use cockpit_readiness::{
     CheckoutFacts, ControlFacts, HostFacts, PresetFacts, ProjectFacts, ProjectNeeds, ProviderFacts,
-    ProviderFound, Report, SandboxEngine, SignInFacts, Status, Trust,
+    ProviderFound, Report, SandboxBlocked, SandboxEngine, SignInFacts, Status, Trust,
 };
 use cockpit_resource_admission::{Availability, Backend};
 
@@ -256,6 +256,14 @@ fn host_facts(context: &Context) -> HostFacts {
             .map(|engine| SandboxEngine {
                 engine: engine.engine(),
                 observations: engine.observations(),
+                blocked: context
+                    .sandbox
+                    .check_seccomp_filter(&context.sessions.launch_environment())
+                    .err()
+                    .map(|failure| SandboxBlocked {
+                        detail: failure.reason,
+                        next: failure.next,
+                    }),
             })
             .map_err(str::to_owned),
         sandbox_setting: context.sessions.owner_settings().sandbox,

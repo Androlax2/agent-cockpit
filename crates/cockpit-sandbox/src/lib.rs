@@ -9,6 +9,7 @@ mod observations;
 mod platform;
 mod profile;
 mod proxy;
+mod seccomp;
 
 pub use cockpit_config::{AgentSandbox, DesktopSession};
 pub use evidence::{AppliedRule, Enforcement, Evidence};
@@ -29,3 +30,4 @@ pub use profile::{
     SecretHandling,
 };
 pub use proxy::{ManagedProxy, ProxyError};
+pub use seccomp::FilterWriteFailure;

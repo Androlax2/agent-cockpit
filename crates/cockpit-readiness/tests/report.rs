@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use cockpit_config::{AgentSandbox, EffectiveConfig, Environment};
 use cockpit_readiness::{
     CheckoutFacts, ControlFacts, DockerEngine, HostFacts, Platform, PresetFacts, ProjectFacts,
-    ProjectNeeds, ProviderFacts, ProviderFound, Report, Requirement, SandboxEngine, Status, Trust,
-    assess, needs_docker,
+    ProjectNeeds, ProviderFacts, ProviderFound, Report, Requirement, SandboxBlocked, SandboxEngine,
+    Status, Trust, assess, needs_docker,
 };
 use tempfile::TempDir;
 
@@ -20,6 +20,7 @@ fn ready_host() -> HostFacts {
         sandbox_engine: Ok(SandboxEngine {
             engine: "greywall 0.3.7 (7c06d51), greyproxy 0.4.5 (cdd5cde)".to_owned(),
             observations: vec!["landlock: yes".to_owned()],
+            blocked: None,
         }),
         sandbox_setting: AgentSandbox::Required,
         sandbox_proxy: Ok("owned proxy healthy".into()),
@@ -191,6 +192,34 @@ fn a_missing_sandbox_names_the_managed_installer() {
             .contains("torlek --profile next sandbox install"),
         "{sandbox:?}"
     );
+}
+
+#[test]
+fn an_installed_engine_that_cannot_write_its_seccomp_filter_blocks_naming_the_cause() {
+    let fixture = Fixture::new();
+    fixture.configure("", None);
+    let mut host = ready_host();
+    let Ok(engine) = &mut host.sandbox_engine else {
+        unreachable!("a ready host has an engine")
+    };
+    engine.blocked = Some(SandboxBlocked {
+        detail: "greywall cannot write its seccomp filter in /tmp/greywall-seccomp".to_owned(),
+        next: "the pinned greywall keeps one seccomp folder for every user (#628)".to_owned(),
+    });
+
+    let report = fixture.report(&host, &fixture.facts());
+
+    let sandbox = requirement(&report, "sandbox");
+    assert_eq!(sandbox.status, Status::MissingPrerequisite);
+    assert!(
+        sandbox.detail.contains("/tmp/greywall-seccomp"),
+        "{sandbox:?}"
+    );
+    assert!(
+        sandbox.next.as_deref().unwrap().contains("#628"),
+        "{sandbox:?}"
+    );
+    assert!(!report.is_ready());
 }
 
 /// Each case: host facts changed from a ready host, the requirement and the status it gets.

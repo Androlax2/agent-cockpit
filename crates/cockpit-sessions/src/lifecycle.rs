@@ -1493,7 +1493,7 @@ impl Sessions {
 
     /// The variables every agent starts with before its provider's own: the base ones, then
     /// the owner's desktop session while the owner shares it.
-    fn launch_environment(&self) -> Vec<(OsString, OsString)> {
+    pub fn launch_environment(&self) -> Vec<(OsString, OsString)> {
         let mut environment = self.settings.base_environment.clone();
         if self.desktop_session() == crate::DesktopSession::Shared {
             environment.extend(

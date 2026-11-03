@@ -176,3 +176,80 @@ async fn the_evidence_is_read_back_as_recorded_for_the_sessions_latest_launch() 
     assert_eq!(latest, Some(sandboxed));
     assert_eq!(none, None);
 }
+
+/// A launch whose greywall writes its temporary files in `temp`.
+fn launch_with_temp(temp: &std::path::Path) -> cockpit_sandbox::LaunchRequest {
+    let mut request = launch_request("s1", "/home/owner/app");
+    request
+        .environment
+        .push(("TMPDIR".into(), temp.as_os_str().to_owned()));
+    request
+}
+
+fn prepare_in(
+    temp: &std::path::Path,
+) -> Result<cockpit_sandbox::Prepared, cockpit_sandbox::Refusal> {
+    let settings = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::new(
+        Platform::Linux,
+        Ok(linux_engine(settings.path())),
+        no_host_paths(),
+    );
+    let (program, arguments) = agent_words();
+    sandbox.prepare(
+        AgentSandbox::Required,
+        &launch_with_temp(temp),
+        program,
+        arguments,
+    )
+}
+
+#[test]
+fn a_seccomp_folder_greywall_cannot_write_refuses_the_launch_naming_the_cause() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("greywall-seccomp");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let refused = prepare_in(temp.path()).unwrap_err();
+
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(refused.rule, "seccomp filter");
+    assert!(
+        refused.reason.contains(&folder.display().to_string()),
+        "{refused}"
+    );
+    assert!(refused.reason.contains("#628"), "{refused}");
+}
+
+#[test]
+fn a_seccomp_path_that_is_not_a_folder_refuses_the_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("greywall-seccomp"), "").unwrap();
+
+    let refused = prepare_in(temp.path()).unwrap_err();
+
+    assert_eq!(refused.rule, "seccomp filter");
+    assert!(refused.reason.contains("not a folder"), "{refused}");
+}
+
+#[test]
+fn a_launch_checks_its_own_seccomp_folder_and_leaves_nothing_in_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("greywall-seccomp");
+    std::fs::create_dir(&folder).unwrap();
+
+    prepare_in(temp.path()).unwrap();
+
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
+}
+
+#[test]
+fn an_absent_seccomp_folder_lets_greywall_create_it() {
+    let temp = tempfile::tempdir().unwrap();
+
+    prepare_in(temp.path()).unwrap();
+
+    assert!(!temp.path().join("greywall-seccomp").exists());
+}
