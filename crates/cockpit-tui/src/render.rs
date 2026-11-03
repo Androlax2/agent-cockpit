@@ -290,10 +290,11 @@ fn coordination_line(session: &SessionView) -> Option<String> {
         format!("grants {}", names.join(","))
     });
     let inbound = session.inbound_message.as_ref().map(|message| {
-        format!(
-            "✉ {} ({}): {:?}",
-            message.from, message.delivery, message.text
-        )
+        let delivery = match &message.note {
+            Some(note) => format!("{}: {note}", message.delivery),
+            None => message.delivery.clone(),
+        };
+        format!("✉ {} ({delivery}): {:?}", message.from, message.text)
     });
     let parts: Vec<String> = grants.into_iter().chain(inbound).collect();
     (!parts.is_empty()).then(|| parts.join(" · "))

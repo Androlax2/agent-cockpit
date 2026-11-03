@@ -26,6 +26,7 @@ use cockpit_protocol::{
     Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, InboundMessageView,
     ObservedSessionView, ProtocolError, Reply, Unblock, UnblockedBy,
 };
+use cockpit_provider_api::Capability;
 use cockpit_sessions::{
     Addressed, QuestionSource, Session, SessionId, SessionState, Sessions, StartRequest,
 };
@@ -223,8 +224,6 @@ async fn message(
         .await?;
         granted(&coordinator, decision.outcome)?;
     }
-    let target_session = context.sessions.get(&target_id).await?;
-    refuse_if_over(&target_session)?;
     let write = context.database.write().await?;
     let coordinator = sender.identify(&write, launch_token).await?;
     let decision = cockpit_authorization::evaluate(
@@ -235,6 +234,14 @@ async fn message(
     )
     .await?;
     let grant = granted(&coordinator, decision.outcome)?;
+    // Read in this transaction, so the sender learns the state the message is queued in.
+    let target_session = cockpit_sessions::session(&write, &target_id).await?;
+    refuse_if_over(&target_session)?;
+    let waits = context
+        .sessions
+        .delivery_target(&target_session, Capability::Submit)
+        .err()
+        .map(|error| error.to_string());
     let report = cockpit_sessions::latest_report(&write, &target_holder).await?;
     if report.is_some_and(|report| report.question_source == Some(QuestionSource::Dialog)) {
         return Err(refused(
@@ -286,6 +293,7 @@ async fn message(
     Ok(Reply::AgentMessageQueued {
         session: target,
         message: entry,
+        waits,
     })
 }
 
@@ -870,6 +878,15 @@ pub(crate) async fn notes(connection: &Connection) -> Result<Notes, Failed> {
                 text,
                 delivery: envelope.state.as_str().to_owned(),
                 sent_at: audit.at,
+                // A stored note says why the last attempt failed: stale once the message is
+                // in flight or delivered.
+                note: (!matches!(
+                    envelope.state,
+                    DeliveryState::Submitting | DeliveryState::Received
+                ))
+                .then_some(envelope.note)
+                .flatten()
+                .map(|note| cockpit_sessions::visible_line(&note)),
             },
         );
     }

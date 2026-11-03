@@ -18,6 +18,7 @@ use cockpit_turso::Database;
 
 #[path = "messaging.rs"]
 mod messaging;
+pub use messaging::visible_line;
 
 use crate::model::{LaunchPurpose, validate_link};
 use crate::store::{self, NewSession};

@@ -421,6 +421,79 @@ async fn a_message_still_queued_when_its_grant_is_revoked_is_never_typed() {
     .await;
 }
 
+/// #656: a message whose target has not reported since its launch is typed once its agent
+/// waits at its prompt; until then the target's card says why it waits, instead of a silent
+/// `queued`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_that_cannot_be_typed_yet_says_why_on_the_card() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let coordinator = new_session(&owner, &coordinator_root).await;
+    let target_root = coordinator_root.join("target").join(COMMANDED_PROJECT);
+    std::fs::create_dir_all(&target_root).unwrap();
+    let target = new_session(&owner, &target_root).await;
+    grant(&owner, &coordinator.id, "message-sessions").await;
+
+    let printed = as_coordinator(
+        &home,
+        &coordinator_root,
+        &["agent", "message", &target.id, "Base it on main."],
+    )
+    .await;
+
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+    assert!(
+        printed.contains("if it cannot be typed, its card says why"),
+        "{printed}"
+    );
+    wait_until("the card says why the message waits", || async {
+        listed(&owner, &target.id)
+            .await
+            .inbound_message
+            .is_some_and(|message| message.delivery == "queued" && message.note.is_some())
+    })
+    .await;
+}
+
+/// #656: when the target's state already rules delivery out, the sender is told why at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_to_an_asleep_session_tells_the_sender_why_it_waits() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let pair = coordinator_and_worker(&home, &owner).await;
+    grant(&owner, &pair.coordinator.id, "message-sessions").await;
+    let slept = owner
+        .request(
+            Command::SessionSleep {
+                session: pair.worker.id.clone(),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(slept.is_ok(), "{slept:?}");
+
+    let printed = as_coordinator(
+        &home,
+        &pair.coordinator_root,
+        &["agent", "message", &pair.worker.id, "Base it on main."],
+    )
+    .await;
+
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+    assert!(
+        printed.contains(&format!(
+            "it is not typed yet: session {} is asleep",
+            pair.worker.id
+        )),
+        "{printed}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn no_grant_is_given_from_the_agent_socket() {
     let home = Home::new();

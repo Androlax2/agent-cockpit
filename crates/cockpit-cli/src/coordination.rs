@@ -71,10 +71,20 @@ pub(crate) fn message(arguments: &[OsString]) -> Result<ExitCode, String> {
             session,
             text,
         }) {
-            Ok(Reply::AgentMessageQueued { session, message }) => {
-                outln!(
-                    "queued message {message} to session {session}; it is typed at its next prompt"
-                );
+            Ok(Reply::AgentMessageQueued {
+                session,
+                message,
+                waits,
+            }) => {
+                match waits {
+                    Some(why) => outln!(
+                        "queued message {message} to session {session}; it is not typed yet: {why}"
+                    ),
+                    None => outln!(
+                        "queued message {message} to session {session}; it is typed once its \
+                         agent waits at its prompt; if it cannot be typed, its card says why"
+                    ),
+                }
                 ExitCode::SUCCESS
             }
             other => agent.failed(other),

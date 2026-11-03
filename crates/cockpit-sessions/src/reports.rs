@@ -481,7 +481,7 @@ fn checked_text(field: &'static str, text: &str) -> Result<String, Refusal> {
 /// Unicode format characters (category Cf) that change how surrounding text displays: soft
 /// hyphen, zero-width marks, bidirectional embeddings, overrides and isolates, word joiners
 /// and the byte-order mark.
-fn is_invisible_format(character: char) -> bool {
+pub(crate) fn is_invisible_format(character: char) -> bool {
     matches!(
         character,
         '\u{00AD}'

@@ -13,6 +13,7 @@ pub use cockpit_config::DesktopSession;
 pub use delivery_context::{ConnectSessionSocket, DeliveryContext};
 pub use error::Error;
 pub use lifecycle::Sessions;
+pub use lifecycle::visible_line;
 pub use model::{
     Addressed, AgentExit, ExitStatus, Launch, LaunchKind, RestartAll, Restored, Session, SessionId,
     SessionState, Settings, SleepRefusal, StartRequest, StopTarget, TickReport, WakeCause,

@@ -145,6 +145,7 @@ fn an_inbound_message_names_its_sender_and_delivery() {
         text: "rebase on main".to_owned(),
         delivery: "queued".to_owned(),
         sent_at: 1_700_000_000,
+        note: None,
     };
 
     assert_eq!(
