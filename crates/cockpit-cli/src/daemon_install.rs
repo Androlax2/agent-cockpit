@@ -133,8 +133,8 @@ fn link_command(program: &Path, profile: &Profile) -> Result<(), String> {
                 ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
             ) =>
         {
-            outln!(
-                "not linked {}: {error}; select this profile with `torlek --profile {name}` or \
+            eprintln!(
+                "torlek: warning: not linked {}: {error}; select this profile with `torlek --profile {name}` or \
                  {variable}={name}",
                 link.display(),
                 name = profile.name(),
