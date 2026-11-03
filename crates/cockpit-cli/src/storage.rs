@@ -85,6 +85,7 @@ fn prune(arguments: &[OsString]) -> Result<ExitCode, String> {
         [Some("prune"), Some("status"), Some(id)] => Command::StoragePruneStatus { operation: positive(id)? },
         _ => return Err("storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID".to_owned()),
     };
+    let applying = matches!(command, Command::StoragePruneApply { .. });
     let reply = match request(command, BULK_DEADLINE) {
         Ok(reply) => reply,
         Err(code) => return Ok(code),
@@ -133,6 +134,12 @@ fn prune(arguments: &[OsString]) -> Result<ExitCode, String> {
                     cell(&plan.epoch)
                 );
             }
+            if matches!(
+                preview.measurement,
+                TargetSizeView::Incomplete { .. } | TargetSizeView::Unavailable { .. }
+            ) {
+                return Ok(ExitCode::FAILURE);
+            }
         }
         Reply::StoragePruneStatus { status } => {
             outln!("epoch: {}", cell(&status.epoch));
@@ -154,6 +161,9 @@ fn prune(arguments: &[OsString]) -> Result<ExitCode, String> {
             );
             if let Some(reason) = &status.reason {
                 outln!("{}", cell(reason));
+            }
+            if applying && status.phase != "complete" {
+                return Ok(ExitCode::FAILURE);
             }
         }
         _ => return Ok(unexpected(&reply)),

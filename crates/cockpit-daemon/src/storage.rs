@@ -321,9 +321,10 @@ async fn drive(context: &Context, operation: i64) -> Result<PruneStatus, Protoco
             .await
             .map_err(project)?;
         let write = context.database.write().await.map_err(internal)?;
-        let status = cockpit_projects::complete_prune_step(&write, receipt)
-            .await
-            .map_err(project)?;
+        let status =
+            cockpit_projects::complete_prune_step(&write, context.database.epoch(), receipt)
+                .await
+                .map_err(project)?;
         write.commit().await.map_err(internal)?;
         if matches!(status.phase.as_str(), "complete" | "paused" | "needs-owner") {
             return Ok(status);

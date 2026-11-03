@@ -14,6 +14,9 @@ implementation to preserve transaction ownership. This does not authorize live c
   prints the explicit ID, revision and database epoch needed for confirmation.
   Incomplete or unavailable measurements cannot authorize removal. Bytes mean
   regular-file logical lengths, not allocated blocks or guaranteed reclaimed space.
+  Unmeasured non-candidates are unavailable, not absent. The CLI returns failure for
+  unavailable/incomplete measurements and for an Apply that has not completed;
+  inspecting a retained status remains a successful query.
 - **Eligibility is separate from delivery or session labels.** Associated sessions
   must be ended with observed execution termination, or the owner must configure a
   full LOCAL base ref. Local ancestry binds and rechecks the clone tip and main
@@ -54,7 +57,7 @@ implementation to preserve transaction ownership. This does not authorize live c
   database ownership even if its async caller is canceled. Startup reconciliation runs
   after process reconciliation and before session restore. Pausing releases the global
   guard only after a joined step and keeps the checkout guard; guards never expire into
-  another writer. Current generation, phase and cursor bind each receipt. Missing
+  another writer. Current database epoch, generation, phase and cursor bind each receipt. Missing
   entries after an unreceipted unlink count as absent with unconfirmed attribution,
   never confirmed freed bytes. Status preserves the recorded target/quarantine
   locations, which may themselves be absent or uncertain.

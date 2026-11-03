@@ -16,6 +16,8 @@ ratatui = "ratatui"
 auther = "auther"
 
 [default.extend-identifiers]
+# POSIX/rustix write-only open flag; preserve the API spelling.
+WRONLY = "WRONLY"
 # The approved Rust DEFLATE crate.
 flate2 = "flate2"
 PNGs = "PNGs"

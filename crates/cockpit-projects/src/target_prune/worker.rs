@@ -14,6 +14,7 @@ pub struct PruneStep {
 }
 
 pub struct PruneStepReceipt {
+    epoch: String,
     operation: i64,
     generation: i64,
     phase: String,
@@ -139,6 +140,7 @@ impl PruneStep {
             return Err(store::stale("cleanup worker database epoch changed"));
         }
         let operation = self.plan.status.operation;
+        let epoch = self.plan.epoch.clone();
         let generation = self.plan.generation;
         let phase = self.plan.status.phase.clone();
         let cursor = self.plan.cursor;
@@ -150,6 +152,7 @@ impl PruneStep {
         .await
         .unwrap_or_else(|error| Err(format!("cleanup worker failed: {error}")));
         Ok(PruneStepReceipt {
+            epoch,
             operation,
             generation,
             phase,
@@ -243,9 +246,15 @@ impl PruneStep {
 /// guard, retaining its checkout guard; no second writer is admitted during a syscall.
 pub async fn complete_prune_step(
     write: &WriteTransaction<'_>,
+    epoch: &str,
     receipt: PruneStepReceipt,
 ) -> Result<PruneStatus, Error> {
     let plan = store::load(write, receipt.operation).await?;
+    if receipt.epoch != epoch || plan.epoch != epoch {
+        return Err(store::stale(
+            "cleanup receipt belongs to another database epoch",
+        ));
+    }
     guards(write, &plan).await?;
     if !plan.worker_active
         || plan.generation != receipt.generation

@@ -1,10 +1,107 @@
 //! Durable maintenance exclusion; fixtures never register or inspect a real checkout.
+#![cfg(target_os = "linux")]
 mod common;
 use cockpit_projects::{
     Git, PruneEvidence, PrunePolicy, claim, create_parallel_clone, prepare_target_prune,
     preview_target_prune, require_execution_start_allowed, reserve_target_prune, sweep,
 };
 use common::{Scratch, holder, register};
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn cleanup_receipt_cannot_checkpoint_a_reused_operation_in_another_database_epoch() {
+    use std::sync::Arc;
+    let first = Scratch::new();
+    let second = Scratch::new();
+    let mut old_receipt = None;
+    let mut old_status = None;
+    for scratch in [&first, &second] {
+        let database = Arc::new(scratch.open().await);
+        let (project, _) = register(&database, &scratch.repository("app")).await;
+        let clone = create_parallel_clone(
+            &database,
+            &Git::from_path(),
+            project.name.as_str(),
+            "feature",
+        )
+        .await
+        .unwrap();
+        std::fs::create_dir(clone.path.join("target")).unwrap();
+        std::fs::write(clone.path.join("target/output"), b"keep").unwrap();
+        std::fs::write(clone.path.join(".git/info/exclude"), "/target/\n").unwrap();
+        let evidence = PruneEvidence {
+            ended_sessions: Some("fixture-ended-session".into()),
+            busy: None,
+        };
+        let policy = PrunePolicy::default();
+        let preview =
+            preview_target_prune(&database, &Git::from_path(), clone.id, &policy, &evidence)
+                .await
+                .unwrap();
+        let write = database.write().await.unwrap();
+        let plan = prepare_target_prune(&write, database.epoch(), &preview, &evidence)
+            .await
+            .unwrap();
+        reserve_target_prune(
+            &write,
+            database.epoch(),
+            plan.operation,
+            plan.revision,
+            &preview,
+            &evidence,
+            false,
+        )
+        .await
+        .unwrap();
+        let step = cockpit_projects::begin_prune_step(
+            &write,
+            database.epoch(),
+            plan.operation,
+            &policy,
+            &evidence,
+        )
+        .await
+        .unwrap();
+        let before = cockpit_projects::prune_status(&write, plan.operation)
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+        if let Some(receipt) = old_receipt.take() {
+            let old: cockpit_projects::PruneStatus = old_status.take().unwrap();
+            assert_eq!(
+                (old.operation, old.revision),
+                (plan.operation, plan.revision)
+            );
+            assert_ne!(old.epoch, plan.epoch);
+            let write = database.write().await.unwrap();
+            assert!(
+                cockpit_projects::complete_prune_step(&write, database.epoch(), receipt)
+                    .await
+                    .is_err(),
+                "accepted a receipt from another database epoch"
+            );
+            assert_eq!(
+                cockpit_projects::prune_status(&write, plan.operation)
+                    .await
+                    .unwrap(),
+                before
+            );
+            write.rollback().await.unwrap();
+            assert_eq!(
+                std::fs::read(clone.path.join("target/output")).unwrap(),
+                b"keep"
+            );
+            drop(step);
+        } else {
+            old_status = Some(plan);
+            old_receipt = Some(
+                step.run(Arc::clone(&database), Git::from_path())
+                    .await
+                    .unwrap(),
+            );
+        }
+    }
+}
 
 #[tokio::test]
 #[cfg(target_os = "linux")]

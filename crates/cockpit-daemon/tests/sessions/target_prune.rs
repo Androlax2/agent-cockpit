@@ -1021,7 +1021,7 @@ async fn cleanup_step(home: &Home, operation: i64, commit_receipt: bool) {
         .unwrap();
     if commit_receipt {
         let write = database.write().await.unwrap();
-        cockpit_projects::complete_prune_step(&write, receipt)
+        cockpit_projects::complete_prune_step(&write, database.epoch(), receipt)
             .await
             .unwrap();
         write.commit().await.unwrap();

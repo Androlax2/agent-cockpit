@@ -30,7 +30,11 @@ pub(super) fn preview(
     if matches!(stored.checkout.kind, CheckoutKind::Main)
         || stored.checkout.state != CheckoutState::Live
     {
-        result.kept_reason = Some("only live registered clones are candidates".to_owned());
+        let reason = "only live registered clones are candidates; target was not measured";
+        result.measurement = TargetSize::Unavailable {
+            reason: reason.to_owned(),
+        };
+        result.kept_reason = Some(reason.to_owned());
         return result;
     }
     match observe(&stored, b"target") {
