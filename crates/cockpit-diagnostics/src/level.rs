@@ -179,6 +179,8 @@ pub struct ActiveOverride {
 pub struct LevelStatus {
     /// The directives in effect now.
     pub directives: Directives,
+    /// The process's own directives, which return when the override ends.
+    pub baseline: Directives,
     pub active_override: Option<ActiveOverride>,
 }
 
@@ -272,6 +274,7 @@ impl LevelControl {
             .map_or(&state.baseline, |active| &active.directives);
         LevelStatus {
             directives: directives.clone(),
+            baseline: state.baseline.clone(),
             active_override: state.active_override.clone(),
         }
     }

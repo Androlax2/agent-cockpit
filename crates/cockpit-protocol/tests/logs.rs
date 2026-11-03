@@ -25,12 +25,27 @@ fn log_level_commands_round_trip_and_bad_field_types_are_refused() {
 #[test]
 fn log_level_status_and_capability_have_stable_wire_forms() {
     for wire in [
-        json!({"kind":"logs-level", "directives":"warn", "expires_at_unix_ms":null}),
-        json!({"kind":"logs-level", "directives":"debug", "expires_at_unix_ms":12345}),
+        json!({"kind":"logs-level", "directives":"warn", "expires_at_unix_ms":null, "reverts_to":null}),
+        json!({"kind":"logs-level", "directives":"debug", "expires_at_unix_ms":12345, "reverts_to":"warn"}),
     ] {
         let reply: Reply = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(reply).unwrap(), wire);
     }
     let capability: Capability = serde_json::from_value(json!("log-level-control")).unwrap();
     assert!(!matches!(capability, Capability::Unknown(_)));
+}
+
+#[test]
+fn a_log_level_reply_from_a_daemon_without_reverts_to_still_decodes() {
+    let reply: Reply = serde_json::from_value(
+        json!({"kind":"logs-level", "directives":"debug", "expires_at_unix_ms":12345}),
+    )
+    .unwrap();
+    assert!(matches!(
+        reply,
+        Reply::LogsLevel {
+            reverts_to: None,
+            ..
+        }
+    ));
 }

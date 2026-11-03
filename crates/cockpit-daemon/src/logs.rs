@@ -48,7 +48,7 @@ fn apply(command: Command, control: Option<LevelControl>) -> Outcome {
         return refusal(ErrorCode::Internal, &error.to_string());
     }
     let status = control.status();
-    let expiry = status.active_override.map(|active| {
+    let expiry = status.active_override.as_ref().map(|active| {
         active
             .expires_at
             .duration_since(UNIX_EPOCH)
@@ -68,5 +68,6 @@ fn apply(command: Command, control: Option<LevelControl>) -> Outcome {
     Outcome::Ok(Reply::LogsLevel {
         directives: status.directives.to_string(),
         expires_at_unix_ms,
+        reverts_to: status.active_override.map(|_| status.baseline.to_string()),
     })
 }
