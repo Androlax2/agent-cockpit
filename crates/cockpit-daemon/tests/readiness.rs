@@ -229,6 +229,34 @@ async fn a_provider_that_does_not_run_is_listed_as_optional_and_exits_0() {
     assert!(!next.contains("install"), "{next}");
 }
 
+/// #624: init's provider step reads the report doctor prints, so a provider doctor calls not
+/// usable is not offered to sessions.
+#[tokio::test(flavor = "multi_thread")]
+async fn init_offers_only_the_providers_doctor_finds_usable() {
+    let home = Home::new();
+    let codex = home.path().join("bin/codex");
+    std::fs::write(&codex, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _daemon = home.start();
+
+    let init = home.cockpit(&["init"], &[]).await;
+
+    let checklist = text(&init.stdout);
+    assert!(init.status.success(), "{checklist}{}", text(&init.stderr));
+    let offered = checklist
+        .lines()
+        .find(|line| line.contains("available: ") || line.contains("sessions start with "))
+        .unwrap_or_else(|| panic!("no offered provider in:\n{checklist}"));
+    assert!(offered.contains("claude"), "{offered}");
+    assert!(!offered.contains("codex"), "{offered}");
+    assert!(
+        checklist
+            .lines()
+            .any(|line| line.contains("provider codex: not usable")),
+        "{checklist}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_without_greywall_blocks_naming_what_to_install() {
     let home = Home::new();

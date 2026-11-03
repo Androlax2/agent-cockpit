@@ -559,6 +559,32 @@ async fn with_several_providers_the_session_action_picks_one_with_agent() {
     );
 }
 
+/// #624: readiness reports an unusable provider as `available` with an action, so that it
+/// does not block; the provider step names it with its reason instead of offering it.
+#[tokio::test]
+async fn a_provider_readiness_reports_not_usable_is_named_with_its_reason_not_offered() {
+    let home = Home::new();
+    home.accept_sandbox();
+    let mut daemon = Daemon::ready().with_project();
+    daemon.requirements.push(RequirementView {
+        next: Some("to use it, install codex on the daemon's PATH".to_owned()),
+        ..available("provider codex", "not usable, optional: no `codex` on PATH")
+    });
+
+    let output = home.against(&daemon, &["init"]).await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        checklist.contains("sessions start with claude"),
+        "{checklist}"
+    );
+    assert!(
+        checklist.contains("provider codex: not usable, optional: no `codex` on PATH\n"),
+        "{checklist}"
+    );
+    assert!(!final_next(&checklist).contains("--agent"), "{checklist}");
+}
+
 #[tokio::test]
 async fn once_a_session_started_init_says_the_setup_is_done() {
     let home = Home::new();

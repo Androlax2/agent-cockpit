@@ -337,10 +337,17 @@ fn provider_name(requirement: &RequirementView) -> Option<&str> {
         .filter(|name| !name.ends_with(" sign-in"))
 }
 
+/// Readiness reports a provider the daemon could not wire as `available`, so that it does
+/// not block (#411), with the action that would make it usable; a usable one has none.
+/// `torlek doctor` reads the same report (#624).
+fn is_usable(requirement: &RequirementView) -> bool {
+    requirement.status == ReadinessStatusView::Available && requirement.next.is_none()
+}
+
 fn available_providers(requirements: &[RequirementView]) -> Vec<&str> {
     requirements
         .iter()
-        .filter(|requirement| requirement.status == ReadinessStatusView::Available)
+        .filter(|requirement| is_usable(requirement))
         .filter_map(provider_name)
         .collect()
 }
@@ -351,12 +358,20 @@ fn provider_step(requirements: &[RequirementView], available: &[&str]) -> Step {
         .filter(|requirement| {
             requirement.name == "providers" || provider_name(requirement).is_some()
         })
-        .filter(|requirement| requirement.status != ReadinessStatusView::Available)
+        .filter(|requirement| !is_usable(requirement))
         .collect();
     let mut lines: Vec<String> = missing
         .iter()
-        .map(|requirement| requirement_line(requirement))
+        .map(|requirement| match requirement.status {
+            ReadinessStatusView::Available => {
+                format!("{}: {}", requirement.name, requirement.detail)
+            }
+            _ => requirement_line(requirement),
+        })
         .collect();
+    if !missing.is_empty() && !available.is_empty() {
+        lines.push("`torlek doctor` says how to make each one usable".to_owned());
+    }
     match available {
         [] => Step {
             title: PROVIDER,
