@@ -485,6 +485,80 @@ async fn queue_explain_names_the_working_session_that_cannot_take_the_item() {
     assert_eq!(explanation.action_by, "cockpit");
 }
 
+/// `item`'s explanation once its reason is no longer `stale`: the pass a queue change wakes
+/// runs beside the request, not inside it.
+async fn explanation_after_pass(
+    client: &Connection,
+    item: i64,
+    stale: &str,
+) -> cockpit_protocol::QueueExplanationView {
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        let explained = request(client, Command::QueueExplain { item: Some(item) }).await;
+        let Ok(Reply::QueueExplanations { mut explanations }) = explained else {
+            panic!("queue-explain: {explained:?}");
+        };
+        let explanation = explanations.remove(0);
+        if explanation.reason != stale {
+            return explanation;
+        }
+        assert!(Instant::now() < deadline, "still {stale}: {explanation:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pausing_the_queue_makes_explain_name_the_pause_and_how_to_resume() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.session_reporting(&client, &root, AgentState::Working)
+        .await;
+    let item = queued_item(&client, "Fix the login").await;
+    request(&client, Command::QueueDispatch).await.unwrap();
+
+    request(&client, Command::ResourceQueue { paused: true })
+        .await
+        .unwrap();
+
+    let explanation = explanation_after_pass(&client, item, "no-session-free").await;
+    assert_eq!(explanation.reason, "queue-paused");
+    assert_eq!(explanation.why, "the queue is paused: nothing new starts");
+    assert!(explanation.sessions.is_empty(), "{explanation:?}");
+    assert_eq!(
+        explanation.action,
+        "resume the queue: `torlek resources resume-queue`"
+    );
+    assert_eq!(explanation.action_by, "owner");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_the_queue_places_the_work_it_held_without_waiting_for_the_interval() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.session_reporting(&client, &root, AgentState::Waiting)
+        .await;
+    request(&client, Command::ResourceQueue { paused: true })
+        .await
+        .unwrap();
+    let item = queued_item(&client, "Fix the login").await;
+    request(&client, Command::QueueDispatch).await.unwrap();
+    assert_eq!(task_status(&client, item).await, TaskStatusView::Todo);
+
+    request(&client, Command::ResourceQueue { paused: false })
+        .await
+        .unwrap();
+
+    let deadline = Instant::now() + GENEROUS;
+    while task_status(&client, item).await != TaskStatusView::Doing {
+        assert!(Instant::now() < deadline, "item {item} was not placed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn queue_explain_of_an_item_the_last_pass_did_not_explain_is_not_found() {
     let home = Home::new();

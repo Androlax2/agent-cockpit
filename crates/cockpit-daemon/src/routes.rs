@@ -143,6 +143,7 @@ impl Routes {
                 manager: Arc::clone(&capabilities.manager),
                 provider_capabilities,
                 settings: capabilities.scheduling,
+                queue_changed: Arc::clone(&capabilities.queue_changed),
             },
             verification: verification::Context {
                 database: Arc::clone(&capabilities.database),
@@ -163,6 +164,7 @@ impl Routes {
                 backend: capabilities.admission,
                 supervisor: capabilities.processes,
                 profile_change: Arc::default(),
+                queue_changed: capabilities.queue_changed,
             },
             database: capabilities.database,
             git: capabilities.git,
