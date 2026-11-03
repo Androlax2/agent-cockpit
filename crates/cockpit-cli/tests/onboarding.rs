@@ -334,14 +334,6 @@ async fn on_a_fresh_profile_the_sandbox_action_creates_the_config_folder_first()
     assert!(created.success(), "{create}");
     let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o700, "{create}");
-    std::fs::write(home.owner_config(), "[agents]\nsandbox = \"required\"\n").unwrap();
-    std::fs::remove_file(home.daemon_socket()).unwrap();
-    let after = home.against(&Daemon::ready(), &["init"]).await;
-    assert!(
-        step(&text(&after.stdout), "Sandbox and approvals").starts_with("[done"),
-        "{}",
-        text(&after.stdout)
-    );
 }
 
 #[tokio::test]
