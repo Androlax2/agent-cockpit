@@ -177,6 +177,8 @@ class CiBootstrapTests(unittest.TestCase):
         self.assertEqual(lock["lockfileVersion"], 3)
         self.assertEqual(lock["packages"][""]["devDependencies"], manifest["devDependencies"])
         self.assertEqual(lock["packages"]["node_modules/markdownlint-cli2"]["version"], "0.24.0")
+        self.assertEqual(manifest["overrides"], {"re2js": "2.8.7"})
+        self.assertEqual(lock["packages"]["node_modules/re2js"]["version"], "2.8.7")
         for path, package in lock["packages"].items():
             if not path:
                 continue
