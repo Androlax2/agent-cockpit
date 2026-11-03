@@ -229,13 +229,21 @@ pub enum AuditedAction {
     Start,
     /// The session a start asked for began; the target is the new session.
     Started,
+    /// The owner approved a start the session asked for (#657). The actor stays the asking
+    /// session, whose grant the start uses; the detail names the request, the owner and the
+    /// client the owner used.
+    Approved,
+    /// The owner declined a start the session asked for (#657).
+    Declined,
 }
 
 impl AuditedAction {
-    pub const ALL: [AuditedAction; 3] = [
+    pub const ALL: [AuditedAction; 5] = [
         AuditedAction::Message,
         AuditedAction::Start,
         AuditedAction::Started,
+        AuditedAction::Approved,
+        AuditedAction::Declined,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -243,6 +251,8 @@ impl AuditedAction {
             AuditedAction::Message => "message",
             AuditedAction::Start => "start",
             AuditedAction::Started => "started",
+            AuditedAction::Approved => "approved",
+            AuditedAction::Declined => "declined",
         }
     }
 

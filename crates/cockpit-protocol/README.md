@@ -44,7 +44,12 @@ the wire. Report 14 treats this contract as stable from the first release.
    `ShownText` beside the exact text, with the kinds escaped as `warnings`; a run request
    carries `folded_command`, `timeout_without_foreground`, `unchecked_shell` (#494) and,
    in the owner's views of an asking request, `changed_build_files` (#156). An approval within the daemon's grace after
-   the request appeared or changed is refused with code `refused`.
+   the request appeared or changed is refused with code `refused`. A decision may name the
+   owner client it came `through` (`tui`, `cli`); a decided request's view carries it in
+   `decision` with `approved` and `at` (#657). The client is self-named: the owner socket
+   proves the owner decided, not which owner client sent it. The coordinator audit records
+   the owner's `approved` / `declined` on an asked start, and `start` with detail
+   `without confirmation` when nobody was asked.
 6. Sessions (#31): `session-new` (an absolute `dir`, optional `agent`, `prompt` and
    `clone` branch), `session-list` (`ended` adds the ended ones), `session-restart`,
    `session-restart-all`, `session-sleep`, `session-wake`, `session-resume`, `session-end` and

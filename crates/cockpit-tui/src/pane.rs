@@ -13,7 +13,9 @@
 
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{Command, GuideStateView, GuideView, RunRequestView, RunStateView};
+use cockpit_protocol::{
+    Command, DecidedThroughView, GuideStateView, GuideView, RunRequestView, RunStateView,
+};
 
 use crate::Key;
 use crate::board::Board;
@@ -178,6 +180,7 @@ impl Pane {
                     request: *id,
                     revision: *revision,
                     digest: digest.clone(),
+                    through: Some(DecidedThroughView::Tui),
                 }),
             ),
             (
@@ -189,7 +192,10 @@ impl Pane {
                 Key::Char('x'),
             ) => handled(
                 "approval-decline",
-                Some(Command::ApprovalDecline { request: *id }),
+                Some(Command::ApprovalDecline {
+                    request: *id,
+                    through: Some(DecidedThroughView::Tui),
+                }),
             ),
             (Shown::Guide { asks: true, .. }, Key::Char('y')) => {
                 self.typing = Some(Typing::Answer);

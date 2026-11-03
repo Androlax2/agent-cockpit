@@ -4,10 +4,11 @@
 mod common;
 
 use cockpit_approvals::{
-    Approved, EXPIRES_AFTER_SECONDS, Error, Interrupted, Output, Refusal, RunId, RunRequest,
-    RunResult, RunState, action_digest, approve_run, ask_run, decline_run, edit_run, finish_run,
-    interrupted_runs, open_runs, queue_order, reconcile_run, record_not_run,
-    record_outcome_unknown, resolve_cwd, run_request, run_status, shown_run, start_run,
+    Approved, DecidedThrough, EXPIRES_AFTER_SECONDS, Error, Interrupted, Output, Refusal,
+    RunDecision, RunId, RunRequest, RunResult, RunState, action_digest, approve_run, ask_run,
+    decline_run, edit_run, finish_run, interrupted_runs, open_runs, queue_order, reconcile_run,
+    record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status, shown_run,
+    start_run,
 };
 use cockpit_authorization::Permission;
 use cockpit_processes::{EndReason, ExecutionId, Phase};
@@ -38,7 +39,7 @@ fn result(exit_code: i32) -> RunResult {
 async fn approve(fixture: &Fixture, id: cockpit_approvals::RunId) -> Approved {
     let write = fixture.database.write().await.unwrap();
     let run = run_request(&write, id, NOW).await.unwrap().unwrap();
-    let (approved, _) = approve_run(&write, id, run.revision, &run.digest(), AFTER_GRACE)
+    let (approved, _) = approve_run(&write, None, id, run.revision, &run.digest(), AFTER_GRACE)
         .await
         .unwrap();
     write.commit().await.unwrap();
@@ -54,9 +55,10 @@ async fn an_approval_right_after_the_ask_is_refused_until_the_grace_has_passed()
     let run = fixture.asked(&session("s1"), "ls").await;
     let write = fixture.database.write().await.unwrap();
 
-    let at_once = refusal(approve_run(&write, run.id, 1, &run.digest(), NOW).await);
-    let almost = refusal(approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE - 1).await);
-    let approved = approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE).await;
+    let at_once = refusal(approve_run(&write, None, run.id, 1, &run.digest(), NOW).await);
+    let almost =
+        refusal(approve_run(&write, None, run.id, 1, &run.digest(), AFTER_GRACE - 1).await);
+    let approved = approve_run(&write, None, run.id, 1, &run.digest(), AFTER_GRACE).await;
 
     assert_eq!(
         at_once,
@@ -78,9 +80,10 @@ async fn an_edit_starts_the_grace_again() {
         .await
         .unwrap();
 
-    let at_once = refusal(approve_run(&write, run.id, 2, &edited.digest(), edited_at).await);
+    let at_once = refusal(approve_run(&write, None, run.id, 2, &edited.digest(), edited_at).await);
     let later = approve_run(
         &write,
+        None,
         run.id,
         2,
         &edited.digest(),
@@ -146,7 +149,7 @@ async fn an_approval_is_consumed_once() {
     assert_eq!(approved.command, "ls");
 
     let write = fixture.database.write().await.unwrap();
-    let again = refusal(approve_run(&write, run.id, 1, &run.digest(), NOW).await);
+    let again = refusal(approve_run(&write, None, run.id, 1, &run.digest(), NOW).await);
     assert_eq!(again, Refusal::AlreadyDecided { state: "approved" });
 }
 
@@ -171,6 +174,7 @@ async fn an_offline_approval_of_an_edited_request_fails_its_revision_then_the_re
     let refused = refusal(
         approve_run(
             &write,
+            None,
             stale_view.id,
             stale_view.revision,
             &stale_view.digest(),
@@ -195,6 +199,7 @@ async fn an_offline_approval_of_an_edited_request_fails_its_revision_then_the_re
     let write = fixture.database.write().await.unwrap();
     let (approved, _) = approve_run(
         &write,
+        None,
         replayed.id,
         replayed.revision,
         &replayed.digest(),
@@ -214,7 +219,7 @@ async fn a_digest_other_than_the_current_revisions_is_refused() {
     let write = fixture.database.write().await.unwrap();
     let other = action_digest(&fixture.cwd(), "ls -la");
     assert_eq!(
-        refusal(approve_run(&write, run.id, 1, &other, NOW).await),
+        refusal(approve_run(&write, None, run.id, 1, &other, NOW).await),
         Refusal::DigestMismatch
     );
 }
@@ -226,7 +231,7 @@ async fn a_request_nobody_asks_about_expires_and_cannot_be_approved() {
     let later = NOW + EXPIRES_AFTER_SECONDS;
     let write = fixture.database.write().await.unwrap();
     assert_eq!(
-        refusal(approve_run(&write, run.id, 1, &run.digest(), later).await),
+        refusal(approve_run(&write, None, run.id, 1, &run.digest(), later).await),
         Refusal::Expired
     );
     assert!(open_runs(&write, later).await.unwrap().is_empty());
@@ -246,9 +251,16 @@ async fn an_agent_waiting_for_its_answer_keeps_the_request_from_expiring() {
         .await
         .unwrap();
     let past_the_first_expiry = NOW + EXPIRES_AFTER_SECONDS + 60;
-    approve_run(&write, run.id, 1, &run.digest(), past_the_first_expiry)
-        .await
-        .unwrap();
+    approve_run(
+        &write,
+        None,
+        run.id,
+        1,
+        &run.digest(),
+        past_the_first_expiry,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -314,7 +326,7 @@ async fn a_decline_returns_the_request_as_it_now_reads() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "ls").await;
     let write = fixture.database.write().await.unwrap();
-    let declined = decline_run(&write, run.id, NOW).await.unwrap();
+    let declined = decline_run(&write, None, run.id, NOW).await.unwrap();
     assert_eq!(declined, stored(&write, run.id).await);
 }
 
@@ -323,10 +335,60 @@ async fn an_approval_returns_the_request_as_it_now_reads() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "ls").await;
     let write = fixture.database.write().await.unwrap();
-    let (_, approved) = approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE)
+    let (_, approved) = approve_run(&write, None, run.id, 1, &run.digest(), AFTER_GRACE)
         .await
         .unwrap();
     assert_eq!(approved, stored(&write, run.id).await);
+}
+
+#[tokio::test]
+async fn an_asking_request_records_no_decision() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    assert_eq!(run.decision, None);
+}
+
+#[tokio::test]
+async fn an_approval_records_when_and_through_which_client() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let write = fixture.database.write().await.unwrap();
+    approve_run(
+        &write,
+        Some(DecidedThrough::Tui),
+        run.id,
+        1,
+        &run.digest(),
+        AFTER_GRACE,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stored(&write, run.id).await.decision,
+        Some(RunDecision {
+            approved: true,
+            at: AFTER_GRACE,
+            through: Some(DecidedThrough::Tui),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_decline_records_when_and_through_which_client() {
+    let fixture = Fixture::new().await;
+    let run = fixture.asked(&session("s1"), "ls").await;
+    let write = fixture.database.write().await.unwrap();
+    decline_run(&write, Some(DecidedThrough::Cli), run.id, NOW)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored(&write, run.id).await.decision,
+        Some(RunDecision {
+            approved: false,
+            at: NOW,
+            through: Some(DecidedThrough::Cli),
+        })
+    );
 }
 
 #[tokio::test]
@@ -334,10 +396,10 @@ async fn a_declined_request_cannot_be_approved() {
     let fixture = Fixture::new().await;
     let run = fixture.asked(&session("s1"), "ls").await;
     let write = fixture.database.write().await.unwrap();
-    let declined = decline_run(&write, run.id, NOW).await.unwrap();
+    let declined = decline_run(&write, None, run.id, NOW).await.unwrap();
     assert_eq!(declined.state, RunState::Declined);
     assert_eq!(
-        refusal(approve_run(&write, run.id, 1, &run.digest(), NOW).await),
+        refusal(approve_run(&write, None, run.id, 1, &run.digest(), NOW).await),
         Refusal::AlreadyDecided { state: "declined" }
     );
 }
@@ -632,7 +694,7 @@ async fn an_ask_whose_session_may_no_longer_ask_cannot_be_approved() {
 
     let write = fixture.database.write().await.unwrap();
     assert_eq!(
-        refusal(approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE).await),
+        refusal(approve_run(&write, None, run.id, 1, &run.digest(), AFTER_GRACE).await),
         Refusal::AskerMayNotAsk
     );
 }
@@ -657,7 +719,7 @@ async fn an_ask_whose_session_may_no_longer_ask_can_still_be_declined() {
     fixture.revoke_all(&session("s1")).await;
 
     let write = fixture.database.write().await.unwrap();
-    let declined = decline_run(&write, run.id, NOW).await.unwrap();
+    let declined = decline_run(&write, None, run.id, NOW).await.unwrap();
     assert_eq!(declined.state, RunState::Declined);
 }
 
@@ -730,7 +792,7 @@ async fn an_ask_cannot_be_approved_once_its_session_is_granted_again() {
 
     let write = fixture.database.write().await.unwrap();
     assert_eq!(
-        refusal(approve_run(&write, run.id, 1, &run.digest(), AFTER_GRACE).await),
+        refusal(approve_run(&write, None, run.id, 1, &run.digest(), AFTER_GRACE).await),
         Refusal::AskerMayNotAsk
     );
 }
@@ -743,7 +805,7 @@ async fn a_stale_approval_of_an_ask_whose_session_may_no_longer_ask_names_the_se
 
     let write = fixture.database.write().await.unwrap();
     assert_eq!(
-        refusal(approve_run(&write, run.id, 2, &run.digest(), AFTER_GRACE).await),
+        refusal(approve_run(&write, None, run.id, 2, &run.digest(), AFTER_GRACE).await),
         Refusal::AskerMayNotAsk
     );
 }

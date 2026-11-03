@@ -66,6 +66,34 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE INDEX authorization_audit_by_target
                 ON authorization_audit (target, action, id);",
         },
+        // #657: the owner's decision on a start a coordinator asked for is audited beside
+        // the ask. SQLite cannot widen a CHECK in place, so the table is rebuilt; its rows
+        // are copied unchanged.
+        Migration {
+            version: 3,
+            sql: "CREATE TABLE authorization_audit_with_decisions (
+                id INTEGER PRIMARY KEY,
+                actor TEXT NOT NULL CHECK (actor <> ''),
+                permission TEXT NOT NULL,
+                grant_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('message', 'start', 'started',
+                    'approved', 'declined')),
+                target TEXT CHECK (target <> ''),
+                detail TEXT,
+                at INTEGER NOT NULL
+            );
+            INSERT INTO authorization_audit_with_decisions (id, actor, permission, grant_id,
+                    revision, action, target, detail, at)
+                SELECT id, actor, permission, grant_id, revision, action, target, detail, at
+                FROM authorization_audit;
+            DROP TABLE authorization_audit;
+            ALTER TABLE authorization_audit_with_decisions RENAME TO authorization_audit;
+            CREATE INDEX authorization_audit_by_actor
+                ON authorization_audit (actor, action, at);
+            CREATE INDEX authorization_audit_by_target
+                ON authorization_audit (target, action, id);",
+        },
     ],
 };
 

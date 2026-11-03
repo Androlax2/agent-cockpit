@@ -25,11 +25,11 @@ pub use redact::{redact_secrets, strip_terminal_controls};
 pub use restart::ended_after_restart;
 pub use rows::{EXPIRES_AFTER_SECONDS, Project, REFRESH_AFTER_SECONDS};
 pub use runs::{
-    APPROVAL_GRACE_SECONDS, Approved, Interrupted, RunAsk, RunId, RunRequest, RunResult, RunState,
-    StartAsk, StartSession, action_digest, approve_run, ask_run, ask_start, decline_run, edit_run,
-    finish_run, finish_start, interrupted_runs, may_ask, open_runs, queue_order, reconcile_run,
-    record_not_run, record_outcome_unknown, resolve_cwd, run_request, run_status,
-    run_status_if_fresh, shown_run, start_run, validate_start,
+    APPROVAL_GRACE_SECONDS, Approved, DecidedThrough, Interrupted, RunAsk, RunDecision, RunId,
+    RunRequest, RunResult, RunState, StartAsk, StartSession, action_digest, approve_run, ask_run,
+    ask_start, decline_run, edit_run, finish_run, finish_start, interrupted_runs, may_ask,
+    open_runs, queue_order, reconcile_run, record_not_run, record_outcome_unknown, resolve_cwd,
+    run_request, run_status, run_status_if_fresh, shown_run, start_run, validate_start,
 };
 
 /// The approvals tables. A run request keeps its asked command beside the current one, so an
@@ -143,6 +143,12 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
         Migration {
             version: 6,
             sql: "ALTER TABLE approvals_runs ADD COLUMN start_agent TEXT CHECK (start_agent <> '');",
+        },
+        // #657: the owner client a decision came through. Earlier decisions keep NULL.
+        Migration {
+            version: 7,
+            sql: "ALTER TABLE approvals_runs ADD COLUMN decided_through TEXT
+                CHECK (decided_through IN ('tui', 'cli'));",
         },
     ],
 };

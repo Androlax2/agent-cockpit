@@ -41,7 +41,7 @@ const KIND: &str = "run request";
 const RUN_COLUMNS: &str = "id, session, revision, command, asked_command, cwd, project,
         project_root, reason, state, asked_at, expires_at, exit_code, output,
         output_omitted_lines, output_truncated_bytes, redacted, note, revised_at, asking_grant,
-        kind, start_prompt, start_clone, start_agent";
+        kind, start_prompt, start_clone, start_agent, decided_at, decided_through";
 const START_PROMPT_MAX_CHARS: usize = 4000;
 const START_KIND: &str = "start-session";
 
@@ -145,6 +145,50 @@ pub struct RunRequest {
     /// A request to start a session (#410) rather than to run a command: the daemon starts
     /// it in [`RunRequest::cwd`] once approved, and `command` is how the owner reads it.
     pub start: Option<StartSession>,
+    /// The owner's decision (#657); `None` until the request leaves `asking`.
+    pub decision: Option<RunDecision>,
+}
+
+/// The owner's decision on a request: only the owner decides, so what it records is whether,
+/// when and through which client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunDecision {
+    pub approved: bool,
+    pub at: i64,
+    /// `None` when the client did not name itself, or the decision predates #657.
+    pub through: Option<DecidedThrough>,
+}
+
+/// The owner client a decision came through, as that client names itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecidedThrough {
+    Tui,
+    Cli,
+}
+
+impl DecidedThrough {
+    const ALL: [DecidedThrough; 2] = [DecidedThrough::Tui, DecidedThrough::Cli];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DecidedThrough::Tui => "tui",
+            DecidedThrough::Cli => "cli",
+        }
+    }
+
+    /// How the owner reads it: `TUI`, `CLI`.
+    pub fn label(self) -> &'static str {
+        match self {
+            DecidedThrough::Tui => "TUI",
+            DecidedThrough::Cli => "CLI",
+        }
+    }
+
+    fn parse(text: &str) -> Option<DecidedThrough> {
+        DecidedThrough::ALL
+            .into_iter()
+            .find(|through| through.as_str() == text)
+    }
 }
 
 /// The session a start request asks for, besides its directory, the request's `cwd` (#410).
@@ -695,14 +739,16 @@ pub async fn edit_run(
 
 pub async fn decline_run(
     write: &WriteTransaction<'_>,
+    through: Option<DecidedThrough>,
     id: RunId,
     now: i64,
 ) -> Result<RunRequest, Error> {
     undecided(write, id, now).await?;
     stored_run(
         write,
-        "UPDATE approvals_runs SET state = 'declined', decided_at = ?2 WHERE id = ?1",
-        (id.0, now),
+        "UPDATE approvals_runs SET state = 'declined', decided_at = ?2, decided_through = ?3
+             WHERE id = ?1",
+        (id.0, now, through.map(DecidedThrough::as_str)),
         now,
     )
     .await
@@ -712,9 +758,10 @@ pub async fn decline_run(
 /// here: the request leaves `asking` with the run intent in the same transaction, so a second
 /// approval, or one made on an older revision, is refused; so is one made within
 /// [`APPROVAL_GRACE_SECONDS`] of the revision appearing. Returns the run to carry out and
-/// the request as it now reads.
+/// the request as it now reads. `through` is recorded with the decision.
 pub async fn approve_run(
     write: &WriteTransaction<'_>,
+    through: Option<DecidedThrough>,
     id: RunId,
     revision: i64,
     digest: &str,
@@ -734,9 +781,15 @@ pub async fn approve_run(
     }
     let run = stored_run(
         write,
-        "UPDATE approvals_runs SET state = 'approved', decided_at = ?2, approved_digest = ?3
+        "UPDATE approvals_runs SET state = 'approved', decided_at = ?2, approved_digest = ?3,
+                decided_through = ?4
              WHERE id = ?1",
-        (id.0, now, current_digest),
+        (
+            id.0,
+            now,
+            current_digest,
+            through.map(DecidedThrough::as_str),
+        ),
         now,
     )
     .await?;
@@ -1098,7 +1151,28 @@ fn run_from(row: &Row, now: i64) -> Result<RunRequest, Error> {
         note: row.get(17)?,
         asking_grant: row.get(19)?,
         start: start_from(row, 20)?,
+        decision: decision_from(row, stored, 24)?,
     })
+}
+
+/// The decision read from `decided_at, decided_through` at `first`; `None` while asking.
+/// Every state after `asking` but `declined` follows an approval.
+fn decision_from(row: &Row, stored: RunState, first: usize) -> Result<Option<RunDecision>, Error> {
+    let Some(at) = row.get::<Option<i64>>(first)? else {
+        return Ok(None);
+    };
+    let through = match row.get::<Option<String>>(first + 1)? {
+        Some(text) => Some(
+            DecidedThrough::parse(&text)
+                .ok_or_else(|| invalid_row(TABLE, format!("decided through {text:?}")))?,
+        ),
+        None => None,
+    };
+    Ok(Some(RunDecision {
+        approved: stored != RunState::Declined,
+        at,
+        through,
+    }))
 }
 
 /// The start request read from `kind, start_prompt, start_clone, start_agent` at `first`;

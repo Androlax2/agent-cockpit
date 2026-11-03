@@ -34,6 +34,7 @@ async fn a_leader_that_fails_leaves_the_run_not_run_with_what_it_printed() {
     let after_grace = NOW + cockpit_approvals::APPROVAL_GRACE_SECONDS;
     let (approved, _) = approve_run(
         &write,
+        None,
         asked.id,
         asked.revision,
         &asked.digest(),

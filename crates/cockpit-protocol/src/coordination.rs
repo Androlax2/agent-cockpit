@@ -37,10 +37,13 @@ pub struct CoordinatorGrantView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoordinatorAuditView {
     pub id: i64,
-    /// The session that acted.
+    /// The session that acted; for `approved` and `declined`, the session whose start the
+    /// owner decided.
     pub actor: String,
     pub permission: String,
-    /// `message`, `start` (asked or made, counted by the cap) or `started`.
+    /// `message`, `start` (asked or made, counted by the cap; detail `without confirmation`
+    /// when nobody was asked), `started`, or the owner's `approved` / `declined` on an asked
+    /// start (#657).
     pub action: String,
     /// The session acted on; absent until a start's session exists.
     pub target: Option<String>,

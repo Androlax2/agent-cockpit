@@ -92,6 +92,7 @@ pub fn run(id: i64, session: &str, command: &str) -> RunRequestView {
         asked_at: 1,
         expires_at: 1000,
         waiting_for_input: false,
+        decision: None,
         result: None,
         note: None,
     }
@@ -102,6 +103,7 @@ pub fn waiting_run(id: i64, session: &str) -> RunRequestView {
     RunRequestView {
         state: RunStateView::Running,
         waiting_for_input: true,
+        decision: None,
         ..run(id, session, "read -r answer")
     }
 }

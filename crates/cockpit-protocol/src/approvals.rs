@@ -108,6 +108,30 @@ pub struct RunRequestView {
     pub result: Option<RunResultView>,
     /// Why the request ended without a result, or what is known about it.
     pub note: Option<String>,
+    /// The owner's decision, once made (#657); `None` while asking or once expired.
+    #[serde(default)]
+    pub decision: Option<RunDecisionView>,
+}
+
+/// The owner's decision on a run request (#657): only the owner decides, on the host-only
+/// socket; `through` is the client the owner used, as that client named itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunDecisionView {
+    pub approved: bool,
+    /// Seconds since 1970.
+    pub at: i64,
+    /// `None` for a client that did not name itself, or a decision recorded before #657.
+    pub through: Option<DecidedThroughView>,
+}
+
+/// The owner client a decision came through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DecidedThroughView {
+    /// A key in the terminal UI's approval pane.
+    Tui,
+    /// `torlek approval approve` or `decline`.
+    Cli,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

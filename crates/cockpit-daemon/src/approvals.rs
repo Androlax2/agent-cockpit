@@ -11,15 +11,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cockpit_agent_channel::{PeerAncestry, ProcessError, ProcessIdentity};
 use cockpit_approvals::{
-    Approved, GuideId, GuideRequest, GuideState, Hidden, NoResult, Project, Refusal, RunAsk, RunId,
-    RunRequest, RunResult, RunSettings, RunState, Runner, Shown, Syntax,
+    Approved, DecidedThrough, GuideId, GuideRequest, GuideState, Hidden, NoResult, Project,
+    Refusal, RunAsk, RunId, RunRequest, RunResult, RunSettings, RunState, Runner, Shown, Syntax,
 };
 use cockpit_authorization::SessionId;
 use cockpit_processes::ExecutionId;
 use cockpit_protocol::{
-    Command, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView, Outcome,
-    ProtocolError, Reply, RunRequestView, RunResultView, RunStateView, ShownText, Unblock,
-    UnblockedBy,
+    Command, DecidedThroughView, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView,
+    HiddenView, Outcome, ProtocolError, Reply, RunDecisionView, RunRequestView, RunResultView,
+    RunStateView, ShownText, Unblock, UnblockedBy,
 };
 use cockpit_turso::sql::Connection;
 use cockpit_turso::{Database, WriteTransaction};
@@ -447,10 +447,24 @@ pub(crate) fn route_decision(
                 request,
                 revision,
                 digest,
-            } => approve(database, runner, sessions, request, revision, &digest).await,
-            Command::ApprovalDecline { request } => {
+                through,
+            } => {
+                let through = through.map(decided_through);
+                approve(
+                    database, runner, sessions, request, revision, &digest, through,
+                )
+                .await
+            }
+            Command::ApprovalDecline { request, through } => {
                 let write = database.write().await?;
-                let run = cockpit_approvals::decline_run(&write, RunId(request), now()).await?;
+                let run = cockpit_approvals::decline_run(
+                    &write,
+                    through.map(decided_through),
+                    RunId(request),
+                    now(),
+                )
+                .await?;
+                crate::coordination::record_decision(&write, &run).await?;
                 write.commit().await?;
                 tracing::info!(request, "the owner declined a run");
                 Ok(run_reply(&run, &runner))
@@ -533,6 +547,20 @@ async fn existing_run(
     )
 }
 
+fn decided_through(through: DecidedThroughView) -> DecidedThrough {
+    match through {
+        DecidedThroughView::Tui => DecidedThrough::Tui,
+        DecidedThroughView::Cli => DecidedThrough::Cli,
+    }
+}
+
+fn through_view(through: DecidedThrough) -> DecidedThroughView {
+    match through {
+        DecidedThrough::Tui => DecidedThroughView::Tui,
+        DecidedThrough::Cli => DecidedThroughView::Cli,
+    }
+}
+
 /// Consumes the request with the run intent, then starts the run. The run is not the
 /// request's work: it outlives the reply, and a long command must not hold a control
 /// worker. A restart before it starts leaves it `not-run`, never repeated.
@@ -543,6 +571,7 @@ async fn approve(
     request: i64,
     revision: i64,
     digest: &str,
+    through: Option<DecidedThrough>,
 ) -> Answer {
     let write = database.write().await?;
     // Approval creates a durable future execution before Runner reserves its process.
@@ -565,7 +594,9 @@ async fn approve(
             ))
         })?;
     let (approved, run) =
-        cockpit_approvals::approve_run(&write, RunId(request), revision, digest, now()).await?;
+        cockpit_approvals::approve_run(&write, through, RunId(request), revision, digest, now())
+            .await?;
+    crate::coordination::record_decision(&write, &run).await?;
     write.commit().await?;
     tracing::info!(request, revision, "the owner approved a run");
     let reply = run_reply(&run, &runner);
@@ -887,6 +918,11 @@ fn run_view(
         asked_at: run.asked_at,
         expires_at: run.expires_at,
         waiting_for_input: run.state == RunState::Running && waiting_for_input.contains(&run.id),
+        decision: run.decision.map(|decision| RunDecisionView {
+            approved: decision.approved,
+            at: decision.at,
+            through: decision.through.map(through_view),
+        }),
         result: run.result.as_ref().map(|result| RunResultView {
             exit_code: result.exit_code,
             output: result.output.shown.clone(),

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
-use cockpit_approvals::{Approved, NoResult, Runner, StartAsk, StartSession};
+use cockpit_approvals::{Approved, NoResult, RunRequest, Runner, StartAsk, StartSession};
 use cockpit_authorization::{
     Actor, Audit, AuditEntry, AuditedAction, Basis, GrantId, Outcome, Permission, Refusal, Scope,
     SessionId as Holder, StartAllowance, StartTerms,
@@ -356,6 +356,8 @@ async fn start(
         );
         return Ok(crate::approvals::run_reply(&run, &context.runner));
     }
+    // An owner auditing the session must tell a start nobody confirmed from an owner's yes.
+    audit.detail = Some("without confirmation".to_owned());
     cockpit_authorization::record_audit(&write, &audit).await?;
     write.commit().await?;
     let started = context.sessions.start(start_request(dir, start)).await?;
@@ -492,6 +494,58 @@ fn start_request(dir: PathBuf, start: StartSession) -> StartRequest {
         first_message: start.prompt,
         clone_branch: start.clone,
     }
+}
+
+/// Audits the owner's decision on a start request beside its ask (#657), in the decision's
+/// transaction: the audit then tells an owner's yes or no from a start nobody confirmed.
+/// A command request has no coordinator grant to audit under. A start whose grant is not
+/// stored is decided all the same, unaudited and logged: the audit must not keep the owner
+/// from declining.
+pub(crate) async fn record_decision(
+    write: &cockpit_turso::WriteTransaction<'_>,
+    run: &RunRequest,
+) -> Result<(), Failed> {
+    let (Some(_), Some(decision)) = (&run.start, run.decision) else {
+        return Ok(());
+    };
+    let grant = match run.asking_grant() {
+        Some(id) => cockpit_authorization::stored_grant(write, id).await?,
+        None => None,
+    };
+    let Some(grant) = grant else {
+        tracing::warn!(
+            request = run.id.0,
+            "a decided start request names no stored start-sessions grant; the decision is not audited"
+        );
+        return Ok(());
+    };
+    let detail = match decision.through {
+        Some(through) => format!(
+            "approval request {}, by the owner through the {}",
+            run.id.0,
+            through.label()
+        ),
+        None => format!("approval request {}, by the owner", run.id.0),
+    };
+    cockpit_authorization::record_audit(
+        write,
+        &Audit {
+            actor: run.session.clone(),
+            permission: Permission::StartSessions,
+            grant: grant.id,
+            revision: cockpit_authorization::current_revision(write).await?,
+            action: if decision.approved {
+                AuditedAction::Approved
+            } else {
+                AuditedAction::Declined
+            },
+            target: None,
+            detail: Some(detail),
+            at: decision.at,
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 /// Audits the session a start made, with both sessions named.

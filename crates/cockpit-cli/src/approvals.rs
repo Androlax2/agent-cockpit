@@ -6,8 +6,10 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
+use chrono::{DateTime, Local};
 use cockpit_protocol::{
-    Command, GuideStateView, GuideView, HiddenView, Reply, RunRequestView, RunStateView, ShownText,
+    Command, DecidedThroughView, GuideStateView, GuideView, HiddenView, Reply, RunDecisionView,
+    RunRequestView, RunStateView, ShownText,
 };
 
 /// The command a verb sends, or the usage problem that stops it.
@@ -24,10 +26,12 @@ pub(crate) fn parse(verb: &str, arguments: &[OsString]) -> Result<Command, Strin
                 request: id_of(id)?,
                 revision: id_of(revision)?,
                 digest: (*digest).to_owned(),
+                through: Some(DecidedThroughView::Cli),
             }
         }
         ("approval", ["decline", id]) => Command::ApprovalDecline {
             request: id_of(id)?,
+            through: Some(DecidedThroughView::Cli),
         },
         ("approval", ["edit", id, "--revision", revision, command]) => Command::ApprovalEdit {
             request: id_of(id)?,
@@ -228,6 +232,9 @@ fn run_detail(run: &RunRequestView) -> String {
         crate::ask::state_name(run.state),
         run.session
     );
+    if let Some(decision) = &run.decision {
+        let _ = writeln!(text, "{}", decision_line(decision));
+    }
     if run.asked_command.is_some() {
         text.push_str("  ! edited by the owner since the agent asked\n");
     }
@@ -271,6 +278,35 @@ fn run_detail(run: &RunRequestView) -> String {
         );
     }
     text
+}
+
+/// `decided: approved by the owner through the TUI at <local time>` (#657). Only the owner
+/// decides; the client is the one the owner used, as it named itself.
+fn decision_line(decision: &RunDecisionView) -> String {
+    let verdict = if decision.approved {
+        "approved"
+    } else {
+        "declined"
+    };
+    let through = match decision.through {
+        Some(DecidedThroughView::Tui) => " through the TUI",
+        Some(DecidedThroughView::Cli) => " through the CLI",
+        None => "",
+    };
+    let at = DateTime::from_timestamp(decision.at, 0).map_or_else(
+        || format!("{} (seconds since 1970)", decision.at),
+        |at| {
+            at.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+        },
+    );
+    let unnamed = if decision.through.is_none() {
+        " (the client did not name itself)"
+    } else {
+        ""
+    };
+    format!("decided: {verdict} by the owner{through} at {at}{unnamed}")
 }
 
 /// The directory a request works in, its hidden characters, and where it lies against the

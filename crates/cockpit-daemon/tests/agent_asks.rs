@@ -133,6 +133,7 @@ async fn a_launched_agents_ask_run_reaches_the_owner_and_hears_the_decline() {
         .request(
             Command::ApprovalDecline {
                 request: request.id,
+                through: None,
             },
             GENEROUS,
         )
@@ -191,6 +192,7 @@ async fn an_ask_run_of_a_session_that_ended_cannot_be_approved() {
                 request: run.id,
                 revision: run.revision,
                 digest: run.digest.clone(),
+                through: None,
             },
             GENEROUS,
         )

@@ -6,7 +6,9 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{Command, GuideView, HiddenView, ManagerPaneView, Reply, RunRequestView};
+use cockpit_protocol::{
+    Command, DecidedThroughView, GuideView, HiddenView, ManagerPaneView, Reply, RunRequestView,
+};
 use cockpit_tui::{App, Focus, INPUT_GRACE, Key, Shown};
 use common::{
     answer, app_with, folded, guide, hidden, press, queue, run, screen_text, sent, session, typing,
@@ -249,6 +251,7 @@ fn y_after_the_grace_approves_the_revision_and_digest_shown() {
             request: 3,
             revision: 1,
             digest: "digest-3-1".to_owned(),
+            through: Some(DecidedThroughView::Tui),
         }]
     );
 }
@@ -313,6 +316,7 @@ fn an_edited_revision_starts_the_grace_again_and_the_approval_names_it() {
             request: 3,
             revision: 2,
             digest: "digest-3-2".to_owned(),
+            through: Some(DecidedThroughView::Tui),
         }]
     );
 }
@@ -456,7 +460,10 @@ fn x_declines_a_run_and_closes_a_guide() {
     assert_eq!(
         (declined.send, closed.send),
         (
-            vec![Command::ApprovalDecline { request: 3 }],
+            vec![Command::ApprovalDecline {
+                request: 3,
+                through: Some(DecidedThroughView::Tui),
+            }],
             vec![Command::GuideClose { guide: 4 }]
         )
     );
