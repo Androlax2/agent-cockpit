@@ -24,7 +24,8 @@ fn documented_sign_in_answers_are_reported_without_account_details() {
     let SignInStatus::NotSignedIn { next } = answer.status else {
         panic!("{answer:?}")
     };
-    assert!(next.contains("claude auth login"));
+    assert!(next.contains("`/login`"), "{next}");
+    assert!(!next.contains("claude auth login"), "{next}");
 }
 
 #[test]

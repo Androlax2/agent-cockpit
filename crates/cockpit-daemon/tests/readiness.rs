@@ -128,7 +128,7 @@ exit "$(cat "$HOME/sign-in.exit")"
             r#"{"loggedIn":false}"#,
             "1",
             "needs-authorization",
-            Some("claude auth login"),
+            Some("`/login`"),
             "todo",
         ),
         (
@@ -154,12 +154,25 @@ exit "$(cat "$HOME/sign-in.exit")"
         assert!(!report.contains("private"), "{report}");
         let init = home.cockpit(&["init"], &[]).await;
         let checklist = text(&init.stdout);
+        let sign_in_step: Vec<&str> = checklist
+            .lines()
+            .skip_while(|line| !line.contains("Sign in"))
+            .take_while(|line| !line.is_empty())
+            .collect();
         assert!(
-            checklist
-                .lines()
-                .any(|line| line.contains("Sign in") && line.contains(onboarding)),
+            sign_in_step
+                .first()
+                .is_some_and(|line| line.contains(onboarding)),
             "{checklist}"
         );
+        if let Some(command) = next_command {
+            assert!(
+                sign_in_step
+                    .iter()
+                    .any(|line| line.trim_start().starts_with("next: ") && line.contains(command)),
+                "{checklist}"
+            );
+        }
     }
 }
 
