@@ -45,6 +45,8 @@ class CiJobSelectionTests(unittest.TestCase):
             "docs/DEVELOPMENT.md": {"docs"},
             "docs/design/greenfield/20-refactoring-plan.md": {"docs"},
             "README.md": {"docs"},
+            "tools/docs-lint/package.json": EVERY_JOB,
+            "tools/docs-lint/package-lock.json": EVERY_JOB,
             "site/src/components/Search.tsx": {"docs"},
             "site/scripts/content.mjs": {"docs"},
         }
