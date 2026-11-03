@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use cockpit_config::{AgentSandbox, EffectiveConfig, Environment};
 use cockpit_readiness::{
     CheckoutFacts, ControlFacts, DockerEngine, HostFacts, Platform, PresetFacts, ProjectFacts,
-    ProjectNeeds, ProviderFacts, ProviderFound, Report, Requirement, SandboxEngine, Status, Trust,
-    assess, needs_docker,
+    ProjectNeeds, ProviderFacts, ProviderFound, ProviderUnusable, Report, Requirement,
+    SandboxEngine, Status, Trust, assess, needs_docker,
 };
 use tempfile::TempDir;
 
@@ -152,7 +152,7 @@ fn every_requirement_that_is_not_available_names_its_next_action() {
         sandbox_engine: Err("no greywall".to_owned()),
         providers: vec![ProviderFacts {
             name: "claude".to_owned(),
-            found: Err("no `claude` on PATH".to_owned()),
+            found: Err(ProviderUnusable::NotOnPath),
         }],
         controls: Vec::new(),
         ..ready_host()
@@ -257,7 +257,7 @@ fn a_host_fact_decides_its_requirement_status() {
 fn missing(name: &str) -> ProviderFacts {
     ProviderFacts {
         name: name.to_owned(),
-        found: Err(format!("no `{name}` on PATH")),
+        found: Err(ProviderUnusable::NotOnPath),
     }
 }
 

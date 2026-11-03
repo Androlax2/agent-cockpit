@@ -265,12 +265,13 @@ impl OpenCode {
             reason,
         };
         let output = process::run_with_deadline(program, "--version", deadline).map_err(failed)?;
-        let version = output
-            .split_whitespace()
-            .next()
-            .map(|word| word.strip_prefix('v').unwrap_or(word))
-            .filter(|word| is_dotted_version(word))
-            .ok_or_else(|| failed(format!("`--version` printed {output:?}, not a version")))?;
+        // `1.19.5`, `v1.19.5` or, from OpenCode 2, `opencode v2.1.4` (#623).
+        let version = match output.split_whitespace().collect::<Vec<_>>()[..] {
+            ["opencode", word, ..] | [word, ..] => Some(word.strip_prefix('v').unwrap_or(word)),
+            [] => None,
+        }
+        .filter(|word| is_dotted_version(word))
+        .ok_or_else(|| failed(format!("`--version` printed {output:?}, not a version")))?;
         Ok(OpenCode::new(
             program.to_path_buf(),
             Some(version.to_owned()),

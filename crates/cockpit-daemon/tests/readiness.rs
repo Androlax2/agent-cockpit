@@ -195,8 +195,8 @@ async fn a_host_with_its_programs_reports_them_available_and_exits_0() {
     assert!(next.is_some(), "{report}");
 }
 
-/// #411: one usable provider is enough; one that does not run is listed with how to install
-/// it and the report still passes.
+/// #411: one usable provider is enough; one that does not run is listed as optional and the
+/// report still passes. #623: it is already on PATH, so the advice is not to install it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_does_not_run_is_listed_as_optional_and_exits_0() {
     let home = Home::new();
@@ -211,10 +211,9 @@ async fn a_provider_that_does_not_run_is_listed_as_optional_and_exits_0() {
     assert!(doctor.status.success(), "{report}{}", text(&doctor.stderr));
     let (line, next) = requirement(&report, "provider codex");
     assert!(line.contains("not usable, optional"), "{line}");
-    assert!(
-        next.is_some_and(|next| next.contains("install codex")),
-        "{report}"
-    );
+    let next = next.unwrap_or_else(|| panic!("no next action in:\n{report}"));
+    assert!(next.contains("`codex --version`"), "{next}");
+    assert!(!next.contains("install"), "{next}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

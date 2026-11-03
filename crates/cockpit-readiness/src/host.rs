@@ -2,7 +2,9 @@
 
 use cockpit_config::{AgentSandbox, ConfigFile, EffectiveConfig, KNOWN_PROVIDERS};
 
-use crate::{ControlFacts, Platform, ProviderFacts, Requirement, SandboxEngine, Status};
+use crate::{
+    ControlFacts, Platform, ProviderFacts, ProviderUnusable, Requirement, SandboxEngine, Status,
+};
 
 const RESTART: &str = "then restart the daemon";
 
@@ -166,11 +168,24 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
     let name = format!("provider {}", provider.name);
     let found = match &provider.found {
         Ok(found) => found,
-        Err(reason) => {
+        Err(ProviderUnusable::NotOnPath) => {
+            return vec![
+                Requirement::available(
+                    name,
+                    format!("not usable, optional: no `{}` on PATH", provider.name),
+                )
+                .with_advice(format!(
+                    "to use it, install {} on the daemon's PATH, {RESTART}",
+                    provider.name
+                )),
+            ];
+        }
+        Err(ProviderUnusable::Refused { reason }) => {
             return vec![
                 Requirement::available(name, format!("not usable, optional: {reason}"))
                     .with_advice(format!(
-                        "to use it, install {} on the daemon's PATH, {RESTART}",
+                        "to use it, make `{} --version` print its version as the daemon's user, \
+                         or report its output as a Torlek bug if it already does, {RESTART}",
                         provider.name
                     )),
             ];

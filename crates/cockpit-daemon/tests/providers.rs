@@ -129,6 +129,22 @@ fn opencode_on_the_path_is_wired_with_its_version_tested() {
     );
 }
 
+/// #623: OpenCode 2 prints `opencode v2.1.4`.
+#[test]
+fn opencode_that_prints_its_name_before_the_version_is_wired() {
+    let bin = tempfile::tempdir().unwrap();
+    fake_program(bin.path(), "opencode", "echo 'opencode v2.1.4'");
+    let home = home_with_path(bin.path());
+    let _daemon = home.start();
+
+    let log = home.log_once_it_contains("provider opencode");
+
+    assert!(
+        log.contains("provider opencode ready version=2.1.4 provenance=unverified"),
+        "{log}"
+    );
+}
+
 #[test]
 fn without_opencode_the_daemon_starts_and_says_so() {
     let empty = tempfile::tempdir().unwrap();

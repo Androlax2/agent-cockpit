@@ -79,7 +79,7 @@ pub struct Wiring {
     pub providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
     /// The providers the start looked for and could not wire, each with why: the readiness
     /// report names them (#50).
-    pub unavailable_providers: Vec<(String, String)>,
+    pub unavailable_providers: Vec<(String, cockpit_readiness::ProviderUnusable)>,
     pub sessions: cockpit_sessions::Settings,
     /// The owner's desktop session variables agents get until the owner imports others
     /// (#307): the daemon start's.
@@ -304,10 +304,10 @@ impl Instance {
             .providers
             .iter()
             .map(|provider| readiness::provider_found(provider.as_ref()))
-            .chain(wiring.unavailable_providers.iter().map(|(name, reason)| {
+            .chain(wiring.unavailable_providers.iter().map(|(name, unusable)| {
                 cockpit_readiness::ProviderFacts {
                     name: name.clone(),
-                    found: Err(reason.clone()),
+                    found: Err(unusable.clone()),
                 }
             }))
             .collect();
