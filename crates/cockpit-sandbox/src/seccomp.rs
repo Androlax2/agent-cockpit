@@ -2,12 +2,13 @@
 //!
 //! The pinned greywall writes it to `$TMPDIR/greywall-seccomp`, `/tmp/greywall-seccomp`
 //! without `TMPDIR`: one folder for every user of the host, owner-only, owned by whoever ran
-//! greywall first. Every other user's sandbox then exits at its start, and a folder owned by
-//! another user lets that user replace the filter. The check writes a file there as greywall
-//! would, so the failure shows before a session starts.
+//! greywall first. Every other user's sandbox then exits at its start, and a folder others
+//! can write lets them replace the filter. The check writes a file there as greywall would,
+//! so the failure shows before a session starts. An absent folder still leaves a window
+//! between the check and greywall's start that only a greywall writing per user closes.
 
 use std::ffi::{OsStr, OsString};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// The folder greywall's runtime keeps its seccomp filters in.
@@ -42,62 +43,63 @@ pub(crate) fn seccomp_filter_dir(environment: &[(OsString, OsString)]) -> PathBu
 /// Writes and removes a file in `dir` as greywall writes its filter there. An absent folder
 /// passes: greywall creates it owner-only for this user.
 pub(crate) fn check_filter_write(dir: &Path) -> Result<(), FilterWriteFailure> {
+    let shown = dir.display();
     let found = match std::fs::symlink_metadata(dir) {
         Ok(found) => found,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(FilterWriteFailure {
-                reason: format!("greywall cannot read {}: {error}", dir.display()),
-                next: format!("make {} readable to this user or remove it", dir.display()),
+                reason: format!("greywall cannot read its seccomp folder {shown}: {error}"),
+                next: format!("make {shown} readable to this user or remove it"),
             });
         }
     };
-    let described = format!(
-        "{} (owner uid {}, mode {:o})",
-        dir.display(),
-        found.uid(),
-        found.permissions().mode() & 0o7777
-    );
-    let shared = |reason: String| FilterWriteFailure {
-        reason,
-        next: format!(
-            "the pinned greywall keeps one seccomp folder for every user of this host (#628); \
-             until a greywall release writes it per user, have uid {} remove {} while none of \
-             its sandboxes starts, or run sandboxed agents as that user",
-            found.uid(),
-            dir.display()
-        ),
-    };
-    if !found.is_dir() {
-        return Err(shared(format!(
-            "greywall writes its seccomp filter in {described}, which is not a folder"
-        )));
-    }
-    let probe = dir.join(format!(".torlek-filter-probe-{}", std::process::id()));
-    // `create_new` never follows a link planted at the probe's name.
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&probe)
-        .and_then(|file| file.metadata());
-    let written = match written {
-        Ok(written) => written,
-        Err(error) => {
-            return Err(shared(format!(
-                "greywall cannot write its seccomp filter in {described}: {error}; every \
-                 sandboxed agent exits at its start"
-            )));
+    let own_uid = std::fs::metadata("/proc/self")
+        .map_err(|error| FilterWriteFailure {
+            reason: format!("this user's id is unknown: /proc/self: {error}"),
+            next: "run the daemon with /proc mounted".to_owned(),
+        })?
+        .uid();
+    let mode = found.permissions().mode() & 0o7777;
+    let described = format!("{shown} (owner uid {}, mode {mode:o})", found.uid());
+    let refuse = |problem: String| {
+        let next = if found.uid() == own_uid {
+            format!("remove {shown}; greywall recreates it owner-only at the next launch")
+        } else {
+            format!(
+                "the pinned greywall keeps one seccomp folder for every user of this host \
+                 (#628); until a greywall release writes it per user, have uid {} remove \
+                 {shown} while none of its sandboxes starts, or run sandboxed agents as that \
+                 user",
+                found.uid()
+            )
+        };
+        FilterWriteFailure {
+            reason: format!("greywall's seccomp folder {described} {problem}"),
+            next,
         }
     };
-    if let Err(error) = std::fs::remove_file(&probe) {
-        tracing::warn!(%error, probe = %probe.display(), "the seccomp folder probe stays");
+    if !found.is_dir() {
+        return Err(refuse("is not a folder".to_owned()));
     }
-    if written.uid() != found.uid() {
-        return Err(shared(format!(
-            "greywall writes its seccomp filter in {described}, another user's folder, \
-             where that user could replace the filter before the sandbox loads it"
-        )));
+    if found.uid() != own_uid {
+        return Err(refuse(
+            "is another user's, who could replace the filter before the sandbox loads it"
+                .to_owned(),
+        ));
     }
-    Ok(())
+    if mode & 0o022 != 0 {
+        return Err(refuse(
+            "is writable by other users, who could replace the filter before the sandbox \
+             loads it"
+                .to_owned(),
+        ));
+    }
+    // A random name of its own, created exclusively: concurrent checks never collide, and
+    // a link planted at the name is never followed. Removed when dropped.
+    tempfile::Builder::new()
+        .prefix(".torlek-filter-probe-")
+        .tempfile_in(dir)
+        .map(drop)
+        .map_err(|error| refuse(format!("cannot be written: {error}")))
 }

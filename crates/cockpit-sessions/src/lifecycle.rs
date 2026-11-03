@@ -1493,7 +1493,7 @@ impl Sessions {
 
     /// The variables every agent starts with before its provider's own: the base ones, then
     /// the owner's desktop session while the owner shares it.
-    pub fn launch_environment(&self) -> Vec<(OsString, OsString)> {
+    fn launch_environment(&self) -> Vec<(OsString, OsString)> {
         let mut environment = self.settings.base_environment.clone();
         if self.desktop_session() == crate::DesktopSession::Shared {
             environment.extend(
@@ -1546,6 +1546,14 @@ impl Sessions {
                 arguments,
             )
             .map_err(Error::Sandbox)
+    }
+
+    /// Whether the sandbox engine can write the seccomp filter a launch loads (#628), in
+    /// the folder the agents' environment gives it. Blocking: it writes a file.
+    pub fn check_seccomp_filter(&self) -> Result<(), cockpit_sandbox::FilterWriteFailure> {
+        self.settings
+            .sandbox
+            .check_seccomp_filter(&self.launch_environment())
     }
 
     /// `cockpit sandbox show`: the sandbox a new session of `provider` in `dir` would get,

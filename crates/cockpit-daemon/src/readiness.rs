@@ -112,6 +112,16 @@ pub(crate) fn route(project: Option<String>, context: Context) -> Route {
 async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, String> {
     let mut host = host_facts(&context);
     if host.sandbox_setting == cockpit_config::AgentSandbox::Required {
+        let sessions = context.sessions.clone();
+        let blocked = tokio::task::spawn_blocking(move || sessions.check_seccomp_filter().err())
+            .await
+            .map_err(|error| error.to_string())?;
+        if let (Ok(engine), Some(failure)) = (&mut host.sandbox_engine, blocked) {
+            engine.blocked = Some(SandboxBlocked {
+                detail: failure.reason,
+                next: failure.next,
+            });
+        }
         let sandbox = context.sandbox.clone();
         let profile = context.environment.profile.value.clone();
         host.sandbox_proxy = tokio::task::spawn_blocking(move || match sandbox.proxy() {
@@ -256,14 +266,7 @@ fn host_facts(context: &Context) -> HostFacts {
             .map(|engine| SandboxEngine {
                 engine: engine.engine(),
                 observations: engine.observations(),
-                blocked: context
-                    .sandbox
-                    .check_seccomp_filter(&context.sessions.launch_environment())
-                    .err()
-                    .map(|failure| SandboxBlocked {
-                        detail: failure.reason,
-                        next: failure.next,
-                    }),
+                blocked: None,
             })
             .map_err(str::to_owned),
         sandbox_setting: context.sessions.owner_settings().sandbox,

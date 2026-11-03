@@ -206,7 +206,11 @@ fn prepare_in(
 
 #[test]
 fn a_seccomp_folder_greywall_cannot_write_refuses_the_launch_naming_the_cause() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    if std::fs::metadata("/proc/self").unwrap().uid() == 0 {
+        eprintln!("skipped: root writes a read-only folder");
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let folder = temp.path().join("greywall-seccomp");
     std::fs::create_dir(&folder).unwrap();
@@ -220,7 +224,24 @@ fn a_seccomp_folder_greywall_cannot_write_refuses_the_launch_naming_the_cause() 
         refused.reason.contains(&folder.display().to_string()),
         "{refused}"
     );
-    assert!(refused.reason.contains("#628"), "{refused}");
+    assert!(refused.reason.contains("cannot be written"), "{refused}");
+}
+
+#[test]
+fn a_seccomp_folder_other_users_can_write_refuses_the_launch() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("greywall-seccomp");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+    let refused = prepare_in(temp.path()).unwrap_err();
+
+    assert_eq!(refused.rule, "seccomp filter");
+    assert!(
+        refused.reason.contains("writable by other users"),
+        "{refused}"
+    );
 }
 
 #[test]
