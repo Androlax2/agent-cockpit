@@ -1,4 +1,3 @@
-import hashlib
 import importlib.util
 import json
 import os
@@ -28,6 +27,8 @@ release = load("release", ROOT / "tools/release.py")
 render = load("aur_render", RENDER)
 HAS_MAKEPKG = shutil.which("makepkg") is not None
 HAS_VERCMP = shutil.which("vercmp") is not None
+# makepkg refuses to run as root, which is an environment limit, not a recipe regression.
+CAN_BUILD = HAS_MAKEPKG and os.geteuid() != 0
 
 
 def sums_for(digests):
@@ -59,10 +60,18 @@ class PackageVersionTest(unittest.TestCase):
             with self.subTest(tag=tag):
                 self.assertEqual(render.package_version(tag), expected)
 
-    def test_refuses_tags_outside_the_prerelease_grammar(self):
-        for tag in ["v0.1.0-alpha.1", "0.1.0", "0.1.0-dev.3", "0.1.0-alpha.0", "01.0.0-alpha.1"]:
-            with self.subTest(tag=tag), self.assertRaises(render.Refusal):
+    def test_refuses_tags_outside_the_release_grammar(self):
+        for tag in ["v0.1.0-alpha.1", "0.1.0-dev.3", "0.1.0-alpha.0", "01.0.0-alpha.1"]:
+            with self.subTest(tag=tag), self.assertRaisesRegex(render.Refusal, "not a release tag"):
                 render.package_version(tag)
+
+    def test_refuses_a_stable_tag_until_one_exists(self):
+        with self.assertRaisesRegex(render.Refusal, "no stable release"):
+            render.package_version("0.1.0")
+
+    def test_a_v_prefixed_tag_is_refused_before_the_checksums_are_read(self):
+        with self.assertRaisesRegex(render.Refusal, "given without its v"):
+            render.recipe("v0.1.0-alpha.1", "not read\n")
 
     @unittest.skipUnless(HAS_VERCMP, "vercmp (pacman) is not installed")
     def test_pacman_orders_alpha_before_beta_before_the_stable_core(self):
@@ -108,9 +117,43 @@ class RecipeTest(unittest.TestCase):
         text = render.recipe(TAG, release_sums())
         self.assertIn("_tag=0.1.0-alpha.1\n", text)
         self.assertIn("pkgver=0.1.0alpha.1\n", text)
+        self.assertIn("pkgrel=1\n", text)
         self.assertIn(f"sha256sums_x86_64=('{'1' * 64}')", text)
         self.assertIn(f"sha256sums_aarch64=('{'2' * 64}')", text)
         self.assertNotRegex(text, r"@[A-Z0-9_]+@")
+
+    def test_a_recipe_only_fix_raises_pkgrel(self):
+        self.assertIn("pkgrel=2\n", render.recipe(TAG, release_sums(), pkgrel=2))
+
+    def test_refuses_a_pkgrel_below_one(self):
+        with self.assertRaisesRegex(render.Refusal, "starts at 1"):
+            render.recipe(TAG, release_sums(), pkgrel=0)
+
+    def test_render_leaves_nothing_when_makepkg_is_missing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            sums = Path(folder) / "SHA256SUMS"
+            sums.write_text(release_sums())
+            out = Path(folder) / "recipe"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(RENDER),
+                    "render",
+                    "--tag",
+                    TAG,
+                    "--sums",
+                    str(sums),
+                    "--out",
+                    str(out),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={**os.environ, "PATH": folder},
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("makepkg is missing", result.stderr)
+            self.assertEqual(list(out.iterdir()), [])
 
     def test_never_downloads_a_moving_url(self):
         text = render.recipe(TAG, release_sums())
@@ -153,7 +196,7 @@ class RecipeTest(unittest.TestCase):
             self.assertEqual((Path(folder) / "PKGBUILD").read_text(), "kept\n")
 
 
-@unittest.skipUnless(HAS_MAKEPKG, "makepkg is not installed")
+@unittest.skipUnless(CAN_BUILD, "makepkg is not installed or this runs as root")
 class FixturePackageTest(unittest.TestCase):
     """makepkg builds the recipe from a release.py bundle of stand-in programs; no install."""
 
@@ -179,9 +222,8 @@ class FixturePackageTest(unittest.TestCase):
             ROOT,
         )
         archive = Path(bundle["archive"])
-        with archive.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        checksums = {"x86_64": "1" * 64, "aarch64": "2" * 64, architecture: digest}
+        checksums = {"x86_64": "1" * 64, "aarch64": "2" * 64}
+        checksums[architecture] = release.sha256_of(archive)
         sums = work / "SHA256SUMS"
         sums.write_text(release_sums(**checksums))
         recipe = work / "recipe"

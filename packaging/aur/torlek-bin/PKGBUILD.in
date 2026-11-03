@@ -8,7 +8,7 @@
 pkgname=torlek-bin
 _tag=@TAG@
 pkgver=@PKGVER@
-pkgrel=1
+pkgrel=@PKGREL@
 pkgdesc='Agent session cockpit: CLI, terminal UI and per-user daemon (prebuilt release)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/Androlax2/agent-cockpit'

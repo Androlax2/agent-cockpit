@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the torlek-bin AUR recipe for one published release (docs/packaging/aur.md, #562).
 
-Usage: render.py render --tag 0.1.0-alpha.1 --sums SHA256SUMS --out DIR
+Usage: render.py render --tag 0.1.0-alpha.1 --sums SHA256SUMS --out DIR [--pkgrel N]
        render.py check-srcinfo DIR
 
 `render` fills packaging/aur/torlek-bin/PKGBUILD.in with the tag and the two Linux archive
@@ -11,17 +11,16 @@ Nothing here downloads, builds, installs or publishes.
 """
 
 import argparse
+import importlib.util
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 TEMPLATE = Path(__file__).resolve().parent / "torlek-bin/PKGBUILD.in"
+RELEASE_TOOL = Path(__file__).resolve().parents[2] / "tools/release.py"
 # The Alpha1 plan's archives (tools/release.py ALPHA1_PLATFORMS), keyed by pacman's CARCH.
 ARCHITECTURES = {"x86_64": "linux-x86_64", "aarch64": "linux-aarch64"}
-# Only prerelease tags exist until Theo decides a stable channel (docs/RELEASING.md#tags).
-TAG_PATTERN = re.compile(
-    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-(?:alpha|beta)\.[1-9][0-9]*"
-)
 SUMS_LINE = re.compile(r"([0-9a-f]{64})  (\S+)")
 
 
@@ -29,11 +28,24 @@ class Refusal(Exception):
     pass
 
 
+def release_tool():
+    spec = importlib.util.spec_from_file_location("release", RELEASE_TOOL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def package_version(tag):
     """pacman's vercmp puts `0.1.0alpha.1` before `0.1.0beta.1` before `0.1.0`; a hyphen
-    is not allowed in pkgver, and `0.1.0_alpha.1` or `0.1.0.alpha.1` would sort after 0.1.0."""
-    if not TAG_PATTERN.fullmatch(tag):
-        raise Refusal(f"{tag!r}: not an X.Y.Z-alpha.N or X.Y.Z-beta.N release tag (without v)")
+    is not allowed in pkgver, and `0.1.0_alpha.1` or `0.1.0.alpha.1` would sort after 0.1.0.
+    The tag grammar is release.py's; only prereleases exist (docs/RELEASING.md#tags)."""
+    release = release_tool()
+    try:
+        channel = release.parse_tag(f"v{tag}")["channel"]
+    except release.Refusal as error:
+        raise Refusal(f"{tag!r}: not a release tag, given without its v: {error}") from error
+    if channel == "stable":
+        raise Refusal(f"{tag!r}: no stable release exists to package")
     return tag.replace("-", "", 1)
 
 
@@ -56,11 +68,15 @@ def archive_checksums(tag, sums_text):
     return selected
 
 
-def recipe(tag, sums_text):
+def recipe(tag, sums_text, pkgrel=1):
+    pkgver = package_version(tag)
+    if pkgrel < 1:
+        raise Refusal(f"pkgrel {pkgrel}: starts at 1")
     checksums = archive_checksums(tag, sums_text)
     values = {
         "@TAG@": tag,
-        "@PKGVER@": package_version(tag),
+        "@PKGVER@": pkgver,
+        "@PKGREL@": str(pkgrel),
         "@SHA256_X86_64@": checksums["x86_64"],
         "@SHA256_AARCH64@": checksums["aarch64"],
     }
@@ -91,13 +107,19 @@ def printed_srcinfo(directory):
     return result.stdout
 
 
-def render(tag, sums, out):
-    out.mkdir(parents=True, exist_ok=True)
+def render(tag, sums, out, pkgrel=1):
+    """Both files appear together or not at all, so a failed makepkg leaves nothing to retry around."""
     for name in ("PKGBUILD", ".SRCINFO"):
         if (out / name).exists():
             raise Refusal(f"{out / name} exists; render into a directory without a recipe")
-    (out / "PKGBUILD").write_text(recipe(tag, sums.read_text()))
-    (out / ".SRCINFO").write_text(printed_srcinfo(out))
+    text = recipe(tag, sums.read_text(), pkgrel)
+    out.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="torlek-aur-", dir=out) as folder:
+        staged = Path(folder)
+        (staged / "PKGBUILD").write_text(text)
+        (staged / ".SRCINFO").write_text(printed_srcinfo(staged))
+        (staged / ".SRCINFO").replace(out / ".SRCINFO")
+        (staged / "PKGBUILD").replace(out / "PKGBUILD")
 
 
 def check_srcinfo(directory):
@@ -113,13 +135,15 @@ def main():
     render_command.add_argument("--tag", required=True)
     render_command.add_argument("--sums", type=Path, required=True)
     render_command.add_argument("--out", type=Path, required=True)
+    render_command.add_argument("--pkgrel", type=int, default=1)
     check_command = commands.add_parser("check-srcinfo")
     check_command.add_argument("directory", type=Path)
     arguments = parser.parse_args()
     try:
         if arguments.command == "render":
-            render(arguments.tag, arguments.sums, arguments.out)
-            print(f"Rendered torlek-bin {package_version(arguments.tag)} into {arguments.out}")
+            render(arguments.tag, arguments.sums, arguments.out, arguments.pkgrel)
+            version = f"{package_version(arguments.tag)}-{arguments.pkgrel}"
+            print(f"Rendered torlek-bin {version} into {arguments.out}")
         else:
             check_srcinfo(arguments.directory)
             print(f"{arguments.directory}/.SRCINFO matches its PKGBUILD")

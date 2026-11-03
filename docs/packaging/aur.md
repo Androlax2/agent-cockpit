@@ -15,7 +15,7 @@ no installed path, so both can stay installed.
 | File | Role |
 | --- | --- |
 | [packaging/aur/torlek-bin/PKGBUILD.in](../../packaging/aur/torlek-bin/PKGBUILD.in) | The reviewed recipe, with the tag and checksums as `@TOKEN@`s |
-| [packaging/aur/render.py](../../packaging/aur/render.py) | `render` fills it from one release's `SHA256SUMS` and writes `.SRCINFO` with `makepkg --printsrcinfo`; `check-srcinfo` refuses a stale `.SRCINFO` |
+| [packaging/aur/render.py](../../packaging/aur/render.py) | `render` fills it from one release's `SHA256SUMS` (and `--pkgrel`), writing `PKGBUILD` and its `makepkg --printsrcinfo` together or neither; `check-srcinfo` refuses a stale `.SRCINFO` |
 | [tools/tests/test_aur_package.py](../../tools/tests/test_aur_package.py) | Tag and checksum refusals, `vercmp` order, `.SRCINFO`, and a `makepkg` build of a `tools/release.py` bundle of stand-in programs |
 
 The rendered `PKGBUILD` and `.SRCINFO` are what the AUR repository holds; the template stays here.
@@ -86,9 +86,9 @@ Run it on an Arch host, for each published `vX.Y.Z-alpha.N` tag.
 8. Check the published route on a new fixture: `git clone https://aur.archlinux.org/torlek-bin.git`,
    then `makepkg -si` and `torlek doctor`. Link the evidence from #97.
 
-**Updates:** a new tag goes through the whole checklist with `pkgrel=1`. A fix to the recipe
-alone changes the template in this repository, raises `pkgrel` in the rendered recipe, and runs
-`check-srcinfo` again before pushing.
+**Updates:** a new tag goes through the whole checklist, and `pkgrel` starts again at 1. A fix
+to the recipe alone changes the template in this repository, then renders the same tag again with
+`--pkgrel` one above the published one, so that AUR helpers see an update.
 
 ## Not yet verified
 
