@@ -1,0 +1,7 @@
+{
+  "name": "cockpit-docs-lint",
+  "private": true,
+  "devDependencies": {
+    "markdownlint-cli2": "0.24.0"
+  }
+}
