@@ -82,10 +82,33 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
                 all,
             }
         }
+        ("targets", []) => Command::SessionList { ended: false },
         ("show", [id]) => Command::TaskShow {
             launch_token: token,
             item: item_id(id)?,
         },
+        ("handoff", [id, session, rest @ ..]) => {
+            let mut flags = Flags::parse(
+                rest,
+                &["--revision", "--state-revision", "--launch"],
+                &[],
+                &[],
+            )?;
+            flags.no_positional()?;
+            Command::TaskHandoff {
+                item: item_id(id)?,
+                session: (*session).to_owned(),
+                intent_revision: flags
+                    .number("--revision", "an intent revision")?
+                    .ok_or("--revision is required")?,
+                state_revision: flags
+                    .number("--state-revision", "a state revision")?
+                    .ok_or("--state-revision is required")?,
+                expected_launch: flags
+                    .number("--launch", "a launch number")?
+                    .ok_or("--launch is required")?,
+            }
+        }
         ("edit", [id, rest @ ..]) => {
             let mut flags = Flags::parse(
                 rest,
@@ -249,6 +272,21 @@ fn render(reply: &Reply) -> Option<String> {
         Reply::TaskDraft { draft } => draft_line(draft),
         Reply::TaskDrafts { drafts } => drafts.iter().map(draft_line).collect(),
         Reply::TaskDraftDiscarded => "discarded\n".to_owned(),
+        Reply::Sessions { sessions } => sessions
+            .iter()
+            .map(|session| {
+                format!(
+                    "{}\t{}\t{}\t{}\n",
+                    session.id,
+                    session
+                        .launch
+                        .as_ref()
+                        .map_or_else(|| "-".to_owned(), |launch| launch.number.to_string()),
+                    session.state,
+                    session.working_dir,
+                )
+            })
+            .collect(),
         _ => return None,
     })
 }

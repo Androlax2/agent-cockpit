@@ -106,6 +106,8 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek todo blocked TITLE --why TEXT [--notes TEXT]
        torlek todo list [--project P] [--all] | show ID | delete ID
        torlek todo start ID | done ID [--summary TEXT] | reopen ID
+       torlek todo targets
+       torlek todo handoff ID SESSION --revision R --state-revision R --launch N
        torlek todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]
        torlek todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID
        torlek todo after ID ON... | unwait ID ON...

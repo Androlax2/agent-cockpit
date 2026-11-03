@@ -594,6 +594,8 @@ fn a_rejected_argument_is_named_before_the_usage() {
                  torlek todo blocked TITLE --why TEXT [--notes TEXT]\n       \
                  torlek todo list [--project P] [--all] | show ID | delete ID\n       \
                  torlek todo start ID | done ID [--summary TEXT] | reopen ID\n       \
+                 torlek todo targets\n       \
+                 torlek todo handoff ID SESSION --revision R --state-revision R --launch N\n       \
                  torlek todo edit ID [--revision R] [--title T] [--notes TEXT] [--kind KIND]\n       \
                  torlek todo priority ID LEVEL | queue ID | unqueue ID | approve ID | decline ID\n       \
                  torlek todo after ID ON... | unwait ID ON...\n       \

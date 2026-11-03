@@ -41,6 +41,23 @@ pub(crate) struct Context {
 pub(crate) fn route(command: Command, context: Context) -> Route {
     let work = async move {
         match command {
+            Command::TaskHandoff {
+                item,
+                intent_revision,
+                state_revision,
+                session,
+                expected_launch,
+            } => {
+                handoff(
+                    &context,
+                    item,
+                    intent_revision,
+                    state_revision,
+                    &session,
+                    expected_launch,
+                )
+                .await
+            }
             Command::QueueExplain { item } => explain(&context, item).await,
             Command::QueueDispatch => dispatched_reply(pass(&context).await?),
             other => unreachable!("routes.rs sends only queue commands here, not {other:?}"),
@@ -270,21 +287,27 @@ impl From<cockpit_scheduling::Error> for DeliveryError {
 /// The sessions that could take work: every session not ended, with its project, provider
 /// capabilities and what its current launch's agent last reported.
 async fn inputs(context: &Context) -> Result<Inputs, Failed> {
-    let sessions = context.sessions.list(false).await?;
     let read = context.database.read().await?;
-    let reports: HashMap<String, SessionReport> = cockpit_sessions::latest_reports(&read)
+    inputs_in(context, &read).await
+}
+
+async fn inputs_in(
+    context: &Context,
+    read: &cockpit_turso::sql::Connection,
+) -> Result<Inputs, Failed> {
+    let sessions = cockpit_sessions::sessions(read, false).await?;
+    let reports: HashMap<String, SessionReport> = cockpit_sessions::latest_reports(read)
         .await?
         .into_iter()
         .map(|report| (report.session.as_str().to_owned(), report))
         .collect();
     let projects: HashMap<cockpit_projects::CheckoutId, String> =
-        cockpit_projects::checkouts(&read, None)
+        cockpit_projects::checkouts(read, None)
             .await
             .map_err(|error| internal(&error))?
             .into_iter()
             .map(|checkout| (checkout.id, checkout.project.as_str().to_owned()))
             .collect();
-    drop(read);
     let candidates = sessions
         .iter()
         .filter(|session| session.state != SessionState::Ended)
@@ -448,3 +471,6 @@ fn internal(error: &dyn std::fmt::Display) -> Failed {
         "the daemon failed; the request may or may not have taken effect",
     ))
 }
+
+mod handoff;
+use handoff::handoff;

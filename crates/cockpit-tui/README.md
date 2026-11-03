@@ -4,8 +4,8 @@ The plain reference terminal UI: renders the daemon's state and sends the owner'
 through cockpit-client.
 
 Deliberately basic until M6 (decision 17, report 05): the session list grouped by project,
-open, next needing you, new session (`N`, the one form), restart, exit, the approval pane,
-the workflow view (`F`, #330), bug report drafts (one needs-you card, the `B` list and the `b`
+open, next needing you, new session (`N`), restart, exit, the approval pane,
+the task view (`T`, #44), the workflow view (`F`, #330), bug report drafts (one needs-you card, the `B` list and the `b`
 form, #471; review and send stay in `torlek bug-report`), the log view and help. Effort, billing, compact and Remote Control are CLI verbs and provider
 capabilities only; no key reaches them here.
 
@@ -41,13 +41,30 @@ detaching the terminal leaves everything running.
   `unbound`…) in `$XDG_STATE_HOME/torlek/logs/tui/cockpit.log`: the name only, never what
   was typed, so M6 prunes on data.
 
+## Tasks (#44)
+
+`T` lists open tasks across projects. `a` adds one, `e` edits the selected item;
+Tab changes the title, notes, kind and project field, Left/Right chooses kind or
+project, Enter saves and Esc cancels. An edit retains the revision it opened on;
+a refusal keeps the draft text. `Q` sets the selected task's queue flag, and `?`
+shows the last scheduling explanation, including its evaluation time and action.
+
+`h` opens a picker of launched sessions in the task's project; Enter hands the
+captured task snapshot to the selected session launch. The daemon retains its
+eligibility and admission checks, including busy, viewed, idle-window and paused
+queue refusals. A stale request stays stale until the owner cancels and selects
+again. For CLI handoff, `torlek todo show ID` prints the task revisions and
+`torlek todo targets` prints each session's ID, launch number, state and directory;
+pass the selected values to `torlek todo handoff`. Items with running workflows use the workflow view. The approval pane
+remains reachable with Tab outside the task form.
+
 ## Approval pane (#166, a region of the TUI by #178)
 
 - When a request appears and nothing was shown, the pane takes focus and asks the daemon
   for tmux's keys (`manager-focus`), so the next key reaches the pane, not the agent in the
   viewer (#317). The daemon answers whether the viewer had them; when nothing waits any
   more, keys taken from the viewer go back to it, unless the owner tabbed to the list or has a
-  form, confirmation, the workflow view, help or log open; keys the list already had stay (#345).
+  form, confirmation, the task or workflow view, help or log open; keys the list already had stay (#345).
 - `y` approves the request shown, naming its revision and digest; no navigation key does.
 - Input is ignored for [`INPUT_GRACE`] after the pane shows a request (or a new revision),
   takes focus (in the TUI, or tmux's keys arriving) or ignored a key; the daemon refuses an
@@ -77,6 +94,9 @@ detaching the terminal leaves everything running.
 - `tests/keys.rs`: open, next needing you, restart and exit after `y`, help, the log view,
   and every key counted as a named command.
 - `tests/form.rs`: the `N` form, from a fresh install's one project to `session-new`.
+- `tests/tasks.rs`: list, form, stale replies and handoff identity, queue explanation,
+  scrolling and approval-pane focus; `tests/e2e/tasks.rs` drives add/edit/queue/explanation
+  through a real terminal and isolated daemon.
 - `tests/workflows.rs`: the `F` view, a running workflow's steps, checkpoint, next action
   and last handoff, and the owner's complete, release, unblock and cancel keys.
 - `tests/usage.rs`: each key's command reaches the TUI's log by name.

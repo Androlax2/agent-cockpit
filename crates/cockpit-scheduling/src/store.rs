@@ -1073,3 +1073,7 @@ fn stored(value: u64) -> i64 {
 fn loaded(value: i64) -> Result<u64, String> {
     u64::try_from(value).map_err(|_| format!("negative value {value}"))
 }
+
+#[path = "store/handoff.rs"]
+mod handoff;
+pub use handoff::{Handoff, handoff};

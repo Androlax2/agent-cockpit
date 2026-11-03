@@ -471,7 +471,12 @@ impl Handler for Routes {
                 Peer::Agent { .. } => Route::Answer(owner_only()),
                 Peer::Owner => resources::route(command, self.resources.clone()),
             },
-            (command @ (Command::QueueExplain { .. } | Command::QueueDispatch), peer) => {
+            (
+                command @ (Command::QueueExplain { .. }
+                | Command::QueueDispatch
+                | Command::TaskHandoff { .. }),
+                peer,
+            ) => {
                 match peer {
                     // What runs where is the owner's to see and to trigger (report 10).
                     Peer::Agent { .. } => Route::Answer(owner_only()),

@@ -4,6 +4,12 @@ use std::fmt;
 /// that cannot take the work it decided rolls back whole.
 #[derive(Debug)]
 pub enum Error {
+    /// The owner chose an item snapshot that has since changed.
+    StaleTask,
+    /// Explicit placement keeps the same eligibility and admission rules as the queue.
+    HandoffRefused {
+        reason: String,
+    },
     /// A stored row breaks this crate's schema rules; `reason` says how.
     InvalidStoredRow {
         table: &'static str,
@@ -26,6 +32,10 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::StaleTask => {
+                formatter.write_str("the item changed; inspect it before handing it off again")
+            }
+            Error::HandoffRefused { reason } => formatter.write_str(reason),
             Error::InvalidStoredRow { table, reason } => write!(formatter, "{table}: {reason}"),
             Error::Tasks(error) => write!(formatter, "tasks: {error}"),
             Error::Workflows(error) => write!(formatter, "workflows: {error}"),
@@ -45,7 +55,10 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::InvalidStoredRow { .. } | Error::PlanAdmissionMismatch { .. } => None,
+            Error::StaleTask
+            | Error::HandoffRefused { .. }
+            | Error::InvalidStoredRow { .. }
+            | Error::PlanAdmissionMismatch { .. } => None,
             Error::Tasks(source) => Some(source),
             Error::Workflows(source) => Some(source),
             Error::Admission(source) => Some(source),

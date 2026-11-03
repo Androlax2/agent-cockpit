@@ -19,7 +19,7 @@ pub use model::{
 pub use reports::{
     AgentState, QuestionSource, Report, SessionReport, latest_report, latest_reports, report,
 };
-pub use store::MIGRATIONS;
+pub use store::{MIGRATIONS, session, sessions};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("cockpit-sessions supports Linux (WSL2 included) and macOS (report 01)");

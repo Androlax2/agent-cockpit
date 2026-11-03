@@ -427,7 +427,7 @@ impl From<cockpit_tasks::Error> for Failed {
     }
 }
 
-fn task_view(item: Item) -> TaskView {
+pub(crate) fn task_view(item: Item) -> TaskView {
     let next = match item.next_action() {
         NextAction::DecideProposal => TaskNextView::DecideProposal,
         NextAction::FinishDependencies { items } => TaskNextView::FinishDependencies {
