@@ -980,6 +980,10 @@ class ReleaseTriggerTests(unittest.TestCase):
                 "crates/cockpit-daemon/tests/restart_reattach.rs",
                 "crates/cockpit-daemon/tests/session_restore_crash.rs",
                 "crates/cockpit-turso/tests/migrations.rs",
+                "packaging/aur/ci-install.sh",
+                "packaging/aur/render.py",
+                "packaging/aur/torlek-bin/PKGBUILD.in",
+                "tools/tests/test_aur_package.py",
             },
         )
 

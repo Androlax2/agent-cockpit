@@ -2,11 +2,14 @@
 """Render the torlek-bin AUR recipe for one published release (docs/packaging/aur.md, #562).
 
 Usage: render.py render --tag 0.1.0-alpha.1 --sums SHA256SUMS --out DIR [--pkgrel N]
+                        [--development]
        render.py check-srcinfo DIR
 
 `render` fills packaging/aur/torlek-bin/PKGBUILD.in with the tag and the two Linux archive
 checksums from the release's SHA256SUMS, then writes .SRCINFO with `makepkg --printsrcinfo`.
 `check-srcinfo` refuses a directory whose .SRCINFO no longer matches its PKGBUILD.
+`--development` takes a dry run's `X.Y.Z-dev.N` instead, for the release workflow's Arch
+install check; such a recipe names no published release and is never submitted.
 Nothing here downloads, builds, installs or publishes.
 """
 
@@ -35,11 +38,16 @@ def release_tool():
     return module
 
 
-def package_version(tag):
+def package_version(tag, is_development=False):
     """pacman's vercmp puts `0.1.0alpha.1` before `0.1.0beta.1` before `0.1.0`; a hyphen
     is not allowed in pkgver, and `0.1.0_alpha.1` or `0.1.0.alpha.1` would sort after 0.1.0.
     The tag grammar is release.py's; only prereleases exist (docs/RELEASING.md#tags)."""
     release = release_tool()
+    if is_development:
+        # release.py dry-run-version's shape: the workspace core, then the commits since the base.
+        if not re.fullmatch(rf"{release.CORE_PATTERN}-dev\.(?:0|[1-9][0-9]*)", tag):
+            raise Refusal(f"{tag!r}: --development takes a dry run's X.Y.Z-dev.N")
+        return tag.replace("-", "", 1)
     try:
         channel = release.parse_tag(f"v{tag}")["channel"]
     except release.Refusal as error:
@@ -68,8 +76,8 @@ def archive_checksums(tag, sums_text):
     return selected
 
 
-def recipe(tag, sums_text, pkgrel=1):
-    pkgver = package_version(tag)
+def recipe(tag, sums_text, pkgrel=1, is_development=False):
+    pkgver = package_version(tag, is_development)
     if pkgrel < 1:
         raise Refusal(f"pkgrel {pkgrel}: starts at 1")
     checksums = archive_checksums(tag, sums_text)
@@ -107,23 +115,28 @@ def printed_srcinfo(directory):
     return result.stdout
 
 
-def render(tag, sums, out, pkgrel=1):
+def render(tag, sums, out, pkgrel=1, is_development=False):
     """Both files appear together or not at all, so a failed makepkg leaves nothing to retry around."""
     for name in ("PKGBUILD", ".SRCINFO"):
         if (out / name).exists():
             raise Refusal(f"{out / name} exists; render into a directory without a recipe")
-    text = recipe(tag, sums.read_text(), pkgrel)
+    text = recipe(tag, sums.read_text(), pkgrel, is_development)
     out.mkdir(parents=True, exist_ok=True)
+    pkgver = package_version(tag, is_development)
     with tempfile.TemporaryDirectory(prefix="torlek-aur-", dir=out) as folder:
         staged = Path(folder)
         (staged / "PKGBUILD").write_text(text)
         (staged / ".SRCINFO").write_text(printed_srcinfo(staged))
         (staged / ".SRCINFO").replace(out / ".SRCINFO")
         (staged / "PKGBUILD").replace(out / "PKGBUILD")
+    return f"{pkgver}-{pkgrel}"
 
 
 def check_srcinfo(directory):
+    """Also the last check before an AUR push, so a --development recipe never passes it."""
     recorded = (directory / ".SRCINFO").read_text()
+    if re.search(r"^\tpkgver = \S*dev\.", recorded, re.MULTILINE):
+        raise Refusal(f"{directory}: a --development recipe names no release; never submit it")
     if recorded != printed_srcinfo(directory):
         raise Refusal(f"{directory}/.SRCINFO does not match its PKGBUILD; render it again")
 
@@ -136,13 +149,19 @@ def main():
     render_command.add_argument("--sums", type=Path, required=True)
     render_command.add_argument("--out", type=Path, required=True)
     render_command.add_argument("--pkgrel", type=int, default=1)
+    render_command.add_argument("--development", action="store_true")
     check_command = commands.add_parser("check-srcinfo")
     check_command.add_argument("directory", type=Path)
     arguments = parser.parse_args()
     try:
         if arguments.command == "render":
-            render(arguments.tag, arguments.sums, arguments.out, arguments.pkgrel)
-            version = f"{package_version(arguments.tag)}-{arguments.pkgrel}"
+            version = render(
+                arguments.tag,
+                arguments.sums,
+                arguments.out,
+                arguments.pkgrel,
+                arguments.development,
+            )
             print(f"Rendered torlek-bin {version} into {arguments.out}")
         else:
             check_srcinfo(arguments.directory)

@@ -65,6 +65,15 @@ class PackageVersionTest(unittest.TestCase):
             with self.subTest(tag=tag), self.assertRaisesRegex(render.Refusal, "not a release tag"):
                 render.package_version(tag)
 
+    def test_a_dry_run_version_needs_the_development_option(self):
+        with self.assertRaisesRegex(render.Refusal, "not a release tag"):
+            render.package_version("0.1.0-dev.42")
+        self.assertEqual(render.package_version("0.1.0-dev.42", is_development=True), "0.1.0dev.42")
+
+    def test_the_development_option_refuses_a_release_tag(self):
+        with self.assertRaisesRegex(render.Refusal, "X.Y.Z-dev.N"):
+            render.package_version(TAG, is_development=True)
+
     def test_refuses_a_stable_tag_until_one_exists(self):
         with self.assertRaisesRegex(render.Refusal, "no stable release"):
             render.package_version("0.1.0")
@@ -185,6 +194,27 @@ class RecipeTest(unittest.TestCase):
             result = run_render("check-srcinfo", str(out))
             self.assertEqual(result.returncode, 1)
             self.assertIn("does not match its PKGBUILD", result.stderr)
+
+    @unittest.skipUnless(HAS_MAKEPKG, "makepkg is not installed")
+    def test_check_srcinfo_refuses_a_development_recipe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            sums = Path(folder) / "SHA256SUMS"
+            sums.write_text(release_sums(tag="0.1.0-dev.7"))
+            out = Path(folder) / "recipe"
+            rendered = run_render(
+                "render",
+                "--development",
+                "--tag",
+                "0.1.0-dev.7",
+                "--sums",
+                str(sums),
+                "--out",
+                str(out),
+            )
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            result = run_render("check-srcinfo", str(out))
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("never submit it", result.stderr)
 
     def test_render_refuses_to_replace_an_existing_recipe(self):
         with tempfile.TemporaryDirectory() as folder:
