@@ -121,6 +121,26 @@ async fn an_agent_report_opens_one_draft_and_an_identical_one_merges_into_it() {
     );
 }
 
+/// `readiness` is owner-only and probes the host; an agent's report must not run it (#634).
+#[tokio::test]
+async fn an_agents_draft_bundle_leaves_out_the_readiness_report() {
+    let home = TestHome::new();
+    let token = home.launch("s1", &this_process(), None).await;
+    let _daemon = home.start();
+    let agent = home.connect_agent().await;
+    let (id, _) = filed(&agent, report_bug(&token, "the pane froze", false)).await;
+
+    let shown = report(&home.connect().await, Command::BugReportShow { report: id }).await;
+    let BugBundleView::Written { path, .. } = &shown.bundle else {
+        panic!("the bundle was not written: {:?}", shown.bundle);
+    };
+    let bundle = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
+    assert!(
+        bundle.contains("left out of an agent's report") && !bundle.contains("\"requirements\""),
+        "{bundle}"
+    );
+}
+
 #[tokio::test]
 async fn an_owner_requested_draft_and_a_new_one_open_beside_todays_detected_draft() {
     let home = TestHome::new();
@@ -462,7 +482,8 @@ async fn a_draft_and_its_bundle_carry_no_prompt_or_agent_output() {
     let root = dir.path().canonicalize().unwrap();
     let _tmux = PrivateTmux(root.clone());
     let state_home = root.join("state");
-    let log_dir = cockpit_diagnostics::log_dir_in(&state_home, "daemon").unwrap();
+    // Where the product's daemon logs: under its own state directory (#634).
+    let log_dir = cockpit_diagnostics::log_dir_in(&state_home.join("cockpit"), "daemon").unwrap();
     let diagnostics = cockpit_diagnostics::start(cockpit_diagnostics::Options::new(
         log_dir.clone(),
         cockpit_diagnostics::Directives::from_env_value(Some("debug")).unwrap(),

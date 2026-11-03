@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_provider_api::{Provenance, Provider};
+use cockpit_readiness::ProviderUnusable;
 
 use crate::{Instance, Options, Routes, StartError, Wiring, session_settings};
 
@@ -328,15 +329,16 @@ fn own_variables(names: &[&str]) -> impl Iterator<Item = (OsString, OsString)> {
 /// The Claude Code adapter for the `claude` on the daemon's `PATH`, with the hook bridge and
 /// the `cockpit` program installed in `programs_dir`. Why not, logged, when there is none or
 /// it does not answer its version: the readiness report names it (#50).
-fn claude_code(programs_dir: &Path) -> Result<cockpit_claude::ClaudeCode, String> {
+fn claude_code(programs_dir: &Path) -> Result<cockpit_claude::ClaudeCode, ProviderUnusable> {
     let unavailable = |reason: String| {
         tracing::warn!("provider claude unavailable: {reason}");
-        reason
+        ProviderUnusable::Refused { reason }
     };
     let Some(program) =
         std::env::var_os("PATH").and_then(|path| cockpit_claude::ClaudeCode::find_on_path(&path))
     else {
-        return Err(unavailable("no `claude` on PATH".to_owned()));
+        tracing::warn!("provider claude unavailable: no `claude` on PATH");
+        return Err(ProviderUnusable::NotOnPath);
     };
     let bridge = cockpit_claude::Bridge {
         hook_program: programs_dir.join("torlek-claude-hook"),
@@ -360,15 +362,16 @@ fn claude_code(programs_dir: &Path) -> Result<cockpit_claude::ClaudeCode, String
 /// The Codex adapter for the `codex` on the daemon's `PATH`, with its session launcher, hook
 /// bridge and the `cockpit` program installed in `programs_dir` (#411). Why not, logged, when
 /// there is none or it does not answer its version: the readiness report names it (#50).
-fn codex(programs_dir: &Path) -> Result<cockpit_codex::Codex, String> {
+fn codex(programs_dir: &Path) -> Result<cockpit_codex::Codex, ProviderUnusable> {
     let unavailable = |reason: String| {
         tracing::warn!("provider codex unavailable: {reason}");
-        reason
+        ProviderUnusable::Refused { reason }
     };
     let Some(program) =
         std::env::var_os("PATH").and_then(|path| cockpit_codex::Codex::find_on_path(&path))
     else {
-        return Err(unavailable("no `codex` on PATH".to_owned()));
+        tracing::warn!("provider codex unavailable: no `codex` on PATH");
+        return Err(ProviderUnusable::NotOnPath);
     };
     let bridge = cockpit_codex::Bridge {
         session_program: programs_dir.join("torlek-codex-session"),
@@ -393,15 +396,19 @@ fn codex(programs_dir: &Path) -> Result<cockpit_codex::Codex, String> {
 /// `plugin_dir` and the bridge and `cockpit` programs installed in `programs_dir` (#415). Why
 /// not, logged, when there is none or it does not answer its version: the readiness report
 /// names it (#50).
-fn opencode(programs_dir: &Path, plugin_dir: &Path) -> Result<cockpit_opencode::OpenCode, String> {
+fn opencode(
+    programs_dir: &Path,
+    plugin_dir: &Path,
+) -> Result<cockpit_opencode::OpenCode, ProviderUnusable> {
     let unavailable = |reason: String| {
         tracing::warn!("provider opencode unavailable: {reason}");
-        reason
+        ProviderUnusable::Refused { reason }
     };
     let Some(program) =
         std::env::var_os("PATH").and_then(|path| cockpit_opencode::OpenCode::find_on_path(&path))
     else {
-        return Err(unavailable("no `opencode` on PATH".to_owned()));
+        tracing::warn!("provider opencode unavailable: no `opencode` on PATH");
+        return Err(ProviderUnusable::NotOnPath);
     };
     // Without its bridge the adapter loads no plugin and reports neither events nor outcomes,
     // so it offers only `resume`.

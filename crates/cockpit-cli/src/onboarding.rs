@@ -298,14 +298,29 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
             next: None,
         };
     }
+    let file = &config.user_file.path;
+    // Init writes nothing, so the owner creates the folder a fresh profile lacks (#625).
+    // Anything else at that path (a file, a dangling link) is left for the owner to see.
+    let create_folder = match file.parent() {
+        Some(folder)
+            if std::fs::symlink_metadata(folder)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            format!(
+                "create the config folder with `mkdir -p -m 700 {}`, then ",
+                shell_word(&folder.to_string_lossy())
+            )
+        }
+        _ => String::new(),
+    };
     Step {
         title: SANDBOX,
         state: State::Open,
         lines,
         next: Some(format!(
-            "to accept, write `[agents]` and `sandbox = \"required\"` in {} \
+            "to accept, {create_folder}write `[agents]` and `sandbox = \"required\"` in {} \
              (`sandbox = \"off\"` runs agents unsandboxed, with your rights)",
-            config.user_file.path.display()
+            shell_word(&file.to_string_lossy())
         )),
     }
 }
@@ -322,11 +337,20 @@ fn provider_name(requirement: &RequirementView) -> Option<&str> {
         .filter(|name| !name.ends_with(" sign-in"))
 }
 
+/// The providers sessions can start with. Readiness lists one the daemon could not wire as
+/// `available`, so that it does not block (#411), and adds a `provider NAME sign-in` row
+/// only for a usable one; `torlek doctor` prints the same report (#624).
 fn available_providers(requirements: &[RequirementView]) -> Vec<&str> {
     requirements
         .iter()
         .filter(|requirement| requirement.status == ReadinessStatusView::Available)
         .filter_map(provider_name)
+        .filter(|name| {
+            let sign_in = format!("provider {name} sign-in");
+            requirements
+                .iter()
+                .any(|requirement| requirement.name == sign_in)
+        })
         .collect()
 }
 
@@ -334,21 +358,38 @@ fn provider_step(requirements: &[RequirementView], available: &[&str]) -> Step {
     let missing: Vec<&RequirementView> = requirements
         .iter()
         .filter(|requirement| {
-            requirement.name == "providers" || provider_name(requirement).is_some()
+            requirement.name == "providers"
+                || provider_name(requirement).is_some_and(|name| !available.contains(&name))
         })
-        .filter(|requirement| requirement.status != ReadinessStatusView::Available)
         .collect();
     let mut lines: Vec<String> = missing
         .iter()
-        .map(|requirement| requirement_line(requirement))
+        .map(
+            |requirement| match (requirement.status, &requirement.next) {
+                (ReadinessStatusView::Available, Some(next)) => {
+                    format!("{}: {}; {next}", requirement.name, requirement.detail)
+                }
+                (ReadinessStatusView::Available, None) => {
+                    format!("{}: {}", requirement.name, requirement.detail)
+                }
+                _ => requirement_line(requirement),
+            },
+        )
         .collect();
     match available {
         [] => Step {
             title: PROVIDER,
             state: State::Open,
+            // The blocking `providers` row names every supported agent, not one of them.
             next: missing
                 .iter()
-                .find_map(|requirement| requirement.next.clone()),
+                .find(|requirement| requirement.name == "providers")
+                .and_then(|requirement| requirement.next.clone())
+                .or_else(|| {
+                    missing
+                        .iter()
+                        .find_map(|requirement| requirement.next.clone())
+                }),
             lines,
         },
         [only] => {

@@ -1008,10 +1008,13 @@ pub enum Reply {
     DesktopSessionImported {
         withheld: bool,
     },
-    /// The running filter and its optional temporary override's expiry.
+    /// The running filter and its optional temporary override's expiry. `reverts_to`: the
+    /// directives the override's end restores; absent from daemons before #635.
     LogsLevel {
         directives: String,
         expires_at_unix_ms: Option<u64>,
+        #[serde(default)]
+        reverts_to: Option<String>,
     },
     /// The owner settings the daemon applies now, each with the value it applied before.
     ConfigReloaded {

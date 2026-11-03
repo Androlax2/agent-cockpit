@@ -79,7 +79,7 @@ pub struct Wiring {
     pub providers: Vec<Arc<dyn cockpit_provider_api::Provider>>,
     /// The providers the start looked for and could not wire, each with why: the readiness
     /// report names them (#50).
-    pub unavailable_providers: Vec<(String, String)>,
+    pub unavailable_providers: Vec<(String, cockpit_readiness::ProviderUnusable)>,
     pub sessions: cockpit_sessions::Settings,
     /// The owner's desktop session variables agents get until the owner imports others
     /// (#307): the daemon start's.
@@ -304,10 +304,10 @@ impl Instance {
             .providers
             .iter()
             .map(|provider| readiness::provider_found(provider.as_ref()))
-            .chain(wiring.unavailable_providers.iter().map(|(name, reason)| {
+            .chain(wiring.unavailable_providers.iter().map(|(name, unusable)| {
                 cockpit_readiness::ProviderFacts {
                     name: name.clone(),
-                    found: Err(reason.clone()),
+                    found: Err(unusable.clone()),
                 }
             }))
             .collect();
@@ -360,6 +360,16 @@ impl Instance {
             faults.clone(),
             move || coordination::deliver_forever(delivered.clone()),
         ));
+        let detected_readiness = readiness::Context {
+            database: Arc::clone(&database),
+            sessions: Arc::clone(&sessions),
+            admission: Arc::clone(&admission),
+            sandbox: sandbox.clone(),
+            tmux: tmux_readiness.clone(),
+            providers: provider_facts.clone(),
+            sign_in_providers: sign_in_providers.clone(),
+            environment: wiring.environment.clone(),
+        };
         let shared = Arc::new(server::Shared {
             owner_uid: self.owner_uid,
             limits,
@@ -396,6 +406,7 @@ impl Instance {
             database: Arc::clone(&database),
             state_dir: options.state_dir.clone(),
             facts: bug_report_facts,
+            readiness: detected_readiness,
         };
         let fault_receiver = Arc::new(tokio::sync::Mutex::new(fault_receiver));
         // Its own panics are not faults it files: a fault that makes it panic would loop.

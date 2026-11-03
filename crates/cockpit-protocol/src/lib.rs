@@ -58,9 +58,9 @@ pub use resources::{
     ReservationView, ResourceStatusView, VerdictView,
 };
 pub use sessions::{
-    AppliedSettingView, DESKTOP_SESSION_VARIABLES, LaunchKindView, LaunchView, ManagerPaneView,
-    ProviderView, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure,
-    SessionStateView, SessionView, StopTargetView,
+    AgentExitView, AppliedSettingView, DESKTOP_SESSION_VARIABLES, ExitStatusView, LaunchKindView,
+    LaunchView, ManagerPaneView, ProviderView, SandboxEnforcementView, SandboxEvidenceView,
+    SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 pub use storage::{
     CloneStorageView, StoragePrunePlanView, StoragePrunePreviewView, StoragePruneStatusView,

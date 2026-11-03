@@ -111,6 +111,16 @@ impl Routes {
 
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         let provider_capabilities = Arc::new(capabilities.provider_capabilities);
+        let readiness = readiness::Context {
+            database: Arc::clone(&capabilities.database),
+            sessions: Arc::clone(&capabilities.sessions),
+            admission: Arc::clone(&capabilities.admission),
+            sandbox: capabilities.sandbox,
+            tmux: capabilities.tmux,
+            providers: capabilities.provider_facts,
+            sign_in_providers: capabilities.sign_in_providers,
+            environment: environment.clone(),
+        };
         Routes {
             storage: capabilities.storage,
             coordination: coordination::Context {
@@ -145,17 +155,9 @@ impl Routes {
                 database: Arc::clone(&capabilities.database),
                 state_dir: capabilities.state_dir,
                 facts: capabilities.bug_report_facts,
+                readiness: readiness.clone(),
             },
-            readiness: readiness::Context {
-                database: Arc::clone(&capabilities.database),
-                sessions: Arc::clone(&capabilities.sessions),
-                admission: Arc::clone(&capabilities.admission),
-                sandbox: capabilities.sandbox,
-                tmux: capabilities.tmux,
-                providers: capabilities.provider_facts,
-                sign_in_providers: capabilities.sign_in_providers,
-                environment: environment.clone(),
-            },
+            readiness,
             resources: resources::Resources {
                 database: Arc::clone(&capabilities.database),
                 backend: capabilities.admission,

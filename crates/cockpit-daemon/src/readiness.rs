@@ -89,14 +89,8 @@ pub(crate) fn route(project: Option<String>, context: Context) -> Route {
                 },
                 None => None,
             };
-            match report(project, context).await {
-                Ok(report) => Outcome::Ok(Reply::Readiness {
-                    requirements: report
-                        .requirements
-                        .into_iter()
-                        .map(requirement_view)
-                        .collect(),
-                }),
+            match requirements(project, context).await {
+                Ok(requirements) => Outcome::Ok(Reply::Readiness { requirements }),
                 Err(error) => {
                     tracing::error!(%error, "the readiness report failed");
                     refusal(
@@ -107,6 +101,19 @@ pub(crate) fn route(project: Option<String>, context: Context) -> Route {
             }
         }),
     }
+}
+
+/// The readiness report as `torlek doctor` shows it; also the support bundle's section.
+pub(crate) async fn requirements(
+    project: Option<PathBuf>,
+    context: Context,
+) -> Result<Vec<RequirementView>, String> {
+    let report = report(project, context).await?;
+    Ok(report
+        .requirements
+        .into_iter()
+        .map(requirement_view)
+        .collect())
 }
 
 async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, String> {

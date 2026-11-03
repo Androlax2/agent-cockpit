@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Capabilities, Daemon, Instance, Limits, Options, Routes, Wiring};
-use cockpit_protocol::{Command, ErrorCode, LaunchKindView, Reply, SessionStateView, SessionView};
+use cockpit_protocol::{
+    Command, ErrorCode, ExitStatusView, LaunchKindView, Reply, SessionStateView, SessionView,
+};
 use cockpit_provider_api::ProviderName;
 use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
 use common::{GENEROUS, is_alive, unix_now};
@@ -32,17 +34,27 @@ struct Home {
 struct Variant {
     can_resume: bool,
     names_conversation: bool,
+    /// The status its agent exits with at once, after printing the line to stderr.
+    exits_with: Option<(u8, &'static str)>,
 }
 
 const BASELINE: Variant = Variant {
     can_resume: true,
     names_conversation: true,
+    exits_with: None,
 };
 
 /// A provider that resumes but never names the conversation, so a restore cannot reopen it.
 const UNNAMED: Variant = Variant {
     can_resume: true,
     names_conversation: false,
+    exits_with: None,
+};
+
+/// A provider whose agent refuses to start, as a sandbox wrapper that cannot run (#629).
+const REFUSING: Variant = Variant {
+    exits_with: Some((3, "Error: failed to wrap command: refusing to start")),
+    ..BASELINE
 };
 
 impl Home {
@@ -95,6 +107,9 @@ impl Home {
         }
         if !variant.names_conversation {
             provider = provider.unnamed_conversations();
+        }
+        if let Some((status, line)) = variant.exits_with {
+            provider = provider.exiting(status, line);
         }
         let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
         wiring.sessions = settings;
@@ -651,7 +666,7 @@ async fn a_session_whose_provider_cannot_resume_is_refused_sleep_and_keeps_runni
     let home = Home::new();
     let variant = Variant {
         can_resume: false,
-        names_conversation: true,
+        ..BASELINE
     };
     let daemon = home.start(variant, settings()).await;
     let client = connect(&daemon).await;
@@ -862,6 +877,40 @@ async fn an_agent_that_exits_ends_its_session_and_resume_reopens_the_conversatio
     assert_eq!(resumed.state, SessionStateView::Running);
     assert_eq!(resumed.launch.unwrap().kind, LaunchKindView::Resume);
     assert_eq!(home.launches(2).await[1].conversation, "conversation-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_exits_at_start_keeps_its_exit_status_and_last_lines() {
+    let home = Home::new();
+    let daemon = home.start(REFUSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let ended = wait_for_state(&client, &started.id, SessionStateView::Ended).await;
+
+    let exit = ended.exit.expect("the agent's exit is kept");
+    assert_eq!(exit.status, ExitStatusView::Code { code: 3 });
+    assert_eq!(
+        exit.output.last().map(String::as_str),
+        Some("Error: failed to wrap command: refusing to start")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_exits_at_start_names_only_its_status_in_the_reason() {
+    let home = Home::new();
+    let daemon = home.start(REFUSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+
+    let ended = wait_for_state(&client, &started.id, SessionStateView::Ended).await;
+
+    assert_eq!(
+        ended.reason.as_deref(),
+        Some("its agent exited with status 3; resume reopens it")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

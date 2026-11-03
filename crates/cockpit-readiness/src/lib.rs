@@ -151,7 +151,18 @@ pub struct ProviderFacts {
     /// As `session new --agent` takes it.
     pub name: String,
     /// What it reported, or why it is not available.
-    pub found: Result<ProviderFound, String>,
+    pub found: Result<ProviderFound, ProviderUnusable>,
+}
+
+/// Why the daemon could not wire a provider. The two need different fixes: installing a
+/// program already on `PATH` does not help (#623).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderUnusable {
+    /// No program of the provider's name on the daemon's `PATH`.
+    NotOnPath,
+    /// Its program is on the daemon's `PATH`, and `reason` is why the adapter refused it,
+    /// such as a `--version` it did not understand.
+    Refused { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
