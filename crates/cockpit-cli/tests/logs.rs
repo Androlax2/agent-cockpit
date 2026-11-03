@@ -87,7 +87,7 @@ fn an_override_reads_as_a_local_clock_time_with_what_follows_it() {
     let _daemon = home.start();
     let expected_expiry = utc_seconds_of_day() + 60;
     let utc = level_in_zone(&home, "UTC0", &["logs", "level", "debug", "--for", "1m"]);
-    let utc_clock = expiry_clock(&utc, "(in 1m), then back to info");
+    let utc_clock = expiry_clock(&utc, "), then back to info");
     assert!(circular_distance(utc_clock, expected_expiry) <= 2, "{utc}");
     let local = level_in_zone(&home, INDIA, &["logs", "level"]);
     let local_clock = expiry_clock(&local, "), then back to info");
@@ -109,12 +109,14 @@ fn level_in_zone(home: &TestHome, zone: &str, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-/// The seconds of the day in `level: debug until HH:MM:SS (in …`, which ends with `suffix`.
+/// The seconds of the day in `level: debug until HH:MM:SS (in …`, which ends with `suffix`;
+/// how long remains depends on the runner's speed, so it is not compared.
 fn expiry_clock(line: &str, suffix: &str) -> i64 {
     let clock = line
         .trim_end()
         .strip_prefix("level: debug until ")
         .filter(|rest| rest.ends_with(suffix))
+        .filter(|rest| rest.get(8..13) == Some(" (in "))
         .and_then(|rest| rest.get(..8))
         .unwrap_or_else(|| panic!("not an override line: {line:?}"));
     clock

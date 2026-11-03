@@ -48,26 +48,27 @@ fn apply(command: Command, control: Option<LevelControl>) -> Outcome {
         return refusal(ErrorCode::Internal, &error.to_string());
     }
     let status = control.status();
-    let expiry = status.active_override.as_ref().map(|active| {
-        active
-            .expires_at
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-    });
-    let expires_at_unix_ms = match expiry {
-        Some(None) => {
-            return refusal(
-                ErrorCode::Internal,
-                "the log override expiry cannot be represented",
-            );
-        }
-        Some(Some(expiry)) => Some(expiry),
-        None => None,
+    let Some(active) = status.active_override else {
+        return Outcome::Ok(Reply::LogsLevel {
+            directives: status.directives.to_string(),
+            expires_at_unix_ms: None,
+            reverts_to: None,
+        });
+    };
+    let Some(expires_at_unix_ms) = active
+        .expires_at
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+    else {
+        return refusal(
+            ErrorCode::Internal,
+            "the log override expiry cannot be represented",
+        );
     };
     Outcome::Ok(Reply::LogsLevel {
         directives: status.directives.to_string(),
-        expires_at_unix_ms,
-        reverts_to: status.active_override.map(|_| status.baseline.to_string()),
+        expires_at_unix_ms: Some(expires_at_unix_ms),
+        reverts_to: Some(status.baseline.to_string()),
     })
 }

@@ -53,14 +53,9 @@ pub fn run(command: Command) -> ExitCode {
             };
             let clock = expiry.with_timezone(&Local).format("%H:%M:%S");
             let remaining = describe_remaining(expiry - Utc::now());
-            match reverts_to {
-                Some(baseline) => {
-                    outln!(
-                        "level: {directives} until {clock} (in {remaining}), then back to {baseline}"
-                    )
-                }
-                None => outln!("level: {directives} until {clock} (in {remaining})"),
-            }
+            let then = reverts_to
+                .map_or_else(String::new, |baseline| format!(", then back to {baseline}"));
+            outln!("level: {directives} until {clock} ({remaining}){then}");
             ExitCode::SUCCESS
         }
         Ok(other) => unexpected(&other),
@@ -68,9 +63,17 @@ pub fn run(command: Command) -> ExitCode {
     }
 }
 
-/// Rounds up so an override set `--for 1m` reads "1m", not "59s".
+/// Rounds up so an override set `--for 1m` reads "in 1m", not "in 59s". A past expiry
+/// still in effect (the daemon's timer missed it, as across a suspend) says so.
 fn describe_remaining(remaining: TimeDelta) -> String {
-    let milliseconds = u64::try_from(remaining.num_milliseconds()).unwrap_or(0);
+    let Ok(milliseconds) = u64::try_from(remaining.num_milliseconds()) else {
+        let overdue = describe_duration((-remaining.num_milliseconds()).unsigned_abs());
+        return format!("overdue by {overdue}");
+    };
+    format!("in {}", describe_duration(milliseconds))
+}
+
+fn describe_duration(milliseconds: u64) -> String {
     let seconds = milliseconds.div_ceil(1000);
     match (seconds / 60, seconds % 60) {
         (0, seconds) => format!("{seconds}s"),
