@@ -462,7 +462,8 @@ async fn a_draft_and_its_bundle_carry_no_prompt_or_agent_output() {
     let root = dir.path().canonicalize().unwrap();
     let _tmux = PrivateTmux(root.clone());
     let state_home = root.join("state");
-    let log_dir = cockpit_diagnostics::log_dir_in(&state_home, "daemon").unwrap();
+    // Where the product's daemon logs: under its own state directory (#634).
+    let log_dir = cockpit_diagnostics::log_dir_in(&state_home.join("cockpit"), "daemon").unwrap();
     let diagnostics = cockpit_diagnostics::start(cockpit_diagnostics::Options::new(
         log_dir.clone(),
         cockpit_diagnostics::Directives::from_env_value(Some("debug")).unwrap(),

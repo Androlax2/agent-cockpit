@@ -44,9 +44,11 @@ const LOGGED_PROCESSES: [&str; 2] = ["daemon", "tui"];
 #[derive(Clone)]
 pub(crate) struct Context {
     pub(crate) database: Arc<Database>,
-    /// `$XDG_STATE_HOME/cockpit`: the bundles' directory and, beside it, the logs.
+    /// `$XDG_STATE_HOME/cockpit`: the bundles' directory and, under `logs`, the logs.
     pub(crate) state_dir: PathBuf,
     pub(crate) facts: Arc<Facts>,
+    /// Gathers the readiness report and the owner's configuration each bundle carries.
+    pub(crate) readiness: crate::readiness::Context,
 }
 
 /// A fault the daemon saw in its own operation. It names only Cockpit's own parts: the
@@ -437,9 +439,9 @@ async fn with_bundle(context: &Context, filed: Filed) -> Result<Filed, Failed> {
         return Ok(filed);
     };
     let state_dir = context.state_dir.clone();
-    let environment = context.facts.environment.clone();
+    let sections = bundle_sections(context).await;
     let id = report.id;
-    let bundle = tokio::task::spawn_blocking(move || write_bundle(&state_dir, id, &environment))
+    let bundle = tokio::task::spawn_blocking(move || write_bundle(&state_dir, id, &sections))
         .await
         .unwrap_or_else(|error| Bundle::Failed {
             problem: format!("writing the bundle failed: {error}"),
@@ -478,30 +480,57 @@ async fn attach(context: &Context, id: ReportId, bundle: &Bundle) -> Result<Repo
     Ok(report)
 }
 
+/// The files a bundle carries beside the logs and the platform facts (report 12): the
+/// version manifest, the readiness report, the owner's configuration and the schema versions.
+/// A part that cannot be gathered says why in its place rather than leaving the bundle.
+async fn bundle_sections(context: &Context) -> Vec<(&'static str, String)> {
+    let readiness = match crate::readiness::requirements(None, context.readiness.clone()).await {
+        Ok(requirements) => serde_json::json!({ "requirements": requirements }),
+        Err(problem) => serde_json::json!({ "unavailable": problem }),
+    };
+    let environment = context.readiness.environment.clone();
+    let config = tokio::task::spawn_blocking(move || {
+        cockpit_config::load(&environment, None, &[]).map_or_else(
+            |error| format!("unavailable: {error}\n"),
+            |config| cockpit_config::render(&config),
+        )
+    })
+    .await
+    .unwrap_or_else(|error| format!("unavailable: {error}\n"));
+    let schema: String = crate::MIGRATION_SETS
+        .iter()
+        .map(|set| format!("{} {}\n", set.owner, set.migrations.len()))
+        .collect();
+    vec![
+        ("version.txt", format!("{}\n", context.facts.environment)),
+        ("readiness.json", format!("{readiness:#}\n")),
+        ("config.txt", config),
+        ("schema.txt", schema),
+    ]
+}
+
 /// Writes the draft's support bundle: Cockpit's own logs (report 12 keeps prompts, agent
-/// output, repository contents, commands and secrets out of them), the facts the draft
-/// carries, and the platform facts the bundle adds itself.
-fn write_bundle(state_dir: &Path, id: ReportId, environment: &str) -> Bundle {
+/// output, repository contents, commands and secrets out of them), `sections`, and the
+/// platform facts the bundle adds itself. The sections pass the approvals redactor: the
+/// configuration holds the owner's check commands, which may carry a token.
+fn write_bundle(state_dir: &Path, id: ReportId, sections: &[(&'static str, String)]) -> Bundle {
     let written = || -> Result<Bundle, String> {
-        let state_home = state_dir
-            .parent()
-            .ok_or("the state directory has no parent")?;
         let mut log_dirs = Vec::new();
         for process in LOGGED_PROCESSES {
-            let dir = cockpit_diagnostics::log_dir_in(state_home, process)
+            let dir = cockpit_diagnostics::log_dir_in(state_dir, process)
                 .map_err(|error| error.to_string())?;
             if dir.is_dir() {
                 log_dirs.push(dir);
             }
         }
         let mut request = cockpit_diagnostics::BundleRequest::new(log_dirs);
-        request.sections.push(
-            cockpit_diagnostics::BundleSection::new(
-                "version.txt",
-                format!("{environment}\n").into_bytes(),
-            )
-            .map_err(|error| error.to_string())?,
-        );
+        for (name, text) in sections {
+            let (redacted, _) = cockpit_approvals::redact_secrets(text);
+            request.sections.push(
+                cockpit_diagnostics::BundleSection::new(name, redacted.into_bytes())
+                    .map_err(|error| error.to_string())?,
+            );
+        }
         let plan = cockpit_diagnostics::plan_bundle(&request).map_err(|error| error.to_string())?;
         let dir = state_dir.join(BUG_REPORTS_DIR);
         fs::DirBuilder::new()
