@@ -478,7 +478,9 @@ const EXIT_SWEEP: Duration = Duration::from_secs(1);
 pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
     let mut ticks = tokio::time::interval(interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut sweeps = tokio::time::interval(EXIT_SWEEP);
+    // Not at once: two ready intervals would push the first tick, which holds each session's
+    // lock, past startup into the owner's first send or cancel.
+    let mut sweeps = tokio::time::interval_at(tokio::time::Instant::now() + EXIT_SWEEP, EXIT_SWEEP);
     sweeps.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let is_sweeping = interval > EXIT_SWEEP;
     loop {

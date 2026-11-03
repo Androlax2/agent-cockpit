@@ -1015,7 +1015,9 @@ impl Sessions {
 
     /// Only the exit part of [`Self::tick`], run more often by the daemon (#632): a running
     /// session whose agent is gone ends, or fails, within seconds rather than at the next
-    /// tick. The same failure handling as the tick.
+    /// tick. The same failure handling as the tick. A live agent is looked at without the
+    /// session's lock: the owner's send and cancel refuse a held lock as busy, and the sweep
+    /// runs every second.
     pub async fn sweep_exits(&self) -> Result<TickReport, Error> {
         let mut report = TickReport::default();
         if self.tmux.is_err() {
@@ -1027,6 +1029,27 @@ impl Sessions {
         };
         for listed in running {
             let id = listed.id.clone();
+            let Some(launch) = &listed.launch else {
+                continue;
+            };
+            match self
+                .processes
+                .observe(&self.database, launch.execution)
+                .await
+            {
+                Ok(execution) if execution.phase.is_occupying() => continue,
+                Ok(_) => {}
+                // A host query that failed is asked again a second later; the tick reports
+                // a lasting one, without a warning per session every second.
+                Err(
+                    cockpit_processes::Error::HostCommand { .. }
+                    | cockpit_processes::Error::Io { .. },
+                ) => continue,
+                Err(error) => {
+                    report.errors.push((id, error.to_string()));
+                    continue;
+                }
+            }
             let _operation = self.lock(&id).await;
             let session = match self.get(&id).await {
                 Ok(session) if session.state == SessionState::Running => session,
