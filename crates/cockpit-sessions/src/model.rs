@@ -322,6 +322,9 @@ pub struct TickReport {
     pub expired: Vec<SessionId>,
     /// Sessions whose deferred restart ran once their agent waited at its prompt.
     pub restarted: Vec<SessionId>,
+    /// Running sessions whose agent did not report by the launch deadline, now shown as
+    /// waiting on the owner (#702).
+    pub unreported: Vec<SessionId>,
     /// Sessions a step failed for, with the reason; the next tick looks again.
     pub errors: Vec<(SessionId, String)>,
 }
@@ -460,6 +463,10 @@ pub struct Settings {
     /// How long `start` and `resume` watch a new agent before they answer: one that exits
     /// within it is answered `failed` or `ended`, with its exit, rather than `running` (#632).
     pub early_exit_window: Duration,
+    /// How long a launch's agent may go without its first report before the periodic pass
+    /// shows the session as waiting on the owner (#702): a harness can stop on a screen of
+    /// its own (folder trust, sign-in, update) before any hook runs.
+    pub report_deadline: Duration,
 }
 
 impl Default for Settings {
@@ -488,6 +495,9 @@ impl Default for Settings {
             // rest of the daemon its threads.
             blocking_steps: 64,
             early_exit_window: Duration::from_millis(500),
+            // Claude Code 2.1.317 reports its `SessionStart` within a few seconds, MCP
+            // servers included; the pass runs every 30 s, so the owner hears within a minute.
+            report_deadline: Duration::from_secs(30),
         }
     }
 }

@@ -18,10 +18,11 @@ use std::time::{Duration, Instant};
 use cockpit_client::{ClientError, Connection};
 use cockpit_daemon::{Capabilities, Daemon, Instance, Limits, Options, Routes, Wiring};
 use cockpit_protocol::{
-    Command, ErrorCode, ExitStatusView, LaunchKindView, Reply, SessionStateView, SessionView,
+    Command, ErrorCode, ExitStatusView, LaunchKindView, QuestionSource, Reply, SessionReport,
+    SessionStateView, SessionView,
 };
-use cockpit_provider_api::ProviderName;
 use cockpit_provider_api::fake::{FakeLaunch as AgentLaunch, FakeProvider};
+use cockpit_provider_api::{Capability, ProviderName};
 use common::{GENEROUS, is_alive, unix_now};
 
 struct Home {
@@ -38,6 +39,8 @@ struct Variant {
     exits_with: Option<(u8, &'static str)>,
     /// It reports `model` and `effort`, so a start may choose them (#701).
     chooses: bool,
+    /// Its bridge reports the agent's activity (the `events` capability).
+    reports_events: bool,
 }
 
 const BASELINE: Variant = Variant {
@@ -45,6 +48,14 @@ const BASELINE: Variant = Variant {
     names_conversation: true,
     exits_with: None,
     chooses: false,
+    reports_events: false,
+};
+
+/// A provider whose bridge reports, so an agent that stays silent after its launch is
+/// noticed (#702).
+const REPORTING: Variant = Variant {
+    reports_events: true,
+    ..BASELINE
 };
 
 /// A provider that resumes but never names the conversation, so a restore cannot reopen it.
@@ -130,6 +141,9 @@ impl Home {
             provider = provider
                 .reporting(cockpit_provider_api::Capability::Model)
                 .reporting(cockpit_provider_api::Capability::Effort);
+        }
+        if variant.reports_events {
+            provider = provider.reporting(Capability::Events);
         }
         let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
         wiring.sessions = settings;
@@ -1800,3 +1814,112 @@ mod target_prune;
 
 #[path = "sessions/output_catalog.rs"]
 mod output_catalog;
+
+/// Settings whose launch deadline passes within a test (#702).
+fn short_report_deadline() -> cockpit_sessions::Settings {
+    cockpit_sessions::Settings {
+        report_deadline: Duration::from_secs(1),
+        ..settings()
+    }
+}
+
+/// The owner's view of `session`'s report, once `is_expected` holds for it.
+async fn report_once(
+    client: &Connection,
+    session: &str,
+    is_expected: impl Fn(&SessionReport) -> bool,
+) -> SessionReport {
+    let deadline = Instant::now() + GENEROUS;
+    loop {
+        let reports = match client.request(Command::AgentReports, GENEROUS).await {
+            Ok(Reply::AgentReports { reports }) => reports,
+            other => panic!("expected the reports, got {other:?}"),
+        };
+        let report = reports.into_iter().find(|report| report.session == session);
+        match report {
+            Some(report) if is_expected(&report) => return report,
+            last if Instant::now() >= deadline => {
+                panic!("the report never matched; the last was {last:?}")
+            }
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_whose_agent_never_reports_waits_on_the_owner_with_why() {
+    let home = Home::new();
+    let daemon = home.start(REPORTING, short_report_deadline()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let started = new_session(&client, &root, None).await;
+
+    let report = report_once(&client, &started.id, |report| report.needs_input.is_some()).await;
+    assert_eq!(report.question_source, Some(QuestionSource::Dialog));
+    assert_eq!(report.state, Some(cockpit_protocol::AgentState::Waiting));
+    assert_eq!(
+        report.needs_input.as_deref(),
+        Some(
+            "fake has not reported 1 s after its launch: its terminal may wait on a screen of \
+             its own (folder trust, sign-in, update) or on a first prompt; attach to answer it"
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agents_first_report_answers_the_unreported_launch() {
+    let home = Home::new();
+    let daemon = home.start(REPORTING, short_report_deadline()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    let launch = home.launches(1).await.remove(0);
+    report_once(&client, &started.id, |report| report.needs_input.is_some()).await;
+
+    home.report_as_agent(&launch, cockpit_sessions::AgentState::Working)
+        .await;
+
+    let report = report_once(&client, &started.id, |report| {
+        report.state == Some(cockpit_protocol::AgentState::Working)
+    })
+    .await;
+    assert_eq!(report.needs_input, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_reported_in_time_is_not_flagged() {
+    let home = Home::new();
+    let daemon = home.start(REPORTING, short_report_deadline()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    let launch = home.launches(1).await.remove(0);
+
+    home.report_as_agent(&launch, cockpit_sessions::AgentState::Waiting)
+        .await;
+    // Several passes after the deadline.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let report = report_once(&client, &started.id, |_| true).await;
+    assert_eq!(report.needs_input, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_that_reports_nothing_is_never_flagged() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, short_report_deadline()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    new_session(&client, &root, None).await;
+    home.launches(1).await;
+
+    // Several passes after the deadline.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let reports = match client.request(Command::AgentReports, GENEROUS).await {
+        Ok(Reply::AgentReports { reports }) => reports,
+        other => panic!("expected the reports, got {other:?}"),
+    };
+    assert_eq!(reports, Vec::new());
+}

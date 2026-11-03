@@ -160,10 +160,44 @@ pub async fn report(
         return Ok(previous.unwrap_or_else(|| unreported(&session)));
     }
     let merged = merge(&session, previous, report, launch, is_new_conversation);
+    store_report(write, &merged).await?;
+    Ok(merged)
+}
+
+/// Records that `launch`'s agent has not reported by the launch deadline (#702): an open
+/// dialog question saying `reason`, which the agent's first report of what it does clears,
+/// as it clears any dialog. Before its agent runs, a harness can wait on a screen of its own
+/// (folder trust, sign-in, update) that no hook reports. `false`, recording nothing, when
+/// the agent reported for `launch` meanwhile or a newer launch began.
+pub(crate) async fn flag_unreported_launch(
+    write: &WriteTransaction<'_>,
+    session: &SessionId,
+    launch: i64,
+    reason: &str,
+) -> Result<bool, Error> {
+    let previous = latest_report(write, session).await?;
+    let has_reported = previous
+        .as_ref()
+        .is_some_and(|previous| previous.launch == Some(launch));
+    if has_reported || latest_launch(write, session).await? != Some(launch) {
+        return Ok(false);
+    }
+    let dialog = bounded_text("dialog", reason, QUESTION_MAX_CHARS).map_err(refused)?;
+    let report = Report {
+        dialog: Some(dialog),
+        ..Report::default()
+    };
+    let merged = merge(session, previous, report, Some(launch), false);
+    store_report(write, &merged).await?;
+    Ok(true)
+}
+
+/// Replaces the session's report row with `merged`.
+async fn store_report(write: &WriteTransaction<'_>, merged: &SessionReport) -> Result<(), Error> {
     write
         .execute(
             "DELETE FROM session_reports WHERE session = ?1",
-            [session.as_str()],
+            [merged.session.as_str()],
         )
         .await?;
     write
@@ -191,7 +225,7 @@ pub async fn report(
             ),
         )
         .await?;
-    Ok(merged)
+    Ok(())
 }
 
 /// Every session's latest report, by session id.
