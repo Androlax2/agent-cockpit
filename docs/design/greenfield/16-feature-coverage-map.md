@@ -9,7 +9,7 @@ Verdicts: **keep** (same behavior, new owner), **change** (behavior simplified o
 **polish** (deferred to the designed-UI milestone), **drop** (not a product feature),
 **plugin** (first candidates for report 14).
 
-Current release scope, decided 2026-11-02: [Alpha 1 is Linux/WSL2 archive installation only](../../decisions/2026-11-02-568-alpha-platform-scope.md). macOS delivery, Homebrew and macOS acceptance are deferred beyond Alpha 1 under #568, not passed; no restoration milestone is assigned. Other packaging (#562/#563/#565) moves to Alpha 2. The implementation and historical platform tests below remain evidence of their stated scope, not promises of macOS support. Linux/WSL2 and all other in-scope acceptance remain required.
+Current release scope, decided 2026-11-02: [Alpha 1 is Linux/WSL2 archive installation only](../../decisions/2026-11-02-568-alpha-platform-scope.md). macOS delivery, Homebrew and macOS acceptance are deferred beyond Alpha 1 under #568, not passed; no restoration milestone is assigned. Other packaging (#563/#565) moves to Alpha 2; the Arch AUR recipe (#562) is prepared in Alpha 1 beside the archive, not as its prerequisite ([decision](../../decisions/2026-11-03-562-arch-packaging-alpha1.md)). The implementation and historical platform tests below remain evidence of their stated scope, not promises of macOS support. Linux/WSL2 and all other in-scope acceptance remain required.
 
 ## Sessions and providers
 

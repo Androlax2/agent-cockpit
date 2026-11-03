@@ -5,7 +5,7 @@ The `m3` filenames preserve the issue links; Alpha 1 is the current release name
 
 ## Current Alpha 1 platform scope
 
-Theo's [2026-11-02 decision](../decisions/2026-11-02-568-alpha-platform-scope.md) limits Alpha 1 to **Linux and WSL2 through archive installation**. macOS delivery, Homebrew and macOS acceptance are **deferred, not passed**, under #568 (including #527/#564); no restoration milestone is assigned. Other packaging (#562/#563/#565) moves to Alpha 2 and is not an Alpha 1 archive-install prerequisite.
+Theo's [2026-11-02 decision](../decisions/2026-11-02-568-alpha-platform-scope.md) limits Alpha 1 to **Linux and WSL2 through archive installation**. macOS delivery, Homebrew and macOS acceptance are **deferred, not passed**, under #568 (including #527/#564); no restoration milestone is assigned. Other packaging (#563/#565) moves to Alpha 2. The Arch AUR recipe (#562) is prepared in Alpha 1 but is not an Alpha 1 archive-install prerequisite ([decision](../decisions/2026-11-03-562-arch-packaging-alpha1.md)).
 
 The required onboarding matrix is Linux/WSL2 × Docker present/absent: **four cells**. The two macOS cells are deferred. Linux/WSL2 sandbox enforcement and repeated launches, two-OS-user isolation, provider conformance and live round trips, context measurement, diagnostics, coexistence and Theo/volunteer observations remain required unless separately deferred in writing. Historical results below retain their original platforms and outcomes; they are not current support promises. Ordinary repository-required development checks are unaffected.
 
