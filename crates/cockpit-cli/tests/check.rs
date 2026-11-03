@@ -11,8 +11,16 @@ use common::{TestHome, commit_all};
 const CHECKS: &str = "[[checks]]\nname = \"test\"\ncommand = \"echo testing; test -f src/lib.rs\"\n\
                       artifacts = [\"src/lib.rs\"]\n";
 
-/// The real daemon with project `app` registered, declaring [`CHECKS`] in its last commit.
+/// The real daemon with project `app` registered and trusted, declaring [`CHECKS`] in its
+/// last commit.
 fn with_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
+    let (home, daemon, root) = with_untrusted_checks();
+    home.trust(&root);
+    (home, daemon, root)
+}
+
+/// [`with_checks`] before the owner trusts the project.
+fn with_untrusted_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
     let home = TestHome::new();
     let daemon = home.start();
     let root = home.project("app");
@@ -22,7 +30,6 @@ fn with_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
     std::fs::write(root.join("src/lib.rs"), "pub fn answer() -> u8 { 42 }\n").unwrap();
     commit_all(&root, "declare the checks");
     home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
-    home.trust(&root);
     (home, daemon, root)
 }
 
@@ -104,6 +111,22 @@ fn a_gate_before_any_run_names_the_check_to_run() {
     assert!(!passed, "{report}");
     assert!(
         report.contains("\ntest\tmissing\tnext: run `test`\n"),
+        "{report}"
+    );
+}
+
+#[test]
+fn the_gate_of_an_untrusted_project_names_the_trust_step_before_the_run() {
+    let (home, _daemon, _root) = with_untrusted_checks();
+
+    let (report, passed) = gate(&home);
+
+    assert!(!passed, "{report}");
+    assert!(
+        report.contains(
+            "\ntest\tmissing\tnext: trust the project under `projects.trusted` in the owner \
+             configuration, then run `test`\n"
+        ),
         "{report}"
     );
 }
