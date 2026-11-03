@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-agent-channel"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-authorization",
  "cockpit-turso",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-agent-context"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-approvals"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-authorization",
  "cockpit-processes",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-authorization"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-turso",
  "tokio",
@@ -412,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-bug-reports"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-turso",
  "tempfile",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-claude"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-provider-api",
  "rustix 1.1.6",
@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-cli"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "cockpit-client",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-client"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-protocol",
  "serde",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-codex"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-provider-api",
  "rustix 1.1.6",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-config"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "tempfile",
@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-daemon"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-agent-channel",
  "cockpit-agent-context",
@@ -512,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-diagnostics"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-messaging"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-turso",
  "serde_json",
@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-opencode"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-provider-api",
  "rustix 1.1.6",
@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-processes"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-turso",
  "rustix 1.1.6",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-projects"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-turso",
  "rustix 1.1.6",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-protocol"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-provider-api"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-provider-api",
  "tempfile",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-readiness"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-config",
  "serde_json",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-resource-admission"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-processes",
  "cockpit-turso",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-sandbox"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-config",
  "cockpit-turso",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-scheduling"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-authorization",
  "cockpit-messaging",
@@ -628,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-sessions"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-agent-channel",
  "cockpit-authorization",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-tasks"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-authorization",
  "cockpit-turso",
@@ -656,14 +656,14 @@ dependencies = [
 
 [[package]]
 name = "cockpit-tmux"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "cockpit-tui"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-client",
  "cockpit-diagnostics",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-turso"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "tokio",
  "turso",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-verification"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-turso",
  "rustix 1.1.6",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-workflows"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cockpit-authorization",
  "cockpit-provider-api",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "cockpit-workspace-rules"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "compact_str"
