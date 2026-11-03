@@ -58,6 +58,7 @@ async fn timed_override_changes_the_installed_filter_and_expires_to_startup_base
     }
     let active = status(&owner).await;
     assert_eq!(active["directives"], "info");
+    assert_eq!(active["reverts_to"], "error");
     let expiry = active["expires_at_unix_ms"].as_u64().unwrap();
     assert!((before + 300_000..=epoch_ms() + 300_000).contains(&expiry));
     owner
@@ -132,7 +133,7 @@ async fn old_timers_do_not_revert_replacements_and_restart_clears_the_override()
         .unwrap();
     assert_eq!(
         status(&owner).await,
-        json!({"kind":"logs-level","directives":"warn","expires_at_unix_ms":null})
+        json!({"kind":"logs-level","directives":"warn","expires_at_unix_ms":null,"reverts_to":null})
     );
     drop(owner);
     restarted.kill();

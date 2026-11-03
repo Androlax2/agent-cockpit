@@ -11,6 +11,7 @@ name = "torlek"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 cockpit-client = { path = "../cockpit-client" }
 cockpit-config = { path = "../cockpit-config" }
 cockpit-protocol = { path = "../cockpit-protocol" }
