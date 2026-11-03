@@ -7,7 +7,7 @@ to. Do not document `scoop install` as an install route until the
 [publication checklist](#publication-checklist) has passed.
 
 Torlek is a Linux program. On Windows it runs **inside a WSL 2 distribution**, from the
-`linux-x86_64` release archive ([README](../../README.md#platforms-and-prerequisites)). There
+`linux-x86_64` release archive ([user guide](../USER-GUIDE.md#platforms-and-prerequisites)). There
 is no native Windows daemon, sandbox or provider support, and neither package manager route
 below adds any.
 
@@ -143,7 +143,7 @@ prerequisite stops with the command for the user to run, for example
 `wsl.exe --install --distribution Ubuntu-24.04`. The source checks in the tests hold the
 scripts to `wsl.exe --distribution/--exec/--cd/--list --quiet`.
 
-Inside WSL, Torlek's own [prerequisites](../../README.md#platforms-and-prerequisites) still
+Inside WSL, Torlek's own [prerequisites](../USER-GUIDE.md#platforms-and-prerequisites) still
 apply: tmux 3.6 or newer (Ubuntu 24.04 ships 3.4), Git, curl and a systemd user manager for
 `torlek daemon install`. `torlek doctor` names what is missing; the package does not install it.
 

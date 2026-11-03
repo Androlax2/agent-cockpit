@@ -144,18 +144,18 @@ export function stage({
   const read = (file) => readFileSync(path.join(root, file), "utf8");
   const add = (source, route, title, body, extra = {}) =>
     entries.push({ source, route, title, body, sourceHash: digest(read(source)), ...extra });
-  const readme = read("README.md");
-  const sections = [...readme.matchAll(/^## (.+)$/gm)];
+  const guide = read("docs/USER-GUIDE.md");
+  const sections = [...guide.matchAll(/^## (.+)$/gm)];
   const section = (name) => {
     const i = sections.findIndex((match) => match[1] === name);
-    if (i < 0) throw new Error(`README section missing: ${name}`);
-    return readme.slice(sections[i].index + sections[i][0].length, sections[i + 1]?.index).trim();
+    if (i < 0) throw new Error(`user guide section missing: ${name}`);
+    return guide.slice(sections[i].index + sections[i][0].length, sections[i + 1]?.index).trim();
   };
   add(
-    "README.md",
+    "docs/USER-GUIDE.md",
     "get-started/install",
     "Install status",
-    readme
+    guide
       .slice(0, sections.find((match) => match[1] === "First project and session").index)
       .replace(/^# .+\n/, ""),
   );
@@ -166,7 +166,7 @@ export function stage({
     ["Configuration and state", "guide/configuration"],
     ["Help and support", "guide/support"],
   ])
-    add("README.md", route, name, section(name));
+    add("docs/USER-GUIDE.md", route, name, section(name));
   const files = (dir) =>
     readdirSync(path.join(root, dir))
       .filter((name) => name.endsWith(".md"))
@@ -234,7 +234,7 @@ export function stage({
     read("site/content/comparison.md").replace(/^# .+\n/, ""),
   );
   const pages = new Map(entries.map((entry) => [entry.source, entry.route]));
-  pages.set("README.md", "get-started/install");
+  pages.set("docs/USER-GUIDE.md", "get-started/install");
   const anchors = new Map();
   for (const [heading, route] of [
     ["first-project-and-session", "get-started/first-session"],
@@ -243,7 +243,7 @@ export function stage({
     ["configuration-and-state", "guide/configuration"],
     ["help-and-support", "guide/support"],
   ])
-    anchors.set(`README.md#${heading}`, route);
+    anchors.set(`docs/USER-GUIDE.md#${heading}`, route);
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   const manifest = {
