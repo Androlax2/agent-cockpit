@@ -310,14 +310,37 @@ def current_main(base):
         raise Refusal("main advanced; leave every existing proposal intact and run on current main")
 
 
-def proposal_body(version, base, head):
+def release_steps(version, base):
+    """The copy-paste dispatch and approval steps, and what the dispatch refuses first (#669)."""
+    dispatch = f"gh workflow run prerelease.yml -R {REPOSITORY} --ref main -f dry_run="
+    actions = f"https://github.com/{REPOSITORY}/actions/workflows"
+    return (
+        "## How to release\n\n"
+        f"1. Dry run: `{dispatch}true`, then approve the `release` environment on the run "
+        f"({actions}/prerelease.yml). It prints `dry run: would tag {base} as v{version}` "
+        "and creates nothing.\n"
+        f"2. Release: `{dispatch}false`, then approve the `release` environment on the run. "
+        f"It tags `{base}` as `v{version}`.\n"
+        "3. The tag starts the Release workflow: approve its `release` jobs as its gates pass "
+        f"({actions}/release.yml). It drafts, then publishes the release.\n\n"
+        "Among its checks, the dispatch refuses before tagging unless:\n\n"
+        f"- {release.ALPHA_CHECKLIST} is closed; once {release.BETA_CHECKLIST} closes, "
+        "only a beta is cut;\n"
+        f"- an alpha's source carries `{release.KNOWN_GAPS}`;\n"
+        f"- `main` is still `{base}` and this is the only open release proposal, unedited;\n"
+        f"- `v{version}` is the next prerelease number and no tag has it yet.\n\n"
+    )
+
+
+def proposal_body(version, base, head, *, with_release_steps=True):
     if "-" in version:
         return (
             f"Next prerelease: `v{version}`. Generated locally with release-plz update and git-cliff.\n\n"
             "Draft for review only; prerelease dispatch verifies this version and tags its main source. "
             "Do not merge this draft. Separate release approval and all release gates still apply. "
             "The branch and commit are retained when superseded.\n\n"
-            f"<!-- cockpit-release-proposal v1 base={base} head={head} -->"
+            + (release_steps(version, base) if with_release_steps else "")
+            + f"<!-- cockpit-release-proposal v1 base={base} head={head} -->"
         )
     return (
         f"Candidate workspace version: `{version}`. Generated locally with release-plz update and git-cliff.\n\n"
@@ -327,13 +350,19 @@ def proposal_body(version, base, head):
     )
 
 
-def owned_draft(pr):
+def owned_draft(pr, *, supersedable=False):
     marker = MARKER.findall(pr.get("body") or "")
     title = re.fullmatch(rf"chore\(release\): prepare ({VERSION})", pr.get("title", ""))
+    if len(marker) != 1 or title is None:
+        return False
+    accepted_bodies = [proposal_body(title[1], *marker[0])]
+    if supersedable:
+        # Drafts published before #669, such as #689, lack the release steps. Only retiring
+        # them accepts that body; dispatch still consumes nothing but the current one.
+        # Remove this, and with_release_steps, once no pre-#669 draft is open.
+        accepted_bodies.append(proposal_body(title[1], *marker[0], with_release_steps=False))
     return (
-        len(marker) == 1
-        and title is not None
-        and pr["body"] == proposal_body(title[1], *marker[0])
+        pr["body"] in accepted_bodies
         and pr["state"] == "open"
         and pr["draft"]
         and pr["user"]["login"] == BOT
@@ -489,7 +518,7 @@ def publish(base, cwd):
         number = pr["number"]
     replacement = verify_replacement(number, branch, head, base, cwd)
     for old in pulls:
-        if old["number"] == number or not owned_draft(old):
+        if old["number"] == number or not owned_draft(old, supersedable=True):
             continue
         old_base = MARKER.findall(old["body"])[0][0]
         if git("merge-base", old_base, base, cwd=cwd, ok=(0, 1, 128)) != old_base:
@@ -497,7 +526,7 @@ def publish(base, cwd):
         if not unchanged_old_commit(old, cwd):
             continue
         fresh = api("GET", endpoint(f"pulls/{old['number']}"))
-        if not owned_draft(fresh) or fresh["head"]["sha"] != old["head"]["sha"]:
+        if not owned_draft(fresh, supersedable=True) or fresh["head"]["sha"] != old["head"]["sha"]:
             continue  # Preserve a draft that a human edited/promoted while this run worked.
         verify_replacement(number, branch, head, base, cwd)
         comment_once(number, f"Supersedes #{old['number']}; its branch and commits are retained.")
@@ -507,7 +536,7 @@ def publish(base, cwd):
         verify_replacement(number, branch, head, base, cwd)
         latest = api("GET", endpoint(f"pulls/{old['number']}"))
         if (
-            owned_draft(latest)
+            owned_draft(latest, supersedable=True)
             and latest["head"]["sha"] == old["head"]["sha"]
             and remote_head(latest["head"]["ref"], cwd) == old["head"]["sha"]
         ):

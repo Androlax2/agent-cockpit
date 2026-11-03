@@ -185,6 +185,28 @@ throwaway unpublished workspace and verifies alpha `.1`/`.2`, changelog, draft
 replacement and deterministic retry. It creates tags only in that disposable fixture.
 A live draft workflow run must be linked separately before claiming live acceptance.
 
+## Cut a release
+
+Each prerelease draft's "How to release" section carries these steps with its exact tag and
+source commit (#669). Do not merge the draft.
+
+1. Dry run: `gh workflow run prerelease.yml -R Androlax2/agent-cockpit --ref main -f dry_run=true`,
+   then approve the `release` environment on the
+   [run](https://github.com/Androlax2/agent-cockpit/actions/workflows/prerelease.yml). It
+   prints the tag and source it would create and creates nothing.
+2. Release: `gh workflow run prerelease.yml -R Androlax2/agent-cockpit --ref main -f dry_run=false`,
+   then approve the `release` environment on the run. It tags the draft's main source.
+3. The tag starts the Release workflow: approve its `release` jobs as its gates pass
+   ([runs](https://github.com/Androlax2/agent-cockpit/actions/workflows/release.yml)). It
+   drafts, then publishes the release.
+
+Among its checks, the dispatch refuses before tagging unless the Alpha 1 checklist (#52) is
+closed (once the Beta 1 checklist, #57, closes, only a beta is cut), an alpha's source has
+`docs/KNOWN-GAPS.md`, `main` is still the draft's base and the draft is the only open,
+unedited proposal, and the draft's version is the next prerelease number. The full list is
+under [Tags](#tags). Drafts published before #669 lack the section; the next
+proposal supersedes them as usual, while dispatch consumes only a draft that carries it.
+
 ## Versions
 
 - Torlek uses [Semantic Versioning](https://semver.org/) and stays on `0.x` until 1.0.
