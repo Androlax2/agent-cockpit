@@ -140,8 +140,8 @@ fn engine_detail(engine: &SandboxEngine) -> String {
 }
 
 /// One requirement per provider the daemon wires and one for each usable provider's sign-in.
-/// A provider that is not usable is listed with how to install it but does not block, as an
-/// unsandboxed owner is: one usable provider is enough (#411). `providers` blocks when none
+/// A provider that is not usable is listed with how to install or fix it but does not block,
+/// as an unsandboxed owner is: one usable provider is enough (#411). `providers` blocks when none
 /// is; a project's preset blocks on the capabilities its steps need (`project::preset`).
 pub(crate) fn providers(providers: &[ProviderFacts]) -> Vec<Requirement> {
     let mut requirements: Vec<Requirement> = providers.iter().flat_map(provider).collect();
@@ -151,14 +151,26 @@ pub(crate) fn providers(providers: &[ProviderFacts]) -> Vec<Requirement> {
         } else {
             "no agent provider is usable, so no session can start"
         };
+        let is_any_installed = providers
+            .iter()
+            .any(|provider| matches!(provider.found, Err(ProviderUnusable::Refused { .. })));
+        let next = if is_any_installed {
+            format!(
+                "fix a provider named above, or install another supported agent ({}) on the \
+                 daemon's PATH, {RESTART}",
+                KNOWN_PROVIDERS.join(", ")
+            )
+        } else {
+            format!(
+                "install a supported agent ({}) on the daemon's PATH, {RESTART}",
+                KNOWN_PROVIDERS.join(", ")
+            )
+        };
         requirements.push(Requirement::needs(
             "providers",
             Status::MissingPrerequisite,
             detail,
-            format!(
-                "install a supported agent ({}) on the daemon's PATH, {RESTART}",
-                KNOWN_PROVIDERS.join(", ")
-            ),
+            next,
         ));
     }
     requirements
@@ -184,8 +196,8 @@ fn provider(provider: &ProviderFacts) -> Vec<Requirement> {
             return vec![
                 Requirement::available(name, format!("not usable, optional: {reason}"))
                     .with_advice(format!(
-                        "to use it, make `{} --version` print its version as the daemon's user, \
-                         or report its output as a Torlek bug if it already does, {RESTART}",
+                        "to use it, fix what is named here so `{} --version` prints its version \
+                         as the daemon's user (report a Torlek bug if it already does), {RESTART}",
                         provider.name
                     )),
             ];

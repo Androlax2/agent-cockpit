@@ -281,6 +281,49 @@ fn a_provider_that_is_not_installed_is_listed_with_how_to_install_it_without_blo
     assert!(report.is_ready(), "{report:#?}");
 }
 
+fn refused(name: &str) -> ProviderFacts {
+    ProviderFacts {
+        name: name.to_owned(),
+        found: Err(ProviderUnusable::Refused {
+            reason: format!("/usr/bin/{name}: `--version` printed \"{name} ?\", not a version"),
+        }),
+    }
+}
+
+/// #623: installing a program that is already on PATH fixes nothing.
+#[test]
+fn a_provider_on_path_that_was_refused_is_not_advised_to_be_installed() {
+    let mut host = ready_host();
+    host.providers.push(refused("opencode"));
+
+    let report = assess(&host, &Ok(owner_only_config()), None);
+
+    let opencode = requirement(&report, "provider opencode");
+    assert!(opencode.detail.contains("not a version"), "{opencode:#?}");
+    let next = opencode.next.as_deref().unwrap_or_default();
+    assert!(next.contains("`opencode --version`"), "{opencode:#?}");
+    assert!(!next.contains("install"), "{opencode:#?}");
+}
+
+#[test]
+fn a_host_whose_only_provider_was_refused_blocks_pointing_at_it() {
+    let host = HostFacts {
+        providers: vec![missing("claude"), missing("codex"), refused("opencode")],
+        ..ready_host()
+    };
+
+    let report = assess(&host, &Ok(owner_only_config()), None);
+
+    let providers = requirement(&report, "providers");
+    assert!(
+        providers
+            .next
+            .as_deref()
+            .is_some_and(|next| next.starts_with("fix a provider named above")),
+        "{providers:#?}"
+    );
+}
+
 #[test]
 fn a_host_where_no_provider_is_usable_blocks_naming_every_supported_one() {
     let host = HostFacts {

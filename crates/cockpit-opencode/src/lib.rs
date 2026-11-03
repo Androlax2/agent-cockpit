@@ -267,7 +267,10 @@ impl OpenCode {
         let output = process::run_with_deadline(program, "--version", deadline).map_err(failed)?;
         // `1.19.5`, `v1.19.5` or, from OpenCode 2, `opencode v2.1.4` (#623).
         let version = match output.split_whitespace().collect::<Vec<_>>()[..] {
-            ["opencode", word, ..] | [word, ..] => Some(word.strip_prefix('v').unwrap_or(word)),
+            [name, word, ..] if name.eq_ignore_ascii_case("opencode") => {
+                Some(word.strip_prefix('v').unwrap_or(word))
+            }
+            [word, ..] => Some(word.strip_prefix('v').unwrap_or(word)),
             [] => None,
         }
         .filter(|word| is_dotted_version(word))

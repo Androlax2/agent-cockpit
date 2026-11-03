@@ -37,11 +37,11 @@ fn a_leading_v_is_not_part_of_the_version() {
     assert_eq!(opencode.version(), Some("1.19.5"));
 }
 
-/// #623: OpenCode 2 prints its name before the version.
+/// #623: OpenCode 2 prints its name before the version (`opencode v2.1.4`).
 #[test]
 fn a_leading_program_name_is_not_part_of_the_version() {
     let dir = tempfile::tempdir().unwrap();
-    let program = common::script(dir.path(), "opencode", "echo 'opencode v2.1.4'");
+    let program = common::script(dir.path(), "opencode", "echo 'OpenCode v2.1.4'");
 
     let opencode = OpenCode::discover(&program, None).unwrap();
 
