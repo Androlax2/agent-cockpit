@@ -37,7 +37,9 @@ grants you hold. Each verb is refused without its grant, and every message and s
 audited with your session and the other one.
 
 - `torlek agent sessions [--watch]` (`observe-sessions`): the other sessions, their state,
-  doing-now and open question. Never their terminal or transcript.
+  doing-now and open question. Never their terminal or transcript. `--watch` prints that
+  listing once, then only the line of a session that changed or appeared, and `ID ended`
+  (tab-separated) for one that left the listing; an unchanged session is not printed again.
 - `torlek agent message SESSION TEXT` (`message-sessions`): one line, typed at that
   session's next prompt with your session named. Refused while it has a dialog open.
 - `torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH]` (`start-sessions`):

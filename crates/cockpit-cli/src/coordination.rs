@@ -21,8 +21,9 @@ const WATCH_EVERY: Duration = Duration::from_secs(2);
 /// A start launches an agent, which can take longer than a request usually may.
 const START_DEADLINE: Duration = Duration::from_secs(120);
 
-/// `cockpit agent sessions [--watch]`: one line per other session; with `--watch`, again
-/// each time a line changes, until interrupted.
+/// `cockpit agent sessions [--watch]`: one line per other session; with `--watch`, then only
+/// the line of a session that changed or appeared, and `ID\tended` for one that left the
+/// listing, until interrupted (#707).
 pub(crate) fn sessions(arguments: &[OsString]) -> Result<ExitCode, String> {
     let is_watching = match utf8_words(arguments)?.as_slice() {
         [] => false,
@@ -33,21 +34,19 @@ pub(crate) fn sessions(arguments: &[OsString]) -> Result<ExitCode, String> {
         Ok(agent) => agent,
         Err(code) => return Ok(code),
     };
-    let mut shown = None;
+    let mut shown: Vec<(String, String)> = Vec::new();
     loop {
-        let listing = match agent.request(Command::AgentSessions {
+        let listed: Vec<(String, String)> = match agent.request(Command::AgentSessions {
             launch_token: crate::agent::launch_token(),
         }) {
-            Ok(Reply::AgentSessions { sessions }) => listing(&sessions),
+            Ok(Reply::AgentSessions { sessions }) => sessions
+                .iter()
+                .map(|session| (session.id.clone(), line(session)))
+                .collect(),
             other => return Ok(agent.failed(other)),
         };
-        if shown.as_ref() != Some(&listing) {
-            if shown.is_some() {
-                out!("\n");
-            }
-            out!("{listing}");
-            shown = Some(listing);
-        }
+        out!("{}", changes(&shown, &listed));
+        shown = listed;
         if !is_watching {
             return Ok(ExitCode::SUCCESS);
         }
@@ -146,37 +145,48 @@ pub(crate) fn start(arguments: &[OsString]) -> Result<ExitCode, String> {
     })
 }
 
+/// The lines of `listed` that `shown` does not hold, then `ID\tended` for each session of
+/// `shown` that `listed` no longer has. Both are `(id, line)` pairs.
+fn changes(shown: &[(String, String)], listed: &[(String, String)]) -> String {
+    let mut printed: String = listed
+        .iter()
+        .filter(|pair| !shown.contains(pair))
+        .map(|(_, line)| line.as_str())
+        .collect();
+    for (id, _) in shown {
+        if !listed.iter().any(|(listed_id, _)| listed_id == id) {
+            printed.push_str(&format!("{id}\tended\n"));
+        }
+    }
+    printed
+}
+
 /// `id  state  agent  agent-state  working-dir` then the report's `label=… doing=…
 /// needs-input=…` (or `dialog=…`), tab-separated before the report.
-fn listing(sessions: &[ObservedSessionView]) -> String {
-    sessions
-        .iter()
-        .map(|session| {
-            let report = session.report.as_ref();
-            let agent_state = report
-                .and_then(|report| report.state)
-                .map_or("-", |state| state.as_str());
-            let mut line = format!(
-                "{}\t{}\t{}\t{agent_state}\t{}",
-                session.id, session.state, session.agent, session.working_dir
-            );
-            if let Some(report) = report {
-                let question_key = match report.question_source {
-                    Some(cockpit_protocol::QuestionSource::Dialog) => "dialog",
-                    Some(cockpit_protocol::QuestionSource::Agent) | None => "needs-input",
-                };
-                for (key, value) in [
-                    ("label", &report.label),
-                    ("doing", &report.doing),
-                    (question_key, &report.needs_input),
-                ] {
-                    if let Some(value) = value {
-                        line.push_str(&format!("\t{key}={value:?}"));
-                    }
-                }
+fn line(session: &ObservedSessionView) -> String {
+    let report = session.report.as_ref();
+    let agent_state = report
+        .and_then(|report| report.state)
+        .map_or("-", |state| state.as_str());
+    let mut line = format!(
+        "{}\t{}\t{}\t{agent_state}\t{}",
+        session.id, session.state, session.agent, session.working_dir
+    );
+    if let Some(report) = report {
+        let question_key = match report.question_source {
+            Some(cockpit_protocol::QuestionSource::Dialog) => "dialog",
+            Some(cockpit_protocol::QuestionSource::Agent) | None => "needs-input",
+        };
+        for (key, value) in [
+            ("label", &report.label),
+            ("doing", &report.doing),
+            (question_key, &report.needs_input),
+        ] {
+            if let Some(value) = value {
+                line.push_str(&format!("\t{key}={value:?}"));
             }
-            line.push('\n');
-            line
-        })
-        .collect()
+        }
+    }
+    line.push('\n');
+    line
 }
