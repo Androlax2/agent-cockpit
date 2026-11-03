@@ -529,6 +529,15 @@ impl Server {
         self.run(&capture_arguments(pane, history_lines))
     }
 
+    /// A pane's visible screen plus up to `history_lines` lines above it as plain text, wrapped
+    /// lines joined: what an agent printed before it exited. Untrusted display data.
+    pub fn capture_text(&self, pane: &PaneId, history_lines: u32) -> Result<String, Error> {
+        let mut arguments = words(&["capture-pane", "-p", "-J", "-t", pane.as_str()]);
+        arguments.extend(words(&["-S", &format!("-{history_lines}")]));
+        let printed = self.run(&arguments)?;
+        Ok(String::from_utf8_lossy(&printed).into_owned())
+    }
+
     /// The server's process id, or `None` when no server runs.
     pub fn server_pid(&self) -> Result<Option<u32>, Error> {
         let arguments = words(&["display-message", "-p", "#{pid}"]);

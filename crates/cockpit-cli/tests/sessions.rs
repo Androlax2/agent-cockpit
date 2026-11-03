@@ -9,9 +9,10 @@ use std::process::Output;
 mod scripted;
 
 use cockpit_protocol::{
-    Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, LaunchKindView, LaunchView,
-    Outcome, ProtocolError, Reply, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView,
-    SessionFailure, SessionStateView, SessionView, StopTargetView,
+    AgentExitView, Command, CoordinatorAuditView, CoordinatorGrantView, ErrorCode, ExitStatusView,
+    LaunchKindView, LaunchView, Outcome, ProtocolError, Reply, SandboxEnforcementView,
+    SandboxEvidenceView, SandboxRuleView, SessionFailure, SessionStateView, SessionView,
+    StopTargetView,
 };
 use scripted::{scripted_daemon, text};
 
@@ -84,6 +85,7 @@ fn view(id: &str, state: SessionStateView) -> SessionView {
             kind: LaunchKindView::Start,
             launched_at: 1,
         }),
+        exit: None,
         changed_start_files: Vec::new(),
         restart_pending: false,
         finished: false,
@@ -167,6 +169,42 @@ async fn session_list_ended_asks_for_ended_sessions_and_prints_one_line_each() {
          s000000000002\tended\tclaude\tstart\tc-1\t/p/app\tits agent exited\t-\t-\n"
     );
     assert_eq!(daemon.await.unwrap(), Command::SessionList { ended: true });
+}
+
+#[tokio::test]
+async fn session_show_prints_how_the_agent_exited_and_its_last_lines() {
+    let home = Home::new();
+    let mut ended = view("s000000000002", SessionStateView::Ended);
+    ended.reason = Some("its agent exited with status 1: refusing to start".to_owned());
+    ended.exit = Some(AgentExitView {
+        status: ExitStatusView::Code { code: 1 },
+        output: vec!["starting".to_owned(), "Error: refusing to start".to_owned()],
+    });
+    let daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(ended),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s000000000002"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "s000000000002\tended\tclaude\tstart\tc-1\t/p/app\t\
+         its agent exited with status 1: refusing to start\t-\t-\n\
+         exit: status 1\n\
+         output:\n  starting\n  Error: refusing to start\n"
+    );
+    assert_eq!(
+        daemon.await.unwrap(),
+        Command::SessionShow {
+            session: "s000000000002".to_owned(),
+        }
+    );
 }
 
 #[tokio::test]

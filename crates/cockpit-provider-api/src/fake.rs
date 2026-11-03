@@ -6,7 +6,7 @@
 //! seconds, 600 by default). A test may give it more capabilities ([`FakeProvider::reporting`]) and a
 //! program its agent runs, in its own process tree, before it sleeps
 //! ([`FakeProvider::running`]), or have it read the messages typed to it
-//! ([`FakeProvider::reading_messages`]).
+//! ([`FakeProvider::reading_messages`]), or exit at once ([`FakeProvider::exiting`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use crate::{
 const AGENT_SCRIPT: &str = r#"printf '%s %s %s %s pid=%s token=%s\n' "$TORLEK_SESSION" "$1" "$2" "${3:-}" "$$" "$TORLEK_LAUNCH_TOKEN" >> "$FAKE_AGENT_LOG"
 : > "$FAKE_AGENT_SESSION_DIR/agent-was-here"
 if [ -n "${FAKE_AGENT_RUN:-}" ]; then "$FAKE_AGENT_RUN"; fi
+if [ -n "${FAKE_AGENT_EXIT:-}" ]; then printf '%s\n' "$FAKE_AGENT_EXIT_OUTPUT" >&2; exit "$FAKE_AGENT_EXIT"; fi
 if [ -n "${FAKE_AGENT_MESSAGES:-}" ]; then
   while IFS= read -r line; do printf '%s %s\n' "$TORLEK_SESSION" "$line" >> "$FAKE_AGENT_MESSAGES"; done
 fi
@@ -33,6 +34,8 @@ pub struct FakeProvider {
     reported: Capabilities,
     agent_program: Option<PathBuf>,
     messages: Option<PathBuf>,
+    /// The status its agent exits with at once, and the line it prints to stderr first.
+    exits_with: Option<(u8, String)>,
     conversations: AtomicUsize,
 }
 
@@ -49,6 +52,7 @@ impl FakeProvider {
             reported: Capabilities::none(),
             agent_program: None,
             messages: None,
+            exits_with: None,
             conversations: AtomicUsize::new(logged),
         }
     }
@@ -75,6 +79,13 @@ impl FakeProvider {
     /// process of the agent's own tree, with its environment and working directory.
     pub fn running(mut self, program: PathBuf) -> FakeProvider {
         self.agent_program = Some(program);
+        self
+    }
+
+    /// Its agent prints `line` to stderr and exits with `status` right after it logs its
+    /// launch, as an agent or sandbox wrapper that refuses to start (#629).
+    pub fn exiting(mut self, status: u8, line: &str) -> FakeProvider {
+        self.exits_with = Some((status, line.to_owned()));
         self
     }
 
@@ -154,6 +165,10 @@ impl Provider for FakeProvider {
         }
         if let Some(log) = &self.messages {
             environment.push(("FAKE_AGENT_MESSAGES".into(), log.clone().into()));
+        }
+        if let Some((status, line)) = &self.exits_with {
+            environment.push(("FAKE_AGENT_EXIT".into(), status.to_string().into()));
+            environment.push(("FAKE_AGENT_EXIT_OUTPUT".into(), line.into()));
         }
         Ok(LaunchCommand {
             program: "/bin/sh".into(),

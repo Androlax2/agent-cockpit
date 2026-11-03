@@ -37,6 +37,9 @@ pub struct SessionView {
     pub created_at: i64,
     pub changed_at: i64,
     pub launch: Option<LaunchView>,
+    /// How the latest launch's agent exited by itself, with the last lines it printed (#629).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<AgentExitView>,
     /// Start files its agent read at launch that changed since: `restart --all` restarts
     /// it (#146).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -146,6 +149,40 @@ impl LaunchKindView {
             LaunchKindView::Resume => "resume",
             LaunchKindView::Restore => "restore",
             LaunchKindView::Unknown => "unknown",
+        }
+    }
+}
+
+/// How a launch's agent exited by itself, as its terminal showed it before the session
+/// closed it (#629).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentExitView {
+    pub status: ExitStatusView,
+    /// The last lines its terminal showed, oldest first, without control characters.
+    /// Untrusted display data.
+    pub output: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ExitStatusView {
+    Code {
+        code: i32,
+    },
+    /// Its process was ended by a signal.
+    Signal,
+    /// Its terminal was gone, or still showed it running; also a status this version does
+    /// not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl fmt::Display for ExitStatusView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExitStatusView::Code { code } => write!(formatter, "status {code}"),
+            ExitStatusView::Signal => formatter.write_str("signal"),
+            ExitStatusView::Unknown => formatter.write_str("unknown"),
         }
     }
 }

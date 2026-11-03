@@ -177,12 +177,17 @@ pub fn run(command: Command) -> ExitCode {
         | Command::SandboxShow { .. } => CONTROL_DEADLINE,
         _ => BULK_DEADLINE,
     };
+    let is_show = matches!(command, Command::SessionShow { .. });
     let reply = match request(command, deadline) {
         Ok(reply) => reply,
         Err(code) => return code,
     };
     match &reply {
         Reply::SessionAction { session } => out!("delivered to session {session}\n"),
+        Reply::Session { session } if is_show => {
+            out!("{}", session_line(session));
+            out!("{}", exit_lines(session));
+        }
         Reply::Session { session } => out!("{}", session_line(session)),
         Reply::Sessions { sessions } => sessions.iter().for_each(|session| {
             out!("{}", session_line(session));
@@ -278,6 +283,22 @@ fn session_line(session: &SessionView) -> String {
         session.working_dir,
         session.reason.as_deref().unwrap_or("-"),
     )
+}
+
+/// How the session's latest agent exited by itself, for `session show` (#629): `exit:` and
+/// its status, then `output:` and the last lines it printed, indented. Empty when it did not.
+fn exit_lines(session: &SessionView) -> String {
+    let Some(exit) = &session.exit else {
+        return String::new();
+    };
+    let mut lines = format!("exit: {}\n", exit.status);
+    if !exit.output.is_empty() {
+        lines.push_str("output:\n");
+        for line in &exit.output {
+            lines.push_str(&format!("  {line}\n"));
+        }
+    }
+    lines
 }
 
 /// `grant  permission  id  terms`, tab-separated; `terms` is `per-hour=N confirmed` or
