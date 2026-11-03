@@ -349,6 +349,8 @@ exec sleep 60
                 description: "runtime diagnostics fixture".into(),
                 title: None,
                 steps: String::new(),
+                since: None,
+                cli_version: None,
             },
             GENEROUS,
         )

@@ -238,6 +238,7 @@ impl Handler for Routes {
             },
             (
                 command @ (Command::BugReportNew { .. }
+                | Command::BugReportBundlePlan { .. }
                 | Command::BugReportList { .. }
                 | Command::BugReportShow { .. }
                 | Command::BugReportEdit { .. }

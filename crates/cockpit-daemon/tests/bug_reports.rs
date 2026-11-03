@@ -45,6 +45,8 @@ fn new_draft(description: &str) -> Command {
         description: description.to_owned(),
         title: None,
         steps: String::new(),
+        since: None,
+        cli_version: None,
     }
 }
 

@@ -148,6 +148,19 @@ pub enum Command {
         title: Option<String>,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         steps: String,
+        /// Unix seconds: the bundle leaves out log files last written before (`--since`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
+        /// The asking CLI's version line, for the bundle's version manifest: the CLI on the
+        /// owner's PATH may not be the release the daemon runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cli_version: Option<String>,
+    },
+    /// Owner only: the paths a new draft's support bundle would carry, read without writing
+    /// it, so the CLI lists them before `bug-report-new` writes one.
+    BugReportBundlePlan {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
     },
     /// Owner only: the drafts waiting; `all` adds the sent and discarded reports.
     BugReportList {
@@ -993,6 +1006,10 @@ pub enum Reply {
     },
     BugReport {
         report: Box<BugReportView>,
+    },
+    /// What `bug-report-bundle-plan` read: each path inside the bundle.
+    BugBundlePlan {
+        contents: Vec<String>,
     },
     /// `None`: the session has not launched an agent yet.
     SessionSandbox {

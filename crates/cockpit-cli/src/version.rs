@@ -14,7 +14,7 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         [flag] if flag == "--all" => true,
         _ => return Err("version takes no argument but --all".to_string()),
     };
-    outln!("torlek {} ({})", env!("CARGO_PKG_VERSION"), revision());
+    outln!("{}", line());
     if !shows_all {
         return Ok(ExitCode::SUCCESS);
     }
@@ -45,6 +45,12 @@ pub(crate) fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `torlek VERSION (revision REVISION)`: this binary's first line, which a support bundle's
+/// version manifest also names as the installed CLI.
+pub(crate) fn line() -> String {
+    format!("torlek {} ({})", env!("CARGO_PKG_VERSION"), revision())
 }
 
 /// The release workflow sets `TORLEK_SOURCE_REVISION` while compiling; rustc tracks it, so a
