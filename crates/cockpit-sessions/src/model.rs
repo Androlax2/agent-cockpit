@@ -224,9 +224,11 @@ pub enum ExitStatus {
 impl ExitStatus {
     /// A non-zero exit code: the agent, or its sandbox wrapper, reported a failure, and its
     /// session is left `failed` (#632). A signal or an unknown status ends it, as a stop
-    /// from outside would.
+    /// from outside would; so does a code a shell or wrapper reports for a signal
+    /// (128 + its number, up to 128 + 31).
     pub fn is_failure(self) -> bool {
-        matches!(self, ExitStatus::Code(code) if code != 0)
+        const SIGNALLED: std::ops::RangeInclusive<i32> = 129..=159;
+        matches!(self, ExitStatus::Code(code) if code != 0 && !SIGNALLED.contains(&code))
     }
 }
 
@@ -493,4 +495,28 @@ pub(crate) fn validate_link(link: &str) -> Result<(), Error> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_non_zero_code_that_names_no_signal_is_a_failure() {
+        let cases = [
+            (ExitStatus::Code(0), false),
+            (ExitStatus::Code(1), true),
+            (ExitStatus::Code(3), true),
+            (ExitStatus::Code(128), true),
+            (ExitStatus::Code(130), false),
+            (ExitStatus::Code(143), false),
+            (ExitStatus::Code(159), false),
+            (ExitStatus::Code(255), true),
+            (ExitStatus::Signal, false),
+            (ExitStatus::Unknown, false),
+        ];
+        for (status, is_failure) in cases {
+            assert_eq!(status.is_failure(), is_failure, "{status}");
+        }
+    }
 }

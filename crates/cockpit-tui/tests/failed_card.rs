@@ -42,3 +42,20 @@ fn a_running_card_has_no_exit_line() {
 
     assert!(!screen.contains("exited with"), "{screen}");
 }
+
+#[test]
+fn a_long_last_line_is_cut_on_the_card() {
+    let now = Instant::now();
+    let mut failed = refused(SessionStateView::Failed);
+    let long_line = format!("{} TAIL", "word ".repeat(60));
+    failed.exit = Some(AgentExitView {
+        status: ExitStatusView::Code { code: 3 },
+        output: vec![long_line],
+    });
+    let app = app_with(&["app"], vec![failed], now);
+
+    let screen = screen_text(&app, now);
+
+    assert!(screen.contains('…'), "{screen}");
+    assert!(!screen.contains("TAIL"), "{screen}");
+}

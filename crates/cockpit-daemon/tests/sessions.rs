@@ -1032,7 +1032,12 @@ async fn an_agent_that_exits_at_start_names_only_its_status_in_the_reason() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_session_whose_agent_exits_at_once_is_answered_failed() {
     let home = Home::new();
-    let daemon = home.start(REFUSING, settings()).await;
+    // Long enough for a loaded runner; the answer comes as soon as the agent exits.
+    let settings = cockpit_sessions::Settings {
+        early_exit_window: Duration::from_secs(10),
+        ..settings()
+    };
+    let daemon = home.start(REFUSING, settings).await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
 
@@ -1052,6 +1057,7 @@ async fn a_session_whose_agent_exits_with_a_failure_stays_listed() {
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
+    wait_for_state(&client, &started.id, SessionStateView::Failed).await;
 
     let listed = sessions(&client, false).await;
 

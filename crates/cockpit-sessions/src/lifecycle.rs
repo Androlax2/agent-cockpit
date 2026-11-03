@@ -34,10 +34,10 @@ const LAUNCH_TOKEN_VARIABLE: &str = "TORLEK_LAUNCH_TOKEN";
 /// The session a dry run's proxy client identity names: no session launches under it.
 const DRY_RUN_SESSION: &str = "dry-run";
 
-/// Variables of the terminal tmux emulates, kept from the pane: they describe the host.
 /// How often [`Sessions::after_early_exit`] looks at a new agent within its window.
 const EARLY_EXIT_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// Variables of the terminal tmux emulates, kept from the pane: they describe the host.
 const TERMINAL_VARIABLES: [&str; 2] = ["TERM", "COLORTERM"];
 
 /// What every launch and every restore of a still-running session grants the session over
@@ -1092,8 +1092,8 @@ impl Sessions {
                 "fail",
             )
             .await?;
-            revoke_self_grants(&write, &session.id).await?;
-            store::clear_restart_request(&write, &session.id).await?;
+            // Its agent is gone as with an ended session: it holds nothing until resumed.
+            give_up_on_end(&write, &failed).await?;
             failed
         } else {
             let ended = store::transition(
@@ -2133,7 +2133,7 @@ async fn release(
 
 /// What an ended session gives up, in the transaction that ends it: its clone, its self
 /// grants and the coordinator grants the owner gave it (#410). Every move to `ended` calls
-/// this.
+/// this, and the move to `failed` of a session whose agent exited with a failure (#632).
 async fn give_up_on_end(
     write: &cockpit_turso::WriteTransaction<'_>,
     ended: &Session,

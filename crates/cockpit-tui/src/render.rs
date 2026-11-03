@@ -290,11 +290,18 @@ fn exit_line(session: &SessionView) -> Option<String> {
     }
     let exit = session.exit.as_ref()?;
     let status = format!("exited with {}", exit.status);
-    Some(match exit.output.last() {
-        Some(line) => format!("{status} · {line}"),
+    let line = match exit.output.last() {
+        Some(printed) => format!("{status} · {printed}"),
         None => status,
+    };
+    Some(match line.char_indices().nth(EXIT_LINE_CHARACTERS) {
+        Some((end, _)) => format!("{}…", &line[..end]),
+        None => line,
     })
 }
+
+/// Characters of [`exit_line`] shown: a few rows at most; `session show` prints it all.
+const EXIT_LINE_CHARACTERS: usize = 120;
 
 /// The coordinator grants a session holds and the latest message a coordinator queued to it,
 /// with its sender (#410): `grants observe,message · ✉ s1a2 (received): "text"`. A plain line

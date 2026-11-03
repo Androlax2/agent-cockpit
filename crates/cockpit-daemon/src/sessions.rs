@@ -474,16 +474,17 @@ pub(crate) async fn restore(sessions: &Sessions) -> Result<(), Error> {
 const EXIT_SWEEP: Duration = Duration::from_secs(1);
 
 /// The sessions' periodic pass: exits, idle sleep, asleep expiry, every `interval`; the exits
-/// also every [`EXIT_SWEEP`] (or `interval`, when shorter). Runs until aborted.
+/// also every [`EXIT_SWEEP`] when `interval` is longer. Runs until aborted.
 pub(crate) async fn tick_forever(sessions: Arc<Sessions>, interval: Duration) {
     let mut ticks = tokio::time::interval(interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut sweeps = tokio::time::interval(EXIT_SWEEP.min(interval));
+    let mut sweeps = tokio::time::interval(EXIT_SWEEP);
     sweeps.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let is_sweeping = interval > EXIT_SWEEP;
     loop {
         let pass = tokio::select! {
             _ = ticks.tick() => sessions.tick().await,
-            _ = sweeps.tick() => sessions.sweep_exits().await,
+            _ = sweeps.tick(), if is_sweeping => sessions.sweep_exits().await,
         };
         match pass {
             Ok(report) => log_tick(&report),
