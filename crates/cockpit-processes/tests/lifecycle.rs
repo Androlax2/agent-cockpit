@@ -209,7 +209,7 @@ async fn a_program_that_cannot_be_spawned_releases_its_reservation() {
 #[tokio::test(flavor = "multi_thread")]
 async fn output_is_drained_from_the_files_the_program_writes() {
     let home = Home::new();
-    let database = home.open_database().await;
+    let database = std::sync::Arc::new(home.open_database().await);
     let supervisor = home.process_group_supervisor();
 
     let execution = supervisor
@@ -217,10 +217,20 @@ async fn output_is_drained_from_the_files_the_program_writes() {
         .await
         .unwrap();
     let stdout = supervisor
-        .follow_output(&database, &execution, OutputKind::Stdout)
+        .follow_output(
+            std::sync::Arc::clone(&database),
+            &execution,
+            OutputKind::Stdout,
+        )
+        .await
         .unwrap();
     let stderr = supervisor
-        .follow_output(&database, &execution, OutputKind::Stderr)
+        .follow_output(
+            std::sync::Arc::clone(&database),
+            &execution,
+            OutputKind::Stderr,
+        )
+        .await
         .unwrap();
 
     assert_eq!(

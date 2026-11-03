@@ -335,6 +335,7 @@ impl Runner {
         let write = database.write().await?;
         let execution = self.supervisor.reserve(&write, database.epoch()).await?;
         start_run(&write, run, execution).await?;
+        crate::runs::attribute_run_output(&write, run, execution, database.epoch()).await?;
         write.commit().await?;
         Ok(execution)
     }

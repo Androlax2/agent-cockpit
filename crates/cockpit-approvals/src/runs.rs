@@ -1153,3 +1153,27 @@ pub async fn maintenance_runs(
     }
     Ok((None, executions))
 }
+
+/// Caller invokes this after start_run, in the same reservation transaction.
+pub(crate) async fn attribute_run_output(
+    write: &WriteTransaction<'_>,
+    run: &Approved,
+    execution: ExecutionId,
+    epoch: &str,
+) -> Result<(), Error> {
+    let row = write.prepare("SELECT session, project FROM approvals_runs WHERE id = ?1 AND revision = ?2 AND state = 'running'").await?
+        .query_row((run.id.0, run.revision)).await?;
+    let session: String = row.get(0)?;
+    let project: Option<String> = row.get(1)?;
+    cockpit_processes::attribute_output(
+        write,
+        execution,
+        epoch,
+        project.as_deref(),
+        Some(&session),
+        cockpit_processes::OutputMode::Pty,
+        false,
+    )
+    .await?;
+    Ok(())
+}

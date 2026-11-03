@@ -12,7 +12,7 @@ const WRITTEN: u64 = 10_000;
 #[tokio::test(flavor = "multi_thread")]
 async fn a_slow_viewer_reads_a_gap_marker_then_the_bytes_still_held() {
     let home = Home::new();
-    let database = home.open_database().await;
+    let database = std::sync::Arc::new(home.open_database().await);
     let mut supervisor = home.process_group_supervisor();
     supervisor.output_limits = OutputLimits {
         window_bytes: WINDOW,
@@ -27,7 +27,12 @@ async fn a_slow_viewer_reads_a_gap_marker_then_the_bytes_still_held() {
         .await
         .unwrap();
     let stream = supervisor
-        .follow_output(&database, &execution, OutputKind::Stdout)
+        .follow_output(
+            std::sync::Arc::clone(&database),
+            &execution,
+            OutputKind::Stdout,
+        )
+        .await
         .unwrap();
     let held_start = WRITTEN - WINDOW as u64;
     // The viewer reads nothing until everything was drained.
@@ -50,14 +55,19 @@ async fn a_slow_viewer_reads_a_gap_marker_then_the_bytes_still_held() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_viewer_reads_at_most_the_bytes_it_asked_for() {
     let home = Home::new();
-    let database = home.open_database().await;
+    let database = std::sync::Arc::new(home.open_database().await);
     let supervisor = home.process_group_supervisor();
     let execution = supervisor
         .launch(&database, &shell(&home, "printf abcdef"))
         .await
         .unwrap();
     let stream = supervisor
-        .follow_output(&database, &execution, OutputKind::Stdout)
+        .follow_output(
+            std::sync::Arc::clone(&database),
+            &execution,
+            OutputKind::Stdout,
+        )
+        .await
         .unwrap();
 
     let mut read = Vec::new();

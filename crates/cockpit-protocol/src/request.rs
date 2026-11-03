@@ -600,7 +600,20 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checkout: Option<String>,
     },
-    /// Owner only: the receipt of the run `check-run` started, `None` until it ended.
+    /// Owner only: bounded discovery of durable, unsealed result intents.
+    CheckPending {
+        project: String,
+        #[serde(default)]
+        after: Option<i64>,
+    },
+    /// Owner only: explicitly resolve an observed inactive producer as unknown.
+    CheckResolvePending {
+        project: String,
+        run: String,
+        revision: i64,
+        database_epoch: String,
+    },
+    /// Owner only: the receipt of the run `check-run` started, `None` while collected.
     CheckReceipt {
         project: String,
         run: String,
@@ -923,6 +936,10 @@ pub enum Reply {
     /// The daemon's execution running the check.
     CheckRunStarted {
         run: String,
+    },
+    CheckPending {
+        pending: Vec<crate::verification::PendingCheckView>,
+        next: Option<i64>,
     },
     CheckReceipt {
         receipt: Option<Box<CheckReceiptView>>,

@@ -72,7 +72,7 @@ pub use tasks::{
 };
 pub use verification::{
     CheckArtifactView, CheckClaimView, CheckOutcomeView, CheckReceiptView, CheckStatusView,
-    GateCheckView, GateOutcomeView, GateView, StaleReasonView,
+    GateCheckView, GateOutcomeView, GateView, PendingCheckView, StaleReasonView,
 };
 pub use workflows::{
     WorkflowBlockedActionView, WorkflowBlockedView, WorkflowCheckpointView, WorkflowGoalView,

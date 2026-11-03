@@ -194,3 +194,17 @@ impl StaleReasonView {
         }
     }
 }
+
+/// Owner-observed producer intent; historical origin and current DB epoch are distinct.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingCheckView {
+    pub project: String,
+    pub run: String,
+    pub execution: i64,
+    pub origin_epoch: String,
+    pub database_epoch: String,
+    pub revision: i64,
+    /// Reservation remains occupied; this includes an unconfirmed launch, not just a live PID.
+    pub active: bool,
+    pub collector_active: bool,
+}

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
+use std::io::Read;
 use tokio::sync::watch;
 
 use crate::Error;
@@ -120,6 +120,7 @@ pub struct OutputStream {
     window: Arc<Mutex<Window>>,
     /// Ticks whenever the drainer changed the window; viewers wait on it.
     progress: watch::Receiver<()>,
+    _guard: crate::OutputGuard,
 }
 
 impl OutputStream {
@@ -129,6 +130,7 @@ impl OutputStream {
     pub(crate) fn follow(
         path: PathBuf,
         limits: OutputLimits,
+        guard: crate::OutputGuard,
         ended: impl Future<Output = ()> + Send + 'static,
     ) -> OutputStream {
         let window = Arc::new(Mutex::new(Window {
@@ -144,9 +146,14 @@ impl OutputStream {
             limits,
             Arc::clone(&window),
             progress_sender,
+            guard.clone(),
             ended,
         ));
-        OutputStream { window, progress }
+        OutputStream {
+            window,
+            progress,
+            _guard: guard,
+        }
     }
 
     /// Reads at `cursor` at most `max_bytes`, waiting until there is something to read.
@@ -184,9 +191,10 @@ async fn drain(
     limits: OutputLimits,
     window: Arc<Mutex<Window>>,
     progress: watch::Sender<()>,
+    guard: crate::OutputGuard,
     ended: impl Future<Output = ()> + Send + 'static,
 ) {
-    let drained = drain_until_ended(&path, limits, &window, &progress, ended).await;
+    let drained = drain_until_ended(&path, limits, &window, &progress, &guard, ended).await;
     let mut window = window
         .lock()
         .expect("the window lock is never held across a panic");
@@ -200,23 +208,37 @@ async fn drain_until_ended(
     limits: OutputLimits,
     window: &Mutex<Window>,
     progress: &watch::Sender<()>,
+    guard: &crate::OutputGuard,
     ended: impl Future<Output = ()>,
 ) -> Result<(), Error> {
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(Error::io("open", path))?;
-    let mut chunk = vec![0; limits.chunk_bytes];
+    let owned_path = path.to_path_buf();
+    let held = guard.clone();
+    let mut file = tokio::task::spawn_blocking(move || {
+        let _held = held;
+        std::fs::File::open(owned_path)
+    })
+    .await
+    .map_err(|e| Error::io("join output open", path)(std::io::Error::other(e)))?
+    .map_err(Error::io("open", path))?;
     let mut ended = std::pin::pin!(ended);
     let mut has_ended = false;
+    let mut chunk = vec![0; limits.chunk_bytes];
     loop {
         // Nobody can read the window any more: stop instead of draining for no one.
         if progress.is_closed() {
             return Ok(());
         }
-        let read = file
-            .read(&mut chunk)
-            .await
-            .map_err(Error::io("read", path))?;
+        let held = guard.clone();
+        let (returned, returned_chunk, read) = tokio::task::spawn_blocking(move || {
+            let _held = held;
+            let read = file.read(&mut chunk);
+            (file, chunk, read)
+        })
+        .await
+        .map_err(|e| Error::io("join output read", path)(std::io::Error::other(e)))?;
+        file = returned;
+        chunk = returned_chunk;
+        let read = read.map_err(Error::io("read", path))?;
         if read > 0 {
             window
                 .lock()

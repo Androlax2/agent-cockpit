@@ -186,8 +186,40 @@ impl Supervisor {
         id: ExecutionId,
         spec: &LaunchSpec,
     ) -> Result<Launched, Error> {
+        self.launch_reserved_inner(database, id, spec, None).await
+    }
+
+    /// File-producing managed callers retain this guard through launch diagnostics as well
+    /// as their result collection. Unknown legacy callers remain conservatively protected.
+    pub async fn launch_reserved_with_output(
+        &self,
+        id: ExecutionId,
+        spec: &LaunchSpec,
+        guard: crate::OutputGuard,
+    ) -> Result<Launched, Error> {
+        if guard.execution() != id {
+            return Err(crate::output_catalog::invalid(id, "wrong output guard"));
+        }
+        let database = Arc::clone(guard.database());
+        self.launch_reserved_inner(&database, id, spec, Some(guard))
+            .await
+    }
+
+    async fn launch_reserved_inner(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+        spec: &LaunchSpec,
+        guard: Option<crate::OutputGuard>,
+    ) -> Result<Launched, Error> {
         let containment = reserved_execution(database, id).await?.containment;
         let takes_expand_environment = self.scope_takes_expand_environment(&containment).await;
+        let mode = if spec.terminal.is_some() {
+            crate::OutputMode::Pty
+        } else {
+            crate::OutputMode::Files
+        };
+        crate::output_catalog::begin_output_launch(database, id, mode, guard.is_some()).await?;
         let mut launcher = match self.spawn(
             self.execution_dir(database, id),
             &containment,
@@ -217,6 +249,7 @@ impl Supervisor {
             process_group,
             launcher_exited,
             spec.terminal.is_some(),
+            guard,
         )
         .await
     }
@@ -370,6 +403,8 @@ impl Supervisor {
         environment: &[(OsString, OsString)],
         host_script: &str,
     ) -> Result<HostedLaunch, Error> {
+        crate::output_catalog::begin_output_launch(database, id, crate::OutputMode::Hosted, false)
+            .await?;
         let dir = self.execution_dir(database, id);
         if let Err(error) = DirBuilder::new().recursive(true).mode(0o700).create(&dir) {
             store::record_ended(database, id, EndReason::NeverStarted).await?;
@@ -491,6 +526,7 @@ impl Supervisor {
         process_group: i32,
         mut launcher_exited: oneshot::Receiver<LauncherExit>,
         has_terminal: bool,
+        guard: Option<crate::OutputGuard>,
     ) -> Result<Launched, Error> {
         let leader_path = self.execution_dir(database, id).join(LEADER_FILE);
         let deadline = tokio::time::Instant::now() + self.launch_timeout;
@@ -532,7 +568,7 @@ impl Supervisor {
                     launcher_output: if has_terminal {
                         "(written to its terminal)".to_owned()
                     } else {
-                        self.launcher_output(database, id).await
+                        self.launcher_output(database, id, guard).await
                     },
                 });
             }
@@ -543,14 +579,28 @@ impl Supervisor {
         }
     }
 
-    async fn launcher_output(&self, database: &Database, id: ExecutionId) -> String {
+    async fn launcher_output(
+        &self,
+        database: &Database,
+        id: ExecutionId,
+        guard: Option<crate::OutputGuard>,
+    ) -> String {
         let path = self.output_path(database, id, OutputKind::Stderr);
-        match tokio::fs::read(&path).await {
-            Ok(bytes) => {
-                let quoted = &bytes[..bytes.len().min(LAUNCHER_OUTPUT_QUOTE_BYTES)];
-                String::from_utf8_lossy(quoted).into_owned()
-            }
-            Err(error) => format!("(cannot read {}: {error})", path.display()),
+        let displayed = path.display().to_string();
+        let read = tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let _guard = guard;
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)?
+                .take(LAUNCHER_OUTPUT_QUOTE_BYTES as u64)
+                .read_to_end(&mut bytes)?;
+            Ok::<_, std::io::Error>(bytes)
+        })
+        .await;
+        match read {
+            Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Ok(Err(error)) => format!("(cannot read {displayed}: {error})"),
+            Err(error) => format!("(output reader failed: {error})"),
         }
     }
 
@@ -648,6 +698,15 @@ impl Supervisor {
         if let Containment::SystemdScope { unit } = &execution.containment {
             if self.systemd.is_active(unit).await? {
                 return Ok(ours);
+            }
+            // An absent unit with no persisted launcher identity cannot distinguish a
+            // launch not submitted from one still being registered. Only an explicit
+            // unclaimed-intent or reaped-launcher proof may end that reservation.
+            if execution.phase == Phase::Launching
+                && process_group.is_none()
+                && leader_start.is_none()
+            {
+                return Ok(Presence::Unidentified);
             }
             // Until `systemd-run` registered the scope, the unit reads as unknown, which
             // `systemctl` answers as `inactive`; the launcher itself is still alive.
@@ -836,9 +895,9 @@ impl Supervisor {
 
     /// Follows one output file of an identified execution until it is observed empty, or
     /// until every clone of the stream is dropped.
-    pub fn follow_output(
+    pub async fn follow_output(
         &self,
-        database: &Database,
+        database: Arc<Database>,
         execution: &Execution,
         kind: OutputKind,
     ) -> Result<OutputStream, Error> {
@@ -846,12 +905,18 @@ impl Supervisor {
             execution: execution.id,
         })?;
         let systemd = self.systemd.clone();
-        let path = self.output_path(database, execution.id, kind);
-        Ok(OutputStream::follow(path, self.output_limits, async move {
-            while identity_present(&systemd, &identity).await {
-                tokio::time::sleep(PRESENCE_POLL_INTERVAL).await;
-            }
-        }))
+        let guard = crate::guard_output(Arc::clone(&database), execution.id).await?;
+        let path = self.output_path(&database, execution.id, kind);
+        Ok(OutputStream::follow(
+            path,
+            self.output_limits,
+            guard,
+            async move {
+                while identity_present(&systemd, &identity).await {
+                    tokio::time::sleep(PRESENCE_POLL_INTERVAL).await;
+                }
+            },
+        ))
     }
 }
 

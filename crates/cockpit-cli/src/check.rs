@@ -28,6 +28,8 @@ pub(crate) enum Request {
         checkout: Option<String>,
     },
     Gate(Command),
+    Pending(Command),
+    Recover(Command),
     Claim(Command),
 }
 
@@ -36,6 +38,40 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Request, String> {
     let words = utf8_words(arguments)?;
     let (verb, rest) = words.split_first().ok_or("name a check verb")?;
     match (*verb, rest) {
+        ("pending", rest) => {
+            let mut flags = Flags::parse(rest, &["--project", "--after"], &[], &[])?;
+            flags.no_positional()?;
+            let after = flags
+                .take("--after")
+                .map(|s| {
+                    s.parse::<i64>()
+                        .map_err(|_| "--after needs the displayed execution cursor".to_owned())
+                })
+                .transpose()?;
+            Ok(Request::Pending(Command::CheckPending {
+                project: flags
+                    .required("--project", "the project whose pending results to inspect")?,
+                after,
+            }))
+        }
+        ("resolve-pending", [run, rest @ ..]) => {
+            let mut flags = Flags::parse(rest, &["--project", "--revision", "--epoch"], &[], &[])?;
+            flags.no_positional()?;
+            let revision = flags
+                .required("--revision", "the observed pending revision")?
+                .parse::<i64>()
+                .map_err(|_| "--revision must be positive")?;
+            if revision <= 0 {
+                return Err("--revision must be positive".into());
+            }
+            Ok(Request::Recover(Command::CheckResolvePending {
+                project: flags.required("--project", "the project")?,
+                run: (*run).to_owned(),
+                revision,
+                database_epoch: flags
+                    .required("--epoch", "the explicitly observed current database epoch")?,
+            }))
+        }
         ("run", [check, rest @ ..]) => {
             let mut flags = Flags::parse(rest, &["--project", "--checkout"], &[], &[])?;
             flags.no_positional()?;
@@ -77,6 +113,43 @@ pub(crate) fn run(request: Request) -> ExitCode {
             check,
             checkout,
         } => run_check(project, check, checkout),
+        Request::Pending(command) => ask(false, command, |reply| match reply {
+            Reply::CheckPending { pending, next } => {
+                let mut text = String::from(
+                    "run\trevision\torigin-epoch\tcurrent-database-epoch\texecution-occupying\tcollector-active\n",
+                );
+                for row in pending {
+                    text.push_str(&format!(
+                        "{:?}\t{}\t{:?}\t{:?}\t{}\t{}\n",
+                        row.run,
+                        row.revision,
+                        row.origin_epoch,
+                        row.database_epoch,
+                        row.active,
+                        row.collector_active
+                    ));
+                }
+                if let Some(cursor) = next {
+                    text.push_str(&format!(
+                        "more pending results: repeat with --after {cursor}\n"
+                    ));
+                }
+                Some((text, ExitCode::SUCCESS))
+            }
+            _ => None,
+        }),
+        Request::Recover(command) => ask(false, command, |reply| match reply {
+            Reply::CheckReceipt {
+                receipt: Some(receipt),
+            } => Some((
+                format!(
+                    "Recorded result {}: {:?}; recovery preserves files and never changes a recorded outcome.\n",
+                    receipt.id, receipt.outcome
+                ),
+                ExitCode::SUCCESS,
+            )),
+            _ => None,
+        }),
         Request::Gate(command) => {
             let is_session = launch_token().is_some();
             ask(is_session, command, |reply| match reply {
@@ -115,8 +188,9 @@ fn ask(
 }
 
 /// Starts the check on the owner's socket, then asks for its receipt on one connection until
-/// the run has ended. A daemon that stops while the check runs records nothing for it (#351);
-/// the connection it held fails, and so does the wait, rather than asking a new daemon forever.
+/// the run has ended. A daemon that stops while the check runs keeps the pending intent;
+/// the connection it held fails. `check pending` discovers the durable intent for explicit
+/// owner recovery; the CLI never auto-confirms a new epoch or silently retries a run.
 fn run_check(project: String, check: String, checkout: Option<String>) -> ExitCode {
     let socket = match socket(false) {
         Ok(socket) => socket,

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_approvals::RunSettings;
 use cockpit_authorization::{Permission, Scope, SessionId};
-use cockpit_processes::{EndReason, ExecutionId, LaunchSpec, OutputKind, Phase, Supervisor};
+use cockpit_processes::{ExecutionId, LaunchSpec, OutputKind, Supervisor};
 use cockpit_protocol::{
     CheckArtifactView, CheckClaimView, CheckOutcomeView, CheckReceiptView, CheckStatusView,
     Command, ErrorCode, GateCheckView, GateOutcomeView, GateView, ProtocolError, Reply,
@@ -60,6 +60,11 @@ struct Target {
 /// The route for a verification command; `routes.rs` sends each only from the socket it is
 /// for. Every one reads the checkout (Git hashes the worktree), so all run in the bulk lane.
 pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
+    let class = if matches!(command, Command::CheckPending { .. }) {
+        WorkClass::Control
+    } else {
+        WorkClass::Bulk
+    };
     let work = async move {
         match (command, peer) {
             (
@@ -74,6 +79,18 @@ pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
                 require_trusted(&context, &checkout).await?;
                 run(&context, target(checkout), &check).await
             }
+            (Command::CheckPending { project, after }, Peer::Owner) => {
+                pending_checks(&context, &project, after.unwrap_or(0)).await
+            }
+            (
+                Command::CheckResolvePending {
+                    project,
+                    run,
+                    revision,
+                    database_epoch,
+                },
+                Peer::Owner,
+            ) => resolve_pending(&context, &project, &run, revision, &database_epoch).await,
             (Command::CheckReceipt { project, run }, Peer::Owner) => {
                 receipt(&context, &project, &run).await
             }
@@ -127,7 +144,7 @@ pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
         }
     };
     Route::Run {
-        class: WorkClass::Bulk,
+        class,
         job: job(work),
     }
 }
@@ -383,10 +400,45 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         .reserve(&write, context.database.epoch())
         .await
         .map_err(|error| internal(&error))?;
+    let started_at = now();
+    let run_id = format!("execution-{}-{}", context.database.epoch(), execution.0);
+    cockpit_processes::attribute_output(
+        &write,
+        execution,
+        context.database.epoch(),
+        Some(&target.project),
+        None,
+        cockpit_processes::OutputMode::Files,
+        true,
+    )
+    .await
+    .map_err(|e| internal(&e))?;
+    let pending = cockpit_verification::reserve_result(
+        &write,
+        context.database.epoch(),
+        execution.0,
+        NewReceipt {
+            project: target.project,
+            run_id: run_id.clone(),
+            check: definition.clone(),
+            source,
+            artifacts,
+            outcome: Outcome::Unknown,
+            exit_code: None,
+            output: String::new(),
+            output_references: Vec::new(),
+            started_at,
+            finished_at: started_at,
+        },
+    )
+    .await?;
+    let collector =
+        cockpit_processes::guard_output_in(&write, Arc::clone(&context.database), execution)
+            .await
+            .map_err(|e| internal(&e))?;
     write.commit().await?;
     let spec = LaunchSpec {
         program: CHECK_SHELL.into(),
-        // One stream, in the order it was written: failures print last.
         arguments: vec![
             "-c".into(),
             format!("exec 2>&1\n{}", definition.command).into(),
@@ -395,78 +447,89 @@ async fn run(context: &Context, target: Target, check: &str) -> Answer {
         environment: context.run_settings.run_environment(&git_config),
         terminal: None,
     };
-    let run_id = format!("execution-{}", execution.0);
-    let started_at = now();
-    let launched = context
+    match context
         .processes
-        .launch_reserved(&context.database, execution, &spec)
-        .await;
-    let mut pending = NewReceipt {
-        project: target.project,
-        run_id: run_id.clone(),
-        check: definition,
-        source,
-        artifacts,
-        outcome: Outcome::Unknown,
-        exit_code: None,
-        output: String::new(),
-        output_references: Vec::new(),
-        started_at,
-        finished_at: started_at,
-    };
-    match launched {
+        .launch_reserved_with_output(execution, &spec, collector.clone())
+        .await
+    {
         Ok(launched) => {
             tokio::spawn(record_when_ended(
                 context.clone(),
-                execution,
-                launched.exit,
                 pending,
+                launched.exit,
+                collector,
             ));
         }
-        Err(error) if never_started(context, execution).await => {
-            return Err(refused(
-                ErrorCode::Refused,
-                format!("check `{}` could not start: {error}", pending.check.name),
-                "make the check's working directory exist",
-                UnblockedBy::Owner,
-            ));
-        }
-        // A launch whose confirmation timed out may still run: its outcome is unknown, and
-        // the gate asks for the check again.
         Err(error) => {
-            pending.output = format!("torlek lost the run: the check may have started: {error}");
-            let output_bytes = pending.output.len() as u64;
-            record(context, pending, output_bytes).await;
+            let write = context.database.write().await?;
+            let observed = cockpit_processes::execution_in(&write, execution)
+                .await
+                .map_err(|e| internal(&e))?;
+            if observed.phase
+                == cockpit_processes::Phase::Ended(cockpit_processes::EndReason::NeverStarted)
+            {
+                let mut result = pending.receipt.clone();
+                result.finished_at = now().max(result.started_at);
+                result.output = format!("check could not start: {error}");
+                let bytes = result.output.len() as u64;
+                cockpit_verification::seal_result(
+                    &write,
+                    &pending,
+                    result,
+                    bytes,
+                    now().max(pending.receipt.started_at),
+                    false,
+                )
+                .await?;
+                cockpit_processes::seal_output_result(&write, execution, &pending.origin_epoch)
+                    .await
+                    .map_err(|e| internal(&e))?;
+                write.commit().await?;
+                return Err(refused(
+                    ErrorCode::Refused,
+                    format!("check `{}` could not start: {error}", definition.name),
+                    "make the check's working directory and launcher available",
+                    UnblockedBy::Owner,
+                ));
+            }
+            drop(write);
+            // No guessed outcome: even a failed launch has a durable, recoverable intent.
+            // Pending protection remains until an observed-inactive owner recovery seals it.
+            tracing::warn!(run = run_id, %error, "check launch uncertain; pending result retained");
         }
     }
     Ok(Reply::CheckRunStarted { run: run_id })
 }
 
-/// Waits for the check's program to exit, then records what it found with the end of its
-/// output. A daemon that stops first records nothing for the run.
 async fn record_when_ended(
     context: Context,
-    execution: ExecutionId,
+    pending: cockpit_verification::PendingResult,
     exit: oneshot::Receiver<std::io::Result<ExitStatus>>,
-    mut receipt: NewReceipt,
+    collector: cockpit_processes::OutputGuard,
 ) {
+    let mut receipt = pending.receipt.clone();
     (receipt.outcome, receipt.exit_code) = match exit.await {
         Ok(Ok(status)) => match status.code() {
             Some(0) => (Outcome::Passed, Some(0)),
             Some(code) => (Outcome::Failed, Some(i64::from(code))),
-            // Ended by a signal: it did not pass.
             None => (Outcome::Failed, None),
         },
-        Ok(Err(_)) | Err(_) => (Outcome::Unknown, None),
+        Ok(Err(_)) | Err(_) => return, // pending hold remains; no timeout success
     };
     receipt.finished_at = now();
-    let output_path =
-        context
-            .processes
-            .output_path(&context.database, execution, OutputKind::Stdout);
-    receipt.output_references = vec![output_path.display().to_string()];
-    let read = tokio::task::spawn_blocking(move || output_tail(&output_path)).await;
-    let output_bytes = match read {
+    let execution = ExecutionId(pending.execution);
+    let path = context
+        .processes
+        .output_path(&context.database, execution, OutputKind::Stdout);
+    receipt.output_references = vec![path.display().to_string()];
+    // A cancelled collector cannot release the opener/reader until the actual blocking read ends.
+    let read_guard = collector.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        let _guard = read_guard;
+        output_tail(&path)
+    })
+    .await;
+    let bytes = match read {
         Ok(Ok((tail, bytes))) => {
             receipt.output = tail;
             bytes
@@ -480,38 +543,27 @@ async fn record_when_ended(
             receipt.output.len() as u64
         }
     };
-    record(&context, receipt, output_bytes).await;
-}
-
-async fn never_started(context: &Context, execution: ExecutionId) -> bool {
-    matches!(
-        cockpit_processes::execution(&context.database, execution).await,
-        Ok(observed) if observed.phase == Phase::Ended(EndReason::NeverStarted)
-    )
-}
-
-/// Records the receipt, logging the outcome: the run already ended, so a failure here can
-/// only be told in the daemon's log.
-async fn record(context: &Context, receipt: NewReceipt, output_bytes: u64) {
-    let run_id = receipt.run_id.clone();
     let recorded = async {
         let write = context.database.write().await?;
         let receipt =
-            cockpit_verification::record_receipt_of_tail(&write, receipt, output_bytes, now())
-                .await
-                .map_err(|error| error.to_string())?;
+            cockpit_verification::seal_result(&write, &pending, receipt, bytes, now(), false)
+                .await?;
+        cockpit_processes::seal_output_result(&write, execution, &pending.origin_epoch).await?;
         write.commit().await?;
-        Ok::<Receipt, Box<dyn std::error::Error + Send + Sync>>(receipt)
-    };
-    match recorded.await {
-        Ok(receipt) => tracing::info!(
-            run = run_id,
-            receipt = receipt.id.0,
-            outcome = receipt.recorded.outcome.as_str(),
-            "recorded a check run"
-        ),
-        Err(error) => tracing::error!(run = run_id, %error, "a check run could not be recorded"),
+        Ok::<_, Box<dyn std::error::Error>>(receipt)
     }
+    .await;
+    match recorded {
+        Ok(receipt) => tracing::info!(
+            run = receipt.recorded.run_id,
+            receipt = receipt.id.0,
+            "recorded check result"
+        ),
+        Err(error) => {
+            tracing::error!(run = pending.receipt.run_id, %error, "pending check result could not be sealed")
+        }
+    }
+    drop(collector);
 }
 
 /// The last [`cockpit_verification::OUTPUT_MAX_BYTES`] of the file and its full size.
@@ -530,7 +582,34 @@ fn output_tail(path: &Path) -> std::io::Result<(String, u64)> {
 
 async fn receipt(context: &Context, project: &str, run: &str) -> Answer {
     let read = context.database.read().await?;
-    let found = cockpit_verification::receipt(&read, project, run).await?;
+    let mut found = cockpit_verification::receipt(&read, project, run).await?;
+    if found.is_none()
+        && let Some(pending) = cockpit_verification::pending_result(&read, project, run).await?
+        && cockpit_processes::output_users(context.database.epoch(), ExecutionId(pending.execution))
+            == 0
+    {
+        // The collector may have committed and dropped its guard after this read
+        // snapshot began. Serialize a fresh orphan check with sealing/guard acquisition;
+        // ordinary receipt and active-collector polls remain read-only.
+        drop(read);
+        let write = context.database.write().await?;
+        found = cockpit_verification::receipt(&write, project, run).await?;
+        if found.is_none()
+            && let Some(current) =
+                cockpit_verification::pending_result(&write, project, run).await?
+            && cockpit_processes::output_users(
+                context.database.epoch(),
+                ExecutionId(current.execution),
+            ) == 0
+        {
+            return Err(refused(
+                ErrorCode::Conflict,
+                "the result remains pending without an active collector".into(),
+                "inspect torlek check pending --project PROJECT; explicitly resolve only after containment is observed inactive",
+                UnblockedBy::Owner,
+            ));
+        }
+    }
     Ok(Reply::CheckReceipt {
         receipt: found.map(|receipt| Box::new(receipt_view(&receipt))),
     })
@@ -740,6 +819,7 @@ impl From<Refusal> for Failed {
         let code = match &refusal {
             Refusal::InvalidRequest { .. } => ErrorCode::InvalidArgument,
             Refusal::RunRecordedDifferently { .. } => ErrorCode::Conflict,
+            Refusal::PendingResultChanged => ErrorCode::StaleRevision,
         };
         refused(
             code,
@@ -757,4 +837,150 @@ impl From<cockpit_verification::Error> for Failed {
             error => internal(&error),
         }
     }
+}
+
+async fn pending_checks(context: &Context, project: &str, after: i64) -> Answer {
+    if after < 0 {
+        return Err(refused(
+            ErrorCode::InvalidArgument,
+            "negative pending cursor".into(),
+            "use the displayed next cursor",
+            UnblockedBy::Owner,
+        ));
+    }
+    let read = context.database.read().await?;
+    let mut rows = cockpit_verification::pending_results(&read, project, after, 101).await?;
+    let truncated = rows.len() > 100;
+    rows.truncate(100);
+    let next = if truncated {
+        rows.last().map(|row| row.execution)
+    } else {
+        None
+    };
+    let mut pending = Vec::new();
+    for row in rows {
+        let execution = ExecutionId(row.execution);
+        let facts = cockpit_processes::output_facts(&read, execution)
+            .await
+            .map_err(|e| internal(&e))?;
+        pending.push(cockpit_protocol::PendingCheckView {
+            project: project.to_owned(),
+            run: row.run_id,
+            execution: row.execution,
+            origin_epoch: row.origin_epoch,
+            database_epoch: context.database.epoch().to_owned(),
+            revision: row.revision,
+            active: facts.active,
+            collector_active: cockpit_processes::output_users(context.database.epoch(), execution)
+                != 0,
+        });
+    }
+    Ok(Reply::CheckPending { pending, next })
+}
+
+async fn resolve_pending(
+    context: &Context,
+    project: &str,
+    run: &str,
+    revision: i64,
+    epoch: &str,
+) -> Answer {
+    let stale = || {
+        refused(
+            ErrorCode::StaleRevision,
+            "pending result identity changed".into(),
+            "inspect check pending and deliberately choose its current epoch/revision",
+            UnblockedBy::Owner,
+        )
+    };
+    if epoch != context.database.epoch() || revision <= 0 {
+        return Err(stale());
+    }
+    let pending = {
+        let read = context.database.read().await?;
+        cockpit_verification::pending_result(&read, project, run)
+            .await?
+            .ok_or_else(stale)?
+    };
+    let execution = ExecutionId(pending.execution);
+    if !pending.sealed {
+        if pending.revision != revision {
+            return Err(stale());
+        }
+        if cockpit_processes::output_users(context.database.epoch(), execution) != 0 {
+            return Err(refused(
+                ErrorCode::Conflict,
+                "execution or result reader is still active".into(),
+                "wait for the actual collector to finish",
+                UnblockedBy::Owner,
+            ));
+        }
+        context
+            .processes
+            .observe(&context.database, execution)
+            .await
+            .map_err(|e| internal(&e))?;
+    }
+    let write = context.database.write().await?;
+    let current = cockpit_verification::pending_result(&write, project, run)
+        .await?
+        .ok_or_else(stale)?;
+    if current.sealed {
+        // Recovery replays cannot rewrite normal successful history, and old callbacks remain fenced.
+        if current.revision != revision
+            && !(current.recovered && Some(current.revision) == revision.checked_add(1))
+        {
+            return Err(stale());
+        }
+        let receipt = cockpit_verification::receipt(&write, project, run)
+            .await?
+            .ok_or_else(stale)?;
+        return Ok(Reply::CheckReceipt {
+            receipt: Some(Box::new(receipt_view(&receipt))),
+        });
+    }
+    if current != pending || current.revision != revision {
+        return Err(stale());
+    }
+    let has_collector = cockpit_processes::output_users(context.database.epoch(), execution) != 0;
+    let ended = if has_collector {
+        false
+    } else {
+        cockpit_processes::end_unstarted_output(&write, execution, &current.origin_epoch)
+            .await
+            .map_err(|e| internal(&e))?
+            || cockpit_processes::observed_ended(&write, &[execution])
+                .await
+                .map_err(|e| internal(&e))?
+    };
+    if !ended {
+        return Err(refused(
+            ErrorCode::Conflict,
+            "execution or result reader is still active or unobserved".into(),
+            "wait for observed containment termination and the actual collector to finish",
+            UnblockedBy::Owner,
+        ));
+    }
+    let mut result = current.receipt.clone();
+    result.finished_at = now().max(result.started_at);
+    result.output =
+        "Owner resolved an inactive pending result as unknown; output files were preserved."
+            .to_owned();
+    let bytes = result.output.len() as u64;
+    let receipt = cockpit_verification::seal_result(
+        &write,
+        &current,
+        result,
+        bytes,
+        now().max(current.receipt.started_at),
+        true,
+    )
+    .await?;
+    cockpit_processes::seal_output_result(&write, execution, &current.origin_epoch)
+        .await
+        .map_err(|e| internal(&e))?;
+    write.commit().await?;
+    Ok(Reply::CheckReceipt {
+        receipt: Some(Box::new(receipt_view(&receipt))),
+    })
 }

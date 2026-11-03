@@ -48,6 +48,21 @@ pub async fn record_receipt_of_tail(
     output_bytes: u64,
     now: i64,
 ) -> Result<Receipt, Error> {
+    if crate::pending_result(write, &new.project, &new.run_id)
+        .await?
+        .is_some_and(|pending| !pending.sealed)
+    {
+        return Err(Refusal::PendingResultChanged.into());
+    }
+    record_tail_unchecked_pending(write, new, output_bytes, now).await
+}
+
+pub(crate) async fn record_tail_unchecked_pending(
+    write: &WriteTransaction<'_>,
+    new: NewReceipt,
+    output_bytes: u64,
+    now: i64,
+) -> Result<Receipt, Error> {
     if output_bytes < new.output.len() as u64 {
         return Err(invalid("output_bytes", "is less than the output given").into());
     }
@@ -449,7 +464,7 @@ async fn claims_on_source(
 
 /// The receipt as it is stored: every field checked, artifacts ordered by path, the output
 /// cut to its tail.
-fn validated(mut new: NewReceipt, now: i64) -> Result<NewReceipt, Refusal> {
+pub(crate) fn validated(mut new: NewReceipt, now: i64) -> Result<NewReceipt, Refusal> {
     required("project", &new.project, NAME_MAX_CHARS)?;
     required("run_id", &new.run_id, NAME_MAX_CHARS)?;
     check_definition(&new.check)?;

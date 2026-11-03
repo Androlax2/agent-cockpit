@@ -4,7 +4,11 @@ mod artifacts;
 mod error;
 mod gate;
 mod model;
+mod pending;
 mod receipts;
+pub use pending::{
+    PendingIdentity, PendingResult, pending_result, pending_results, reserve_result, seal_result,
+};
 
 use cockpit_turso::{Migration, MigrationSet};
 
@@ -25,9 +29,10 @@ pub use receipts::{
 /// and whether a receipt still applies is decided when a gate is evaluated.
 pub const MIGRATIONS: MigrationSet = MigrationSet {
     owner: "verification",
-    migrations: &[Migration {
-        version: 1,
-        sql: "CREATE TABLE verification_receipts (
+    migrations: &[
+        Migration {
+            version: 1,
+            sql: "CREATE TABLE verification_receipts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project TEXT NOT NULL CHECK (project <> ''),
                 run_id TEXT NOT NULL CHECK (run_id <> ''),
@@ -79,5 +84,10 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             );
             CREATE INDEX verification_claims_by_check
                 ON verification_claims (project, check_name, head, id);",
-    }],
+        },
+        Migration {
+            version: 2,
+            sql: pending::SCHEMA,
+        },
+    ],
 };

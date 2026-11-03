@@ -4,6 +4,13 @@ mod diagnostics;
 mod error;
 mod model;
 mod output;
+mod output_catalog;
+mod output_hold;
+pub use output_catalog::{
+    OutputFacts, OutputMode, attribute_output, end_unstarted_output, latest_file_output,
+    output_facts, seal_output_result,
+};
+pub use output_hold::{OutputGuard, guard_output, guard_output_in, output_users};
 mod platform;
 mod session;
 mod store;
