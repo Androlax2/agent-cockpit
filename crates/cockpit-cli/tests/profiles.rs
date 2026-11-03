@@ -325,6 +325,40 @@ fn daemon_install_of_another_profile_installs_the_command_whose_name_selects_it(
     );
 }
 
+/// A package install (#562): torlek in a directory only root writes, such as
+/// /usr/lib/torlek/bin. The unit selects the profile by `--profile`, so the command link
+/// beside the program is skipped with the way to select it instead.
+#[test]
+fn daemon_install_of_another_profile_beside_a_read_only_program_skips_its_command() {
+    let home = Home::new();
+    let package = home.path().join("package/bin");
+    fs::create_dir_all(&package).unwrap();
+    for name in ["torlek", "torlek-daemon"] {
+        fs::copy(home.bin().join(name), package.join(name)).unwrap();
+    }
+    fs::set_permissions(&package, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(package.join("probe"), "").is_ok() {
+        // Root writes through the mode bits, so this run cannot model a package directory.
+        eprintln!(
+            "skipped: {} stays writable for this user",
+            package.display()
+        );
+        return;
+    }
+
+    let output = home.run(
+        &package.join("torlek"),
+        &["--profile", "next", "daemon", "install"],
+        &[],
+    );
+    fs::set_permissions(&package, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let printed = succeeded(&output);
+    assert!(!package.join("torlek-next").exists());
+    assert!(home.unit_of("torlek-next").is_file());
+    assert!(printed.contains("torlek --profile next"), "{printed}");
+}
+
 #[test]
 fn daemon_install_refuses_a_command_name_another_file_holds() {
     let home = Home::new();
