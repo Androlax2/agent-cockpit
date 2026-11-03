@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use cockpit_config::{AgentSandbox, DesktopSession};
 
 use crate::{
-    AppliedRule, ClientIdentity, Enforcement, Evidence, Greywall, ManagedProxy, Platform, Profile,
-    ProfileRequest, ProxyError, Refusal, Secret,
+    AppliedRule, ClientIdentity, Enforcement, Evidence, FilterWriteFailure, Greywall, ManagedProxy,
+    Platform, Profile, ProfileRequest, ProxyError, Refusal, Secret,
 };
 
 /// What the daemon's own layout asks of every profile.
@@ -133,6 +133,21 @@ impl Sandbox {
             .map_err(|error| proxy.refusal(error))
     }
 
+    /// Whether the engine can write the seccomp filter a launch with `environment` loads
+    /// (#628). Passes without an engine, whose launches are refused anyway, and on macOS,
+    /// where greywall loads no seccomp filter.
+    pub fn check_seccomp_filter(
+        &self,
+        environment: &[(OsString, OsString)],
+    ) -> Result<(), FilterWriteFailure> {
+        match &self.engine {
+            Ok(engine) if matches!(engine.platform, Platform::Linux | Platform::Wsl2 { .. }) => {
+                crate::seccomp::check_filter_write(&crate::seccomp::seccomp_filter_dir(environment))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// The profile `request` gets on this host, without launching anything (the dry run).
     pub fn profile(&self, request: &LaunchRequest) -> Result<Profile, Refusal> {
         self.build_profile(self.ready_engine()?, request)
@@ -230,6 +245,8 @@ impl Sandbox {
                 .map(OsString::from),
             );
         }
+        self.check_seccomp_filter(&plan.environment)
+            .map_err(|failure| Refusal::new("seccomp filter", failure.to_string()))?;
         let mut command_arguments = plan.arguments.clone();
         command_arguments.push(program.into_os_string());
         command_arguments.extend(arguments);

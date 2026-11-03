@@ -134,6 +134,15 @@ pub struct SandboxEngine {
     pub engine: String,
     /// The host capabilities the engine reported, one line each.
     pub observations: Vec<String>,
+    /// Why every launch through it fails now although it is installed, such as a seccomp
+    /// filter it cannot write (#628).
+    pub blocked: Option<SandboxBlocked>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxBlocked {
+    pub detail: String,
+    pub next: String,
 }
 
 /// A provider the daemon tried to wire at its start.

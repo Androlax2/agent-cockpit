@@ -80,9 +80,18 @@ pub(crate) fn sandbox(
     profile: &cockpit_config::Profile,
 ) -> Requirement {
     match (setting, engine) {
-        (AgentSandbox::Required, Ok(engine)) => {
-            Requirement::available("sandbox", engine_detail(engine))
-        }
+        (AgentSandbox::Required, Ok(engine)) => match &engine.blocked {
+            None => Requirement::available("sandbox", engine_detail(engine)),
+            Some(blocked) => Requirement::needs(
+                "sandbox",
+                Status::MissingPrerequisite,
+                format!(
+                    "{}: {}; every agent launch is refused",
+                    engine.engine, blocked.detail
+                ),
+                &blocked.next,
+            ),
+        },
         (AgentSandbox::Required, Err(reason)) => Requirement::needs(
             "sandbox",
             Status::MissingPrerequisite,

@@ -1575,6 +1575,14 @@ impl Sessions {
             .map_err(Error::Sandbox)
     }
 
+    /// Whether the sandbox engine can write the seccomp filter a launch loads (#628), in
+    /// the folder the agents' environment gives it. Blocking: it writes a file.
+    pub fn check_seccomp_filter(&self) -> Result<(), cockpit_sandbox::FilterWriteFailure> {
+        self.settings
+            .sandbox
+            .check_seccomp_filter(&self.launch_environment())
+    }
+
     /// `cockpit sandbox show`: the sandbox a new session of `provider` in `dir` would get,
     /// without launching anything. The agent's own program and arguments are the provider's
     /// at launch; the dry run shows `<agent>` in their place.

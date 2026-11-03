@@ -9,7 +9,7 @@ use std::sync::Arc;
 use cockpit_protocol::{ErrorCode, Outcome, ReadinessStatusView, Reply, RequirementView};
 use cockpit_readiness::{
     CheckoutFacts, ControlFacts, HostFacts, PresetFacts, ProjectFacts, ProjectNeeds, ProviderFacts,
-    ProviderFound, Report, SandboxEngine, SignInFacts, Status, Trust,
+    ProviderFound, Report, SandboxBlocked, SandboxEngine, SignInFacts, Status, Trust,
 };
 use cockpit_resource_admission::{Availability, Backend};
 
@@ -119,6 +119,16 @@ pub(crate) async fn requirements(
 async fn report(project: Option<PathBuf>, context: Context) -> Result<Report, String> {
     let mut host = host_facts(&context);
     if host.sandbox_setting == cockpit_config::AgentSandbox::Required {
+        let sessions = context.sessions.clone();
+        let blocked = tokio::task::spawn_blocking(move || sessions.check_seccomp_filter().err())
+            .await
+            .map_err(|error| error.to_string())?;
+        if let (Ok(engine), Some(failure)) = (&mut host.sandbox_engine, blocked) {
+            engine.blocked = Some(SandboxBlocked {
+                detail: failure.reason,
+                next: failure.next,
+            });
+        }
         let sandbox = context.sandbox.clone();
         let profile = context.environment.profile.value.clone();
         host.sandbox_proxy = tokio::task::spawn_blocking(move || match sandbox.proxy() {
@@ -263,6 +273,7 @@ fn host_facts(context: &Context) -> HostFacts {
             .map(|engine| SandboxEngine {
                 engine: engine.engine(),
                 observations: engine.observations(),
+                blocked: None,
             })
             .map_err(str::to_owned),
         sandbox_setting: context.sessions.owner_settings().sandbox,
