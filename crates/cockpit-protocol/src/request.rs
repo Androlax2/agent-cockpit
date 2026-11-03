@@ -16,6 +16,7 @@ use crate::sessions::{
     AppliedSettingView, ManagerPaneView, ProviderView, SandboxEvidenceView, SessionFailure,
     SessionView,
 };
+use crate::storage::CloneStorageView;
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
 };
@@ -40,6 +41,8 @@ pub struct Request {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Command {
     Ping,
+    /// Owner only: bounded, read-only measurements of registered clone target directories.
+    StorageReport,
     /// Start the change feed at `from`.
     Subscribe {
         from: FeedPosition,
@@ -738,6 +741,11 @@ pub enum Outcome {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Reply {
     Pong,
+    Storage {
+        clones: Vec<CloneStorageView>,
+        /// Further registered clones were omitted by the report's row limit.
+        truncated: bool,
+    },
     Subscribed {
         cursor: Cursor,
     },

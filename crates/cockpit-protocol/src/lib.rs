@@ -14,6 +14,7 @@ mod readiness;
 mod request;
 mod resources;
 mod sessions;
+mod storage;
 mod tasks;
 mod verification;
 mod workflows;
@@ -61,6 +62,7 @@ pub use sessions::{
     ProviderView, SandboxEnforcementView, SandboxEvidenceView, SandboxRuleView, SessionFailure,
     SessionStateView, SessionView, StopTargetView,
 };
+pub use storage::{CloneStorageView, TargetSizeView};
 pub use tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,
     TaskStatusView, TaskView, TaskWaitView,
