@@ -298,14 +298,29 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
             next: None,
         };
     }
+    let file = &config.user_file.path;
+    // Init writes nothing, so the owner creates the folder a fresh profile lacks (#625).
+    // Anything else at that path (a file, a dangling link) is left for the owner to see.
+    let create_folder = match file.parent() {
+        Some(folder)
+            if std::fs::symlink_metadata(folder)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            format!(
+                "create the config folder with `mkdir -p -m 700 {}`, then ",
+                shell_word(&folder.to_string_lossy())
+            )
+        }
+        _ => String::new(),
+    };
     Step {
         title: SANDBOX,
         state: State::Open,
         lines,
         next: Some(format!(
-            "to accept, write `[agents]` and `sandbox = \"required\"` in {} \
+            "to accept, {create_folder}write `[agents]` and `sandbox = \"required\"` in {} \
              (`sandbox = \"off\"` runs agents unsandboxed, with your rights)",
-            config.user_file.path.display()
+            shell_word(&file.to_string_lossy())
         )),
     }
 }
