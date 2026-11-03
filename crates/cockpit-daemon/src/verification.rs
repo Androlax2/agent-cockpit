@@ -103,9 +103,8 @@ pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
                 Peer::Owner,
             ) => {
                 let checkout = owner_checkout(&context, &project, checkout.as_deref()).await?;
-                // `check run` refuses an untrusted checkout, so trusting it comes first (#649).
-                let first_step = (!is_trusted(&context, &checkout).await?).then_some(TRUST_STEP);
-                gate(&context, target(checkout), first_step).await
+                let refusal = run_refusal(&context, &checkout).await?;
+                gate(&context, target(checkout), refusal).await
             }
             (Command::CheckGate { project: None, .. }, Peer::Owner) => Err(refused(
                 ErrorCode::InvalidArgument,
@@ -130,7 +129,12 @@ pub(crate) fn route(command: Command, peer: Peer, context: Context) -> Route {
                     ));
                 }
                 let agent = Agent::identified(&context, connector, launch_token).await?;
-                gate(&context, agent.target, None).await
+                // The owner runs the checks an agent's gate names, under the same refusal.
+                let checkout =
+                    owner_checkout(&context, &agent.target.project, agent.target.path.to_str())
+                        .await?;
+                let refusal = run_refusal(&context, &checkout).await?;
+                gate(&context, target(checkout), refusal).await
             }
             (
                 Command::CheckClaim {
@@ -199,13 +203,36 @@ fn target(checkout: cockpit_projects::Checkout) -> Target {
 /// What lets the owner run an untrusted checkout's checks.
 const TRUST_STEP: &str = "trust the project under `projects.trusted` in the owner configuration";
 
+/// Why `check run` would refuse every check of a checkout, so a gate's next actions say what
+/// comes before running one (#649).
+#[derive(Clone, Copy)]
+enum RunRefusal {
+    /// The owner trusting the project lifts it.
+    Untrusted,
+    /// Nothing lifts it: a review checkout holds someone else's changes.
+    Review,
+}
+
+impl RunRefusal {
+    /// `action`, a check's next action, preceded by what lifts the refusal.
+    fn before(self, action: &str) -> String {
+        match self {
+            RunRefusal::Untrusted => format!("{TRUST_STEP}, then {action}"),
+            RunRefusal::Review => format!(
+                "in the project's own checkout or a parallel clone, {action}: a review \
+                 checkout's checks never run"
+            ),
+        }
+    }
+}
+
 /// A check runs the command the checkout's own configuration declares, on the host: only in
 /// a checkout the owner trusts, never in a review checkout (report 09, report 11).
 async fn require_trusted(
     context: &Context,
     checkout: &cockpit_projects::Checkout,
 ) -> Result<(), Failed> {
-    if is_trusted(context, checkout).await? {
+    if run_refusal(context, checkout).await?.is_none() {
         return Ok(());
     }
     Err(refused(
@@ -219,10 +246,10 @@ async fn require_trusted(
     ))
 }
 
-async fn is_trusted(
+async fn run_refusal(
     context: &Context,
     checkout: &cockpit_projects::Checkout,
-) -> Result<bool, Failed> {
+) -> Result<Option<RunRefusal>, Failed> {
     let trusted = crate::projects::trusted_roots(context.environment.clone())
         .await
         .map_err(|error| {
@@ -234,8 +261,9 @@ async fn is_trusted(
             )
         })?;
     Ok(match cockpit_projects::trust(checkout, &trusted) {
-        cockpit_projects::Trust::Trusted | cockpit_projects::Trust::Inherited { .. } => true,
-        cockpit_projects::Trust::Untrusted | cockpit_projects::Trust::NeverForReview => false,
+        cockpit_projects::Trust::Trusted | cockpit_projects::Trust::Inherited { .. } => None,
+        cockpit_projects::Trust::Untrusted => Some(RunRefusal::Untrusted),
+        cockpit_projects::Trust::NeverForReview => Some(RunRefusal::Review),
     })
 }
 
@@ -629,8 +657,8 @@ async fn receipt(context: &Context, project: &str, run: &str) -> Answer {
 }
 
 /// The gate of every check the project declares on the checkout's current result; each check's
-/// next action starts with `first_step` when one must come before it.
-async fn gate(context: &Context, target: Target, first_step: Option<&str>) -> Answer {
+/// next action says first what lifts `refusal`, when `check run` would refuse it.
+async fn gate(context: &Context, target: Target, refusal: Option<RunRefusal>) -> Answer {
     let checks: Vec<CheckDefinition> = declared_checks(&context.environment, &target.path)
         .await?
         .iter()
@@ -654,7 +682,7 @@ async fn gate(context: &Context, target: Target, first_step: Option<&str>) -> An
         .await
         .map_err(|error| internal(&error))??;
     Ok(Reply::CheckGate {
-        gate: Box::new(gate_view(&target, &source, &report, first_step)),
+        gate: Box::new(gate_view(&target, &source, &report, refusal)),
     })
 }
 
@@ -758,7 +786,7 @@ fn gate_view(
     target: &Target,
     source: &Source,
     report: &GateReport,
-    first_step: Option<&str>,
+    refusal: Option<RunRefusal>,
 ) -> GateView {
     GateView {
         project: target.project.clone(),
@@ -777,8 +805,8 @@ fn gate_view(
                 name: check.name.clone(),
                 status: status_view(&check.status),
                 receipt: check.receipt.map(|receipt| receipt.0),
-                next_action: check.next_action().map(|action| match first_step {
-                    Some(step) => format!("{step}, then {action}"),
+                next_action: check.next_action().map(|action| match refusal {
+                    Some(refusal) => refusal.before(&action),
                     None => action,
                 }),
             })

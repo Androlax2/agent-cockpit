@@ -6,7 +6,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{TestHome, commit_all};
+use common::{TestHome, commit_all, real_git};
 
 const CHECKS: &str = "[[checks]]\nname = \"test\"\ncommand = \"echo testing; test -f src/lib.rs\"\n\
                       artifacts = [\"src/lib.rs\"]\n";
@@ -128,6 +128,53 @@ fn the_gate_of_an_untrusted_project_names_the_trust_step_before_the_run() {
              configuration, then run `test`\n"
         ),
         "{report}"
+    );
+}
+
+#[test]
+fn the_gate_of_a_review_checkout_names_the_projects_own_checkout() {
+    let home = TestHome::new();
+    let root = home.project("app");
+    home.trust(&root);
+    let contributor = home.home().join("contributor");
+    real_git(
+        &home.home(),
+        &[
+            "clone",
+            "--quiet",
+            home.github().to_str().unwrap(),
+            contributor.to_str().unwrap(),
+        ],
+    );
+    std::fs::create_dir_all(contributor.join(".torlek")).unwrap();
+    std::fs::write(contributor.join(".torlek/config.toml"), CHECKS).unwrap();
+    commit_all(&contributor, "declare the checks");
+    real_git(
+        &contributor,
+        &["push", "--quiet", "origin", "HEAD:refs/pull/7/head"],
+    );
+    let _daemon = home.start();
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["checkout", "review", "app", "7"]);
+    let clone = home.home().join("projects/.parallel/app/pr-7");
+
+    let output = home.cockpit(&[
+        "check",
+        "gate",
+        "--project",
+        "app",
+        "--checkout",
+        clone.to_str().unwrap(),
+    ]);
+
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains(
+            "\ntest\tmissing\tnext: in the project's own checkout or a parallel clone, run \
+             `test`: a review checkout's checks never run\n"
+        ),
+        "{report}{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
