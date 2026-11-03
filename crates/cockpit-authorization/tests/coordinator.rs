@@ -492,3 +492,79 @@ async fn an_audit_entry_is_read_back_by_its_id() {
     assert_eq!(found.map(|entry| entry.audit), Some(message));
     assert_eq!(missing, None);
 }
+
+/// #657: the owner's decision on a start a coordinator asked for is audited beside the ask.
+#[tokio::test]
+async fn the_owners_decisions_on_a_start_are_audited() {
+    let database = open("decision-audit").await;
+    give_start_terms(&database, "coordinator", StartTerms::DEFAULT).await;
+    let StartAllowance::Allowed {
+        grant, revision, ..
+    } = allowance(&database, "coordinator", NOW).await
+    else {
+        panic!("the coordinator may start");
+    };
+    let write = database.write().await.unwrap();
+    for action in [AuditedAction::Approved, AuditedAction::Declined] {
+        record_audit(
+            &write,
+            &Audit {
+                actor: session("coordinator"),
+                permission: Permission::StartSessions,
+                grant,
+                revision,
+                action,
+                target: None,
+                detail: Some("approval request 3, by the owner through the TUI".to_owned()),
+                at: NOW,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    write.commit().await.unwrap();
+    let read = database.read().await.unwrap();
+
+    let actions: Vec<AuditedAction> = audit_of(&read, &session("coordinator"), 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.audit.action)
+        .collect();
+
+    assert_eq!(actions, [AuditedAction::Declined, AuditedAction::Approved]);
+}
+
+/// #657 rebuilt the audit table to widen its actions; entries written before keep every column.
+#[tokio::test]
+async fn entries_audited_before_the_decision_actions_survive_the_rebuild() {
+    const BEFORE_DECISIONS: cockpit_turso::MigrationSet = cockpit_turso::MigrationSet {
+        owner: "authorization",
+        migrations: cockpit_authorization::MIGRATIONS.migrations.split_at(2).0,
+    };
+    let path = common::database_path("decision-audit-rebuild");
+    let before = Database::open(&path, &[BEFORE_DECISIONS]).await.unwrap();
+    let write = before.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO authorization_audit
+                (id, actor, permission, grant_id, revision, action, target, detail, at)
+             VALUES (5, 'coordinator', 'start-sessions', 2, 3, 'start', NULL,
+                'approval request 3', ?1)",
+            [NOW],
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(before);
+
+    let after = Database::open(&path, &[cockpit_authorization::MIGRATIONS])
+        .await
+        .unwrap();
+    let read = after.read().await.unwrap();
+
+    let entry = audit_entry(&read, 5).await.unwrap().unwrap();
+    assert_eq!(entry.audit.action, AuditedAction::Start);
+    assert_eq!(entry.audit.detail.as_deref(), Some("approval request 3"));
+    assert_eq!(entry.audit.at, NOW);
+}

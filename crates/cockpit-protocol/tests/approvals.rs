@@ -87,6 +87,7 @@ fn each_owner_decision_has_its_kebab_case_kind() {
                 request: 4,
                 revision: 2,
                 digest: "d".to_owned(),
+                through: None,
             },
         ),
         (
@@ -157,6 +158,7 @@ fn a_finished_run_request_reply_round_trips() {
             asked_at: 1,
             expires_at: 901,
             waiting_for_input: false,
+            decision: None,
             result: Some(RunResultView {
                 exit_code: 2,
                 output: "fail".to_owned(),

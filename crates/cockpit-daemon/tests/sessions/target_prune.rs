@@ -484,6 +484,7 @@ async fn target_prune_guard_refuses_owner_approval_without_consuming_intent() {
             request: run.id.0,
             revision: run.revision,
             digest: run.digest(),
+            through: None,
         },
     )
     .await;
@@ -555,9 +556,16 @@ async fn target_prune_prepare_refuses_committed_approval_before_runner_reserves(
     // No Runner dispatch: there is deliberately no occupying process to discover.
     {
         let write = database.write().await.unwrap();
-        cockpit_approvals::approve_run(&write, run.id, run.revision, &run.digest(), unix_now())
-            .await
-            .unwrap();
+        cockpit_approvals::approve_run(
+            &write,
+            None,
+            run.id,
+            run.revision,
+            &run.digest(),
+            unix_now(),
+        )
+        .await
+        .unwrap();
         write.commit().await.unwrap();
     }
     assert!(
@@ -822,6 +830,7 @@ async fn paused_target_prune_keeps_candidate_checks_and_approvals_out_but_allows
                 request: run.id.0,
                 revision: run.revision,
                 digest: run.digest(),
+                through: None,
             },
         )
         .await,

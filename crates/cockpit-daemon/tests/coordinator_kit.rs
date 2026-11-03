@@ -7,16 +7,17 @@
 mod candidate;
 mod real_daemon;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
-    Command, CoordinatorAuditView, ErrorCode, Reply, RunRequestView, RunStateView, SessionView,
+    Command, CoordinatorAuditView, DecidedThroughView, ErrorCode, Reply, RunRequestView,
+    RunStateView, SessionView,
 };
 use real_daemon::{
-    ASKED_QUESTION, COMMANDED_PROJECT, GENEROUS, Home, QUESTION_PROJECT, cockpit_program, listed,
-    new_session,
+    ASKED_QUESTION, COMMANDED_PROJECT, Daemon, GENEROUS, Home, QUESTION_PROJECT, cockpit_program,
+    listed, new_session,
 };
 
 const COORDINATOR_GRANTS: [&str; 3] = ["observe-sessions", "message-sessions", "start-sessions"];
@@ -233,6 +234,7 @@ async fn a_coordinator_sees_a_question_messages_the_worker_and_starts_one_the_ow
         actions,
         vec![
             ("started", Some(new_worker.as_str())),
+            ("approved", None),
             ("start", None),
             ("message", Some(pair.worker.id.as_str())),
         ]
@@ -240,6 +242,136 @@ async fn a_coordinator_sees_a_question_messages_the_worker_and_starts_one_the_ow
     assert!(
         audit.iter().all(|entry| entry.actor == pair.coordinator.id),
         "{audit:?}"
+    );
+    assert_eq!(
+        audit[1].detail,
+        Some(format!(
+            "approval request {}, by the owner through the TUI",
+            request.id
+        ))
+    );
+}
+
+/// A coordinator holding `start-sessions` (confirmed) whose `agent start` waits in the
+/// owner's queue as `request`; `started` is the agent command to read its answer from.
+struct AskedStart {
+    home: Home,
+    _daemon: Daemon,
+    owner: Connection,
+    coordinator: String,
+    coordinator_root: PathBuf,
+    started: usize,
+    request: RunRequestView,
+}
+
+async fn asked_start_by_a_coordinator() -> AskedStart {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let (new_root, _) = home.project(&owner, "plain").await;
+    let coordinator = new_session(&owner, &coordinator_root).await.id;
+    grant(&owner, &coordinator, "start-sessions").await;
+    let started = home.command_agent(
+        &coordinator_root,
+        &cockpit_line(&[
+            "agent",
+            "start",
+            &new_root.display().to_string(),
+            "--agent",
+            "claude",
+        ]),
+    );
+    let request = asked_start(&owner, &coordinator).await;
+    AskedStart {
+        home,
+        _daemon: daemon,
+        owner,
+        coordinator,
+        coordinator_root,
+        started,
+        request,
+    }
+}
+
+/// #657: the owner auditing an agent-started session reads the decision that let it start:
+/// approved, by the owner, when, and through which client.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approved_start_names_the_owners_decision() {
+    let asked = asked_start_by_a_coordinator().await;
+    approve(&asked.owner, &asked.request).await;
+    let printed = asked
+        .home
+        .agent_output(&asked.coordinator_root, asked.started)
+        .await;
+    assert!(printed.ends_with("exit=0\n"), "{printed}");
+
+    let shown = match asked
+        .owner
+        .request(
+            Command::ApprovalShow {
+                request: asked.request.id,
+            },
+            GENEROUS,
+        )
+        .await
+    {
+        Ok(Reply::RunRequest { request }) => request,
+        other => panic!("approval-show answered {other:?}"),
+    };
+
+    let decision = shown.decision.expect("the decision is recorded");
+    assert!(decision.approved, "{decision:?}");
+    assert_eq!(decision.through, Some(DecidedThroughView::Tui));
+    assert!(
+        decision.at >= asked.request.asked_at,
+        "{decision:?} after {}",
+        asked.request.asked_at
+    );
+}
+
+/// #657: a declined start leaves an audit entry, not just the ask.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declined_start_is_audited() {
+    let asked = asked_start_by_a_coordinator().await;
+    let declined = asked
+        .owner
+        .request(
+            Command::ApprovalDecline {
+                request: asked.request.id,
+                through: Some(DecidedThroughView::Cli),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(
+        matches!(declined, Ok(Reply::RunRequest { .. })),
+        "{declined:?}"
+    );
+    let printed = asked
+        .home
+        .agent_output(&asked.coordinator_root, asked.started)
+        .await;
+    assert!(printed.ends_with("exit=125\n"), "{printed}");
+
+    let audit = audit_of(&asked.owner, &asked.coordinator).await;
+
+    let actions: Vec<(&str, Option<&str>)> = audit
+        .iter()
+        .map(|entry| (entry.action.as_str(), entry.detail.as_deref()))
+        .collect();
+    let ask = format!("approval request {}", asked.request.id);
+    let decided = format!(
+        "approval request {}, by the owner through the CLI",
+        asked.request.id
+    );
+    assert_eq!(
+        actions,
+        vec![
+            ("declined", Some(decided.as_str())),
+            ("start", Some(ask.as_str())),
+        ]
     );
 }
 
@@ -294,6 +426,12 @@ async fn an_unconfirmed_start_begins_at_once_until_the_hourly_cap() {
         runs.is_empty(),
         "an unconfirmed start asks nobody: {runs:?}"
     );
+    let audit = audit_of(&owner, &coordinator.id).await;
+    let start = audit
+        .iter()
+        .find(|entry| entry.action == "start")
+        .unwrap_or_else(|| panic!("the start is audited: {audit:?}"));
+    assert_eq!(start.detail.as_deref(), Some("without confirmation"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -579,6 +717,7 @@ async fn approve(owner: &Connection, request: &RunRequestView) {
                     request: request.id,
                     revision: request.revision,
                     digest: request.digest.clone(),
+                    through: Some(DecidedThroughView::Tui),
                 },
                 GENEROUS,
             )

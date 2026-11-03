@@ -10,9 +10,9 @@ use std::process::{Output, Stdio};
 mod scripted;
 
 use cockpit_protocol::{
-    Command, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView, HiddenView, Outcome,
-    ProtocolError, Reply, RunRequestView, RunResultView, RunStateView, ShownText, Unblock,
-    UnblockedBy,
+    Command, DecidedThroughView, ErrorCode, FoldedView, GuideStateView, GuideStepView, GuideView,
+    HiddenView, Outcome, ProtocolError, Reply, RunDecisionView, RunRequestView, RunResultView,
+    RunStateView, ShownText, Unblock, UnblockedBy,
 };
 use scripted::{scripted_conversation, text};
 
@@ -61,6 +61,7 @@ impl Home {
             .env("XDG_RUNTIME_DIR", self.runtime_dir())
             .env("TORLEK_LAUNCH_TOKEN", "the-token")
             .env("TORLEK_ASK_WAIT_SECONDS", "2")
+            .env("TZ", "UTC")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -116,6 +117,7 @@ fn request(state: RunStateView) -> RunRequestView {
         asked_at: 1,
         expires_at: 901,
         waiting_for_input: false,
+        decision: None,
         result: None,
         note: None,
     }
@@ -372,6 +374,7 @@ async fn the_owner_approves_naming_the_revision_and_digest_read() {
             request: 7,
             revision: 1,
             digest,
+            through: Some(DecidedThroughView::Cli),
         }]
     );
 }
@@ -505,6 +508,68 @@ async fn shown_to_owner(request: RunRequestView) -> String {
     let output = home.cockpit(&["approval", "show", "7"], "").await;
     assert!(output.status.success(), "{}", text(&output.stderr));
     text(&output.stdout)
+}
+
+/// #657: an owner auditing a request reads who decided it, when and through which client.
+#[tokio::test]
+async fn the_owner_reads_the_decision_that_let_a_request_run() {
+    let shown = shown_to_owner(RunRequestView {
+        decision: Some(RunDecisionView {
+            approved: true,
+            at: 1_800_000_000,
+            through: Some(DecidedThroughView::Tui),
+        }),
+        ..request(RunStateView::Finished)
+    })
+    .await;
+
+    assert!(
+        shown.contains(
+            "decided: approved by the owner through the TUI at 2027-01-15 08:00:00 +00:00\n"
+        ),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn a_decline_from_a_client_that_did_not_name_itself_says_so() {
+    let shown = shown_to_owner(RunRequestView {
+        decision: Some(RunDecisionView {
+            approved: false,
+            at: 1_800_000_000,
+            through: None,
+        }),
+        ..request(RunStateView::Declined)
+    })
+    .await;
+
+    assert!(
+        shown.contains(
+            "decided: declined by the owner at 2027-01-15 08:00:00 +00:00 \
+             (the client did not name itself)\n"
+        ),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn the_cli_names_itself_when_the_owner_declines() {
+    let home = Home::new();
+    let daemon = scripted_conversation(
+        &home.owner_socket(),
+        vec![run_reply(request(RunStateView::Declined))],
+    );
+
+    let output = home.cockpit(&["approval", "decline", "7"], "").await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        daemon.await.unwrap(),
+        [Command::ApprovalDecline {
+            request: 7,
+            through: Some(DecidedThroughView::Cli),
+        }]
+    );
 }
 
 #[tokio::test]

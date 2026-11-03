@@ -109,6 +109,7 @@ impl Asking {
                     request: request.id,
                     revision: request.revision,
                     digest: request.digest.clone(),
+                    through: None,
                 },
                 GENEROUS,
             )
@@ -329,6 +330,7 @@ async fn a_declined_request_never_runs_and_the_agent_learns_it() {
         .request(
             Command::ApprovalDecline {
                 request: request.id,
+                through: None,
             },
             GENEROUS,
         )
@@ -538,6 +540,7 @@ async fn only_the_owner_decides_and_only_agents_ask() {
                     request: request.id,
                     revision: request.revision,
                     digest: request.digest.clone(),
+                    through: None,
                 },
                 GENEROUS,
             )

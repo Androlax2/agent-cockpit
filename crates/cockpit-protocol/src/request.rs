@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::{AgentReport, SessionReport};
-use crate::approvals::{GuideView, RunRequestView};
+use crate::approvals::{DecidedThroughView, GuideView, RunRequestView};
 use crate::bug_reports::{BugFiledView, BugKindView, BugReportView};
 use crate::change_feed::{ChangeBatch, Cursor, FeedPosition};
 use crate::coordination::{CoordinatorAuditView, CoordinatorGrantView, ObservedSessionView};
@@ -268,13 +268,18 @@ pub enum Command {
         request: i64,
     },
     /// Owner only: run the request's `revision`, whose digest is `digest`. Consumed once.
+    /// `through` names the client, recorded with the decision (#657).
     ApprovalApprove {
         request: i64,
         revision: i64,
         digest: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
     },
     ApprovalDecline {
         request: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<DecidedThroughView>,
     },
     /// Owner only: replace the command, creating revision `revision + 1`.
     ApprovalEdit {

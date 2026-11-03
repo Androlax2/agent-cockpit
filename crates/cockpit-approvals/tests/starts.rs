@@ -96,9 +96,16 @@ async fn an_approved_start_is_finished_with_the_session_it_started() {
     let fixture = Fixture::new().await;
     let run = asked_start(&fixture, &session("coordinator"), start(None, None)).await;
     let write = fixture.database.write().await.unwrap();
-    let (approved, _) = approve_run(&write, run.id, run.revision, &run.digest(), AFTER_GRACE)
-        .await
-        .unwrap();
+    let (approved, _) = approve_run(
+        &write,
+        None,
+        run.id,
+        run.revision,
+        &run.digest(),
+        AFTER_GRACE,
+    )
+    .await
+    .unwrap();
 
     finish_start(&write, &approved, "s9", AFTER_GRACE)
         .await
@@ -145,8 +152,17 @@ async fn a_start_request_leaves_the_queue_once_its_start_grant_is_revoked() {
     let write = fixture.database.write().await.unwrap();
 
     assert!(open_runs(&write, AFTER_GRACE).await.unwrap().is_empty());
-    let refused =
-        refusal(approve_run(&write, run.id, run.revision, &run.digest(), AFTER_GRACE).await);
+    let refused = refusal(
+        approve_run(
+            &write,
+            None,
+            run.id,
+            run.revision,
+            &run.digest(),
+            AFTER_GRACE,
+        )
+        .await,
+    );
     assert_eq!(refused, Refusal::AskerMayNotAsk);
 }
 
@@ -170,8 +186,17 @@ async fn a_run_commands_grant_does_not_keep_a_start_request_decidable() {
         .await
         .unwrap();
 
-    let refused =
-        refusal(approve_run(&write, run.id, run.revision, &run.digest(), AFTER_GRACE).await);
+    let refused = refusal(
+        approve_run(
+            &write,
+            None,
+            run.id,
+            run.revision,
+            &run.digest(),
+            AFTER_GRACE,
+        )
+        .await,
+    );
 
     assert_eq!(refused, Refusal::AskerMayNotAsk);
 }
@@ -181,9 +206,16 @@ async fn an_approved_start_a_restart_finds_is_not_run_never_started_again() {
     let fixture = Fixture::new().await;
     let run = asked_start(&fixture, &session("coordinator"), start_with_agent("codex")).await;
     let write = fixture.database.write().await.unwrap();
-    approve_run(&write, run.id, run.revision, &run.digest(), AFTER_GRACE)
-        .await
-        .unwrap();
+    approve_run(
+        &write,
+        None,
+        run.id,
+        run.revision,
+        &run.digest(),
+        AFTER_GRACE,
+    )
+    .await
+    .unwrap();
     write.commit().await.unwrap();
 
     let write = fixture.database.write().await.unwrap();

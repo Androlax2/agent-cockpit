@@ -6,9 +6,9 @@ mod common;
 use std::time::Instant;
 
 use cockpit_protocol::{
-    Command, Reply, TaskKindView, TaskStatusView, WorkflowCheckpointView, WorkflowGoalView,
-    WorkflowHandoffRecordView, WorkflowHandoffView, WorkflowNextView, WorkflowPacketView,
-    WorkflowStatusView, WorkflowStepStatusView, WorkflowStepView, WorkflowView,
+    Command, DecidedThroughView, Reply, TaskKindView, TaskStatusView, WorkflowCheckpointView,
+    WorkflowGoalView, WorkflowHandoffRecordView, WorkflowHandoffView, WorkflowNextView,
+    WorkflowPacketView, WorkflowStatusView, WorkflowStepStatusView, WorkflowStepView, WorkflowView,
 };
 use cockpit_tui::{App, Key};
 use common::{answer, app_with, press, screen_text, sent, typing};
@@ -496,7 +496,13 @@ fn an_approval_pane_that_takes_focus_keeps_its_keys_while_the_view_is_open() {
         now + cockpit_tui::INPUT_GRACE,
     ));
 
-    assert_eq!(declined, [Command::ApprovalDecline { request: 1 }]);
+    assert_eq!(
+        declined,
+        [Command::ApprovalDecline {
+            request: 1,
+            through: Some(DecidedThroughView::Tui),
+        }]
+    );
 }
 
 #[test]
