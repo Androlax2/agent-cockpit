@@ -89,17 +89,30 @@ class QualityTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_lint_failure_is_returned_to_the_caller(self):
+    def check_python_with_silent_ruff(self, body):
         self.source("entry.py", "print('ok')\n")
+        self.source("other.py", "print('ok')\n")
         tools = self.root / "fake-tools"
         tools.mkdir()
         checker = tools / "ruff"
-        checker.write_text(f"#!{sys.executable}\nraise SystemExit(19)\n")
+        checker.write_text(f"#!{sys.executable}\nimport os, signal\n{body}\n")
         checker.chmod(0o755)
-        result = self.run_check(
+        return self.run_check(
             "python", environment=os.environ | {"PATH": f"{tools}:{os.environ['PATH']}"}
         )
+
+    def test_lint_failure_is_returned_to_the_caller(self):
+        result = self.check_python_with_silent_ruff("raise SystemExit(19)")
         self.assertEqual(result.returncode, 19, result.stderr)
+
+    def test_silent_checker_failure_names_the_command_and_status_on_stderr(self):
+        result = self.check_python_with_silent_ruff("raise SystemExit(2)")
+        self.assertEqual(result.stderr, "quality: ruff check on 2 paths exited with status 2\n")
+
+    def test_checker_killed_by_a_signal_is_named_and_exits_like_a_shell(self):
+        result = self.check_python_with_silent_ruff("os.kill(os.getpid(), signal.SIGKILL)")
+        self.assertEqual(result.returncode, 128 + 9, result.stderr)
+        self.assertEqual(result.stderr, "quality: ruff check on 2 paths was killed by SIGKILL\n")
 
     def test_fish_syntax_checks_every_file(self):
         self.source("a.fish", "echo ok\n")
