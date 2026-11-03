@@ -44,6 +44,13 @@ fn fake_docker(home: &Home, info: &str) {
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// A `name` on the daemon's PATH that fails every invocation, its `--version` included.
+fn fake_failing_program(home: &Home, name: &str) {
+    let program = home.path().join("bin").join(name);
+    std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 fn declare_docker(root: &Path) {
     std::fs::create_dir_all(root.join(".torlek")).unwrap();
     std::fs::write(
@@ -213,9 +220,7 @@ async fn a_host_with_its_programs_reports_them_available_and_exits_0() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_provider_that_does_not_run_is_listed_as_optional_and_exits_0() {
     let home = Home::new();
-    let codex = home.path().join("bin/codex");
-    std::fs::write(&codex, "#!/bin/sh\nexit 1\n").unwrap();
-    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake_failing_program(&home, "codex");
     let _daemon = home.start();
 
     let doctor = home.cockpit(&["doctor"], &[]).await;
@@ -227,6 +232,36 @@ async fn a_provider_that_does_not_run_is_listed_as_optional_and_exits_0() {
     let next = next.unwrap_or_else(|| panic!("no next action in:\n{report}"));
     assert!(next.contains("`codex --version`"), "{next}");
     assert!(!next.contains("install"), "{next}");
+}
+
+/// #624: init's provider step reads the report doctor prints, so a provider doctor calls not
+/// usable is not offered to sessions.
+#[tokio::test(flavor = "multi_thread")]
+async fn init_offers_only_the_providers_doctor_finds_usable() {
+    let home = Home::new();
+    fake_failing_program(&home, "codex");
+    let _daemon = home.start();
+
+    let init = home.cockpit(&["init"], &[]).await;
+
+    let checklist = text(&init.stdout);
+    assert!(init.status.success(), "{checklist}{}", text(&init.stderr));
+    let provider_step: Vec<&str> = checklist
+        .lines()
+        .skip_while(|line| !line.ends_with(". Pick a provider"))
+        .take_while(|line| !line.is_empty())
+        .collect();
+    let offered = provider_step
+        .get(1)
+        .unwrap_or_else(|| panic!("no offered provider in:\n{checklist}"));
+    assert!(offered.contains("claude"), "{offered}");
+    assert!(!offered.contains("codex"), "{offered}");
+    assert!(
+        provider_step
+            .iter()
+            .any(|line| line.contains("provider codex: not usable")),
+        "{checklist}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

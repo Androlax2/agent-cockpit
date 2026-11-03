@@ -337,11 +337,20 @@ fn provider_name(requirement: &RequirementView) -> Option<&str> {
         .filter(|name| !name.ends_with(" sign-in"))
 }
 
+/// The providers sessions can start with. Readiness lists one the daemon could not wire as
+/// `available`, so that it does not block (#411), and adds a `provider NAME sign-in` row
+/// only for a usable one; `torlek doctor` prints the same report (#624).
 fn available_providers(requirements: &[RequirementView]) -> Vec<&str> {
     requirements
         .iter()
         .filter(|requirement| requirement.status == ReadinessStatusView::Available)
         .filter_map(provider_name)
+        .filter(|name| {
+            let sign_in = format!("provider {name} sign-in");
+            requirements
+                .iter()
+                .any(|requirement| requirement.name == sign_in)
+        })
         .collect()
 }
 
@@ -349,21 +358,38 @@ fn provider_step(requirements: &[RequirementView], available: &[&str]) -> Step {
     let missing: Vec<&RequirementView> = requirements
         .iter()
         .filter(|requirement| {
-            requirement.name == "providers" || provider_name(requirement).is_some()
+            requirement.name == "providers"
+                || provider_name(requirement).is_some_and(|name| !available.contains(&name))
         })
-        .filter(|requirement| requirement.status != ReadinessStatusView::Available)
         .collect();
     let mut lines: Vec<String> = missing
         .iter()
-        .map(|requirement| requirement_line(requirement))
+        .map(
+            |requirement| match (requirement.status, &requirement.next) {
+                (ReadinessStatusView::Available, Some(next)) => {
+                    format!("{}: {}; {next}", requirement.name, requirement.detail)
+                }
+                (ReadinessStatusView::Available, None) => {
+                    format!("{}: {}", requirement.name, requirement.detail)
+                }
+                _ => requirement_line(requirement),
+            },
+        )
         .collect();
     match available {
         [] => Step {
             title: PROVIDER,
             state: State::Open,
+            // The blocking `providers` row names every supported agent, not one of them.
             next: missing
                 .iter()
-                .find_map(|requirement| requirement.next.clone()),
+                .find(|requirement| requirement.name == "providers")
+                .and_then(|requirement| requirement.next.clone())
+                .or_else(|| {
+                    missing
+                        .iter()
+                        .find_map(|requirement| requirement.next.clone())
+                }),
             lines,
         },
         [only] => {

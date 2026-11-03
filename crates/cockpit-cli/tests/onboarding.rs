@@ -546,6 +546,9 @@ async fn with_several_providers_the_session_action_picks_one_with_agent() {
     daemon
         .requirements
         .push(available("provider codex", "0.5 (tested)"));
+    daemon
+        .requirements
+        .push(available("provider codex sign-in", "signed in"));
 
     let output = home.against(&daemon, &["init"]).await;
 
@@ -556,6 +559,67 @@ async fn with_several_providers_the_session_action_picks_one_with_agent() {
     );
     assert!(
         final_next(&checklist).contains("--agent claude"),
+        "{checklist}"
+    );
+}
+
+/// #624: readiness reports an unusable provider as `available` with an action, so that it
+/// does not block; the provider step names it with its reason instead of offering it.
+#[tokio::test]
+async fn a_provider_readiness_reports_not_usable_is_named_with_its_reason_not_offered() {
+    let home = Home::new();
+    home.accept_sandbox();
+    let mut daemon = Daemon::ready().with_project();
+    daemon.requirements.push(RequirementView {
+        next: Some("to use it, install codex on the daemon's PATH".to_owned()),
+        ..available("provider codex", "not usable, optional: no `codex` on PATH")
+    });
+
+    let output = home.against(&daemon, &["init"]).await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        checklist.contains("sessions start with claude"),
+        "{checklist}"
+    );
+    assert!(
+        checklist.contains(
+            "provider codex: not usable, optional: no `codex` on PATH; \
+             to use it, install codex on the daemon's PATH\n"
+        ),
+        "{checklist}"
+    );
+    assert!(!final_next(&checklist).contains("--agent"), "{checklist}");
+}
+
+/// #624: with no usable provider, the action is the blocking `providers` row's, which names
+/// every supported agent, not the first unusable one's.
+#[tokio::test]
+async fn without_a_usable_provider_the_action_is_the_blocking_requirements() {
+    let home = Home::new();
+    home.accept_sandbox();
+    let mut daemon = Daemon::ready();
+    daemon
+        .requirements
+        .retain(|requirement| !requirement.name.starts_with("provider claude"));
+    daemon.requirements.push(RequirementView {
+        next: Some("to use it, install claude on the daemon's PATH".to_owned()),
+        ..available(
+            "provider claude",
+            "not usable, optional: no `claude` on PATH",
+        )
+    });
+    daemon.requirements.push(requirement(
+        "providers",
+        ReadinessStatusView::MissingPrerequisite,
+        "install a supported agent (claude, codex, opencode) on the daemon's PATH",
+    ));
+
+    let output = home.against(&daemon, &["init"]).await;
+
+    let checklist = text(&output.stdout);
+    assert!(
+        final_next(&checklist).starts_with("next: install a supported agent"),
         "{checklist}"
     );
 }
