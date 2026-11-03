@@ -6,13 +6,21 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{TestHome, commit_all};
+use common::{TestHome, commit_all, real_git};
 
 const CHECKS: &str = "[[checks]]\nname = \"test\"\ncommand = \"echo testing; test -f src/lib.rs\"\n\
                       artifacts = [\"src/lib.rs\"]\n";
 
-/// The real daemon with project `app` registered, declaring [`CHECKS`] in its last commit.
+/// The real daemon with project `app` registered and trusted, declaring [`CHECKS`] in its
+/// last commit.
 fn with_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
+    let (home, daemon, root) = with_untrusted_checks();
+    home.trust(&root);
+    (home, daemon, root)
+}
+
+/// [`with_checks`] before the owner trusts the project.
+fn with_untrusted_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
     let home = TestHome::new();
     let daemon = home.start();
     let root = home.project("app");
@@ -22,7 +30,6 @@ fn with_checks() -> (TestHome, common::RunningDaemon, PathBuf) {
     std::fs::write(root.join("src/lib.rs"), "pub fn answer() -> u8 { 42 }\n").unwrap();
     commit_all(&root, "declare the checks");
     home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
-    home.trust(&root);
     (home, daemon, root)
 }
 
@@ -105,6 +112,69 @@ fn a_gate_before_any_run_names_the_check_to_run() {
     assert!(
         report.contains("\ntest\tmissing\tnext: run `test`\n"),
         "{report}"
+    );
+}
+
+#[test]
+fn the_gate_of_an_untrusted_project_names_the_trust_step_before_the_run() {
+    let (home, _daemon, _root) = with_untrusted_checks();
+
+    let (report, passed) = gate(&home);
+
+    assert!(!passed, "{report}");
+    assert!(
+        report.contains(
+            "\ntest\tmissing\tnext: trust the project under `projects.trusted` in the owner \
+             configuration, then run `test`\n"
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn the_gate_of_a_review_checkout_names_the_projects_own_checkout() {
+    let home = TestHome::new();
+    let root = home.project("app");
+    home.trust(&root);
+    let contributor = home.home().join("contributor");
+    real_git(
+        &home.home(),
+        &[
+            "clone",
+            "--quiet",
+            home.github().to_str().unwrap(),
+            contributor.to_str().unwrap(),
+        ],
+    );
+    std::fs::create_dir_all(contributor.join(".torlek")).unwrap();
+    std::fs::write(contributor.join(".torlek/config.toml"), CHECKS).unwrap();
+    commit_all(&contributor, "declare the checks");
+    real_git(
+        &contributor,
+        &["push", "--quiet", "origin", "HEAD:refs/pull/7/head"],
+    );
+    let _daemon = home.start();
+    home.cockpit_ok(&["project", "add", root.to_str().unwrap()]);
+    home.cockpit_ok(&["checkout", "review", "app", "7"]);
+    let clone = home.home().join("projects/.parallel/app/pr-7");
+
+    let output = home.cockpit(&[
+        "check",
+        "gate",
+        "--project",
+        "app",
+        "--checkout",
+        clone.to_str().unwrap(),
+    ]);
+
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        report.contains(
+            "\ntest\tmissing\tnext: in the project's own checkout or a parallel clone, run \
+             `test`: a review checkout's checks never run\n"
+        ),
+        "{report}{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
