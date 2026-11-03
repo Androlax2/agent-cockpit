@@ -1,0 +1,202 @@
+# Windows: Scoop and WinGet for Torlek inside WSL 2
+
+**Status:** the Scoop manifest template, its renderer, the two Windows launcher scripts and the
+script they run inside WSL are written and tested on Linux (#565). None of them has run on
+Windows. No bucket exists, nothing is published, and no release exists yet to bind the manifest
+to. Do not document `scoop install` as an install route until the
+[publication checklist](#publication-checklist) has passed.
+
+Torlek is a Linux program. On Windows it runs **inside a WSL 2 distribution**, from the
+`linux-x86_64` release archive ([README](../../README.md#platforms-and-prerequisites)). There
+is no native Windows daemon, sandbox or provider support, and neither package manager route
+below adds any.
+
+## Dispositions
+
+| Manager | Disposition | Reason |
+| --- | --- | --- |
+| Scoop, own bucket | **Supported route, prepared here** | A bucket is any Git repository of JSON manifests; `bin` may be a `.ps1` script |
+| Scoop `main` | Not eligible now | Needs 500 stars or 150 forks and the latest *stable* version; Torlek has 0 and 0, and only prereleases |
+| Scoop `extras` | Not eligible now | Needs 100 stars or 50 forks and the latest *stable* version |
+| WinGet community repository | **Unsupported without a native payload: deferred** | Scripts are disallowed as installers; a portable installer must be an `.exe` |
+
+### WinGet: what the policy and the client require
+
+All read on 2026-11-03.
+
+- The community repository's
+  [installer types](https://github.com/microsoft/winget-pkgs/blob/89b39feb49ce424c3a1aa1d144d32515c0deac09/doc/Policies.md#installer-types)
+  are MSIX, APPX, MSI, exe-based installers and fonts, possibly nested in a `.zip`, and
+  "**Scripts are expressly disallowed as installers.** Examples include: Batch files (`.bat`),
+  PowerShell scripts (`.ps1`)".
+- The manifest schema 1.28.0
+  ([installer schema](https://github.com/microsoft/winget-cli/blob/dafe5e7795c6b36e2a8cea86aa9fddec898df795/schemas/JSON/manifests/v1.28.0/manifest.installer.1.28.0.json))
+  allows `InstallerType` `msix, msi, appx, exe, zip, inno, nullsoft, wix, burn, pwa, portable,
+  font`, and no script type.
+- A zip's nested `portable` file must be an `.exe`: `s_AllowedPortableFiletypes = { L".exe" }`
+  in [ManifestValidation.cpp](https://github.com/microsoft/winget-cli/blob/dfad88cdd908941dfc8077bb981c5d4b6052a168/src/AppInstallerCommonCore/Manifest/ManifestValidation.cpp#L18-L20),
+  checked under full validation, which `winget validate` and the pipeline run. The client also
+  appends `.exe` to every portable command alias
+  ([PortableFlow.cpp](https://github.com/microsoft/winget-cli/blob/b042b3b681e1ba4b70309c2ada7dc18b6b6b8bcf/src/AppInstallerCLICore/Workflows/PortableFlow.cpp#L245)),
+  so a `.cmd` or `.ps1` launcher cannot even be linked as a command.
+- The [validation pipeline](https://github.com/microsoft/winget-pkgs/blob/89b39feb49ce424c3a1aa1d144d32515c0deac09/doc/Validation.md)
+  installs the package silently as a standard user, checks that "the main application
+  executable can be located", and scans the installer and installed files with Defender. A
+  `.tar.gz` of Linux ELF programs is none of the allowed types; labelling it `exe` or `zip`
+  would misdescribe it, which the issue forbids.
+- The [Windows Package Manager policies](https://learn.microsoft.com/en-us/windows/package-manager/package/windows-package-manager-policies)
+  (updated 2026-08-30) require accurate metadata (1.1), allow depending on non-integrated
+  software (1.2.3), and ask that a product on an incompatible device "detect that at launch and
+  display a message to the customer detailing the requirements" (1.4.1). A native launcher could
+  meet them; a script cannot be submitted at all.
+
+So a WinGet entry needs a native Windows executable, for example a small `torlek.exe` that only
+runs `wsl.exe`. None exists, and building one is a new Windows build target, release asset and
+signing question. Theo deferred WinGet to a later milestone on 2026-11-03
+([decision](../decisions/2026-11-03-565-scoop-bucket-winget-needs-native-launcher.md)). A
+private WinGet REST source does not avoid it: it uses the same manifest types and client.
+
+### Scoop: what the format and the buckets allow
+
+All read on 2026-11-03; Scoop sources at
+[`e6aa3b36`](https://github.com/ScoopInstaller/Scoop/tree/e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f), its `master`.
+
+- [App manifests](https://github.com/ScoopInstaller/Scoop/wiki/App-Manifests): `bin` lists
+  "programs (executables or scripts)"; `hash` holds one SHA-256 per `url`; a `#/name` URL
+  fragment sets the local file name. Scoop writes a `.ps1` and a `.cmd` shim for a `.ps1` program
+  ([core.ps1](https://github.com/ScoopInstaller/Scoop/blob/e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f/lib/core.ps1#L1012-L1043)).
+- [Buckets](https://github.com/ScoopInstaller/Scoop/wiki/Buckets): "Anyone can set up their own
+  bucket", added with `scoop bucket add <name> <git url>`. Its own example ships a `.ps1` as the
+  app.
+- [Main criteria](https://github.com/ScoopInstaller/Scoop/wiki/Criteria-for-including-apps-in-the-main-bucket)
+  and the [Main](https://github.com/ScoopInstaller/Main/blob/8b0efb09e9cdeaa0c58e5c353558673ee33f10c2/.github/ISSUE_TEMPLATE/package-request.yml)
+  and [Extras](https://github.com/ScoopInstaller/Extras/blob/bb57b25354439811249d3f818d700600a58ed97c/.github/ISSUE_TEMPLATE/package-request.yml)
+  request templates require popularity (500/150 and 100/50 stars/forks) and the latest stable
+  version. On 2026-11-03 `Androlax2/agent-cockpit` had 0 stars and 0 forks and no stable
+  release, so only an own bucket is open. Revisit after a stable release.
+- Scoop unpacks any download whose local name matches `\.(…|gz|…|tar|t[abgpx]z2?|…)(\.[^\d.]+)?$`
+  ([depends.ps1](https://github.com/ScoopInstaller/Scoop/blob/e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f/lib/depends.ps1#L134-L146)).
+  Unpacking on NTFS loses the bundle's Unix modes, so the manifest saves the archive as
+  `torlek-v<tag>-linux-x86_64.archive`, which the tests check against that pattern.
+- On Windows 11 arm64, a manifest without an `arm64` entry installs its `64bit` one
+  ([manifest.ps1](https://github.com/ScoopInstaller/Scoop/blob/e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f/lib/manifest.ps1#L165-L181)),
+  so the WSL-side check refuses an aarch64 distribution with an actionable message.
+- `Compare-Version` orders `alpha` and `beta` before the release of the same core and compares
+  numbers numerically ([versions.ps1](https://github.com/ScoopInstaller/Scoop/blob/e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f/lib/versions.ps1#L110-L185)),
+  so the manifest's `version` is the tag itself, `0.1.0-alpha.1`. Not run here: no PowerShell.
+
+### WSL commands the launchers use
+
+From the `wsl.exe` usage text in [Resources.resw](https://github.com/microsoft/WSL/blob/fe15c863b0537e705159e0cec45e0dfc4b8d1f36/localization/strings/en-US/Resources.resw)
+and [Basic commands for WSL](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)
+(updated 2025-12-01), read 2026-11-03: `--distribution`, `--exec` ("without using the default
+Linux shell"), `--cd` (an absolute Windows path is accepted) and `--list --quiet`. `wsl.exe`
+writes UTF-8 instead of UTF-16 when `WSL_UTF8=1`
+([WslClient.cpp](https://github.com/microsoft/WSL/blob/fe15c863b0537e705159e0cec45e0dfc4b8d1f36/src/windows/common/WslClient.cpp#L1883-L1886)).
+The [documented](https://learn.microsoft.com/en-us/windows/wsl/basic-commands) `wsl --unregister`
+permanently deletes a distribution's data; nothing here calls it.
+
+## What exists
+
+| File | Role |
+| --- | --- |
+| [packaging/windows/scoop/torlek.json.in](../../packaging/windows/scoop/torlek.json.in) | The reviewed Scoop manifest, with the tag and five checksums as `@TOKEN@`s |
+| [packaging/windows/render.py](../../packaging/windows/render.py) | `render` fills it from one release's `SHA256SUMS` and the `v<tag>` git tag |
+| [packaging/windows/torlek.ps1](../../packaging/windows/torlek.ps1) | The `torlek` command on Windows: forwards its arguments to the Linux `torlek` in WSL |
+| [packaging/windows/torlek-wsl.ps1](../../packaging/windows/torlek-wsl.ps1) | `torlek-wsl check` and `torlek-wsl install`: Windows-side checks and the consent prompt |
+| [packaging/windows/install-in-wsl.sh](../../packaging/windows/install-in-wsl.sh) | Runs inside the distribution: WSL 2 kernel, architecture, user, checksum, then the unpack |
+| [tools/tests/test_windows_package.py](../../tools/tests/test_windows_package.py) | Rendering, checksum binding, tag handling, the in-WSL refusals, and source checks of the PowerShell |
+
+The manifest downloads five files, each with its own SHA-256: the release's `linux-x86_64`
+archive and its `SHA256SUMS` from the GitHub release, and the three scripts from
+`raw.githubusercontent.com` at the `v<tag>` git tag. The renderer hashes the scripts as that git
+tag holds them (`git show v<tag>:<path>`), not the working tree, and the checksum file as given.
+There is no placeholder checksum, no `latest` URL, no `checkver` or `autoupdate`: a new release is
+rendered and reviewed, not bumped by a bot.
+
+## How it works
+
+1. `scoop install torlek` downloads and verifies the five files into the app directory and
+   shims `torlek` and `torlek-wsl`. It runs no install script and changes nothing in WSL.
+2. `torlek-wsl check -Distribution <name>` reports, without changing anything: WSL missing,
+   no distribution registered, the named one not registered, then inside it a non-WSL 2
+   kernel, an architecture other than `x86_64`, root as the default user, missing `sha256sum`,
+   `tar` or `awk`, and an archive whose SHA-256 differs from `SHA256SUMS`.
+3. `torlek-wsl install -Distribution <name>` repeats the check, asks
+   `Install Torlek <tag> into WSL distribution '<name>' at ~/.local/lib/torlek/v<tag> …? [y/N]`
+   (or takes `-Yes`), refuses archive members outside the bundle directory and links, unpacks into
+   `~/.local/lib/torlek/v<tag>` and points `~/.local/lib/torlek/current` at it. It never
+   replaces an installed version.
+4. `torlek …` on Windows runs `$HOME/.local/lib/torlek/current/bin/torlek …` in the
+   distribution named by `TORLEK_WSL_DISTRIBUTION`. There is no default distribution: an unset
+   variable stops with the command that sets it, which the user runs.
+
+The whole bundle stays in one directory, as in the [AUR recipe](aur.md#package), because `torlek`
+finds its other programs and the release manifest from its own resolved path.
+
+### Consent and prerequisites
+
+Nothing here installs or enables WSL, enables a Windows feature, adds, converts or removes a
+distribution, elevates, registers a service or sets an environment variable. Each missing
+prerequisite stops with the command for the user to run, for example
+`wsl.exe --install --no-distribution` (elevated, enables Windows features, may restart) or
+`wsl.exe --install --distribution Ubuntu-24.04`. The source checks in the tests hold the
+scripts to `wsl.exe --distribution/--exec/--cd/--list --quiet`.
+
+Inside WSL, Torlek's own [prerequisites](../../README.md#platforms-and-prerequisites) still
+apply: tmux 3.6 or newer (Ubuntu 24.04 ships 3.4), Git, curl and a systemd user manager for
+`torlek daemon install`. `torlek doctor` names what is missing; the package does not install it.
+
+## Update and uninstall
+
+- **Update:** `scoop update torlek` replaces the Windows files with the next rendered release.
+  The Linux side changes only when the user runs `torlek-wsl install` again, which adds
+  `v<new tag>` beside the old one and moves `current`. User services written by
+  `torlek daemon install` point at the resolved old path: run `torlek daemon install` again after
+  moving `current`, as with any archive upgrade.
+- **Uninstall:** `scoop uninstall torlek` removes only Scoop's app directory and shims. The
+  manifest has no uninstaller, so it never touches a WSL distribution, `~/.local/lib/torlek`, a
+  profile's state, or user services inside WSL. Removing them is the user's choice: inside WSL,
+  stop the services, then delete `~/.local/lib/torlek/v<tag>`. A distribution is never
+  unregistered by this package.
+- **Going back:** an older installed version is selected with
+  `ln -sfn v<tag> ~/.local/lib/torlek/current` inside WSL; the refusal message prints that command.
+
+## Publication checklist
+
+Each step that downloads, creates a repository, installs or publishes needs its own approval;
+this list grants none. For each published `vX.Y.Z-alpha.N` tag:
+
+1. Download the release's checksums and archive, then verify them and their provenance as in the
+   [AUR checklist](aur.md#publication-checklist), steps 1 to 3, for `linux-x86_64`.
+2. In a checkout that has the `v$TAG` tag, render the manifest:
+   `python3 packaging/windows/render.py render --tag "$TAG" --sums "$WORK/SHA256SUMS" --out "$WORK/bucket"`
+3. On a clean Windows 11 x64 machine with WSL 2 and a fresh Ubuntu 24.04 distribution with tmux
+   3.6 or newer: `scoop install "$WORK/bucket/torlek.json"`, then `torlek-wsl check`,
+   `torlek-wsl install`, `torlek doctor` and the #97 onboarding scenario from Windows Terminal.
+   Then check each refusal: no WSL, no or unknown distribution, a WSL 1 distribution, an arm64
+   machine, a tampered archive in the app directory. Run `scoop uninstall torlek` and confirm
+   that the distribution, `~/.local/lib/torlek` and the profile state are still there. Record the
+   commands and output on #565.
+4. Run [PSScriptAnalyzer](https://learn.microsoft.com/en-us/powershell/utility-modules/psscriptanalyzer/overview)
+   on the two `.ps1` files under both Windows PowerShell 5.1 and PowerShell 7, and explain or fix
+   every finding.
+5. Publish, only with Theo's approval: create the bucket repository he names, add the rendered
+   `torlek.json` under `bucket/`, and push it.
+6. Check the published route on a new machine: `scoop bucket add <name> <url>`,
+   `scoop install <name>/torlek`, `torlek-wsl install`, `torlek doctor`. Link the evidence from #97.
+
+## Not yet verified
+
+- Nothing ran on Windows: no PowerShell, `wsl.exe`, Scoop or WinGet exists here, and there is
+  no PowerShell parser or PSScriptAnalyzer, so the `.ps1` files are not even syntax-checked. The
+  tests read their source for forbidden commands and the consent order; that is not execution.
+- Untested assumptions that step 3 must confirm: `wsl.exe --exec` passes each argument intact
+  (Windows PowerShell 5.1 does not escape embedded double quotes or empty arguments for native
+  commands); `--cd` accepts Scoop's `current` junction; `@args` carries named parameters through
+  Scoop's `.ps1` shim; `wsl.exe --list --quiet` output under `WSL_UTF8=1`.
+- `install-in-wsl.sh` ran on this Arch host with faked `uname` and `id`, not in a WSL kernel.
+- No release exists, so no real archive was rendered, downloaded or installed.
+- The in-WSL layout `~/.local/lib/torlek/v<tag>` and `current` is this route's own; #97 has not
+  yet published the archive route's install instructions. If #97 picks another layout, change
+  the scripts to match it before publishing.

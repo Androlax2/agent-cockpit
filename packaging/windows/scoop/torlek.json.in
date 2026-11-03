@@ -1,0 +1,35 @@
+{
+    "##": "Rendered by packaging/windows/render.py from one release (docs/packaging/windows.md). The archive is saved as .archive so Scoop does not unpack it on NTFS, which would lose its Unix modes.",
+    "version": "@TAG@",
+    "description": "Windows launcher for the Linux Torlek inside WSL 2 (agent session cockpit; no native Windows build)",
+    "homepage": "https://github.com/Androlax2/agent-cockpit",
+    "license": "Apache-2.0",
+    "notes": [
+        "Torlek runs only inside a WSL 2 distribution on x86_64. Nothing was installed into WSL yet.",
+        "Next: torlek-wsl check -Distribution <name>, then torlek-wsl install -Distribution <name>.",
+        "Torlek inside WSL needs tmux 3.6 or newer, git and curl; torlek doctor names what is missing.",
+        "Uninstalling this package never touches WSL distributions or ~/.local/lib/torlek inside them."
+    ],
+    "architecture": {
+        "64bit": {
+            "url": [
+                "https://github.com/Androlax2/agent-cockpit/releases/download/v@TAG@/torlek-v@TAG@-linux-x86_64.tar.gz#/torlek-v@TAG@-linux-x86_64.archive",
+                "https://github.com/Androlax2/agent-cockpit/releases/download/v@TAG@/SHA256SUMS",
+                "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@/packaging/windows/torlek.ps1",
+                "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@/packaging/windows/torlek-wsl.ps1",
+                "https://raw.githubusercontent.com/Androlax2/agent-cockpit/v@TAG@/packaging/windows/install-in-wsl.sh"
+            ],
+            "hash": [
+                "@SHA256_ARCHIVE@",
+                "@SHA256_SUMS@",
+                "@SHA256_TORLEK_PS1@",
+                "@SHA256_TORLEK_WSL_PS1@",
+                "@SHA256_INSTALL_IN_WSL_SH@"
+            ]
+        }
+    },
+    "bin": [
+        "torlek.ps1",
+        "torlek-wsl.ps1"
+    ]
+}
