@@ -2,7 +2,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cockpit_turso::sql::Row;
+use cockpit_turso::sql::{Connection, Row};
 use cockpit_turso::{Database, Migration, MigrationSet, WriteTransaction};
 
 use crate::model::{PROCESS_GROUP, SYSTEMD_SCOPE};
@@ -154,7 +154,12 @@ const COLUMNS: &str = "id, containment, unit, boot_id, phase, process_group, lea
 
 pub async fn execution(database: &Database, id: ExecutionId) -> Result<Execution, Error> {
     let read = database.read().await?;
-    let mut rows = read
+    execution_in(&read, id).await
+}
+
+/// Read on the caller's transaction, including maintenance admission.
+pub async fn execution_in(connection: &Connection, id: ExecutionId) -> Result<Execution, Error> {
+    let mut rows = connection
         .query(
             &format!("SELECT {COLUMNS} FROM process_executions WHERE id = ?1"),
             [id.0],
@@ -169,7 +174,12 @@ pub async fn execution(database: &Database, id: ExecutionId) -> Result<Execution
 /// Every execution that still holds its reservation, oldest first.
 pub async fn occupying_executions(database: &Database) -> Result<Vec<Execution>, Error> {
     let read = database.read().await?;
-    let mut rows = read
+    occupying_executions_in(&read).await
+}
+
+/// Current occupying executions, not a second snapshot after a writer was acquired.
+pub async fn occupying_executions_in(connection: &Connection) -> Result<Vec<Execution>, Error> {
+    let mut rows = connection
         .query(
             &format!("SELECT {COLUMNS} FROM process_executions WHERE phase <> 'ended' ORDER BY id"),
             (),
@@ -231,4 +241,32 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .expect("the clock is after 1970");
     i64::try_from(elapsed.as_millis()).expect("milliseconds since 1970 fit in i64")
+}
+
+/// Missing identities are uncertainty, never termination. Bounded parameter batches avoid
+/// one query per historical launch while retaining the caller's transaction snapshot.
+pub async fn observed_ended(
+    connection: &Connection,
+    executions: &[ExecutionId],
+) -> Result<bool, Error> {
+    let mut ids: Vec<i64> = executions.iter().map(|id| id.0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    for batch in ids.chunks(256) {
+        let placeholders = vec!["?"; batch.len()].join(",");
+        let mut rows = connection.query(&format!("SELECT COUNT(*) FROM process_executions WHERE phase = 'ended' AND id IN ({placeholders})"),
+            cockpit_turso::sql::params_from_iter(batch.iter().copied())).await?;
+        let count: i64 = rows
+            .next()
+            .await?
+            .ok_or_else(|| Error::InvalidStoredExecution {
+                execution: ExecutionId(0),
+                reason: "missing termination count".to_owned(),
+            })?
+            .get(0)?;
+        if count != batch.len() as i64 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

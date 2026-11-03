@@ -49,6 +49,20 @@ pub async fn sweep(database: &Database, git: &Git, dry_run: bool) -> Result<Swee
     };
     let mut report = SweepReport::default();
     for stored in clones {
+        let available = {
+            let read = database.read().await?;
+            crate::require_checkout_available(&read, stored.checkout.id).await
+        };
+        match available {
+            Err(Error::Refused { reason }) => {
+                report
+                    .kept
+                    .push((stored.checkout, Kept::Unreadable { reason }));
+                continue;
+            }
+            Err(error) => return Err(error),
+            Ok(()) => {}
+        }
         let kept = if dry_run {
             inspect(git, &stored).await?
         } else {

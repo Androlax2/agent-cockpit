@@ -1119,3 +1119,37 @@ fn start_from(row: &Row, first: usize) -> Result<Option<StartSession>, Error> {
         other => Err(invalid_row(TABLE, format!("kind {other:?}"))),
     }
 }
+
+/// Admission evidence on the caller's writer. Approved is busy before Runner reserves;
+/// a finished command still names its execution, whose observed end processes owns.
+pub async fn maintenance_runs(
+    connection: &Connection,
+) -> Result<(Option<String>, Vec<ExecutionId>), Error> {
+    let mut rows = connection
+        .query(
+            "SELECT id,state,execution FROM approvals_runs
+        WHERE state IN ('approved','running') OR execution IS NOT NULL ORDER BY id LIMIT 4097",
+            (),
+        )
+        .await?;
+    let mut executions = Vec::new();
+    let mut count = 0;
+    while let Some(row) = rows.next().await? {
+        count += 1;
+        if count > 4096 {
+            return Ok((
+                Some("approval execution evidence bound reached".to_owned()),
+                executions,
+            ));
+        }
+        let state: String = row.get(1)?;
+        if state == "approved" || state == "running" {
+            let id: i64 = row.get(0)?;
+            return Ok((Some(format!("run request {id} is {state}")), executions));
+        }
+        if let Some(id) = row.get::<Option<i64>>(2)? {
+            executions.push(ExecutionId(id));
+        }
+    }
+    Ok((None, executions))
+}

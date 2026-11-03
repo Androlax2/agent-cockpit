@@ -234,7 +234,7 @@ pub(crate) fn error_code(error: &Error) -> ErrorCode {
         | Error::Occupied { .. }
         | Error::NotOccupant { .. }
         | Error::BeingRemoved { .. } => ErrorCode::Conflict,
-        Error::Replaced { .. } => ErrorCode::StaleRevision,
+        Error::Replaced { .. } | Error::StalePrune { .. } => ErrorCode::StaleRevision,
         Error::Refused { .. } => ErrorCode::Refused,
         _ => ErrorCode::Internal,
     }

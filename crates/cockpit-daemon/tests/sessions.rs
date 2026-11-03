@@ -1407,3 +1407,7 @@ fn a_clean_owner_configuration_keeps_the_sessions_product_defaults() {
 
     assert_eq!(configured.owner, product.owner);
 }
+
+#[cfg(target_os = "linux")]
+#[path = "sessions/target_prune.rs"]
+mod target_prune;

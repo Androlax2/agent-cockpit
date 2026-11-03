@@ -14,6 +14,7 @@ mod source;
 mod storage;
 mod store;
 mod sweep;
+mod target_prune;
 
 use std::path::{Path, PathBuf};
 
@@ -74,3 +75,17 @@ pub(crate) async fn blocking<T: Send + 'static>(
         .await
         .map_err(|error| Error::Blocking(error.to_string()))?
 }
+
+pub use store::target_prune_candidates;
+pub use target_prune::paused_automatic_prunes;
+pub use target_prune::require_working_directory_available;
+pub use target_prune::reserve_target_prune;
+pub use target_prune::{
+    PruneEvidence, PrunePolicy, PrunePreview, PruneStatus, prepare_target_prune,
+    preview_target_prune, prune_status, require_checkout_available,
+    require_execution_start_allowed,
+};
+pub use target_prune::{
+    PruneStep, PruneStepReceipt, begin_prune_step, complete_prune_step, pause_target_prune,
+    recover_target_prunes, resume_target_prune,
+};

@@ -77,6 +77,7 @@ pub trait Handler: Send + Sync + 'static {
 
 /// The daemon's commands, over the state database the daemon opened.
 pub struct Routes {
+    storage: crate::storage::Context,
     database: Arc<cockpit_turso::Database>,
     /// The host Git that project commands run, with the safe settings applied.
     git: cockpit_projects::Git,
@@ -111,6 +112,7 @@ impl Routes {
     pub fn new(capabilities: Capabilities, environment: cockpit_config::Environment) -> Routes {
         let provider_capabilities = Arc::new(capabilities.provider_capabilities);
         Routes {
+            storage: capabilities.storage,
             coordination: coordination::Context {
                 database: Arc::clone(&capabilities.database),
                 sessions: Arc::clone(&capabilities.sessions),
@@ -261,6 +263,15 @@ impl Handler for Routes {
                 "run `torlek brief` from a session Torlek launched",
                 UnblockedBy::Agent,
             )),
+            (
+                command @ (Command::StoragePrunePreview { .. }
+                | Command::StoragePruneApply { .. }
+                | Command::StoragePruneStatus { .. }),
+                peer,
+            ) => match peer {
+                Peer::Agent { .. } => Route::Answer(owner_only()),
+                Peer::Owner => crate::storage::route(command, self.storage.clone()),
+            },
             (
                 command @ (Command::ProjectAdd { .. }
                 | Command::StorageReport

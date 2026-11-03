@@ -44,6 +44,12 @@ pub struct Git {
 }
 
 impl Git {
+    /// An explicit host-selected Git program, including a hermetic tool in fixtures.
+    /// Commands retain the same safe configuration and argument handling as `from_path`.
+    pub fn with_program(program: PathBuf) -> Git {
+        Git { program }
+    }
+
     /// `git` as found on the daemon's `PATH`.
     pub fn from_path() -> Git {
         Git {

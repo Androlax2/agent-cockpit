@@ -9,7 +9,7 @@ use crate::daemon::{BULK_DEADLINE, request, unexpected};
 
 pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     if !arguments.is_empty() {
-        return Err("storage takes no arguments; it only reports registered clones".to_owned());
+        return prune(arguments);
     }
     let reply = match request(Command::StorageReport, BULK_DEADLINE) {
         Ok(reply) => reply,
@@ -66,6 +66,99 @@ fn row(clone: &CloneStorageView) -> String {
 /// A path or holder is data, even when it contains a terminal escape or a table delimiter.
 fn cell(value: &str) -> String {
     value.chars().flat_map(char::escape_debug).collect()
+}
+
+fn prune(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let args: Vec<_> = arguments.iter().map(|s| s.to_str()).collect();
+    let positive = |value: &str| {
+        value
+            .parse::<i64>()
+            .ok()
+            .filter(|v| *v > 0)
+            .ok_or_else(|| "storage identity/revision must be positive".to_owned())
+    };
+    let command = match args.as_slice() {
+        [Some("prune"), Some(id), Some("--dry-run")] => Command::StoragePrunePreview { checkout: positive(id)?, prepare: false },
+        [Some("prune"), Some(id)] => Command::StoragePrunePreview { checkout: positive(id)?, prepare: true },
+        [Some("prune"), Some("--plan"), Some(id), Some("--revision"), Some(revision), Some("--epoch"), Some(epoch), Some("--confirm")] =>
+            Command::StoragePruneApply { plan: positive(id)?, revision: positive(revision)?, epoch: (*epoch).to_owned() },
+        [Some("prune"), Some("status"), Some(id)] => Command::StoragePruneStatus { operation: positive(id)? },
+        _ => return Err("storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID".to_owned()),
+    };
+    let reply = match request(command, BULK_DEADLINE) {
+        Ok(reply) => reply,
+        Err(code) => return Ok(code),
+    };
+    match &reply {
+        Reply::StoragePrunePreview { preview } => {
+            outln!(
+                "{}: {}",
+                if preview.dry_run {
+                    "dry-run"
+                } else {
+                    "prepared; nothing deleted"
+                },
+                cell(&preview.target)
+            );
+            match &preview.measurement {
+                TargetSizeView::Complete { apparent_bytes } => {
+                    outln!("{apparent_bytes} apparent bytes; physical space freed is not promised")
+                }
+                TargetSizeView::Missing => outln!("target is absent"),
+                TargetSizeView::Incomplete {
+                    apparent_bytes,
+                    reason,
+                } => outln!(
+                    "at least {apparent_bytes} apparent bytes; incomplete: {}",
+                    cell(reason)
+                ),
+                TargetSizeView::Unavailable { reason } => {
+                    outln!("size unavailable: {}", cell(reason))
+                }
+            }
+            if let Some(reason) = &preview.kept_reason {
+                outln!("kept: {}", cell(reason));
+            }
+            if let Some(eligibility) = &preview.eligibility {
+                outln!("eligibility: {}", cell(eligibility));
+            }
+            if let Some(plan) = &preview.plan {
+                outln!(
+                    "Confirm only if this literal target is disposable and no unmanaged writer can mutate it:"
+                );
+                outln!(
+                    "torlek storage prune --plan {} --revision {} --epoch {} --confirm",
+                    plan.operation,
+                    plan.revision,
+                    cell(&plan.epoch)
+                );
+            }
+        }
+        Reply::StoragePruneStatus { status } => {
+            outln!("epoch: {}", cell(&status.epoch));
+            outln!("target: {}", cell(&status.target));
+            outln!(
+                "quarantine: {} (recorded location; existence/contents may be uncertain)",
+                status
+                    .quarantine
+                    .as_deref()
+                    .map(cell)
+                    .unwrap_or_else(|| "not reserved".into())
+            );
+            outln!(
+                "operation {}: {}; {} removed apparent bytes, {} absent bytes with unconfirmed attribution",
+                status.operation,
+                cell(&status.phase),
+                status.removed_apparent_bytes,
+                status.absent_unconfirmed_bytes
+            );
+            if let Some(reason) = &status.reason {
+                outln!("{}", cell(reason));
+            }
+        }
+        _ => return Ok(unexpected(&reply)),
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

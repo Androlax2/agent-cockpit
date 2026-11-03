@@ -182,7 +182,7 @@ fn open_directory(parent: impl AsFd, name: impl rustix::path::Arg) -> Result<Own
     fs::openat(parent, name, DIRECTORY_FLAGS, Mode::empty())
 }
 
-fn open_root(path: &Path) -> Result<OwnedFd, String> {
+pub(crate) fn open_root(path: &Path) -> Result<OwnedFd, String> {
     if !path.is_absolute() {
         return Err("registered checkout path is not absolute".to_owned());
     }
@@ -204,7 +204,7 @@ fn open_root(path: &Path) -> Result<OwnedFd, String> {
     Ok(directory)
 }
 
-fn verify_marker(stored: &StoredCheckout, root: &OwnedFd) -> Result<(), String> {
+pub(crate) fn verify_marker(stored: &StoredCheckout, root: &OwnedFd) -> Result<(), String> {
     let git = fs::openat(root, ".git", ANCHOR_FLAGS, Mode::empty())
         .map_err(|error| format!("open identity directory: {error}"))?;
     let marker = stored.marker_name();

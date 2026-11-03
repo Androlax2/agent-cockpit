@@ -545,6 +545,25 @@ async fn approve(
     digest: &str,
 ) -> Answer {
     let write = database.write().await?;
+    // Approval creates a durable future execution before Runner reserves its process.
+    // Serialize that intent with maintenance on the same writer, not an earlier read.
+    cockpit_projects::require_execution_start_allowed(&write)
+        .await
+        .map_err(|error| {
+            Failed(ProtocolError::new(
+                crate::projects::error_code(&error),
+                error.to_string(),
+            ))
+        })?;
+    let current = existing_run(&write, request).await?;
+    cockpit_projects::require_working_directory_available(&write, &current.cwd)
+        .await
+        .map_err(|error| {
+            Failed(ProtocolError::new(
+                crate::projects::error_code(&error),
+                error.to_string(),
+            ))
+        })?;
     let (approved, run) =
         cockpit_approvals::approve_run(&write, RunId(request), revision, digest, now()).await?;
     write.commit().await?;

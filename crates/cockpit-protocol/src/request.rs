@@ -43,6 +43,20 @@ pub enum Command {
     Ping,
     /// Owner only: bounded, read-only measurements of registered clone target directories.
     StorageReport,
+    /// Owner-only registered-clone observation; prepare persists a plan but deletes nothing.
+    StoragePrunePreview {
+        checkout: i64,
+        prepare: bool,
+    },
+    /// Owner confirms precisely the displayed immutable plan.
+    StoragePruneApply {
+        plan: i64,
+        revision: i64,
+        epoch: String,
+    },
+    StoragePruneStatus {
+        operation: i64,
+    },
     /// Start the change feed at `from`.
     Subscribe {
         from: FeedPosition,
@@ -750,6 +764,12 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Reply {
+    StoragePrunePreview {
+        preview: Box<crate::storage::StoragePrunePreviewView>,
+    },
+    StoragePruneStatus {
+        status: Box<crate::storage::StoragePruneStatusView>,
+    },
     Pong,
     Storage {
         clones: Vec<CloneStorageView>,
