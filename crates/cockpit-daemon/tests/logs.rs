@@ -214,7 +214,10 @@ async fn trace_override_keeps_fake_provider_content_out_of_logs_and_the_existing
     use cockpit_provider_api::{ProviderName, fake::FakeProvider};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("log canary ")
+        .tempdir()
+        .unwrap();
     let root = dir.path().canonicalize().unwrap();
     let _tmux = PrivateTmux(root.clone());
     let state_dir = root.join("state/cockpit");
@@ -228,16 +231,24 @@ async fn trace_override_keeps_fake_provider_content_out_of_logs_and_the_existing
     tracing::dispatcher::set_global_default(diagnostics.dispatch().clone()).unwrap();
     let program = root.join("agent");
     let marker = root.join("environment-seen");
-    std::fs::write(&program, format!("#!/bin/sh\necho output-canary-137\nprintf '%s' \"$CONTENT_CANARY\" > {}\nexec sleep 60\n", marker.display())).unwrap();
+    std::fs::write(
+        &program,
+        r#"#!/bin/sh
+echo output-canary-137
+printf '%s' "$CONTENT_CANARY" > "$CANARY_MARKER"
+exec sleep 60
+"#,
+    )
+    .unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
     let agent_log = root.join("agent.log");
     let provider =
         FakeProvider::new(ProviderName::new("fake").unwrap(), agent_log.clone()).running(program);
     let mut wiring = common::wiring_in(&root, vec![Arc::new(provider)]);
-    wiring
-        .sessions
-        .base_environment
-        .push(("CONTENT_CANARY".into(), "environment-canary-137".into()));
+    wiring.sessions.base_environment.extend([
+        ("CONTENT_CANARY".into(), "environment-canary-137".into()),
+        ("CANARY_MARKER".into(), marker.as_os_str().to_owned()),
+    ]);
     let environment = wiring.environment.clone();
     let daemon = Instance::acquire(Options {
         runtime_dir: root.join("run/cockpit"),
