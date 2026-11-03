@@ -13,7 +13,9 @@ pub fn parse(arguments: &[OsString]) -> Result<Command, String> {
             directives: (*directives).into(),
             duration: None,
         }),
-        ["level", directives, "--for", duration] if !directives.starts_with('-') => {
+        ["level", directives, "--for", duration]
+            if !directives.starts_with('-') && !duration.starts_with('-') =>
+        {
             Ok(Command::LogsLevelSet {
                 directives: (*directives).into(),
                 duration: Some((*duration).into()),

@@ -61,6 +61,8 @@ fn malformed_log_arguments_are_usage_errors_without_a_daemon() {
         vec!["logs", "level", "--for"],
         vec!["logs", "level", "--revert", "--for", "1s"],
         vec!["logs", "level", "debug", "--for"],
+        vec!["logs", "level", "debug", "--for", "--revert"],
+        vec!["logs", "level", "debug", "--for", "--unknown"],
         vec!["logs", "level", "debug", "--for", "1s", "--for", "2s"],
         vec!["logs", "level", "--unknown"],
     ] {
