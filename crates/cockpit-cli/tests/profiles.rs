@@ -325,6 +325,58 @@ fn daemon_install_of_another_profile_installs_the_command_whose_name_selects_it(
     );
 }
 
+/// A package install (#562): torlek in a directory only root writes, such as
+/// /usr/lib/torlek/bin. The unit selects the profile by `--profile`, so the command link
+/// beside the program is skipped with the way to select it instead.
+#[test]
+fn daemon_install_of_another_profile_beside_a_read_only_program_skips_its_command() {
+    let home = Home::new();
+    let package = home.path().join("package/bin");
+    fs::create_dir_all(&package).unwrap();
+    for name in ["torlek", "torlek-daemon"] {
+        fs::copy(home.bin().join(name), package.join(name)).unwrap();
+    }
+    let _writable_again = ReadOnly::make(&package);
+    if fs::write(package.join("probe"), "").is_ok() {
+        // Root writes through the mode bits, so this run cannot model a package directory.
+        eprintln!(
+            "skipped: {} stays writable for this user",
+            package.display()
+        );
+        return;
+    }
+
+    let output = home.run(
+        &package.join("torlek"),
+        &["--profile", "next", "daemon", "install"],
+        &[],
+    );
+
+    succeeded(&output);
+    assert!(!package.join("torlek-next").exists());
+    assert!(home.unit_of("torlek-next").is_file());
+    let warning = String::from_utf8_lossy(&output.stderr);
+    assert!(warning.contains("not linked"), "{warning}");
+    assert!(warning.contains("torlek --profile next"), "{warning}");
+    assert!(warning.contains("TORLEK_PROFILE=next"), "{warning}");
+}
+
+/// A directory at 0555 until dropped, so a failing test still lets its TempDir be removed.
+struct ReadOnly<'a>(&'a Path);
+
+impl<'a> ReadOnly<'a> {
+    fn make(directory: &'a Path) -> Self {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o555)).unwrap();
+        Self(directory)
+    }
+}
+
+impl Drop for ReadOnly<'_> {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
 #[test]
 fn daemon_install_refuses_a_command_name_another_file_holds() {
     let home = Home::new();

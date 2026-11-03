@@ -2,7 +2,8 @@
 //! systemd user unit `cockpit[-<name>].service`, or the launchd agent on macOS, started now.
 //! Until the cutover (#66) the default profile belongs to the legacy Cockpit while one is
 //! installed, so it is refused then and `--profile next` proposed (#134). Another profile also
-//! gets its command, `cockpit-<name>` beside this program, whose name selects the profile.
+//! gets its command, `cockpit-<name>` beside this program, whose name selects the profile,
+//! unless that directory is not this user's to write (a package install, #562).
 
 use std::ffi::OsString;
 use std::fs;
@@ -49,7 +50,7 @@ fn install() -> Result<ExitCode, String> {
                 "a legacy Cockpit is installed ({}): the default profile is refused until the \
                  cutover because greyproxy endpoints are shared; install this one beside it with \
                  `torlek --profile {COEXISTING_PROFILE} daemon install`, which also installs \
-                  the command torlek-{COEXISTING_PROFILE}",
+                  the command torlek-{COEXISTING_PROFILE} where it can",
                 legacy.describe()
             ));
         }
@@ -119,10 +120,30 @@ fn link_command(program: &Path, profile: &Profile) -> Result<(), String> {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
         Err(error) => return Err(format!("{}: {error}", link.display())),
     }
-    std::os::unix::fs::symlink(&target, &link)
-        .map_err(|error| format!("cannot link {}: {error}", link.display()))?;
-    outln!("linked {} -> {}", link.display(), target.display());
-    Ok(())
+    match std::os::unix::fs::symlink(&target, &link) {
+        Ok(()) => {
+            outln!("linked {} -> {}", link.display(), target.display());
+            Ok(())
+        }
+        // A package install (#562) keeps the program where only root writes; the unit selects
+        // the profile by `--profile`, so the command is a convenience the user can do without.
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            eprintln!(
+                "torlek: warning: not linked {}: {error}; select this profile with `torlek --profile {name}` or \
+                 {variable}={name}",
+                link.display(),
+                name = profile.name(),
+                variable = cockpit_config::PROFILE_VARIABLE,
+            );
+            Ok(())
+        }
+        Err(error) => Err(format!("cannot link {}: {error}", link.display())),
+    }
 }
 
 fn systemd_unit(
