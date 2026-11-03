@@ -394,6 +394,79 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual([p["version"] for p in lock["package"]], ["0.1.0-alpha.1"])
         self.assertIn("\n## 0.1.0-alpha.1 (", (self.fixture.root / "CHANGELOG.md").read_text())
 
+    def published_prerelease_body(self):
+        self.prepare()
+        self.publish()
+        return self.fixture.api.pulls[1]["body"]
+
+    def test_draft_shows_the_dry_run_and_release_commands_and_approval(self):
+        body = self.published_prerelease_body()
+        dispatch = "gh workflow run prerelease.yml -R Androlax2/agent-cockpit --ref main"
+        for step in (
+            f"`{dispatch} -f dry_run=true`",
+            f"`{dispatch} -f dry_run=false`",
+            "approve the `release` environment on the run",
+            "https://github.com/Androlax2/agent-cockpit/actions/workflows/prerelease.yml",
+        ):
+            with self.subTest(step=step):
+                self.assertIn(step, body)
+
+    def test_draft_names_the_tag_its_dispatch_creates(self):
+        body = self.published_prerelease_body()
+        self.assertIn(f"would tag {self.fixture.base} as v0.1.0-alpha.1`", body)
+        self.assertIn(f"tags `{self.fixture.base}` as `v0.1.0-alpha.1`", body)
+
+    def test_draft_names_what_the_dispatch_checks_before_tagging(self):
+        body = self.published_prerelease_body()
+        for check in (
+            "the Alpha 1 checklist (#52)",
+            "the Beta 1 checklist (#57)",
+            "`docs/KNOWN-GAPS.md`",
+            f"`main` is still `{self.fixture.base}`",
+            "`v0.1.0-alpha.1` is the next prerelease",
+        ):
+            with self.subTest(check=check):
+                self.assertIn(check, body)
+
+    def test_draft_keeps_the_do_not_merge_rule(self):
+        self.assertIn("Do not merge this draft.", self.published_prerelease_body())
+
+    def test_draft_dispatches_the_prerelease_workflow_input_that_exists(self):
+        workflow = (ROOT / ".github/workflows/prerelease.yml").read_text()
+        self.assertIn("  workflow_dispatch:\n    inputs:\n      dry_run:\n", workflow)
+
+    def test_draft_published_before_release_steps_is_superseded_and_keeps_its_branch(self):
+        old_head = self.prepare()
+        old_base = self.fixture.base
+        self.publish()
+        # The exact body drafts carried before #669, such as #689.
+        self.fixture.api.pulls[1]["body"] = (
+            "Next prerelease: `v0.1.0-alpha.1`. Generated locally with release-plz update and git-cliff.\n\n"
+            "Draft for review only; prerelease dispatch verifies this version and tags its main source. "
+            "Do not merge this draft. Separate release approval and all release gates still apply. "
+            "The branch and commit are retained when superseded.\n\n"
+            f"<!-- cockpit-release-proposal v1 base={old_base} head={old_head} -->"
+        )
+        self.fixture.next_base()
+        self.prepare()
+        self.publish()
+        self.assertEqual(self.fixture.api.pulls[1]["state"], "closed")
+        self.assertEqual(self.fixture.api.pulls[2]["state"], "open")
+        self.assertEqual(
+            git(self.fixture.remote, "rev-parse", "refs/heads/release-plz/" + old_base), old_head
+        )
+
+    def test_selection_refuses_a_draft_without_release_steps(self):
+        self.prepare()
+        self.publish()
+        pull = self.fixture.api.pulls[1]
+        pull["body"] = pull["body"].replace(
+            proposal.release_steps("0.1.0-alpha.1", self.fixture.base), ""
+        )
+        code, _, error = self.select_prerelease()
+        self.assertEqual(code, 1)
+        self.assertIn("edited, non-draft or not App-owned", error)
+
     def test_push_uses_git_only_key_and_cleans_private_files(self):
         self.prepare()
         with patch.dict(
