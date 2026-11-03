@@ -198,13 +198,83 @@ async fn session_show_prints_how_the_agent_exited_and_its_last_lines() {
          its agent exited with status 1; resume reopens it \
          (last output: Error: refusing to start)\t-\t-\n\
          exit: status 1\n\
-         output:\n  starting\n  Error: refusing to start\n"
+         output:\n  starting\n  Error: refusing to start\n\
+         resume: torlek --profile dev session resume s000000000002\n"
     );
     assert_eq!(
         daemon.await.unwrap(),
         Command::SessionShow {
             session: "s000000000002".to_owned(),
         }
+    );
+}
+
+#[tokio::test]
+async fn session_show_of_an_ended_session_prints_how_to_resume_it() {
+    let home = Home::new();
+    let mut ended = view("s000000000002", SessionStateView::Ended);
+    ended.reason = Some("its agent exited; resume reopens it".to_owned());
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(ended),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s000000000002"])
+        .await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(
+        text(&output.stdout),
+        "s000000000002\tended\tclaude\tstart\tc-1\t/p/app\t\
+         its agent exited; resume reopens it\t-\t-\n\
+         resume: torlek --profile dev session resume s000000000002\n"
+    );
+}
+
+#[tokio::test]
+async fn session_show_of_an_ended_session_without_a_conversation_points_to_a_new_session() {
+    let home = Home::new();
+    let mut ended = view("s000000000002", SessionStateView::Failed);
+    ended.conversation = None;
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(ended),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s000000000002"])
+        .await;
+
+    assert!(
+        text(&output.stdout)
+            .ends_with("no conversation to resume: torlek --profile dev session new /p/app\n"),
+        "{}",
+        text(&output.stdout)
+    );
+}
+
+#[tokio::test]
+async fn session_show_of_a_running_session_prints_only_its_line() {
+    let home = Home::new();
+    let _daemon = scripted_daemon(
+        &home.daemon_socket(),
+        Outcome::Ok(Reply::Session {
+            session: Box::new(view("s000000000001", SessionStateView::Running)),
+        }),
+    );
+
+    let output = home
+        .cockpit(home.dir.path(), &["session", "show", "s000000000001"])
+        .await;
+
+    assert_eq!(
+        text(&output.stdout),
+        "s000000000001\trunning\tclaude\tstart\tc-1\t/p/app\t-\t-\t-\n"
     );
 }
 

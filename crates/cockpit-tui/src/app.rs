@@ -520,6 +520,8 @@ impl App {
                 }
             }
             Reply::Session { session } => {
+                // `None` for an ended or failed session shown: it has no terminal to open
+                // (#630), so the note says why instead.
                 let what = match command {
                     Command::SessionNew { .. } => {
                         // Only the form that sent it closes: one opened since stays.
@@ -531,14 +533,25 @@ impl App {
                             self.form = None;
                         }
                         self.selected = Some(session.id.clone());
-                        "started"
+                        Some("started")
                     }
-                    Command::SessionShow { .. } => "opened",
-                    Command::SessionRestart { .. } => "restarted",
-                    Command::SessionEnd { .. } => "exited",
-                    _ => "changed",
+                    Command::SessionShow { .. } if session.state.is_over() => None,
+                    Command::SessionShow { .. } => Some("opened"),
+                    Command::SessionRestart { .. } => Some("restarted"),
+                    Command::SessionEnd { .. } => Some("exited"),
+                    _ => Some("changed"),
                 };
-                self.note(format!("{what} {} in {}", session.id, session.working_dir));
+                match what {
+                    Some(what) => {
+                        self.note(format!("{what} {} in {}", session.id, session.working_dir));
+                    }
+                    None => self.note(format!(
+                        "{} is {}: {}",
+                        session.id,
+                        session.state,
+                        session.reason.as_deref().unwrap_or("-")
+                    )),
+                }
                 self.board.put_session(*session);
                 self.failure = None;
             }

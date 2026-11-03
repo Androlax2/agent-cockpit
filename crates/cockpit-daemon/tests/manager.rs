@@ -523,6 +523,82 @@ async fn showing_a_session_before_the_manager_is_open_is_refused_naming_the_fix(
     );
 }
 
+/// A session started and ended by its owner: it has no terminal any more.
+async fn ended_session(client: &Connection, root: &Path) -> SessionView {
+    let started = session(
+        client,
+        Command::SessionNew {
+            dir: root.display().to_string(),
+            agent: Some("fake".to_owned()),
+            prompt: None,
+            clone: None,
+        },
+    )
+    .await;
+    session(
+        client,
+        Command::SessionEnd {
+            session: started.id,
+        },
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn showing_an_ended_session_describes_it_without_a_manager() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    let ended = ended_session(&client, &root).await;
+
+    let shown = session(
+        &client,
+        Command::SessionShow {
+            session: ended.id.clone(),
+        },
+    )
+    .await;
+
+    assert_eq!(shown.state, SessionStateView::Ended);
+    assert_eq!(shown.reason.as_deref(), Some("ended by the owner"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn showing_an_ended_session_leaves_the_viewer_unattached() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    let root = home.project(&client).await;
+    home.open_manager(&client).await.unwrap();
+    let ended = ended_session(&client, &root).await;
+
+    let shown = request(
+        &client,
+        Command::SessionShow {
+            session: ended.id.clone(),
+        },
+    )
+    .await;
+
+    assert!(matches!(shown, Ok(Reply::Session { .. })), "{shown:?}");
+    // The viewer's client attaches asynchronously: keep looking for a while.
+    let deadline = std::time::Instant::now() + common::SETTLE;
+    while std::time::Instant::now() < deadline {
+        assert!(
+            !home
+                .tmux(&["list-clients", "-F", "#{session_name}"])
+                .lines()
+                .any(|attached| attached == ended.id)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_may_neither_open_nor_focus_the_manager_nor_list_providers() {
     let home = Home::new();
