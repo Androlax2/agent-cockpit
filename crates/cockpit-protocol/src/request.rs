@@ -57,6 +57,12 @@ pub enum Command {
     StoragePruneStatus {
         operation: i64,
     },
+    /// Owner terminates an inactive operation without touching retained files.
+    StoragePruneAbandon {
+        operation: i64,
+        revision: i64,
+        epoch: String,
+    },
     /// Start the change feed at `from`.
     Subscribe {
         from: FeedPosition,

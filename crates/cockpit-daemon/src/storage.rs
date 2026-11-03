@@ -135,7 +135,10 @@ pub(crate) async fn evidence(
 }
 
 pub(crate) fn route(command: Command, context: Context) -> Route {
-    let class = if matches!(command, Command::StoragePruneStatus { .. }) {
+    let class = if matches!(
+        command,
+        Command::StoragePruneStatus { .. } | Command::StoragePruneAbandon { .. }
+    ) {
         WorkClass::Control
     } else {
         WorkClass::Bulk
@@ -150,7 +153,7 @@ pub(crate) fn route(command: Command, context: Context) -> Route {
                 Command::StoragePruneStatus { operation } => match context.database.read().await {
                     Ok(read) => cockpit_projects::prune_status(&read, operation)
                         .await
-                        .map(status_reply)
+                        .map(|status| status_reply(status, context.database.epoch()))
                         .map_err(project),
                     Err(error) => Err(internal(error)),
                 },
@@ -160,7 +163,28 @@ pub(crate) fn route(command: Command, context: Context) -> Route {
                     epoch,
                 } => apply(&context, plan, revision, &epoch, false)
                     .await
-                    .map(status_reply),
+                    .map(|status| status_reply(status, context.database.epoch())),
+                Command::StoragePruneAbandon {
+                    operation,
+                    revision,
+                    epoch,
+                } => {
+                    async {
+                        let write = context.database.write().await.map_err(internal)?;
+                        let status = cockpit_projects::abandon_target_prune(
+                            &write,
+                            context.database.epoch(),
+                            operation,
+                            revision,
+                            &epoch,
+                        )
+                        .await
+                        .map_err(project)?;
+                        write.commit().await.map_err(internal)?;
+                        Ok(status_reply(status, context.database.epoch()))
+                    }
+                    .await
+                }
                 _ => Err(ProtocolError::new(
                     ErrorCode::InvalidArgument,
                     "not a storage command",
@@ -279,7 +303,10 @@ async fn drive(context: &Context, operation: i64) -> Result<PruneStatus, Protoco
             let status = cockpit_projects::prune_status(&write, operation)
                 .await
                 .map_err(project)?;
-            if matches!(status.phase.as_str(), "complete" | "paused" | "needs-owner") {
+            if matches!(
+                status.phase.as_str(),
+                "complete" | "abandoned" | "paused" | "needs-owner"
+            ) {
                 return Ok(status);
             }
             if context.stopping.load(Ordering::Acquire) {
@@ -326,7 +353,10 @@ async fn drive(context: &Context, operation: i64) -> Result<PruneStatus, Protoco
                 .await
                 .map_err(project)?;
         write.commit().await.map_err(internal)?;
-        if matches!(status.phase.as_str(), "complete" | "paused" | "needs-owner") {
+        if matches!(
+            status.phase.as_str(),
+            "complete" | "abandoned" | "paused" | "needs-owner"
+        ) {
             return Ok(status);
         }
         tokio::task::yield_now().await;
@@ -407,7 +437,7 @@ pub(crate) fn measurement(size: TargetSize) -> TargetSizeView {
         TargetSize::Unavailable { reason } => TargetSizeView::Unavailable { reason },
     }
 }
-fn status_reply(status: PruneStatus) -> Reply {
+fn status_reply(status: PruneStatus, database_epoch: &str) -> Reply {
     Reply::StoragePruneStatus {
         status: Box::new(StoragePruneStatusView {
             target: status.target,
@@ -415,6 +445,7 @@ fn status_reply(status: PruneStatus) -> Reply {
             operation: status.operation,
             revision: status.revision,
             epoch: status.epoch,
+            database_epoch: database_epoch.to_owned(),
             checkout: status.checkout.0,
             phase: status.phase,
             apparent_bytes: status.apparent_bytes,
@@ -479,7 +510,7 @@ async fn automatic_pass(
             )
             .await
             {
-                Ok(status) => Outcome::Ok(status_reply(status)),
+                Ok(status) => Outcome::Ok(status_reply(status, context.database.epoch())),
                 Err(error) => Outcome::Error(error),
             }
         });

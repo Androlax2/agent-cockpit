@@ -562,7 +562,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   torlek checkout sweep [--dry-run]\n       \
                   torlek checkout push CHECKOUT\n       \
                   torlek storage\n       \
-                  torlek storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID\n       \
+                  torlek storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID | abandon ID --revision N --epoch E\n       \
                   torlek ask run [--cwd DIR] --reason TEXT COMMAND | --wait ID | --check\n       \
                   torlek ask guide [--cwd DIR] < GUIDE | --wait ID\n       \
                   torlek approval list | show ID | decline ID | input ID < LINE\n       \

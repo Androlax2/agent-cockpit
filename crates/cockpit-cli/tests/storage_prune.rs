@@ -68,6 +68,34 @@ fn storage_prune_incomplete_apply_fails_but_its_status_remains_inspectable() {
         std::fs::read(collision.join("keep")).unwrap(),
         b"not our quarantine"
     );
+    let abandon = [
+        "storage",
+        "prune",
+        "abandon",
+        args[3],
+        "--revision",
+        args[5],
+        "--epoch",
+        args[7],
+    ];
+    let output = home.cockpit_ok(&abandon);
+    assert!(output.contains("abandoned"), "{output}");
+    assert!(output.contains("retained"), "{output}");
+    assert!(
+        output.contains(&collision.display().to_string()),
+        "{output}"
+    );
+    assert_eq!(home.cockpit_ok(&abandon), output);
+    assert_eq!(std::fs::read(clone.join("target/output")).unwrap(), b"keep");
+    assert_eq!(
+        std::fs::read(collision.join("keep")).unwrap(),
+        b"not our quarantine"
+    );
+    let fresh = home.cockpit_ok(&["storage", "prune", id]);
+    assert!(
+        !fresh.contains(command),
+        "new work reused abandoned plan: {fresh}"
+    );
 }
 
 #[test]
@@ -120,6 +148,17 @@ fn storage_prune_confirm_carries_displayed_epoch_and_status_names_kept_recovery_
     );
     assert!(status.contains("quarantine:"), "{status}");
     assert!(status.contains("epoch:"), "{status}");
+    let terminal = home.cockpit_ok(&[
+        "storage",
+        "prune",
+        "abandon",
+        args[3],
+        "--revision",
+        args[5],
+        "--epoch",
+        args[7],
+    ]);
+    assert_eq!(terminal, status, "abandon rewrote successful history");
 }
 
 #[test]

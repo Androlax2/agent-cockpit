@@ -1,5 +1,7 @@
 //! Real session routes must observe durable cleanup exclusion before launch preparation.
 use super::*;
+#[path = "target_prune/abandon.rs"]
+mod abandon;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn target_prune_changed_manifest_local_oid_policy_and_current_busy_evidence_refuse_apply() {
@@ -161,6 +163,19 @@ async fn target_prune_active_bulk_step_keeps_control_responsive_and_refuses_dupl
         };
         assert_eq!(status.phase, "reserved");
         assert_eq!(status.removed_apparent_bytes, 0);
+        let error = refusal(
+            request(
+                &control,
+                Command::StoragePruneAbandon {
+                    operation: status.operation,
+                    revision: status.revision,
+                    epoch: status.database_epoch.clone(),
+                },
+            )
+            .await,
+        );
+        assert_eq!(error.code, ErrorCode::Refused);
+        assert!(error.message.contains("active"), "{error:?}");
         let duplicate = request(&control, duplicate).await.unwrap();
         let Reply::StoragePruneStatus { status } = duplicate else {
             panic!("{duplicate:?}")
@@ -329,12 +344,22 @@ async fn prepared_cleanup(
     cockpit_projects::PruneStatus,
     cockpit_projects::PrunePreview,
 ) {
+    prepared_cleanup_in(home, "cleanup").await
+}
+
+async fn prepared_cleanup_in(
+    home: &Home,
+    branch: &str,
+) -> (
+    cockpit_projects::PruneStatus,
+    cockpit_projects::PrunePreview,
+) {
     use cockpit_projects::{
         Git, PruneEvidence, PrunePolicy, create_parallel_clone, prepare_target_prune,
         preview_target_prune,
     };
     let database = home.database.lock().unwrap().clone().unwrap();
-    let clone = create_parallel_clone(&database, &Git::from_path(), "app", "cleanup")
+    let clone = create_parallel_clone(&database, &Git::from_path(), "app", branch)
         .await
         .unwrap();
     std::fs::create_dir(clone.path.join("target")).unwrap();

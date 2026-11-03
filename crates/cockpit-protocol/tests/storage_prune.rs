@@ -8,9 +8,21 @@ fn storage_prune_commands_preserve_explicit_intent() {
         json!({"kind":"storage-prune-preview","checkout":2,"prepare":true}),
         json!({"kind":"storage-prune-apply","plan":7,"revision":1,"epoch":"displayed-epoch"}),
         json!({"kind":"storage-prune-status","operation":7}),
+        json!({"kind":"storage-prune-abandon","operation":7,"revision":1,"epoch":"current-database-epoch"}),
     ] {
         let command: Command = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(command).unwrap(), value);
+    }
+}
+
+#[test]
+fn storage_prune_abandon_requires_explicit_revision_and_current_database_epoch() {
+    for value in [
+        json!({"kind":"storage-prune-abandon","operation":7}),
+        json!({"kind":"storage-prune-abandon","operation":7,"revision":1}),
+        json!({"kind":"storage-prune-abandon","path":"/tmp/target","revision":1,"epoch":"current"}),
+    ] {
+        assert!(serde_json::from_value::<Command>(value).is_err());
     }
 }
 #[test]

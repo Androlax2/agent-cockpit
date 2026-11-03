@@ -18,7 +18,7 @@ pub(crate) const MIGRATION: Migration = Migration {
         policy TEXT NOT NULL, eligibility TEXT NOT NULL, target TEXT NOT NULL,
         root_identity TEXT NOT NULL, target_identity TEXT NOT NULL, manifest BLOB NOT NULL,
         apparent_bytes INTEGER NOT NULL CHECK(apparent_bytes >= 0),
-        phase TEXT NOT NULL CHECK(phase IN ('prepared','reserved','detaching','deleting','finishing','paused','needs-owner','complete')),
+        phase TEXT NOT NULL CHECK(phase IN ('prepared','reserved','detaching','deleting','finishing','paused','needs-owner','complete','abandoned')),
         worker_active INTEGER NOT NULL DEFAULT 0 CHECK(worker_active IN (0,1)),
         resume_phase TEXT CHECK(resume_phase IN ('reserved','detaching','deleting','finishing')),
         decision TEXT, quarantine TEXT, quarantine_identity TEXT,
@@ -155,7 +155,7 @@ pub(super) async fn prepare(
             [preview.checkout.id.0],
         )
         .await?;
-    let mut rows = write.query("SELECT COUNT(*), COALESCE(SUM(length(manifest)),0) FROM project_target_prunes WHERE phase <> 'complete'", ()).await?;
+    let mut rows = write.query("SELECT COUNT(*), COALESCE(SUM(length(manifest)),0) FROM project_target_prunes WHERE phase NOT IN ('complete','abandoned')", ()).await?;
     let row = rows
         .next()
         .await?
@@ -368,7 +368,7 @@ pub(super) async fn reserve(
     if status.revision != revision {
         return Err(stale("cleanup plan revision changed"));
     }
-    if status.phase == "complete" {
+    if matches!(status.phase.as_str(), "complete" | "abandoned") {
         return Ok(status);
     }
     let plan = load(write, id).await?;

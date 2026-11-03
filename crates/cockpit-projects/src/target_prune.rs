@@ -15,8 +15,8 @@ pub use store::{
     require_execution_start_allowed, require_working_directory_available,
 };
 pub use worker::{
-    PruneStep, PruneStepReceipt, begin_prune_step, complete_prune_step, pause_target_prune,
-    recover_target_prunes, resume_target_prune,
+    PruneStep, PruneStepReceipt, abandon_target_prune, begin_prune_step, complete_prune_step,
+    pause_target_prune, recover_target_prunes, resume_target_prune,
 };
 
 /// Owner policy. Filesystem output is disposable only under the explicit owner contract;

@@ -61,6 +61,20 @@ implementation to preserve transaction ownership. This does not authorize live c
   entries after an unreceipted unlink count as absent with unconfirmed attribution,
   never confirmed freed bytes. Status preserves the recorded target/quarantine
   locations, which may themselves be absent or uncertain.
+- **Owner abandonment completes recovery without filesystem effects.** The coordinator
+  approved this bounded recovery amendment under the same delegated source authority.
+  `torlek storage prune abandon ID --revision N --epoch E` requires the explicit
+  current database epoch shown by status, separately from the historical plan epoch
+  after restore. It refuses active or unreceipted steps; cancellation or elapsed time
+  never proves that a syscall ended. The writer fences the generation, releases only
+  that operation's exact guards and records `abandoned`, retaining paths, byte counts
+  and the previous reason. Remaining target, quarantine and source files stay untouched;
+  any manual disposition is a separate owner action, with no implied restoration.
+  Matching completed/abandoned replays return unchanged history; stale identity refuses.
+  Abandoned operations never resume. A retained capability rechecks the current step
+  before filesystem work, and late receipts cannot overwrite the terminal summary.
+  Later cleanup requires a fresh measured plan and the original policy/identity checks;
+  still-enabled automatic policy can create such a new plan, never revive the old one.
 - **Rejected:** whole-clone sweep, a live-session occupancy snapshot without durable
   launch fences, path-recursive deletion, `st_dev` alone, automatic restoration,
   and silently refreshing a stale owner plan into current intent.
@@ -71,6 +85,9 @@ Implementation: [projects target pruning](../../crates/cockpit-projects/src/targ
 Evidence: [real daemon entrypoints](../../crates/cockpit-daemon/tests/sessions/target_prune.rs),
 [CLI fixtures](../../crates/cockpit-cli/tests/storage_prune.rs) and
 [project durability fixtures](../../crates/cockpit-projects/tests/target_prune.rs).
+The [owner recovery fixtures](../../crates/cockpit-daemon/tests/sessions/target_prune/abandon.rs)
+cover unchanged files, unrelated guards, stale/agent requests, restored database identity,
+terminal replay and retained callbacks across restart.
 
 Database/output retention, shared caches, memory policy and low-disk handling remain
 separate #406 work. These isolated fixtures do not establish live cleanup acceptance.

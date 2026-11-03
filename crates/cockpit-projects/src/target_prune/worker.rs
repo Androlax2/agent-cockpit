@@ -139,6 +139,28 @@ impl PruneStep {
         if database.epoch() != self.plan.epoch {
             return Err(store::stale("cleanup worker database epoch changed"));
         }
+        // A reserved capability can outlive a caller that never started it. Recheck
+        // under the current writer before ANY filesystem work, not merely when its
+        // eventual receipt arrives. The owned database then stays alive through join.
+        {
+            let write = database.write().await?;
+            let mut rows = write.query("SELECT worker_active,epoch,generation,phase,cursor FROM project_target_prunes WHERE id=?1", [self.plan.status.operation]).await?;
+            let row = rows
+                .next()
+                .await?
+                .ok_or_else(|| store::stale("cleanup operation disappeared"))?;
+            if row.get::<i64>(0)? != 1
+                || row.get::<String>(1)? != self.plan.epoch
+                || row.get::<i64>(2)? != self.plan.generation
+                || row.get::<String>(3)? != self.plan.status.phase
+                || usize::try_from(row.get::<i64>(4)?).ok() != Some(self.plan.cursor)
+            {
+                return Err(store::stale("cleanup capability belongs to another step"));
+            }
+            drop(rows);
+            guards(&write, &self.plan).await?;
+            write.commit().await?;
+        }
         let operation = self.plan.status.operation;
         let epoch = self.plan.epoch.clone();
         let generation = self.plan.generation;
@@ -336,7 +358,7 @@ pub async fn resume_target_prune(
     if status.revision != revision {
         return Err(store::stale("cleanup revision changed"));
     }
-    if status.phase == "complete" {
+    if matches!(status.phase.as_str(), "complete" | "abandoned") {
         return Ok(status);
     }
     let plan = store::load(write, operation).await?;
@@ -374,6 +396,80 @@ pub async fn resume_target_prune(
         params![operation, generation, epoch]).await?;
     write.execute("UPDATE project_target_prunes SET generation=?2,phase=?3,resume_phase=NULL,reason=NULL,changed_at=?4 WHERE id=?1",
         params![operation, generation, phase, crate::store::now()]).await?;
+    store::prune_status(write, operation).await
+}
+
+/// Owner-only orchestration supplies the explicit current database epoch. This changes
+/// only the inactive operation's ledger; it never reads, removes or restores a path.
+pub async fn abandon_target_prune(
+    write: &WriteTransaction<'_>,
+    current_epoch: &str,
+    operation: i64,
+    revision: i64,
+    expected_epoch: &str,
+) -> Result<PruneStatus, Error> {
+    if current_epoch != expected_epoch || current_epoch.is_empty() {
+        return Err(store::stale(
+            "cleanup database epoch changed; inspect current status",
+        ));
+    }
+    let status = store::prune_status(write, operation).await?;
+    if status.revision != revision {
+        return Err(store::stale("cleanup revision changed"));
+    }
+    if matches!(status.phase.as_str(), "complete" | "abandoned") {
+        return Ok(status);
+    }
+    let mut rows = write
+        .query(
+            "SELECT generation,worker_active FROM project_target_prunes WHERE id=?1",
+            [operation],
+        )
+        .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| store::stale("cleanup operation disappeared"))?;
+    let generation: i64 = row.get(0)?;
+    if row.get::<i64>(1)? != 0 {
+        return Err(refused(
+            "cleanup filesystem step is active or unreceipted; wait for its joined result or startup reconciliation",
+        ));
+    }
+    drop(rows);
+    // A restored plan retains its historical epoch. Only its exact guards may be
+    // released, even when an unrelated operation currently owns the global guard.
+    let mut rows = write
+        .query(
+            "SELECT key,generation,epoch FROM project_target_prune_guards WHERE operation=?1",
+            [operation],
+        )
+        .await?;
+    let checkout_key = format!("checkout:{}", status.checkout.0);
+    while let Some(row) = rows.next().await? {
+        let key: String = row.get(0)?;
+        if !matches!(key.as_str(), "global") && key != checkout_key
+            || row.get::<i64>(1)? != generation
+            || row.get::<String>(2)? != status.epoch
+        {
+            return Err(store::stale(
+                "cleanup guard identity changed; retained for inspection",
+            ));
+        }
+    }
+    drop(rows);
+    let next = generation
+        .checked_add(1)
+        .ok_or_else(|| refused("cleanup generation overflow"))?;
+    let reason = format!(
+        "owner abandoned cleanup; all remaining target/quarantine/source files retained, with no restoration or deletion; owner must arrange any manual disposition separately. Previous {}: {}",
+        status.phase,
+        status.reason.as_deref().unwrap_or("no recorded error")
+    );
+    write.execute("UPDATE project_target_prunes SET phase='abandoned',generation=?2,resume_phase=NULL,manifest=X'',reason=?3,changed_at=?4 WHERE id=?1",
+        params![operation, next, reason, crate::store::now()]).await?;
+    write.execute("DELETE FROM project_target_prune_guards WHERE operation=?1 AND generation=?2 AND epoch=?3",
+        params![operation, generation, status.epoch]).await?;
     store::prune_status(write, operation).await
 }
 

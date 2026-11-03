@@ -86,6 +86,6 @@ pub use target_prune::{
     require_execution_start_allowed,
 };
 pub use target_prune::{
-    PruneStep, PruneStepReceipt, begin_prune_step, complete_prune_step, pause_target_prune,
-    recover_target_prunes, resume_target_prune,
+    PruneStep, PruneStepReceipt, abandon_target_prune, begin_prune_step, complete_prune_step,
+    pause_target_prune, recover_target_prunes, resume_target_prune,
 };

@@ -1,4 +1,4 @@
-//! `torlek storage`: the daemon's bounded, read-only registered-clone target report.
+//! Registered-clone storage reporting and explicit owner target-pruning decisions.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -83,7 +83,9 @@ fn prune(arguments: &[OsString]) -> Result<ExitCode, String> {
         [Some("prune"), Some("--plan"), Some(id), Some("--revision"), Some(revision), Some("--epoch"), Some(epoch), Some("--confirm")] =>
             Command::StoragePruneApply { plan: positive(id)?, revision: positive(revision)?, epoch: (*epoch).to_owned() },
         [Some("prune"), Some("status"), Some(id)] => Command::StoragePruneStatus { operation: positive(id)? },
-        _ => return Err("storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID".to_owned()),
+        [Some("prune"), Some("abandon"), Some(id), Some("--revision"), Some(revision), Some("--epoch"), Some(epoch)] =>
+            Command::StoragePruneAbandon { operation: positive(id)?, revision: positive(revision)?, epoch: (*epoch).to_owned() },
+        _ => return Err("storage prune CHECKOUT [--dry-run] | --plan ID --revision N --epoch E --confirm | status ID | abandon ID --revision N --epoch E".to_owned()),
     };
     let applying = matches!(command, Command::StoragePruneApply { .. });
     let reply = match request(command, BULK_DEADLINE) {
@@ -142,7 +144,8 @@ fn prune(arguments: &[OsString]) -> Result<ExitCode, String> {
             }
         }
         Reply::StoragePruneStatus { status } => {
-            outln!("epoch: {}", cell(&status.epoch));
+            outln!("plan epoch: {}", cell(&status.epoch));
+            outln!("current database epoch: {}", cell(&status.database_epoch));
             outln!("target: {}", cell(&status.target));
             outln!(
                 "quarantine: {} (recorded location; existence/contents may be uncertain)",
@@ -161,6 +164,15 @@ fn prune(arguments: &[OsString]) -> Result<ExitCode, String> {
             );
             if let Some(reason) = &status.reason {
                 outln!("{}", cell(reason));
+            }
+            if !matches!(status.phase.as_str(), "complete" | "abandoned") {
+                outln!("To abandon once no filesystem step is active, retaining all files:");
+                outln!(
+                    "torlek storage prune abandon {} --revision {} --epoch {}",
+                    status.operation,
+                    status.revision,
+                    cell(&status.database_epoch)
+                );
             }
             if applying && status.phase != "complete" {
                 return Ok(ExitCode::FAILURE);

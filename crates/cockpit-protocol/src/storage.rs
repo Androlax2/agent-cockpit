@@ -1,4 +1,4 @@
-//! Read-only registered-clone target sizes. These are observations, never prune advice.
+//! Registered-clone size observations and explicit owner target-pruning decisions.
 
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,8 @@ pub struct StoragePruneStatusView {
     pub target: String,
     pub quarantine: Option<String>,
     pub epoch: String,
+    /// Current database identity, distinct from the historical plan epoch after restore.
+    pub database_epoch: String,
     pub operation: i64,
     pub revision: i64,
     pub checkout: i64,

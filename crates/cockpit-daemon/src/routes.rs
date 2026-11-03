@@ -266,6 +266,7 @@ impl Handler for Routes {
             (
                 command @ (Command::StoragePrunePreview { .. }
                 | Command::StoragePruneApply { .. }
+                | Command::StoragePruneAbandon { .. }
                 | Command::StoragePruneStatus { .. }),
                 peer,
             ) => match peer {
