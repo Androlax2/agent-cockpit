@@ -7,7 +7,7 @@ Torlek runs your coding agents in terminal sessions and keeps their work, questi
 One installation belongs to one person, with a CLI and terminal UI backed by a per-user daemon and tmux.
 Agents work inside a sandbox; you decide which requests may run outside it.
 
-The next release is **Alpha 1 for Linux and WSL2**, being built under `crates/` beside the running legacy product.
+This is **Alpha 1 for Linux and WSL2**, built under `crates/` beside the running legacy product.
 Alpha state may reset between releases; keep your work in Git and do not rely on alpha state migrating to beta.
 Existing desktop users can find their commands and demo screenshots in the [legacy operator guide](legacy/README.md).
 
@@ -30,7 +30,7 @@ torlek doctor
 
 See [Development](DEVELOPMENT.md) for build prerequisites and checks.
 `doctor` names missing prerequisites and their next action; building alone does not install the sandbox engine or sign in to a provider.
-The quickstart below starts once those prerequisites are ready.
+The steps below start once those prerequisites are ready.
 
 ## Platforms and prerequisites
 

@@ -8,7 +8,8 @@ If not, follow the [README](../README.md) first.
 
 - **Runs your coding agents side by side.** Claude Code, Codex or OpenCode, each in its own terminal session.
   You see them all in one list and open the one you want.
-- **Keeps each agent in a sandbox.** An agent can work in its project, but it cannot reach the rest of your computer.
+- **Keeps each agent in a sandbox.** An agent writes only in its own copy of the project, cannot read Torlek's own files, and reaches the internet through a filter.
+  With `desktop_session = "withheld"` in your config, it also stays away from your screen and desktop session.
 - **Asks you before anything risky.** When an agent needs to run a command outside its sandbox, it sends you a request.
   Nothing runs until you say yes.
 - **Keeps a todo list per project.** You and your agents add items; agents can also suggest ideas, which you accept or decline.
@@ -55,7 +56,7 @@ This picture uses made-up projects and agents.
 
 When an agent wants to run a command outside its sandbox, the request appears in the approval pane at the bottom of the Torlek screen.
 
-1. Press `Tab` to move to the pane.
+1. Press `Tab` to move to the pane. Keys are ignored for a moment after a request appears or the pane gets focus, so read first.
 2. Read the command, the folder it runs in and the agent's reason. Press `m` to see a long command in full.
 3. Press `y` to run it once, or `x` to decline.
 
