@@ -1,0 +1,35 @@
+# Maintainer: Androlax2 (AUR account to be confirmed before submission)
+#
+# Rendered by packaging/aur/render.py from a published release's SHA256SUMS
+# (docs/packaging/aur.md); edit this template, never the rendered PKGBUILD.
+# makepkg consumes these globals after sourcing the recipe.
+# shellcheck disable=SC2034
+
+pkgname=torlek-bin
+_tag=@TAG@
+pkgver=@PKGVER@
+pkgrel=@PKGREL@
+pkgdesc='Agent session cockpit: CLI, terminal UI and per-user daemon (prebuilt release)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/Androlax2/agent-cockpit'
+license=('Apache-2.0')
+depends=('glibc' 'gcc-libs' 'git' 'curl' 'tmux>=3.6')
+optdepends=('systemd: per-user daemon and proxy services')
+provides=('torlek')
+conflicts=('torlek')
+options=('!strip' '!debug')
+source_x86_64=("$url/releases/download/v$_tag/torlek-v$_tag-linux-x86_64.tar.gz")
+source_aarch64=("$url/releases/download/v$_tag/torlek-v$_tag-linux-aarch64.tar.gz")
+sha256sums_x86_64=('@SHA256_X86_64@')
+sha256sums_aarch64=('@SHA256_AARCH64@')
+
+# The bundle stays whole under /usr/lib/torlek: torlek finds torlek-tui, the daemon its
+# helpers and both the release manifest through their own resolved path (bin/../share).
+package() {
+    : "${srcdir:?makepkg source directory is required}" "${pkgdir:?makepkg package directory is required}"
+    local bundle="$srcdir/torlek-v$_tag-linux-$CARCH"
+    install -d "$pkgdir/usr/lib/torlek" "$pkgdir/usr/bin" "$pkgdir/usr/share/licenses/$pkgname"
+    cp -a --no-preserve=ownership "$bundle/." "$pkgdir/usr/lib/torlek/"
+    ln -s ../lib/torlek/bin/torlek "$pkgdir/usr/bin/torlek"
+    ln -s ../../../lib/torlek/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

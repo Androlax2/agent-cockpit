@@ -15,7 +15,7 @@ Existing desktop users can find their commands and demo screenshots in the [lega
 Public installation is still being prepared in [#97](https://github.com/Androlax2/agent-cockpit/issues/97).
 The managed Greywall/greyproxy installer and proxy service setup are merged; see the [sandbox guide](crates/cockpit-sandbox/README.md#managed-installation-470).
 A complete public clean-install recipe still waits for #97's published Linux/WSL2 archive and platform acceptance.
-Alpha 1 uses archive installation; other packaging (#562/#563/#565) is deferred to Alpha 2. macOS delivery and Homebrew are deferred beyond Alpha 1 under [#568](https://github.com/Androlax2/agent-cockpit/issues/568), with no restoration milestone assigned.
+Alpha 1 uses archive installation; other packaging (#563/#565) is deferred to Alpha 2. The Arch AUR recipe (#562) is prepared in Alpha 1 beside the archive, not as its prerequisite ([decision](docs/decisions/2026-11-03-562-arch-packaging-alpha1.md), [recipe](docs/packaging/aur.md)). macOS delivery and Homebrew are deferred beyond Alpha 1 under [#568](https://github.com/Androlax2/agent-cockpit/issues/568), with no restoration milestone assigned.
 The root `make install` installs the legacy desktop setup; it is not the Alpha installer.
 
 Developers can build the current greenfield binaries with the pinned Rust toolchain:
