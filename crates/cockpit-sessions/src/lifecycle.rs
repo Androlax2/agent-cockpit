@@ -359,7 +359,7 @@ impl Sessions {
         self.tmux()?;
         let operation = self.lock(id).await;
         let session = self.get(id).await?;
-        self.resumable(&session)?;
+        self.restart_conversation(&session)?;
         self.restart_from(&operation, id, &RESTARTABLE, LaunchPurpose::Work)
             .await
     }
@@ -406,7 +406,7 @@ impl Sessions {
         if changed.is_empty() {
             return Ok(RestartStep::Current);
         }
-        self.resumable(&session)?;
+        self.restart_conversation(&session)?;
         if turn_refusal(&session, agent_report.as_ref()).is_none() {
             return Ok(RestartStep::Restarted(
                 self.restart_locked(&operation, id).await?,
@@ -501,11 +501,21 @@ impl Sessions {
         cause: WakeCause,
     ) -> Result<Session, Error> {
         let session = self.get(id).await?;
-        let conversation = self.resumable(&session)?;
+        // Checked first: a session that is not asleep has nothing to wake, whatever its
+        // conversation (#647).
+        if session.state != SessionState::Asleep {
+            return Err(Error::WrongState {
+                session: id.clone(),
+                state: session.state,
+                operation: "wake",
+            });
+        }
+        let conversation = self.resumable(&session, "wake")?;
         // Waking reopens the conversation as resume does, so it is refused the same way.
-        self.refuse_if_agent_alive_elsewhere(&session).await?;
+        self.refuse_if_agent_alive_elsewhere(&session, "wake")
+            .await?;
         let write = self.database.write().await?;
-        refuse_if_active_elsewhere(&write, &session).await?;
+        refuse_if_active_elsewhere(&write, &session, "wake").await?;
         store::transition(
             &write,
             id,
@@ -534,13 +544,14 @@ impl Sessions {
         self.tmux()?;
         let operation = self.lock(id).await;
         let session = self.get(id).await?;
-        let conversation = self.resumable(&session)?;
-        self.refuse_if_agent_alive_elsewhere(&session).await?;
+        let conversation = self.resumable(&session, "resume")?;
+        self.refuse_if_agent_alive_elsewhere(&session, "resume")
+            .await?;
         if matches!(session.state, SessionState::Ended | SessionState::Failed) {
             self.stop_previous_agent(&session).await?;
         }
         let write = self.database.write().await?;
-        refuse_if_active_elsewhere(&write, &session).await?;
+        refuse_if_active_elsewhere(&write, &session, "resume").await?;
         store::transition(
             &write,
             id,
@@ -569,7 +580,11 @@ impl Sessions {
     /// still alive, as `cockpit-processes` observes its execution now (report 04: an
     /// execution is identified by its supervisor identity, never a PID): a failed launch
     /// may have left one running whatever its session's state says.
-    async fn refuse_if_agent_alive_elsewhere(&self, session: &Session) -> Result<(), Error> {
+    async fn refuse_if_agent_alive_elsewhere(
+        &self,
+        session: &Session,
+        operation: &'static str,
+    ) -> Result<(), Error> {
         let Some(conversation) = &session.conversation else {
             return Ok(());
         };
@@ -588,6 +603,7 @@ impl Sessions {
             if execution.phase.is_occupying() {
                 return Err(Error::CannotResume {
                     session: session.id.clone(),
+                    operation,
                     reason: format!(
                         "its conversation is still alive as session {}'s agent (execution {})",
                         holder.id, launch.execution.0
@@ -741,8 +757,9 @@ impl Sessions {
             return Ok(Restored::StopFinished(id, stopped.state));
         }
         // Who asked for the interrupted restart is not kept: a working one ([`LaunchPurpose`]).
+        let conversation = self.restart_conversation(&stopped);
         match self
-            .relaunch(&operation, &stopped, LaunchPurpose::Work)
+            .relaunch(&operation, &stopped, LaunchPurpose::Work, conversation)
             .await
         {
             Ok(relaunched) => Ok(Restored::StopFinished(id, relaunched.state)),
@@ -809,7 +826,11 @@ impl Sessions {
             .await?;
             LaunchPurpose::Upkeep
         };
-        let conversation = match self.resumable(session) {
+        let conversation = match kind {
+            LaunchKind::Restart => self.restart_conversation(session),
+            _ => self.resumable(session, "restore"),
+        };
+        let conversation = match conversation {
             Ok(conversation) => conversation,
             Err(error) => {
                 return self
@@ -1047,7 +1068,15 @@ impl Sessions {
         if session.state != SessionState::Running {
             return Some(SleepRefusal::NotRunning(session.state));
         }
-        if let Err(error) = self.resumable(session) {
+        if session.conversation.is_none() {
+            // What it needs, said for the case a live session is in (#647).
+            return Some(SleepRefusal::CannotResume(
+                "its provider has not named the conversation yet; it does once its agent \
+                 reports, usually after a first turn: send it a prompt, then retry"
+                    .to_owned(),
+            ));
+        }
+        if let Err(error) = self.resumable(session, "wake") {
             return Some(SleepRefusal::CannotResume(match error {
                 Error::CannotResume { reason, .. } => reason,
                 other => other.to_string(),
@@ -1080,10 +1109,11 @@ impl Sessions {
         None
     }
 
-    /// The conversation to launch again, or why there is none.
-    fn resumable(&self, session: &Session) -> Result<Conversation, Error> {
+    /// The conversation to launch again for `operation`, or why there is none.
+    fn resumable(&self, session: &Session, operation: &'static str) -> Result<Conversation, Error> {
         let cannot = |reason: &str| Error::CannotResume {
             session: session.id.clone(),
+            operation,
             reason: reason.to_owned(),
         };
         let provider = self.provider(Some(session.provider.as_str()))?;
@@ -1091,9 +1121,21 @@ impl Sessions {
             return Err(cannot("its agent's provider cannot resume a conversation"));
         }
         let conversation = session.conversation.clone().ok_or_else(|| {
-            cannot("its provider never named the conversation; start a new session")
+            cannot("its provider has not named the conversation; start a new session")
         })?;
         Ok(Conversation::Resume(conversation))
+    }
+
+    /// The conversation a restart launches: the session's own, or a new one while its
+    /// provider has named none (#647). A provider names its conversation at launch or with
+    /// its agent's first report, so an unnamed one has had no turn to lose. Decided on the
+    /// session alone, the same before the stop, after it and on restore.
+    fn restart_conversation(&self, session: &Session) -> Result<Conversation, Error> {
+        if session.conversation.is_none() {
+            self.provider(Some(session.provider.as_str()))?;
+            return Ok(Conversation::New);
+        }
+        self.resumable(session, "restart")
     }
 
     /// [`store::transition`] in a transaction of its own.
@@ -1180,7 +1222,9 @@ impl Sessions {
             .await?;
         let _launching = lock.launching();
         let stopped = self.finish_stop(id, to).await?;
-        self.relaunch(lock, &stopped, purpose).await
+        // Chosen again after the stop: the provider may have named it in between.
+        let conversation = self.restart_conversation(&stopped);
+        self.relaunch(lock, &stopped, purpose, conversation).await
     }
 
     /// Stops a stopping session's agent and moves it on: asleep, ended, or `launching` for
@@ -1219,15 +1263,17 @@ impl Sessions {
         Ok(stopped)
     }
 
-    /// Launches a restart's conversation again once its stop finished. A failure leaves the
-    /// session `failed` with the reason, and is returned.
+    /// Launches `conversation` for a restart once its stop finished. A failure, choosing
+    /// the conversation included, leaves the session `failed` with the reason, and is
+    /// returned.
     async fn relaunch(
         &self,
         lock: &Operation,
         stopped: &Session,
         purpose: LaunchPurpose,
+        conversation: Result<Conversation, Error>,
     ) -> Result<Session, Error> {
-        let conversation = match self.resumable(stopped) {
+        let conversation = match conversation {
             Ok(conversation) => conversation,
             Err(error) => {
                 self.fail(&stopped.id, &error.to_string()).await?;
@@ -1964,6 +2010,7 @@ fn turn_refusal(session: &Session, agent_report: Option<&SessionReport>) -> Opti
 async fn refuse_if_active_elsewhere(
     write: &cockpit_turso::WriteTransaction<'_>,
     session: &Session,
+    operation: &'static str,
 ) -> Result<(), Error> {
     let Some(conversation) = &session.conversation else {
         return Ok(());
@@ -1979,6 +2026,7 @@ async fn refuse_if_active_elsewhere(
     match active {
         Some(holder) => Err(Error::CannotResume {
             session: session.id.clone(),
+            operation,
             reason: format!(
                 "its conversation still runs in session {} ({})",
                 holder.id, holder.state

@@ -48,9 +48,11 @@ pub enum Error {
         state: SessionState,
         operation: &'static str,
     },
-    /// The conversation cannot be launched again; `reason` says why.
+    /// The conversation cannot be launched again for `operation` (the verb the owner typed:
+    /// wake, restart, resume); `reason` says why.
     CannotResume {
         session: SessionId,
+        operation: &'static str,
         reason: String,
     },
     SleepRefused {
@@ -165,9 +167,11 @@ impl fmt::Display for Error {
                 formatter,
                 "session {session} is {state}; cannot {operation}"
             ),
-            Error::CannotResume { session, reason } => {
-                write!(formatter, "session {session} cannot be resumed: {reason}")
-            }
+            Error::CannotResume {
+                session,
+                operation,
+                reason,
+            } => write!(formatter, "cannot {operation} session {session}: {reason}"),
             Error::SleepRefused { session, refusal } => {
                 write!(formatter, "session {session} may not sleep: {refusal}")
             }

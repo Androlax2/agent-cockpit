@@ -51,6 +51,13 @@ const UNNAMED: Variant = Variant {
     exits_with: None,
 };
 
+/// A provider that names its conversations but cannot resume one, so a restart cannot
+/// relaunch it.
+const NOT_RESUMING: Variant = Variant {
+    can_resume: false,
+    ..BASELINE
+};
+
 /// A provider whose agent refuses to start, as a sandbox wrapper that cannot run (#629).
 const REFUSING: Variant = Variant {
     exits_with: Some((3, "Error: failed to wrap command: refusing to start")),
@@ -686,6 +693,115 @@ async fn a_session_whose_provider_cannot_resume_is_refused_sleep_and_keeps_runni
     assert!(is_alive(first[0].pid));
 }
 
+/// #647: a session whose provider has named no conversation, and whose agent has not
+/// reported, has no turn to lose: a restart launches a new conversation in the same session.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_of_a_session_without_a_conversation_starts_its_agent_fresh_in_place() {
+    let home = Home::new();
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    home.launches(1).await;
+
+    let restarted = session_reply(
+        &client,
+        Command::SessionRestart {
+            session: started.id.clone(),
+        },
+    )
+    .await;
+
+    assert_eq!(restarted.id, started.id);
+    assert_eq!(restarted.state, SessionStateView::Running);
+    assert_eq!(restarted.launch.unwrap().kind, LaunchKindView::Restart);
+    let launches = home.launches(2).await;
+    assert_eq!(launches[1].mode, "new");
+    assert!(!is_alive(launches[0].pid));
+    assert!(is_alive(launches[1].pid));
+}
+
+/// #647: a restart a daemon crash interrupted follows the same rule on start: a session
+/// whose provider named no conversation relaunches fresh, not failed.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_restart_of_a_session_without_a_conversation_starts_it_fresh_on_start() {
+    let home = Home::new();
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    let first = home.launches(1).await;
+    drop(client);
+    home.leave_stopping(&started.id, "restart").await;
+    home.stop(daemon);
+
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+
+    let restored = sessions(&client, false).await;
+    assert_eq!(restored[0].state, SessionStateView::Running, "{restored:?}");
+    let launches = home.launches(2).await;
+    assert_eq!(launches[1].mode, "new");
+    assert!(!is_alive(first[0].pid));
+}
+
+/// #647: waking a running session says it is running, whatever its conversation.
+#[tokio::test(flavor = "multi_thread")]
+async fn waking_a_running_session_without_a_conversation_says_it_is_running() {
+    let home = Home::new();
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    home.launches(1).await;
+
+    let refused = refusal(
+        request(
+            &client,
+            Command::SessionWake {
+                session: started.id.clone(),
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        format!("session {} is running; cannot wake", started.id)
+    );
+}
+
+/// #647: sleep of a session whose provider has not named its conversation yet says what it
+/// needs: a first turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn sleep_of_a_session_without_a_conversation_says_it_needs_a_first_turn() {
+    let home = Home::new();
+    let daemon = home.start(UNNAMED, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    let started = new_session(&client, &root, None).await;
+    let first = home.launches(1).await;
+
+    let refused = refusal(
+        request(
+            &client,
+            Command::SessionSleep {
+                session: started.id.clone(),
+            },
+        )
+        .await,
+    );
+
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert!(
+        refused.message.contains("send it a prompt, then retry"),
+        "{}",
+        refused.message
+    );
+    assert!(is_alive(first[0].pid));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn waking_a_running_session_is_refused_as_a_conflict() {
     let home = Home::new();
@@ -1301,7 +1417,7 @@ async fn a_stop_interrupted_by_a_daemon_crash_is_finished_on_start() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_interrupted_restart_whose_relaunch_fails_on_start_is_left_failed() {
     let home = Home::new();
-    let daemon = home.start(UNNAMED, settings()).await;
+    let daemon = home.start(NOT_RESUMING, settings()).await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     let started = new_session(&client, &root, None).await;
@@ -1310,7 +1426,7 @@ async fn an_interrupted_restart_whose_relaunch_fails_on_start_is_left_failed() {
     home.leave_stopping(&started.id, "restart").await;
     home.stop(daemon);
 
-    let daemon = home.start(UNNAMED, settings()).await;
+    let daemon = home.start(NOT_RESUMING, settings()).await;
     let client = connect(&daemon).await;
     let failed = sessions(&client, false).await;
     assert_eq!(failed[0].state, SessionStateView::Failed, "{failed:?}");
@@ -1318,7 +1434,7 @@ async fn an_interrupted_restart_whose_relaunch_fails_on_start_is_left_failed() {
     drop(client);
     home.stop(daemon);
 
-    let daemon = home.start(UNNAMED, settings()).await;
+    let daemon = home.start(NOT_RESUMING, settings()).await;
     let client = connect(&daemon).await;
     assert_eq!(
         sessions(&client, false).await[0].state,
