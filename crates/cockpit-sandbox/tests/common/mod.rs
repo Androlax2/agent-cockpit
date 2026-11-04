@@ -27,6 +27,9 @@ pub const OWNER_UID: u32 = 1000;
 /// The fixtures' session directory for session `s1`.
 pub const SESSION_DIR: &str = "/run/user/1000/cockpit/sessions/s1";
 
+/// Session `s1`'s temporary folder, its `TMPDIR` (#766).
+pub const TEMP_DIR: &str = "/home/owner/.local/state/cockpit/tmp/s1";
+
 /// The daemon's folder for what sandboxes mount at another path.
 pub const MOUNT_SOURCES: &str = "/run/user/1000/cockpit/mounts";
 
@@ -119,6 +122,7 @@ pub fn profile_request(working_dir: &str) -> ProfileRequest {
         provider: "claude".to_owned(),
         working_dir: PathBuf::from(working_dir),
         session_dir: PathBuf::from(SESSION_DIR),
+        temp_dir: PathBuf::from(TEMP_DIR),
         mount_dir: Path::new(MOUNT_SOURCES).join("s1"),
         owner_uid: OWNER_UID,
         read_only: vec![PathBuf::from("/run/user/1000/cockpit/agent")],
@@ -137,6 +141,7 @@ pub fn launch_request(session: &str, working_dir: &str) -> LaunchRequest {
         provider: "claude".to_owned(),
         working_dir: PathBuf::from(working_dir),
         session_dir: PathBuf::from(format!("/run/user/1000/cockpit/sessions/{session}")),
+        temp_dir: PathBuf::from(format!("/home/owner/.local/state/cockpit/tmp/{session}")),
         environment: vec![
             ("PATH".into(), "/usr/bin".into()),
             ("TORLEK_LAUNCH_TOKEN".into(), "token-1".into()),

@@ -318,3 +318,61 @@ fn unused_report_time_flows_to_the_clones_still_waiting() {
         Duration::ZERO
     );
 }
+
+/// #766: the sessions' temp folders, each measured without following a link.
+#[tokio::test]
+async fn folder_storage_measures_each_folder_and_never_follows_a_link() {
+    let parent = tempfile::tempdir().unwrap();
+    disk::create_dir(parent.path().join("s1")).unwrap();
+    disk::write(parent.path().join("s1/build.log"), [0; 12]).unwrap();
+    symlink("/", parent.path().join("s2")).unwrap();
+
+    let report = folder_storage(parent.path().to_path_buf()).await;
+
+    assert_eq!(report.unavailable, None);
+    let measured: Vec<_> = report
+        .folders
+        .iter()
+        .map(|folder| (folder.name.as_str(), folder.measurement.clone()))
+        .collect();
+    assert_eq!(
+        measured,
+        [
+            ("s1", TargetSize::Complete { apparent_bytes: 12 }),
+            (
+                "s2",
+                TargetSize::Unavailable {
+                    reason: "not a folder".to_owned()
+                }
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn folder_storage_reports_a_parent_it_cannot_open_instead_of_failing() {
+    let parent = tempfile::tempdir().unwrap();
+    let link = parent.path().join("link");
+    symlink(parent.path(), &link).unwrap();
+
+    let report = folder_storage(link).await;
+
+    assert!(report.folders.is_empty());
+    assert!(
+        report
+            .unavailable
+            .as_deref()
+            .unwrap()
+            .starts_with("cannot open"),
+        "{report:?}"
+    );
+}
+
+#[tokio::test]
+async fn folder_storage_finds_nothing_in_an_absent_parent() {
+    let parent = tempfile::tempdir().unwrap();
+
+    let report = folder_storage(parent.path().join("tmp")).await;
+
+    assert!(report.folders.is_empty() && report.unavailable.is_none());
+}

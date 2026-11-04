@@ -1,11 +1,12 @@
-//! Registered-clone storage reporting and explicit owner target-pruning decisions.
+//! Registered-clone and session temporary folder storage reporting, and explicit owner
+//! target-pruning decisions.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
 
 use cockpit_protocol::{
     CloneStorageView, Command, EndSweepView, OutputRetentionView, PruneVerdictView, Reply,
-    TargetSizeView,
+    SessionTempStorageView, TargetSizeView,
 };
 
 use crate::daemon::{BULK_DEADLINE, request, unexpected};
@@ -28,6 +29,9 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
         clones,
         truncated,
         end_sweeps,
+        session_temps,
+        session_temps_truncated,
+        session_temps_unavailable,
     } = &reply
     else {
         return Ok(unexpected(&reply));
@@ -50,13 +54,39 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
             outln!("{}", end_sweep_row(sweep));
         }
     }
+    outln!("");
+    outln!("session temp folders: each session's TMPDIR, apparent bytes as above");
+    outln!("session\tbytes\tstatus\tfolder\treason");
+    let reported_temps = session_temps.as_deref().unwrap_or_default();
+    for temp in reported_temps {
+        outln!("{}", temp_row(temp));
+    }
+    if session_temps.is_none() {
+        outln!("incomplete report: the daemon reported no session temp folders");
+    }
+    if *session_temps_truncated {
+        outln!("incomplete report: further session temp folders omitted by the row limit");
+    }
+    if let Some(reason) = session_temps_unavailable {
+        outln!(
+            "incomplete report: session temp folders unavailable: {}",
+            cell(reason)
+        );
+    }
+    let is_partial = |measurement: &TargetSizeView| {
+        matches!(
+            measurement,
+            TargetSizeView::Incomplete { .. } | TargetSizeView::Unavailable { .. }
+        )
+    };
     let incomplete = *truncated
-        || clones.iter().any(|clone| {
-            matches!(
-                clone.measurement,
-                TargetSizeView::Incomplete { .. } | TargetSizeView::Unavailable { .. }
-            )
-        });
+        || *session_temps_truncated
+        || session_temps_unavailable.is_some()
+        || session_temps.is_none()
+        || clones.iter().any(|clone| is_partial(&clone.measurement))
+        || reported_temps
+            .iter()
+            .any(|temp| is_partial(&temp.measurement));
     Ok(if incomplete {
         ExitCode::FAILURE
     } else {
@@ -64,16 +94,34 @@ pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
     })
 }
 
-fn row(clone: &CloneStorageView) -> String {
-    let (bytes, status, reason) = match &clone.measurement {
+/// The bytes, status and reason cells of `measurement`; `missing` explains an absent folder.
+fn measurement_cells<'view>(
+    measurement: &'view TargetSizeView,
+    missing: &'view str,
+) -> (String, &'static str, &'view str) {
+    match measurement {
         TargetSizeView::Complete { apparent_bytes } => (apparent_bytes.to_string(), "complete", ""),
-        TargetSizeView::Missing => ("0".to_owned(), "missing", "target directory absent"),
+        TargetSizeView::Missing => ("0".to_owned(), "missing", missing),
         TargetSizeView::Incomplete {
             apparent_bytes,
             reason,
         } => (apparent_bytes.to_string(), "incomplete", reason.as_str()),
         TargetSizeView::Unavailable { reason } => ("-".to_owned(), "unavailable", reason.as_str()),
-    };
+    }
+}
+
+fn temp_row(temp: &SessionTempStorageView) -> String {
+    let (bytes, status, reason) = measurement_cells(&temp.measurement, "folder absent");
+    format!(
+        "{}\t{bytes}\t{status}\t{}\t{}",
+        cell(&temp.session),
+        cell(&temp.path),
+        cell(reason)
+    )
+}
+
+fn row(clone: &CloneStorageView) -> String {
+    let (bytes, status, reason) = measurement_cells(&clone.measurement, "target directory absent");
     let (prune, reason) = match &clone.prune {
         Some(PruneVerdictView::Eligible {
             confirmation_required: true,

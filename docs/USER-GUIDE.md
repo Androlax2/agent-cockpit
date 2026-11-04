@@ -176,10 +176,12 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | Owner settings | `~/.config/torlek/config.toml` |
 | Database, session records and instruction bundle | `~/.local/state/torlek/` |
 | Torlek operational logs | `~/.local/state/torlek/logs/` |
+| Each session's temporary files (its `TMPDIR`), removed when the session ends | `~/.local/state/torlek/tmp/<session>/` |
 | Cache | `~/.cache/torlek/` |
 | Update choices and the last release check (`update.json`) | `~/.local/state/torlek/` |
 | Sockets and instance lock | `$XDG_RUNTIME_DIR/torlek/`, or the state directory's `run/` when unset |
 
+`torlek storage` lists each session's temporary folder and its size.
 Managed engines live under the profile's state directory in `engines/`; proxy configuration, its private CA and data live in `greyproxy/`.
 `torlek sandbox status` checks proxy health without the daemon.
 

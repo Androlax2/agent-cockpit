@@ -5,7 +5,8 @@ use cockpit_projects::{
 };
 use cockpit_protocol::{
     CloneStorageView, Command, EndSweepView, ErrorCode, Outcome, ProtocolError, PruneVerdictView,
-    Reply, StoragePrunePlanView, StoragePrunePreviewView, StoragePruneStatusView, TargetSizeView,
+    Reply, SessionTempStorageView, StoragePrunePlanView, StoragePrunePreviewView,
+    StoragePruneStatusView, TargetSizeView,
 };
 use cockpit_turso::{Database, sql::Connection};
 use std::sync::Arc;
@@ -21,6 +22,8 @@ pub(crate) struct Context {
     pub(crate) stopping: Arc<AtomicBool>,
     pub(crate) supervisor: cockpit_processes::Supervisor,
     pub(crate) outputs: Arc<crate::output_retention::OutputPolicy>,
+    /// The sessions' temporary folders, one per session, which the report measures (#766).
+    pub(crate) session_temps: std::path::PathBuf,
 }
 
 pub(crate) async fn settings(
@@ -416,10 +419,24 @@ async fn report(context: &Context) -> Result<Reply, ProtocolError> {
             .await
             .map_err(project)?
     };
+    let temps = cockpit_projects::folder_storage(context.session_temps.clone()).await;
     Ok(Reply::Storage {
         clones,
         truncated: report.truncated,
         end_sweeps: end_sweeps.into_iter().map(end_sweep_view).collect(),
+        session_temps: Some(
+            temps
+                .folders
+                .into_iter()
+                .map(|folder| SessionTempStorageView {
+                    session: folder.name,
+                    path: folder.path.to_string_lossy().into_owned(),
+                    measurement: measurement(folder.measurement),
+                })
+                .collect(),
+        ),
+        session_temps_truncated: temps.truncated,
+        session_temps_unavailable: temps.unavailable,
     })
 }
 

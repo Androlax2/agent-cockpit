@@ -1,7 +1,9 @@
-//! Bounded metadata-only observations of registered clone build folders.
+//! Bounded metadata-only observations of registered clone build folders and of the folders
+//! directly inside one parent, such as the sessions' temporary folders.
 
 use std::os::fd::{AsFd, OwnedFd};
-use std::path::{Component, Path};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use cockpit_turso::Database;
@@ -15,6 +17,7 @@ const MAX_CLONES: usize = 128;
 // Per clone, not per report: a real Rust `target/` holds hundreds of thousands of entries,
 // and a shared allowance let the first clone starve every later one (#764).
 const MAX_ENTRIES: usize = 500_000;
+const MAX_FOLDERS: usize = 128;
 const MAX_DEPTH: usize = 64;
 // Upper bound for one clone; `measure_all` shrinks it so every clone still gets a turn.
 const SCAN_BUDGET: Duration = Duration::from_secs(3);
@@ -101,6 +104,133 @@ fn measure_all(
 /// neighbours more than an even split of the report budget.
 fn fair_time_share(report_deadline: Instant, clones_left: u32) -> Duration {
     report_deadline.saturating_duration_since(Instant::now()) / clones_left
+}
+
+/// One entry directly inside the measured parent.
+#[derive(Debug, Clone)]
+pub struct FolderStorage {
+    pub name: String,
+    pub path: PathBuf,
+    pub measurement: TargetSize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FolderReport {
+    /// In name order.
+    pub folders: Vec<FolderStorage>,
+    /// Further entries were omitted by the row or listing limit.
+    pub truncated: bool,
+    /// Why `parent` itself could not be listed; `folders` is then empty or partial.
+    pub unavailable: Option<String>,
+}
+
+/// Measures each entry directly inside `parent`, at most 128 in name order, under the same
+/// per-folder bounds as the clone report; an entry that is not a folder is listed as unavailable. An
+/// absent `parent` holds none. Never follows a link, at `parent`'s last component included.
+/// A `parent` that cannot be listed is reported, not an error: the caller's other
+/// measurements stand.
+pub async fn folder_storage(parent: PathBuf) -> FolderReport {
+    blocking(move || Ok(measure_folders(&parent)))
+        .await
+        .unwrap_or_else(|error| FolderReport {
+            unavailable: Some(error.to_string()),
+            ..FolderReport::default()
+        })
+}
+
+fn measure_folders(parent: &Path) -> FolderReport {
+    let unavailable = |action: &str, error: Errno| FolderReport {
+        unavailable: Some(format!("cannot {action} {}: {error}", parent.display())),
+        ..FolderReport::default()
+    };
+    let directory = match fs::open(parent, DIRECTORY_FLAGS, Mode::empty()) {
+        Ok(directory) => directory,
+        Err(Errno::NOENT) => return FolderReport::default(),
+        Err(error) => return unavailable("open", error),
+    };
+    let mut names = Vec::new();
+    let mut truncated = false;
+    let entries = match Dir::read_from(&directory) {
+        Ok(entries) => entries,
+        Err(error) => return unavailable("list", error),
+    };
+    for entry in entries {
+        let name = match entry {
+            Ok(entry) => entry.file_name().to_bytes().to_vec(),
+            Err(error) => return unavailable("list", error),
+        };
+        if name == b"." || name == b".." {
+            continue;
+        }
+        if names.len() == MAX_ENTRIES {
+            truncated = true;
+            break;
+        }
+        names.push(name);
+    }
+    names.sort();
+    truncated |= names.len() > MAX_FOLDERS;
+    names.truncate(MAX_FOLDERS);
+    let report_deadline = Instant::now() + REPORT_BUDGET;
+    let folder_count = names.len();
+    let folders = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let folders_left = u32::try_from(folder_count - index).unwrap_or(u32::MAX);
+            let fair_share = fair_time_share(report_deadline, folders_left);
+            let mut budget = Budget::new(MAX_ENTRIES, fair_share.min(SCAN_BUDGET));
+            let measurement = measure_folder(&directory, &name, &mut budget);
+            let name = std::ffi::OsStr::from_bytes(&name);
+            FolderStorage {
+                name: name.to_string_lossy().into_owned(),
+                path: parent.join(name),
+                measurement,
+            }
+        })
+        .collect();
+    FolderReport {
+        folders,
+        truncated,
+        unavailable: None,
+    }
+}
+
+fn measure_folder(parent: &OwnedFd, name: &[u8], budget: &mut Budget) -> TargetSize {
+    if let Err(reason) = budget.check() {
+        return TargetSize::Unavailable { reason };
+    }
+    let folder = match open_directory(parent, name) {
+        Ok(folder) => folder,
+        Err(Errno::NOENT) => return TargetSize::Missing,
+        Err(Errno::NOTDIR | Errno::LOOP) => {
+            return TargetSize::Unavailable {
+                reason: "not a folder".to_owned(),
+            };
+        }
+        Err(error) => {
+            return TargetSize::Unavailable {
+                reason: reason(error),
+            };
+        }
+    };
+    let mut walk = Walk {
+        budget,
+        bytes: 0,
+        issue: None,
+    };
+    if let Err(error) = walk.directory(folder, 0, &mut || {}) {
+        walk.record(error);
+    }
+    match walk.issue {
+        Some(reason) => TargetSize::Incomplete {
+            apparent_bytes: walk.bytes,
+            reason,
+        },
+        None => TargetSize::Complete {
+            apparent_bytes: walk.bytes,
+        },
+    }
 }
 
 struct Budget {

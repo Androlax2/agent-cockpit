@@ -275,6 +275,7 @@ impl Instance {
             outputs: Arc::new(output_retention::OutputPolicy::from_settings(
                 &storage_settings,
             )),
+            session_temps: options.session_temps(),
         };
         let admission = Arc::new(
             cockpit_resource_admission::Backend::detect(
@@ -355,6 +356,7 @@ impl Instance {
                 ..wiring.sessions
             },
             options.session_dirs(),
+            options.session_temps(),
             session_sockets::connect,
         ));
         sessions.import_desktop_environment(wiring.desktop_environment);

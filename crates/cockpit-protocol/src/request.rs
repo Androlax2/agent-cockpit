@@ -18,7 +18,7 @@ use crate::sessions::{
     AppliedSettingView, ManagerPaneView, ProviderView, SandboxEvidenceView, SessionFailure,
     SessionView,
 };
-use crate::storage::CloneStorageView;
+use crate::storage::{CloneStorageView, SessionTempStorageView};
 use crate::tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskView,
 };
@@ -873,6 +873,16 @@ pub enum Reply {
         /// older than #767.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         end_sweeps: Vec<crate::storage::EndSweepView>,
+        /// Each session's temporary folder, by session id; absent from a daemon older than
+        /// the folders (#766).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_temps: Option<Vec<SessionTempStorageView>>,
+        /// Further temporary folders were omitted by the report's row limit.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        session_temps_truncated: bool,
+        /// Why the folder holding them could not be listed; the clones still are.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_temps_unavailable: Option<String>,
     },
     StorageOutputs {
         projects: Vec<crate::storage::OutputRetentionView>,

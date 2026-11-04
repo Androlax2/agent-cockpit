@@ -50,6 +50,8 @@ pub struct LaunchRequest {
     /// The session's private directory, where its provider keeps what reaches the running
     /// agent: read and write.
     pub session_dir: PathBuf,
+    /// The session's own temporary folder, which `TMPDIR` names: read and write.
+    pub temp_dir: PathBuf,
     pub environment: Vec<(OsString, OsString)>,
     /// Secrets the environment holds, and how each crosses into the sandbox.
     pub secrets: Vec<Secret>,
@@ -174,6 +176,7 @@ impl Sandbox {
                 provider: request.provider.clone(),
                 working_dir: request.working_dir.clone(),
                 session_dir: request.session_dir.clone(),
+                temp_dir: request.temp_dir.clone(),
                 mount_dir,
                 owner_uid: host.owner_uid,
                 read_only: host.read_only.clone(),

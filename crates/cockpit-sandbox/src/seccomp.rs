@@ -1,11 +1,12 @@
 //! Whether greywall can write the seccomp filter it loads at every Linux launch (#628).
 //!
 //! The pinned greywall writes it to `$TMPDIR/greywall-seccomp`, `/tmp/greywall-seccomp`
-//! without `TMPDIR`: one folder for every user of the host, owner-only, owned by whoever ran
-//! greywall first. Every other user's sandbox then exits at its start, and a folder others
-//! can write lets them replace the filter. The check writes a file there as greywall would,
-//! so the failure shows before a session starts. An absent folder still leaves a window
-//! between the check and greywall's start that only a greywall writing per user closes.
+//! without `TMPDIR`. In `/tmp` that is one folder for every user of the host, owner-only,
+//! owned by whoever ran greywall first: every other user's sandbox exits at its start, and a
+//! folder others can write lets them replace the filter. Every launch now sets `TMPDIR` to
+//! the session's own temp folder (#766), so the folder is per user and per session; the
+//! profile denies the agent writes to it. The check writes a file there as greywall would,
+//! so a failure shows before a session starts.
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -29,7 +30,7 @@ impl std::fmt::Display for FilterWriteFailure {
 
 /// The folder greywall writes its seccomp filter to under `environment`, as Go's
 /// `os.TempDir` picks it: the last non-empty `TMPDIR`, else `/tmp`.
-pub(crate) fn seccomp_filter_dir(environment: &[(OsString, OsString)]) -> PathBuf {
+pub fn seccomp_filter_dir(environment: &[(OsString, OsString)]) -> PathBuf {
     let temp = environment
         .iter()
         .rev()
