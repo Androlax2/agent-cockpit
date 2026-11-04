@@ -26,6 +26,7 @@ fn report(session: &str) -> SessionReport {
         outcome: None,
         question_source: None,
         covered_question: None,
+        held_by: None,
         reported_at: 1,
     }
 }
