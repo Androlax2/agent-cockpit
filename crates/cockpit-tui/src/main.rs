@@ -25,8 +25,6 @@ use tokio::sync::mpsc;
 /// How often the TUI asks the daemon for what is not on the change feed: projects, the
 /// agents' reports and the approval queue.
 const REFRESH: Duration = Duration::from_secs(1);
-/// Redraws this often regardless, so the pane's grace hint goes away on time.
-const REDRAW: Duration = Duration::from_millis(200);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -151,7 +149,6 @@ async fn run(
     // A refresh is sent only once the last one is answered, so a slow daemon gets no pile.
     let mut unanswered_refreshes = 0_usize;
     let mut refresh = tokio::time::interval(REFRESH);
-    let mut redraw = tokio::time::interval(REDRAW);
     loop {
         terminal
             .draw(|frame| draw(&app, frame, Instant::now()))
@@ -163,7 +160,8 @@ async fn run(
                     send(&requests, command, true)?;
                 }
             }
-            _ = redraw.tick() => {}
+            // The one redraw nothing else wakes: the pane's grace hint going away.
+            () = sleep_until(app.pane().grace_ends_at(Instant::now())) => {}
             event = feed.recv() => match event {
                 None => return Err("the change feed task stopped".to_owned()),
                 Some(event) => follow(&mut app, event),
@@ -202,6 +200,14 @@ fn ring_bell() {
     let mut terminal = std::io::stdout();
     if let Err(error) = terminal.write_all(b"\x07").and_then(|()| terminal.flush()) {
         tracing::warn!(%error, "cannot ring the terminal bell");
+    }
+}
+
+/// Sleeps until `deadline`; forever when there is none.
+async fn sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
     }
 }
 
