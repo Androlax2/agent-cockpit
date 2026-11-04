@@ -71,10 +71,15 @@ async fn pass(database: &Database, read_through: &mut Option<i64>) -> Result<(),
             None => touched.extend(ViewArea::ALL.map(|area| (area, newest))),
             Some(mut after) => {
                 while after < newest {
-                    let commits = read
-                        .commits_after(after, COMMITS_PER_READ)
-                        .await
-                        .map_err(|error| error.to_string())?;
+                    let commits = match read.commits_after(after, COMMITS_PER_READ).await {
+                        Ok(commits) => commits,
+                        Err(error) => {
+                            // What the capture cannot tell is assumed changed: the retry
+                            // stamps every area instead of reading it again.
+                            *read_through = None;
+                            return Err(error.to_string());
+                        }
+                    };
                     let Some(last) = commits.last() else { break };
                     after = last.revision;
                     for commit in &commits {
@@ -118,4 +123,79 @@ async fn write(
         write.rollback().await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::area_of;
+
+    /// Tables no polled view reads. A table that is neither here nor in an area fails
+    /// `every_table_is_in_an_area_or_shown_by_none`, so a new table is classified on purpose.
+    const SHOWN_BY_NO_AREA: &[&str] = &[
+        "agent_channel_launches",
+        "authorization_audit",
+        "authorization_revision",
+        // Drafts have a feed kind of their own (`bug_report_feed`).
+        "bug_reports",
+        // Checkouts are on the feed as `checkout` entities (`session_feed`).
+        "checkout_occupancy",
+        "project_checkouts",
+        "cockpit_database",
+        "cockpit_migrations",
+        "messaging_entities",
+        "messaging_envelopes",
+        "messaging_feed_retention",
+        "messaging_receipts",
+        "process_executions",
+        "process_output_sets",
+        "project_target_prune_guards",
+        "project_target_prunes",
+        "resource_reservations",
+        "resource_settings",
+        "sandbox_launch_lines",
+        "sandbox_launches",
+        "verification_artifacts",
+        "verification_claims",
+        "verification_output_references",
+        "verification_pending_artifacts",
+        "verification_receipts",
+        "verification_run_identities",
+    ];
+
+    /// The engine's own tables: counters and the change capture.
+    const ENGINE_TABLE_PREFIXES: &[&str] = &["__turso_internal_", "sqlite_", "turso_cdc"];
+
+    #[tokio::test]
+    async fn every_table_is_in_an_area_or_shown_by_none() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = cockpit_turso::Database::open(
+            &directory.path().join("state.db"),
+            &crate::MIGRATION_SETS,
+        )
+        .await
+        .unwrap();
+        let read = database.read().await.unwrap();
+        let mut rows = read
+            .query("SELECT name FROM sqlite_schema WHERE type = 'table'", ())
+            .await
+            .unwrap();
+        let mut unclassified = Vec::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            let table: String = row.get(0).unwrap();
+            let is_classified = area_of(&table).is_some()
+                || SHOWN_BY_NO_AREA.contains(&table.as_str())
+                || ENGINE_TABLE_PREFIXES
+                    .iter()
+                    .any(|prefix| table.starts_with(prefix));
+            if !is_classified {
+                unclassified.push(table);
+            }
+        }
+
+        unclassified.sort();
+        assert!(
+            unclassified.is_empty(),
+            "map these tables to a ViewArea in area_of, or list them in SHOWN_BY_NO_AREA: {unclassified:?}"
+        );
+    }
 }

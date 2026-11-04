@@ -13,8 +13,11 @@ Issue #706. Decided by Theo (option A of the worker's question); the details by 
   an area reads must be added there; until then the 5 s poll still shows it. At start every area
   is stamped, as commits may have touched them while the daemon was down.
 - **The TUI keeps a slow poll of the same requests every 5 s.** A stamp cannot see what no commit
-  records: the runner's memory (`waiting_for_input`), and a question's hold running out with the
-  clock. Stamp-triggered requests count as refreshes, so a slow daemon still gets no pile.
+  records: the runner's memory (`waiting_for_input`), the files a run changed in its checkout
+  (read from git), and a question's hold running out with the clock. Those show up to 5 s late,
+  as the owner chose. Stamp-triggered requests count as refreshes, so a slow daemon still gets no
+  pile: moved areas wait until no refresh is unanswered, and one request per area then covers
+  every batch meanwhile.
 - **Old TUIs and unknown areas are safe.** `Board::apply` skips a kind or an area it does not
   know; the closed `Change` enum is untouched.
 - **Rejected:** a feed kind per view (projects, reports, approvals, tasks, workflows) because the

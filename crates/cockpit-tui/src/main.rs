@@ -160,6 +160,8 @@ async fn run(
             .map_err(|error| format!("cannot draw: {error}"))?;
         tokio::select! {
             _ = refresh.tick(), if unanswered_refreshes == 0 => {
+                // This refresh asks for everything a moved stamp would.
+                app.changed_view_commands();
                 for command in App::refresh_commands().into_iter().chain(app.view_refresh_commands()) {
                     unanswered_refreshes += 1;
                     send(&requests, command, true)?;
@@ -171,10 +173,7 @@ async fn run(
                 None => return Err("the change feed task stopped".to_owned()),
                 Some(event) => {
                     follow(&mut app, event);
-                    for command in app.changed_view_commands() {
-                        unanswered_refreshes += 1;
-                        send(&requests, command, true)?;
-                    }
+                    ask_for_changed_views(&mut app, &requests, &mut unanswered_refreshes)?;
                 }
             },
             input = received.recv() => match input {
@@ -195,6 +194,7 @@ async fn run(
                     if let Some(command) = app.answer(&sent.command, answer, Instant::now()) {
                         send(&requests, command, false)?;
                     }
+                    ask_for_changed_views(&mut app, &requests, &mut unanswered_refreshes)?;
                 }
             },
         }
@@ -220,6 +220,24 @@ async fn sleep_until(deadline: Option<Instant>) {
         Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
         None => std::future::pending().await,
     }
+}
+
+/// Asks again for the views whose stamp moved, once no refresh is waiting for its answer: a
+/// slow daemon gets one request per moved area however many batches came meanwhile, and the
+/// areas that moved stay pending until then.
+fn ask_for_changed_views(
+    app: &mut App,
+    requests: &mpsc::UnboundedSender<Sent>,
+    unanswered_refreshes: &mut usize,
+) -> Result<(), String> {
+    if *unanswered_refreshes > 0 {
+        return Ok(());
+    }
+    for command in app.changed_view_commands() {
+        *unanswered_refreshes += 1;
+        send(requests, command, true)?;
+    }
+    Ok(())
 }
 
 fn follow(app: &mut App, event: FeedEvent) {
