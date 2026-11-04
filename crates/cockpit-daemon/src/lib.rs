@@ -6,6 +6,7 @@ mod approvals;
 mod bug_report_feed;
 mod bug_reports;
 mod coordination;
+mod coordinator_workers;
 mod error;
 mod feed;
 mod instance;

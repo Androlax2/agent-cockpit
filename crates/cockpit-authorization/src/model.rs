@@ -56,7 +56,8 @@ pub enum Permission {
     /// Queue a message to another session, delivered at its next prompt (#410).
     MessageSessions,
     /// Ask to start a session; each start needs the owner's approval unless the grant's
-    /// [`StartTerms`] say otherwise, and is capped per hour (#410).
+    /// [`StartTerms`] say otherwise, and is capped per hour (#410) and by how many of the
+    /// sessions it started still run (#739).
     StartSessions,
     /// Owner-only actions such as `handoff-install` and `system-install` (report 17). Never
     /// granted to a session.
@@ -185,19 +186,28 @@ pub struct Grant {
 /// How a `start-sessions` grant lets its holder start sessions (#410).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StartTerms {
-    /// Starts asked or made in any hour, at most; at least 1.
+    /// Starts asked or made in any hour, at most; at least 1. A guard against a runaway
+    /// coordinator; `max_active` bounds the load.
     pub per_hour: u32,
+    /// Sessions the holder started that are not ended, with its starts still waiting for
+    /// the owner, at most at once; at least 1 (#739).
+    pub max_active: u32,
     /// Each start waits for the owner's approval in the `ask run` queue. Without it, the
     /// daemon starts the session at once.
     pub needs_confirmation: bool,
 }
 
 impl StartTerms {
-    /// The terms [`crate::grant`] gives: every start confirmed, ten an hour.
+    /// The terms [`crate::grant`] gives: every start confirmed, eight at once, twenty an
+    /// hour.
     pub const DEFAULT: StartTerms = StartTerms {
-        per_hour: 10,
+        per_hour: 20,
+        max_active: StartTerms::DEFAULT_MAX_ACTIVE,
         needs_confirmation: true,
     };
+
+    /// The `max_active` of a grant given without one, and of every grant stored before #739.
+    pub const DEFAULT_MAX_ACTIVE: u32 = 8;
 }
 
 /// Whether the holder of a `start-sessions` grant may start a session now (#410).
@@ -215,6 +225,12 @@ pub enum StartAllowance {
     Capped {
         per_hour: u32,
         retry_at: i64,
+    },
+    /// `active` of the holder's sessions run or wait for the owner, and the grant allows
+    /// `max_active` at once; ending one frees a place (#739).
+    AtCapacity {
+        max_active: u32,
+        active: u32,
     },
     Refused(Refusal),
 }

@@ -579,7 +579,7 @@ fn a_rejected_argument_is_named_before_the_usage() {
                   torlek session sleep|wake|resume|end|show SESSION\n       \
                   torlek session end --finished\n       \
                   torlek session link SESSION URL\n       \
-                  torlek session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]]\n       \
+                  torlek session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]] [--max-active N]\n       \
                   torlek session revoke SESSION observe-sessions|message-sessions|start-sessions\n       \
                   torlek session grants SESSION\n       \
                   torlek session sandbox SESSION\n       \

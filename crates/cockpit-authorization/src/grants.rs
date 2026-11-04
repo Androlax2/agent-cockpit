@@ -9,8 +9,8 @@ use crate::{
 /// The window a `start-sessions` grant's cap counts over.
 const HOUR_SECONDS: i64 = 60 * 60;
 /// The columns `grant_from_row` reads, in its order.
-const GRANT_COLUMNS: &str =
-    "id, holder, permission, scope_kind, scope_id, granted_at, starts_per_hour, starts_unconfirmed";
+const GRANT_COLUMNS: &str = "id, holder, permission, scope_kind, scope_id, granted_at, \
+     starts_per_hour, starts_unconfirmed, starts_max_active";
 /// The columns `audit_from_row` reads, in its order.
 const AUDIT_COLUMNS: &str = "id, actor, permission, grant_id, revision, action, target, detail, at";
 
@@ -94,6 +94,16 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             CREATE INDEX authorization_audit_by_target
                 ON authorization_audit (target, action, id);",
         },
+        // #739: a `start-sessions` grant also caps the sessions its holder runs at once.
+        // Grants stored before, revoked ones too, get the default, so `session grants` shows
+        // the cap they work under.
+        Migration {
+            version: 4,
+            sql: "ALTER TABLE authorization_grants ADD COLUMN starts_max_active INTEGER
+                CHECK (starts_max_active >= 1);
+            UPDATE authorization_grants SET starts_max_active = 8
+                WHERE permission = 'start-sessions';",
+        },
     ],
 };
 
@@ -127,6 +137,11 @@ pub async fn grant_start_sessions(
     if terms.per_hour == 0 {
         return Err(Error::InvalidStartTerms {
             reason: "the cap per hour must be at least 1",
+        });
+    }
+    if terms.max_active == 0 {
+        return Err(Error::InvalidStartTerms {
+            reason: "the sessions at once must be at least 1",
         });
     }
     let permission = Permission::StartSessions;
@@ -176,8 +191,8 @@ async fn insert_grant(
         .execute(
             "INSERT INTO authorization_grants
                 (holder, permission, scope_kind, scope_id, granted_at, starts_per_hour,
-                 starts_unconfirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 starts_unconfirmed, starts_max_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             (
                 holder.as_str(),
                 permission.as_str(),
@@ -186,6 +201,7 @@ async fn insert_grant(
                 granted_at.0,
                 start_terms.map(|terms| i64::from(terms.per_hour)),
                 start_terms.is_some_and(|terms| !terms.needs_confirmation),
+                start_terms.map(|terms| i64::from(terms.max_active)),
             ),
         )
         .await?;
@@ -303,13 +319,17 @@ pub async fn active_coordinator_grants(connection: &Connection) -> Result<Vec<Gr
 }
 
 /// Whether `holder` may start a session at `now` (seconds since 1970): its `start-sessions`
-/// grant over the owner's scope, and fewer [`AuditedAction::Start`] entries in the past hour
-/// than the grant's cap. Evaluate it in the write transaction that records the start, so two
-/// starts cannot both take the last place.
+/// grant over the owner's scope, fewer than the grant's `max_active` sessions `active`, and
+/// fewer [`AuditedAction::Start`] entries in the past hour than the grant's cap. `active` is
+/// the caller's count, read in the same transaction: the sessions [`started_sessions`] names
+/// that are not ended, and the holder's start requests the owner has not decided or carried
+/// out yet (#739). Evaluate it in the write transaction that records the start, so two starts
+/// cannot both take the last place.
 pub async fn start_allowance(
     connection: &Connection,
     holder: &SessionId,
     now: i64,
+    active: u32,
 ) -> Result<StartAllowance, Error> {
     let actor = Actor::Session(holder.clone());
     let decision = evaluate(connection, &actor, Permission::StartSessions, &Scope::Owner).await?;
@@ -325,6 +345,12 @@ pub async fn start_allowance(
             grant,
             reason: "a start-sessions grant without terms".to_owned(),
         })?;
+    if active >= terms.max_active {
+        return Ok(StartAllowance::AtCapacity {
+            max_active: terms.max_active,
+            active,
+        });
+    }
     let window_start = now - HOUR_SECONDS;
     let mut rows = connection
         .query(
@@ -347,6 +373,27 @@ pub async fn start_allowance(
         revision: decision.revision,
         needs_confirmation: terms.needs_confirmation,
     })
+}
+
+/// The sessions `holder`'s starts made, ended or not, each once: the
+/// [`AuditedAction::Started`] entries it is the actor of (#739).
+pub async fn started_sessions(
+    connection: &Connection,
+    holder: &SessionId,
+) -> Result<Vec<SessionId>, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT DISTINCT target FROM authorization_audit
+             WHERE actor = ?1 AND action = 'started' AND target IS NOT NULL
+             ORDER BY target",
+            [holder.as_str()],
+        )
+        .await?;
+    let mut started = Vec::new();
+    while let Some(row) = rows.next().await? {
+        started.push(SessionId::new(row.get::<String>(0)?)?);
+    }
+    Ok(started)
 }
 
 /// The grant stored as `id`, active or revoked, when another crate kept only its number:
@@ -609,19 +656,24 @@ fn grant_from_row(row: &Row) -> Result<Grant, Error> {
     };
     let per_hour: Option<i64> = row.get(6)?;
     let is_unconfirmed: bool = row.get::<i64>(7)? == 1;
-    let start_terms = match (permission, per_hour) {
-        (Permission::StartSessions, Some(per_hour)) => Some(StartTerms {
-            per_hour: u32::try_from(per_hour)
-                .ok()
-                .filter(|per_hour| *per_hour >= 1)
-                .ok_or_else(|| invalid(&format_args!("a cap of {per_hour} starts an hour")))?,
+    let max_active: Option<i64> = row.get(8)?;
+    let at_least_one = |stored: i64, what: &str| {
+        u32::try_from(stored)
+            .ok()
+            .filter(|count| *count >= 1)
+            .ok_or_else(|| invalid(&format_args!("a cap of {stored} {what}")))
+    };
+    let start_terms = match (permission, per_hour, max_active) {
+        (Permission::StartSessions, Some(per_hour), Some(max_active)) => Some(StartTerms {
+            per_hour: at_least_one(per_hour, "starts an hour")?,
+            max_active: at_least_one(max_active, "sessions at once")?,
             needs_confirmation: !is_unconfirmed,
         }),
-        (Permission::StartSessions, None) => {
+        (Permission::StartSessions, _, _) => {
             return Err(invalid(&"a start-sessions grant without terms"));
         }
-        (_, None) if !is_unconfirmed => None,
-        (other, _) => return Err(invalid(&format_args!("{other} with start terms"))),
+        (_, None, None) if !is_unconfirmed => None,
+        (other, _, _) => return Err(invalid(&format_args!("{other} with start terms"))),
     };
     Ok(Grant {
         id,

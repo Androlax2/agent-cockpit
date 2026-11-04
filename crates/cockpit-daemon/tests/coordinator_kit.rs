@@ -17,7 +17,7 @@ use cockpit_protocol::{
 };
 use real_daemon::{
     ASKED_QUESTION, COMMANDED_PROJECT, Daemon, GENEROUS, Home, QUESTION_PROJECT, cockpit_program,
-    listed, new_session,
+    listed, new_session, wait_for_state,
 };
 
 const COORDINATOR_GRANTS: [&str; 3] = ["observe-sessions", "message-sessions", "start-sessions"];
@@ -54,6 +54,7 @@ async fn grant(owner: &Connection, session: &str, permission: &str) {
                 permission: permission.to_owned(),
                 without_confirmation: false,
                 per_hour: None,
+                max_active: None,
             },
             GENEROUS,
         )
@@ -391,6 +392,7 @@ async fn an_unconfirmed_start_begins_at_once_until_the_hourly_cap() {
                 permission: "start-sessions".to_owned(),
                 without_confirmation: true,
                 per_hour: Some(1),
+                max_active: None,
             },
             GENEROUS,
         )
@@ -520,6 +522,168 @@ async fn a_start_with_an_effort_claude_does_not_have_is_refused_before_the_owner
     );
     let (runs, _) = queue(&owner).await;
     assert!(runs.is_empty(), "nothing reaches the owner: {runs:?}");
+}
+
+/// #739: gives `coordinator` `start-sessions` with `max_active`, its other terms as given.
+async fn grant_at_once(
+    owner: &Connection,
+    coordinator: &str,
+    max_active: u32,
+    without_confirmation: bool,
+) {
+    let granted = owner
+        .request(
+            Command::SessionGrant {
+                session: coordinator.to_owned(),
+                permission: "start-sessions".to_owned(),
+                without_confirmation,
+                per_hour: Some(100),
+                max_active: Some(max_active),
+            },
+            GENEROUS,
+        )
+        .await;
+    assert!(
+        matches!(granted, Ok(Reply::CoordinatorGrants { .. })),
+        "{granted:?}"
+    );
+}
+
+/// The session `printed` says `agent start` started.
+fn started_session(printed: &str) -> String {
+    printed
+        .strip_prefix("started session ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("agent start started no session: {printed}"))
+        .to_owned()
+}
+
+/// #739: a coordinator at its sessions at once is refused, naming the cap and the count, and
+/// may start again as soon as one of the sessions it started ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_at_max_active_is_refused_until_a_started_session_ends() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let (new_root, _) = home.project(&owner, "plain").await;
+    let coordinator = new_session(&owner, &coordinator_root).await;
+    grant_at_once(&owner, &coordinator.id, 1, true).await;
+    let start = [
+        "agent",
+        "start",
+        &new_root.display().to_string(),
+        "--agent",
+        "claude",
+    ];
+    let first = as_coordinator(&home, &coordinator_root, &start).await;
+    assert!(first.ends_with("exit=0\n"), "{first}");
+
+    let refused = as_coordinator(&home, &coordinator_root, &start).await;
+
+    assert!(refused.ends_with("exit=1\n"), "{refused}");
+    assert!(
+        refused.contains("is at its 1 sessions at once: 1 it started run or wait for the owner"),
+        "{refused}"
+    );
+    let worker = started_session(&first);
+    owner
+        .request(
+            Command::SessionEnd {
+                session: worker.clone(),
+            },
+            GENEROUS,
+        )
+        .await
+        .expect("the owner ends the worker");
+    wait_for_state(&owner, &worker, |state| {
+        *state == cockpit_protocol::SessionStateView::Ended
+    })
+    .await;
+    let again = as_coordinator(&home, &coordinator_root, &start).await;
+    assert!(again.ends_with("exit=0\n"), "{again}");
+}
+
+/// #739: a start waiting for the owner's approval holds one of the sessions at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_waiting_for_the_owner_counts_against_max_active() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (coordinator_root, _) = home.project(&owner, COMMANDED_PROJECT).await;
+    let (new_root, _) = home.project(&owner, "plain").await;
+    let coordinator = new_session(&owner, &coordinator_root).await;
+    grant_at_once(&owner, &coordinator.id, 1, false).await;
+    let start = [
+        "agent",
+        "start",
+        &new_root.display().to_string(),
+        "--agent",
+        "claude",
+    ];
+    // One line: the agent runs its lines one at a time, and the first start waits for the
+    // owner. The second waits for `.agent/go`, which the test drops once the first is queued;
+    // both stay children of the agent, which identifies them.
+    let first = cockpit_line(&start);
+    let line = home.command_agent(
+        &coordinator_root,
+        &format!(
+            "{first} >/dev/null 2>&1 & \
+             while [ ! -e .agent/go ]; do sleep 0.1; done; \
+             {first}; status=$?; kill $!; exit $status"
+        ),
+    );
+    asked_start(&owner, &coordinator.id).await;
+    std::fs::write(coordinator_root.join(".agent").join("go"), "").unwrap();
+
+    let refused = home.agent_output(&coordinator_root, line).await;
+
+    assert!(refused.ends_with("exit=1\n"), "{refused}");
+    assert!(
+        refused.contains("is at its 1 sessions at once"),
+        "{refused}"
+    );
+}
+
+/// #739: the owner's `torlek session grant --max-active` reaches the grant, and
+/// `torlek session grants` shows it with the other terms.
+#[tokio::test(flavor = "multi_thread")]
+async fn max_active_round_trips_through_session_grant_and_session_grants() {
+    assert_the_cli_is_built();
+    let home = Home::new();
+    let _daemon = home.start();
+    let owner = home.connect().await;
+    let (root, _) = home.project(&owner, "plain").await;
+    let session = new_session(&owner, &root).await;
+
+    let granted = home
+        .cockpit(
+            &[
+                "session",
+                "grant",
+                &session.id,
+                "start-sessions",
+                "--max-active",
+                "3",
+            ],
+            &[],
+        )
+        .await;
+    let shown = home.cockpit(&["session", "grants", &session.id], &[]).await;
+
+    assert!(
+        granted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&granted.stderr)
+    );
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(
+        shown.contains("\tstart-sessions\t")
+            && shown.contains("\tper-hour=20 max-active=3 confirmed\n"),
+        "{shown}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -868,6 +1032,7 @@ async fn no_grant_is_given_from_the_agent_socket() {
                 permission: "start-sessions".to_owned(),
                 without_confirmation: true,
                 per_hour: Some(100),
+                max_active: None,
             },
             GENEROUS,
         )
@@ -894,6 +1059,7 @@ async fn only_a_coordinator_grant_is_given_with_session_grant() {
                 permission: "run-commands".to_owned(),
                 without_confirmation: false,
                 per_hour: None,
+                max_active: None,
             },
             GENEROUS,
         )

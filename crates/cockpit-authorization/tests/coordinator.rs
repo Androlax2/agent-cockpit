@@ -7,7 +7,7 @@ use cockpit_authorization::{
     Actor, Audit, AuditedAction, Basis, Error, Outcome, Permission, Refusal, Scope, StartAllowance,
     StartTerms, active_coordinator_grants, active_grants, audit_entry, audit_of, evaluate,
     grant_start_sessions, latest_audit_on, latest_audits_by_target, record_audit, revoke,
-    start_allowance, stored_grant,
+    start_allowance, started_sessions, stored_grant,
 };
 use cockpit_turso::Database;
 use common::{grant, open, session};
@@ -16,8 +16,19 @@ const NOW: i64 = 1_800_000_000;
 const HOUR: i64 = 3600;
 
 async fn allowance(database: &Database, holder: &str, now: i64) -> StartAllowance {
+    allowance_with_active(database, holder, now, 0).await
+}
+
+async fn allowance_with_active(
+    database: &Database,
+    holder: &str,
+    now: i64,
+    active: u32,
+) -> StartAllowance {
     let read = database.read().await.unwrap();
-    start_allowance(&read, &session(holder), now).await.unwrap()
+    start_allowance(&read, &session(holder), now, active)
+        .await
+        .unwrap()
 }
 
 async fn give_start_terms(database: &Database, holder: &str, terms: StartTerms) {
@@ -167,6 +178,7 @@ async fn starts_beyond_the_hourly_cap_are_refused_until_the_oldest_leaves_the_ho
         "coordinator",
         StartTerms {
             per_hour: 2,
+            max_active: StartTerms::DEFAULT_MAX_ACTIVE,
             needs_confirmation: false,
         },
     )
@@ -195,6 +207,7 @@ async fn the_cap_counts_one_holders_starts_only() {
     let database = open("start-cap-per-holder").await;
     let terms = StartTerms {
         per_hour: 1,
+        max_active: StartTerms::DEFAULT_MAX_ACTIVE,
         needs_confirmation: true,
     };
     give_start_terms(&database, "first", terms).await;
@@ -215,6 +228,7 @@ async fn granting_other_start_terms_replaces_the_grant_and_keeps_the_count() {
         "coordinator",
         StartTerms {
             per_hour: 1,
+            max_active: StartTerms::DEFAULT_MAX_ACTIVE,
             needs_confirmation: true,
         },
     )
@@ -225,6 +239,7 @@ async fn granting_other_start_terms_replaces_the_grant_and_keeps_the_count() {
         "coordinator",
         StartTerms {
             per_hour: 1,
+            max_active: StartTerms::DEFAULT_MAX_ACTIVE,
             needs_confirmation: false,
         },
     )
@@ -256,12 +271,147 @@ async fn a_cap_of_zero_is_refused() {
         &session("coordinator"),
         StartTerms {
             per_hour: 0,
+            max_active: StartTerms::DEFAULT_MAX_ACTIVE,
             needs_confirmation: true,
         },
     )
     .await;
 
     assert!(matches!(refused, Err(Error::InvalidStartTerms { .. })));
+}
+
+/// #739: the terms for the tests of `max_active`, with an hourly cap they never reach.
+const TWO_AT_ONCE: StartTerms = StartTerms {
+    per_hour: 100,
+    max_active: 2,
+    needs_confirmation: true,
+};
+
+#[tokio::test]
+async fn a_start_at_max_active_is_refused_with_the_active_count() {
+    let database = open("start-at-capacity").await;
+    give_start_terms(&database, "coordinator", TWO_AT_ONCE).await;
+
+    assert_eq!(
+        allowance_with_active(&database, "coordinator", NOW, 2).await,
+        StartAllowance::AtCapacity {
+            max_active: 2,
+            active: 2,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_start_below_max_active_is_allowed() {
+    let database = open("start-below-capacity").await;
+    give_start_terms(&database, "coordinator", TWO_AT_ONCE).await;
+
+    assert!(matches!(
+        allowance_with_active(&database, "coordinator", NOW, 1).await,
+        StartAllowance::Allowed { .. }
+    ));
+}
+
+#[tokio::test]
+async fn the_hourly_cap_still_applies_below_max_active() {
+    let database = open("start-cap-below-capacity").await;
+    give_start_terms(
+        &database,
+        "coordinator",
+        StartTerms {
+            per_hour: 1,
+            ..TWO_AT_ONCE
+        },
+    )
+    .await;
+    record_start(&database, "coordinator", NOW).await;
+
+    assert_eq!(
+        allowance_with_active(&database, "coordinator", NOW + 1, 0).await,
+        StartAllowance::Capped {
+            per_hour: 1,
+            retry_at: NOW + HOUR,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_max_active_of_zero_is_refused() {
+    let database = open("start-zero-at-once").await;
+    let write = database.write().await.unwrap();
+
+    let refused = grant_start_sessions(
+        &write,
+        &session("coordinator"),
+        StartTerms {
+            max_active: 0,
+            ..TWO_AT_ONCE
+        },
+    )
+    .await;
+
+    assert!(matches!(refused, Err(Error::InvalidStartTerms { .. })));
+}
+
+#[tokio::test]
+async fn started_sessions_names_each_session_the_holder_started_once() {
+    let database = open("started-sessions").await;
+    give_start_terms(&database, "coordinator", StartTerms::DEFAULT).await;
+    give_start_terms(&database, "other", StartTerms::DEFAULT).await;
+    let write = database.write().await.unwrap();
+    for (actor, action, target) in [
+        ("coordinator", AuditedAction::Started, "worker-b"),
+        ("coordinator", AuditedAction::Started, "worker-a"),
+        ("coordinator", AuditedAction::Started, "worker-a"),
+        ("coordinator", AuditedAction::Message, "worker-c"),
+        ("other", AuditedAction::Started, "worker-d"),
+    ] {
+        let permission = match action {
+            AuditedAction::Message => Permission::MessageSessions,
+            _ => Permission::StartSessions,
+        };
+        record_audit(
+            &write,
+            &Audit {
+                actor: session(actor),
+                permission,
+                grant: stored_start_grant(&write, actor).await,
+                revision: cockpit_authorization::current_revision(&write)
+                    .await
+                    .unwrap(),
+                action,
+                target: Some(session(target)),
+                detail: None,
+                at: NOW,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    write.commit().await.unwrap();
+    let read = database.read().await.unwrap();
+
+    let started = started_sessions(&read, &session("coordinator"))
+        .await
+        .unwrap();
+
+    assert_eq!(started, [session("worker-a"), session("worker-b")]);
+}
+
+async fn stored_start_grant(
+    connection: &cockpit_turso::sql::Connection,
+    holder: &str,
+) -> cockpit_authorization::GrantId {
+    cockpit_authorization::active_grant(
+        connection,
+        &session(holder),
+        Permission::StartSessions,
+        &Scope::Owner,
+    )
+    .await
+    .unwrap()
+    .expect("the holder has start-sessions")
+    .id
 }
 
 #[tokio::test]
@@ -567,4 +717,49 @@ async fn entries_audited_before_the_decision_actions_survive_the_rebuild() {
     assert_eq!(entry.audit.action, AuditedAction::Start);
     assert_eq!(entry.audit.detail.as_deref(), Some("approval request 3"));
     assert_eq!(entry.audit.at, NOW);
+}
+
+/// #739: a `start-sessions` grant stored before `max_active` existed reads with the default,
+/// and keeps its own hourly cap and confirmation.
+#[tokio::test]
+async fn a_start_grant_stored_before_max_active_reads_with_the_default() {
+    const BEFORE_MAX_ACTIVE: cockpit_turso::MigrationSet = cockpit_turso::MigrationSet {
+        owner: "authorization",
+        migrations: cockpit_authorization::MIGRATIONS.migrations.split_at(3).0,
+    };
+    let path = common::database_path("max-active-migration");
+    let before = Database::open(&path, &[BEFORE_MAX_ACTIVE]).await.unwrap();
+    let write = before.write().await.unwrap();
+    write
+        .execute(
+            "INSERT INTO authorization_grants
+                (id, holder, permission, scope_kind, scope_id, granted_at, starts_per_hour,
+                 starts_unconfirmed)
+             VALUES (7, 'coordinator', 'start-sessions', 'owner', NULL, 1, 10, 1),
+                    (8, 'coordinator', 'observe-sessions', 'owner', NULL, 2, NULL, 0)",
+            (),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    drop(before);
+
+    let after = Database::open(&path, &[cockpit_authorization::MIGRATIONS])
+        .await
+        .unwrap();
+    let read = after.read().await.unwrap();
+
+    let held = active_grants(&read, &session("coordinator")).await.unwrap();
+    let terms: Vec<Option<StartTerms>> = held.iter().map(|grant| grant.start_terms).collect();
+    assert_eq!(
+        terms,
+        [
+            Some(StartTerms {
+                per_hour: 10,
+                max_active: StartTerms::DEFAULT_MAX_ACTIVE,
+                needs_confirmation: false,
+            }),
+            None,
+        ]
+    );
 }
