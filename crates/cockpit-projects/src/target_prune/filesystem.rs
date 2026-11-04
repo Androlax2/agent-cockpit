@@ -151,7 +151,10 @@ fn eligibility(
     if crate::sweep::has_unpushed_commits(git, &stored.checkout.path)
         .map_err(|error| error.to_string())?
     {
-        return Err("the clone has unpushed commits".to_owned());
+        return Err(
+            "the clone has unpushed commits (on no remote-tracking branch; fetch if they were pushed)"
+                .to_owned(),
+        );
     }
     if let Some(ended) = evidence.ended_sessions {
         return Ok(format!("observed ended sessions: {ended}"));

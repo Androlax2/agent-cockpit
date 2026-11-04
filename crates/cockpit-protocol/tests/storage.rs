@@ -40,7 +40,7 @@ fn an_unavailable_measurement_is_not_a_complete_zero() {
 #[test]
 fn a_clone_row_says_whether_prune_would_accept_it() {
     for prune in [
-        json!({"kind":"eligible", "proof":"observed ended sessions: 4", "confirmation_required":true}),
+        json!({"kind":"eligible", "confirmation_required":true}),
         json!({"kind":"kept", "reason":"the clone has unpushed commits"}),
     ] {
         let value = json!({"kind":"storage", "clones":[{"checkout":2,"project":"app","incarnation":1,
@@ -49,4 +49,13 @@ fn a_clone_row_says_whether_prune_would_accept_it() {
         let reply: Reply = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(reply).unwrap(), value);
     }
+}
+
+#[test]
+fn a_clone_row_from_a_daemon_without_verdicts_still_reads() {
+    let value = json!({"kind":"storage", "clones":[{"checkout":2,"project":"app","incarnation":1,
+        "target":"/p/.parallel/app/feature/target","holder":null,
+        "measurement":{"kind":"missing"}}],"truncated":false});
+    let reply: Reply = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(reply).unwrap(), value);
 }

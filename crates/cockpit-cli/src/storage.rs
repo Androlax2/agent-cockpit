@@ -54,12 +54,12 @@ fn row(clone: &CloneStorageView) -> String {
         TargetSizeView::Unavailable { reason } => ("-".to_owned(), "unavailable", reason.as_str()),
     };
     let (prune, reason) = match &clone.prune {
-        PruneVerdictView::Eligible {
+        Some(PruneVerdictView::Eligible {
             confirmation_required: true,
-            ..
-        } => ("eligible", reason),
-        PruneVerdictView::Eligible { .. } => ("eligible-auto", reason),
-        PruneVerdictView::Kept { reason } => ("kept", reason.as_str()),
+        }) => ("eligible", reason),
+        Some(PruneVerdictView::Eligible { .. }) => ("eligible-auto", reason),
+        Some(PruneVerdictView::Kept { reason }) => ("kept", reason.as_str()),
+        None => ("-", "the daemon reported no prune verdict"),
     };
     format!(
         "{}\t{}\t{}\t{bytes}\t{status}\t{}\t{prune}\t{}\t{}",
@@ -77,9 +77,10 @@ fn eligible_total(clones: &[CloneStorageView]) -> String {
     let eligible: Vec<u64> = clones
         .iter()
         .filter_map(|clone| match (&clone.prune, &clone.measurement) {
-            (PruneVerdictView::Eligible { .. }, TargetSizeView::Complete { apparent_bytes }) => {
-                Some(*apparent_bytes)
-            }
+            (
+                Some(PruneVerdictView::Eligible { .. }),
+                TargetSizeView::Complete { apparent_bytes },
+            ) => Some(*apparent_bytes),
             _ => None,
         })
         .collect();
@@ -226,10 +227,13 @@ mod tests {
             measurement: TargetSizeView::Unavailable {
                 reason: "permission denied".to_owned(),
             },
+            prune: Some(PruneVerdictView::Kept {
+                reason: "permission denied".to_owned(),
+            }),
         };
         assert_eq!(
             row(&clone),
-            "2\tapp\t1\t-\tunavailable\tlive\\t\\u{1b}\\n\t/clone/target\tpermission denied"
+            "2\tapp\t1\t-\tunavailable\tlive\\t\\u{1b}\\n\tkept\t/clone/target\tpermission denied"
         );
     }
 }

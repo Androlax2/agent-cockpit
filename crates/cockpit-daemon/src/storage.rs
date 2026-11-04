@@ -366,8 +366,9 @@ async fn drive(context: &Context, operation: i64) -> Result<PruneStatus, Protoco
     }
 }
 
-/// Each clone's verdict uses the evidence and policy prune itself would use, so the report
-/// never calls a clone eligible that prune would refuse at that moment.
+/// Each clone's verdict uses the evidence and policy prune itself would use, applied to the
+/// report's measurement. Prune measures again with its own limits (mount boundaries, manifest
+/// size), so it can still refuse a clone the report called eligible.
 async fn report(context: &Context) -> Result<Reply, ProtocolError> {
     let report = cockpit_projects::clone_storage(&context.database)
         .await
@@ -376,23 +377,27 @@ async fn report(context: &Context) -> Result<Reply, ProtocolError> {
         let read = context.database.read().await.map_err(internal)?;
         let mut observed = Vec::with_capacity(report.clones.len());
         for clone in &report.clones {
-            observed.push(evidence(&read, clone.checkout.id).await?);
+            observed.push(evidence(&read, clone.checkout.id).await);
         }
         observed
     };
     let mut clones = Vec::with_capacity(report.clones.len());
     for (clone, observed) in report.clones.into_iter().zip(observed) {
-        let prune = cockpit_projects::prune_verdict(
-            &context.database,
-            &context.git,
-            &clone,
-            &context.policy,
-            &observed,
-        )
-        .await
-        .unwrap_or_else(|error| PruneVerdict::Kept {
+        let undecided = |error: String| PruneVerdict::Kept {
             reason: format!("could not decide: {error}"),
-        });
+        };
+        let prune = match observed {
+            Ok(observed) => cockpit_projects::prune_verdict(
+                &context.database,
+                &context.git,
+                &clone,
+                &context.policy,
+                &observed,
+            )
+            .await
+            .unwrap_or_else(|error| undecided(error.to_string())),
+            Err(error) => undecided(error.message),
+        };
         clones.push(clone_view(clone, prune));
     }
     Ok(Reply::Storage {
@@ -417,16 +422,15 @@ fn clone_view(clone: CloneStorage, prune: PruneVerdict) -> CloneStorageView {
             .occupancy
             .map(|occupancy| occupancy.holder.to_string()),
         measurement: measurement(clone.measurement),
-        prune: match prune {
+        prune: Some(match prune {
             PruneVerdict::Eligible {
-                proof,
                 confirmation_required,
+                ..
             } => PruneVerdictView::Eligible {
-                proof,
                 confirmation_required,
             },
             PruneVerdict::Kept { reason } => PruneVerdictView::Kept { reason },
-        },
+        }),
     }
 }
 

@@ -10,7 +10,9 @@ pub struct CloneStorageView {
     pub target: String,
     pub holder: Option<String>,
     pub measurement: TargetSizeView,
-    pub prune: PruneVerdictView,
+    /// Absent from a daemon older than the verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune: Option<PruneVerdictView>,
 }
 
 /// What `storage prune` would decide now for this clone's measured `target/`; it
@@ -18,8 +20,8 @@ pub struct CloneStorageView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PruneVerdictView {
+    /// `confirmation_required` is false only where automatic policy would prune it.
     Eligible {
-        proof: String,
         confirmation_required: bool,
     },
     Kept {

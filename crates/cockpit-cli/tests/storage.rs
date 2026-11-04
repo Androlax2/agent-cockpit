@@ -111,9 +111,9 @@ async fn storage_preserves_measurement_status_and_exits_unsuccessfully_on_partia
                     target: "/registered/target".to_owned(),
                     holder: None,
                     measurement,
-                    prune: PruneVerdictView::Kept {
+                    prune: Some(PruneVerdictView::Kept {
                         reason: "fixture".to_owned(),
-                    },
+                    }),
                 }],
                 truncated,
             }),
@@ -146,7 +146,7 @@ fn scripted_row(checkout: i64, apparent_bytes: u64, prune: PruneVerdictView) -> 
         target: format!("/registered/{checkout}/target"),
         holder: None,
         measurement: TargetSizeView::Complete { apparent_bytes },
-        prune,
+        prune: Some(prune),
     }
 }
 
@@ -166,7 +166,6 @@ async fn storage_shows_each_clone_prune_verdict_and_the_eligible_total() {
                     2,
                     8,
                     PruneVerdictView::Eligible {
-                        proof: "observed ended sessions: 4".to_owned(),
                         confirmation_required: true,
                     },
                 ),
@@ -174,7 +173,6 @@ async fn storage_shows_each_clone_prune_verdict_and_the_eligible_total() {
                     3,
                     16,
                     PruneVerdictView::Eligible {
-                        proof: "observed ended sessions: 5".to_owned(),
                         confirmation_required: false,
                     },
                 ),
@@ -258,7 +256,7 @@ fn storage_keeps_a_clone_with_unpushed_commits_and_counts_only_eligible_clones()
     assert!(row(&ids[0]).contains("\teligible\t"), "{output}");
     assert!(row(&ids[1]).contains("\tkept\t"), "{output}");
     assert!(
-        row(&ids[1]).ends_with("the clone has unpushed commits"),
+        row(&ids[1]).contains("\tthe clone has unpushed commits"),
         "{output}"
     );
     assert!(
