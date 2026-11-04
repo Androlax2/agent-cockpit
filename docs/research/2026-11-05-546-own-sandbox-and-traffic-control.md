@@ -166,10 +166,11 @@ The design below closes each by construction or names the test that must prove i
 Also reworded, not re-scoped: #66 (cutover removes the native-replaced engines), #150 (final
 audit covers Torlek-owned code), #568 (macOS needs a native backend), #500 and #501 (remote
 hosts need user namespaces and Landlock, not Greywall), #390 (containers use the native
-proxy), #59 (its proxy placeholders become credentials bound to hosts by proposed issue 4; today no
-launch requests a placeholder, only the launch token's pass-through).
-Unaffected: #155, #352, #716, #718 and #754 (its rule that the sandbox hides `~/.config/gh`
-applies to any backend).
+proxy), #59 (its proxy placeholders become credentials bound to hosts by proposed issue 4).
+Since #754 (merged in #819) the project's `GH_TOKEN` enters the sandbox: no launch requests a
+placeholder, because Git sends the token inside Basic credentials that Greyproxy cannot swap.
+Proposed issue 4 takes it out; #754's rule that the sandbox hides `~/.config/gh` applies to any
+backend. Unaffected: #155, #352, #716 and #718.
 
 ## Threat model for an agent session
 
@@ -183,7 +184,7 @@ OS user. A kernel exploit is out of scope; a sandbox escape that needs no kernel
 | **May** read and write its checkout, session folder and temp folder; read system files and its provider's own folders; run builds and tests | Greywall profile + `--allow-path` | Mount view + Landlock |
 | **May** reach its provider's API and hosts granted to it | Greyproxy session rules from the engine profile | Per-session proxy, allowlist from the provider adapter and grants |
 | **May** talk to Torlek on the agent socket; every verb checked against its grants | Agent channel, `cockpit-authorization` | Unchanged |
-| **Must not** read owner credentials (`~/.ssh/id_*`, `~/.gnupg`, cloud and Git credentials, keyrings, `~/.config/gh` once #754 lands) or other projects | Deny masks | Not mounted, and Landlock denies by omission |
+| **Must not** read owner credentials (`~/.ssh/id_*`, `~/.gnupg`, cloud and Git credentials, keyrings, `~/.config/gh`, #754) or other projects | Deny masks | Not mounted, and Landlock denies by omission |
 | **Must not** persist outside the session: Git hooks and config, `.torlek`, `.envrc`, IDE run configurations, shell start-up, `~/.local/bin`, systemd and autostart units | `denyWrite` | Read-only binds over those paths inside writable trees |
 | **Must not** reach Torlek's state, owner socket, logs or configuration, or the proxy's own state | Deny masks | Not mounted; the proxy has no state on disk |
 | **Must not** signal, trace or connect to other sessions' or the owner's processes and sockets | PID namespace; ptrace denied; named sockets under read-only folders stay connectable | PID namespace, Landlock signal, abstract-socket and (ABI 9) named-socket rules, seccomp |
@@ -456,7 +457,7 @@ tests and do not include review or CI waits.
 | 1 | Native Linux launcher behind `agents.sandbox_backend` | Through the daemon with a fake provider: checkout writable; `.git/hooks`, `.git/config`, `.torlek` not; `~/.ssh/id_*` and the state database unreadable; no interface but `lo`; `Seccomp: 2`; a second Unix user starts a session (#628); each provider launched with its own sandbox off; evidence names the backend and Landlock ABI | alpha.4 | #628, #434 |
 | 2 | Provider hosts and paths in the provider adapters | Each adapter declares its hosts and folders; a test compares them with the Greywall profiles they replace; attribution kept | alpha.4 | Greywall `--profile` |
 | 3 | Per-session egress proxy | Allowed host connects; unknown host `403` under 1 s with a reason; loopback, private, link-local, metadata and IP literals refused; SNI mismatch refused; no DNS or UDP from inside | alpha.4 | #495 |
-| 4 | Selective TLS interception for credential hosts | A host with a bound credential (for example the project's `GH_TOKEN`, #754) is intercepted with a per-session CA whose key never leaves the launcher's memory; only the certificate enters the session, with trust variables per runtime; the credential is added on that host only and never enters the sandbox; every other host stays a plain tunnel; a pinned client's failure names the host | alpha.4 | #59 placeholders, #527 |
+| 4 | Selective TLS interception for credential hosts | A host with a bound credential (for example the project's `GH_TOKEN`, #754) is intercepted with a per-session CA whose key never leaves the launcher's memory; only the certificate enters the session, with trust variables per runtime; the credential is added on that host only and never enters the sandbox, so `git push` over HTTPS and `gh` work with no token inside; every other host stays a plain tunnel; a pinned client's failure names the host | alpha.4 | #59 placeholders, #754's pass-through, #527 |
 | 5 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always for the project (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674 (scope text changes per D4), #641 |
 | 6 | Live enforcement CI for the native backend | #433's probes on disposable Linux and WSL2 runners, both backends, four sequential launches | alpha.4 | #433 |
 | 7 | Red-team the native sandbox | #685 section 1 against the native backend; one issue per finding | alpha.4 | #685 |
