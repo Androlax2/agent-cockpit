@@ -26,9 +26,8 @@ Status: proposed; platform enforcement `validate`
   upstream looks unmaintained, so Theo iterates on the forks. The release bundle pins exact fork
   revisions and builds them; readiness reports the installed fork version.
 - **Being replaced (owner direction, 2026-11-05):** Torlek's own sandbox and traffic control
-  replace both engines; options, design and migration are in the
-  [#546 research](../../research/2026-11-05-546-own-sandbox-and-traffic-control.md), awaiting
-  Theo's decisions.
+  replace both engines; options, design, migration and Theo's decisions of 2026-11-05 are in
+  the [#546 research](../../research/2026-11-05-546-own-sandbox-and-traffic-control.md).
 - Rootless Docker per project: dedicated engine identity, checkout-specific containers,
   volumes, networks and ports. Same-UID separation is not a hostile-tenant boundary.
 - Windows: everything runs inside the chosen WSL2 distribution. Keep projects on the Linux

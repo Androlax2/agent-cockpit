@@ -9,7 +9,7 @@ engine removal or follow-up issue; the issues proposed at the end are not filed.
 [repository-placement report](2026-11-02-546-engine-repositories.md) answered the previous
 question (import the Go engines or keep them separate) and is superseded by this direction.
 
-## Recommendation and decisions still needed
+## Recommendation and decisions
 
 Build the replacement for Linux and WSL2 first, from five pieces Torlek owns:
 
@@ -51,7 +51,9 @@ hundreds of milliseconds. The case rests on correctness, one lifecycle and owner
   #674's text changes from the whole profile to the project.
 - [x] D5 decided 2026-11-05: A, the `landlock` crate and `seccompiler`, pinned exactly; the
   workspace keeps `unsafe_code = "deny"`.
-- [ ] Theo decides [D6](#decisions-for-the-owner) and approves or declines each
+- [x] D6 decided 2026-11-05: A, stages 1 to 4 in v0.1.0-alpha.4, stage 5 in v0.1.0-alpha.5,
+  macOS in Roadmap: macOS.
+- [ ] Theo approves or declines each
   [proposed issue](#proposed-issues-not-filed).
 
 ## What was measured
@@ -441,12 +443,15 @@ no dependency.
 stage 5 in v0.1.0-alpha.5, macOS in Roadmap: macOS. **B:** a new milestone between alpha.4 and
 alpha.5 for the native sandbox. **C:** after the Beta 2 cutover.
 
+**Decided 2026-11-05: A.** Stages 1 to 4 in v0.1.0-alpha.4, stage 5 (remove Greywall and
+Greyproxy) in v0.1.0-alpha.5, macOS in Roadmap: macOS.
+
 ## Proposed issues (not filed)
 
 Ordered; each is one pull request or a small series. Times are for one agent with focused
 tests and do not include review or CI waits.
 
-| # | Title | Acceptance | Milestone (D6 A) | Supersedes or changes |
+| # | Title | Acceptance | Milestone (D6) | Supersedes or changes |
 | --- | --- | --- | --- | --- |
 | 1 | Native Linux launcher behind `agents.sandbox_backend` | Through the daemon with a fake provider: checkout writable; `.git/hooks`, `.git/config`, `.torlek` not; `~/.ssh/id_*` and the state database unreadable; no interface but `lo`; `Seccomp: 2`; a second Unix user starts a session (#628); each provider launched with its own sandbox off; evidence names the backend and Landlock ABI | alpha.4 | #628, #434 |
 | 2 | Provider hosts and paths in the provider adapters | Each adapter declares its hosts and folders; a test compares them with the Greywall profiles they replace; attribution kept | alpha.4 | Greywall `--profile` |
@@ -459,6 +464,28 @@ tests and do not include review or CI waits.
 | 9 | Remove Greywall and Greyproxy | Stage 5 above, including the confirmed removal of the old unit and state | alpha.5 | #495, #527, #66 wording |
 | 10 | Per-session resource limits | A fork bomb or memory hog in one session leaves the others running; fallback reported | Hardening: daemon, sessions, CLI and TUI | |
 | 11 | macOS Seatbelt backend | Same probe suite on a macOS runner | Roadmap: macOS | #527, #568 |
+
+### Current alpha.4 issues these supersede
+
+The open issues in v0.1.0-alpha.4 on 2026-11-05, against the proposed issues above. This
+report closes and rewrites nothing; Theo does that when filing.
+
+| Current issue | Disposition | By proposed issue |
+| --- | --- | --- |
+| [#628](https://github.com/Androlax2/agent-cockpit/issues/628) shared seccomp folder | Superseded: the filter is installed from memory; its second-user acceptance becomes a regression test | 1 |
+| [#434](https://github.com/Androlax2/agent-cockpit/issues/434) settings files of failed and ended sessions | Superseded: the policy passes on an inherited descriptor, no settings file exists | 1 |
+| [#495](https://github.com/Androlax2/agent-cockpit/issues/495) own the Greyproxy lifecycle | Superseded: no shared proxy service; its fresh-home and "present versus working" checks move to the launcher's probe launch | 1, 3, 9 |
+| [#641](https://github.com/Androlax2/agent-cockpit/issues/641) request to a new host hangs | Superseded: an unknown host is refused at once and becomes an owner decision | 3, 5 |
+| [#674](https://github.com/Androlax2/agent-cockpit/issues/674) refuse at once, owner decides | Kept and rewritten for the native proxy: it can carry proposed issue 5 itself; "allow always" covers the project (D4) | 5 |
+| [#433](https://github.com/Androlax2/agent-cockpit/issues/433) live enforcement CI | Not superseded: the same probes stay the Greywall baseline; proposed issue 6 runs them on the native backend, or #433 is widened to both | 6 |
+| [#685](https://github.com/Androlax2/agent-cockpit/issues/685) red-team | Not superseded: its section 1 targets the native sandbox once it ships | 7 |
+| [#482](https://github.com/Androlax2/agent-cockpit/issues/482) mount source cleanup | Unaffected: the folder stays daemon-owned | |
+| [#382](https://github.com/Androlax2/agent-cockpit/issues/382) repository protection | Unaffected | |
+| [#546](https://github.com/Androlax2/agent-cockpit/issues/546) this research | Stays open for Theo | |
+
+Outside alpha.4, proposed issue 4 supersedes [#527](https://github.com/Androlax2/agent-cockpit/issues/527)
+(Roadmap: macOS) and takes over the proxy placeholders of
+[#59](https://github.com/Androlax2/agent-cockpit/issues/59) (v0.1.0-beta.2).
 
 ## Sources, limits and what was not measured
 
