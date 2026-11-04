@@ -247,7 +247,7 @@ async fn a_worker_whose_item_is_not_done_is_not_ended() {
     assert!(refused.ends_with("exit=1\n"), "{refused}");
     assert!(
         refused.contains(&format!(
-            "session {} has not finished its work",
+            "session {} has not finished its work: the task list records no item it finished since its launch",
             started.worker
         )),
         "{refused}"

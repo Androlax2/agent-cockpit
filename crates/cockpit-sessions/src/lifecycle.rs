@@ -685,9 +685,37 @@ impl Sessions {
     /// [`Self::end`] for `ender`, whom the session's reason then names (#713). Who may end
     /// which session is the caller's rule: this only records who did.
     pub async fn end_by(&self, id: &SessionId, ender: &Ender) -> Result<Session, Error> {
+        self.end_by_when(id, ender, async |_| Ok::<(), Error>(()))
+            .await
+            .map(|(session, ())| session)
+    }
+
+    /// [`Self::end_by`] once `decide` allows it (#713). `decide` sees the session under its
+    /// lock, right before its agent is stopped, so what it checks (a grant, the task list)
+    /// is the state the end acts on; an error from it refuses the end, which does not begin.
+    /// Its value comes back with the ended session, for the caller's record of the end.
+    pub async fn end_by_when<T, E: From<Error>>(
+        &self,
+        id: &SessionId,
+        ender: &Ender,
+        decide: impl AsyncFnOnce(&Session) -> Result<T, E>,
+    ) -> Result<(Session, T), E> {
         let reason = ender.reason();
         let operation = self.lock_to_stop(id, "end").await?;
         let session = self.get(id).await?;
+        let decided = decide(&session).await?;
+        let ended = self.end_locked(&operation, id, session, &reason).await?;
+        Ok((ended, decided))
+    }
+
+    /// The end itself, under `operation`'s lock: see [`Self::end`].
+    async fn end_locked(
+        &self,
+        operation: &Operation,
+        id: &SessionId,
+        session: Session,
+        reason: &str,
+    ) -> Result<Session, Error> {
         if matches!(
             session.state,
             SessionState::Running | SessionState::Launching | SessionState::Stopping { .. }
@@ -695,12 +723,12 @@ impl Sessions {
             self.tmux()?;
             return self
                 .stop(
-                    &operation,
+                    operation,
                     id,
                     &[session.state],
                     StopTarget::Ended,
                     "end",
-                    Some(&reason),
+                    Some(reason),
                 )
                 .await;
         }
@@ -716,7 +744,7 @@ impl Sessions {
             id,
             &[SessionState::Asleep, SessionState::Failed],
             SessionState::Ended,
-            Some(&reason),
+            Some(reason),
             "end",
         )
         .await?;

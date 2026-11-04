@@ -336,6 +336,30 @@ pub async fn session_work(
     Ok(work)
 }
 
+/// One session's items alone: what deciding its finished label needs (#713), without the
+/// aggregate over every session that [`session_work`] builds for the cards.
+pub async fn work_of(connection: &Connection, session: &SessionId) -> Result<SessionWork, Error> {
+    let mut rows = connection
+        .query(
+            "SELECT
+                (SELECT count(*) FROM tasks_items WHERE doing_session = ?1),
+                (SELECT max(finished_order) FROM tasks_items
+                 WHERE finished_by = ?1 AND status = 'done' AND finished_order IS NOT NULL)",
+            [session.as_str()],
+        )
+        .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| invalid_row("tasks_items", "a count query returned no row".to_owned()))?;
+    let doing = u32::try_from(row.get::<i64>(0)?)
+        .map_err(|error| invalid_row("tasks_items", error.to_string()))?;
+    Ok(SessionWork {
+        doing,
+        last_finished_order: row.get::<Option<i64>>(1)?,
+    })
+}
+
 /// The item `session` finished last, by commit order, if any: what a coordinator's audit of
 /// ending that session names (#713). The owner's `reopen` clears `finished_by`, so a reopened
 /// item is not it.

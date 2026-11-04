@@ -15,6 +15,7 @@ pub use images::{IMAGE_MAX_BYTES, IMAGES_PER_ITEM_MAX, Image, add_image, image};
 pub use items::{
     ListFilter, add, approve, decline, delete, edit, finish, item, latest_finished_item, list,
     propose, reopen, report_blocker, session_work, set_priority, set_queued, start, unwait, wait,
+    work_of,
 };
 pub use model::{
     Actor, Draft, DraftTarget, Edit, ImageInfo, Item, ItemId, Kind, NewItem, NextAction, Priority,

@@ -24,7 +24,12 @@ answered below.
 - **The verb is `torlek agent end SESSION`** (`agent-end` on the agent socket), beside `agent
   start`. It runs in the stop lane like the owner's end (#217), never in control (#32). The
   session's reason reads `ended by session <coordinator>`, not `ended by the owner`
-  (`cockpit_sessions::Ender`), so the card tells the two apart.
+  (`cockpit_sessions::Ender`), so the card tells the two apart. The grant, the `started_by`
+  link and the finished label are decided under the worker's lock, right before its agent is
+  stopped (`Sessions::end_by_when`): a grant revoked or an item taken in between refuses the
+  end instead of being missed. **Known limit:** the stopping state keeps no ender, so an end a
+  daemon restart interrupts is finished on restore with `ended by the owner`, as every
+  interrupted end was before #713; the `ended` audit row stays the record of who asked.
 - **Every end is audited** as `ended` (`AuditedAction::Ended`): actor the coordinator, target
   the worker, detail `item <id>` naming the item it finished last. A refused end is not
   audited. Migration 4 of `cockpit-authorization` rebuilds the audit table for the new action,

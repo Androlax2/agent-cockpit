@@ -24,10 +24,9 @@ use crate::daemon::{absolute_dir, utf8_words};
 const WATCH_EVERY: Duration = Duration::from_secs(2);
 /// How often `agent inbox` asks again while nothing is handed over.
 const INBOX_EVERY: Duration = Duration::from_secs(2);
-/// A start launches an agent, which can take longer than a request usually may.
-const START_DEADLINE: Duration = Duration::from_secs(120);
-/// An end waits out the worker's grace and kill wait, like the owner's `session end`.
-const END_DEADLINE: Duration = Duration::from_secs(120);
+/// A start launches an agent and an end waits out its grace and kill wait, like the owner's
+/// `session end`: longer than a request usually may.
+const LIFECYCLE_DEADLINE: Duration = Duration::from_secs(120);
 
 /// `cockpit agent sessions [--watch]`: one line per other session; with `--watch`, then only
 /// the line of a session that changed or appeared, and `ID\tended` for one that left the
@@ -197,7 +196,7 @@ pub(crate) fn end(arguments: &[OsString]) -> Result<ExitCode, String> {
                 launch_token: crate::agent::launch_token(),
                 session,
             },
-            END_DEADLINE,
+            LIFECYCLE_DEADLINE,
         ) {
             Ok(Reply::AgentEnded { session }) => {
                 outln!("ended session {session}");
@@ -250,7 +249,7 @@ pub(crate) fn start(arguments: &[OsString]) -> Result<ExitCode, String> {
             model,
             effort,
         },
-        START_DEADLINE,
+        LIFECYCLE_DEADLINE,
     );
     Ok(match asked {
         Ok(Reply::AgentStarted { session }) => {

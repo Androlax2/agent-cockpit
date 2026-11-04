@@ -35,6 +35,7 @@ use cockpit_sessions::{
     Addressed, AgentState, Ender, QuestionSource, Session, SessionId, SessionReport, SessionState,
     Sessions, StartRequest,
 };
+use cockpit_tasks::SessionWork;
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
 use tokio::sync::Notify;
@@ -572,49 +573,50 @@ async fn end(
             UnblockedBy::Agent,
         ));
     }
-    // One transaction reads the grant, the target and its items, so the end is decided on
-    // one state; the end itself then runs under the session's own lock.
-    let read = context.database.read().await?;
-    let decision = cockpit_authorization::evaluate(
-        &read,
-        &Actor::Session(coordinator.clone()),
-        Permission::EndSessions,
-        &Scope::Session(target_holder.clone()),
-    )
-    .await?;
-    let grant = granted(&coordinator, decision.outcome)?;
-    let target_session = cockpit_sessions::session(&read, &target_id).await?;
-    if target_session.started_by.as_ref().map(SessionId::as_str) != Some(coordinator.as_str()) {
-        return Err(refused(
-            ErrorCode::NotAuthorized,
-            format!(
-                "session {} did not start session {target}; only the owner ends it",
-                coordinator.as_str()
-            ),
-            "end only a session you started with `torlek agent start`".to_owned(),
-            UnblockedBy::Owner,
-        ));
-    }
-    refuse_if_over(&target_session)?;
-    let work = cockpit_tasks::session_work(&read).await?;
-    if !crate::sessions::is_finished(&target_session, &work) {
-        let doing = work.get(&target_holder).map_or(0, |work| work.doing);
-        return Err(refused(
-            ErrorCode::Conflict,
-            format!(
-                "session {target} has not finished its work: it is doing {doing} item(s) and the task list records no item it finished since its launch"
-            ),
-            format!("end session {target} once `torlek todo done` marks its item done"),
-            UnblockedBy::Agent,
-        ));
-    }
-    let finished_item = cockpit_tasks::latest_finished_item(&read, &target_holder).await?;
-    drop(read);
-    let ended = context
+    // Decided under the target's lock, right before its agent is stopped: a grant revoked, or
+    // an item the worker took, between a check and the end would otherwise be missed.
+    let (ended, (grant, finished_item)) = context
         .sessions
-        .end_by(
+        .end_by_when(
             &target_id,
             &Ender::Coordinator(SessionId::parse(coordinator.as_str())?),
+            async |target_session: &Session| {
+                let read = context.database.read().await?;
+                let decision = cockpit_authorization::evaluate(
+                    &read,
+                    &Actor::Session(coordinator.clone()),
+                    Permission::EndSessions,
+                    &Scope::Session(target_holder.clone()),
+                )
+                .await?;
+                let grant = granted(&coordinator, decision.outcome)?;
+                if target_session.started_by.as_ref().map(SessionId::as_str)
+                    != Some(coordinator.as_str())
+                {
+                    return Err(refused(
+                        ErrorCode::NotAuthorized,
+                        format!(
+                            "session {} did not start session {target}; only the owner ends it",
+                            coordinator.as_str()
+                        ),
+                        "end only a session you started with `torlek agent start`; ask the owner for any other".to_owned(),
+                        UnblockedBy::Agent,
+                    ));
+                }
+                refuse_if_over(target_session)?;
+                let work = cockpit_tasks::work_of(&read, &target_holder).await?;
+                if !crate::sessions::is_finished_with(target_session, &work) {
+                    return Err(unfinished(&target, target_session, &work));
+                }
+                let finished_item = cockpit_tasks::latest_finished_item(&read, &target_holder)
+                    .await?
+                    .ok_or_else(|| {
+                        internal(&format!(
+                            "session {target} is labelled finished, but the task list names no item it finished"
+                        ))
+                    })?;
+                Ok::<_, Failed>((grant, finished_item))
+            },
         )
         .await?;
     tracing::info!(
@@ -623,22 +625,47 @@ async fn end(
         "a coordinator ended a session it started"
     );
     // The session is over: from here an error must not read as an end that did not happen.
-    let detail = finished_item.map_or_else(
-        || "finished its work".to_owned(),
-        |item| format!("item {}", item.0),
-    );
     if let Err(Failed(error)) = record_ended(
         &context.database,
         &coordinator,
         grant,
         &target_holder,
-        detail,
+        format!("item {}", finished_item.0),
     )
     .await
     {
         tracing::error!(session = %ended.id, ?error, "an end's `ended` entry was not audited");
     }
     Ok(Reply::AgentEnded { session: target })
+}
+
+/// Why `target` is not finished, in the words of the rule that fails: its state, the items
+/// it is doing, or the item it finished since its launch that the task list does not record.
+fn unfinished(target: &str, session: &Session, work: &SessionWork) -> Failed {
+    let (why, then) = match session.state {
+        SessionState::Launching => (
+            "it is still launching".to_owned(),
+            format!("end session {target} once it runs and finishes its item"),
+        ),
+        SessionState::Stopping { .. } => (
+            "it is already stopping".to_owned(),
+            format!("`torlek agent sessions` shows session {target} once its stop is over"),
+        ),
+        _ if work.doing > 0 => (
+            format!("it is doing {} item(s)", work.doing),
+            format!("end session {target} once `torlek todo done` marks its item done"),
+        ),
+        _ => (
+            "the task list records no item it finished since its launch".to_owned(),
+            format!("end session {target} once `torlek todo done` marks its item done"),
+        ),
+    };
+    refused(
+        ErrorCode::Conflict,
+        format!("session {target} has not finished its work: {why}"),
+        then,
+        UnblockedBy::Agent,
+    )
 }
 
 /// Audits the end of `target` by `coordinator`, with the item it finished as the detail.

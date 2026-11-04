@@ -346,9 +346,7 @@ pub(crate) async fn card_inputs(sessions: &Sessions) -> Result<CardInputs, Faile
 }
 
 /// Each session's items alone: what the finished label needs.
-pub(crate) async fn task_work(
-    sessions: &Sessions,
-) -> Result<HashMap<TaskSession, SessionWork>, Failed> {
+async fn task_work(sessions: &Sessions) -> Result<HashMap<TaskSession, SessionWork>, Failed> {
     let read = sessions.database().read().await.map_err(Error::from)?;
     Ok(cockpit_tasks::session_work(&read).await?)
 }
@@ -361,6 +359,16 @@ pub(crate) async fn task_work(
 /// session mid-launch, mid-stop, failed or ended is not labelled: the failed one needs the
 /// owner, the ended one has nothing left to exit.
 pub(crate) fn is_finished(session: &Session, items: &HashMap<TaskSession, SessionWork>) -> bool {
+    let id = TaskSession::new(session.id.as_str())
+        .expect("a session id is never empty, so it is a valid task-list session id");
+    items
+        .get(&id)
+        .is_some_and(|work| is_finished_with(session, work))
+}
+
+/// [`is_finished`] with the session's own items (`cockpit_tasks::work_of`), for a decision
+/// about one session (#713).
+pub(crate) fn is_finished_with(session: &Session, work: &SessionWork) -> bool {
     if matches!(
         session.state,
         SessionState::Launching
@@ -373,14 +381,10 @@ pub(crate) fn is_finished(session: &Session, items: &HashMap<TaskSession, Sessio
     let Some(launch_order) = session.working_launch_order else {
         return false;
     };
-    let id = TaskSession::new(session.id.as_str())
-        .expect("a session id is never empty, so it is a valid task-list session id");
-    items.get(&id).is_some_and(|work| {
-        work.doing == 0
-            && work
-                .last_finished_order
-                .is_some_and(|finish_order| finish_order > launch_order)
-    })
+    work.doing == 0
+        && work
+            .last_finished_order
+            .is_some_and(|finish_order| finish_order > launch_order)
 }
 
 pub(crate) fn protocol_error(error: &Error) -> ProtocolError {
