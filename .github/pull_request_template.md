@@ -23,10 +23,11 @@ Closes #
 
 ## Commands run
 
-<!-- Exact commands and their actual outcomes, failures included. A skipped check is not a pass. -->
+<!-- Exact commands and their actual outcomes, failures included. A skipped check is not a pass.
+Agents run cargo directly, not `make` targets (see CLAUDE.md, Tests). -->
 
 ```text
-make greenfield-ci  # exit 0
+CARGO_BUILD_JOBS=2 cargo nextest run --locked -p <crate>  # exit 0
 ```
 
 ## Checklist

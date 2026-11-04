@@ -44,7 +44,8 @@ the betas for a long time ([Releasing](../../RELEASING.md#channels-and-what-each
 | M6 | Beta 3: designed UI and the whole-codebase audits | #69 |
 | M7 | Plugins, then Desktop app and Native phone apps (research) | #73 (Plugins) |
 
-`Hardening` holds follow-ups no release needs.
+`Maintenance: hardening` is the intake for follow-ups no release needs; triage moves each into a
+closable `Hardening: ...` batch.
 
 ## Order inside a milestone
 

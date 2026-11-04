@@ -47,8 +47,9 @@ instead of guessing.
 - Title the pull request as a conventional commit subject, `type(scope): description`: it
   becomes a `CHANGELOG.md` entry ([Releasing](docs/RELEASING.md#changelog)). Say what
   changed, not how; the issue goes in the body.
-- Never force-push. Rebase onto `main` before the pull request is opened; once it is open,
-  merge `main` into the branch (or into a stacked branch) instead of rewriting history.
+- Rebase onto `main` before the pull request is opened. Once it is open, rebase and push
+  with `--force-with-lease` only when GitHub reports a conflict, and only on your own
+  branch: never force-push without the lease, and never to `main` or another branch.
 
 ## Checks
 
@@ -56,6 +57,10 @@ Run focused tests while you work, then the gate for the paths you changed:
 [Development](docs/DEVELOPMENT.md#verification-policy) lists which `make` target covers
 which paths. The pull request's CI is the full gate; a pull request is merged only when
 every check is green.
+
+The `make` targets are for humans and for `apps/`. Coding agents do not run them (not for
+agents, see [CLAUDE.md](CLAUDE.md) Tests): they run cargo directly, for example
+`CARGO_BUILD_JOBS=2 cargo nextest run --locked -p <crate>` in place of `make crates-test`.
 
 Arm auto-merge (`gh pr merge <n> --auto --squash`) once the pull request is ready. `main`
 does not require a branch to be up to date, so rebase only when GitHub reports a conflict:
@@ -80,13 +85,13 @@ GitHub's merge queue is not used:
 ## Milestones
 
 Milestones are releases (decided 2026-11-01): Alpha 1, Alpha 2, Beta 1, Beta 2: cutover,
-Beta 3: designed UI, then Plugins, Desktop app and Native phone apps (research). `Hardening`
-holds follow-ups no release needs. M0 Foundation and M1 Single-session parity closed under
+Beta 3: designed UI, then Plugins, Desktop app and Native phone apps (research). `Maintenance: hardening` is the intake for follow-ups no
+release needs; triage moves each into a closable `Hardening: ...` batch. M0 Foundation and M1 Single-session parity closed under
 their old names; the [refactoring plan](docs/design/greenfield/20-refactoring-plan.md#milestones-and-gates)
 maps the other M-numbers to these names. A release milestone:
 
 - holds about 25 issues at most; a new issue goes to the release it blocks, otherwise to
-  `Hardening`;
+  `Maintenance: hardening`;
 - has one checklist issue (labelled `gate`) that closes with its proof linked;
 - ends with a live acceptance walk by the maintainer before its checklist closes;
 - ships on a channel: alphas from Alpha 1, betas from Beta 1. No stable release is planned
