@@ -45,6 +45,7 @@ mod sessions;
 mod storage;
 mod todo;
 mod tui;
+mod update;
 mod version;
 mod workflow;
 
@@ -108,6 +109,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek doctor [--project DIR]
        torlek tui [--version]
        torlek version [--all]
+       torlek update [check | later | skip | checks on|off]
        torlek daemon install
        torlek todo add TITLE [--project P] [--notes TEXT] [--kind KIND] [--priority 1-6] [--after ID]...
        torlek todo propose TITLE --why TEXT [--project P] [--notes TEXT] [--kind KIND]
@@ -223,7 +225,14 @@ fn main() -> ExitCode {
             storage::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }
         [Some("session"), ..] => match sessions::parse(&arguments[1..]) {
-            Ok(command) => sessions::run(command),
+            Ok(command) => {
+                let is_list = matches!(command, cockpit_protocol::Command::SessionList { .. });
+                let code = sessions::run(command);
+                if is_list && code == ExitCode::SUCCESS {
+                    update::notice_if_due();
+                }
+                code
+            }
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("daemon"), Some("install")] => daemon_install::run(&arguments[2..])
@@ -275,7 +284,13 @@ fn main() -> ExitCode {
             Err(problem) => usage_error(Some(problem)),
         },
         [Some("doctor"), ..] => {
-            doctor::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
+            let code =
+                doctor::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)));
+            update::notice_if_due();
+            code
+        }
+        [Some("update"), ..] => {
+            update::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
         }
         [Some("tui"), ..] => {
             tui::run(&arguments[1..]).unwrap_or_else(|problem| usage_error(Some(problem)))
