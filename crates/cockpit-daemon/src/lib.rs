@@ -244,11 +244,21 @@ impl Instance {
                 .map_err(StartError::Storage)?;
             write.commit().await?;
         }
+        // One that fails stays retiring with its files, fenced from readers; the next start or
+        // `storage outputs prune` retries it.
         match cockpit_processes::recover_output_retirements(&database, &processes).await {
-            Ok(0) => {}
-            Ok(finished) => tracing::info!(finished, "finished interrupted output retirements"),
-            // Its files stay and it stays retiring: no reader can take it, the next start retries.
-            Err(error) => tracing::warn!(%error, "an interrupted output retirement is unfinished"),
+            Ok(recovered) => {
+                if recovered.finished > 0 {
+                    tracing::info!(
+                        finished = recovered.finished,
+                        "finished interrupted output retirements"
+                    );
+                }
+                for (execution, error) in recovered.failed {
+                    tracing::warn!(execution = execution.0, %error, "output retirement unfinished");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "interrupted output retirements not checked"),
         }
         let storage_settings = storage::settings(wiring.environment.clone()).await?;
         let storage = storage::Context {

@@ -152,12 +152,18 @@ async fn each_check_keeps_its_newest_run_and_its_newest_finished_run() {
         .unwrap();
     write.commit().await.unwrap();
 
-    let mut newest = newest_runs(&fixture.database.read().await.unwrap(), &epoch)
-        .await
-        .unwrap();
+    let read = fixture.database.read().await.unwrap();
+    let mut newest = newest_runs(&read, &epoch).await.unwrap();
     newest.sort_unstable();
+    let mut one_by_one = Vec::new();
+    for execution in 1..=4 {
+        if is_newest_run(&read, &epoch, execution).await.unwrap() {
+            one_by_one.push(execution);
+        }
+    }
 
     assert_eq!(newest, vec![2, 3, 4]);
+    assert_eq!(one_by_one, newest, "the one-run check agrees with the list");
 }
 
 #[tokio::test]

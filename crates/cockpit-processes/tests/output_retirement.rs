@@ -240,3 +240,37 @@ async fn a_finished_retirement_is_not_listed_again() {
 
     assert!(listed.is_empty(), "{listed:?}");
 }
+
+#[tokio::test]
+async fn recovery_goes_on_past_an_output_it_cannot_remove() {
+    let home = Home::new();
+    let database = Arc::new(home.open_database().await);
+    let supervisor = home.process_group_supervisor();
+    let stuck = ended_file_run(&home, &database, &supervisor, "stuck").await;
+    let next = ended_file_run(&home, &database, &supervisor, "next").await;
+    let stuck_stdout = supervisor.output_path(&database, stuck, OutputKind::Stdout);
+    std::fs::remove_file(&stuck_stdout).unwrap();
+    std::fs::create_dir(&stuck_stdout).unwrap();
+    retire_in_database(&database, stuck).await;
+    retire_in_database(&database, next).await;
+
+    let recovered = recover_output_retirements(&database, &supervisor)
+        .await
+        .unwrap();
+
+    assert_eq!(recovered.finished, 1);
+    assert_eq!(
+        recovered
+            .failed
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        vec![stuck]
+    );
+    assert!(
+        !supervisor
+            .output_path(&database, next, OutputKind::Stdout)
+            .exists()
+    );
+    assert!(stuck_stdout.is_dir(), "removed what is not a regular file");
+}

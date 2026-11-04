@@ -21,16 +21,22 @@ Issue #406. Decided by Theo on 2026-11-04 (option A for PR 2 of the
 - **Fenced and recoverable.** A retirement rechecks the output and its protections under the
   writer, refuses when anyone holds a reader guard, and commits `retiring` before any file
   goes; from then on no reader guard can be taken. The files go off the async workers, then
-  `retired` is committed. A daemon start finishes a retirement interrupted between the two.
+  `retired` is committed. A daemon start and every `storage outputs prune` retry a retirement
+  interrupted or failed between the two; one that fails again is reported and does not stop
+  the others.
 - **The owner runs it; automation is opt-in.** `torlek storage outputs` reports per project
   what the policy selects (a dry run); `torlek storage outputs prune` retires it. Both are
   owner-only on the Bulk lane. `output_prune_automatic` (off) runs the same pass every
   `output_prune_interval_minutes` (60) over `output_prune_projects` (empty) only.
-- **A finished check run is observed ended at once.** Retention only considers ended runs;
-  the daemon now observes a check run's execution right after recording its receipt instead
-  of waiting for the next reservation sweep (up to 30 s).
-- **Known limits.** One pass considers at most 16 384 outputs and says when it left some
-  out. Apparent bytes are not reclaimed physical space. Citation pins (#314) do not exist
+- **A finished check run is observed right away.** Retention only considers ended runs; the
+  daemon now observes a check run's execution once its receipt is recorded. If its processes
+  are still being torn down, the next reservation sweep (up to 30 s) ends it as before.
+- **Known limits.** "Newest run" is per project and check, not per checkout: a clone's
+  latest run of a check that another clone ran since can be retired (its receipt and tail
+  stay). One pass considers at most 16 384 outputs and says when it left some out; a project
+  cut off by that bound is judged against its budget on the outputs seen. A pass reads each
+  output's protections one query at a time. Apparent bytes are not reclaimed physical
+  space. Citation pins (#314) do not exist
   yet; retiring raw output keeps receipts and claims, so it removes nothing a citation names.
 - **Rejected:** retiring receipts with their output (#314 owns evidence retention), a
   per-check newest-N rule (one newest run per check covers the gate's evidence), and deleting

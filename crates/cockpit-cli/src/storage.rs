@@ -10,10 +10,14 @@ use cockpit_protocol::{
 use crate::daemon::{BULK_DEADLINE, request, unexpected};
 
 pub fn run(arguments: &[OsString]) -> Result<ExitCode, String> {
-    match arguments.first().and_then(|argument| argument.to_str()) {
-        None => {}
-        Some("outputs") => return outputs(&arguments[1..]),
-        Some(_) => return prune(arguments),
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "outputs")
+    {
+        return outputs(&arguments[1..]);
+    }
+    if !arguments.is_empty() {
+        return prune(arguments);
     }
     let reply = match request(Command::StorageReport, BULK_DEADLINE) {
         Ok(reply) => reply,

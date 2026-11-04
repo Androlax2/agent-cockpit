@@ -68,11 +68,11 @@ fn now_ms() -> i64 {
 async fn protection(
     connection: &Connection,
     epoch: &str,
-    newest: &HashSet<i64>,
+    is_newest: bool,
     facts: &OutputFacts,
 ) -> Result<Option<String>, ProtocolError> {
     let id = facts.execution;
-    if newest.contains(&id.0) {
+    if is_newest {
         return Ok(Some("its check's newest run".to_owned()));
     }
     let Some(project) = facts.project.as_deref() else {
@@ -168,7 +168,8 @@ async fn judge(
             if judged.len() == PASS_LIMIT {
                 return Ok((judged, true));
             }
-            let protection = protection(&read, epoch, &newest, &output.facts).await?;
+            let is_newest = newest.contains(&output.facts.execution.0);
+            let protection = protection(&read, epoch, is_newest, &output.facts).await?;
             judged.push(Judged {
                 output,
                 bytes: None,
@@ -205,8 +206,10 @@ async fn retire(context: &Context, judged: &Judged) -> Result<u64, String> {
         if facts != judged.output.facts {
             return Err("it changed since this pass judged it".to_owned());
         }
-        let newest = newest_runs(&write, epoch).await.map_err(|e| e.message)?;
-        if let Some(reason) = protection(&write, epoch, &newest, &facts)
+        let is_newest = cockpit_verification::is_newest_run(&write, epoch, id.0)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(reason) = protection(&write, epoch, is_newest, &facts)
             .await
             .map_err(|e| e.message)?
         {
@@ -233,6 +236,34 @@ async fn retire(context: &Context, judged: &Judged) -> Result<u64, String> {
     Ok(removed)
 }
 
+/// Finishes retirements a failed removal or an interruption left retiring; each that fails
+/// again is a failure of its project. Its files stay, fenced from readers, until one succeeds.
+async fn retry_unfinished(
+    context: &Context,
+) -> Result<BTreeMap<String, Vec<String>>, ProtocolError> {
+    let recovered =
+        cockpit_processes::recover_output_retirements(&context.database, &context.supervisor)
+            .await
+            .map_err(internal)?;
+    let mut unfinished: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    if recovered.failed.is_empty() {
+        return Ok(unfinished);
+    }
+    let read = context.database.read().await.map_err(internal)?;
+    for (id, error) in recovered.failed {
+        let project = cockpit_processes::output_facts(&read, id)
+            .await
+            .map_err(internal)?
+            .project
+            .unwrap_or_default();
+        unfinished
+            .entry(project)
+            .or_default()
+            .push(format!("execution {}: still retiring: {error}", id.0));
+    }
+    Ok(unfinished)
+}
+
 /// Reports, and with `apply` retires, what the owner's policy selects; `only` limits it to
 /// those projects.
 pub(crate) async fn pass(
@@ -240,6 +271,11 @@ pub(crate) async fn pass(
     apply: bool,
     only: Option<&[String]>,
 ) -> Result<Reply, ProtocolError> {
+    let mut unfinished = if apply {
+        retry_unfinished(context).await?
+    } else {
+        BTreeMap::new()
+    };
     let (judged, truncated) = judge(context, only).await?;
     let judged = measure(context, judged).await?;
     let now = now_ms();
@@ -252,6 +288,7 @@ pub(crate) async fn pass(
     for (project, outputs) in by_project {
         let selected = select(&outputs, &context.outputs, now);
         let mut view = OutputRetentionView {
+            failures: unfinished.remove(&project).unwrap_or_default(),
             project,
             outputs: outputs.len() as u64,
             apparent_bytes: outputs.iter().filter_map(|judged| judged.bytes).sum(),
@@ -267,7 +304,6 @@ pub(crate) async fn pass(
             selected_bytes: 0,
             retired: 0,
             retired_bytes: 0,
-            failures: Vec::new(),
         };
         for (judged, _) in outputs.iter().zip(&selected).filter(|(_, is)| **is) {
             view.selected += 1;
@@ -287,6 +323,20 @@ pub(crate) async fn pass(
             }
         }
         projects.push(view);
+    }
+    for (project, failures) in unfinished {
+        projects.push(OutputRetentionView {
+            project,
+            outputs: 0,
+            apparent_bytes: 0,
+            unmeasured: 0,
+            protected: 0,
+            selected: 0,
+            selected_bytes: 0,
+            retired: 0,
+            retired_bytes: 0,
+            failures,
+        });
     }
     Ok(Reply::StorageOutputs {
         projects,

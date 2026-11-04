@@ -13,8 +13,9 @@ pub use output_catalog::{
 pub use output_hold::{OutputGuard, guard_output, guard_output_in, output_users};
 mod output_retirement;
 pub use output_retirement::{
-    OutputRetirement, RetirableOutput, RetiringOutput, begin_output_retirement,
-    finish_output_retirement, recover_output_retirements, retirable_outputs, retiring_outputs,
+    OutputRetirement, RecoveredRetirements, RetirableOutput, RetiringOutput,
+    begin_output_retirement, finish_output_retirement, recover_output_retirements,
+    retirable_outputs, retiring_outputs,
 };
 mod platform;
 mod session;

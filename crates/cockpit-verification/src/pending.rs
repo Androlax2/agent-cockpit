@@ -228,3 +228,22 @@ pub async fn newest_runs(read: &Connection, epoch: &str) -> Result<Vec<i64>, Err
     }
     Ok(newest)
 }
+
+/// Whether `execution` is among [`newest_runs`], looking only at its own check's runs: the
+/// recheck a retirement makes under the writer.
+pub async fn is_newest_run(read: &Connection, epoch: &str, execution: i64) -> Result<bool, Error> {
+    let row = read
+        .prepare(
+            "SELECT EXISTS (SELECT 1 FROM verification_run_identities r
+            WHERE r.origin_epoch = ?1 AND r.execution = ?2 AND (
+                r.execution = (SELECT max(execution) FROM verification_run_identities
+                    WHERE origin_epoch = ?1 AND project = r.project AND check_name = r.check_name)
+                OR r.execution = (SELECT max(execution) FROM verification_run_identities
+                    WHERE origin_epoch = ?1 AND project = r.project AND check_name = r.check_name
+                    AND sealed = 1)))",
+        )
+        .await?
+        .query_row((epoch, execution))
+        .await?;
+    Ok(row.get::<i64>(0)? != 0)
+}

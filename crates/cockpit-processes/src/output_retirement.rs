@@ -157,28 +157,49 @@ pub async fn retiring_outputs(
     Ok(retiring)
 }
 
-/// Finishes every retirement an interruption left between its commit and its last file.
-/// Returns how many it finished; stops at the first failure, which keeps that one retiring.
+/// What [`recover_output_retirements`] finished, and each retirement it could not, which
+/// stays retiring with its files until a later recovery.
+#[derive(Debug, Default)]
+pub struct RecoveredRetirements {
+    pub finished: usize,
+    pub failed: Vec<(ExecutionId, Error)>,
+}
+
+/// Finishes every retirement an interruption or a failed removal left between its commit and
+/// its last file. One that fails again does not stop the others.
 pub async fn recover_output_retirements(
     database: &Database,
     supervisor: &Supervisor,
-) -> Result<usize, Error> {
+) -> Result<RecoveredRetirements, Error> {
     let retiring = {
         let read = database.read().await?;
         retiring_outputs(&read, database.epoch()).await?
     };
-    let count = retiring.len();
+    let mut recovered = RecoveredRetirements::default();
     for output in retiring {
-        let remover = supervisor.clone();
-        let removing = output.clone();
-        tokio::task::spawn_blocking(move || remover.remove_output_files(&removing))
-            .await
-            .map_err(|error| invalid(output.execution, &format!("removal stopped: {error}")))??;
-        let write = database.write().await?;
-        finish_output_retirement(&write, output).await?;
-        write.commit().await?;
+        let execution = output.execution;
+        match finish_removal(database, supervisor, output).await {
+            Ok(()) => recovered.finished += 1,
+            Err(error) => recovered.failed.push((execution, error)),
+        }
     }
-    Ok(count)
+    Ok(recovered)
+}
+
+async fn finish_removal(
+    database: &Database,
+    supervisor: &Supervisor,
+    output: RetiringOutput,
+) -> Result<(), Error> {
+    let remover = supervisor.clone();
+    let removing = output.clone();
+    tokio::task::spawn_blocking(move || remover.remove_output_files(&removing))
+        .await
+        .map_err(|error| invalid(output.execution, &format!("removal stopped: {error}")))??;
+    let write = database.write().await?;
+    finish_output_retirement(&write, output).await?;
+    write.commit().await?;
+    Ok(())
 }
 
 impl Supervisor {

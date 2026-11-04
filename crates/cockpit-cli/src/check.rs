@@ -260,7 +260,13 @@ fn receipt_report(receipt: &CheckReceiptView) -> ExitCode {
             ""
         }
     );
-    if receipt.output_bytes > receipt.output.len() as u64 {
+    if receipt.output_retired && receipt.output_bytes > receipt.output.len() as u64 {
+        outln!(
+            "output: the last {} of {} bytes; output retention removed the rest",
+            receipt.output.len(),
+            receipt.output_bytes
+        );
+    } else if receipt.output_bytes > receipt.output.len() as u64 {
         outln!(
             "output: the last {} of {} bytes; the rest is in {}",
             receipt.output.len(),
