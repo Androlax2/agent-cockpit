@@ -16,7 +16,7 @@ No live conversation, transcript or provider was used. Every command below is re
 
 ```sh
 torlek brief | wc -c                       # 1118
-torlek brief --measure                     # always loaded 1394 (brief 1118, catalog 276); on demand 9862
+torlek brief --measure                     # always loaded 1394 (brief 1118, catalog 276; omits MCP instructions); on demand 9862
 torlek --skill | wc -c                     # 9862
 torlek docs | wc -c                        # 595
 for t in overview workflow checks approvals coordination sandbox; do torlek docs $t | wc -c; done
@@ -45,7 +45,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 | Work placement | `cockpit-scheduling/src/model.rs:288-300`; daemon `scheduling.rs:78-241` | Pass every 30 s. Delivered only after 5 min idle at the prompt. Never redelivered. | Selected session | "Torlek gives you item N: read it with …" (141 bytes) or "… step `S` of workflow run R …" (152 bytes, template) | **Yes**, plus one read turn |
 | Sender confirmation | `cockpit-cli/src/coordination.rs:84-101` | Per `agent message` | Sender | One line, naming `torlek agent sessions` | No; invites a poll |
 | `agent sessions --watch` | `cockpit-cli/src/coordination.rs:31-59,216-268`; note: daemon `coordination.rs:1215-1235` | Polls every 2 s and prints changed lines | Watching agent | About 150–400 bytes per line; the "stuck" note includes `{waited} s` | Wakes a Monitor on every change |
-| Workflow and todo replies | `cockpit-cli/src/workflow.rs:219-338`, `todo.rs:322-368` | Per verb | Calling agent | The whole record on every write (§ before/after) | Its own tool call |
+| Workflow and todo replies | `cockpit-cli/src/workflow.rs:219-338`, `todo.rs:322-368` | Per verb | Calling agent | The whole record on every write ([before and after](#before-and-after-templates)) | Its own tool call |
 | `ask run` result | `cockpit-cli/src/ask.rs:323-342`; `cockpit-approvals/src/pty.rs:96-97` | Per finished request | Asking agent | Last 120 lines of a 1 MiB tail, no byte cap | Its own tool call |
 | Refusals | `cockpit-cli/src/agent.rs:225-249`; `cockpit-protocol/src/error.rs:103-116` | Per refusal | Calling agent | `torlek: refused: …` plus `to unblock (by): …`; echo ≤256 bytes | No |
 | Usage error | `cockpit-cli/src/main.rs:56,303-307` | Per argument mistake | Calling agent | All 85 lines, 5.3 KB measured | No; costs bytes |
@@ -106,7 +106,7 @@ after (once, when it becomes stuck):
 
 Kept: the fact that it is stuck, since when, and the action to fix it.
 
-**Three queued messages to a Claude session** (P2): before, three wake-ups, each one a full
+**Three queued messages to a Claude session** (P2a; P2b joins them the same way for the other harnesses): before, three wake-ups, each one a full
 turn. After, one wake-up:
 
 ```text

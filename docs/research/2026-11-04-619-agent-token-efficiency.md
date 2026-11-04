@@ -7,7 +7,8 @@ for Theo's approval, item by item.
 
 ## Answer
 
-What Torlek loads into every conversation is already small: 1,394 bytes, measured.
+What Torlek loads into every conversation is already small: 1,508 bytes on Claude Code and
+OpenCode, 1,232 on Codex, measured.
 Most of the waste is in **turns**, not prompt bytes. Every extra turn sends the whole
 conversation to the model again, so one avoided turn saves more than any trim to the brief.
 
@@ -20,7 +21,8 @@ There are three top-ranked problems:
 3. **Echoes and extra reads**: each workflow and todo action prints the whole record back,
    and `workflow begin` makes the agent ask for the packet in a second call.
 
-The fixes are small, local and testable. None of them drops any fact an agent needs.
+Most fixes are small, local and testable; P2a changes one wire type. None of them drops any
+fact an agent needs.
 
 - [ ] Theo approves, changes or declines each item of the [plan](#prioritized-plan).
 
@@ -57,8 +59,12 @@ and the commands used for each measurement.
 | MCP tool schemas | 487 | measured | ≈120 | All three. Claude Code defers them in this harness, so only the tool names load until a tool is used. |
 | MCP resource list | 1,003 | measured | ≈250 | Only when a harness lists resources |
 
-- **Always loaded.** 1,394 bytes, matching `torlek brief --measure`. Add up to 601 bytes when
-  the harness loads the MCP schemas eagerly.
+- **Always loaded.** 1,508 bytes on Claude Code and OpenCode (brief, catalog entry, MCP
+  `instructions`). 1,232 bytes on Codex, which has no catalog entry. Add 487 bytes when the
+  harness loads the MCP schemas eagerly.
+- **What `--measure` leaves out.** `torlek brief --measure` reports 1,394 bytes (brief and
+  catalog). It does not count the MCP `instructions`, and it counts the catalog even for
+  Codex.
 - **Brief size.** The brief is within its 2 KiB target (`BRIEF_TARGET_BYTES`).
 - **Read on demand.** The whole manual is 9,862 bytes. One topic is 987 to 3,270 bytes.
 
@@ -68,11 +74,11 @@ Turn counts come from the code paths. They are not counts from live runs.
 
 | Workflow | What Torlek adds | Extra turns Torlek causes |
 | --- | --- | --- |
-| Quiet, unchanged period | Nothing. The hooks print nothing except at `SessionStart`. The message waiter is silent until a message arrives. There are no reminders, nudges or pushed approval results. | None for a worker. A coordinator watching `agent sessions --watch` is woken by every state change of every session, and every 2 s while a message is stuck (§2). |
-| Ordinary task, `code-change` preset | A placement line of 141 to 152 bytes. Then the packet, each checkpoint and the handoff. | The placement points to the packet: 1 read turn. `begin` does not print the packet: 1 more read turn. Each checkpoint or complete prints the whole workflow back: about 1.1 KB, up to 3.3 KB (template). |
+| Quiet, unchanged period | Nothing. The hooks print nothing except at `SessionStart`. The message waiter is silent until a message arrives. There are no reminders, nudges or pushed approval results. | None for a worker. A coordinator watching `agent sessions --watch` is woken by every state change of every session, and every 2 s while a message is stuck ([ranked item 2](#ranked-waste)). |
+| Ordinary task, `code-change` preset | A placement line of 141 to 152 bytes. Then the packet, each checkpoint and the handoff. | The placement points to the packet: 1 read turn, which `begin` could replace if it printed the packet. Each checkpoint or complete prints the whole workflow back: about 1.1 KB, up to 3.3 KB (template). |
 | Error | A refusal is 1 to 2 lines, with an echo cap of 256 bytes. | Any argument mistake prints the whole usage: 5.3 KB, 85 lines, measured. The verb's own lines are 134 to 936 bytes. |
 | Recovery: compaction, `/clear`, resume | The brief again, 1,118 bytes. This is necessary, because compaction drops it. | None. Note that the skill's "Start here" step 1 tells the agent to run `torlek brief`, which it already has. This researcher did exactly that (one observation). |
-| Multi-agent coordination | 77 bytes of prefix plus up to 2,000 characters per message. | 1 turn per message. N queued messages take N turns. Nothing prevents two agents acknowledging each other back and forth (§1). |
+| Multi-agent coordination | 77 bytes of prefix plus up to 2,000 characters per message. | 1 turn per message. N queued messages take N turns. Nothing prevents two agents acknowledging each other back and forth ([ranked item 1](#ranked-waste)). |
 
 **Who adds what.** Everything above is Torlek's addition. The harness's own instructions,
 tool schemas and generated output are the provider's to count (#479). They are much larger,
@@ -120,11 +126,14 @@ Ranked by how often the cost occurs times its cost. Each claim is anchored to a 
 5. **The placement line is only a pointer.** "Torlek gives you step … read its task packet
    with `torlek workflow packet {run}`" (`cockpit-scheduling/src/model.rs:288-300`) costs a
    guaranteed read turn. That is a fair trade: the line stays short and never goes stale.
-   Combined with item 3, though, a step takes two read turns where one would do.
-6. **Output with a line limit and no byte limit.**
-   - **The gap.** A finished `ask run` returns the last 120 lines from a 1 MiB tail with no
-     byte cap (`cockpit-approvals/src/pty.rs:96-97`, `cockpit-cli/src/ask.rs:323-342`).
-     Minified or long-line output can reach the agent nearly whole.
+   If `begin` printed the packet (item 3), the placement could point to `begin`, and that read
+   turn would go.
+6. **Output whose byte bound is 1 MiB.**
+   - **The gap.** A finished `ask run` returns the last 120 lines of a 1 MiB kept tail
+     (`cockpit-approvals/src/pty.rs:96-97`). It already reports what it leaves out
+     (`[N earlier lines and B bytes not shown]`, `cockpit-cli/src/ask.rs:323-342`). But the only
+     byte bound on those 120 lines is the 1 MiB tail, so minified or long-line output can reach
+     the agent nearly whole.
    - **The contrast.** `check run` already caps its output at 16 KiB.
 7. **The same rules in two places, and a redundant first step.**
    - **Rules.** The brief's three rules (≈430 bytes) and the skill's "Rules that nothing
@@ -187,17 +196,31 @@ templates above (*est.*), not from provider usage.
 
 | # | Change | Owner | Expected saving | Trade-off | Regression check | Time |
 | --- | --- | --- | --- | --- | --- | --- |
-| P1 | Remove the clock from the stuck note; say "stuck since HH:MM" or only the transition | cockpit-daemon `coordination.rs` | Up to 1,800 reprints/hour → 1 | Exact wait seconds are no longer shown on each line | Daemon/CLI test: a stuck message prints one `--watch` line across several polls | 30 min |
-| P2 | `collect` hands over every queued message for the target in one wake, ≤8 KiB, in order | cockpit-daemon `coordination.rs`, `cockpit-claude` hook | N wake turns → 1 per burst | A larger single input; a batch must fit the bound | Fixture: 3 queued messages → one inbox reply holding all 3, each with its sender | 2 h |
+| P1 | Make the stuck note's text constant: drop `{waited} s`, keep "over 60 s". Its baseline `sent_at.max(reported_at)` moves whenever the target reports, so a "since HH:MM" would need a persisted stuck-at time | cockpit-daemon `coordination.rs` | Up to 1,800 reprints/hour → 1 while stuck; 2 more per idle re-report of the target (not stuck, then stuck again) | The exact wait in seconds is no longer shown | Daemon/CLI test: a stuck message prints one `--watch` line across several polls, and a re-report while idle reprints it only on the real transitions | 30 min |
+| P2a | Claude: `collect` hands over every queued message for the target in one wake, ≤8 KiB, in order, recording each delivery and audit entry separately | cockpit-protocol (`InboxView::Message` carries one message: a wire change for separate review), cockpit-daemon `coordination.rs`, `cockpit-claude` hook | N wake turns → 1 per burst for Claude sessions | A wire change; a larger single input; a batch must fit the bound | Fixture: 3 queued messages → one inbox reply holding all 3, each with its sender, and 3 received receipts | Half a day |
+| P2b | Codex, OpenCode and typed sessions: the delivery loop joins the messages queued for one target into one submission (one line when typed), ≤8 KiB | cockpit-daemon `coordination.rs` delivery loop (`:892-1020`) | N turns → 1 per burst for the other harnesses | The typed form stays one line, so messages are separated inline | Fixture per delivery path: 3 queued → 1 submission, order and senders kept | Half a day |
 | P3 | Changing workflow and todo verbs print one confirmation line; `workflow begin` prints the packet | cockpit-cli `workflow.rs`, `todo.rs` | About 1.0–3.2 KB per workflow write, up to about 1.6 KB per todo write; 1 read turn per step | Agents relying on the echo must run `show` | CLI tests: the line keeps id, revisions, `--step/--attempt`, `next:`; `begin` output equals `packet` | Half a day |
 | P4 | A usage error prints the verb's own usage lines, plus "`torlek` alone lists every verb" | cockpit-cli `main.rs` | About 4.4–5.2 KB per mistake | None found | CLI test per verb family: an error prints only that family's lines | 1–2 h |
-| P5 | Byte-cap `ask run`'s returned tail (16 KiB, like `check run`), keeping the "not shown" line | cockpit-approvals `pty.rs` | Bounds a rare, large tail | Long single lines get cut | Test: 120 lines of 10 KiB each return ≤16 KiB plus the omission line | 1 h |
-| P6 | Message rate limit and loop guard. **Needs Theo's policy**: Option A is a per-pair hourly cap like starts; Option B holds a third consecutive acknowledgement-only exchange; Option C is wording only (rule 3) | cockpit-daemon, cockpit-authorization | Stops runaway loops | A cap can hold a real burst | Fixture: two sessions exchanging messages stop at the cap with a visible refusal | 2–4 h after the decision |
+| P5 | Lower the byte bound of `ask run`'s returned tail from the 1 MiB kept tail to 16 KiB, like `check run`, through the existing `[… bytes not shown]` line rather than a second omission path | cockpit-approvals `pty.rs` (`present`, `answer_lines`) | Bounds a rare, large tail | Long single lines get cut | Test: 120 lines of 10 KiB each return ≤16 KiB, with the omitted bytes counted in the existing line | 1 h |
+| P6 | Message rate limit and loop guard. **Needs Theo's policy**: see the options below the table | cockpit-daemon, cockpit-authorization | Stops runaway loops | Depends on the option | Fixture: two sessions exchanging messages are stopped as the option says, with a visible refusal | 2–4 h after the decision |
 | P7 | Skill "Start here" step 1 says the brief arrives at start (`torlek brief` reprints it); keep the rules in the brief and point to them from the skill | cockpit-agent-context `bundle/SKILL.md` | ≈550 bytes once per context; avoids one turn | The rules appear in one place, not two | `tests/bundle.rs`, plus `cockpit-cli` `tests/instructions.rs` (verbs still resolve) | 30 min |
 | P8 | Packet shows the latest handoff per step and counts earlier attempts | cockpit-workflows, cockpit-cli | Bounds rework loops | Older attempts need `workflow show` | Workflow test with 3 attempts → 1 handoff line plus a count | Defer until rework frequency is known (#103, #479) |
+| P9 | `torlek brief --measure` counts the MCP `instructions` and counts the catalog entry only for harnesses that list the skill | cockpit-agent-context `context_budget`, with #479 | None: the baseline becomes correct | None found | `tests/brief.rs`: the budget per provider equals the delivered parts | 1 h, with #479 |
 
-**Recommendation.** Approve P1, P4 and P5 now (bug-level, no trade-off). Then P2, P3 and P7.
-Decide P6's option. Defer P8.
+**P6 options.**
+
+- **Option A: a per-pair hourly cap, like the cap on starts.** Pros: one named, greppable
+  limit, enforced where grants are checked. Cons: a real burst between two sessions is held
+  until the hour passes.
+- **Option B: hold the third consecutive acknowledgement-only exchange.** Pros: targets the
+  loop itself and leaves real bursts alone. Cons: Torlek has to judge what counts as
+  "acknowledgement-only", which is fragile and hard to test.
+- **Option C: wording only (rule 3).** Pros: no new mechanism, and it lowers the risk of a
+  first reply. Cons: no guarantee; a loop can still run.
+- **Recommendation:** A with C. A is the backstop and C keeps it rarely reached.
+
+**Recommendation.** Approve P4 now: no trade-off found. P1 and P5 are bug-level, with the
+small trade-offs listed. Then P2a, P2b, P3, P7 and P9. Decide P6's option. Defer P8.
 
 ## How to check that agents still get the same information
 
@@ -207,7 +230,7 @@ Decide P6's option. Defer P8.
 - **End-to-end.** `cockpit-daemon` `tests/agent_onboarding.rs` (a clean-home agent finds its
   workflow, checks and approval route) must pass unchanged. The provider conformance fixtures
   must still deliver the brief at every `SessionStart`.
-- **Turn counts.** The fixtures count turns, not only bytes: wake-ups per message burst (P2)
+- **Turn counts.** The fixtures count turns, not only bytes: wake-ups per message burst (P2a, P2b)
   and read calls from placement to first work (P3).
 - **Provider tokens.** Once #479 reports harness totals, the same fixtures record real tokens
   per provider, kept apart from bytes and labelled as cached or uncached.
