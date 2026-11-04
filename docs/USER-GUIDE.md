@@ -83,6 +83,7 @@ Setup refuses an occupied endpoint. A separate profile does not provide separate
    `sandbox = "off"` runs agents unsandboxed, with your rights: an unsandboxed agent can reach the owner socket and act as the owner, so Torlek's grants only hold under the sandbox.
    The default desktop setting is `shared`, which exposes your display and filtered session bus to agents; choose it only if you want desktop access.
    Run `torlek config reload` after changing session settings on a running daemon.
+   The TUI rings the terminal bell when a session finishes, asks a question or fails; add `[tui]` with `attention_bell = false` to turn that off, then close the manager session and run `torlek tui` again.
 
 3. Choose a provider and follow `torlek init`'s sign-in instruction in your terminal:
 

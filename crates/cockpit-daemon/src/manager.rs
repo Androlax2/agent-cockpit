@@ -22,6 +22,8 @@ const VIEWER_PERCENT: u8 = 70;
 pub struct Manager {
     /// The daemon's one handle, shared with the sessions, or why tmux is unavailable.
     tmux: Result<Arc<cockpit_tmux::Server>, String>,
+    /// Where the owner's configuration is read when the column is built (`tui.attention_bell`).
+    environment: cockpit_config::Environment,
     /// Held while the manager is checked and built, so two `cockpit tui` at once build it
     /// once.
     opening: Mutex<()>,
@@ -34,9 +36,13 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub(crate) fn new(tmux: Result<Arc<cockpit_tmux::Server>, String>) -> Manager {
+    pub(crate) fn new(
+        tmux: Result<Arc<cockpit_tmux::Server>, String>,
+        environment: cockpit_config::Environment,
+    ) -> Manager {
         Manager {
             tmux,
+            environment,
             opening: Mutex::new(()),
             shown: Mutex::new(None),
             focusing: Mutex::new(()),
@@ -149,6 +155,7 @@ fn open(
         }
     };
     if created {
+        let column = with_attention_bell(column, &manager.environment)?;
         // A new viewer shows no session yet.
         *manager
             .shown
@@ -158,7 +165,7 @@ fn open(
             .new_session(&SessionLaunch {
                 name: name.clone(),
                 working_dir: dir,
-                command: words(column),
+                command: words(&column),
                 environment: Vec::new(),
                 columns: 200,
                 rows: 50,
@@ -325,6 +332,35 @@ fn whole_manager(tmux: &cockpit_tmux::Server) -> Result<ManagerPanes, ProtocolEr
 
 fn manager_name() -> SessionName {
     SessionName::new(MANAGER).expect("the manager's name is a valid tmux session name")
+}
+
+/// `column` and the owner's `tui.attention_bell` as the TUI's `--bell on|off` (#682). Read
+/// when the column is built, so a change counts from the next time the manager is built: the
+/// column keeps the flag it started with. An invalid file refuses the build and names the fix,
+/// as `config reload` refuses it.
+fn with_attention_bell(
+    column: &[String],
+    environment: &cockpit_config::Environment,
+) -> Result<Vec<String>, ProtocolError> {
+    let config = cockpit_config::load(environment, None, &[]).map_err(|error| {
+        ProtocolError::new(
+            ErrorCode::Refused,
+            format!(
+                "the owner configuration is invalid, so the manager is not built: {error}; \
+                 fix the file, then run `torlek tui` again"
+            ),
+        )
+    })?;
+    let bell = if config.tui_attention_bell.value {
+        "on"
+    } else {
+        "off"
+    };
+    Ok(column
+        .iter()
+        .cloned()
+        .chain(["--bell".to_owned(), bell.to_owned()])
+        .collect())
 }
 
 fn words(words: &[String]) -> Vec<OsString> {

@@ -113,12 +113,41 @@ impl Home {
         root
     }
 
+    /// The owner's file, as `torlek` reads it for the daemon's default profile in this home.
+    fn write_owner_config(&self, contents: &str) {
+        let config_dir = self.path().join("home/.config/torlek");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.toml"), contents).unwrap();
+    }
+
+    /// The command the manager's column pane was started with.
+    fn column_command(&self) -> String {
+        self.tmux(&[
+            "list-panes",
+            "-t",
+            "=torlek:",
+            "-F",
+            "#{pane_left} #{pane_start_command}",
+        ])
+        .lines()
+        .find(|pane| pane.starts_with("0 "))
+        .expect("the manager has a column pane")
+        .to_owned()
+    }
+
     async fn open_manager(&self, client: &Connection) -> Result<Reply, ClientError> {
         request(
             client,
             Command::ManagerOpen {
                 dir: self.path().display().to_string(),
-                column: vec!["/bin/sleep".to_owned(), "600".to_owned()],
+                // A shell, so the words the daemon appends to the column (`--bell on`) are
+                // positional arguments it ignores, as the real column's flags are its own.
+                column: vec![
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    "sleep 600".to_owned(),
+                    "column".to_owned(),
+                ],
                 viewer: vec!["/bin/sleep".to_owned(), "601".to_owned()],
             },
         )
@@ -324,6 +353,71 @@ async fn the_manager_opens_a_column_and_a_viewer_once_and_answers_how_to_attach(
         !commands[1].starts_with("0 ") && commands[1].contains("601"),
         "{panes}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_column_is_told_to_ring_the_attention_bell_by_default() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    home.open_manager(&client).await.unwrap();
+
+    let column = home.column_command();
+    assert!(column.contains("--bell on"), "{column}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_column_is_told_to_keep_quiet_when_the_owner_turned_the_bell_off() {
+    let home = Home::new();
+    home.write_owner_config("[tui]\nattention_bell = false\n");
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+
+    home.open_manager(&client).await.unwrap();
+
+    let column = home.column_command();
+    assert!(column.contains("--bell off"), "{column}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bell_change_reaches_the_column_the_next_time_the_manager_is_built() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.open_manager(&client).await.unwrap();
+    home.write_owner_config("[tui]\nattention_bell = false\n");
+
+    home.open_manager(&client).await.unwrap();
+    let kept = home.column_command();
+    home.tmux(&["kill-session", "-t", "=torlek:"]);
+    home.open_manager(&client).await.unwrap();
+    let rebuilt = home.column_command();
+
+    assert!(kept.contains("--bell on"), "{kept}");
+    assert!(rebuilt.contains("--bell off"), "{rebuilt}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invalid_owner_file_refuses_to_build_the_manager_naming_the_fix() {
+    let home = Home::new();
+    let daemon = home.start().await;
+    let client = Connection::open(daemon.socket_path(), GENEROUS)
+        .await
+        .unwrap();
+    home.write_owner_config("[tui]\nattention_bell = \"loud\"\n");
+
+    let refused = refusal(home.open_manager(&client).await);
+
+    assert_eq!(refused.code, ErrorCode::Refused);
+    assert!(refused.message.contains("attention_bell"), "{refused:?}");
+    assert!(refused.message.contains("torlek tui"), "{refused:?}");
 }
 
 /// The index of the pane an attached client's keys go to: the window's active pane. The

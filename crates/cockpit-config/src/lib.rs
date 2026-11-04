@@ -141,6 +141,8 @@ pub struct EffectiveConfig {
     pub agents_desktop_session: Sourced<DesktopSession>,
     /// Whether launched agents run in the sandbox (#61); only the owner turns it off.
     pub agents_sandbox: Sourced<AgentSandbox>,
+    /// Whether the TUI rings the terminal bell when a session needs the owner (#682).
+    pub tui_attention_bell: Sourced<bool>,
     /// The checks the project declares, in its order: what Cockpit runs and a gate requires.
     pub checks: Vec<Sourced<Check>>,
     /// Where the project expects its work to run (`[execution] environment`); unset asks for
@@ -329,6 +331,7 @@ struct SettingsFile {
     tasks: Option<Spanned<TasksTable>>,
     sessions: Option<Spanned<SessionsTable>>,
     agents: Option<Spanned<AgentsTable>>,
+    tui: Option<Spanned<TuiTable>>,
     checks: Option<Spanned<Vec<Spanned<CheckEntry>>>>,
     execution: Option<Spanned<ExecutionTable>>,
     needs: Option<Spanned<NeedsTable>>,
@@ -360,6 +363,12 @@ struct ResultsTable {
 struct AgentsTable {
     desktop_session: Option<Spanned<DesktopSession>>,
     sandbox: Option<Spanned<AgentSandbox>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TuiTable {
+    attention_bell: Option<Spanned<bool>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -494,6 +503,7 @@ pub fn load(
         asleep_expiry: asleep_expiry(&layers)?,
         agents_desktop_session: agents_desktop_session(&layers),
         agents_sandbox: agents_sandbox(&layers),
+        tui_attention_bell: tui_attention_bell(&layers),
         checks: checks(&layers)?,
         execution_environment: execution_environment(&layers),
         needs: needs(&layers)?,
@@ -550,6 +560,7 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         tasks,
         sessions,
         agents,
+        tui,
         workflow: _,
         checks: _,
         execution: _,
@@ -590,6 +601,12 @@ fn reject_owner_settings(layer: &Layer) -> Result<(), ConfigError> {
         return Err(ConfigError::OwnerOnly {
             key: "agents",
             source: layer.source_at(agents.span()),
+        });
+    }
+    if let Some(tui) = tui {
+        return Err(ConfigError::OwnerOnly {
+            key: "tui",
+            source: layer.source_at(tui.span()),
         });
     }
     Ok(())
@@ -871,6 +888,22 @@ fn agents_sandbox(layers: &[Layer]) -> Sourced<AgentSandbox> {
             .agents
             .as_ref()
             .and_then(|agents| agents.get_ref().sandbox.as_ref())
+        else {
+            continue;
+        };
+        resolved = Sourced::new(*value.get_ref(), layer.source_at(value.span()));
+    }
+    resolved
+}
+
+fn tui_attention_bell(layers: &[Layer]) -> Sourced<bool> {
+    let mut resolved = Sourced::new(true, Source::ProductDefault);
+    for layer in layers {
+        let Some(value) = layer
+            .settings
+            .tui
+            .as_ref()
+            .and_then(|tui| tui.get_ref().attention_bell.as_ref())
         else {
             continue;
         };

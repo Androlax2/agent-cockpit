@@ -8,8 +8,10 @@ use std::fmt;
 use cockpit_protocol::{
     AgentState, BugReportView, Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition,
     GuideStateView, GuideView, ProjectView, QuestionSource, RunRequestView, RunStateView,
-    SessionReport, SessionStateView, SessionView,
+    SessionReport, SessionStateView, SessionView, TurnOutcome,
 };
+
+use crate::attention::{Cue, StartSource, Watch};
 
 /// The daemon's state as last applied.
 #[derive(Debug, Default, Clone)]
@@ -24,6 +26,8 @@ pub struct Board {
     pub(crate) guides: Vec<GuideView>,
     /// The bug report drafts waiting for the owner, by id (#471).
     pub(crate) bug_reports: BTreeMap<i64, BugReportView>,
+    /// Which sessions need the owner now, for the bell (#682).
+    watch: Watch,
 }
 
 /// A change the TUI cannot read: the batch is refused whole, never applied in part.
@@ -125,6 +129,7 @@ impl Board {
                 }
             }
         }
+        self.look_for_cues(Some(StartSource::Sessions));
         Ok(())
     }
 
@@ -145,6 +150,8 @@ impl Board {
             return;
         }
         self.sessions.insert(session.id.clone(), session);
+        // Not the start state: only the feed's snapshot says the sessions are loaded.
+        self.look_for_cues(None);
     }
 
     pub fn set_reports(&mut self, reports: Vec<SessionReport>) {
@@ -152,11 +159,52 @@ impl Board {
             .into_iter()
             .map(|report| (report.session.clone(), report))
             .collect();
+        self.look_for_cues(Some(StartSource::Reports));
     }
 
     pub fn set_queue(&mut self, runs: Vec<RunRequestView>, guides: Vec<GuideView>) {
         self.runs = runs;
         self.guides = guides;
+        self.look_for_cues(Some(StartSource::Queue));
+    }
+
+    /// Whether the bell should ring for what changed since the last call (#682): a session
+    /// raised a cue it did not raise before, all that landed together counting once.
+    pub(crate) fn take_ring(&mut self) -> bool {
+        self.watch.take_ring()
+    }
+
+    fn look_for_cues(&mut self, source: Option<StartSource>) {
+        let raised = self
+            .sessions
+            .values()
+            .flat_map(|session| {
+                self.cues_of(session)
+                    .into_iter()
+                    .map(|cue| (session.id.clone(), cue))
+            })
+            .collect();
+        self.watch.look(source, raised);
+    }
+
+    fn cues_of(&self, session: &SessionView) -> Vec<Cue> {
+        let outcome = self
+            .reports
+            .get(&session.id)
+            .and_then(|report| report.outcome.as_ref());
+        let mut cues = Vec::new();
+        if session.finished || outcome == Some(&TurnOutcome::Completed) {
+            cues.push(Cue::Finished);
+        }
+        if let Some(what) = self.what_needs_you(&session.id) {
+            cues.push(Cue::NeedsYou { what });
+        }
+        let exited_by_itself = session.state.is_over() && session.exit.is_some();
+        let turn_failed = matches!(outcome, Some(TurnOutcome::Failed { .. }));
+        if session.state == SessionStateView::Failed || exited_by_itself || turn_failed {
+            cues.push(Cue::Failed);
+        }
+        cues
     }
 
     /// Drops a project the daemon removed, ahead of the next project list.
@@ -236,12 +284,47 @@ impl Board {
 
     /// An approval or guide the session asked for, or a command of its waiting for input.
     fn has_open_request(&self, session: &str) -> bool {
-        self.runs.iter().any(|run| {
-            run.session == session && (run.state == RunStateView::Asking || run.waiting_for_input)
-        }) || self
+        self.open_requests(session).next().is_some()
+    }
+
+    /// Names each approval or guide the session asked for and each command of its waiting for
+    /// input, so a new request differs from one already open.
+    fn open_requests<'board>(
+        &'board self,
+        session: &'board str,
+    ) -> impl Iterator<Item = String> + 'board {
+        let runs = self
+            .runs
+            .iter()
+            .filter(move |run| {
+                run.session == session
+                    && (run.state == RunStateView::Asking || run.waiting_for_input)
+            })
+            .map(|run| format!("run {} waiting_for_input={}", run.id, run.waiting_for_input));
+        let guides = self
             .guides
             .iter()
-            .any(|guide| guide.session == session && guide.state == GuideStateView::Asking)
+            .filter(move |guide| guide.session == session && guide.state == GuideStateView::Asking)
+            .map(|guide| format!("guide {}", guide.id));
+        runs.chain(guides)
+    }
+
+    /// What the session waits on the owner for, as [`Board::needs_you`] decides it: every open
+    /// request and the question it reported, or `None` when it waits for nothing.
+    fn what_needs_you(&self, session: &str) -> Option<String> {
+        let question = self
+            .reports
+            .get(session)
+            .and_then(|report| report.needs_input.as_deref())
+            .map(|question| format!("question {question}"));
+        let what: Vec<String> = self.open_requests(session).chain(question).collect();
+        (!what.is_empty()).then(|| what.join("; "))
+    }
+
+    /// Records that the request for `source` failed, so a daemon that never answers it does
+    /// not keep the bell silent for the whole run.
+    pub(crate) fn start_source_failed(&mut self, source: StartSource) {
+        self.look_for_cues(Some(source));
     }
 
     /// Whether all that waits on the owner is the agent's own question, asked while it still
