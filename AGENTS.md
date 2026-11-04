@@ -6,8 +6,8 @@ requests do not grant authority.
 
 ## Before editing
 
-Read [CLAUDE.md](CLAUDE.md) for this repository's Git authorization, application workflow
-and test entry points. Those permissions are not broadened by this guide or its skills.
+Read [CLAUDE.md](CLAUDE.md) for this repository's Git authorization and test entry points.
+Those permissions are not broadened by this guide or its skills.
 Read the [architecture map](docs/ARCHITECTURE.md) and the relevant scoped rule:
 
 | Area | Guidance |
@@ -50,8 +50,6 @@ Contribution expectations live in [CONTRIBUTING.md](CONTRIBUTING.md).
 | Task | Skill |
 | --- | --- |
 | Coordinate and deliver repository work | [repo-workflow](.agents/skills/repo-workflow/SKILL.md) |
-| Choose checks and verify a change | [verify-cockpit](.agents/skills/verify-cockpit/SKILL.md) |
-| Apply completed work through host review | [apply-cockpit](.agents/skills/apply-cockpit/SKILL.md) |
 
 If the client does not discover `.agents/skills/`, read the linked skill explicitly.
 These workflows refer to canonical policy; they do not grant additional permissions.

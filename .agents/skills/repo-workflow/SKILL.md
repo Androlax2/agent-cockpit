@@ -48,8 +48,8 @@ Read surrounding conventions, then make the smallest correct change. Preserve
 validation and error handling. Use the real entry-point check for the affected
 behavior, with isolated fixtures instead of live user state. Run focused checks
 while iterating and affected checks on the final source, using canonical test
-entry points and shared resource controls. In this repository,
-[verify-cockpit](../verify-cockpit/SKILL.md) selects those checks from policy.
+entry points and shared resource controls. In this repository, the Tests section
+of [CLAUDE.md](../../../CLAUDE.md) lists those checks.
 
 Deliver the assigned result rather than repeatedly handing off plans. Inspect the
 final diff for scope and unrelated changes. Obtain the required independent review
@@ -93,9 +93,8 @@ an authorized channel and state that delivery remains unconfirmed.
 Verify source delivery and written issue acceptance separately. A merged PR can
 leave a broader issue open. Non-code work finishes on its agreed deliverable;
 installation, host application, release and publication each require their own
-acceptance and authorization where applicable. In this repository,
-[apply-cockpit](../apply-cockpit/SKILL.md) covers approved host application;
-source delivery alone does not require or authorize that operation.
+acceptance and authorization where applicable. Source delivery alone does not
+require or authorize host application.
 
 Update linked issues and follow-ups with evidence and remaining work. Close an
 issue or broader task only when its actual acceptance is satisfied. Report PR,
