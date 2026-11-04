@@ -20,7 +20,8 @@ the ones `started_sessions` names that are not ended, with its start requests st
 both, this crate records the grant and the audit. Each use is recorded with both sessions in
 the audit (`record_audit`, `audit_of`, `latest_audits_by_target`). Besides the coordinator
 grants, `change-state` is audited: a session's edit of a task item it filed (`edited`, #714)
-is recorded under it with the item and each field's old and new value.
+is recorded under it with the item and each changed field's old and new value, long notes as
+their head and length.
 
 Prose, payload fields, skills, team messages and plugin manifests request; they are not
 inputs to `evaluate` and cannot widen a grant (reports 11, 14, 17). Ids match exactly, and

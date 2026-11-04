@@ -65,7 +65,7 @@ pub struct CoordinatorAuditView {
     /// when nobody was asked), `started`, the owner's `approved` / `declined` on an asked
     /// start (#657), `ended` (target: the session the actor started and ended, detail: the
     /// item it finished; #713), or `edited` (no target; detail: the task item the actor filed
-    /// and edited, with each field's old and new value; #714).
+    /// and edited, with each changed field's old and new value; #714).
     pub action: String,
     /// The session acted on; absent until a start's session exists.
     pub target: Option<String>,

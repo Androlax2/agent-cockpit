@@ -20,7 +20,7 @@ use cockpit_turso::WriteTransaction;
 use cockpit_turso::sql::{Connection, Row};
 
 use crate::error::invalid;
-use crate::text::{self, NOTES_MAX_CHARS, SUMMARY_MAX_CHARS, WHY_MAX_CHARS};
+use crate::text::{self, NOTES_MAX_CHARS, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, WHY_MAX_CHARS};
 use crate::{
     Actor, Edit, Error, Item, ItemId, Kind, NewItem, Priority, Refusal, SessionWork, Settings,
     Status, Wait,
@@ -407,7 +407,8 @@ async fn counts_by_session(
     Ok(counts)
 }
 
-/// A change to what is asked: the title, notes or kind, a new intent revision.
+/// A change to what is asked: the title, notes or kind, a new intent revision; an edit that
+/// changes nothing is none, so a retried edit does not move the revision.
 /// `expected_intent_revision`, when given, must be the current one, so an edit made on an
 /// older reading is refused instead of overwriting. The owner edits any item; a session only
 /// the title and notes of an item it filed that nobody started (`proposed` or `todo`), each
@@ -440,11 +441,17 @@ pub async fn edit(
     let title = edit
         .title
         .map(|title| text::title("title", &title))
-        .transpose()?;
+        .transpose()?
+        .filter(|title| *title != item.title);
     let notes = edit
         .notes
         .map(|notes| text::body("notes", &notes, NOTES_MAX_CHARS))
-        .transpose()?;
+        .transpose()?
+        .filter(|notes| *notes != item.notes);
+    let kind = edit.kind.filter(|kind| *kind != item.kind);
+    if title.is_none() && notes.is_none() && kind.is_none() {
+        return Ok(item);
+    }
     let audit = editor.map(|(session, under)| Audit {
         actor: session.clone(),
         permission: Permission::ChangeState,
@@ -457,7 +464,7 @@ pub async fn edit(
     });
     let title = title.unwrap_or(item.title);
     let notes = notes.unwrap_or(item.notes);
-    let kind = edit.kind.unwrap_or(item.kind);
+    let kind = kind.unwrap_or(item.kind);
     write
         .execute(
             "UPDATE tasks_items SET title = ?2, title_key = ?3, notes = ?4, kind = ?5,
@@ -502,8 +509,13 @@ fn session_may_edit(item: &Item, session: &SessionId, edit: &Edit) -> Result<(),
     )
 }
 
-/// What a session's edit changed, for the audit: the item, then each field it gave with the
-/// old and the new value.
+/// How much of a value the audit keeps: a whole title; of notes, their head and their length.
+/// Audit rows are never removed, and `session grants` ships them whole.
+const AUDIT_EXCERPT_CHARS: usize = TITLE_MAX_CHARS;
+
+/// What a session's edit changed, for the audit: the item, then each field that changed with
+/// the old and the new value. Plain quotes, nothing escaped: the CLI escapes the line it
+/// prints.
 fn edited_detail(before: &Item, title: Option<&str>, notes: Option<&str>) -> String {
     let mut detail = format!("item {}", before.id.0);
     let mut separator = ": ";
@@ -514,10 +526,23 @@ fn edited_detail(before: &Item, title: Option<&str>, notes: Option<&str>) -> Str
         let Some(new) = new else {
             continue;
         };
-        detail.push_str(&format!("{separator}{field} {old:?} -> {new:?}"));
+        detail.push_str(&format!(
+            "{separator}{field} {} -> {}",
+            excerpt(old),
+            excerpt(new)
+        ));
         separator = "; ";
     }
     detail
+}
+
+fn excerpt(value: &str) -> String {
+    let length = value.chars().count();
+    if length <= AUDIT_EXCERPT_CHARS {
+        return format!("\"{value}\"");
+    }
+    let head: String = value.chars().take(AUDIT_EXCERPT_CHARS).collect();
+    format!("\"{head}...\" ({length} chars)")
 }
 
 pub async fn set_priority(

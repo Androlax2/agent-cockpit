@@ -743,3 +743,60 @@ async fn a_sessions_edit_naming_no_field_is_refused() {
         "{refused:?}"
     );
 }
+
+#[tokio::test]
+async fn a_sessions_edit_that_changes_nothing_moves_no_revision_and_is_not_audited() {
+    let fixture = Fixture::new().await;
+    let filer = fixture.session("s1", "app").await;
+    let item = session_adds(&fixture, &filer, "Schema").await;
+    let write = fixture.database.write().await.unwrap();
+
+    let same = cockpit_tasks::edit(&write, &filer, item.id, Some(1), retitle("Schema", ""), NOW)
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    let audit = cockpit_authorization::audit_of(&read, &SessionId::new("s1").unwrap(), 10)
+        .await
+        .unwrap();
+    assert_eq!(same.intent_revision, 1);
+    assert!(audit.is_empty(), "{audit:?}");
+}
+
+#[tokio::test]
+async fn the_audit_keeps_the_head_of_long_notes_and_their_length() {
+    let fixture = Fixture::new().await;
+    let filer = fixture.session("s1", "app").await;
+    let item = session_adds(&fixture, &filer, "Schema").await;
+    let long_notes = "x".repeat(300);
+    let write = fixture.database.write().await.unwrap();
+    cockpit_tasks::edit(
+        &write,
+        &filer,
+        item.id,
+        None,
+        Edit {
+            notes: Some(long_notes.clone()),
+            ..Edit::default()
+        },
+        NOW,
+    )
+    .await
+    .unwrap();
+    write.commit().await.unwrap();
+
+    let read = fixture.database.read().await.unwrap();
+    let audit = cockpit_authorization::audit_of(&read, &SessionId::new("s1").unwrap(), 10)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        audit[0].audit.detail.as_deref(),
+        Some(&*format!(
+            "item {}: notes \"\" -> \"{}...\" (300 chars)",
+            item.id.0,
+            "x".repeat(200)
+        ))
+    );
+}
