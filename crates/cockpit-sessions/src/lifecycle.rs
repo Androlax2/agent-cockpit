@@ -12,7 +12,9 @@ use cockpit_authorization::{Permission, Scope};
 use cockpit_config::StartFileSnapshot;
 use cockpit_processes::{ExecutionId, LaunchSpec, Phase, Supervisor, Termination};
 use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
-use cockpit_provider_api::{Capability, Conversation, LaunchRequest, Provider, ProviderError};
+use cockpit_provider_api::{
+    Capability, Conversation, LaunchRequest, Provider, ProviderError, TrustRequest, WorkspaceTrust,
+};
 use cockpit_tmux::{PaneId, PaneInfo, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
 
@@ -1648,6 +1650,10 @@ impl Sessions {
         // not just the folder it starts in: Git and the project's own files live at its root.
         let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let output_project = checkout.project.as_str().to_owned();
+        if matches!(checkout.kind, CheckoutKind::Parallel { .. }) {
+            self.trust_clone(id, session.provider.as_str(), &checkout, &environment)
+                .await;
+        }
         let prepared = self.prepare_sandbox(
             id.as_str(),
             session.provider.as_str(),
@@ -1776,6 +1782,55 @@ impl Sessions {
         write.commit().await?;
         tracing::info!(session = %id, ?kind, execution = confirmed.id.0, "a session runs");
         Ok(running)
+    }
+
+    /// Asks the provider to record its harness's trust of a parallel clone before the agent
+    /// runs there, so the agent does not stop on the harness's folder-trust dialog (#702,
+    /// `docs/decisions/2026-11-04-702-claude-folder-trust.md`): only for a clone of a project
+    /// in the owner's `projects.trusted` whose origin is its project's. Never fails the
+    /// launch: a refusal leaves the dialog to the owner, and the periodic pass shows the
+    /// session as waiting on them.
+    async fn trust_clone(
+        &self,
+        id: &SessionId,
+        provider: &str,
+        checkout: &Checkout,
+        environment: &[(OsString, OsString)],
+    ) {
+        let provider = match self.provider(Some(provider)) {
+            Ok(provider) => Arc::clone(provider),
+            Err(error) => {
+                tracing::warn!(session = %id, %error, "a clone's harness trust is not recorded");
+                return;
+            }
+        };
+        let owner_environment = self.settings.owner_environment.clone();
+        let git = self.git.clone();
+        let checkout = checkout.clone();
+        let environment = environment.to_vec();
+        let counted = TerminalStep::start(&self.session_lock(id));
+        let recorded = self
+            .blocking("record the harness's trust of the clone", move || {
+                let _counted = counted;
+                Ok(record_clone_trust(
+                    provider.as_ref(),
+                    &owner_environment,
+                    &git,
+                    &checkout,
+                    &environment,
+                ))
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+        match recorded {
+            Ok(WorkspaceTrust::Recorded) => {
+                tracing::info!(session = %id, "recorded the harness's trust of a parallel clone");
+            }
+            Ok(WorkspaceTrust::AlreadyTrusted | WorkspaceTrust::NotKept) => {}
+            Err(reason) => {
+                tracing::warn!(session = %id, %reason, "a clone's harness trust is not recorded");
+            }
+        }
     }
 
     /// The variables every agent starts with before its provider's own: the base ones, then
@@ -2393,4 +2448,26 @@ fn create_session_dir(dir: &Path) -> Result<(), Error> {
             path: dir.to_path_buf(),
             source,
         })
+}
+
+/// The trust check and write of [`Sessions::trust_clone`], blocking: it reads the owner's
+/// configuration, the clone's and its project's Git origins, and the harness's files.
+fn record_clone_trust(
+    provider: &dyn Provider,
+    owner_environment: &cockpit_config::Environment,
+    git: &Git,
+    checkout: &Checkout,
+    environment: &[(OsString, OsString)],
+) -> Result<WorkspaceTrust, String> {
+    let config = cockpit_config::load(owner_environment, None, &[])
+        .map_err(|error| format!("the owner configuration cannot be read: {error}"))?;
+    let trusted_roots = cockpit_projects::resolve_trusted_roots(config.trusted_projects.value);
+    let trusted_checkout = cockpit_projects::harness_trust_source(checkout, &trusted_roots, git)?;
+    provider
+        .trust_workspace(&TrustRequest {
+            workspace: &checkout.path,
+            trusted_checkout: &trusted_checkout,
+            environment,
+        })
+        .map_err(|error| error.reason)
 }

@@ -468,6 +468,11 @@ pub struct Settings {
     /// bridge reports at launch (#702): a harness can stop on a screen of its own (folder
     /// trust, sign-in, update) before any hook runs.
     pub report_deadline: Duration,
+    /// The owner's environment, whose configuration a launch in a parallel clone reads for
+    /// `projects.trusted` before it asks the provider to record its harness's trust of the
+    /// clone (#702). The default names no home, so no configuration is read and no trust is
+    /// recorded.
+    pub owner_environment: cockpit_config::Environment,
 }
 
 impl Default for Settings {
@@ -499,6 +504,7 @@ impl Default for Settings {
             // Claude Code 2.1.317 reports its `SessionStart` within a few seconds, MCP
             // servers included; the pass runs every 30 s, so the owner hears within a minute.
             report_deadline: Duration::from_secs(30),
+            owner_environment: cockpit_config::Environment::default(),
         }
     }
 }

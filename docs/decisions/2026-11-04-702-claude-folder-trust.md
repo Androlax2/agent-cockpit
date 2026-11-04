@@ -4,9 +4,10 @@ Issue #702. Decided by Theo on 2026-11-04 (option A, "with the safe write"), fro
 worker measured in Claude Code 2.1.317.
 
 - **A launch whose agent never reports waits on the owner.** When a provider's bridge reports
-  (`events`) and the current launch's agent has not reported within 30 s, the sessions'
-  periodic pass records an open dialog question naming the likely screens (folder trust,
-  sign-in, update, a first prompt). The agent's first report of what it does answers it.
+  as the harness starts (`Provider::reports_at_launch`: Claude Code's `SessionStart`, not
+  OpenCode's, which needs a first prompt) and the current launch's agent has not reported
+  within 30 s, the sessions' periodic pass records an open dialog question naming the likely
+  screens (folder trust, sign-in, update). The agent's first report of what it does answers it.
   Provider-neutral: any harness screen before the first hook is caught, not only Claude's trust
   dialog. Rejected: reading the pane for known screens, which reads the terminal of a resumed
   conversation too, and a launch failure after the deadline, which would kill an agent the owner
@@ -29,7 +30,10 @@ worker measured in Claude Code 2.1.317.
   `.mcp.json`) each exist with the same bytes in the main checkout
   (`cockpit_claude::trust::unexpected_settings`). Files only the main checkout has, such as the
   owner's untracked `.claude/settings.local.json`, are allowed: the clone applies fewer settings,
-  never other ones. A branch that changes them gets the dialog.
+  never other ones. A branch that changes them gets the dialog. Each launch in a parallel clone
+  reads `projects.trusted` from the owner's configuration as it is then, and records the trust
+  off the async workers before the agent runs; any refusal is logged and the launch goes on
+  (`crates/cockpit-sessions/src/lifecycle.rs` `trust_clone`).
 - **The main checkout's Torlek trust stays a setup step.** Adding a project to
   `projects.trusted` is the owner's decision; nothing here sets it.
 - **Rejected:** launching with `CLAUDE_CODE_SANDBOXED=1`, an undocumented variable that skips
