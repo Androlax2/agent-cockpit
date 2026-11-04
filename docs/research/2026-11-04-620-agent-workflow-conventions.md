@@ -71,8 +71,6 @@ The commands, scripts and raw tables are in the appendix [620/measurements.md](6
 | Create a skill for detailed, task-specific, self-contained content; keep one-liner rules and content every session needs in `AGENTS.md`. | [Next.js authoring-skills](https://github.com/vercel/next.js/blob/9d7422f68b9e7913e3a23e27ee02e7fbdb4165b1/.agents/skills/README.md) | Yes: the bar for a new skill |
 | Short rule files that link guides, plus the narrowest-test-first loop. | [uv](https://github.com/astral-sh/uv/blob/33f003cb85d73fe2aad0079f532ff019540d72e9/AGENTS.md) (3.7 KB), [rust-analyzer](https://github.com/rust-lang/rust-analyzer/blob/d385d3dc167c25239d3d64a1b3d55623fc14c99c/AGENTS.md) (3.5 KB) | Matches `AGENTS.md` today |
 | Who may post issues and comments is stated in the file: Next.js lets only org members' agents comment; rust-analyzer: "Do not autonomously open issues or pull requests." | [Next.js](https://github.com/vercel/next.js/blob/9d7422f68b9e7913e3a23e27ee02e7fbdb4165b1/AGENTS.md), rust-analyzer file above | Cockpit's analogue: Torlek grants decide; prose only states the habit |
-| Context-saving habits written down: grep before reading large files, save command output once, do not re-run unchanged commands. | Next.js `AGENTS.md`, "Context-Efficient Workflows" | Already in `AGENTS.md` loop step 3; no addition |
-| Final independent review by a fresh subagent given only scope and requirements. | Biome `AGENTS.md`, "Final Review" | Already required here (`/code-review`) |
 
 **Demonstrated versus assumed.** Demonstrated by the sources: layering (always-loaded versus
 on-demand), deterministic enforcement for hard rules, and removing contradictions. Not
@@ -96,14 +94,14 @@ style tasks, not on delivery workflow. The templates below are therefore proposa
 | 30 crate READMEs, each opens with a one-sentence ownership line | 182,366 total | | | On demand | On demand |
 
 *Measured* for bytes and words; *doc* for who loads what. A Claude Code worker starts with
-**2,159 bytes**. Reaching a rule, the skill and CONTRIBUTING takes five reads and about **20.6 KB**
+**2,159 bytes**. Reaching a rule, the skill and CONTRIBUTING takes four more reads and about **20.6 KB** in all
 (≈5,200 tokens, est.); adding DEVELOPMENT makes it 30.6 KB. A Codex worker starts with 4,372 bytes
 (13% of its cap) and never sees the Git authorization or the cargo-only Tests section unless it
 follows a link.
 
 **Skill discovery.** The Claude Code documentation lists `.claude/skills/` for project skills.
-In the first 100,000 of its 118,821 characters (the part read) `.agents/skills` does not appear.
-This session's skill listing contains `torlek` and no `repo-workflow` (*observed, n=1*). `AGENTS.md` already says to read the skill by link when the
+Its "Share skills" section says to "commit `.claude/skills/`"; `.agents/skills` appears nowhere on
+the page (read in full, 118,821 characters). This session's skill listing contains `torlek` and no `repo-workflow` (*observed, n=1*). `AGENTS.md` already says to read the skill by link when the
 client does not discover it, so the skill reaches a Claude worker only through
 `CLAUDE.md` → `AGENTS.md` → `SKILL.md`.
 
@@ -263,7 +261,8 @@ Follow-ups: <#n or "none">
    commit, and say so in the PR body.
 3. **Otherwise file a follow-up** (when the task allows filing): one problem, a `Depends on:`
    line, labels from `CONTRIBUTING`, and the milestone by one rule: the release it blocks,
-   else `Maintenance: hardening`, which triage moves (resolves C3). Leave it **unassigned**
+   else the intake milestone titled exactly `Maintenance: hardening (no release)`, which triage
+   moves into a closable batch (resolves C3; P1 makes `CONTRIBUTING` use that title). Leave it **unassigned**
    (only Theo is assignable) and name the owning crate or lane in the body (resolves C4).
 4. **Escalate** only what policy cannot settle: new dependency, token scope, security,
    spending, anything irreversible, a conflict with a `decided` report. Open a `decision-needed`
@@ -300,7 +299,7 @@ here widens Git, dependency, host, publication or live-operation approval.
 
 ## Before and after
 
-**1. Loading (D1, option A).** Before, `CLAUDE.md` opens:
+**1. Loading (D1, option A; the 6.5 KB below holds only for A).** Before, `CLAUDE.md` opens:
 
 ```markdown
 # Agent Cockpit
@@ -344,7 +343,8 @@ Templates and discovered-work rules: [repo-workflow](.agents/skills/repo-workflo
   - **A (recommended):** `CLAUDE.md` imports `@AGENTS.md`; Tests move to `AGENTS.md`;
     `## Git authorization` stays in `CLAUDE.md`, which your global rule reads, with one link line in
     `AGENTS.md`. Pros: small, documented, deterministic for Claude. Cons: Codex still reaches the
-    authorization by link.
+    authorization by link. A Codex worker that skips the link most likely refuses or skips the push
+    rather than pushing unauthorized (not tested); the new issue-update text names no permission.
   - **B:** everything shared in `AGENTS.md`, `CLAUDE.md` only the import. Pros: one file for both.
     Cons: the authorization is no longer text in `CLAUDE.md`, which your global Git rule looks for.
   - **C:** leave as is and rely on the links. Pros: no edit. Cons: Codex never loads `CLAUDE.md`;
@@ -362,12 +362,12 @@ approval. Savings are reduced contradiction and re-explaining, not a token claim
 
 | # | Change | Files | Time | Depends | Check |
 | --- | --- | --- | --- | --- | --- |
-| P1 | Remove C1 to C3: `make` references in `CONTRIBUTING`, `DEVELOPMENT`, PR template, `AGENTS.md`; rebase rule; milestone intake | those five files | 1 h | D2 | `python3 tools/quality.py` `markdown`, `links`, `typos`; grep finds no banned command |
+| P1 | Remove C1 to C3. `make` references stay valid for humans and `apps/`; in `CONTRIBUTING`, `DEVELOPMENT`, the PR template and `AGENTS.md` mark them "not for agents, see `CLAUDE.md` Tests" and give the cargo equivalent; fix the rebase rule; name the intake milestone | those four files | 1 h | D2 | `python3 tools/quality.py` `markdown`, `links`, `typos`; every `make` mention in an agent-facing file carries the note |
 | P2 | Loading per D1 | `CLAUDE.md`, `AGENTS.md` | 30 min | D1, P1 | A fresh session lists both files as loaded |
 | P3 | Rewrite `repo-workflow`: delivery path first, coordination into `references/` | skill, `scenarios.md` | 2 to 3 h | P1 | Scenarios below |
 | P4 | Issue-update rule in `AGENTS.md`; templates and discovered-work in the skill | `AGENTS.md`, skill | 1 h | P3 | Scenarios below |
 | P5 | `docs/research/README.md`; check whether Claude Code lists `.agents/skills` on the current version, and if not decide a `.claude/skills` link | new file; `.claude/` | 1 h | D3 | The skill appears in a Claude session's listing |
-| P6 | Regression test in `cockpit-workspace-rules`: instruction files name no command that `CLAUDE.md` bans; skill description within the cap. Expires with the cutover (#66) | one test file | 2 h | P1 | `cargo nextest run --locked -p cockpit-workspace-rules` |
+| P6 | Regression test in `cockpit-workspace-rules`: the agent-facing files (`AGENTS.md`, `CLAUDE.md`, `.agents/`, the PR template; not the human build guide) give no `make` command without the note; skill description within the cap. Expires with the cutover (#66) | one test file | 2 h | P1 | `cargo nextest run --locked -p cockpit-workspace-rules` |
 
 Order: P1, then P2 and P5 in parallel, then P3, P4, P6. About an afternoon in total.
 
@@ -398,8 +398,10 @@ Not run here (it needs live provider sessions and their authorization).
   files were read. Compare with today's baseline above before and after P2 to P4.
 - **Pass criteria come from the baseline**, not a target set here: no more issue comments than
   today's mean of 1.08 per issue, no repeated comment, no acknowledgement-only comment, and no
-  more start-up bytes than the 6.5 KB D1 states.
-- Run the same scenarios on Claude Code and Codex.
+  more start-up bytes than the option Theo picks in D1 states (6.5 KB under A).
+- Run the same scenarios on Claude Code and Codex. In Claude Code, `/context` reports the skill
+  listing's size and `/doctor` estimates its cost ([doc](https://code.claude.com/docs/en/skills#skill-descriptions-are-cut-short)),
+  so the description cost needs no estimate.
 
 ## What this does not settle
 
