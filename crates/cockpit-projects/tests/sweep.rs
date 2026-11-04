@@ -92,6 +92,26 @@ async fn a_squash_merged_branch_whose_remote_branch_was_deleted_is_removed() {
 }
 
 #[tokio::test]
+async fn a_squash_merged_branch_whose_file_the_default_branch_changed_since_is_removed() {
+    let scratch = Scratch::new();
+    let (database, root, clone) = clone_with_local_commit(&scratch).await;
+    squash_merge(&root, &clone.path);
+    std::fs::write(root.join("draft"), "work, then more\n").unwrap();
+    git(
+        &root,
+        &["commit", "--quiet", "--all", "-m", "a later pull request"],
+    );
+    git(&clone.path, &["fetch", "--quiet", "origin"]);
+
+    let (_, kept) = sweep_clone(&database, &Git::from_path(), clone.id)
+        .await
+        .unwrap();
+
+    assert_eq!(kept, None);
+    assert!(!clone.path.exists());
+}
+
+#[tokio::test]
 async fn a_squash_merged_branch_with_a_later_commit_is_kept_as_unpushed() {
     let scratch = Scratch::new();
     let (database, root, clone) = clone_with_local_commit(&scratch).await;

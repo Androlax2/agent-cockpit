@@ -227,6 +227,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             ALTER TABLE session_reports ADD COLUMN question_escalated_at INTEGER
                 CHECK (question_escalated_at IS NULL OR question_asked_at IS NOT NULL);",
         },
+        // The session-end sweep reads each clone's sessions at every tick (#767).
+        Migration {
+            version: 12,
+            sql: "CREATE INDEX sessions_by_checkout ON sessions (checkout_id);",
+        },
     ],
 };
 

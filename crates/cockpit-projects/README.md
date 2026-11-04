@@ -38,9 +38,9 @@ marker is refused as `Replaced` instead of being acted on.
   clone is marked `removing` (claims refused) before it is checked and `deleting` once the
   checks pass; only `deleting` skips them. Clones with submodules or a committed nested
   repository are kept, and so is a held clone whose directory is gone. Age and ignored
-  files never count. A commit on no remote whose touched paths all read the same in
-  `origin/HEAD` (a squash-merged pull request whose remote branch was pruned) does not count
-  as unpushed; one that changes nothing does. `sweep_clone` sweeps one clone, as the daemon does when
+  files never count. A commit on no remote whose touched paths all read as `origin/HEAD`
+  or one of its commits since the merge base left them (a squash-merged pull request whose
+  remote branch was pruned) does not count as unpushed; one that changes nothing does. `sweep_clone` sweeps one clone, as the daemon does when
   the session that occupied it ends (#767), and `EndSweep` records what it did, for
   `torlek storage`. See the
   [decision](../../docs/decisions/2026-11-04-767-sweep-on-session-end.md).
@@ -69,7 +69,8 @@ marker is refused as `Replaced` instead of being acted on.
 - `tests/registration.rs`: registration, names, overlap and path validation on real Git.
 - `tests/occupancy.rs`: claim, release, conflicts and replaced checkouts on a real database.
 - `tests/sweep.rs`: a clone left `removing` is checked again, not deleted; a squash-merged
-  branch is removed, a later, empty or partly undoing commit kept; a main checkout is refused.
+  branch is removed even after the default branch changed its file, a later, empty or partly
+  undoing commit kept; a main checkout is refused.
 - `tests/changed_files.rs`: uncommitted and unpushed changes on real Git.
 - `tests/source_state.rs`: a checkout's head and uncommitted-changes digest on real Git, the
   index left as it was.

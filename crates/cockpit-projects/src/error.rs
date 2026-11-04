@@ -97,6 +97,18 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether the database failed, here or in a cleanup after another error: the same call
+    /// may succeed later, unlike a refusal or what Git said about a checkout.
+    pub fn is_database_failure(&self) -> bool {
+        match self {
+            Error::Database(_) | Error::Sql(_) => true,
+            Error::CleanupFailed { cause, cleanup } => {
+                cause.is_database_failure() || cleanup.is_database_failure()
+            }
+            _ => false,
+        }
+    }
+
     /// `self` when `cleanup` succeeded, both otherwise.
     pub(crate) fn after_cleanup(self, cleanup: Result<(), Error>) -> Error {
         match cleanup {

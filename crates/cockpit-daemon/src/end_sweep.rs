@@ -49,7 +49,8 @@ pub(crate) async fn sweep_forever(
 }
 
 /// Sweeps each ended session's clone as Bulk work, as the owner's requests are. A busy lane
-/// ends the pass; the clone is swept by a later one.
+/// ends the pass; a clone whose sweep failed is logged and left to a later pass, after the
+/// others.
 async fn pass(context: &Context, shared: &crate::server::Shared) -> Result<(), ProtocolError> {
     let ended = {
         let read = context.database.read().await.map_err(internal)?;
@@ -74,7 +75,10 @@ async fn pass(context: &Context, shared: &crate::server::Shared) -> Result<(), P
             Err(outcome) => outcome,
         };
         if let Outcome::Error(error) = outcome {
-            return Err(error);
+            if error.code == ErrorCode::Busy {
+                return Err(error);
+            }
+            tracing::warn!(error = %error.message, "a clone's session-end sweep was deferred");
         }
     }
     Ok(())
@@ -143,19 +147,16 @@ async fn ended_clones(read: &Connection) -> Result<Vec<EndedClone>, ProtocolErro
 }
 
 /// Sweeps the clone, prunes the `target/` of one kept only for uncommitted changes, and
-/// records the outcome. A database failure records nothing, so a later pass sweeps again; any
-/// other failed sweep is recorded, so it is not retried every pass: the owner's
-/// `torlek checkout sweep` can.
+/// records the outcome. A database failure records nothing, so a later pass sweeps again, and
+/// neither does a clone removed meanwhile; any other failed sweep is recorded, so it is not
+/// retried every pass: the owner's `torlek checkout sweep` can.
 async fn sweep_and_record(context: &Context, clone: EndedClone) -> Result<(), ProtocolError> {
     let swept =
         cockpit_projects::sweep_clone(&context.database, &context.git, clone.checkout.id).await;
-    if let Err(
-        error @ (cockpit_projects::Error::Database(_)
-        | cockpit_projects::Error::Sql(_)
-        | cockpit_projects::Error::Blocking(_)),
-    ) = &swept
-    {
-        return Err(internal(error));
+    match &swept {
+        Err(error) if error.is_database_failure() => return Err(internal(error)),
+        Err(cockpit_projects::Error::UnknownCheckout { .. }) => return Ok(()),
+        _ => {}
     }
     let (checkout, kept, target) = match swept {
         Ok((checkout, None)) => {
@@ -173,9 +174,12 @@ async fn sweep_and_record(context: &Context, clone: EndedClone) -> Result<(), Pr
                 Kept::UncommittedChanges => Some(
                     match crate::storage::automatic_one(context, checkout.id).await {
                         Ok(prune) => prune.to_string(),
-                        // Busy, say: the periodic automatic prune or the owner's
-                        // `torlek storage prune` can still take it.
-                        Err(error) => format!("not pruned now: {}", error.message),
+                        // The periodic automatic prune or the owner's `torlek storage prune`
+                        // can still take it.
+                        Err(error) if error.code == ErrorCode::Busy => {
+                            format!("not pruned now: {}", error.message)
+                        }
+                        Err(error) => format!("the prune failed: {}", error.message),
                     },
                 ),
                 _ => None,

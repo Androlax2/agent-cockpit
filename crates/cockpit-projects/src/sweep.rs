@@ -1,6 +1,7 @@
 //! The clone sweep: deletes clones nobody occupies and that hold no work, keeps the rest
 //! with the reason.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -333,13 +334,15 @@ pub(crate) fn has_unpushed_commits(git: &Git, clone: &Path) -> Result<bool, Erro
 }
 
 /// Whether the content of every local branch and HEAD holding a commit no remote-tracking branch
-/// has is already in `origin/HEAD`: each path such a commit touched reads the same at the tip
-/// and in `origin/HEAD`. That is a pull request squash-merged (or rebased) after which its
-/// remote branch was deleted and pruned by a fetch (#767); only the commits' messages and their
-/// intermediate states are lost. The answer is `false`, kept on doubt, without `origin/HEAD`,
-/// when `origin/HEAD` changed such a path again, and when a tip changes nothing since its merge
-/// base (an empty commit, or one undoing the whole change). Git only reads: no object is
-/// written, so `torlek storage` stays read-only.
+/// has is already in `origin/HEAD`'s history: each path such a commit touched reads at the tip
+/// as it does in `origin/HEAD`, or as a commit of `origin/HEAD` since their merge base left it.
+/// That is a pull request squash-merged (or rebased) after which its remote branch was deleted
+/// and pruned by a fetch (#767), the default branch possibly changing the same files since;
+/// only the commits' messages and their intermediate states are lost. The answer is `false`,
+/// kept on doubt, without `origin/HEAD`, without a merge base, when a tip changes nothing since
+/// it (an empty commit, or one undoing the whole change), and when a touched path reads at the
+/// tip as no commit of `origin/HEAD` left it (a later commit undoing part of the merged
+/// change). Git only reads: no object is written, so `torlek storage` stays read-only.
 fn is_merged_into_default_branch(git: &Git, clone: &Path) -> Result<bool, Error> {
     let default = git.output(
         clone,
@@ -377,59 +380,16 @@ fn is_merged_into_default_branch(git: &Git, clone: &Path) -> Result<bool, Error>
                 arg("--remotes"),
             ],
         )?;
-        if unpushed.trim().is_empty() {
-            continue;
-        }
-        if !changes_anything(git, clone, &default, tip)? {
-            return Ok(false);
-        }
-        // A merge commit counts with what it changed from its first parent, conflict
-        // resolutions included.
-        let touched = git.run(
-            clone,
-            &[
-                arg("log"),
-                arg("--format="),
-                arg("--name-only"),
-                arg("-z"),
-                arg("--no-renames"),
-                arg("--diff-merges=first-parent"),
-                arg(tip),
-                arg("--not"),
-                arg("--remotes"),
-            ],
-        )?;
-        let differing = git.run(
-            clone,
-            &[
-                arg("diff"),
-                arg("--name-only"),
-                arg("-z"),
-                arg("--no-renames"),
-                arg(&default),
-                arg(tip),
-            ],
-        )?;
-        let differing: std::collections::HashSet<&str> = paths(&differing).collect();
-        if paths(&touched).any(|path| differing.contains(path)) {
+        if !unpushed.trim().is_empty() && !is_tip_merged(git, clone, &default, tip)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-/// The paths of Git's NUL-separated `--name-only -z` output.
-fn paths(output: &str) -> impl Iterator<Item = &str> {
-    output
-        .split('\0')
-        .map(|path| path.trim_start_matches('\n'))
-        .filter(|path| !path.is_empty())
-}
-
-/// Whether `tip` changes any content since its merge base with `default`. An empty commit, or
-/// commits that undo each other, merge into anything without a change, yet nothing was merged:
-/// they stay unpushed commits.
-fn changes_anything(git: &Git, clone: &Path, default: &str, tip: &str) -> Result<bool, Error> {
+/// Whether every path `tip`'s unpushed commits touched reads at `tip` as `default` or one of
+/// its commits since their merge base left it; see [`is_merged_into_default_branch`].
+fn is_tip_merged(git: &Git, clone: &Path, default: &str, tip: &str) -> Result<bool, Error> {
     let arguments = [arg("merge-base"), arg(default), arg(tip)];
     let base = git.output(clone, &arguments)?;
     match base.status.code() {
@@ -439,17 +399,82 @@ fn changes_anything(git: &Git, clone: &Path, default: &str, tip: &str) -> Result
         _ => return Err(git_failure(&arguments, &base)),
     }
     let base = String::from_utf8_lossy(&base.stdout).trim().to_owned();
-    let tree = |commit: &str| {
-        git.run(
-            clone,
-            &[
-                arg("rev-parse"),
-                arg("--verify"),
-                arg(&format!("{commit}^{{tree}}")),
-            ],
-        )
-    };
-    Ok(tree(&base)? != tree(tip)?)
+    let arguments = [
+        arg("diff"),
+        arg("--quiet"),
+        arg("--no-ext-diff"),
+        arg(&base),
+        arg(tip),
+    ];
+    let changes = git.output(clone, &arguments)?;
+    match changes.status.code() {
+        Some(1) => {}
+        Some(0) => return Ok(false),
+        _ => return Err(git_failure(&arguments, &changes)),
+    }
+    // A merge commit counts with what it changed from its first parent, conflict resolutions
+    // included.
+    let touched = git.run(
+        clone,
+        &[
+            arg("log"),
+            arg("--format="),
+            arg("--name-only"),
+            arg("-z"),
+            arg("--no-renames"),
+            arg("--diff-merges=first-parent"),
+            arg(tip),
+            arg("--not"),
+            arg("--remotes"),
+        ],
+    )?;
+    let differing = git.run(
+        clone,
+        &[
+            arg("diff"),
+            arg("--raw"),
+            arg("-z"),
+            arg("--no-abbrev"),
+            arg("--no-renames"),
+            arg(default),
+            arg(tip),
+        ],
+    )?;
+    let at_tip: HashMap<&str, &str> = raw_entries(&differing).collect();
+    let mut touched_differing = touched
+        .split('\0')
+        .filter(|path| at_tip.contains_key(path))
+        .peekable();
+    if touched_differing.peek().is_none() {
+        return Ok(true);
+    }
+    let landed = git.run(
+        clone,
+        &[
+            arg("log"),
+            arg("--format="),
+            arg("--raw"),
+            arg("-z"),
+            arg("--no-abbrev"),
+            arg("--no-renames"),
+            arg("--diff-merges=first-parent"),
+            arg(&format!("{base}..{default}")),
+        ],
+    )?;
+    let landed: HashSet<(&str, &str)> = raw_entries(&landed).collect();
+    Ok(touched_differing.all(|path| landed.contains(&(path, at_tip[path]))))
+}
+
+/// The `(path, object after)` of each entry of Git's `--raw -z` output, `:mode mode object
+/// object status` then the path; a deleted path's object after is all zeros.
+fn raw_entries(output: &str) -> impl Iterator<Item = (&str, &str)> {
+    let mut fields = output.split('\0');
+    std::iter::from_fn(move || {
+        let meta = fields.next()?.trim_start_matches('\n');
+        let path = fields.next()?;
+        let after = meta.split(' ').nth(3)?;
+        Some((path, after))
+    })
 }
 
 /// Deletes `clone` only when it is a real directory directly inside its project's clones
