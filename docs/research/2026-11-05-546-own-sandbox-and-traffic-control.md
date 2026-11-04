@@ -25,8 +25,8 @@ Build the replacement for Linux and WSL2 first, from five pieces Torlek owns:
 3. **A per-session egress proxy in that launcher**, not a shared service. It decides on the
    `CONNECT` host and port and checks the TLS SNI against it, resolves names itself, refuses
    private and loopback addresses unless granted, and refuses an unknown host at once with a
-   reason. The refusal becomes an owner decision in Torlek (#674): allow once, allow always,
-   deny. No fixed ports, no API token, no client secrets, no dashboard.
+   reason. The refusal becomes an owner decision in Torlek (#674): allow once, allow always
+   for the project, deny. No fixed ports, no API token, no client secrets, no dashboard.
 4. **TLS interception only for hosts that carry a credential, and second** (D1, decided C,
    staged). The proxy ships first without interception: no CA. The next issue adds selective
    interception for hosts with a bound credential, through a per-session CA whose key never
@@ -47,7 +47,9 @@ hundreds of milliseconds. The case rests on correctness, one lifecycle and owner
 - [x] D2 decided 2026-11-05: A, the proxy runs in each session's launcher.
 - [x] D3 decided 2026-11-05: A, bubblewrap as a required host program; Torlek applies Landlock
   and seccomp.
-- [ ] Theo decides [D4 to D6](#decisions-for-the-owner) and approves or declines each
+- [x] D4 decided 2026-11-05: A, "allow always" covers the project only, as a revocable grant;
+  #674's text changes from the whole profile to the project.
+- [ ] Theo decides [D5 to D6](#decisions-for-the-owner) and approves or declines each
   [proposed issue](#proposed-issues-not-filed).
 
 ## What was measured
@@ -147,7 +149,7 @@ The design below closes each by construction or names the test that must prove i
 | --- | --- | --- |
 | [#628](https://github.com/Androlax2/agent-cockpit/issues/628) shared seccomp folder | alpha.4 | Superseded: the filter is loaded from memory. Its two-user acceptance becomes a regression test |
 | [#641](https://github.com/Androlax2/agent-cockpit/issues/641) unknown host hangs | alpha.4 | Superseded by #674 |
-| [#674](https://github.com/Androlax2/agent-cockpit/issues/674) refuse at once, owner decides | alpha.4 | Kept: built in the native proxy (Theo's 2026-11-03 decision) |
+| [#674](https://github.com/Androlax2/agent-cockpit/issues/674) refuse at once, owner decides | alpha.4 | Kept: built in the native proxy (Theo's 2026-11-03 decision). Text changes: "allow always" covers the project, not the whole profile (D4) |
 | [#495](https://github.com/Androlax2/agent-cockpit/issues/495) Greyproxy lifecycle | alpha.4 | Superseded: no shared service. Its fresh-home and "present versus working" acceptance moves to the launcher |
 | [#433](https://github.com/Androlax2/agent-cockpit/issues/433) live enforcement CI | alpha.4 | Changed: same probes, run against the native backend built from the same tree |
 | [#434](https://github.com/Androlax2/agent-cockpit/issues/434) settings files | alpha.4 | Superseded: policy passes by file descriptor |
@@ -340,7 +342,7 @@ tmux pane ─> torlek-sandbox (host network; Landlock: its sockets only; seccomp
    request filed, and send the request to the daemon (one per host per session until decided).
 3. **Owner decision (#674).** The request appears under Waiting on you, in
    `torlek approval list` and on the phone (#245): allow once (this session), allow always
-   (D4), deny. The decision records who, when and through which client, as approvals do (#672).
+   for this project (D4), deny. The decision records who, when and through which client, as approvals do (#672).
    The daemon pushes the new revision to the session's launcher; the agent's retry succeeds.
    Revoking a grant closes that host's open tunnels. An agent can ask ahead with a verb such as
    `torlek ask host HOST[:PORT] --reason TEXT`, under its `run-commands` grant.
@@ -418,6 +420,10 @@ seccomp itself.
 so one project's need never widens another's network. **B:** the whole Torlek profile, as the
 text of #674 says. Either way stored as grants and revocable.
 
+**Decided 2026-11-05: A.** "Allow always" covers that project only; another project asks
+again. It is stored as a revocable grant, and the text of #674 changes from the whole profile
+to the project.
+
 **D5. New dependencies.** **A (recommended):** the `landlock` crate (maintained by the Landlock
 authors) and `seccompiler` (rust-vmm; last released 2025-03, now developed in the rust-vmm
 monorepo), pinned exactly; the workspace keeps
@@ -440,7 +446,7 @@ tests and do not include review or CI waits.
 | 2 | Provider hosts and paths in the provider adapters | Each adapter declares its hosts and folders; a test compares them with the Greywall profiles they replace; attribution kept | alpha.4 | Greywall `--profile` |
 | 3 | Per-session egress proxy | Allowed host connects; unknown host `403` under 1 s with a reason; loopback, private, link-local, metadata and IP literals refused; SNI mismatch refused; no DNS or UDP from inside | alpha.4 | #495 |
 | 4 | Selective TLS interception for credential hosts | A host with a bound credential (for example the project's `GH_TOKEN`, #754) is intercepted with a per-session CA whose key never leaves the launcher's memory; only the certificate enters the session, with trust variables per runtime; the credential is added on that host only and never enters the sandbox; every other host stays a plain tunnel; a pinned client's failure names the host | alpha.4 | #59 placeholders, #527 |
-| 5 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674, #641 |
+| 5 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always for the project (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674 (scope text changes per D4), #641 |
 | 6 | Live enforcement CI for the native backend | #433's probes on disposable Linux and WSL2 runners, both backends, four sequential launches | alpha.4 | #433 |
 | 7 | Red-team the native sandbox | #685 section 1 against the native backend; one issue per finding | alpha.4 | #685 |
 | 8 | Default to the native backend | Default `torlek`; doctor's probe launch; rollback documented | alpha.4 | |
