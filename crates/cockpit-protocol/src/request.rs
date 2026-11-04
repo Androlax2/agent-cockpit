@@ -866,6 +866,10 @@ pub enum Reply {
         clones: Vec<CloneStorageView>,
         /// Further registered clones were omitted by the report's row limit.
         truncated: bool,
+        /// The latest clones swept at their session's end, newest first; absent from a daemon
+        /// older than #767.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        end_sweeps: Vec<crate::storage::EndSweepView>,
     },
     StorageOutputs {
         projects: Vec<crate::storage::OutputRetentionView>,

@@ -15,6 +15,23 @@ pub struct CloneStorageView {
     pub prune: Option<PruneVerdictView>,
 }
 
+/// What the sweep did to a clone once the session that occupied it ended (#767).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndSweepView {
+    pub checkout: i64,
+    pub incarnation: i64,
+    /// The ended session that occupied the clone.
+    pub session: String,
+    pub project: String,
+    pub path: String,
+    /// Why the clone was kept; `None` when it was deleted.
+    pub kept: Option<String>,
+    /// What became of a kept clone's `target/`; `None` when its pruning was not tried.
+    pub target: Option<String>,
+    /// Seconds since the Unix epoch.
+    pub swept_at: i64,
+}
+
 /// What `storage prune` would decide now for this clone's measured `target/`; it
 /// persists nothing and prune decides again from its own measurement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

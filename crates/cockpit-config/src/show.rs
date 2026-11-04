@@ -135,6 +135,11 @@ pub fn render(config: &EffectiveConfig) -> String {
         &storage.output_prune_interval_minutes.source,
     ));
     lines.push(line(
+        "storage.sweep_on_session_end",
+        &storage.sweep_on_session_end.value.to_string(),
+        &storage.sweep_on_session_end.source,
+    ));
+    lines.push(line(
         "workflow.preset",
         &config
             .workflow_preset

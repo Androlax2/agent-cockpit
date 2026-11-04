@@ -3,7 +3,7 @@ mod common;
 mod scripted;
 
 use cockpit_protocol::{
-    CloneStorageView, Command, Outcome, PruneVerdictView, Reply, TargetSizeView,
+    CloneStorageView, Command, EndSweepView, Outcome, PruneVerdictView, Reply, TargetSizeView,
 };
 use common::TestHome;
 use std::os::unix::fs::DirBuilderExt;
@@ -116,6 +116,7 @@ async fn storage_preserves_measurement_status_and_exits_unsuccessfully_on_partia
                     }),
                 }],
                 truncated,
+                end_sweeps: Vec::new(),
             }),
         );
         let output = tokio::task::spawn_blocking(move || home.cockpit(&["storage"]))
@@ -185,6 +186,7 @@ async fn storage_shows_each_clone_prune_verdict_and_the_eligible_total() {
                 ),
             ],
             truncated: false,
+            end_sweeps: Vec::new(),
         }),
     );
 
@@ -212,6 +214,62 @@ async fn storage_shows_each_clone_prune_verdict_and_the_eligible_total() {
     );
     assert!(
         stdout.contains("eligible for prune: 2 of 3 clones, 24 apparent bytes"),
+        "{stdout}"
+    );
+    assert_eq!(daemon.await.unwrap(), Command::StorageReport);
+}
+
+#[tokio::test]
+async fn storage_lists_what_each_session_end_removed_or_kept_and_why() {
+    let home = TestHome::new();
+    let socket = home.home().join("run/torlek-dev/daemon.sock");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(socket.parent().unwrap())
+        .unwrap();
+    let sweep = |checkout: i64, kept: Option<&str>, target: Option<&str>| EndSweepView {
+        checkout,
+        incarnation: 1,
+        session: format!("s{checkout}"),
+        project: "app".to_owned(),
+        path: format!("/clones/{checkout}"),
+        kept: kept.map(str::to_owned),
+        target: target.map(str::to_owned),
+        swept_at: 0,
+    };
+    let daemon = scripted::scripted_daemon(
+        &socket,
+        Outcome::Ok(Reply::Storage {
+            clones: Vec::new(),
+            truncated: false,
+            end_sweeps: vec![
+                sweep(5, None, None),
+                sweep(
+                    6,
+                    Some("uncommitted changes"),
+                    Some("kept: needs a confirmation"),
+                ),
+            ],
+        }),
+    );
+
+    let output = tokio::task::spawn_blocking(move || home.cockpit(&["storage"]))
+        .await
+        .unwrap();
+
+    let stdout = scripted::text(&output.stdout);
+    assert!(
+        stdout.contains("swept at session end, newest first:"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\t5\tapp\ts5\tremoved\t/clones/5\t-\t-\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "\t6\tapp\ts6\tkept\t/clones/6\tuncommitted changes\tkept: needs a confirmation\n"
+        ),
         "{stdout}"
     );
     assert_eq!(daemon.await.unwrap(), Command::StorageReport);

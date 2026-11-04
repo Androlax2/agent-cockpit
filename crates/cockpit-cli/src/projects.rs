@@ -156,7 +156,9 @@ fn kept_reason(reason: &KeptReason) -> String {
     match reason {
         KeptReason::Occupied { holder } => format!("occupied by {holder}"),
         KeptReason::UncommittedChanges => "uncommitted changes".to_owned(),
-        KeptReason::UnpushedCommits => "unpushed commits".to_owned(),
+        KeptReason::UnpushedCommits => {
+            "unpushed commits (on no remote branch, and not merged into origin/HEAD)".to_owned()
+        }
         KeptReason::Replaced { reason } => format!("replaced: {reason}"),
         KeptReason::Unreadable { reason } => format!("unreadable: {reason}"),
     }

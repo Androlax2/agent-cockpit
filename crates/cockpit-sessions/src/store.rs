@@ -227,6 +227,11 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             ALTER TABLE session_reports ADD COLUMN question_escalated_at INTEGER
                 CHECK (question_escalated_at IS NULL OR question_asked_at IS NOT NULL);",
         },
+        // The session-end sweep reads each clone's sessions at every tick (#767).
+        Migration {
+            version: 12,
+            sql: "CREATE INDEX sessions_by_checkout ON sessions (checkout_id);",
+        },
     ],
 };
 
@@ -288,6 +293,14 @@ pub async fn sessions(connection: &Connection, include_ended: bool) -> Result<Ve
         "s.state <> 'ended'"
     };
     query_sessions(connection, filter, ()).await
+}
+
+/// Every session, ended ones included, that worked in the checkout `checkout`.
+pub async fn checkout_sessions(
+    connection: &Connection,
+    checkout: CheckoutId,
+) -> Result<Vec<Session>, Error> {
+    query_sessions(connection, "s.checkout_id = ?1", [checkout.0]).await
 }
 
 pub(crate) async fn sessions_in(

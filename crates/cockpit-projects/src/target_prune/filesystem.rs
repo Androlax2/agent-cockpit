@@ -152,7 +152,7 @@ fn eligibility(
         .map_err(|error| error.to_string())?
     {
         return Err(
-            "the clone has unpushed commits (on no remote-tracking branch; fetch if they were pushed)"
+            "the clone has unpushed commits (on no remote-tracking branch, and not merged into origin/HEAD; fetch if they were pushed or merged)"
                 .to_owned(),
         );
     }

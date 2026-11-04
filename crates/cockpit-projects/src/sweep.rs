@@ -1,14 +1,17 @@
 //! The clone sweep: deletes clones nobody occupies and that hold no work, keeps the rest
 //! with the reason.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use cockpit_turso::Database;
 
-use crate::git::arg;
+use crate::git::{arg, git_failure};
 use crate::store::{self, GIT_DIR_MARKER_PREFIX, StoredCheckout};
-use crate::{Checkout, CheckoutId, CheckoutState, Error, Git, Holder, blocking, clones_dir};
+use crate::{
+    Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Git, Holder, blocking, clones_dir,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SweepReport {
@@ -25,7 +28,8 @@ pub enum Kept {
     },
     /// `git status` lists changes not committed, or a stash holds some.
     UncommittedChanges,
-    /// A local branch or HEAD has commits no remote-tracking branch has.
+    /// A local branch or HEAD has commits no remote-tracking branch has, and their changes are
+    /// not in `origin/HEAD` either (not squash-merged).
     UnpushedCommits,
     /// The working copy is not the recorded incarnation; the owner decides what it is.
     Replaced {
@@ -35,6 +39,20 @@ pub enum Kept {
     Unreadable {
         reason: String,
     },
+}
+
+impl std::fmt::Display for Kept {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Occupied { holder } => write!(formatter, "occupied by {holder}"),
+            Self::UncommittedChanges => formatter.write_str("uncommitted changes"),
+            Self::UnpushedCommits => formatter.write_str(
+                "unpushed commits (on no remote branch, and not merged into origin/HEAD)",
+            ),
+            Self::Replaced { reason } => write!(formatter, "replaced: {reason}"),
+            Self::Unreadable { reason } => write!(formatter, "unreadable: {reason}"),
+        }
+    }
 }
 
 /// Deletes every parallel and review clone that is unoccupied, still the recorded
@@ -49,31 +67,57 @@ pub async fn sweep(database: &Database, git: &Git, dry_run: bool) -> Result<Swee
     };
     let mut report = SweepReport::default();
     for stored in clones {
-        let available = {
-            let read = database.read().await?;
-            crate::require_checkout_available(&read, stored.checkout.id).await
-        };
-        match available {
-            Err(Error::Refused { reason }) => {
-                report
-                    .kept
-                    .push((stored.checkout, Kept::Unreadable { reason }));
-                continue;
-            }
-            Err(error) => return Err(error),
-            Ok(()) => {}
-        }
-        let kept = if dry_run {
-            inspect(git, &stored).await?
-        } else {
-            sweep_one(database, git, &stored).await?
-        };
+        let kept = sweep_stored(database, git, &stored, dry_run).await?;
         match kept {
             None => report.removed.push(stored.checkout),
             Some(kept) => report.kept.push((stored.checkout, kept)),
         }
     }
     Ok(report)
+}
+
+/// [`sweep`] of the one clone `checkout`, as a session's end asks for it (#767): the clone as
+/// it was before the sweep and why it was kept, `None` when it was deleted. A main checkout is
+/// refused.
+pub async fn sweep_clone(
+    database: &Database,
+    git: &Git,
+    checkout: CheckoutId,
+) -> Result<(Checkout, Option<Kept>), Error> {
+    let stored = {
+        let read = database.read().await?;
+        store::stored_checkout(&read, checkout).await?
+    };
+    if stored.checkout.kind == CheckoutKind::Main {
+        return Err(Error::Refused {
+            reason: format!("checkout {checkout} is a project's main checkout, not a clone"),
+        });
+    }
+    let kept = sweep_stored(database, git, &stored, false).await?;
+    Ok((stored.checkout, kept))
+}
+
+/// Deletes one clone, or with `dry_run` says whether it would; `Some` says why it was kept.
+async fn sweep_stored(
+    database: &Database,
+    git: &Git,
+    stored: &StoredCheckout,
+    dry_run: bool,
+) -> Result<Option<Kept>, Error> {
+    let available = {
+        let read = database.read().await?;
+        crate::require_checkout_available(&read, stored.checkout.id).await
+    };
+    match available {
+        Err(Error::Refused { reason }) => return Ok(Some(Kept::Unreadable { reason })),
+        Err(error) => return Err(error),
+        Ok(()) => {}
+    }
+    if dry_run {
+        inspect(git, stored).await
+    } else {
+        sweep_one(database, git, stored).await
+    }
 }
 
 /// What the sweep knows about a clone before asking Git.
@@ -267,8 +311,9 @@ fn leftovers_now(git: &Git, clone: &Path) -> Option<Kept> {
     }
 }
 
-/// Whether HEAD or a local branch has a commit no remote-tracking branch has. HEAD too:
-/// commits made on a detached HEAD are on no branch.
+/// Whether HEAD or a local branch has a commit no remote-tracking branch has, unless the
+/// changes of each such tip are already in the remote's default branch. HEAD too: commits made
+/// on a detached HEAD are on no branch.
 pub(crate) fn has_unpushed_commits(git: &Git, clone: &Path) -> Result<bool, Error> {
     let commits = git.run(
         clone,
@@ -282,7 +327,154 @@ pub(crate) fn has_unpushed_commits(git: &Git, clone: &Path) -> Result<bool, Erro
             arg("--remotes"),
         ],
     )?;
-    Ok(!commits.trim().is_empty())
+    if commits.trim().is_empty() {
+        return Ok(false);
+    }
+    Ok(!is_merged_into_default_branch(git, clone)?)
+}
+
+/// Whether the content of every local branch and HEAD holding a commit no remote-tracking branch
+/// has is already in `origin/HEAD`'s history: each path such a commit touched reads at the tip
+/// as it does in `origin/HEAD`, or as a commit of `origin/HEAD` since their merge base left it.
+/// That is a pull request squash-merged (or rebased) after which its remote branch was deleted
+/// and pruned by a fetch (#767), the default branch possibly changing the same files since;
+/// only the commits' messages and their intermediate states are lost. The answer is `false`,
+/// kept on doubt, without `origin/HEAD`, without a merge base, when a tip changes nothing since
+/// it (an empty commit, or one undoing the whole change), and when a touched path reads at the
+/// tip as no commit of `origin/HEAD` left it (a later commit undoing part of the merged
+/// change). Git only reads: no object is written, so `torlek storage` stays read-only.
+fn is_merged_into_default_branch(git: &Git, clone: &Path) -> Result<bool, Error> {
+    let default = git.output(
+        clone,
+        &[
+            arg("rev-parse"),
+            arg("--verify"),
+            arg("--quiet"),
+            arg("refs/remotes/origin/HEAD^{commit}"),
+        ],
+    )?;
+    if !default.status.success() {
+        return Ok(false);
+    }
+    let default = String::from_utf8_lossy(&default.stdout).trim().to_owned();
+    let branch_tips = git.run(
+        clone,
+        &[
+            arg("for-each-ref"),
+            arg("--format=%(objectname)"),
+            arg("refs/heads"),
+        ],
+    )?;
+    let head = git.run(clone, &[arg("rev-parse"), arg("--verify"), arg("HEAD")])?;
+    let mut tips: Vec<&str> = branch_tips.lines().chain(head.lines()).collect();
+    tips.sort_unstable();
+    tips.dedup();
+    for tip in tips {
+        let unpushed = git.run(
+            clone,
+            &[
+                arg("rev-list"),
+                arg("-1"),
+                arg(tip),
+                arg("--not"),
+                arg("--remotes"),
+            ],
+        )?;
+        if !unpushed.trim().is_empty() && !is_tip_merged(git, clone, &default, tip)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether every path `tip`'s unpushed commits touched reads at `tip` as `default` or one of
+/// its commits since their merge base left it; see [`is_merged_into_default_branch`].
+fn is_tip_merged(git: &Git, clone: &Path, default: &str, tip: &str) -> Result<bool, Error> {
+    let arguments = [arg("merge-base"), arg(default), arg(tip)];
+    let base = git.output(clone, &arguments)?;
+    match base.status.code() {
+        Some(0) => {}
+        // No common history: nothing to compare, so not a merge either.
+        Some(1) => return Ok(false),
+        _ => return Err(git_failure(&arguments, &base)),
+    }
+    let base = String::from_utf8_lossy(&base.stdout).trim().to_owned();
+    let arguments = [
+        arg("diff"),
+        arg("--quiet"),
+        arg("--no-ext-diff"),
+        arg(&base),
+        arg(tip),
+    ];
+    let changes = git.output(clone, &arguments)?;
+    match changes.status.code() {
+        Some(1) => {}
+        Some(0) => return Ok(false),
+        _ => return Err(git_failure(&arguments, &changes)),
+    }
+    // A merge commit counts with what it changed from its first parent, conflict resolutions
+    // included.
+    let touched = git.run(
+        clone,
+        &[
+            arg("log"),
+            arg("--format="),
+            arg("--name-only"),
+            arg("-z"),
+            arg("--no-renames"),
+            arg("--diff-merges=first-parent"),
+            arg(tip),
+            arg("--not"),
+            arg("--remotes"),
+        ],
+    )?;
+    let differing = git.run(
+        clone,
+        &[
+            arg("diff"),
+            arg("--raw"),
+            arg("-z"),
+            arg("--no-abbrev"),
+            arg("--no-renames"),
+            arg(default),
+            arg(tip),
+        ],
+    )?;
+    let at_tip: HashMap<&str, &str> = raw_entries(&differing).collect();
+    let mut touched_differing = touched
+        .split('\0')
+        .filter(|path| at_tip.contains_key(path))
+        .peekable();
+    if touched_differing.peek().is_none() {
+        return Ok(true);
+    }
+    let landed = git.run(
+        clone,
+        &[
+            arg("log"),
+            arg("--format="),
+            arg("--raw"),
+            arg("-z"),
+            arg("--no-abbrev"),
+            arg("--no-renames"),
+            arg("--diff-merges=first-parent"),
+            arg(&format!("{base}..{default}")),
+        ],
+    )?;
+    let landed: HashSet<(&str, &str)> = raw_entries(&landed).collect();
+    Ok(touched_differing.all(|path| landed.contains(&(path, at_tip[path]))))
+}
+
+/// The `(path, object after)` of each entry of Git's `--raw -z` output, `:mode mode object
+/// object status` then the path; a deleted path's object after is all zeros.
+fn raw_entries(output: &str) -> impl Iterator<Item = (&str, &str)> {
+    let mut fields = output.split('\0');
+    std::iter::from_fn(move || {
+        let meta = fields.next()?.trim_start_matches('\n');
+        let path = fields.next()?;
+        let after = meta.split(' ').nth(3)?;
+        Some((path, after))
+    })
 }
 
 /// Deletes `clone` only when it is a real directory directly inside its project's clones

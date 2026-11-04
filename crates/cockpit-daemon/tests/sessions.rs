@@ -1837,6 +1837,8 @@ fn a_clean_owner_configuration_keeps_the_sessions_product_defaults() {
     assert_eq!(configured.owner, product.owner);
 }
 
+#[path = "sessions/end_sweep.rs"]
+mod end_sweep;
 #[cfg(target_os = "linux")]
 #[path = "sessions/target_prune.rs"]
 mod target_prune;
