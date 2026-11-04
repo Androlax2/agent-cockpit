@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Key, LaunchCommand,
-    LaunchRequest, Provenance, Provider, ProviderError, ProviderName, TerminalInput,
+    LaunchRequest, Provenance, Provider, ProviderError, ProviderName, TerminalInput, TrustRequest,
+    WorkspaceTrust,
 };
 
 /// The efforts the fake takes once it reports [`Capability::Effort`]; any other is refused.
@@ -40,6 +41,7 @@ pub struct FakeProvider {
     /// The status its agent exits with at once, and the line it prints to stderr first.
     exits_with: Option<(u8, String)>,
     reports_at_launch: bool,
+    trusted: Option<PathBuf>,
     conversations: AtomicUsize,
 }
 
@@ -58,6 +60,7 @@ impl FakeProvider {
             messages: None,
             exits_with: None,
             reports_at_launch: false,
+            trusted: None,
             conversations: AtomicUsize::new(logged),
         }
     }
@@ -111,6 +114,24 @@ impl FakeProvider {
         self.reporting(Capability::Submit)
     }
 
+    /// Keeps a harness trust: each [`Provider::trust_workspace`] is recorded and appends
+    /// `<workspace>\t<trusted checkout>` to `log` ([`FakeProvider::trusted`]).
+    pub fn keeping_trust(mut self, log: PathBuf) -> FakeProvider {
+        self.trusted = Some(log);
+        self
+    }
+
+    /// Every trust the fake recorded into `log`, as (workspace, trusted checkout), oldest
+    /// first.
+    pub fn trusted(log: &Path) -> Vec<(PathBuf, PathBuf)> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .map(|(workspace, trusted)| (workspace.into(), trusted.into()))
+            .collect()
+    }
+
     /// Every message the fake agents read into `log`, as (session, line), oldest first.
     pub fn messages(log: &Path) -> Vec<(String, String)> {
         std::fs::read_to_string(log)
@@ -151,6 +172,26 @@ impl Provider for FakeProvider {
 
     fn reports_at_launch(&self) -> bool {
         self.reports_at_launch
+    }
+
+    fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
+        let Some(log) = &self.trusted else {
+            return Ok(WorkspaceTrust::NotKept);
+        };
+        let line = format!(
+            "{}\t{}\n",
+            request.workspace.display(),
+            request.trusted_checkout.display()
+        );
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()))
+            .map_err(|error| ProviderError {
+                reason: format!("the fake's trust log {}: {error}", log.display()),
+            })?;
+        Ok(WorkspaceTrust::Recorded)
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {

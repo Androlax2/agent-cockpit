@@ -117,6 +117,22 @@ impl Home {
         self.path().join("agent.log")
     }
 
+    /// Where the fake provider records the harness trust it is asked to keep (#702).
+    fn trust_log(&self) -> PathBuf {
+        self.path().join("trust.log")
+    }
+
+    /// Puts `root` in the owner's `projects.trusted`.
+    fn trust_project(&self, root: &Path) {
+        let config = self.path().join("home/.config/torlek");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("config.toml"),
+            format!("[projects]\ntrusted = [{:?}]\n", root.to_str().unwrap()),
+        )
+        .unwrap();
+    }
+
     /// Every launch the fake agent logged, once it has logged `count`. The agent logs from
     /// its own shell after tmux starts it, so a launch the daemon already reported can still
     /// be missing; an agent stopped before it logs never does, so a test waits for a launch
@@ -137,7 +153,8 @@ impl Home {
     }
 
     fn wiring(&self, variant: Variant, settings: cockpit_sessions::Settings) -> Wiring {
-        let mut provider = FakeProvider::new(ProviderName::new("fake").unwrap(), self.agent_log());
+        let mut provider = FakeProvider::new(ProviderName::new("fake").unwrap(), self.agent_log())
+            .keeping_trust(self.trust_log());
         if !variant.can_resume {
             provider = provider.without_resume();
         }
@@ -1939,4 +1956,64 @@ async fn a_provider_that_reports_only_after_a_first_prompt_is_never_flagged() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     assert_eq!(agent_reports(&client).await, Vec::new());
+}
+
+/// Starts a session in `dir`, in a new parallel clone when `clone` names its branch.
+async fn start_in(client: &Connection, dir: &Path, clone: Option<&str>) -> SessionView {
+    session_reply(
+        client,
+        Command::SessionNew {
+            dir: dir.display().to_string(),
+            agent: None,
+            prompt: None,
+            clone: clone.map(str::to_owned),
+            model: None,
+            effort: None,
+        },
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clone_of_a_trusted_project_inherits_its_harness_trust_before_the_agent_runs() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.trust_project(&root);
+
+    let session = start_in(&client, &root, Some("feature/x")).await;
+
+    assert_eq!(session.state, SessionStateView::Running);
+    assert_eq!(
+        FakeProvider::trusted(&home.trust_log()),
+        vec![(PathBuf::from(&session.working_dir), root)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clone_of_a_project_not_in_projects_trusted_launches_without_harness_trust() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let session = start_in(&client, &root, Some("feature/x")).await;
+
+    assert_eq!(session.state, SessionStateView::Running);
+    assert_eq!(FakeProvider::trusted(&home.trust_log()), Vec::new());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_in_the_main_checkout_never_records_harness_trust() {
+    let home = Home::new();
+    let daemon = home.start(BASELINE, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+    home.trust_project(&root);
+
+    let session = start_in(&client, &root, None).await;
+
+    assert_eq!(session.state, SessionStateView::Running);
+    assert_eq!(FakeProvider::trusted(&home.trust_log()), Vec::new());
 }

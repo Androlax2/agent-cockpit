@@ -232,9 +232,7 @@ fn clone_and_prepare(
             clone.as_os_str(),
         ],
     )?;
-    let origin = git.output(main_root, &[arg("remote"), arg("get-url"), arg("origin")])?;
-    if origin.status.success() {
-        let url = String::from_utf8_lossy(&origin.stdout).trim().to_owned();
+    if let Some(url) = git.origin_url(main_root)? {
         git.run(
             clone,
             &[arg("remote"), arg("set-url"), arg("origin"), arg(&url)],

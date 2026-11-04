@@ -321,7 +321,10 @@ impl Instance {
             tmux,
             wiring.git.clone(),
             wiring.providers,
-            wiring.sessions,
+            cockpit_sessions::Settings {
+                owner_environment: wiring.environment.clone(),
+                ..wiring.sessions
+            },
             options.session_dirs(),
             session_sockets::connect,
         ));

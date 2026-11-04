@@ -4,6 +4,7 @@ mod sign_in;
 
 pub mod hooks;
 mod screen;
+pub mod trust;
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -17,6 +18,7 @@ use std::time::{Duration, Instant};
 use cockpit_provider_api::{
     Action, Activity, Capabilities, Capability, Conversation, ConversationId, Key, LaunchCommand,
     LaunchRequest, Observation, Provenance, Provider, ProviderError, ProviderName, TerminalInput,
+    TrustRequest, WorkspaceTrust,
 };
 
 /// The Claude Code version this adapter's conformance tests pin; capabilities are `tested`
@@ -408,6 +410,45 @@ impl Provider for ClaudeCode {
     /// seconds on 2.1.317, MCP servers included.
     fn reports_at_launch(&self) -> bool {
         self.bridge.is_some()
+    }
+
+    /// A clone whose settings differ from the trusted checkout's, or cannot be compared, has
+    /// any trust recorded earlier revoked: a reused clone never keeps the trust a previous
+    /// branch earned.
+    fn trust_workspace(&self, request: &TrustRequest<'_>) -> Result<WorkspaceTrust, ProviderError> {
+        let refused = |reason: String| ProviderError { reason };
+        let config = trust::config_file(request.environment).map_err(refused)?;
+        let vetted = trust::unexpected_settings(
+            request.workspace,
+            request.trusted_checkout,
+            request.working_dir,
+        )
+        .and_then(|unexpected| {
+            if unexpected.is_empty() {
+                return Ok(());
+            }
+            let names: Vec<String> = unexpected
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            Err(format!(
+                "the clone's harness settings differ from {}: {}",
+                request.trusted_checkout.display(),
+                names.join(", ")
+            ))
+        });
+        if let Err(reason) = vetted {
+            let revoked = match trust::record(&config, request.workspace, false) {
+                Ok(trust::Recorded::Written) => "; its earlier trust is revoked".to_owned(),
+                Ok(trust::Recorded::Unchanged) => String::new(),
+                Err(error) => format!("; its earlier trust, if any, could not be revoked: {error}"),
+            };
+            return Err(refused(format!("{reason}{revoked}")));
+        }
+        match trust::record(&config, request.workspace, true).map_err(refused)? {
+            trust::Recorded::Unchanged => Ok(WorkspaceTrust::AlreadyTrusted),
+            trust::Recorded::Written => Ok(WorkspaceTrust::Recorded),
+        }
     }
 }
 

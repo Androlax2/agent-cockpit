@@ -66,6 +66,48 @@ pub fn trust(checkout: &Checkout, trusted_roots: &[PathBuf]) -> Trust {
     }
 }
 
+/// The trusted checkout whose trust `checkout` inherits, so a harness's own folder trust
+/// may be recorded for it before a launch there; why not, when not (#702, decided in
+/// docs/decisions/2026-11-04-702-claude-folder-trust.md). Only a parallel clone of a project
+/// the owner trusts in `projects.trusted`, whose origin is the main checkout's; never a review
+/// clone, whatever the project is. Runs Git: call it off the async workers.
+pub fn harness_trust_source(
+    checkout: &Checkout,
+    trusted_roots: &[PathBuf],
+    git: &Git,
+) -> Result<PathBuf, String> {
+    let from = match (&checkout.kind, trust(checkout, trusted_roots)) {
+        (CheckoutKind::Parallel { .. }, Trust::Inherited { from }) => from,
+        (CheckoutKind::Parallel { .. }, Trust::Trusted) => {
+            return Err(
+                "the clone itself is in projects.trusted, so it has no trusted checkout to match"
+                    .to_owned(),
+            );
+        }
+        (CheckoutKind::Parallel { .. }, _) => {
+            return Err(format!(
+                "its project {} is not in projects.trusted",
+                checkout.project_root.display()
+            ));
+        }
+        (CheckoutKind::Main, _) => return Err("it is a main checkout, not a clone".to_owned()),
+        (CheckoutKind::Review { .. }, _) => {
+            return Err("a review clone is never trusted".to_owned());
+        }
+    };
+    let origin = |dir: &Path| {
+        git.origin_url(dir)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("{} has no origin", dir.display()))
+    };
+    let (clone_origin, trusted_origin) = (origin(&checkout.path)?, origin(&from)?);
+    if clone_origin != trusted_origin {
+        // Never the URLs themselves: an origin can carry credentials, and this reason is logged.
+        return Err("its origin is not its project's".to_owned());
+    }
+    Ok(from)
+}
+
 /// Runs a blocking Git or filesystem step off the async executor and waits for it; a started
 /// step always runs to its end (report 03).
 pub(crate) async fn blocking<T: Send + 'static>(
