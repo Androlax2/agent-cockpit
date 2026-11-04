@@ -342,6 +342,47 @@ async fn a_delivery_the_receiver_never_got_is_retried_until_attempts_run_out() {
     assert_eq!(state(&fixture.database, id).await, DeliveryState::Failed);
 }
 
+/// #816: a session busy with another operation for a moment cost scheduled work one of its
+/// three tries.
+#[tokio::test]
+async fn a_receiver_busy_with_something_else_is_retried_without_spending_a_try() {
+    let fixture = Fixture::new().await;
+    let mut decision = envelope("decision-13", "session-a", "go");
+    decision.max_attempts = 1;
+    let id = queued_id(enqueue(&fixture.database, &decision).await);
+    let busy = || {
+        Delivery::Failed(Failure::Busy {
+            reason: "the session is busy with another operation".to_owned(),
+            retry_at: NOW,
+        })
+    };
+
+    for _ in 0..3 {
+        let claimed = claim(&fixture.database, NOW).await.remove(0);
+        assert_eq!(
+            record(&fixture.database, &claimed, busy()).await,
+            DeliveryState::Queued
+        );
+    }
+    let last = claim(&fixture.database, NOW).await.remove(0);
+    let delivered = record(
+        &fixture.database,
+        &last,
+        Delivery::Received {
+            receipt: "typed".to_owned(),
+        },
+    )
+    .await;
+
+    assert_eq!(delivered, DeliveryState::Received);
+    let read = fixture.database.read().await.unwrap();
+    let stored = cockpit_messaging::envelope(&read, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.attempts, 1);
+}
+
 #[tokio::test]
 async fn a_restart_during_delivery_retries_only_what_the_receiver_deduplicates() {
     let fixture = Fixture::new().await;
