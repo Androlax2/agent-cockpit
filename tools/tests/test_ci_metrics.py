@@ -60,7 +60,7 @@ class CiMetricsTests(unittest.TestCase):
             "id": job_id,
             "run_id": 10,
             "run_attempt": attempt,
-            "name": "greenfield-macos",
+            "name": "build",
             "labels": ["macos-26"],
             "status": "completed",
             "conclusion": conclusion,

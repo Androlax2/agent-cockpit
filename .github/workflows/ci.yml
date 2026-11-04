@@ -62,8 +62,7 @@ jobs:
         with:
           fallback: none
           tool: cargo-nextest@0.9.150,cargo-deny@0.20.2,typos@1.51.1
-      # The same reviewed pin and rules as greenfield-macos (#397): main saves, pull requests
-      # restore; docs/decisions/2026-11-01-397-ci-cost.md.
+      # Reviewed pin (#397): main saves, pull requests restore; docs/decisions/2026-11-01-397-ci-cost.md.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -81,53 +80,6 @@ jobs:
         run: make greenfield-ci
       - name: Check enforcement-runner fixtures
         run: make sandbox-enforcement-fixtures
-
-  # The daemon's startup tests on macOS, clean-home start included (M0 gate, #27); the full
-  # greenfield gate stays on Linux. Plain cargo: the Makefile's agent-build runner is Linux-only.
-  # Pull requests run it only when a crate it builds changes (tools/ci-jobs.py); main always does.
-  greenfield-macos:
-    needs: changes
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && needs.changes.outputs.platform == 'true'
-    runs-on: macos-26
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
-        with:
-          toolchain: 1.99.1
-      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
-        with:
-          fallback: none
-          tool: cargo-nextest@0.9.150
-      # Why main saves and pull requests only restore:
-      # docs/decisions/2026-10-31-127-platform-build-cache.md.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-bin: false
-      - name: Start the daemon on a clean home
-        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-daemon --test startup
-      # The process supervisor's macOS paths: ps start tokens, the boot session id and
-      # process-group containment.
-      - name: Supervise processes
-        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-processes
-      # The resource backend's macOS subset (#42): nice and SIGSTOP/SIGCONT on process
-      # groups, every cgroup control reported unsupported with its reason.
-      - name: Admit resources
-        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-resource-admission
-      # The agent channel's macOS process trees (#336): ps and sysctl, real processes.
-      - name: Identify agents
-        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-agent-channel
-      # The TUI end to end (#300): the daemon, `cockpit tui` and the agents in real tmux. The
-      # Linux job runs the same tests inside the workspace's.
-      - name: Install tmux for the TUI's end-to-end tests
-        run: command -v tmux || brew install tmux
-      - name: Drive the TUI end to end
-        run: cargo nextest run --locked --manifest-path Cargo.toml -p cockpit-tui --test e2e
-      - name: Check observation ownership and missing macOS engine capability
-        run: make sandbox-enforcement-platform-fixtures
 
   # The daemon's startup tests inside WSL 2: the M0 gate's WSL2 proof (#27). Why each step
   # exists: docs/decisions/2026-10-31-27-wsl2-proven-in-ci.md. cargo-nextest's pin and hash

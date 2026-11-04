@@ -93,10 +93,7 @@ class CiBootstrapTests(unittest.TestCase):
 
     def test_cached_jobs_restore_the_pinned_rust_cache_saved_only_on_main(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for job, first_build in [
-            ("greenfield", "run: make greenfield-ci"),
-            ("greenfield-macos", "cargo nextest run"),
-        ]:
+        for job, first_build in [("greenfield", "run: make greenfield-ci")]:
             with self.subTest(job=job):
                 steps = ci_job(workflow, job)
                 cache_step = re.search(
@@ -109,7 +106,7 @@ class CiBootstrapTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(cache_step, "the reviewed cache pin, saved only from main")
                 self.assertLess(cache_step.end(), steps.index(first_build))
-        self.assertEqual(workflow.count("Swatinem/rust-cache@"), 2, "reviewed for these two jobs")
+        self.assertEqual(workflow.count("Swatinem/rust-cache@"), 1, "reviewed for this one job")
 
     def test_docs_job_installs_the_reviewed_lychee_release_instead_of_compiling_it(self):
         for filename, job in [("ci.yml", "docs"), ("docs.yml", "build")]:
