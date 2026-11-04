@@ -265,7 +265,13 @@ impl Drop for RunningDaemon {
 
 /// The `cockpit-daemon` binary of the same profile as the `cockpit` under test. The CLI may
 /// not depend on the daemon crate (rule `nothing -> daemon`), so Cargo has not built it for
-/// this test: build it here, which is a no-op once it is up to date.
+/// this test: build it here.
+///
+/// Nextest runs every test in its own process, so each would start its own Cargo and queue on
+/// its build lock. Under nextest the processes of one run share a lock and a marker file in
+/// the profile directory: the first builds and records `NEXTEST_RUN_ID` (and the error, when
+/// the build failed, so the rest fail at once instead of each repeating the build), the rest
+/// reuse that result. Without nextest there is no run to share, so every call builds.
 fn daemon_binary() -> PathBuf {
     let cli = Path::new(env!("CARGO_BIN_EXE_torlek"));
     let profile_dir = cli.parent().expect("the binary is in a profile directory");
@@ -274,19 +280,65 @@ fn daemon_binary() -> PathBuf {
         Some(name) => name,
         None => panic!("unexpected binary path {}", cli.display()),
     };
+    match std::env::var("NEXTEST_RUN_ID") {
+        Ok(run_id) => build_daemon_once_per_run(profile_dir, profile, &run_id),
+        Err(_) => build_daemon(profile).unwrap_or_else(|failure| panic!("{failure}")),
+    }
+    profile_dir.join("torlek-daemon")
+}
+
+fn build_daemon_once_per_run(profile_dir: &Path, profile: &str, run_id: &str) {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(profile_dir.join("torlek-daemon-build.lock"))
+        .expect("the daemon build lock opens");
+    lock.lock().expect("the daemon build lock is taken");
+    let marker = profile_dir.join("torlek-daemon-build.run");
+    let recorded = std::fs::read_to_string(&marker).unwrap_or_default();
+    // First line: the run id. The rest: the build's failure, empty when it succeeded.
+    let (recorded_run_id, recorded_failure) = recorded.split_once('\n').unwrap_or((&recorded, ""));
+    if recorded_run_id == run_id {
+        assert!(recorded_failure.is_empty(), "{recorded_failure}");
+        if profile_dir.join("torlek-daemon").is_file() {
+            return;
+        }
+    }
+    let failure = build_daemon(profile).err().unwrap_or_default();
+    std::fs::write(&marker, format!("{run_id}\n{failure}"))
+        .expect("the daemon build marker is written");
+    assert!(failure.is_empty(), "{failure}");
+}
+
+fn build_daemon(profile: &str) -> Result<(), String> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let arguments = [
+        "build",
+        "--locked",
+        "--quiet",
+        "--profile",
+        profile,
+        "--package",
+        "cockpit-daemon",
+        "--bin",
+        "torlek-daemon",
+        "--manifest-path",
+    ];
     let built = Command::new(env!("CARGO"))
-        .args(["build", "--locked", "--quiet", "--profile", profile])
-        .args(["--package", "cockpit-daemon", "--bin", "torlek-daemon"])
-        .arg("--manifest-path")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"))
+        .args(arguments)
+        .arg(&manifest)
         .output()
         .expect("cargo runs");
-    assert!(
-        built.status.success(),
-        "building cockpit-daemon failed: {}",
+    if built.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "building torlek-daemon failed; run `cargo {} {}` to see why: {}",
+        arguments.join(" "),
+        manifest.display(),
         String::from_utf8_lossy(&built.stderr)
-    );
-    profile_dir.join("torlek-daemon")
+    ))
 }
 
 /// The machine's Git, found on the test's own `PATH`.
