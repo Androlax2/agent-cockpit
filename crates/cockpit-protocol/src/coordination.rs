@@ -38,7 +38,7 @@ pub enum InboxView {
 /// A coordinator grant a session holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoordinatorGrantView {
-    /// `observe-sessions`, `message-sessions` or `start-sessions`.
+    /// `observe-sessions`, `message-sessions`, `start-sessions` or `end-sessions`.
     pub permission: String,
     pub grant: i64,
     /// `start-sessions` only: starts asked or made per hour, at most.
@@ -62,8 +62,9 @@ pub struct CoordinatorAuditView {
     pub actor: String,
     pub permission: String,
     /// `message`, `start` (asked or made, counted by the cap; detail `without confirmation`
-    /// when nobody was asked), `started`, or the owner's `approved` / `declined` on an asked
-    /// start (#657).
+    /// when nobody was asked), `started`, the owner's `approved` / `declined` on an asked
+    /// start (#657), or `ended` (target: the session the actor started and ended, detail: the
+    /// item it finished; #713).
     pub action: String,
     /// The session acted on; absent until a start's session exists.
     pub target: Option<String>,

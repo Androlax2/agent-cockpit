@@ -281,6 +281,23 @@ pub struct Session {
     pub started_by: Option<SessionId>,
 }
 
+/// Who ends a session, for the reason its card shows (#713).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ender {
+    Owner,
+    /// The coordinator session that started it ends it once its work is done.
+    Coordinator(SessionId),
+}
+
+impl Ender {
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Ender::Owner => "ended by the owner".to_owned(),
+            Ender::Coordinator(coordinator) => format!("ended by session {coordinator}"),
+        }
+    }
+}
+
 /// `cockpit session new`: a directory of a registered project, in place or in a new
 /// parallel clone on `clone_branch`.
 #[derive(Debug, Clone)]

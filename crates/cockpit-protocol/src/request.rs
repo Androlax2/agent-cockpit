@@ -134,10 +134,18 @@ pub enum Command {
         launch_token: Option<String>,
         session: String,
     },
+    /// Agent socket only (#713): end `session`, which the sender started and which the task
+    /// list says finished its work. Needs `end-sessions`. Any other session, and every other
+    /// lifecycle change, stay [`Command::SessionEnd`] and its owner-only neighbours.
+    AgentEnd {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        session: String,
+    },
     /// Owner only (#410): give `session` one coordinator grant over every session:
-    /// `observe-sessions`, `message-sessions` or `start-sessions`. `without_confirmation`,
-    /// `per_hour` and `max_active` (#739) are `start-sessions`' terms; `without_confirmation`
-    /// needs `per_hour`.
+    /// `observe-sessions`, `message-sessions`, `start-sessions` or `end-sessions` (#713).
+    /// `without_confirmation`, `per_hour` and `max_active` (#739) are `start-sessions`' terms;
+    /// `without_confirmation` needs `per_hour`.
     SessionGrant {
         session: String,
         permission: String,
@@ -902,6 +910,10 @@ pub enum Reply {
     },
     /// `session`'s question waits on the owner now.
     AgentEscalated {
+        session: String,
+    },
+    /// `session`, which the sender started, has ended (#713).
+    AgentEnded {
         session: String,
     },
     /// A start without confirmation: the session that began.

@@ -55,6 +55,34 @@ async fn work_of(fixture: &Fixture, session: &str) -> Option<SessionWork> {
         .remove(&SessionId::new(session).unwrap())
 }
 
+/// #713: one session's work, read alone, is what the aggregate says of it.
+#[tokio::test]
+async fn one_session_s_work_read_alone_matches_the_aggregate() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session("s1", "app").await;
+    let other = fixture.session("s2", "app").await;
+    let first = fixture.owner_adds("app", "Fix the login").await;
+    let second = fixture.owner_adds("app", "Fix the logout").await;
+    let others = fixture.owner_adds("app", "Fix the signup").await;
+    start(&fixture, &session, first.id).await;
+    finish(&fixture, &session, first.id).await;
+    start(&fixture, &session, second.id).await;
+    start(&fixture, &other, others.id).await;
+
+    let read = fixture.database.read().await.unwrap();
+    let alone = cockpit_tasks::work_of(&read, &SessionId::new("s1").unwrap())
+        .await
+        .unwrap();
+    let idle = cockpit_tasks::work_of(&read, &SessionId::new("s3").unwrap())
+        .await
+        .unwrap();
+    drop(read);
+
+    assert_eq!(Some(alone), work_of(&fixture, "s1").await);
+    assert_eq!(alone.doing, 1);
+    assert_eq!(idle, SessionWork::default());
+}
+
 #[tokio::test]
 async fn a_session_that_finishes_its_item_is_kept_as_its_finisher() {
     let fixture = Fixture::new().await;

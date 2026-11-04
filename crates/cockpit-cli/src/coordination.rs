@@ -1,7 +1,8 @@
-//! `cockpit agent sessions|message|start|escalate`: a coordinator session observes, messages
-//! and starts other sessions on the agent socket, under the grants the owner gave it with
-//! `cockpit session grant` (#410), and hands the question of a session it started to the
-//! owner (#710). The daemon identifies the sender and refuses each verb without its grant.
+//! `cockpit agent sessions|message|start|escalate|end`: a coordinator session observes,
+//! messages and starts other sessions on the agent socket, under the grants the owner gave it
+//! with `cockpit session grant` (#410), hands the question of a session it started to the
+//! owner (#710), and ends a session it started once its work is done (#713). The daemon
+//! identifies the sender and refuses each verb without its grant.
 //! `cockpit agent inbox` is the other end: a session's hook waits there for the next message
 //! sent to it (#703).
 //!
@@ -23,8 +24,9 @@ use crate::daemon::{absolute_dir, utf8_words};
 const WATCH_EVERY: Duration = Duration::from_secs(2);
 /// How often `agent inbox` asks again while nothing is handed over.
 const INBOX_EVERY: Duration = Duration::from_secs(2);
-/// A start launches an agent, which can take longer than a request usually may.
-const START_DEADLINE: Duration = Duration::from_secs(120);
+/// A start launches an agent and an end waits out its grace and kill wait, like the owner's
+/// `session end`: longer than a request usually may.
+const LIFECYCLE_DEADLINE: Duration = Duration::from_secs(120);
 
 /// `cockpit agent sessions [--watch]`: one line per other session; with `--watch`, then only
 /// the line of a session that changed or appeared, and `ID\tended` for one that left the
@@ -177,6 +179,34 @@ pub(crate) fn escalate(arguments: &[OsString]) -> Result<ExitCode, String> {
     )
 }
 
+/// `cockpit agent end SESSION`: ends a session the sender started, once the task list says
+/// its work is done (#713). The daemon refuses any other session, and one still working.
+pub(crate) fn end(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let session = match utf8_words(arguments)?.as_slice() {
+        [session] => (*session).to_owned(),
+        _ => return Err("agent end takes SESSION".to_owned()),
+    };
+    let agent = match Agent::connect() {
+        Ok(agent) => agent,
+        Err(code) => return Ok(code),
+    };
+    Ok(
+        match agent.request_within(
+            Command::AgentEnd {
+                launch_token: crate::agent::launch_token(),
+                session,
+            },
+            LIFECYCLE_DEADLINE,
+        ) {
+            Ok(Reply::AgentEnded { session }) => {
+                outln!("ended session {session}");
+                ExitCode::SUCCESS
+            }
+            other => agent.failed(other),
+        },
+    )
+}
+
 /// `cockpit agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL]
 /// [--effort LEVEL]`: starts at once when the grant needs no confirmation, otherwise asks the
 /// owner and waits like `cockpit ask run`.
@@ -219,7 +249,7 @@ pub(crate) fn start(arguments: &[OsString]) -> Result<ExitCode, String> {
             model,
             effort,
         },
-        START_DEADLINE,
+        LIFECYCLE_DEADLINE,
     );
     Ok(match asked {
         Ok(Reply::AgentStarted { session }) => {

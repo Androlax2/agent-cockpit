@@ -52,7 +52,7 @@ pub struct SessionView {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub finished: bool,
     /// The coordinator grants it holds (#410): `observe-sessions`, `message-sessions`,
-    /// `start-sessions`.
+    /// `start-sessions`, `end-sessions`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub coordinator_grants: Vec<String>,
     /// The latest message a coordinator queued to it, with the sender named (#410).

@@ -104,6 +104,33 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             UPDATE authorization_grants SET starts_max_active = 8
                 WHERE permission = 'start-sessions';",
         },
+        // #713: a coordinator's end of a session it started is audited. The same rebuild as
+        // version 3, for the same reason; rows are copied unchanged.
+        Migration {
+            version: 5,
+            sql: "CREATE TABLE authorization_audit_with_ends (
+                id INTEGER PRIMARY KEY,
+                actor TEXT NOT NULL CHECK (actor <> ''),
+                permission TEXT NOT NULL,
+                grant_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('message', 'start', 'started',
+                    'approved', 'declined', 'ended')),
+                target TEXT CHECK (target <> ''),
+                detail TEXT,
+                at INTEGER NOT NULL
+            );
+            INSERT INTO authorization_audit_with_ends (id, actor, permission, grant_id,
+                    revision, action, target, detail, at)
+                SELECT id, actor, permission, grant_id, revision, action, target, detail, at
+                FROM authorization_audit;
+            DROP TABLE authorization_audit;
+            ALTER TABLE authorization_audit_with_ends RENAME TO authorization_audit;
+            CREATE INDEX authorization_audit_by_actor
+                ON authorization_audit (actor, action, at);
+            CREATE INDEX authorization_audit_by_target
+                ON authorization_audit (target, action, id);",
+        },
     ],
 };
 
@@ -297,18 +324,15 @@ pub async fn active_grants(
 /// Every session's active coordinator grants (#410), by holder then oldest first: what the
 /// session cards show.
 pub async fn active_coordinator_grants(connection: &Connection) -> Result<Vec<Grant>, Error> {
+    let [observe, message, start, end] = Permission::COORDINATOR.map(Permission::as_str);
     let mut rows = connection
         .query(
             &format!(
                 "SELECT {GRANT_COLUMNS} FROM authorization_grants
-                 WHERE revoked_at IS NULL AND permission IN (?1, ?2, ?3)
+                 WHERE revoked_at IS NULL AND permission IN (?1, ?2, ?3, ?4)
                  ORDER BY holder, id"
             ),
-            (
-                Permission::ObserveSessions.as_str(),
-                Permission::MessageSessions.as_str(),
-                Permission::StartSessions.as_str(),
-            ),
+            (observe, message, start, end),
         )
         .await?;
     let mut grants = Vec::new();

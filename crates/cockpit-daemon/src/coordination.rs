@@ -1,9 +1,10 @@
-//! The coordinator kit (#410): an agent's `agent-sessions`, `agent-message` and `agent-start`
-//! from the agent socket, the owner's `session-grant`, `session-revoke` and `session-grants`,
-//! the delivery of queued messages, and the coordinator notes on session cards. The rules
-//! live in `cockpit-authorization` (grants, start terms and cap, audit), `cockpit-approvals`
-//! (a start waiting for the owner) and `cockpit-messaging` (the outbox); this file maps and
-//! wires.
+//! The coordinator kit (#410): an agent's `agent-sessions`, `agent-message`, `agent-start`
+//! and `agent-end` (#713) from the agent socket, the owner's `session-grant`,
+//! `session-revoke` and `session-grants`, the delivery of queued messages, and the
+//! coordinator notes on session cards. The rules live in `cockpit-authorization` (grants,
+//! start terms and cap, audit), `cockpit-approvals` (a start waiting for the owner),
+//! `cockpit-messaging` (the outbox) and, for the finished label an end needs,
+//! [`crate::sessions::is_finished`]; this file maps and wires.
 //!
 //! A message reaches its target one of two ways. An agent whose bridge collects its own
 //! ([`Capability::Inbox`], Claude Code) takes it with `agent-inbox` from a hook, which hands it
@@ -31,9 +32,10 @@ use cockpit_protocol::{
 };
 use cockpit_provider_api::Capability;
 use cockpit_sessions::{
-    Addressed, AgentState, QuestionSource, Session, SessionId, SessionReport, SessionState,
+    Addressed, AgentState, Ender, QuestionSource, Session, SessionId, SessionReport, SessionState,
     Sessions, StartRequest,
 };
+use cockpit_tasks::SessionWork;
 use cockpit_turso::Database;
 use cockpit_turso::sql::Connection;
 use tokio::sync::Notify;
@@ -134,12 +136,18 @@ impl Waiters {
 }
 
 /// The route for a coordinator verb from the agent socket. Agent requests run in the bulk
-/// lane, like every agent request (#32).
+/// lane, like every agent request (#32), except an end: it may wait out the worker's grace
+/// and kill wait, so it runs in the stop lane like the owner's (#217), never in control.
 pub(crate) fn route_agent(
     command: Command,
     connector: Result<ProcessIdentity, ProcessError>,
     context: Context,
 ) -> Route {
+    let class = if matches!(command, Command::AgentEnd { .. }) {
+        WorkClass::Stop
+    } else {
+        WorkClass::Bulk
+    };
     let work = job(async move {
         let sender = Sender::read(connector).await;
         match command {
@@ -159,6 +167,10 @@ pub(crate) fn route_agent(
                 launch_token,
                 session,
             } => escalate(&context, &sender, launch_token, session).await,
+            Command::AgentEnd {
+                launch_token,
+                session,
+            } => end(&context, &sender, launch_token, session).await,
             Command::AgentStart {
                 launch_token,
                 dir,
@@ -186,10 +198,7 @@ pub(crate) fn route_agent(
             other => unreachable!("routes.rs sends only coordinator verbs here, not {other:?}"),
         }
     });
-    Route::Run {
-        class: WorkClass::Bulk,
-        job: work,
-    }
+    Route::Run { class, job: work }
 }
 
 /// The route for the owner's coordinator grants; small and the owner's: the control lane.
@@ -540,6 +549,151 @@ async fn escalate(
         "a coordinator escalated a question to the owner"
     );
     Ok(Reply::AgentEscalated { session: target })
+}
+
+/// `agent-end` (#713): ends `target` for the coordinator that started it, once the task list
+/// says its work is done (the finished label, #157: doing no item, finished one since its
+/// latest working launch). Needs `end-sessions`; the audit names both sessions and the item.
+/// Any other session, finished or not, and every other lifecycle change stay the owner's:
+/// `routes.rs` never sends them here.
+async fn end(
+    context: &Context,
+    sender: &Sender,
+    launch_token: Option<String>,
+    target: String,
+) -> Answer {
+    let target_id = SessionId::parse(&target)?;
+    let target_holder = holder(&target)?;
+    let coordinator = identified(&context.database, sender, launch_token).await?;
+    if coordinator.as_str() == target {
+        return Err(refused(
+            ErrorCode::InvalidArgument,
+            "a session does not end itself".to_owned(),
+            "name a session you started, from `torlek agent sessions`".to_owned(),
+            UnblockedBy::Agent,
+        ));
+    }
+    // Decided under the target's lock, right before its agent is stopped: a grant revoked, or
+    // an item the worker took, between a check and the end would otherwise be missed.
+    let (ended, (grant, finished_item)) = context
+        .sessions
+        .end_by_when(
+            &target_id,
+            &Ender::Coordinator(SessionId::parse(coordinator.as_str())?),
+            async |target_session: &Session| {
+                let read = context.database.read().await?;
+                let decision = cockpit_authorization::evaluate(
+                    &read,
+                    &Actor::Session(coordinator.clone()),
+                    Permission::EndSessions,
+                    &Scope::Session(target_holder.clone()),
+                )
+                .await?;
+                let grant = granted(&coordinator, decision.outcome)?;
+                if target_session.started_by.as_ref().map(SessionId::as_str)
+                    != Some(coordinator.as_str())
+                {
+                    return Err(refused(
+                        ErrorCode::NotAuthorized,
+                        format!(
+                            "session {} did not start session {target}; only the owner ends it",
+                            coordinator.as_str()
+                        ),
+                        "end only a session you started with `torlek agent start`; ask the owner for any other".to_owned(),
+                        UnblockedBy::Agent,
+                    ));
+                }
+                refuse_if_over(target_session)?;
+                let work = cockpit_tasks::work_of(&read, &target_holder).await?;
+                if !crate::sessions::is_finished_with(target_session, &work) {
+                    return Err(unfinished(&target, target_session, &work));
+                }
+                let finished_item = cockpit_tasks::latest_finished_item(&read, &target_holder)
+                    .await?
+                    .ok_or_else(|| {
+                        internal(&format!(
+                            "session {target} is labelled finished, but the task list names no item it finished"
+                        ))
+                    })?;
+                Ok::<_, Failed>((grant, finished_item))
+            },
+        )
+        .await?;
+    tracing::info!(
+        from = coordinator.as_str(),
+        session = %ended.id,
+        "a coordinator ended a session it started"
+    );
+    // The session is over: from here an error must not read as an end that did not happen.
+    if let Err(Failed(error)) = record_ended(
+        &context.database,
+        &coordinator,
+        grant,
+        &target_holder,
+        format!("item {}", finished_item.0),
+    )
+    .await
+    {
+        tracing::error!(session = %ended.id, ?error, "an end's `ended` entry was not audited");
+    }
+    Ok(Reply::AgentEnded { session: target })
+}
+
+/// Why `target` is not finished, in the words of the rule that fails: its state, the items
+/// it is doing, or the item it finished since its launch that the task list does not record.
+fn unfinished(target: &str, session: &Session, work: &SessionWork) -> Failed {
+    let (why, then) = match session.state {
+        SessionState::Launching => (
+            "it is still launching".to_owned(),
+            format!("end session {target} once it runs and finishes its item"),
+        ),
+        SessionState::Stopping { .. } => (
+            "it is already stopping".to_owned(),
+            format!("`torlek agent sessions` shows session {target} once its stop is over"),
+        ),
+        _ if work.doing > 0 => (
+            format!("it is doing {} item(s)", work.doing),
+            format!("end session {target} once `torlek todo done` marks its item done"),
+        ),
+        _ => (
+            "the task list records no item it finished since its launch".to_owned(),
+            format!("end session {target} once `torlek todo done` marks its item done"),
+        ),
+    };
+    refused(
+        ErrorCode::Conflict,
+        format!("session {target} has not finished its work: {why}"),
+        then,
+        UnblockedBy::Agent,
+    )
+}
+
+/// Audits the end of `target` by `coordinator`, with the item it finished as the detail.
+async fn record_ended(
+    database: &Database,
+    coordinator: &Holder,
+    grant: GrantId,
+    target: &Holder,
+    detail: String,
+) -> Result<(), Failed> {
+    let write = database.write().await?;
+    let revision = cockpit_authorization::current_revision(&write).await?;
+    cockpit_authorization::record_audit(
+        &write,
+        &Audit {
+            actor: coordinator.clone(),
+            permission: Permission::EndSessions,
+            grant,
+            revision,
+            action: AuditedAction::Ended,
+            target: Some(target.clone()),
+            detail: Some(detail),
+            at: now(),
+        },
+    )
+    .await?;
+    write.commit().await?;
+    Ok(())
 }
 
 /// `agent-start`: below the sessions at once and within the hourly cap, either files the
@@ -1382,8 +1536,8 @@ fn coordinator_permission(name: &str) -> Result<Permission, Failed> {
         .filter(|permission| permission.is_coordinator())
         .ok_or_else(|| {
             invalid_argument(&format!(
-                "{name:?} is not a coordinator grant: observe-sessions, message-sessions or \
-                 start-sessions"
+                "{name:?} is not a coordinator grant: observe-sessions, message-sessions, \
+                 start-sessions or end-sessions"
             ))
         })
 }

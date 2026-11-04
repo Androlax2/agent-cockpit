@@ -65,6 +65,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek agent inbox
        torlek agent escalate SESSION
        torlek agent start DIR [--agent NAME] [--prompt TEXT] [--clone BRANCH] [--model MODEL] [--effort LEVEL]
+       torlek agent end SESSION
        torlek agent report-bug DESCRIPTION [--kind timeout|unreachable|internal|other] [--component NAME] [--steps TEXT] [--requested-by-owner]
        torlek bug-report new DESCRIPTION [--title TEXT] [--steps TEXT] [--since 2h|RFC3339]
        torlek bug-report list [--all] | show ID | discard ID
@@ -96,8 +97,8 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek session sleep|wake|resume|end|show SESSION
        torlek session end --finished
        torlek session link SESSION URL
-       torlek session grant SESSION observe-sessions|message-sessions|start-sessions [--per-hour N [--without-confirmation]] [--max-active N]
-       torlek session revoke SESSION observe-sessions|message-sessions|start-sessions
+       torlek session grant SESSION observe-sessions|message-sessions|start-sessions|end-sessions [--per-hour N [--without-confirmation]] [--max-active N]
+       torlek session revoke SESSION observe-sessions|message-sessions|start-sessions|end-sessions
        torlek session grants SESSION
        torlek session sandbox SESSION
        torlek session sandbox-record SESSION --client CLIENT --observed TEXT...
@@ -196,6 +197,8 @@ fn main() -> ExitCode {
         [Some("agent"), Some("escalate")] => coordination::escalate(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("agent"), Some("start")] => coordination::start(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
+        [Some("agent"), Some("end")] => coordination::end(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some("agent"), Some("report-bug")] => bug_report::agent_report(&arguments[2..])
             .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
