@@ -100,3 +100,12 @@ async fn the_backend_policy_follows_the_guards_reading() {
     }));
     assert_eq!(backend.policy().low_disk, None);
 }
+
+#[test]
+fn space_equal_to_the_floor_is_not_low() {
+    let at_floor = DiskSpace {
+        free_mib: 10_240,
+        floor_mib: 10_240,
+    };
+    assert!(!at_floor.is_low());
+}

@@ -466,7 +466,10 @@ impl Instance {
             floor_mib: storage_settings.low_disk_floor_mib.value,
             queue_changed: Arc::clone(&queue_changed),
             sweep_now: Arc::clone(&storage.sweep_now),
+            prune_automatic: storage.policy.automatic,
         };
+        // Read once before any scheduling pass, so a restart on a full disk holds work at once.
+        guard.check(&mut None).await;
         let scheduled = scheduling::Context {
             database: Arc::clone(&database),
             sessions: Arc::clone(&sessions),

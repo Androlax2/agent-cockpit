@@ -25,6 +25,8 @@ pub(crate) struct DiskGuard {
     pub(crate) floor_mib: u64,
     pub(crate) queue_changed: Arc<Notify>,
     pub(crate) sweep_now: Arc<Notify>,
+    /// Whether the owner enabled automatic target pruning; if not, nothing listens to `sweep_now`.
+    pub(crate) prune_automatic: bool,
 }
 
 impl DiskGuard {
@@ -70,10 +72,13 @@ impl DiskGuard {
                 free_mib,
                 floor_mib = self.floor_mib,
                 path = %self.watched_path.display(),
-                "free disk space is below the floor: new launches and heavy jobs wait; target pruning runs only for what [storage] allows"
+                prune_automatic = self.prune_automatic,
+                "free disk space is below the floor: new launches and heavy jobs wait; nothing is deleted unless the owner allowed it in [storage] (target_prune_automatic)"
             );
         }
-        if last_sweep.is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL_WHILE_LOW) {
+        if self.prune_automatic
+            && last_sweep.is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL_WHILE_LOW)
+        {
             *last_sweep = Some(Instant::now());
             self.sweep_now.notify_one();
         }
@@ -110,6 +115,7 @@ mod tests {
             floor_mib,
             queue_changed: Arc::new(Notify::new()),
             sweep_now: Arc::new(Notify::new()),
+            prune_automatic: true,
         };
         (guard, directory)
     }

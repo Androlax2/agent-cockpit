@@ -43,7 +43,8 @@ impl Workload {
         matches!(self, Workload::Build | Workload::Test | Workload::Container)
     }
 
-    /// What waits while disk space is low: new agent launches and heavy jobs, the work that
+    /// What waits while disk space is low: agent turns (the queue's placements, which start
+    /// new work) and heavy jobs, the work that
     /// writes the most. Deliveries and approvals keep going, so the owner can still answer.
     pub fn waits_for_disk(self) -> bool {
         self == Workload::AgentTurn || self.is_heavy()
