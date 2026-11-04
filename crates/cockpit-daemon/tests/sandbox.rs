@@ -436,6 +436,46 @@ async fn the_owners_off_setting_launches_unsandboxed_and_the_evidence_says_so() 
     );
 }
 
+/// The daemon's start and each unsandboxed launch warn that grants no longer hold (#729).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owners_off_setting_warns_that_an_agent_can_act_as_the_owner() {
+    let home = Home::new();
+    home.write_owner_config("[agents]\nsandbox = \"off\"\n");
+    let _daemon = home.start_without_greywall();
+    let client = home.connect().await;
+    let (root, _) = home.project(&client, "app").await;
+    let session = new_session(&client, &root).await;
+    home.wait_for_launches(&session.id, 1).await;
+    let risk = "an unsandboxed agent can reach the owner socket and act as the owner, so \
+                Torlek's grants only hold under the sandbox";
+
+    let log = log_once_it_contains(&home, "an agent launches UNSANDBOXED");
+
+    assert!(
+        log.lines()
+            .any(|line| line.contains("agents run UNSANDBOXED") && line.contains(risk)),
+        "{log}"
+    );
+    assert!(
+        log.lines()
+            .any(|line| line.contains("an agent launches UNSANDBOXED") && line.contains(risk)),
+        "{log}"
+    );
+}
+
+/// The daemon's log once it holds `needle`, or as it is after [`GENEROUS`].
+fn log_once_it_contains(home: &Home, needle: &str) -> String {
+    let file = home.state_dir().join("logs/daemon/cockpit.log");
+    let deadline = std::time::Instant::now() + GENEROUS;
+    loop {
+        let log = std::fs::read_to_string(&file).unwrap_or_default();
+        if log.contains(needle) || std::time::Instant::now() > deadline {
+            return log;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cockpit_session_sandbox_prints_how_the_latest_launch_ran() {
     let home = Home::new();

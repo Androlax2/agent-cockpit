@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use cockpit_client::ClientError;
 use cockpit_config::{AgentSandbox, EffectiveConfig, Source};
 use cockpit_protocol::{
-    Command, ProjectView, ReadinessStatusView, Reply, RequirementView, SessionView,
+    Command, ErrorCode, ProjectView, ReadinessStatusView, Reply, RequirementView, SessionView,
 };
 
 use crate::daemon;
@@ -73,7 +73,7 @@ fn gather() -> Result<Facts, ExitCode> {
     let config = cockpit_config::load(&crate::profile::environment(), None, &[])
         .map_err(|error| error.to_string());
     let daemon = match crate::agent::locate_socket_dir() {
-        Ok(dir) => ask_daemon(&dir.join(cockpit_config::DAEMON_SOCKET))?,
+        Ok(_) => ask_daemon(&crate::agent::caller_socket()?)?,
         Err(error) => Err(DaemonProblem {
             detail: format!("cannot locate its socket: {error}"),
             next: "fix what is named here so `torlek` finds the daemon's socket",
@@ -96,6 +96,12 @@ fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, DaemonProblem>, ExitC
                 next: "`torlek daemon install` runs it as a user service (or run `torlek-daemon` \
                    in another terminal)",
             }),
+            Err(ClientError::Daemon(error)) if error.code == ErrorCode::NotAuthorized => {
+                Err(DaemonProblem {
+                    detail: format!("refused: {}", error.message),
+                    next: "run `torlek init` from your own terminal, outside any Torlek session",
+                })
+            }
             Err(error) => Err(failing_daemon(&error.to_string())),
         },
     )
@@ -287,8 +293,9 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
         lines.push(match setting.value {
             AgentSandbox::Required => format!("you chose the sandbox ({}:{line})", path.display()),
             AgentSandbox::Off => format!(
-                "you chose to run agents UNSANDBOXED, with your rights ({}:{line})",
-                path.display()
+                "you chose to run agents UNSANDBOXED, with your rights ({}:{line}): {}",
+                path.display(),
+                cockpit_config::UNSANDBOXED_RISK
             ),
         });
         return Step {
@@ -319,8 +326,9 @@ fn sandbox_step(config: &Result<EffectiveConfig, String>) -> Step {
         lines,
         next: Some(format!(
             "to accept, {create_folder}write `[agents]` and `sandbox = \"required\"` in {} \
-             (`sandbox = \"off\"` runs agents unsandboxed, with your rights)",
-            shell_word(&file.to_string_lossy())
+             (`sandbox = \"off\"` runs agents unsandboxed, with your rights: {})",
+            shell_word(&file.to_string_lossy()),
+            cockpit_config::UNSANDBOXED_RISK
         )),
     }
 }

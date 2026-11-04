@@ -376,6 +376,13 @@ async fn an_unsandboxed_choice_is_named_loudly() {
         "{checklist}"
     );
     assert!(checklist.contains("UNSANDBOXED"), "{checklist}");
+    assert!(
+        checklist.contains(
+            "an unsandboxed agent can reach the owner socket and act as the owner, so Torlek's \
+             grants only hold under the sandbox"
+        ),
+        "{checklist}"
+    );
 }
 
 #[tokio::test]

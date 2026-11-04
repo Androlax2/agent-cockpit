@@ -262,7 +262,8 @@ fn sandbox(
     if config.agents_sandbox.value == cockpit_config::AgentSandbox::Off {
         tracing::warn!(
             source = %config.agents_sandbox.source,
-            "agents run UNSANDBOXED: the owner set agents.sandbox = \"off\""
+            "agents run UNSANDBOXED: the owner set agents.sandbox = \"off\"; {}",
+            cockpit_config::UNSANDBOXED_RISK
         );
     }
     let layout_config_dir = environment

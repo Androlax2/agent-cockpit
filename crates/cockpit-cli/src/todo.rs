@@ -15,7 +15,7 @@ use cockpit_protocol::{
     TaskView,
 };
 
-use crate::agent::{agent_socket, exchange, failed, is_in_a_session, launch_token, socket_dir};
+use crate::agent::{agent_socket, caller_socket, exchange, failed, is_in_a_session, launch_token};
 use crate::daemon::utf8_words;
 
 /// What a verb sends, and whether it is a session's request by its nature.
@@ -241,11 +241,13 @@ pub(crate) fn run(request: Request) -> ExitCode {
     }
 }
 
+/// The agent socket for a session's request, else [`caller_socket`]: the agent socket still
+/// inside a session.
 pub(crate) fn socket(is_session: bool) -> Result<PathBuf, ExitCode> {
     if is_session {
         agent_socket()
     } else {
-        Ok(socket_dir()?.join(cockpit_config::DAEMON_SOCKET))
+        caller_socket()
     }
 }
 

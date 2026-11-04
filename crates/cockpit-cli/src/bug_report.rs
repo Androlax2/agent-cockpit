@@ -322,7 +322,7 @@ fn new_draft(command: Command) -> Result<Reply, ExitCode> {
     let Command::BugReportNew { since, .. } = command else {
         unreachable!("new_draft is given bug-report-new, not {command:?}")
     };
-    let socket = crate::agent::socket_dir()?.join(cockpit_config::DAEMON_SOCKET);
+    let socket = crate::agent::caller_socket()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -424,8 +424,8 @@ fn bundle_text(bundle: &BugBundleView) -> String {
 /// until the owner records the issue with `send ID --filed URL`. One connection: the draft
 /// read is the draft sent.
 fn send_report(send: &Send) -> ExitCode {
-    let socket = match crate::agent::socket_dir() {
-        Ok(dir) => dir.join(cockpit_config::DAEMON_SOCKET),
+    let socket = match crate::agent::caller_socket() {
+        Ok(socket) => socket,
         Err(code) => return code,
     };
     let runtime = match tokio::runtime::Builder::new_current_thread()
