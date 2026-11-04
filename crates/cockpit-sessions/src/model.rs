@@ -276,6 +276,9 @@ pub struct Session {
     /// `restart --all` deferred its restart until the agent waits at its prompt; the
     /// periodic pass restarts it then.
     pub restart_pending: bool,
+    /// The coordinator session that started this one (#710): its agent's questions go to
+    /// that coordinator before the owner. `None` for a session the owner started.
+    pub started_by: Option<SessionId>,
 }
 
 /// `cockpit session new`: a directory of a registered project, in place or in a new
@@ -291,6 +294,8 @@ pub struct StartRequest {
     /// does not know, before the session is recorded (#701).
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The coordinator session asking for the start; `None` when the owner starts it.
+    pub started_by: Option<SessionId>,
 }
 
 /// What [`crate::Sessions::restore`] did with one session at daemon start.

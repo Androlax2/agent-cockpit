@@ -44,6 +44,7 @@ fn dialog_over(covered_question: &str) -> SessionReport {
         needs_input: Some("Allow Bash?".to_owned()),
         question_source: Some(QuestionSource::Dialog),
         covered_question: Some(covered_question.to_owned()),
+        held_by: None,
         outcome: None,
         reported_at: 1,
     }

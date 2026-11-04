@@ -346,6 +346,7 @@ impl Sessions {
                 working_dir: &working_dir,
                 model: request.model.as_deref(),
                 effort: request.effort.as_deref(),
+                started_by: request.started_by.as_ref(),
             },
         )
         .await?;

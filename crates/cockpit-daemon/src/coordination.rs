@@ -153,6 +153,10 @@ pub(crate) fn route_agent(
                 launch_token,
                 waiter,
             } => collect(&context, &sender, launch_token, waiter).await,
+            Command::AgentEscalate {
+                launch_token,
+                session,
+            } => escalate(&context, &sender, launch_token, session).await,
             Command::AgentStart {
                 launch_token,
                 dir,
@@ -238,11 +242,11 @@ async fn observe(context: &Context, sender: &Sender, launch_token: Option<String
     if let Outcome::Refused(refusal) = decision.outcome {
         return Err(not_granted(&coordinator, &refusal));
     }
-    let mut reports: HashMap<String, cockpit_sessions::SessionReport> =
-        cockpit_sessions::latest_reports(&read)
+    let mut reports: HashMap<String, cockpit_protocol::SessionReport> =
+        crate::agent::wire_reports(&read, cockpit_sessions::latest_reports(&read).await?)
             .await?
             .into_iter()
-            .map(|report| (report.session.as_str().to_owned(), report))
+            .map(|report| (report.session.clone(), report))
             .collect();
     let notes = notes(&read).await?;
     drop(read);
@@ -257,9 +261,7 @@ async fn observe(context: &Context, sender: &Sender, launch_token: Option<String
             inbound_message: notes
                 .inbound_message_of(session.id.as_str())
                 .filter(|inbound| inbound.from == coordinator.as_str()),
-            report: reports
-                .remove(session.id.as_str())
-                .map(crate::agent::to_wire),
+            report: reports.remove(session.id.as_str()),
             id: session.id.to_string(),
             agent: session.provider.to_string(),
             state: crate::sessions::state_view(session.state),
@@ -437,25 +439,31 @@ async fn collect(
     while let Some(claim) =
         cockpit_messaging::claim_next_for(&write, INBOX_PRODUCER, session.as_str(), at).await?
     {
-        let delivery = match authorship(&write, &claim).await.map_err(|reason| {
+        let (delivery, from) = match authorship(&write, &claim).await.map_err(|reason| {
             tracing::error!(%reason, "reading a collected message's sender failed");
             internal(&reason)
         })? {
-            Authorship::Rejected(reason) => Delivery::Failed(Failure::Rejected { reason }),
-            Authorship::Granted(from) => Delivery::Received {
-                receipt: format!(
-                    "handed to session {}'s agent by its hook, from session {}",
-                    session.as_str(),
-                    from.as_str()
-                ),
-            },
+            Authorship::Rejected(reason) => (Delivery::Failed(Failure::Rejected { reason }), None),
+            Authorship::Granted(from) => (
+                Delivery::Received {
+                    receipt: format!(
+                        "handed to session {}'s agent by its hook, from session {}",
+                        session.as_str(),
+                        from.as_str()
+                    ),
+                },
+                Some(from),
+            ),
         };
         let state =
             cockpit_messaging::record_delivery(&write, claim.id, claim.attempt, &delivery, at)
                 .await?;
-        if state != DeliveryState::Received {
+        let Some(from) = from.filter(|_| state == DeliveryState::Received) else {
             continue;
-        }
+        };
+        // A collected message starts no prompt, so nothing else clears the question the
+        // coordinator that started the session answers with it (#710); a typed one does.
+        cockpit_sessions::answer_question(&write, &session, &from).await?;
         let message = audit_entry_of(&claim).ok_or_else(|| internal(&claim.effect_key))?;
         write.commit().await?;
         tracing::info!(
@@ -484,6 +492,50 @@ async fn is_busy(connection: &Connection, session: &Holder) -> Result<bool, Fail
         report.state == Some(AgentState::Working)
             || report.question_source == Some(QuestionSource::Dialog)
     }))
+}
+
+/// `agent-escalate` (#710): the coordinator that started `target` hands the question its
+/// agent asked to the owner, before its time with the coordinator is over. Needs no grant:
+/// starting the session is what made the question the coordinator's.
+async fn escalate(
+    context: &Context,
+    sender: &Sender,
+    launch_token: Option<String>,
+    target: String,
+) -> Answer {
+    let target_id = SessionId::parse(&target)?;
+    let target_holder = holder(&target)?;
+    let write = context.database.write().await?;
+    let coordinator = sender.identify(&write, launch_token).await?;
+    let target_session = cockpit_sessions::session(&write, &target_id).await?;
+    if target_session.started_by.as_ref().map(SessionId::as_str) != Some(coordinator.as_str()) {
+        return Err(refused(
+            ErrorCode::NotAuthorized,
+            format!(
+                "session {} did not start session {target}; its question is not the sender's to escalate",
+                coordinator.as_str()
+            ),
+            "escalate only a session you started with `torlek agent start`".to_owned(),
+            UnblockedBy::Agent,
+        ));
+    }
+    if !cockpit_sessions::escalate_question(&write, &target_holder, now()).await? {
+        return Err(refused(
+            ErrorCode::Conflict,
+            format!("session {target} has no question of its own open"),
+            format!(
+                "nothing waits; `torlek agent sessions` shows session {target}'s question once it asks"
+            ),
+            UnblockedBy::Agent,
+        ));
+    }
+    write.commit().await?;
+    tracing::info!(
+        from = coordinator.as_str(),
+        session = target.as_str(),
+        "a coordinator escalated a question to the owner"
+    );
+    Ok(Reply::AgentEscalated { session: target })
 }
 
 /// `agent-start`: within the hourly cap, either files the start in the `ask run` queue or,
@@ -566,7 +618,10 @@ async fn start(
     audit.detail = Some("without confirmation".to_owned());
     cockpit_authorization::record_audit(&write, &audit).await?;
     write.commit().await?;
-    let started = context.sessions.start(start_request(dir, start)).await?;
+    let started = context
+        .sessions
+        .start(start_request(dir, start, &coordinator)?)
+        .await?;
     tracing::info!(
         from = coordinator.as_str(),
         session = %started.id,
@@ -611,10 +666,20 @@ pub(crate) async fn start_approved(
         .start
         .clone()
         .expect("only a start request is carried out as a start");
-    match sessions
-        .start(start_request(approved.cwd.clone(), start))
-        .await
-    {
+    let start = match start_request(approved.cwd.clone(), start, &asker) {
+        Ok(start) => start,
+        Err(Failed(error)) => {
+            tracing::warn!(
+                request,
+                ?error,
+                "an approved start names no valid asking session"
+            );
+            let not_started = Err(NoResult::NotStarted(error.message));
+            crate::approvals::record_end_or_log(&database, &approved, &not_started).await;
+            return;
+        }
+    };
+    match sessions.start(start).await {
         Ok(started) => {
             tracing::info!(request, session = %started.id, "an approved start began");
             let grant = finish_approved(&database, &approved, asked_under, &started).await;
@@ -693,15 +758,21 @@ async fn try_finish_approved(
     Ok(grant.id)
 }
 
-fn start_request(dir: PathBuf, start: StartSession) -> StartRequest {
-    StartRequest {
+/// The start a coordinator asked for, recorded as started by it (#710).
+fn start_request(
+    dir: PathBuf,
+    start: StartSession,
+    coordinator: &Holder,
+) -> Result<StartRequest, Failed> {
+    Ok(StartRequest {
         dir,
         provider: start.agent,
         first_message: start.prompt,
         clone_branch: start.clone,
         model: start.model,
         effort: start.effort,
-    }
+        started_by: Some(SessionId::parse(coordinator.as_str())?),
+    })
 }
 
 /// Audits the owner's decision on a start request beside its ask (#657), in the decision's

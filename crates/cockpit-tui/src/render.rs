@@ -253,7 +253,7 @@ fn columns(text: &str) -> usize {
 /// One session's card: the id line, then whether it waits on you and what the agent reports
 /// on an indented line of their own. The mark after the selection marker lets the eye find the
 /// sessions that need you down the list's left edge: `!` blocked on you, `?` asked you and
-/// still works (#215).
+/// still works (#215). A question a coordinator holds is named with it instead (#710).
 fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
     let (mark, waiting) = if !board.needs_you(&session.id) {
@@ -267,8 +267,12 @@ fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -
         "{marker}{mark} {}  {}  {}",
         session.id, session.agent, session.state,
     )];
+    let held = board
+        .question_holder(&session.id)
+        .map(|coordinator| format!("question with coordinator {coordinator}"));
     let details: Vec<&str> = waiting
         .into_iter()
+        .chain(held.as_deref())
         .chain(
             board
                 .report(&session.id)

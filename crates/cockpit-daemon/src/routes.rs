@@ -350,6 +350,7 @@ impl Handler for Routes {
                 command @ (Command::AgentSessions { .. }
                 | Command::AgentMessage { .. }
                 | Command::AgentInbox { .. }
+                | Command::AgentEscalate { .. }
                 | Command::AgentStart { .. }),
                 peer,
             ) => match peer {

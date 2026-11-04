@@ -258,10 +258,13 @@ impl Board {
             .collect()
     }
 
-    /// A finished session folds away unless it waits on the owner: that one stays listed,
-    /// so its question or approval is never hidden behind a count.
+    /// A finished session folds away unless it waits on the owner or a coordinator holds its
+    /// question (#710): that one stays listed, so its question or approval is never hidden
+    /// behind a count.
     fn is_folded(&self, session: &SessionView) -> bool {
-        session.finished && !self.needs_you(&session.id)
+        session.finished
+            && !self.needs_you(&session.id)
+            && self.question_holder(&session.id).is_none()
     }
 
     /// The sessions in list order, flattened across groups.
@@ -273,13 +276,20 @@ impl Board {
     }
 
     /// Whether the session waits on the owner: an approval or guide it asked for, a command
-    /// of its waiting for input, or a question it reported.
+    /// of its waiting for input, or a question it reported that no coordinator holds (#710).
     pub fn needs_you(&self, session: &str) -> bool {
         self.has_open_request(session)
             || self
                 .reports
                 .get(session)
-                .is_some_and(|report| report.needs_input.is_some())
+                .is_some_and(|report| report.needs_input.is_some() && report.held_by.is_none())
+    }
+
+    /// The coordinator session that holds the session's question before the owner (#710).
+    pub fn question_holder(&self, session: &str) -> Option<&str> {
+        self.reports
+            .get(session)
+            .and_then(|report| report.held_by.as_deref())
     }
 
     /// An approval or guide the session asked for, or a command of its waiting for input.

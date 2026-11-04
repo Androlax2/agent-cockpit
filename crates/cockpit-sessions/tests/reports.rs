@@ -332,6 +332,8 @@ async fn a_report_recorded_before_the_move_survives_the_migration() {
             covered_question: None,
             reported_at: 42,
             launch: None,
+            question_asked_at: None,
+            question_escalated_at: None,
         }]
     );
     let channel_table = database

@@ -18,7 +18,8 @@ const OUTCOME_REASON_MAX_CHARS: usize = 80;
 
 /// The columns `report_from` reads, in its order.
 const SELECT_REPORTS: &str = "SELECT session, state, label, doing, needs_input, reported_at,
-     launch_id, outcome, outcome_reason, question_source, covered_question FROM session_reports";
+     launch_id, outcome, outcome_reason, question_source, covered_question, question_asked_at,
+     question_escalated_at FROM session_reports";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -116,6 +117,13 @@ pub struct SessionReport {
     /// The session's latest launch when the agent reported, so a report is never mistaken
     /// for one from a later launch; `None` for a report moved from the agent channel.
     pub launch: Option<i64>,
+    /// Seconds since 1970 when the agent asked its own question, open or covered by a
+    /// dialog; its time with a coordinator counts from here (#710). `None` without one, and
+    /// for a question recorded before #710.
+    pub question_asked_at: Option<i64>,
+    /// When the coordinator that started the session handed the agent's question to the
+    /// owner (`agent escalate`, #710).
+    pub question_escalated_at: Option<i64>,
 }
 
 /// Records `report` for the session the sender is identified as (see
@@ -205,8 +213,9 @@ async fn store_report(write: &WriteTransaction<'_>, merged: &SessionReport) -> R
         .execute(
             "INSERT INTO session_reports
                 (session, state, label, doing, needs_input, reported_at, launch_id, outcome,
-                 outcome_reason, question_source, covered_question)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 outcome_reason, question_source, covered_question, question_asked_at,
+                 question_escalated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             (
                 merged.session.as_str(),
                 merged.state.map(AgentState::as_str),
@@ -223,6 +232,8 @@ async fn store_report(write: &WriteTransaction<'_>, merged: &SessionReport) -> R
                     .map(str::to_owned),
                 merged.question_source.map(QuestionSource::as_str),
                 merged.covered_question.clone(),
+                merged.question_asked_at,
+                merged.question_escalated_at,
             ),
         )
         .await?;
@@ -260,7 +271,10 @@ pub async fn latest_report(
 
 /// The session's latest launch: the one its reporting agent runs as, since a launch is
 /// recorded before its agent starts and the previous agent is stopped before that.
-async fn latest_launch(connection: &Connection, session: &SessionId) -> Result<Option<i64>, Error> {
+pub(crate) async fn latest_launch(
+    connection: &Connection,
+    session: &SessionId,
+) -> Result<Option<i64>, Error> {
     let mut rows = connection
         .query(
             "SELECT max(id) FROM session_launches WHERE session_id = ?1",
@@ -286,6 +300,8 @@ fn unreported(session: &SessionId) -> SessionReport {
         outcome: None,
         reported_at: 0,
         launch: None,
+        question_asked_at: None,
+        question_escalated_at: None,
     }
 }
 
@@ -299,6 +315,7 @@ fn merge(
     is_new_conversation: bool,
 ) -> SessionReport {
     let previous = previous.unwrap_or_else(|| unreported(session));
+    let at = now();
     let is_continuing = previous.launch == launch && !is_new_conversation;
     let is_asking = report.needs_input.is_some() || report.dialog.is_some();
     // Only a report saying what the agent does answers a dialog: a label, a doing-now or the
@@ -324,6 +341,17 @@ fn merge(
     };
     let kept_agent_question =
         previous_agent_question.filter(|_| !report.is_new_prompt && is_continuing);
+    // Asking the kept question again keeps its time and escalation: a repeated report must
+    // not take a question back from the owner (#710).
+    let (question_asked_at, question_escalated_at) =
+        match (&report.needs_input, &kept_agent_question) {
+            (Some(asked), Some(kept)) if asked == kept => {
+                (previous.question_asked_at, previous.question_escalated_at)
+            }
+            (Some(_), _) => (Some(at), None),
+            (None, Some(_)) => (previous.question_asked_at, previous.question_escalated_at),
+            (None, None) => (None, None),
+        };
     let agent_question = report.needs_input.or(kept_agent_question);
     let kept_dialog = previous_dialog.filter(|_| !is_answering_dialog && is_continuing);
     // An open dialog shows over the agent's question, which waits beneath it.
@@ -343,8 +371,10 @@ fn merge(
         question_source,
         covered_question,
         outcome,
-        reported_at: now(),
+        reported_at: at,
         launch,
+        question_asked_at,
+        question_escalated_at,
     }
 }
 
@@ -576,5 +606,7 @@ fn report_from(row: &Row) -> Result<SessionReport, Error> {
         outcome,
         reported_at: row.get(5)?,
         launch: row.get(6)?,
+        question_asked_at: row.get(11)?,
+        question_escalated_at: row.get(12)?,
     })
 }

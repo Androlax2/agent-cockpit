@@ -216,6 +216,17 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             sql: "ALTER TABLE sessions ADD COLUMN model TEXT CHECK (model <> '');
             ALTER TABLE sessions ADD COLUMN effort TEXT CHECK (effort <> '');",
         },
+        // #710: the coordinator that started a session, whose agent's questions go to it
+        // before the owner; when the agent's own question was asked, which starts its time
+        // with the coordinator, and when the coordinator handed it to the owner. A question
+        // recorded before has no time and waits on the owner, as it did.
+        Migration {
+            version: 11,
+            sql: "ALTER TABLE sessions ADD COLUMN started_by TEXT CHECK (started_by <> '');
+            ALTER TABLE session_reports ADD COLUMN question_asked_at INTEGER;
+            ALTER TABLE session_reports ADD COLUMN question_escalated_at INTEGER
+                CHECK (question_escalated_at IS NULL OR question_asked_at IS NOT NULL);",
+        },
     ],
 };
 
@@ -242,7 +253,7 @@ const SESSION_COLUMNS: &str = "s.id, s.provider, s.checkout_id, s.holds_checkout
     s.changed_at, l.id, l.kind, l.execution_id, l.launched_at,
     EXISTS (SELECT 1 FROM session_restart_requests r WHERE r.session_id = s.id),
     (SELECT max(w.working_order) FROM session_launches w WHERE w.session_id = s.id),
-    e.ended_by, e.code, e.output, s.model, s.effort";
+    e.ended_by, e.code, e.output, s.model, s.effort, s.started_by";
 const SESSION_FROM: &str = "sessions s LEFT JOIN session_launches l ON l.id =
     (SELECT max(id) FROM session_launches WHERE session_id = s.id)
     LEFT JOIN session_exits e ON e.launch_id = l.id";
@@ -329,6 +340,7 @@ pub(crate) struct NewSession<'values> {
     pub(crate) working_dir: &'values Path,
     pub(crate) model: Option<&'values str>,
     pub(crate) effort: Option<&'values str>,
+    pub(crate) started_by: Option<&'values SessionId>,
 }
 
 /// Records a new session, `launching` its first launch.
@@ -342,8 +354,8 @@ pub(crate) async fn insert_session(
     write
         .execute(
             "INSERT INTO sessions (id, provider, checkout_id, holds_checkout, working_dir,
-                 state, revision, created_at, changed_at, model, effort)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'launching', 1, ?6, ?6, ?7, ?8)",
+                 state, revision, created_at, changed_at, model, effort, started_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'launching', 1, ?6, ?6, ?7, ?8, ?9)",
             (
                 new.id.as_str(),
                 new.provider.as_str(),
@@ -353,6 +365,7 @@ pub(crate) async fn insert_session(
                 at,
                 optional_text(new.model),
                 optional_text(new.effort),
+                optional_text(new.started_by.map(SessionId::as_str)),
             ),
         )
         .await?;
@@ -779,6 +792,11 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
             })
         }
     };
+    let started_by = row
+        .get::<Option<String>>(24)?
+        .map(|starter| SessionId::parse(&starter))
+        .transpose()
+        .map_err(|error| invalid(format!("started_by: {error}")))?;
     Ok(Session {
         id,
         provider,
@@ -798,6 +816,7 @@ fn session_from_row(row: &Row) -> Result<Session, Error> {
         exit,
         working_launch_order,
         restart_pending,
+        started_by,
     })
 }
 

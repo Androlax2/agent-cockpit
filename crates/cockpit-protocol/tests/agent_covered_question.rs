@@ -12,6 +12,7 @@ fn a_session_report_carries_the_question_a_dialog_covers() {
         needs_input: Some("Allow Bash?".to_owned()),
         question_source: Some(QuestionSource::Dialog),
         covered_question: Some("Which database?".to_owned()),
+        held_by: None,
         outcome: None,
         reported_at: 42,
     };

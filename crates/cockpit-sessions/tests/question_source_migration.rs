@@ -62,6 +62,8 @@ async fn a_version_3_report_keeps_every_column_and_its_question_becomes_the_agen
                 }),
                 reported_at: 42,
                 launch: Some(7),
+                question_asked_at: None,
+                question_escalated_at: None,
             },
             SessionReport {
                 session: SessionId::new("s2").unwrap(),
@@ -74,6 +76,8 @@ async fn a_version_3_report_keeps_every_column_and_its_question_becomes_the_agen
                 outcome: None,
                 reported_at: 43,
                 launch: Some(8),
+                question_asked_at: None,
+                question_escalated_at: None,
             },
         ]
     );

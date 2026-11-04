@@ -122,6 +122,13 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
     },
+    /// Agent socket only (#710): hand the open question of `session`, which the sender
+    /// started, to the owner before its time with the sender is over.
+    AgentEscalate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_token: Option<String>,
+        session: String,
+    },
     /// Owner only (#410): give `session` one coordinator grant over every session:
     /// `observe-sessions`, `message-sessions` or `start-sessions`. `without_confirmation` and
     /// `per_hour` are `start-sessions`' terms; `without_confirmation` needs `per_hour`.
@@ -876,6 +883,10 @@ pub enum Reply {
     AgentInbox {
         waiter: u64,
         inbox: InboxView,
+    },
+    /// `session`'s question waits on the owner now.
+    AgentEscalated {
+        session: String,
     },
     /// A start without confirmation: the session that began.
     AgentStarted {
