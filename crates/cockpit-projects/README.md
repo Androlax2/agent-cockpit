@@ -27,6 +27,12 @@ marker is refused as `Replaced` instead of being acted on.
   five-second budget. Symbolic links are never followed. Concurrent changes prevent an atomic
   snapshot; occupancy is the registration snapshot, not permission to prune. See the
   [decision](../../docs/decisions/2026-11-03-406-clone-storage-report.md).
+- **Target pruning.** A registered clone's `target/` is pruned only under the owner's policy
+  and an immutable confirmed plan, never while the clone has a commit on no remote (the
+  sweep's rule). `prune_verdict` tells the storage report what prune would decide now, from
+  the report's measurement. See the
+  [pruning](../../docs/decisions/2026-11-03-406-target-pruning.md) and
+  [verdict](../../docs/decisions/2026-11-04-406-prune-verdict-and-unpushed-guard.md) decisions.
 - **Sweep.** Removes clones with no holder, no uncommitted changes, no stash and no commit
   (on a branch or HEAD) missing from the remotes; every kept clone carries its reason. A
   clone is marked `removing` (claims refused) before it is checked and `deleting` once the

@@ -10,6 +10,21 @@ pub struct CloneStorageView {
     pub target: String,
     pub holder: Option<String>,
     pub measurement: TargetSizeView,
+    pub prune: PruneVerdictView,
+}
+
+/// What `storage prune` would decide now for this clone's measured `target/`; it
+/// persists nothing and prune decides again from its own measurement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PruneVerdictView {
+    Eligible {
+        proof: String,
+        confirmation_required: bool,
+    },
+    Kept {
+        reason: String,
+    },
 }
 
 /// Apparent bytes sum regular-file lengths per directory entry, including hardlinks.

@@ -8,8 +8,8 @@ use cockpit_projects::{
     Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Git, Holder, Kept, Trust,
 };
 use cockpit_protocol::{
-    CheckoutKindView, CheckoutView, CloneStorageView, Command, ErrorCode, KeptCheckout, KeptReason,
-    Outcome, ProjectView, ProtocolError, Reply, TrustView, Unblock, UnblockedBy,
+    CheckoutKindView, CheckoutView, Command, ErrorCode, KeptCheckout, KeptReason, Outcome,
+    ProjectView, ProtocolError, Reply, TrustView, Unblock, UnblockedBy,
 };
 use cockpit_turso::Database;
 
@@ -23,35 +23,6 @@ pub(crate) fn route(
     environment: cockpit_config::Environment,
 ) -> Route {
     let (class, job): (WorkClass, crate::Job) = match command {
-        Command::StorageReport => (
-            WorkClass::Bulk,
-            job(async move {
-                let report = cockpit_projects::clone_storage(&database).await?;
-                Ok(Reply::Storage {
-                    clones: report
-                        .clones
-                        .into_iter()
-                        .map(|clone| CloneStorageView {
-                            checkout: clone.checkout.id.0,
-                            project: clone.checkout.project.to_string(),
-                            incarnation: clone.checkout.incarnation,
-                            target: clone
-                                .checkout
-                                .path
-                                .join("target")
-                                .to_string_lossy()
-                                .into_owned(),
-                            holder: clone
-                                .checkout
-                                .occupancy
-                                .map(|occupancy| occupancy.holder.to_string()),
-                            measurement: crate::storage::measurement(clone.measurement),
-                        })
-                        .collect(),
-                    truncated: report.truncated,
-                })
-            }),
-        ),
         Command::ProjectList => (
             WorkClass::Control,
             job(async move {

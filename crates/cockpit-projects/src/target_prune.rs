@@ -6,7 +6,7 @@ mod quarantine;
 mod store;
 mod worker;
 
-use crate::{Checkout, CheckoutId, Error, Git, TargetSize};
+use crate::{Checkout, CheckoutId, CloneStorage, Error, Git, TargetSize};
 use cockpit_turso::{Database, WriteTransaction};
 
 pub(crate) use store::MIGRATION;
@@ -61,6 +61,20 @@ pub struct PrunePreview {
     policy: PrunePolicy,
 }
 
+/// What `torlek storage prune` would decide now for a clone the storage report measured.
+/// An observation only: it persists nothing, and prune decides again from its own measurement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PruneVerdict {
+    Eligible {
+        proof: String,
+        /// Above the owner's threshold or outside automatic policy: the owner confirms a plan.
+        confirmation_required: bool,
+    },
+    Kept {
+        reason: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PruneStatus {
     pub target: String,
@@ -103,6 +117,44 @@ pub async fn preview_target_prune(
     let evidence = evidence.clone();
     let git = git.clone();
     crate::blocking(move || Ok(filesystem::preview(stored, main, &git, policy, evidence))).await
+}
+
+/// The same rules as [`preview_target_prune`], applied to the report's measurement instead of
+/// walking `target/` again. A checkout whose incarnation changed since the report is kept.
+pub async fn prune_verdict(
+    database: &Database,
+    git: &Git,
+    clone: &CloneStorage,
+    policy: &PrunePolicy,
+    evidence: &PruneEvidence,
+) -> Result<PruneVerdict, Error> {
+    let (stored, main) = {
+        let read = database.read().await?;
+        let stored = crate::store::stored_checkout(&read, clone.checkout.id).await?;
+        let project = crate::store::project_named(&read, stored.checkout.project.as_str()).await?;
+        let main = crate::store::main_checkout(&read, project.id).await?;
+        (stored, main)
+    };
+    if stored.checkout.incarnation != clone.checkout.incarnation {
+        return Ok(PruneVerdict::Kept {
+            reason: "checkout was replaced during the report".to_owned(),
+        });
+    }
+    let policy = policy.clone();
+    let evidence = evidence.clone();
+    let git = git.clone();
+    let measurement = clone.measurement.clone();
+    crate::blocking(move || {
+        Ok(filesystem::verdict(
+            stored,
+            main,
+            &git,
+            &policy,
+            evidence,
+            &measurement,
+        ))
+    })
+    .await
 }
 
 /// Revalidate the observed registration and current capability evidence in the caller's

@@ -260,8 +260,17 @@ fn leftovers_now(git: &Git, clone: &Path) -> Option<Kept> {
         Ok(_) => {}
         Err(error) => return unreadable(error),
     }
-    // HEAD too: commits made on a detached HEAD are on no branch.
-    let unpushed = git.run(
+    match has_unpushed_commits(git, clone) {
+        Ok(true) => Some(Kept::UnpushedCommits),
+        Ok(false) => None,
+        Err(error) => unreadable(error),
+    }
+}
+
+/// Whether HEAD or a local branch has a commit no remote-tracking branch has. HEAD too:
+/// commits made on a detached HEAD are on no branch.
+pub(crate) fn has_unpushed_commits(git: &Git, clone: &Path) -> Result<bool, Error> {
+    let commits = git.run(
         clone,
         &[
             arg("log"),
@@ -272,12 +281,8 @@ fn leftovers_now(git: &Git, clone: &Path) -> Option<Kept> {
             arg("--not"),
             arg("--remotes"),
         ],
-    );
-    match unpushed {
-        Ok(commits) if !commits.trim().is_empty() => Some(Kept::UnpushedCommits),
-        Ok(_) => None,
-        Err(error) => unreadable(error),
-    }
+    )?;
+    Ok(!commits.trim().is_empty())
 }
 
 /// Deletes `clone` only when it is a real directory directly inside its project's clones
