@@ -190,7 +190,7 @@ and save it alone in `~/.config/torlek/github-tokens/<project>` (`mkdir -p -m 70
 folder, then `chmod 600` the file).
 Its next sessions get it as `GH_TOKEN`, and your `~/.config/gh` login is hidden from them.
 A project without one gets no `GH_TOKEN`. `torlek project show PROJECT` says which, never the
-token. A file other users may read, or one that holds anything but the token, stops the
+token. A file whose mode is not `0600` or `0400`, or one that holds anything but the token, stops the
 project's sessions from launching until you fix it.
 Managed engines live under the profile's state directory in `engines/`; proxy configuration, its private CA and data live in `greyproxy/`.
 `torlek sandbox status` checks proxy health without the daemon.

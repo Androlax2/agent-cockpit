@@ -375,19 +375,14 @@ async fn with_github_tokens(
     projects: Vec<cockpit_projects::Project>,
 ) -> Result<Vec<ProjectView>, Error> {
     tokio::task::spawn_blocking(move || {
-        let layout = environment
-            .home_dir()
-            .ok()
-            .map(|home| cockpit_config::Layout::resolve(&environment, &home));
         projects
             .iter()
             .map(|project| ProjectView {
-                github_token: layout.as_ref().map(|layout| {
-                    github_token_view(cockpit_config::github_token_state(
-                        layout,
-                        project.name.as_str(),
-                    ))
-                }),
+                github_token: cockpit_config::github_token_state(
+                    &environment,
+                    project.name.as_str(),
+                )
+                .map(github_token_view),
                 ..project_view(project)
             })
             .collect()

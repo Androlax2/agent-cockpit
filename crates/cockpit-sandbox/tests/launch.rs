@@ -127,7 +127,7 @@ fn a_hosts_denied_path_reaches_the_profile() {
 }
 
 #[test]
-fn a_launchs_own_denied_path_reaches_its_profile_beside_the_hosts() {
+fn a_launch_requests_own_denied_path_reaches_its_profile_beside_the_hosts() {
     let settings = tempfile::tempdir().unwrap();
     let sandbox = Sandbox::new(
         Platform::Linux,

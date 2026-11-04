@@ -28,8 +28,9 @@ pub struct LaunchFacts {
     /// The profile of the daemon that launched the session (#196): its `cockpit` reaches
     /// that daemon alone.
     pub profile: String,
-    /// Whether the project has a GitHub token its sessions get as `GH_TOKEN` (#754); none
-    /// when the session is in no project or the daemon cannot tell.
+    /// Whether the project has a GitHub token its sessions get as `GH_TOKEN` (#754), as its
+    /// file reads when the brief is built; none when the session is in no project or the
+    /// daemon cannot tell.
     pub github_token: Option<GithubTokenFact>,
 }
 
@@ -101,16 +102,15 @@ pub fn brief(facts: &LaunchFacts) -> String {
     if let Some(github_token) = facts.github_token {
         text.push_str(match github_token {
             GithubTokenFact::Configured => {
-                "- GitHub: `GH_TOKEN` is this project's own token; the owner's `gh` login is \
-                 hidden.\n"
+                "- GitHub: this project has its own token, set as `GH_TOKEN` at launch; in the \
+                 sandbox, the owner's `gh` login is hidden.\n"
             }
             GithubTokenFact::Missing => {
-                "- GitHub: this project has no token, so `GH_TOKEN` is unset and Torlek gives \
-                 pushes none.\n"
+                "- GitHub: this project has no token of its own, so Torlek sets no `GH_TOKEN`.\n"
             }
             GithubTokenFact::Unusable => {
-                "- GitHub: the owner's token file for this project is refused; its sessions \
-                 do not launch until it is fixed.\n"
+                "- GitHub: the owner's token file for this project is refused; new sessions \
+                 in it do not launch until it is fixed.\n"
             }
         });
     }

@@ -104,7 +104,7 @@ fn a_project_with_a_token_is_told_gh_token_is_its_own() {
     let text = brief(&facts());
 
     assert!(
-        text.contains("`GH_TOKEN` is this project's own token"),
+        text.contains("this project has its own token, set as `GH_TOKEN`"),
         "{text}"
     );
 }
@@ -117,7 +117,7 @@ fn a_project_without_a_token_is_told_gh_token_is_unset() {
     });
 
     assert!(
-        text.contains("this project has no token, so `GH_TOKEN` is unset"),
+        text.contains("this project has no token of its own, so Torlek sets no `GH_TOKEN`"),
         "{text}"
     );
 }

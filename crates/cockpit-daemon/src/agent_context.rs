@@ -196,9 +196,7 @@ async fn github_token_fact(
     project: String,
 ) -> Result<Option<GithubTokenFact>, Failed> {
     let state = tokio::task::spawn_blocking(move || {
-        let home = environment.home_dir().ok()?;
-        let layout = cockpit_config::Layout::resolve(&environment, &home);
-        Some(cockpit_config::github_token_state(&layout, &project))
+        cockpit_config::github_token_state(&environment, &project)
     })
     .await
     .map_err(|error| internal(&error))?;

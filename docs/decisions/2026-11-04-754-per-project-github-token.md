@@ -12,7 +12,7 @@ login until each project has a token) and by the worker (the rest, reasons below
   nothing to parse, and the token cannot sit in a repository or a world-readable place by
   mistake. `cockpit_config::read_github_token` owns the rules.
 - **A wrong file refuses the launch, never weakens it.** A symbolic link, a folder, a file
-  other users may reach, an empty file or one that holds anything but one token (letters,
+  whose mode is not `0600` or `0400`, an empty file or one that holds anything but one token (letters,
   digits, `_`, one line) fails the project's launches with the path and the fix. It is not
   skipped (that would silently fall back to the owner's login) and not used.
 - **Only `GH_TOKEN` reaches the agent, and only its project's.** Every launch drops
@@ -32,8 +32,8 @@ login until each project has a token) and by the worker (the rest, reasons below
 - **Torlek says whether a project has a token, never what it is.** `torlek project show
   PROJECT` prints `github-token` `configured`, `none` or `unusable` with the file or the
   reason; the project list carries the same state (serde-optional, so an older daemon's reply
-  still parses). The launch brief says `GH_TOKEN` is the project's token, or that the project
-  has none and `GH_TOKEN` is unset.
+  still parses). The brief says, as the file reads when it is built, that the project has its own
+  token set as `GH_TOKEN`, or none so Torlek sets no `GH_TOKEN`.
 - **Rejected:** a placeholder through greyproxy (breaks `git push`, above); reading the
   token from the owner's keyring (the daemon would need the session bus, and the keyring
   holds the owner's own login, not a per-project one); a short-lived token minted per

@@ -194,7 +194,7 @@ async fn no_token_value_reaches_the_logs_the_engines_arguments_or_torlek_output(
         assert!(!output.contains(TOKEN), "{name} holds the token:\n{output}");
     }
     assert!(
-        brief.contains("`GH_TOKEN` is this project's own token"),
+        brief.contains("this project has its own token, set as `GH_TOKEN`"),
         "{brief}"
     );
     assert!(shown.status.success(), "{shown:?}");

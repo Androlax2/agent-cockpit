@@ -8,7 +8,7 @@ use std::io::{ErrorKind, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use crate::Layout;
+use crate::{Environment, Layout};
 
 /// The folder of [`Layout::config_dir`] that holds one token file per project, named as the
 /// project is.
@@ -30,12 +30,19 @@ pub const GITHUB_TOKEN_VARIABLES: [&str; 4] = [
 /// Far above a fine-grained token's 93 characters; a larger file is not a token.
 const MAX_TOKEN_BYTES: u64 = 1024;
 
-impl Layout {
-    /// Where project `project`'s GitHub token lives. The project name is the registry's,
-    /// which never holds a `/` or starts with `.`.
-    pub fn github_token_file(&self, project: &str) -> PathBuf {
-        self.config_dir.value.join(GITHUB_TOKENS_DIR).join(project)
-    }
+/// Where project `project`'s GitHub token lives in the configuration of the owner whose
+/// environment is `environment`; `None` when it names no home, so no token is read. The project
+/// name is the registry's, which never holds a `/` or starts with `.`.
+pub fn github_token_file(environment: &Environment, project: &str) -> Option<PathBuf> {
+    let home = environment.home_dir().ok()?;
+    let layout = Layout::resolve(environment, &home);
+    Some(
+        layout
+            .config_dir
+            .value
+            .join(GITHUB_TOKENS_DIR)
+            .join(project),
+    )
 }
 
 /// A token read from its file. It has no `Display`, and its `Debug` is redacted, so a log or
@@ -66,7 +73,7 @@ pub enum GithubTokenError {
     NotAFile {
         path: PathBuf,
     },
-    /// Other users may read or write it: mode `0600` or `0400` only.
+    /// Its mode is not `0600` or `0400`: others may reach it, or it is executable or setuid.
     TooOpen {
         path: PathBuf,
         mode: u32,
@@ -101,7 +108,7 @@ impl fmt::Display for GithubTokenError {
             ),
             Self::TooOpen { path, mode } => write!(
                 formatter,
-                "{} has mode {mode:04o}: other users may reach it; `chmod 600` it",
+                "{} has mode {mode:04o}, not 0600 or 0400; `chmod 600` it",
                 path.display()
             ),
             Self::Malformed { path, reason } => write!(formatter, "{} {reason}", path.display()),
@@ -138,7 +145,7 @@ pub fn read_github_token(path: &Path) -> Result<Option<GithubToken>, GithubToken
         });
     }
     let mode = opened.permissions().mode() & 0o7777;
-    if mode & 0o077 != 0 {
+    if mode & !0o600 != 0 {
         return Err(GithubTokenError::TooOpen {
             path: path.to_owned(),
             mode,
@@ -154,7 +161,14 @@ pub fn read_github_token(path: &Path) -> Result<Option<GithubToken>, GithubToken
     let mut contents = String::new();
     file.take(MAX_TOKEN_BYTES + 1)
         .read_to_string(&mut contents)
-        .map_err(|_| malformed("is not UTF-8 text"))?;
+        .map_err(|error| match error.kind() {
+            ErrorKind::InvalidData => malformed("is not UTF-8 text"),
+            _ => unreadable(error),
+        })?;
+    // The file grew after its size was checked.
+    if contents.len() as u64 > MAX_TOKEN_BYTES {
+        return Err(malformed("is larger than a GitHub token"));
+    }
     let token = contents.trim_end_matches(['\n', '\r']);
     if token.is_empty() {
         return Err(malformed("is empty"));
@@ -172,8 +186,7 @@ pub fn read_github_token(path: &Path) -> Result<Option<GithubToken>, GithubToken
     Ok(Some(GithubToken(token.to_owned())))
 }
 
-/// Whether project `project` has a usable token, read from `layout`, for what Torlek shows:
-/// never the value.
+/// Whether a project has a usable token, for what Torlek shows: never the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GithubTokenState {
     Configured { path: PathBuf },
@@ -181,14 +194,15 @@ pub enum GithubTokenState {
     Unusable { reason: String },
 }
 
-/// [`read_github_token`] for project `project`, as its state. Blocking.
-pub fn github_token_state(layout: &Layout, project: &str) -> GithubTokenState {
-    let path = layout.github_token_file(project);
-    match read_github_token(&path) {
+/// [`read_github_token`] for project `project`, as its state; `None` when `environment`
+/// names no home. Blocking.
+pub fn github_token_state(environment: &Environment, project: &str) -> Option<GithubTokenState> {
+    let path = github_token_file(environment, project)?;
+    Some(match read_github_token(&path) {
         Ok(Some(_)) => GithubTokenState::Configured { path },
         Ok(None) => GithubTokenState::Missing { path },
         Err(error) => GithubTokenState::Unusable {
             reason: error.to_string(),
         },
-    }
+    })
 }

@@ -47,17 +47,19 @@ fn a_tokens_debug_form_holds_no_value() {
 }
 
 #[test]
-fn a_file_other_users_may_read_is_refused_naming_the_fix() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = token_file(dir.path(), TOKEN, 0o644);
+fn a_file_with_any_mode_but_0600_or_0400_is_refused_naming_the_fix() {
+    for mode in [0o644, 0o640, 0o604, 0o700, 0o500, 0o4600] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = token_file(dir.path(), TOKEN, mode);
 
-    let error = read_github_token(&path).unwrap_err();
+        let error = read_github_token(&path).unwrap_err();
 
-    assert!(matches!(
-        error,
-        GithubTokenError::TooOpen { mode: 0o644, .. }
-    ));
-    assert!(error.to_string().contains("chmod 600"), "{error}");
+        assert!(
+            matches!(error, GithubTokenError::TooOpen { mode: refused, .. } if refused == mode),
+            "{mode:o}: {error:?}"
+        );
+        assert!(error.to_string().contains("chmod 600"), "{error}");
+    }
 }
 
 #[test]

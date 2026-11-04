@@ -24,7 +24,7 @@ use toml::Spanned;
 
 pub use github_token::{
     GITHUB_TOKEN_VARIABLE, GITHUB_TOKEN_VARIABLES, GITHUB_TOKENS_DIR, GithubToken,
-    GithubTokenError, GithubTokenState, github_token_state, read_github_token,
+    GithubTokenError, GithubTokenState, github_token_file, github_token_state, read_github_token,
 };
 pub use layout::{AGENT_SOCKET, AGENT_SOCKET_DIR, DAEMON_SOCKET, Environment, Layout};
 pub use profile::{

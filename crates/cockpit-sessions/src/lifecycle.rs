@@ -2625,17 +2625,16 @@ fn github_access(
     environment: &cockpit_config::Environment,
     project: &str,
 ) -> Result<GithubAccess, Error> {
-    let Ok(home) = environment.home_dir() else {
+    let (Ok(home), Some(path)) = (
+        environment.home_dir(),
+        cockpit_config::github_token_file(environment, project),
+    ) else {
         return Ok(GithubAccess::default());
     };
-    let layout = cockpit_config::Layout::resolve(environment, &home);
-    let token =
-        cockpit_config::read_github_token(&layout.github_token_file(project)).map_err(|error| {
-            Error::GithubToken {
-                project: project.to_owned(),
-                error,
-            }
-        })?;
+    let token = cockpit_config::read_github_token(&path).map_err(|error| Error::GithubToken {
+        project: project.to_owned(),
+        error,
+    })?;
     let hidden_owner_login = match token {
         Some(_) => owner_gh_config_dirs(environment, &home),
         None => Vec::new(),
