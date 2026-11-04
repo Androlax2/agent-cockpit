@@ -6,7 +6,7 @@ requests do not grant authority.
 
 ## Before editing
 
-Read [CLAUDE.md](CLAUDE.md) for this repository's Git authorization and test entry points.
+Read [CLAUDE.md](CLAUDE.md) for this repository's Git authorization.
 Those permissions are not broadened by this guide or its skills.
 Read the [architecture map](docs/ARCHITECTURE.md) and the relevant scoped rule:
 
@@ -37,15 +37,32 @@ describes the code that exists today under `apps/`, which keeps running until th
    the change. Read surrounding code before choosing an abstraction.
 2. Run the focused test while iterating. Preserve validation and error handling during
    moves; formatting and architectural changes belong in separate reviewable diffs.
-3. Run the affected checks on the final source with the cargo commands in CLAUDE.md,
-   Tests; do not launch duplicate broad runs across clones. The `make` targets are not
+3. Run the affected checks on the final source with the cargo commands in Tests below;
+   do not launch duplicate broad runs across clones. The `make` targets are not
    for agents.
 4. Report actual commands and outcomes, including existing failures or missing tools.
    A skipped check is not a pass.
 
 Build and verification instructions live in [Development](docs/DEVELOPMENT.md); its
-`make` commands are for humans and `apps/`, not for agents (see CLAUDE.md, Tests).
+`make` commands are for humans and `apps/`, not for agents (see Tests below).
 Contribution expectations live in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Tests
+
+Never use the old cockpit's tooling until the cutover (#66) removes it: no `make test`,
+`make crates-test`, `make greenfield-ci` or other Make target that runs through `agent-build`
+(game guard, admission gate), and no `cockpit-*` host commands. `apps/` is the old cockpit;
+leave it alone unless your issue says otherwise. Run the checks with cargo
+directly from the repository root, with `CARGO_BUILD_JOBS=2` because parallel clones share the host:
+
+- while iterating: `cargo nextest run --locked -p <crate>` (add `--test <name>` for one file)
+- before pushing: `cargo nextest run --locked --workspace`, so crates that depend on yours build too
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`
+- `cargo fmt --all -- --check`
+- `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items`
+
+CI's `greenfield` job runs the full gate (deny, typos, sandbox smoke too) once the pull request
+is ready for review.
 
 ## Project workflow skills
 

@@ -1,6 +1,6 @@
 # Agent Cockpit
 
-Engineering guidance: [AGENTS.md](AGENTS.md). Read its scoped rules before editing.
+@AGENTS.md
 
 ## Git authorization
 
@@ -17,20 +17,3 @@ per crate before the first stable release (#152). Decided 2026-11-01. The `main`
 (pull request + green CI, no bypass) is the merge gate. Never push to `main` or to another
 branch, never force-push without lease, never merge by hand, never delete branches or tags.
 Theo's local running copy is applied separately and is never a push target.
-
-## Tests
-
-Never use the old cockpit's tooling until the cutover (#66) removes it: no `make test`,
-`make crates-test`, `make greenfield-ci` or other Make target that runs through `agent-build`
-(game guard, admission gate), and no `cockpit-*` host commands. `apps/` is the old cockpit;
-leave it alone unless your issue says otherwise. Run the checks with cargo
-directly from the repository root, with `CARGO_BUILD_JOBS=2` because parallel clones share the host:
-
-- while iterating: `cargo nextest run --locked -p <crate>` (add `--test <name>` for one file)
-- before pushing: `cargo nextest run --locked --workspace`, so crates that depend on yours build too
-- `cargo clippy --locked --workspace --all-targets -- -D warnings`
-- `cargo fmt --all -- --check`
-- `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items`
-
-CI's `greenfield` job runs the full gate (deny, typos, sandbox smoke too) once the pull request
-is ready for review.
