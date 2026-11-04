@@ -12,9 +12,13 @@ use crate::store::{StoredCheckout, stored_clones_limited};
 use crate::{Checkout, CheckoutState, Error, blocking};
 
 const MAX_CLONES: usize = 128;
-const MAX_ENTRIES: usize = 100_000;
+// Per clone, not per report: a real Rust `target/` holds hundreds of thousands of entries,
+// and a shared allowance let the first clone starve every later one (#764).
+const MAX_ENTRIES: usize = 500_000;
 const MAX_DEPTH: usize = 64;
-const SCAN_BUDGET: Duration = Duration::from_secs(5);
+// Upper bound for one clone; `measure_all` shrinks it so every clone still gets a turn.
+const SCAN_BUDGET: Duration = Duration::from_secs(3);
+const REPORT_BUDGET: Duration = Duration::from_secs(30);
 const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::NOFOLLOW)
@@ -51,6 +55,8 @@ pub struct StorageReport {
 }
 
 /// Reports the literal `target/` of at most 128 registered parallel/review clones.
+/// Each clone has its own entry and time allowance, so a huge `target/` yields an
+/// incomplete count that says how far the walk got, never an empty row for its neighbours.
 /// Filesystem work runs off the executor, without holding a database transaction. This is
 /// not an atomic snapshot, allocated-space measurement, or indication that pruning is safe.
 pub async fn clone_storage(database: &Database) -> Result<StorageReport, Error> {
@@ -61,40 +67,65 @@ pub async fn clone_storage(database: &Database) -> Result<StorageReport, Error> 
     let truncated = stored.len() > MAX_CLONES;
     stored.truncate(MAX_CLONES);
     blocking(move || {
-        let mut budget = Budget::new(MAX_ENTRIES, SCAN_BUDGET);
-        let clones = stored
-            .into_iter()
-            .map(|stored| {
-                let measurement = measure(&stored, &mut budget, &mut || {});
-                CloneStorage {
-                    checkout: stored.checkout,
-                    measurement,
-                }
-            })
-            .collect();
+        let clones = measure_all(stored, MAX_ENTRIES, SCAN_BUDGET, REPORT_BUDGET);
         Ok(StorageReport { clones, truncated })
     })
     .await
 }
 
+fn measure_all(
+    stored: Vec<StoredCheckout>,
+    entries_per_clone: usize,
+    time_per_clone: Duration,
+    report_time: Duration,
+) -> Vec<CloneStorage> {
+    let report_deadline = Instant::now() + report_time;
+    let clone_count = stored.len();
+    stored
+        .into_iter()
+        .enumerate()
+        .map(|(index, stored)| {
+            let clones_left = u32::try_from(clone_count - index).unwrap_or(u32::MAX);
+            let fair_share = fair_time_share(report_deadline, clones_left);
+            let mut budget = Budget::new(entries_per_clone, fair_share.min(time_per_clone));
+            let measurement = measure(&stored, &mut budget, &mut || {});
+            CloneStorage {
+                checkout: stored.checkout,
+                measurement,
+            }
+        })
+        .collect()
+}
+
+/// Unused time flows to the clones still waiting, so a small `target/` early on gives its
+/// neighbours more than an even split of the report budget.
+fn fair_time_share(report_deadline: Instant, clones_left: u32) -> Duration {
+    report_deadline.saturating_duration_since(Instant::now()) / clones_left
+}
+
 struct Budget {
+    limit: usize,
     remaining: usize,
     deadline: Instant,
 }
 
 impl Budget {
-    fn new(remaining: usize, duration: Duration) -> Self {
+    fn new(limit: usize, duration: Duration) -> Self {
         Self {
-            remaining,
+            limit,
+            remaining: limit,
             deadline: Instant::now() + duration,
         }
     }
 
     fn check(&self) -> Result<(), String> {
+        let visited = self.limit - self.remaining;
         if Instant::now() >= self.deadline {
-            Err("report time budget reached".to_owned())
+            Err(format!("clone time budget reached after {visited} entries"))
         } else if self.remaining == 0 {
-            Err("report directory-entry limit reached".to_owned())
+            Err(format!(
+                "clone directory-entry limit reached after {visited} entries"
+            ))
         } else {
             Ok(())
         }
@@ -237,9 +268,9 @@ impl Walk<'_> {
         between: &mut dyn FnMut(),
     ) -> Result<(), String> {
         let mut entries = Dir::new(directory).map_err(reason)?;
-        loop {
+        // Checked after each read so a directory that ends exactly at the limit is complete.
+        while let Some(entry) = entries.read() {
             self.budget.check()?;
-            let Some(entry) = entries.read() else { break };
             self.budget.remaining -= 1;
             let entry = entry.map_err(reason)?;
             let name = entry.file_name();

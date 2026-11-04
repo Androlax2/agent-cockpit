@@ -23,9 +23,9 @@ marker is refused as `Replaced` instead of being acted on.
   parallel/review clones, including occupied ones, without changing them. Apparent bytes sum
   regular-file lengths per directory entry (hardlinks count again); this is neither allocated
   nor reclaimable space. Missing, incomplete and unavailable results are distinct. Bounds are
-  128 clones, 100,000 directory entries per report, 64 directory levels and a cooperative
-  five-second budget. Symbolic links are never followed. Concurrent changes prevent an atomic
-  snapshot; occupancy is the registration snapshot, not permission to prune. See the
+  128 clones, 500,000 directory entries and three seconds per clone (30 seconds per report),
+  64 directory levels. A clone over its limit is incomplete and names how far the walk got.
+  Symbolic links are never followed. Concurrent changes prevent an atomic snapshot; occupancy is the registration snapshot, not permission to prune. See the
   [decision](../../docs/decisions/2026-11-03-406-clone-storage-report.md).
 - **Target pruning.** A registered clone's `target/` is pruned only under the owner's policy
   and an immutable confirmed plan, never while the clone has a commit on no remote (the
