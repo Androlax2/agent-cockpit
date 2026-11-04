@@ -175,6 +175,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
                 // one's sessions (#196).
                 socket: cockpit_tmux::Socket::Named(profile.qualified_name()),
                 config_path: instance.options().state_dir.join("tmux.conf"),
+                history_limit: config.memory.tmux_history_lines.value,
             },
             git: cockpit_projects::Git::from_path(),
             providers,
@@ -187,6 +188,7 @@ pub fn serve(serve: Serve) -> Result<(), StartError> {
             run_settings,
             environment: environment.clone(),
             scheduling: cockpit_scheduling::Settings::default(),
+            feed_buffer_bytes: config.memory.feed_buffer_kib.value.saturating_mul(1024),
         };
         let daemon = instance
             .start(wiring, |capabilities| {

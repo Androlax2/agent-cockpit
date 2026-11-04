@@ -12,6 +12,6 @@ pub use control::{ControlEvent, ObserveOptions, Observer};
 pub use error::Error;
 pub use names::{PaneId, SessionName};
 pub use server::{
-    CONFIG, Keystroke, PaneInfo, PaneState, Server, ServerSpec, SessionLaunch, Socket, Split,
+    Keystroke, PaneInfo, PaneState, Server, ServerSpec, SessionLaunch, Socket, Split, config,
 };
 pub use version::{MINIMUM_VERSION, TmuxVersion, check_version};

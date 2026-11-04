@@ -6,8 +6,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use cockpit_tmux::{
-    CONFIG, Error, PaneState, Server, ServerSpec, SessionLaunch, SessionName, Socket,
+    Error, PaneState, Server, ServerSpec, SessionLaunch, SessionName, Socket, config,
 };
+
+/// The history limit these specs ask for; the fake reads none of it.
+const HISTORY_LIMIT: u32 = 10_000;
 
 struct FakeTmux {
     directory: tempfile::TempDir,
@@ -53,6 +56,7 @@ impl FakeTmux {
             tmux: self.directory.path().join("tmux"),
             socket,
             config_path: self.config_path(),
+            history_limit: HISTORY_LIMIT,
         }
     }
 
@@ -140,6 +144,7 @@ fn a_missing_tmux_is_refused_naming_the_binary() {
         tmux: directory.path().join("no-tmux-here"),
         socket: Socket::cockpit(),
         config_path: directory.path().join("tmux.conf"),
+        history_limit: HISTORY_LIMIT,
     };
 
     let error = Server::open(spec).expect_err("there is no binary");
@@ -182,7 +187,7 @@ fn opening_without_a_live_server_still_writes_the_next_servers_config() {
 
         assert_eq!(
             fs::read_to_string(fake.config_path()).expect("config"),
-            CONFIG
+            config(HISTORY_LIMIT)
         );
     }
 }
@@ -226,7 +231,7 @@ fn opening_writes_cockpits_own_config_private_to_the_user() {
 
     assert_eq!(
         fs::read_to_string(fake.config_path()).expect("written"),
-        CONFIG
+        config(HISTORY_LIMIT)
     );
     let mode = fs::metadata(fake.config_path())
         .expect("exists")

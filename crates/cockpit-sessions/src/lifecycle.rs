@@ -15,7 +15,7 @@ use cockpit_projects::{Checkout, CheckoutKind, Git, Holder};
 use cockpit_provider_api::{
     Capability, Conversation, LaunchRequest, Provider, ProviderError, TrustRequest, WorkspaceTrust,
 };
-use cockpit_tmux::{PaneId, PaneInfo, Server, SessionLaunch, SessionName};
+use cockpit_tmux::{PaneId, PaneInfo, PaneState, Server, SessionLaunch, SessionName};
 use cockpit_turso::Database;
 
 #[path = "messaging.rs"]
@@ -84,9 +84,14 @@ pub struct Sessions {
     /// the main disk: its agent's `TMPDIR`, never the host's shared `/tmp` (#766).
     session_temps: PathBuf,
     /// One lock per session, held by each owner operation and each periodic step on it, so
-    /// the periodic pass never acts on a launch an owner operation just replaced. Entries
-    /// stay for the daemon's life: one per session ever touched.
+    /// the periodic pass never acts on a launch an owner operation just replaced. An entry
+    /// nothing holds carries no state; the periodic pass drops those (#406), so the map
+    /// holds the sessions being worked on, not every session ever touched.
     operations: Mutex<HashMap<SessionId, Arc<SessionLock>>>,
+    /// The running sessions last seen with no agent in their terminal: the launch it was,
+    /// and since when, in seconds since 1970 (#406). Kept to the running sessions by the
+    /// periodic pass; a daemon restart counts again from its start.
+    agentless_since: Mutex<HashMap<SessionId, (i64, i64)>>,
     /// The owner's desktop session variables the next launch gets: none until the daemon
     /// imports its start's, then each owner import (#307).
     desktop_environment: Mutex<Vec<(OsString, OsString)>>,
@@ -116,6 +121,11 @@ struct SessionLock {
     /// timed-out ones included. A launch opens the terminal only at zero (#324): the terminal
     /// is named by the session alone, so a stale step would act on the new launch's.
     terminal_steps: tokio::sync::watch::Sender<usize>,
+}
+
+/// Whether anything but the sessions' own map holds `session`.
+fn session_lock_is_held(session: &Arc<SessionLock>) -> bool {
+    Arc::strong_count(session) > 1 || Arc::strong_count(&session.operation) > 1
 }
 
 /// A step counted in [`SessionLock::terminal_steps`], moved into its thread so it counts
@@ -195,6 +205,7 @@ impl Sessions {
             session_dirs,
             session_temps,
             operations: Mutex::new(HashMap::new()),
+            agentless_since: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1014,6 +1025,11 @@ impl Sessions {
                 report.errors.push((session.id, error.to_string()));
             }
         }
+        let running_ids: std::collections::HashSet<SessionId> =
+            running.iter().map(|session| session.id.clone()).collect();
+        // Running sessions the pass left awake, with their launch: looked at for a missing
+        // agent once every session's lock is released.
+        let mut awake = Vec::new();
         for listed in running {
             let id = listed.id.clone();
             let operation = self.lock(&id).await;
@@ -1050,6 +1066,11 @@ impl Sessions {
                         }
                     }
                     if self.idle_sleep_refusal(&session, agent_report).is_some() {
+                        // The idle sleep stops everything a session runs. One that will
+                        // not sleep may be left with no agent and never end by itself.
+                        if let Some(launch) = &session.launch {
+                            awake.push((id, launch.number));
+                        }
                         continue;
                     }
                     match self
@@ -1080,7 +1101,129 @@ impl Sessions {
                 Err(error) => report.errors.push((session.id, error.to_string())),
             }
         }
+        self.flag_agentless(awake, &mut report).await;
+        self.agentless_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|id, _| running_ids.contains(id));
+        self.drop_idle_session_locks();
         Ok(report)
+    }
+
+    /// Drops the session locks nothing holds (#406). Both counts are read under the map's
+    /// lock, which every new holder takes first: an operation or a counted step holds the
+    /// entry, and a guard taken with `try_lock_owned` holds only its mutex.
+    fn drop_idle_session_locks(&self) {
+        let mut operations = self
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operations.retain(|_, session| session_lock_is_held(session));
+    }
+
+    /// Reports the `awake` launches left with no agent (#406). No session lock is held:
+    /// looking at terminals takes tmux calls, long enough that an owner's send or cancel
+    /// would find its session busy, and the report is written only for a session still
+    /// running that launch, read in the transaction that writes it.
+    async fn flag_agentless(&self, awake: Vec<(SessionId, i64)>, report: &mut TickReport) {
+        let terminals = self.look_at_terminals(&awake).await;
+        for (id, launch) in awake {
+            let Some(&has_agent) = terminals.get(&id) else {
+                continue;
+            };
+            match self.flag_if_agentless(&id, launch, has_agent).await {
+                Ok(true) => report.agentless.push(id),
+                Ok(false) => {}
+                Err(error) => report.errors.push((id, error.to_string())),
+            }
+        }
+    }
+
+    /// Whether each session's terminal is open with its agent's process running in it. A
+    /// look that fails is logged and answers nothing, so the pass reports no session.
+    async fn look_at_terminals(&self, sessions: &[(SessionId, i64)]) -> HashMap<SessionId, bool> {
+        let terminals: Vec<(SessionId, SessionName)> = sessions
+            .iter()
+            .filter_map(|(id, _)| Some((id.clone(), terminal_name(id).ok()?)))
+            .collect();
+        let Ok(tmux) = self.tmux() else {
+            return HashMap::new();
+        };
+        if terminals.is_empty() {
+            return HashMap::new();
+        }
+        let looked = self
+            .blocking("look at the agents' terminals", move || {
+                let open = tmux.sessions()?;
+                let mut has_agent = HashMap::new();
+                for (id, name) in terminals {
+                    let is_running = open.contains(&name)
+                        && matches!(agent_pane_info(&tmux, &name)?.state, PaneState::Running);
+                    has_agent.insert(id, is_running);
+                }
+                Ok(has_agent)
+            })
+            .await;
+        looked.unwrap_or_else(|error| {
+            tracing::warn!(%error, "the agents' terminals could not be looked at");
+            HashMap::new()
+        })
+    }
+
+    /// Shows a running session with no agent in its terminal, while processes it started
+    /// still run, as waiting on the owner with the command that ends it (#406), once it has
+    /// been so for [`Settings::agentless_after`]; `true` when it did. Nothing is stopped:
+    /// what still runs may be work the owner wants. The pass observed `launch`'s execution
+    /// occupied; an agent's leftovers that keep its terminal open are not seen, since tmux
+    /// then shows the pane running.
+    async fn flag_if_agentless(
+        &self,
+        id: &SessionId,
+        launch: i64,
+        has_agent: bool,
+    ) -> Result<bool, Error> {
+        let since = {
+            let mut agentless_since = self
+                .agentless_since
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if has_agent {
+                agentless_since.remove(id);
+                return Ok(false);
+            }
+            let seen = agentless_since
+                .entry(id.clone())
+                .or_insert((launch, store::now()));
+            // An earlier launch's time says nothing about this one.
+            if seen.0 != launch {
+                *seen = (launch, store::now());
+            }
+            seen.1
+        };
+        let window = i64::try_from(self.settings.agentless_after.as_secs()).unwrap_or(i64::MAX);
+        if store::now().saturating_sub(since) < window {
+            return Ok(false);
+        }
+        let reason = format!(
+            "no agent runs in its terminal, but processes it started still run; \
+             `torlek session end {id}` stops them"
+        );
+        let write = self.database.write().await?;
+        let is_running = store::session(&write, id).await?.state == SessionState::Running;
+        let is_flagged = is_running
+            && crate::reports::flag_agentless_launch(
+                &write,
+                &authorization_session(id)?,
+                launch,
+                &reason,
+            )
+            .await?;
+        if is_flagged {
+            write.commit().await?;
+        } else {
+            write.rollback().await?;
+        }
+        Ok(is_flagged)
     }
 
     /// Shows a running session whose agent has not reported for its launch within the
@@ -2723,4 +2866,34 @@ fn record_clone_trust(
             environment,
         })
         .map_err(|error| error.reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_lock_nothing_holds_is_not_held() {
+        let session = Arc::new(SessionLock::default());
+
+        assert!(!session_lock_is_held(&session));
+    }
+
+    #[test]
+    fn a_session_lock_an_operation_holds_is_held() {
+        let session = Arc::new(SessionLock::default());
+        let _operation = Arc::clone(&session);
+
+        assert!(session_lock_is_held(&session));
+    }
+
+    #[test]
+    fn a_session_lock_whose_mutex_alone_is_locked_is_held() {
+        let session = Arc::new(SessionLock::default());
+        let _guard = Arc::clone(&session.operation)
+            .try_lock_owned()
+            .expect("nothing else locks it");
+
+        assert!(session_lock_is_held(&session));
+    }
 }

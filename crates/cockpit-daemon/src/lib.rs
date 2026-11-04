@@ -44,7 +44,7 @@ pub use error::StartError;
 pub use instance::{Instance, Options};
 pub use lanes::{LaneLimits, StallBudgets};
 pub use manager::Manager;
-pub use routes::{Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusal};
+pub use routes::{BufferedBatch, Handler, Job, Peer, Route, Routes, StreamJob, WorkClass, refusal};
 pub use serve::{SESSION_TICK, Serve, own_profile, own_program, serve};
 pub use server::Limits;
 pub use session_sockets::SessionTreeSockets;
@@ -98,13 +98,20 @@ pub struct Wiring {
     pub environment: cockpit_config::Environment,
     /// How waiting work is placed on sessions: the idle window, the pass interval, aging.
     pub scheduling: cockpit_scheduling::Settings,
+    /// The bytes of change batches one subscriber may have waiting to be written (#406):
+    /// the owner's `memory.feed_buffer_kib`.
+    pub feed_buffer_bytes: u32,
 }
 
-/// The sessions' settings the owner configured, the idle window and the asleep expiry
-/// (report 09); everything else keeps the product's values.
+/// The sessions' settings the owner configured: the idle window and the asleep expiry
+/// (report 09), and how long a session may run with no agent before it is reported (#406);
+/// everything else keeps the product's values.
 pub fn session_settings(config: &cockpit_config::EffectiveConfig) -> cockpit_sessions::Settings {
     cockpit_sessions::Settings {
         owner: owner_session_settings(config),
+        agentless_after: Duration::from_secs(
+            u64::from(config.memory.agentless_session_minutes.value) * 60,
+        ),
         ..cockpit_sessions::Settings::default()
     }
 }
@@ -144,6 +151,8 @@ pub struct Capabilities {
     /// How approved commands run: a check the owner runs gets the same shell and environment.
     pub run_settings: Arc<cockpit_approvals::RunSettings>,
     pub scheduling: cockpit_scheduling::Settings,
+    /// What one change-feed subscriber may have waiting to be written (#406).
+    pub feed_buffer_bytes: u32,
     /// The sandbox launches go through, for the readiness report (#50).
     pub sandbox: cockpit_sandbox::Sandbox,
     /// The tmux version the start found, or why it refused it.
@@ -437,6 +446,7 @@ impl Instance {
                 provider_capabilities: provider_capabilities.clone(),
                 run_settings,
                 scheduling: wiring.scheduling,
+                feed_buffer_bytes: wiring.feed_buffer_bytes,
                 sandbox,
                 tmux: tmux_readiness,
                 provider_facts,

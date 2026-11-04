@@ -22,8 +22,10 @@ sessions exist, `cockpit-processes` ends process trees, and verification decides
   It queries the private running server's `#{version}` before writing configuration:
   upgrading the client alone does not replace the server that reaps agents. An old or
   unknown server is refused without ending sessions; an absent/exiting server is allowed. It
-  writes [`CONFIG`] (mode 0600), applies it to a server already running (`source-file`, so
-  an upgrade's config reaches the sessions it holds; #308) and starts nothing.
+  writes [`config`] (mode 0600), applies it to a server already running (`source-file`, so
+  an upgrade's config reaches the sessions it holds; #308) and starts nothing. The config's
+  `history-limit` is [`ServerSpec::history_limit`], the owner's `memory.tmux_history_lines`
+  (#406). Panes opened afterwards are bound by it; tmux 3.8 trims the open ones too.
 - **Private server.** Every command is `tmux -f <Torlek's config> -L torlek` ([`Socket`];
   tests use `-S` in a temporary directory). The user's `~/.tmux.conf` never applies, and the
   caller's `TMUX`/`TMUX_PANE` are removed so a daemon started inside tmux cannot reach it.

@@ -76,6 +76,15 @@ stopped in the middle of one finishes or repairs it at its next start.
   pass records an open dialog question saying so, which shows the session as waiting on the
   owner (#702): a harness can stop on its own screen (folder trust, sign-in, update) before
   any hook runs. The agent's first report of what it does answers it, as any dialog.
+- **A session left with no agent** (#406). An agent can exit while processes it started
+  keep running: its execution stays occupied, so the session stays `running` and never
+  ends by itself. When the periodic pass finds such a session with a dead agent pane, or
+  no terminal, for `agentless_after` (the owner's `memory.agentless_session_minutes`, 10),
+  it records an open dialog question naming `torlek session end ID`, which shows the
+  session as waiting on the owner. Nothing is stopped: what still runs may be work the
+  owner wants. A session the idle sleep takes first is not reported, since sleeping stops
+  everything it runs. Not seen: leftovers that keep the terminal open, because tmux then
+  shows the pane running. The window counts again from a daemon restart.
 - **A clone inherits its harness trust** (#702). Before the agent runs in a parallel clone of
   a project in the owner's `projects.trusted` whose origin is its project's, the launch asks
   the provider to record its harness's trust of the clone (`Provider::trust_workspace`), so
@@ -111,7 +120,9 @@ stopped in the middle of one finishes or repairs it at its next start.
   stops its agent; `resume` and `end` stop the previous agent first (#221). A failed
   session whose agent is not observed gone is not ended; it stays `failed`.
 - **One operation per session at a time.** Owner operations and the periodic pass take the
-  session's lock, and the pass re-reads the session under it.
+  session's lock, and the pass re-reads the session under it. The pass drops the locks
+  nothing holds, so the daemon keeps one per session being worked on, not one per session
+  ever touched (#406).
 - **Reboot restore** runs at daemon start, before requests are accepted. A session whose
   agent still runs is kept; a stop under way is finished; any other active session is
   reopened on its conversation. A reopen that fails, for any reason, leaves the session

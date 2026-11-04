@@ -8,20 +8,59 @@ use std::time::Duration;
 use cockpit_messaging::{EntityChange, Feed, FeedBatch, FeedCursor, Refusal};
 use cockpit_protocol::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
-    EntityRevision, ErrorCode, FeedPosition, Outcome, Reply,
+    EntityRevision, ErrorCode, FeedPosition, Outcome, Reply, ServerFrame,
 };
 use cockpit_turso::Database;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 
-use crate::routes::{Route, refusal};
+use crate::routes::{BufferedBatch, Route, refusal};
 
 /// Batches built ahead of the connection; the feed waits when the client reads slower.
 const STREAM_BATCHES: usize = 8;
 
-pub(crate) fn route(from: FeedPosition, database: Arc<Database>) -> Route {
+/// The bytes of batches one subscriber may have waiting to be written (#406): beside the
+/// count above, what a subscriber that stopped reading makes the daemon hold. A batch takes
+/// its line's length of it, or all of it when the line is longer, so the largest batch still
+/// passes, alone.
+struct Buffer {
+    room: Arc<Semaphore>,
+    bytes: u32,
+}
+
+impl Buffer {
+    fn new(bytes: u32) -> Buffer {
+        Buffer {
+            room: Arc::new(Semaphore::new(bytes as usize)),
+            bytes,
+        }
+    }
+
+    /// Waits until the buffer has room for `line`.
+    async fn hold(&self, line: Vec<u8>) -> BufferedBatch {
+        let share = u32::try_from(line.len())
+            .unwrap_or(u32::MAX)
+            .min(self.bytes);
+        let room = Arc::clone(&self.room)
+            .acquire_many_owned(share)
+            .await
+            .expect("the buffer's semaphore is never closed");
+        BufferedBatch { line, room }
+    }
+}
+
+/// `batch` as the line its connection writes, or `None` when it exceeds the frame limit.
+/// Kept as the line, not as the batch: the line is what the buffer counts, and several times
+/// smaller than the parsed states.
+fn batch_line(batch: FeedBatch) -> Option<Vec<u8>> {
+    let mut line = crate::server::encode(&ServerFrame::Changes(change_batch(batch)))?;
+    line.shrink_to_fit();
+    Some(line)
+}
+
+pub(crate) fn route(from: FeedPosition, database: Arc<Database>, buffer_bytes: u32) -> Route {
     Route::Stream {
         job: Box::pin(async move {
-            match start(from, database).await {
+            match start(from, database, buffer_bytes).await {
                 Ok((cursor, batches)) => (Outcome::Ok(Reply::Subscribed { cursor }), Some(batches)),
                 Err(outcome) => (outcome, None),
             }
@@ -34,20 +73,30 @@ pub(crate) fn route(from: FeedPosition, database: Arc<Database>) -> Route {
 async fn start(
     from: FeedPosition,
     database: Arc<Database>,
-) -> Result<(Cursor, mpsc::Receiver<ChangeBatch>), Outcome> {
+    buffer_bytes: u32,
+) -> Result<(Cursor, mpsc::Receiver<BufferedBatch>), Outcome> {
     // Watched before the feed is read, so a commit in between wakes the stream.
     let commits = database.watch_commits();
     let (feed, first) = Feed::open(&database, feed_position(from))
         .await
         .map_err(|error| feed_error(&error))?;
     let cursor = wire_cursor(feed.cursor().clone());
+    let buffer = Buffer::new(buffer_bytes);
     let (sender, batches) = mpsc::channel(STREAM_BATCHES);
     if let Some(first) = first {
-        sender
-            .try_send(change_batch(first))
-            .expect("a new channel has room for the first batch");
+        let Some(line) = batch_line(first) else {
+            // The sender is dropped: the feed ends before its first batch and its
+            // connection closes, as for any batch too large to send.
+            tracing::error!("a change feed's first batch exceeds the frame limit; closing it");
+            return Ok((cursor, batches));
+        };
+        // A new buffer has room, so this does not wait.
+        let first = buffer.hold(line).await;
+        if sender.try_send(first).is_err() {
+            unreachable!("a new channel has room for the first batch");
+        }
     }
-    tokio::spawn(stream(feed, database, commits, sender));
+    tokio::spawn(stream(feed, database, commits, sender, buffer));
     Ok((cursor, batches))
 }
 
@@ -57,7 +106,8 @@ async fn stream(
     mut feed: Feed,
     database: Arc<Database>,
     mut commits: watch::Receiver<()>,
-    sender: mpsc::Sender<ChangeBatch>,
+    sender: mpsc::Sender<BufferedBatch>,
+    buffer: Buffer,
 ) {
     loop {
         tokio::select! {
@@ -67,7 +117,16 @@ async fn stream(
         match feed.next(&database).await {
             Ok(None) => {}
             Ok(Some(batch)) => {
-                if sender.send(change_batch(batch)).await.is_err() {
+                let Some(line) = batch_line(batch) else {
+                    tracing::error!("a change batch exceeds the frame limit; closing its feed");
+                    return;
+                };
+                // Commits made while this waits are in the next batch, each entity once.
+                let buffered = tokio::select! {
+                    buffered = buffer.hold(line) => buffered,
+                    () = sender.closed() => return,
+                };
+                if sender.send(buffered).await.is_err() {
                     return;
                 }
             }

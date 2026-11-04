@@ -206,6 +206,37 @@ async fn resuming_after_a_cursor_replays_only_what_changed_since() {
     assert_eq!(feed.cursor(), &replay.cursor);
 }
 
+/// More commits than the feed reads from the capture at a time (#406).
+#[tokio::test]
+async fn a_cursor_hundreds_of_commits_behind_replays_each_changed_entity_once() {
+    let fixture = Fixture::new().await;
+    publish(&fixture.database, "a", json!({"turn": 0})).await;
+    let (_, first) = snapshot(&fixture.database).await;
+    for turn in 1..=300 {
+        publish(&fixture.database, "a", json!({"turn": turn})).await;
+        unrelated_commit(&fixture.database).await;
+    }
+    publish(&fixture.database, "b", json!({"turn": 0})).await;
+
+    let (feed, replay) = Feed::open(&fixture.database, FeedPosition::After(first.cursor.clone()))
+        .await
+        .unwrap();
+    let replay = replay.unwrap();
+
+    assert_eq!(
+        replay.changes,
+        [
+            upsert("a", 301, json!({"turn": 300})),
+            upsert("b", 1, json!({"turn": 0}))
+        ]
+    );
+    assert_eq!(
+        replay.cursor.revision,
+        newest_revision(&fixture.database).await
+    );
+    assert_eq!(feed.cursor(), &replay.cursor);
+}
+
 #[tokio::test]
 async fn resuming_an_up_to_date_cursor_starts_with_no_batch() {
     let fixture = Fixture::new().await;

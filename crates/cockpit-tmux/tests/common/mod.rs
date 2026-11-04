@@ -14,6 +14,9 @@ use cockpit_tmux::{PaneId, Server, ServerSpec, SessionLaunch, SessionName, Socke
 /// Long enough never to fire in a passing test, short enough to fail a hung one quickly.
 pub const GENEROUS: Duration = Duration::from_secs(10);
 
+/// The history limit a fixture server keeps unless a test opens it with another.
+pub const HISTORY_LIMIT: u32 = 10_000;
+
 pub struct TestServer {
     pub home: tempfile::TempDir,
     pub server: Server,
@@ -32,12 +35,22 @@ impl TestServer {
             tmux: PathBuf::from("tmux"),
             socket: Socket::Path(directory.join("tmux.sock")),
             config_path: directory.join("tmux.conf"),
+            history_limit: HISTORY_LIMIT,
         }
     }
 
     /// Another handle on the same server, as a restarted daemon would open it.
     pub fn reopen(&self) -> Server {
-        Server::open(Self::spec_in(self.home.path())).expect("the server reopens")
+        self.reopen_keeping(HISTORY_LIMIT)
+    }
+
+    /// [`TestServer::reopen`] by a daemon whose owner set another history limit.
+    pub fn reopen_keeping(&self, history_limit: u32) -> Server {
+        Server::open(ServerSpec {
+            history_limit,
+            ..Self::spec_in(self.home.path())
+        })
+        .expect("the server reopens")
     }
 
     pub fn socket_path(&self) -> PathBuf {

@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use cockpit_agent_channel::{ProcessError, ProcessIdentity};
 use cockpit_protocol::{
-    Capability, ChangeBatch, ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal,
-    RefusalReason, Response, SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello,
-    decode_request_with_kind, negotiate,
+    Capability, ErrorCode, HandshakeReply, MAX_FRAME_BYTES, ProtocolError, Refusal, RefusalReason,
+    Response, SUPPORTED_VERSIONS, ServerFrame, Welcome, decode_hello, decode_request_with_kind,
+    negotiate,
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -19,7 +19,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::StartError;
 use crate::lanes::{LaneLimits, Lanes, StallBudgets};
-use crate::routes::{Handler, Job, Peer, Route, WorkClass, refusal};
+use crate::routes::{BufferedBatch, Handler, Job, Peer, Route, WorkClass, refusal};
 
 /// Only the owner may connect; the 0700 directory already says so, this is the second lock.
 const SOCKET_MODE: u32 = 0o600;
@@ -375,33 +375,29 @@ async fn handshake(
 
 /// Writes answers and the started feed's batches until every answer is written; stopping
 /// drops the feed, which ends its stream. Answers go first, so a `subscribe` answer precedes
-/// its first batch. A stopped feed, or a batch too large to send, closes the connection:
-/// waiting for batches that never come, or skipping one, would leave the client behind.
+/// its first batch. A stopped feed, which a batch too large to send stops, closes the
+/// connection: waiting for batches that never come, or skipping one, would leave the client
+/// behind.
 async fn write_frames(
     mut writer: OwnedWriteHalf,
     mut frames: mpsc::Receiver<ServerFrame>,
-    mut started_feeds: mpsc::Receiver<mpsc::Receiver<ChangeBatch>>,
+    mut started_feeds: mpsc::Receiver<mpsc::Receiver<BufferedBatch>>,
 ) {
     let mut feed = None;
     let mut can_start_feed = true;
     loop {
-        let line = tokio::select! {
+        // A batch gives its room in the subscriber's buffer back once its line is written.
+        let (line, _room) = tokio::select! {
             biased;
             frame = frames.recv() => match frame {
                 Some(frame) => match answer_line(frame) {
-                    Some(line) => line,
+                    Some(line) => (line, None),
                     None => continue,
                 },
                 None => return,
             },
             batch = next_batch(&mut feed) => match batch {
-                Some(batch) => {
-                    let Some(line) = encode(&ServerFrame::Changes(batch)) else {
-                        tracing::error!("a change batch exceeds the frame limit; closing its feed");
-                        return;
-                    };
-                    line
-                }
+                Some(batch) => (batch.line, Some(batch.room)),
                 None => {
                     tracing::info!("a change feed stopped; closing its connection");
                     return;
@@ -420,7 +416,7 @@ async fn write_frames(
 }
 
 /// The started feed's next batch, `None` once it stopped; never ready without a feed.
-async fn next_batch(feed: &mut Option<mpsc::Receiver<ChangeBatch>>) -> Option<ChangeBatch> {
+async fn next_batch(feed: &mut Option<mpsc::Receiver<BufferedBatch>>) -> Option<BufferedBatch> {
     match feed {
         Some(batches) => batches.recv().await,
         None => std::future::pending().await,
@@ -449,7 +445,7 @@ fn answer_line(frame: ServerFrame) -> Option<Vec<u8>> {
 
 /// `frame` as one line of JSON. The daemon's own frames always serialize; one larger than
 /// the limit is a daemon bug, logged; the caller answers its request with a refusal.
-fn encode(frame: &impl serde::Serialize) -> Option<Vec<u8>> {
+pub(crate) fn encode(frame: &impl serde::Serialize) -> Option<Vec<u8>> {
     let mut line = serde_json::to_vec(frame).expect("protocol frames serialize");
     line.push(b'\n');
     if line.len() > MAX_FRAME_BYTES {

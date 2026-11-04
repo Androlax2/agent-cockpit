@@ -13,12 +13,18 @@ use crate::version::{TmuxVersion, check_version};
 /// Cockpit's own tmux configuration, passed with `-f` so the user's `~/.tmux.conf` never
 /// applies. tmux reads it when a command starts the server, and [`Server::open`] applies it
 /// again to a server already running. Every option is global and safe to set live.
-pub const CONFIG: &str = "\
+///
+/// `history_limit` is the lines of history a pane keeps, the server's largest use of memory
+/// (#406). tmux 3.8 applies a changed limit to the panes already open as well, trimming
+/// them at once; only the panes opened afterwards are relied on.
+pub fn config(history_limit: u32) -> String {
+    format!(
+        "\
 # Cockpit's private tmux server (cockpit-tmux). The user's ~/.tmux.conf is never read.
 # Keep a pane that exited, with its last output and exit status, until Cockpit closes it.
 set-option -g remain-on-exit on
 # Agent transcripts are long; the default 2000 lines loses most of a build log.
-set-option -g history-limit 50000
+set-option -g history-limit {history_limit}
 # Anything tmux runs through a shell uses sh, never the user's login shell.
 set-option -g default-shell /bin/sh
 # A pane opened by hand (prefix c in the viewer) must not reach this server either.
@@ -27,7 +33,9 @@ set-option -g default-command 'unset TMUX TMUX_PANE; exec /bin/sh'
 set-option -g status off
 # The TUI runs in a pane: an Escape key must not wait for the rest of a sequence.
 set-option -s escape-time 0
-";
+"
+    )
+}
 
 /// How long [`Server::close_session`] waits for a server it emptied to exit.
 const SERVER_EXIT_WAIT: Duration = Duration::from_secs(5);
@@ -61,8 +69,10 @@ pub struct ServerSpec {
     /// A bare name is looked up on `PATH`.
     pub tmux: PathBuf,
     pub socket: Socket,
-    /// Written by [`Server::open`] with [`CONFIG`]; its directory must exist.
+    /// Written by [`Server::open`] with [`config`]; its directory must exist.
     pub config_path: PathBuf,
+    /// The lines of history each pane keeps ([`config`]).
+    pub history_limit: u32,
 }
 
 /// The parts of a new tmux session. `command` runs directly, never through a shell.
@@ -107,8 +117,8 @@ pub struct Server {
 }
 
 impl Server {
-    /// Checks the tmux version (the readiness check), writes [`CONFIG`] and applies it to
-    /// the server if one already runs, so every option [`CONFIG`] sets takes effect on the
+    /// Checks the tmux version (the readiness check), writes [`config`] and applies it to
+    /// the server if one already runs, so every option [`config`] sets takes effect on the
     /// sessions it holds (an option removed from it stays set until the server exits).
     /// Starts nothing: the first session starts the server.
     /// Why: `docs/decisions/2026-11-01-308-tmux-config-on-a-running-server.md`.
@@ -116,7 +126,7 @@ impl Server {
         let version = check_version(&spec.tmux)?;
         let server = Server { spec, version };
         server.check_running_version()?;
-        write_private_file(&server.spec.config_path, CONFIG)?;
+        write_private_file(&server.spec.config_path, &config(server.spec.history_limit))?;
         server.apply_config_to_running_server()?;
         Ok(server)
     }
@@ -410,7 +420,7 @@ impl Server {
     }
 
     /// The approval pane: a split under the viewer, focused so the human answers there.
-    /// [`CONFIG`] keeps an exited pane, so its owner closes it with [`Server::close_pane`].
+    /// [`config`] keeps an exited pane, so its owner closes it with [`Server::close_pane`].
     pub fn split_approval_pane(
         &self,
         viewer: &PaneId,
