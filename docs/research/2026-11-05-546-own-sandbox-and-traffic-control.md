@@ -2,7 +2,8 @@
 
 Issue [#546](https://github.com/Androlax2/agent-cockpit/issues/546), re-scoped by the owner on
 2026-11-05: Torlek replaces Greywall and Greyproxy with its own sandbox and network traffic
-control. **Research and proposal, 2026-11-05; Theo has not decided.** Merging this document
+control. **Research and proposal, 2026-11-05; Theo's decisions are recorded under
+[Decisions for the owner](#decisions-for-the-owner) as they are made.** Merging this document
 accepts research delivery only. It authorizes no product code, dependency, host setting,
 engine removal or follow-up issue; the issues proposed at the end are not filed. The earlier
 [repository-placement report](2026-11-02-546-engine-repositories.md) answered the previous
@@ -26,8 +27,10 @@ Build the replacement for Linux and WSL2 first, from five pieces Torlek owns:
    private and loopback addresses unless granted, and refuses an unknown host at once with a
    reason. The refusal becomes an owner decision in Torlek (#674): allow once, allow always,
    deny. No fixed ports, no API token, no client secrets, no dashboard.
-4. **No TLS interception by default.** Without it there is no CA, and #527 disappears. Selective
-   interception with an in-memory, per-session CA stays an option for host-bound credentials.
+4. **TLS interception only for hosts that carry a credential, and second** (D1, decided C,
+   staged). The proxy ships first without interception: no CA. The next issue adds selective
+   interception for hosts with a bound credential, through a per-session CA whose key never
+   leaves the launcher's memory, so a token such as `GH_TOKEN` never enters the sandbox.
 5. **Policy from Torlek's own records.** Provider hosts and paths move into the provider
    adapters; network allow rules become audited, revocable grants; the launcher reports what it
    actually enforced.
@@ -40,7 +43,8 @@ Performance does not decide this. On the research host a native launch prototype
 0.05 to 0.42 ms per request ([measurements](#what-was-measured)); a provider API call takes
 hundreds of milliseconds. The case rests on correctness, one lifecycle and owner control.
 
-- [ ] Theo decides [D1 to D6](#decisions-for-the-owner) and approves or declines each
+- [x] D1 decided 2026-11-05: C, staged (A first, then selective interception).
+- [ ] Theo decides [D2 to D6](#decisions-for-the-owner) and approves or declines each
   [proposed issue](#proposed-issues-not-filed).
 
 ## What was measured
@@ -146,14 +150,15 @@ The design below closes each by construction or names the test that must prove i
 | [#434](https://github.com/Androlax2/agent-cockpit/issues/434) settings files | alpha.4 | Superseded: policy passes by file descriptor |
 | [#482](https://github.com/Androlax2/agent-cockpit/issues/482) mount source cleanup | alpha.4 | Unaffected in substance; the folder stays daemon-owned |
 | [#685](https://github.com/Androlax2/agent-cockpit/issues/685) red-team | alpha.4 | Changed: section 1 targets the native sandbox, after it ships |
-| [#527](https://github.com/Androlax2/agent-cockpit/issues/527) macOS public CA | Roadmap: macOS | Superseded with no interception (no CA); otherwise the in-memory CA removes the private state it protects |
+| [#527](https://github.com/Androlax2/agent-cockpit/issues/527) macOS public CA | Roadmap: macOS | Superseded: the per-session CA's key stays in the launcher's memory (D1) and only its certificate enters the session, so there is no private CA state to protect |
 | [#372](https://github.com/Androlax2/agent-cockpit/issues/372) plugin egress | Roadmap: plugins | Changed: shares the native allowlist, decision and audit model |
 | [#89](https://github.com/Androlax2/agent-cockpit/issues/89), [#245](https://github.com/Androlax2/agent-cockpit/issues/245), [#691](https://github.com/Androlax2/agent-cockpit/issues/691) | beta.3, beta.4 | Changed: no Greyproxy dashboard; a "hold" is a Torlek network request on the change feed |
 
 Also reworded, not re-scoped: #66 (cutover removes the native-replaced engines), #150 (final
 audit covers Torlek-owned code), #568 (macOS needs a native backend), #500 and #501 (remote
 hosts need user namespaces and Landlock, not Greywall), #390 (containers use the native
-proxy), #59 (no proxy placeholders unless D1 picks interception).
+proxy), #59 (its proxy placeholders become credentials bound to hosts by proposed issue 4; today no
+launch requests a placeholder, only the launch token's pass-through).
 Unaffected: #155, #352, #716, #718 and #754 (its rule that the sandbox hides `~/.config/gh`
 applies to any backend).
 
@@ -179,8 +184,8 @@ OS user. A kernel exploit is out of scope; a sandbox escape that needs no kernel
 | **Asks the owner** to run a host command, reach a new host, widen a path, share the desktop | `ask run`, `ask guide`; hosts: Greyproxy dashboard only | `ask run`, `ask guide`, network requests in Torlek (#674) |
 
 Residual risks the owner accepts with any design: allowed hosts are exfiltration channels (the
-provider API itself, GitHub for a session that pushes); without interception, a client can
-send a different HTTP `Host` inside an allowed TLS connection (domain fronting on shared
+provider API itself, GitHub for a session that pushes); on a host without interception, a
+client can send a different HTTP `Host` inside an allowed TLS connection (domain fronting on shared
 front ends); code the agent writes runs later wherever it is approved or merged; a same-UID
 process outside the sandbox is not contained (#729).
 
@@ -269,6 +274,8 @@ Peers sit between A and B: Claude Code's sandbox inspects no TLS unless a settin
 Codex intercepts only in its limited mode with the CA key in memory, and Docker Sandboxes
 terminate TLS for the hosts where they inject credentials
 ([sources](546/measurements.md#prior-art-and-platform-sources)).
+
+Decided (D1): B is the target, after A ships.
 
 ### M7. Where the proxy runs
 
@@ -368,7 +375,8 @@ The profile, refusals and evidence are backend-neutral already, so the switch is
 | 4 | Default becomes `torlek`; Greywall stays selectable for one release as the rollback | Live Linux and WSL2 runs on the owner's hosts with the sandbox on |
 | 5 | Delete `greywall.rs`, `install.rs`, `proxy/`, `seccomp.rs`, pins, `sandbox install`/`restart`/`stop` and their tests; `torlek doctor` offers to stop and remove the old `torlek-greyproxy-<profile>` unit and its state, with the owner's confirmation | No reference to the engines outside history; report 11 and decision register item 15 rewritten |
 
-Rollback before stage 5 is one owner setting. Nothing in stages 1 to 4 removes the managed
+Selective interception (proposed issue 4) follows stage 1 and gates no stage: nothing Torlek
+launches today depends on Greyproxy's interception. Rollback before stage 5 is one owner setting. Nothing in stages 1 to 4 removes the managed
 Greyproxy, so an owner who switches back finds it running.
 
 ## Decisions for the owner
@@ -381,6 +389,9 @@ Greyproxy, so an owner who switches back finds it running.
   works without variables; more code, DNS interception.
 - **C.** A, plus selective interception with an in-memory per-session CA for hosts that carry a
   bound credential (M6 B), from the start.
+
+**Decided 2026-11-05: C, staged.** The target is C. A ships first; selective interception
+with the in-memory per-session CA is the next issue (proposed issue 4).
 
 **D2. Where the proxy runs.** **A (recommended):** in each session's launcher (M7 A): traffic
 survives daemon restarts and a session's identity needs no secret. **B:** inside the daemon.
@@ -416,13 +427,14 @@ tests and do not include review or CI waits.
 | 1 | Native Linux launcher behind `agents.sandbox_backend` | Through the daemon with a fake provider: checkout writable; `.git/hooks`, `.git/config`, `.torlek` not; `~/.ssh/id_*` and the state database unreadable; no interface but `lo`; `Seccomp: 2`; a second Unix user starts a session (#628); each provider launched with its own sandbox off; evidence names the backend and Landlock ABI | alpha.4 | #628, #434 |
 | 2 | Provider hosts and paths in the provider adapters | Each adapter declares its hosts and folders; a test compares them with the Greywall profiles they replace; attribution kept | alpha.4 | Greywall `--profile` |
 | 3 | Per-session egress proxy | Allowed host connects; unknown host `403` under 1 s with a reason; loopback, private, link-local, metadata and IP literals refused; SNI mismatch refused; no DNS or UDP from inside | alpha.4 | #495 |
-| 4 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674, #641 |
-| 5 | Live enforcement CI for the native backend | #433's probes on disposable Linux and WSL2 runners, both backends, four sequential launches | alpha.4 | #433 |
-| 6 | Red-team the native sandbox | #685 section 1 against the native backend; one issue per finding | alpha.4 | #685 |
-| 7 | Default to the native backend | Default `torlek`; doctor's probe launch; rollback documented | alpha.4 | |
-| 8 | Remove Greywall and Greyproxy | Stage 5 above, including the confirmed removal of the old unit and state | alpha.5 | #495, #527, #66 wording |
-| 9 | Per-session resource limits | A fork bomb or memory hog in one session leaves the others running; fallback reported | Hardening: daemon, sessions, CLI and TUI | |
-| 10 | macOS Seatbelt backend | Same probe suite on a macOS runner | Roadmap: macOS | #527, #568 |
+| 4 | Selective TLS interception for credential hosts | A host with a bound credential (for example the project's `GH_TOKEN`, #754) is intercepted with a per-session CA whose key never leaves the launcher's memory; only the certificate enters the session, with trust variables per runtime; the credential is added on that host only and never enters the sandbox; every other host stays a plain tunnel; a pinned client's failure names the host | alpha.4 | #59 placeholders, #527 |
+| 5 | Network requests as owner decisions | Request listed in `approval list`, Waiting on you and the change feed; allow once, always (D4), deny; who, when, client recorded; revocation closes open tunnels; no path adds an allowlist entry without an owner decision | alpha.4 | #674, #641 |
+| 6 | Live enforcement CI for the native backend | #433's probes on disposable Linux and WSL2 runners, both backends, four sequential launches | alpha.4 | #433 |
+| 7 | Red-team the native sandbox | #685 section 1 against the native backend; one issue per finding | alpha.4 | #685 |
+| 8 | Default to the native backend | Default `torlek`; doctor's probe launch; rollback documented | alpha.4 | |
+| 9 | Remove Greywall and Greyproxy | Stage 5 above, including the confirmed removal of the old unit and state | alpha.5 | #495, #527, #66 wording |
+| 10 | Per-session resource limits | A fork bomb or memory hog in one session leaves the others running; fallback reported | Hardening: daemon, sessions, CLI and TUI | |
+| 11 | macOS Seatbelt backend | Same probe suite on a macOS runner | Roadmap: macOS | #527, #568 |
 
 ## Sources, limits and what was not measured
 

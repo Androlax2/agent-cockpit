@@ -377,7 +377,7 @@ Run from a folder outside `/tmp`, with `XDG_RUNTIME_DIR` set (Unix socket paths 
 - Greywall's launch and its TUN path: the pinned Greywall registers with Greyproxy's fixed
   management port, which the profile's live service holds, and the live service is never a
   validation target (decision record of #495). A private Greyproxy in its own network
-  namespace would make it measurable; that belongs to issue 5's disposable CI.
+  namespace would make it measurable; that belongs to issue 6's disposable CI.
 - Ubuntu's user-namespace restriction, WSL2 and macOS: no such host was available.
 - Memory of a per-session Rust proxy: no implementation exists.
 
