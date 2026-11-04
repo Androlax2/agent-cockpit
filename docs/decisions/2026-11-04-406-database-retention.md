@@ -38,6 +38,8 @@ Issue #406. Decided by Theo on 2026-11-04 (option A for PR 3, the Database line 
   `state/<profile>/backups/state-<secs>.db` when none exists, when the newest is older than
   `database_backup_interval_hours` (24), or when the newest is dated in the future, then
   keeps the newest `database_backups_kept` (7) and removes partial copies. 0 takes none.
+  A backup copies the whole database, so it waits while the low-disk guard (#818) reads
+  free space below `low_disk_floor_mib`.
   A copy is restorable with the existing offline restore.
 - **The owner runs it; automation is opt-in.** `torlek storage database` reports sizes,
   what the policy selects, the feed history and the backups (a dry run);

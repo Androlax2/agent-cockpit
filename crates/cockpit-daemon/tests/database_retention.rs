@@ -223,11 +223,8 @@ async fn the_feed_history_cap_is_the_owner_setting() {
 
 #[tokio::test]
 async fn the_daemon_backs_its_database_up_when_it_starts() {
-    let (home, _daemon) = started_with_old_history("").await;
-    let backups = home
-        .state_home()
-        .join(common::BUILD_PROFILE_DIR)
-        .join("backups");
+    let (home, _daemon) = started_with_old_history("[storage]\nlow_disk_floor_mib = 0\n").await;
+    let backups = backups_dir(&home);
     let deadline = std::time::Instant::now() + GENEROUS;
     while cockpit_turso::backups(&backups).unwrap().is_empty()
         && std::time::Instant::now() < deadline
@@ -240,6 +237,29 @@ async fn the_daemon_backs_its_database_up_when_it_starts() {
     assert_eq!(report.backups.len(), 1, "{:?}", report.backups);
     assert_eq!(report.backups_kept, 7);
     assert!(report.backups[0].bytes > 0);
+}
+
+/// A floor no disk meets: the low-disk guard holds the backup.
+#[tokio::test]
+async fn no_backup_is_taken_while_free_disk_space_is_below_the_floor() {
+    let (home, _daemon) =
+        started_with_old_history("[storage]\nlow_disk_floor_mib = 1000000000000\n").await;
+
+    let log = home.log_once_it_contains("database backup waits");
+
+    assert!(log.contains("database backup waits"), "{log}");
+
+    assert!(
+        cockpit_turso::backups(&backups_dir(&home))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn backups_dir(home: &TestHome) -> std::path::PathBuf {
+    home.state_home()
+        .join(common::BUILD_PROFILE_DIR)
+        .join("backups")
 }
 
 #[tokio::test]

@@ -26,6 +26,21 @@ async fn status(owner: &Connection) -> Value {
     )
     .unwrap()
 }
+/// Writes an owner configuration with database backups off: a backup is heavy database work
+/// that, under a debug or trace override, floods the very log these tests read (#406).
+fn without_database_backups(config_file: &std::path::Path) {
+    std::fs::create_dir_all(config_file.parent().unwrap()).unwrap();
+    std::fs::write(config_file, "[storage]\ndatabase_backups_kept = 0\n").unwrap();
+}
+
+/// The owner's configuration file a [`TestHome`] daemon reads.
+fn owner_config(home: &TestHome) -> std::path::PathBuf {
+    home.home()
+        .join("config")
+        .join(common::BUILD_PROFILE_DIR)
+        .join("config.toml")
+}
+
 fn epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -38,6 +53,7 @@ fn epoch_ms() -> u64 {
 #[tokio::test]
 async fn timed_override_changes_the_installed_filter_and_expires_to_startup_baseline() {
     let mut home = TestHome::new();
+    without_database_backups(&owner_config(&home));
     home.log_level = Some("error".into());
     let mut daemon = home.start();
     let owner = Connection::open(&home.socket_path(), GENEROUS)
@@ -96,6 +112,7 @@ async fn timed_override_changes_the_installed_filter_and_expires_to_startup_base
 #[tokio::test]
 async fn old_timers_do_not_revert_replacements_and_restart_clears_the_override() {
     let mut home = TestHome::new();
+    without_database_backups(&owner_config(&home));
     home.log_level = Some("warn".into());
     let daemon = home.start();
     let owner = Connection::open(&home.socket_path(), GENEROUS)
@@ -220,6 +237,7 @@ async fn trace_override_keeps_fake_provider_content_out_of_logs_and_the_existing
         .tempdir()
         .unwrap();
     let root = dir.path().canonicalize().unwrap();
+    without_database_backups(&root.join("home/.config/torlek/config.toml"));
     let _tmux = PrivateTmux(root.clone());
     let state_dir = root.join("state/cockpit");
     let log_dir = cockpit_diagnostics::log_dir_in(&root.join("state"), "daemon").unwrap();

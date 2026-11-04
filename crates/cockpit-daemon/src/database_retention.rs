@@ -300,8 +300,13 @@ async fn back_up_if_due(
 /// At start and every `database_maintenance_interval_minutes`: checkpoints the WAL, takes a
 /// backup when one is due, and runs the owner's opt-in pass on the Bulk lane. The checkpoint
 /// and the backup take no lane place, as the feed's history discard takes none: holding a
-/// Bulk place at daemon start would refuse the owner's first feed subscription.
-pub(crate) async fn maintain_forever(context: Context, shared: Arc<crate::server::Shared>) {
+/// Bulk place at daemon start would refuse the owner's first feed subscription. A backup
+/// copies the whole database, so it waits while the low-disk guard reads the disk as low.
+pub(crate) async fn maintain_forever(
+    context: Context,
+    shared: Arc<crate::server::Shared>,
+    disk: Arc<cockpit_resource_admission::Backend>,
+) {
     let mut ticks = tokio::time::interval(context.retention.interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -316,7 +321,18 @@ pub(crate) async fn maintain_forever(context: Context, shared: Arc<crate::server
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "WAL checkpoint failed; retrying next period"),
         }
-        match back_up_if_due(&context, crate::approvals::now().unsigned_abs()).await {
+        let is_disk_low = disk
+            .disk_space()
+            .is_some_and(cockpit_resource_admission::DiskSpace::is_low);
+        if is_disk_low {
+            tracing::warn!("database backup waits: free disk space is below the floor");
+        }
+        let due = if is_disk_low {
+            Ok(None)
+        } else {
+            back_up_if_due(&context, crate::approvals::now().unsigned_abs()).await
+        };
+        match due {
             Ok(Some(backup)) => tracing::info!(
                 backup = %backup.path.display(),
                 bytes = backup.bytes,

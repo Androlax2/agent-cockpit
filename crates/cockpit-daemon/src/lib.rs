@@ -565,6 +565,7 @@ impl Instance {
         ));
         let maintained_shared = Arc::clone(&shared);
         let maintained_context = storage.clone();
+        let maintained_disk = Arc::clone(&admission);
         let maintaining_database = tokio::spawn(supervisor::supervise(
             "database-retention",
             faults.clone(),
@@ -572,6 +573,7 @@ impl Instance {
                 database_retention::maintain_forever(
                     maintained_context.clone(),
                     Arc::clone(&maintained_shared),
+                    Arc::clone(&maintained_disk),
                 )
             },
         ));
