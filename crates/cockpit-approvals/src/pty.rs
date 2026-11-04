@@ -520,7 +520,8 @@ fn drain(mut reader: File, live: Arc<LiveRun>, kept_bytes: usize) -> oneshot::Re
 }
 
 /// The kept output as the agent may read it: from the first whole line, without terminal
-/// controls, redacted, its last `answer_lines` lines quoted.
+/// controls, redacted, its last `answer_lines` lines quoted. Only the last `ANSWER_MAX_BYTES`
+/// of `kept` are read, whatever the caller kept; the rest is counted in `truncated_bytes`.
 pub fn present(kept: &[u8], total: u64, answer_lines: usize) -> Output {
     let kept = &kept[kept.len().saturating_sub(ANSWER_MAX_BYTES)..];
     let mut truncated_bytes = total.saturating_sub(kept.len() as u64);
