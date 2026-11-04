@@ -21,7 +21,9 @@ Issue #701. Decided by the worker, as the smallest choice consistent with the ex
 - **Lifetime: recorded on the session, fixed at start.** `sessions.model` and
   `sessions.effort` (migration 10) are passed by every launch: restart, wake, resume and
   restore. A `/clear` keeps the running process and so its flags. Changing them on a running
-  session is not offered; end it and start another.
+  session is not offered; end it and start another. A stored value a later adapter refuses
+  fails that relaunch with the adapter's reason, as any refused launch does, rather than
+  silently running the harness's default.
 - **Defaults: none in Torlek.** Without the flags nothing is passed and the harness's own
   settings apply (`~/.claude/settings.json`).
 - **Coordinator starts: the owner reads the choice.** `approvals_runs.start_model` and

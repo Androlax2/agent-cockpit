@@ -246,9 +246,13 @@ impl FakeLaunch {
                 .unwrap_or_else(|| panic!("no {prefix} in the fake agent's line {line:?}"))
                 .to_owned()
         };
-        // Lines written before #701 have neither; an empty one was not chosen.
+        // Last on the line, after a first message that may hold the same words. Lines written
+        // before #701 have neither; an empty one was not chosen.
         let chosen = |prefix: &str| {
-            value(prefix)
+            words
+                .iter()
+                .rev()
+                .find_map(|word| word.strip_prefix(prefix))
                 .filter(|chosen| !chosen.is_empty())
                 .map(str::to_owned)
         };

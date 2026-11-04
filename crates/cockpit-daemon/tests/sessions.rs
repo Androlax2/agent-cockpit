@@ -725,6 +725,24 @@ async fn a_provider_without_the_model_capability_refuses_the_start_and_records_n
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_empty_model_is_refused_as_an_invalid_argument() {
+    let home = Home::new();
+    let daemon = home.start(CHOOSING, settings()).await;
+    let client = connect(&daemon).await;
+    let root = home.project(&client).await;
+
+    let refused = refusal(request(&client, new_session_choosing(&root, Some(""), None)).await);
+
+    assert_eq!(
+        refused.code,
+        ErrorCode::InvalidArgument,
+        "{}",
+        refused.message
+    );
+    assert_eq!(sessions(&client, true).await, []);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_effort_the_provider_does_not_know_refuses_the_start_and_records_nothing() {
     let home = Home::new();
     let daemon = home.start(CHOOSING, settings()).await;

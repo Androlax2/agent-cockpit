@@ -386,31 +386,31 @@ pub fn validate_start(dir: &Path, start: &StartSession) -> Result<String, Refusa
             return Err(invalid("prompt", "contains a NUL character"));
         }
     }
-    if let Some(branch) = &start.clone
-        && (branch.is_empty() || branch.chars().any(|c| c.is_control() || c.is_whitespace()))
-    {
-        return Err(invalid(
+    // Only their shape: the provider refuses a model or effort it does not know before the ask.
+    for (field, value, rule) in [
+        (
             "clone",
+            &start.clone,
             "must be a branch name, without spaces or control characters",
-        ));
-    }
-    if let Some(agent) = &start.agent
-        && (agent.is_empty() || agent.chars().any(|c| c.is_control() || c.is_whitespace()))
-    {
-        return Err(invalid(
+        ),
+        (
             "agent",
+            &start.agent,
             "must be an agent name, without spaces or control characters",
-        ));
-    }
-    // Only their shape: the provider refuses a value it does not know before the ask.
-    for (field, value) in [("model", &start.model), ("effort", &start.effort)] {
-        if let Some(value) = value
-            && (value.is_empty() || value.chars().any(|c| c.is_control() || c.is_whitespace()))
-        {
-            return Err(invalid(
-                field,
-                "must be one word, without spaces or control characters",
-            ));
+        ),
+        (
+            "model",
+            &start.model,
+            "must be one word, without spaces or control characters",
+        ),
+        (
+            "effort",
+            &start.effort,
+            "must be one word, without spaces or control characters",
+        ),
+    ] {
+        if value.as_deref().is_some_and(|value| !is_one_word(value)) {
+            return Err(invalid(field, rule));
         }
     }
     let command = start_command(dir, start)?;
@@ -438,6 +438,13 @@ fn start_command(dir: &Path, start: &StartSession) -> Result<String, Refusal> {
         command.push_str(&format!(" --effort {}", shell_quoted(effort)));
     }
     Ok(command)
+}
+
+fn is_one_word(value: &str) -> bool {
+    !value.is_empty()
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
 }
 
 fn shell_quoted(word: &str) -> String {

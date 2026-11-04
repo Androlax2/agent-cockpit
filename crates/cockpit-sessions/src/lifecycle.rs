@@ -378,6 +378,15 @@ impl Sessions {
         if model.is_none() && effort.is_none() {
             return Ok(());
         }
+        for (kind, value) in [("model", model), ("effort", effort)] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return Err(Error::InvalidValue(cockpit_provider_api::InvalidValue {
+                    kind,
+                    value: value.unwrap_or_default().to_owned(),
+                    rule: "leave it out to use the harness's own setting",
+                }));
+            }
+        }
         let provider = Arc::clone(self.provider(provider)?);
         let (model, effort) = (model.map(str::to_owned), effort.map(str::to_owned));
         self.blocking("check the model and effort", move || {
