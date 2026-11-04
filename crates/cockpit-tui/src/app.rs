@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply};
 
+use crate::attention::StartSource;
 use crate::board::{Board, FeedError};
 use crate::bug_form::BugForm;
 use crate::form::{Form, FormOutcome};
@@ -614,6 +615,11 @@ impl App {
     }
 
     fn failed(&mut self, command: &Command, problem: String, now: Instant) {
+        match command {
+            Command::AgentReports => self.board.start_source_failed(StartSource::Reports),
+            Command::ApprovalQueue => self.board.start_source_failed(StartSource::Queue),
+            _ => {}
+        }
         if is_column_focus(command) {
             self.pane.keys_answered(now);
             if self.taken_keys == TakenKeys::Asking {

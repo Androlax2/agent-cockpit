@@ -328,3 +328,52 @@ fn a_cue_that_landed_while_muted_does_not_ring_when_the_bell_is_on_again() {
 
     assert!(!app.take_bell());
 }
+
+#[test]
+fn a_second_approval_while_the_first_is_still_open_rings_again() {
+    let now = Instant::now();
+    let mut app = running_app(now);
+    queue(&mut app, vec![run(1, WORKER, "make test")], Vec::new(), now);
+    app.take_bell();
+
+    queue(
+        &mut app,
+        vec![run(1, WORKER, "make test"), run(2, WORKER, "make lint")],
+        Vec::new(),
+        now,
+    );
+
+    assert!(app.take_bell());
+}
+
+#[test]
+fn a_new_question_while_the_old_one_is_still_open_rings_again() {
+    let now = Instant::now();
+    let mut app = running_app(now);
+    reports(&mut app, vec![asking(WORKER)], now);
+    app.take_bell();
+
+    reports(
+        &mut app,
+        vec![SessionReport {
+            needs_input: Some("And which remote?".to_owned()),
+            ..asking(WORKER)
+        }],
+        now,
+    );
+
+    assert!(app.take_bell());
+}
+
+#[test]
+fn a_report_request_that_failed_does_not_keep_the_bell_silent() {
+    let now = Instant::now();
+    let mut app = app_with(&["app"], vec![session(WORKER, 1, 1)], now);
+    queue(&mut app, Vec::new(), Vec::new(), now);
+    app.answer(&Command::AgentReports, Err("timed out".to_owned()), now);
+    app.take_bell();
+
+    reports(&mut app, vec![asking(WORKER)], now);
+
+    assert!(app.take_bell());
+}

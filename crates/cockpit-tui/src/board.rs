@@ -11,7 +11,7 @@ use cockpit_protocol::{
     SessionReport, SessionStateView, SessionView, TurnOutcome,
 };
 
-use crate::attention::{Cue, Source, Watch};
+use crate::attention::{Cue, StartSource, Watch};
 
 /// The daemon's state as last applied.
 #[derive(Debug, Default, Clone)]
@@ -129,7 +129,7 @@ impl Board {
                 }
             }
         }
-        self.look_for_cues(Some(Source::Sessions));
+        self.look_for_cues(Some(StartSource::Sessions));
         Ok(())
     }
 
@@ -159,13 +159,13 @@ impl Board {
             .into_iter()
             .map(|report| (report.session.clone(), report))
             .collect();
-        self.look_for_cues(Some(Source::Reports));
+        self.look_for_cues(Some(StartSource::Reports));
     }
 
     pub fn set_queue(&mut self, runs: Vec<RunRequestView>, guides: Vec<GuideView>) {
         self.runs = runs;
         self.guides = guides;
-        self.look_for_cues(Some(Source::Queue));
+        self.look_for_cues(Some(StartSource::Queue));
     }
 
     /// Whether the bell should ring for what changed since the last call (#682): a session
@@ -174,7 +174,7 @@ impl Board {
         self.watch.take_ring()
     }
 
-    fn look_for_cues(&mut self, source: Option<Source>) {
+    fn look_for_cues(&mut self, source: Option<StartSource>) {
         let raised = self
             .sessions
             .values()
@@ -196,8 +196,8 @@ impl Board {
         if session.finished || outcome == Some(&TurnOutcome::Completed) {
             cues.push(Cue::Finished);
         }
-        if self.needs_you(&session.id) {
-            cues.push(Cue::NeedsYou);
+        if let Some(what) = self.what_needs_you(&session.id) {
+            cues.push(Cue::NeedsYou { what });
         }
         let exited_by_itself = session.state.is_over() && session.exit.is_some();
         let turn_failed = matches!(outcome, Some(TurnOutcome::Failed { .. }));
@@ -279,12 +279,47 @@ impl Board {
 
     /// An approval or guide the session asked for, or a command of its waiting for input.
     fn has_open_request(&self, session: &str) -> bool {
-        self.runs.iter().any(|run| {
-            run.session == session && (run.state == RunStateView::Asking || run.waiting_for_input)
-        }) || self
+        self.open_requests(session).next().is_some()
+    }
+
+    /// Names each approval or guide the session asked for and each command of its waiting for
+    /// input, so a new request differs from one already open.
+    fn open_requests<'board>(
+        &'board self,
+        session: &'board str,
+    ) -> impl Iterator<Item = String> + 'board {
+        let runs = self
+            .runs
+            .iter()
+            .filter(move |run| {
+                run.session == session
+                    && (run.state == RunStateView::Asking || run.waiting_for_input)
+            })
+            .map(|run| format!("run {} waiting_for_input={}", run.id, run.waiting_for_input));
+        let guides = self
             .guides
             .iter()
-            .any(|guide| guide.session == session && guide.state == GuideStateView::Asking)
+            .filter(move |guide| guide.session == session && guide.state == GuideStateView::Asking)
+            .map(|guide| format!("guide {}", guide.id));
+        runs.chain(guides)
+    }
+
+    /// What the session waits on the owner for, as [`Board::needs_you`] decides it: every open
+    /// request and the question it reported, or `None` when it waits for nothing.
+    fn what_needs_you(&self, session: &str) -> Option<String> {
+        let question = self
+            .reports
+            .get(session)
+            .and_then(|report| report.needs_input.as_deref())
+            .map(|question| format!("question {question}"));
+        let what: Vec<String> = self.open_requests(session).chain(question).collect();
+        (!what.is_empty()).then(|| what.join("; "))
+    }
+
+    /// Records that the request for `source` failed, so a daemon that never answers it does
+    /// not keep the bell silent for the whole run.
+    pub(crate) fn start_source_failed(&mut self, source: StartSource) {
+        self.look_for_cues(Some(source));
     }
 
     /// Whether all that waits on the owner is the agent's own question, asked while it still
