@@ -1,6 +1,6 @@
 use cockpit_protocol::{
     Change, ChangeBatch, ChangeEvent, CommitRevision, Cursor, DatabaseEpoch, EntityKind, EntityRef,
-    EntityRevision, FeedPosition, ServerFrame,
+    EntityRevision, FeedPosition, ServerFrame, ViewArea, ViewStamp,
 };
 use serde_json::json;
 
@@ -110,6 +110,7 @@ fn every_known_entity_kind_has_its_published_name() {
         (EntityKind::Execution, "execution"),
         (EntityKind::Checkout, "checkout"),
         (EntityKind::BugReport, "bug-report"),
+        (EntityKind::ViewStamp, "view-stamp"),
     ];
 
     for (kind, name) in published {
@@ -141,4 +142,22 @@ fn a_batch_must_say_what_it_follows() {
     }));
 
     assert!(parsed.is_err());
+}
+
+#[test]
+fn every_view_area_is_found_again_by_its_stamp_id() {
+    for area in ViewArea::ALL {
+        assert_eq!(ViewArea::from_id(area.id()), Some(area));
+    }
+    assert_eq!(ViewArea::from_id("garden"), None);
+}
+
+#[test]
+fn a_view_stamp_is_a_json_object_with_the_commit_revision() {
+    let stamp = ViewStamp { changed_at: 7 };
+
+    assert_eq!(
+        serde_json::to_value(stamp).unwrap(),
+        json!({"changed_at": 7})
+    );
 }

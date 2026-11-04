@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply};
+use cockpit_protocol::{ChangeBatch, Command, ManagerPaneView, Reply, ViewArea};
 
 use crate::attention::StartSource;
 use crate::board::{Board, FeedError};
@@ -160,14 +160,40 @@ impl App {
         is_news && !self.is_bell_muted
     }
 
-    /// What the runtime asks the daemon on every refresh. Sessions and checkouts are not
-    /// among them: they come from the change feed (#199).
+    /// What the runtime asks the daemon on every refresh, the slow fallback beside the view
+    /// stamps (#706). Sessions and checkouts are not among them: they come from the change
+    /// feed (#199).
     pub fn refresh_commands() -> Vec<Command> {
         vec![
             Command::ProjectList,
             Command::AgentReports,
             Command::ApprovalQueue,
         ]
+    }
+
+    /// What the feed's view stamps say changed since the last call: the requests that bring
+    /// those views up to date, sent at once instead of waiting for the next refresh (#706).
+    /// An open task or workflow view is asked for only while it is open.
+    pub fn changed_view_commands(&mut self) -> Vec<Command> {
+        let mut commands = Vec::new();
+        for area in self.board.take_stale_areas() {
+            match area {
+                ViewArea::Projects => commands.push(Command::ProjectList),
+                ViewArea::AgentReports => commands.push(Command::AgentReports),
+                ViewArea::Approvals => commands.push(Command::ApprovalQueue),
+                ViewArea::Tasks => {
+                    if let Some(tasks) = &self.tasks {
+                        commands.extend(tasks.refresh_commands());
+                    }
+                }
+                ViewArea::Workflows => {
+                    if let (None, Some(workflows)) = (&self.tasks, &self.workflows) {
+                        commands.extend(workflows.refresh_commands());
+                    }
+                }
+            }
+        }
+        commands
     }
 
     /// What keeps the views open on screen current, sent with every refresh.

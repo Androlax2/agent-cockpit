@@ -34,8 +34,11 @@ detaching the terminal leaves everything running.
   whole; the cursor advances only once a batch is applied. A lost feed or a refused batch
   starts again from a snapshot (after 1 s, doubling to 30 s) and shows on the status line,
   beside any failed command, until a batch applies.
-  What is not on the feed is refreshed every second: `project-list`, `agent-reports` and
-  `approval-queue`. A command's answer never takes a session back to an older revision nor
+  What the daemon answers by request (`project-list`, `agent-reports`, `approval-queue`, and
+  the open task or workflow view) is on the feed as one `view-stamp` per area (#706): when a
+  stamp moves, the TUI asks again for that area at once. A slow refresh of all of them
+  every 5 s remains for what no commit records (the runner's memory, a question's hold
+  running out). A command's answer never takes a session back to an older revision nor
   brings back one the feed took off.
 - **Usage.** Every key counts as one named command (`open`, `restart`, `approval-approve`,
   `unbound`…) in `$XDG_STATE_HOME/torlek/logs/tui/cockpit.log`: the name only, never what
@@ -109,6 +112,7 @@ remains reachable with Tab outside the task form.
 ## Tests
 
 - `tests/feed.rs`: the list rendered from a recorded change feed, grouped by project.
+- `tests/view_stamps.rs`: which requests a moved view stamp sends, and when.
 - `tests/feed_follow.rs`: a session shown from the feed alone against a scripted daemon,
   with `subscribe` the only request; no list in the refresh; late answers ignored; a lost
   feed kept on the status line.

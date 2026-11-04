@@ -22,9 +22,11 @@ use cockpit_tui::{App, FeedEvent, Key, draw, follow_feed, record_usage};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use tokio::sync::mpsc;
 
-/// How often the TUI asks the daemon for what is not on the change feed: projects, the
-/// agents' reports and the approval queue.
-const REFRESH: Duration = Duration::from_secs(1);
+/// How often the TUI asks the daemon again for projects, the agents' reports, the approval
+/// queue and the open task or workflow view, whatever the feed said. The feed's view stamps
+/// (#706) bring a change at once; this catches what no commit records: the runner's memory and
+/// a question's hold running out with the clock.
+const REFRESH: Duration = Duration::from_secs(5);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -158,6 +160,8 @@ async fn run(
             .map_err(|error| format!("cannot draw: {error}"))?;
         tokio::select! {
             _ = refresh.tick(), if unanswered_refreshes == 0 => {
+                // This refresh asks for everything a moved stamp would.
+                app.changed_view_commands();
                 for command in App::refresh_commands().into_iter().chain(app.view_refresh_commands()) {
                     unanswered_refreshes += 1;
                     send(&requests, command, true)?;
@@ -167,7 +171,10 @@ async fn run(
             () = sleep_until(app.pane().grace_ends_at(now)) => {}
             event = feed.recv() => match event {
                 None => return Err("the change feed task stopped".to_owned()),
-                Some(event) => follow(&mut app, event),
+                Some(event) => {
+                    follow(&mut app, event);
+                    ask_for_changed_views(&mut app, &requests, &mut unanswered_refreshes)?;
+                }
             },
             input = received.recv() => match input {
                 None => return Err("the key reader stopped".to_owned()),
@@ -187,6 +194,7 @@ async fn run(
                     if let Some(command) = app.answer(&sent.command, answer, Instant::now()) {
                         send(&requests, command, false)?;
                     }
+                    ask_for_changed_views(&mut app, &requests, &mut unanswered_refreshes)?;
                 }
             },
         }
@@ -212,6 +220,24 @@ async fn sleep_until(deadline: Option<Instant>) {
         Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
         None => std::future::pending().await,
     }
+}
+
+/// Asks again for the views whose stamp moved, once no refresh is waiting for its answer: a
+/// slow daemon gets one request per moved area however many batches came meanwhile, and the
+/// areas that moved stay pending until then.
+fn ask_for_changed_views(
+    app: &mut App,
+    requests: &mpsc::UnboundedSender<Sent>,
+    unanswered_refreshes: &mut usize,
+) -> Result<(), String> {
+    if *unanswered_refreshes > 0 {
+        return Ok(());
+    }
+    for command in app.changed_view_commands() {
+        *unanswered_refreshes += 1;
+        send(requests, command, true)?;
+    }
+    Ok(())
 }
 
 fn follow(app: &mut App, event: FeedEvent) {

@@ -29,6 +29,7 @@ mod storage;
 mod supervisor;
 mod tasks;
 mod verification;
+mod view_stamp_feed;
 mod workflows;
 
 use std::path::{Path, PathBuf};
@@ -169,6 +170,7 @@ pub struct Daemon {
     ticking: tokio::task::JoinHandle<()>,
     publishing: tokio::task::JoinHandle<()>,
     publishing_drafts: tokio::task::JoinHandle<()>,
+    publishing_view_stamps: tokio::task::JoinHandle<()>,
     retaining: tokio::task::JoinHandle<()>,
     sweeping: tokio::task::JoinHandle<()>,
     dispatching: tokio::task::JoinHandle<()>,
@@ -487,6 +489,12 @@ impl Instance {
             faults.clone(),
             move || bug_report_feed::publish_forever(Arc::clone(&drafts_database)),
         ));
+        let stamped_database = Arc::clone(&database);
+        let publishing_view_stamps = tokio::spawn(supervisor::supervise(
+            "view-stamp-feed",
+            faults.clone(),
+            move || view_stamp_feed::publish_forever(Arc::clone(&stamped_database)),
+        ));
         let ticking = tokio::spawn(supervisor::supervise(
             "sessions-tick",
             faults.clone(),
@@ -557,6 +565,7 @@ impl Instance {
             ticking,
             publishing,
             publishing_drafts,
+            publishing_view_stamps,
             retaining,
             sweeping,
             dispatching,
@@ -683,6 +692,7 @@ impl Drop for Daemon {
         self.ticking.abort();
         self.publishing.abort();
         self.publishing_drafts.abort();
+        self.publishing_view_stamps.abort();
         self.retaining.abort();
         self.sweeping.abort();
         self.dispatching.abort();
