@@ -93,7 +93,7 @@ impl RunSettings {
             leader,
             leader_arguments,
             environment: Vec::new(),
-            kept_bytes: 1024 * 1024,
+            kept_bytes: ANSWER_MAX_BYTES,
             answer_lines: 120,
             rows: 40,
             columns: 120,
@@ -441,6 +441,9 @@ impl Runner {
     }
 }
 
+/// The most output bytes an answer quotes; what came before is counted in the omission line.
+pub const ANSWER_MAX_BYTES: usize = 16 * 1024;
+
 /// The terminal lines quoted with a failed launch: enough for the launcher's error.
 const LAUNCH_FAILURE_LINES: usize = 5;
 
@@ -517,8 +520,10 @@ fn drain(mut reader: File, live: Arc<LiveRun>, kept_bytes: usize) -> oneshot::Re
 }
 
 /// The kept output as the agent may read it: from the first whole line, without terminal
-/// controls, redacted, its last `answer_lines` lines quoted.
+/// controls, redacted, its last `answer_lines` lines quoted. Only the last `ANSWER_MAX_BYTES`
+/// of `kept` are read, whatever the caller kept; the rest is counted in `truncated_bytes`.
 pub fn present(kept: &[u8], total: u64, answer_lines: usize) -> Output {
+    let kept = &kept[kept.len().saturating_sub(ANSWER_MAX_BYTES)..];
     let mut truncated_bytes = total.saturating_sub(kept.len() as u64);
     let mut kept = kept;
     if truncated_bytes > 0
