@@ -174,6 +174,7 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | Data | Default profile location |
 | --- | --- |
 | Owner settings | `~/.config/torlek/config.toml` |
+| A project's GitHub token, its sessions' `GH_TOKEN` | `~/.config/torlek/github-tokens/<project>` |
 | Database, session records and instruction bundle | `~/.local/state/torlek/` |
 | Torlek operational logs | `~/.local/state/torlek/logs/` |
 | Each session's temporary files (its `TMPDIR`), removed when the session ends | `~/.local/state/torlek/tmp/<session>/` |
@@ -182,6 +183,15 @@ Unknown keys fail with the file and line. See the [current configuration guide](
 | Sockets and instance lock | `$XDG_RUNTIME_DIR/torlek/`, or the state directory's `run/` when unset |
 
 `torlek storage` lists each session's temporary folder and its size.
+
+To let a project's agents push and open pull requests without your own `gh` login, create a
+fine-grained token limited to that repository (contents and pull requests: read and write)
+and save it alone in `~/.config/torlek/github-tokens/<project>` (`mkdir -p -m 700` the
+folder, then `chmod 600` the file).
+Its next sessions get it as `GH_TOKEN`, and your `~/.config/gh` login is hidden from them.
+A project without one gets no `GH_TOKEN`. `torlek project show PROJECT` says which, never the
+token. A file other users may read, or one that holds anything but the token, stops the
+project's sessions from launching until you fix it.
 Managed engines live under the profile's state directory in `engines/`; proxy configuration, its private CA and data live in `greyproxy/`.
 `torlek sandbox status` checks proxy health without the daemon.
 

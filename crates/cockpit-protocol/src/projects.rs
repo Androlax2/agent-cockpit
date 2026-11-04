@@ -7,6 +7,27 @@ use serde::{Deserialize, Serialize};
 pub struct ProjectView {
     pub name: String,
     pub root: String,
+    /// Whether the owner keeps a GitHub token its sessions get as `GH_TOKEN` (#754), never
+    /// the value; absent from an older daemon's reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<GithubTokenView>,
+}
+
+/// A project's GitHub token as Torlek shows it (#754): where it lives, never what it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum GithubTokenView {
+    Configured {
+        path: String,
+    },
+    /// Its sessions get no `GH_TOKEN`; the owner creates `path` to give them one.
+    Missing {
+        path: String,
+    },
+    /// The file exists but is refused; its sessions do not launch until it is fixed.
+    Unusable {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

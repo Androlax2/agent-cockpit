@@ -258,7 +258,7 @@ impl Handler for Routes {
             (Command::AgentBrief { launch_token }, Peer::Agent { connector }) => Route::Run {
                 class: WorkClass::Bulk,
                 job: approvals::job(agent_context::brief(
-                    self.environment.profile.value.name().to_owned(),
+                    self.environment.clone(),
                     launch_token,
                     connector,
                     Arc::clone(&self.database),

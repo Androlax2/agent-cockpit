@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cockpit_agent_context::{Grants, LaunchFacts, WorkflowFacts};
+use cockpit_agent_context::{GithubTokenFact, Grants, LaunchFacts, WorkflowFacts};
 use cockpit_protocol::{
     Command, ContextBudgetView, ErrorCode, InstructionTopicView, Outcome, ProtocolError, Reply,
     Unblock, UnblockedBy,
@@ -86,7 +86,7 @@ pub(crate) fn instructions(command: Command) -> Outcome {
 
 /// `agent-brief`: the sender's launch brief from what its owners say now.
 pub(crate) async fn brief(
-    profile: String,
+    environment: cockpit_config::Environment,
     launch_token: Option<String>,
     connector: Result<ProcessIdentity, ProcessError>,
     database: Arc<Database>,
@@ -95,7 +95,17 @@ pub(crate) async fn brief(
     let sender = Sender::read(connector).await;
     let session = identify(&sender, &database, launch_token).await?;
     let read = database.read().await?;
-    let facts = facts(&read, &sessions, session, profile).await?;
+    let mut facts = facts(
+        &read,
+        &sessions,
+        session,
+        environment.profile.value.name().to_owned(),
+    )
+    .await?;
+    drop(read);
+    if let Some(project) = facts.project.clone() {
+        facts.github_token = github_token_fact(environment, project).await?;
+    }
     let brief = cockpit_agent_context::brief(&facts);
     let budget = cockpit_agent_context::context_budget(&brief);
     Ok(Reply::AgentBrief {
@@ -175,7 +185,28 @@ async fn facts(
         workflow,
         manifest_id: cockpit_agent_context::manifest().id,
         profile,
+        github_token: None,
     })
+}
+
+/// Whether `project` has a GitHub token, read now (#754); none when the owner's home is
+/// unknown.
+async fn github_token_fact(
+    environment: cockpit_config::Environment,
+    project: String,
+) -> Result<Option<GithubTokenFact>, Failed> {
+    let state = tokio::task::spawn_blocking(move || {
+        let home = environment.home_dir().ok()?;
+        let layout = cockpit_config::Layout::resolve(&environment, &home);
+        Some(cockpit_config::github_token_state(&layout, &project))
+    })
+    .await
+    .map_err(|error| internal(&error))?;
+    Ok(state.map(|state| match state {
+        cockpit_config::GithubTokenState::Configured { .. } => GithubTokenFact::Configured,
+        cockpit_config::GithubTokenState::Missing { .. } => GithubTokenFact::Missing,
+        cockpit_config::GithubTokenState::Unusable { .. } => GithubTokenFact::Unusable,
+    }))
 }
 
 async fn grants(

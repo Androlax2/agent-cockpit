@@ -73,6 +73,7 @@ const USAGE: &str = "usage: torlek [--profile NAME] VERB ...
        torlek bug-report send ID [--gh | --print] [--anyway] | send ID --filed URL
        torlek project add DIR [--name NAME]
        torlek project list
+       torlek project show PROJECT
        torlek project remove PROJECT
        torlek checkout list [PROJECT]
        torlek checkout clone PROJECT BRANCH
@@ -216,6 +217,8 @@ fn main() -> ExitCode {
                 Err(problem) => verb_usage_error(&verb_name, problem),
             }
         }
+        [Some("project"), Some("show"), ..] => projects::show(&arguments[2..])
+            .unwrap_or_else(|problem| verb_usage_error(&verb_name, problem)),
         [Some(verb @ ("project" | "checkout")), ..] => {
             match projects::parse(verb, &arguments[1..]) {
                 Ok((command, deadline)) => projects::run(command, deadline),

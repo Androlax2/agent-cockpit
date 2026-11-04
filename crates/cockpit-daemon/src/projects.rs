@@ -8,8 +8,8 @@ use cockpit_projects::{
     Checkout, CheckoutId, CheckoutKind, CheckoutState, Error, Git, Holder, Kept, Trust,
 };
 use cockpit_protocol::{
-    CheckoutKindView, CheckoutView, Command, ErrorCode, KeptCheckout, KeptReason, Outcome,
-    ProjectView, ProtocolError, Reply, TrustView, Unblock, UnblockedBy,
+    CheckoutKindView, CheckoutView, Command, ErrorCode, GithubTokenView, KeptCheckout, KeptReason,
+    Outcome, ProjectView, ProtocolError, Reply, TrustView, Unblock, UnblockedBy,
 };
 use cockpit_turso::Database;
 
@@ -28,8 +28,9 @@ pub(crate) fn route(
             job(async move {
                 let read = database.read().await.map_err(Error::from)?;
                 let projects = cockpit_projects::projects(&read).await?;
+                drop(read);
                 Ok(Reply::Projects {
-                    projects: projects.iter().map(project_view).collect(),
+                    projects: with_github_tokens(environment, projects).await?,
                 })
             }),
         ),
@@ -363,6 +364,49 @@ fn project_view(project: &cockpit_projects::Project) -> ProjectView {
     ProjectView {
         name: project.name.to_string(),
         root: text(&project.root),
+        github_token: None,
+    }
+}
+
+/// `projects` as listed, each with its GitHub token's state read now (#754), never its
+/// value; none when the owner's home is unknown.
+async fn with_github_tokens(
+    environment: cockpit_config::Environment,
+    projects: Vec<cockpit_projects::Project>,
+) -> Result<Vec<ProjectView>, Error> {
+    tokio::task::spawn_blocking(move || {
+        let layout = environment
+            .home_dir()
+            .ok()
+            .map(|home| cockpit_config::Layout::resolve(&environment, &home));
+        projects
+            .iter()
+            .map(|project| ProjectView {
+                github_token: layout.as_ref().map(|layout| {
+                    github_token_view(cockpit_config::github_token_state(
+                        layout,
+                        project.name.as_str(),
+                    ))
+                }),
+                ..project_view(project)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| Error::Blocking(error.to_string()))
+}
+
+fn github_token_view(state: cockpit_config::GithubTokenState) -> GithubTokenView {
+    match state {
+        cockpit_config::GithubTokenState::Configured { path } => {
+            GithubTokenView::Configured { path: text(&path) }
+        }
+        cockpit_config::GithubTokenState::Missing { path } => {
+            GithubTokenView::Missing { path: text(&path) }
+        }
+        cockpit_config::GithubTokenState::Unusable { reason } => {
+            GithubTokenView::Unusable { reason }
+        }
     }
 }
 

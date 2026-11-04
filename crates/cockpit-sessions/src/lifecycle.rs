@@ -1717,9 +1717,14 @@ impl Sessions {
         // not just the folder it starts in: Git and the project's own files live at its root.
         let (checkout, _) = self.checkout_containing(&session.working_dir).await?;
         let output_project = checkout.project.as_str().to_owned();
+        let github = self.github_access(&output_project).await?;
         // Kept for the clone's harness trust, recorded once the launch passed its gates.
-        let clone_trust = matches!(checkout.kind, CheckoutKind::Parallel { .. })
-            .then(|| (checkout.clone(), environment.clone()));
+        let clone_trust = matches!(checkout.kind, CheckoutKind::Parallel { .. }).then(|| {
+            (
+                checkout.clone(),
+                with_github_token(environment.clone(), None),
+            )
+        });
         let prepared = self.prepare_sandbox(
             id.as_str(),
             session.provider.as_str(),
@@ -1727,6 +1732,7 @@ impl Sessions {
             session_dir,
             temp_dir,
             environment,
+            github,
             command.program,
             command.arguments,
         )?;
@@ -1940,9 +1946,20 @@ impl Sessions {
         environment
     }
 
+    /// What a launch in `project` gets of GitHub (#754), read now so a token the owner
+    /// replaced reaches the next launch.
+    async fn github_access(&self, project: &str) -> Result<GithubAccess, Error> {
+        let environment = self.settings.owner_environment.clone();
+        let project = project.to_owned();
+        self.blocking("read the project's GitHub token", move || {
+            github_access(&environment, &project)
+        })
+        .await
+    }
+
     /// How `program` runs for a launch of `provider` in `checkout_root`, with the session's
-    /// own `session_dir`: through the sandbox, or unchanged only by the owner's
-    /// `agents.sandbox = "off"`.
+    /// own `session_dir` and the project's `github` access: through the sandbox, or
+    /// unchanged only by the owner's `agents.sandbox = "off"`.
     #[allow(
         clippy::too_many_arguments,
         reason = "one launch's facts, each passed straight into the sandbox's request"
@@ -1955,9 +1972,24 @@ impl Sessions {
         session_dir: PathBuf,
         temp_dir: PathBuf,
         environment: Vec<(OsString, OsString)>,
+        github: GithubAccess,
         program: PathBuf,
         arguments: Vec<OsString>,
     ) -> Result<cockpit_sandbox::Prepared, Error> {
+        let mut secrets = vec![cockpit_sandbox::Secret {
+            // The agent presents it on the local agent socket, never in an HTTP header
+            // greyproxy could swap a placeholder in.
+            variable: LAUNCH_TOKEN_VARIABLE.to_owned(),
+            handling: cockpit_sandbox::SecretHandling::PassThrough,
+        }];
+        if github.token.is_some() {
+            secrets.push(cockpit_sandbox::Secret {
+                // Git sends it inside Basic credentials, which greyproxy does not decode, so
+                // a placeholder would never be swapped back: `git push` would fail.
+                variable: cockpit_config::GITHUB_TOKEN_VARIABLE.to_owned(),
+                handling: cockpit_sandbox::SecretHandling::PassThrough,
+            });
+        }
         self.settings
             .sandbox
             .prepare(
@@ -1968,13 +2000,9 @@ impl Sessions {
                     working_dir: checkout_root,
                     session_dir,
                     temp_dir,
-                    environment,
-                    secrets: vec![cockpit_sandbox::Secret {
-                        // The agent presents it on the local agent socket, never in an HTTP
-                        // header greyproxy could swap a placeholder in.
-                        variable: LAUNCH_TOKEN_VARIABLE.to_owned(),
-                        handling: cockpit_sandbox::SecretHandling::PassThrough,
-                    }],
+                    environment: with_github_token(environment, github.token.as_ref()),
+                    secrets,
+                    denied: github.hidden_owner_login,
                     desktop: self.desktop_session(),
                 },
                 program,
@@ -2018,6 +2046,7 @@ impl Sessions {
             .blocking("resolve the directory", move || canonical_dir(dir))
             .await?;
         let (checkout, _) = self.checkout_containing(&dir).await?;
+        let github = self.github_access(checkout.project.as_str()).await?;
         self.prepare_sandbox(
             DRY_RUN_SESSION,
             &provider,
@@ -2025,6 +2054,7 @@ impl Sessions {
             self.session_dirs.join(DRY_RUN_SESSION),
             self.dry_run_temp_dir(),
             with_temp_dir(self.launch_environment(), &self.dry_run_temp_dir()),
+            github,
             PathBuf::from("<agent>"),
             Vec::new(),
         )
@@ -2574,6 +2604,84 @@ fn with_temp_dir(
     environment.retain(|(name, _)| name != "TMPDIR" && name != "CLAUDE_CODE_TMPDIR");
     environment.push(("TMPDIR".into(), temp_dir.into()));
     environment.push(("CLAUDE_CODE_TMPDIR".into(), temp_dir.into()));
+    environment
+}
+
+/// What a launch in one project gets of GitHub (#754).
+#[derive(Debug, Default)]
+struct GithubAccess {
+    /// The project's token, when the owner keeps one: the agent's `GH_TOKEN`.
+    token: Option<cockpit_config::GithubToken>,
+    /// The owner's own `gh` login, hidden from an agent that has its project's token, so
+    /// `gh` and Git use that token alone. Empty without a token: the owner decided agents
+    /// may use their login until each project has one.
+    hidden_owner_login: Vec<PathBuf>,
+}
+
+/// [`GithubAccess`] for a launch in `project`, from the token file in the owner's
+/// configuration. Blocking: it reads the file. An owner environment that names no home
+/// (in-process tests) reads none.
+fn github_access(
+    environment: &cockpit_config::Environment,
+    project: &str,
+) -> Result<GithubAccess, Error> {
+    let Ok(home) = environment.home_dir() else {
+        return Ok(GithubAccess::default());
+    };
+    let layout = cockpit_config::Layout::resolve(environment, &home);
+    let token =
+        cockpit_config::read_github_token(&layout.github_token_file(project)).map_err(|error| {
+            Error::GithubToken {
+                project: project.to_owned(),
+                error,
+            }
+        })?;
+    let hidden_owner_login = match token {
+        Some(_) => owner_gh_config_dirs(environment, &home),
+        None => Vec::new(),
+    };
+    Ok(GithubAccess {
+        token,
+        hidden_owner_login,
+    })
+}
+
+/// Where the owner's `gh` keeps its login (`hosts.yml`): `~/.config/gh`, which the engine's
+/// profile lets every agent read, and `$XDG_CONFIG_HOME/gh`, where `gh` looks when it is set.
+fn owner_gh_config_dirs(environment: &cockpit_config::Environment, home: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![home.join(".config").join("gh")];
+    let xdg_config = environment
+        .xdg_config_home
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join("gh"));
+    if let Some(dir) = xdg_config
+        && !dirs.contains(&dir)
+    {
+        dirs.push(dir);
+    }
+    dirs
+}
+
+/// `environment` with `token` as its only GitHub token (#754): none the daemon or a
+/// provider passed reaches the agent, so a project without one never gets another's or the
+/// owner's.
+fn with_github_token(
+    mut environment: Vec<(OsString, OsString)>,
+    token: Option<&cockpit_config::GithubToken>,
+) -> Vec<(OsString, OsString)> {
+    environment.retain(|(name, _)| {
+        !cockpit_config::GITHUB_TOKEN_VARIABLES
+            .iter()
+            .any(|variable| name == variable)
+    });
+    if let Some(token) = token {
+        environment.push((
+            cockpit_config::GITHUB_TOKEN_VARIABLE.into(),
+            token.expose().into(),
+        ));
+    }
     environment
 }
 

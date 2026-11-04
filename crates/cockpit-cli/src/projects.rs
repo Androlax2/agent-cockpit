@@ -4,10 +4,13 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use cockpit_protocol::{CheckoutKindView, CheckoutView, Command, KeptReason, Reply, TrustView};
+use cockpit_protocol::{
+    CheckoutKindView, CheckoutView, Command, GithubTokenView, KeptReason, ProjectView, Reply,
+    TrustView,
+};
 
 use crate::daemon::{
-    BULK_DEADLINE, CONTROL_DEADLINE, absolute_dir, request, unexpected, utf8_words,
+    BULK_DEADLINE, CONTROL_DEADLINE, absolute_dir, fail, request, unexpected, utf8_words,
 };
 
 /// A verb's command, or the usage problem that stops it.
@@ -51,6 +54,46 @@ pub fn parse(verb: &str, arguments: &[OsString]) -> Result<(Command, Duration), 
         }),
         _ => Err(format!("unknown {verb} arguments")),
     }
+}
+
+/// `project show PROJECT`: the project's root and whether it has a GitHub token its
+/// sessions get as `GH_TOKEN` (#754), never the value. Exit 1 when no project has that name.
+pub fn show(arguments: &[OsString]) -> Result<ExitCode, String> {
+    let words = utf8_words(arguments)?;
+    let [name] = words.as_slice() else {
+        return Err("name one project".to_owned());
+    };
+    let reply = match request(Command::ProjectList, CONTROL_DEADLINE) {
+        Ok(reply) => reply,
+        Err(code) => return Ok(code),
+    };
+    let Reply::Projects { projects } = &reply else {
+        return Ok(unexpected(&reply));
+    };
+    let Some(project) = projects.iter().find(|project| project.name == *name) else {
+        return Ok(fail(&format!("no project is named {name}")));
+    };
+    out!("{}", project_details(project));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `key<TAB>value` lines: `name`, `root`, then `github-token` with `configured`, `none` or
+/// `unusable` and the file or the reason.
+fn project_details(project: &ProjectView) -> String {
+    let github_token = match &project.github_token {
+        Some(GithubTokenView::Configured { path }) => format!("configured\t{path}"),
+        Some(GithubTokenView::Missing { path }) => {
+            format!("none\tsessions get no GH_TOKEN; the owner may create {path}, mode 0600")
+        }
+        Some(GithubTokenView::Unusable { reason }) => {
+            format!("unusable\tsessions do not launch: {reason}")
+        }
+        None => "unknown\tthe daemon does not say; restart it on this version".to_owned(),
+    };
+    format!(
+        "name\t{}\nroot\t{}\ngithub-token\t{github_token}\n",
+        project.name, project.root
+    )
 }
 
 fn project_add(dir: &str, name: Option<&str>) -> Result<Command, String> {

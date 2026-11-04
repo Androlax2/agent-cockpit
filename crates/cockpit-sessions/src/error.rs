@@ -81,6 +81,12 @@ pub enum Error {
     /// The sandbox refused the launch: a rule this host cannot enforce, or no engine (#61).
     Sandbox(cockpit_sandbox::Refusal),
     SandboxObservations(cockpit_sandbox::ObservationError),
+    /// The launch's project has a GitHub token file that cannot be used (#754); the launch
+    /// is refused rather than run without it or with the owner's own login.
+    GithubToken {
+        project: String,
+        error: cockpit_config::GithubTokenError,
+    },
     Authorization(cockpit_authorization::Error),
     Io {
         action: &'static str,
@@ -200,6 +206,11 @@ impl fmt::Display for Error {
             Error::AgentChannel(error) => write!(formatter, "agent channel: {error}"),
             Error::Sandbox(refusal) => refusal.fmt(formatter),
             Error::SandboxObservations(error) => error.fmt(formatter),
+            Error::GithubToken { project, error } => write!(
+                formatter,
+                "project {project}'s GitHub token cannot be used, so its sessions do not \
+                 launch: {error}; fix the file, or remove it to launch without a token"
+            ),
             Error::Authorization(error) => write!(formatter, "authorization: {error}"),
             Error::Io {
                 action,
@@ -276,6 +287,7 @@ impl std::error::Error for Error {
             Error::Database(source) => Some(source),
             Error::Sql(source) => Some(source),
             Error::SandboxObservations(source) => Some(source),
+            Error::GithubToken { error, .. } => Some(error),
             _ => None,
         }
     }

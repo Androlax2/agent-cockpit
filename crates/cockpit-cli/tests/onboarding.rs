@@ -133,6 +133,7 @@ impl Daemon {
         self.projects.push(ProjectView {
             name: "app".to_owned(),
             root: "/home/me/code/my app".to_owned(),
+            github_token: None,
         });
         self
     }

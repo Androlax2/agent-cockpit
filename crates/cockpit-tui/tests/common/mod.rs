@@ -20,6 +20,7 @@ pub fn project(name: &str) -> ProjectView {
     ProjectView {
         name: name.to_owned(),
         root: format!("/p/{name}"),
+        github_token: None,
     }
 }
 

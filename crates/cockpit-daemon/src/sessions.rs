@@ -423,7 +423,8 @@ fn error_code(error: &Error) -> ErrorCode {
         | Error::DeliveryUnconfirmed { .. }
         | Error::Provider(_)
         | Error::TmuxUnavailable { .. }
-        | Error::Sandbox(_) => ErrorCode::Refused,
+        | Error::Sandbox(_)
+        | Error::GithubToken { .. } => ErrorCode::Refused,
         Error::Projects(error) => crate::projects::error_code(error),
         _ => ErrorCode::Internal,
     }
