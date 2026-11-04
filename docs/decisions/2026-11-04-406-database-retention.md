@@ -20,6 +20,14 @@ Issue #406. Decided by Theo on 2026-11-04 (option A for PR 3, the Database line 
   so Control requests keep the writer. One pass considers at most 16 384 sessions, and says
   when it left some out, and clears at most 16 384 run outputs; the report shows what it
   selected beside what it retired, and the next pass takes the rest.
+- **Retention writes capture ids, not images.** The writer captures changes in `full` mode,
+  so a delete or an update would copy the payload it removes into `turso_cdc` as a before
+  image. Retention's transactions use `Database::write_without_images` (`id` mode): each
+  commit and changed row still reach the feed, no payload is copied, and the next write
+  captures in full again. The payload's earlier images (its insert) leave with the feed
+  history and the backups as they age out. A first pass over a large history writes one
+  change row per removed row, so it can push older history past `feed_history_changes`; a
+  client resuming from before then takes a fresh snapshot, nothing is skipped.
 - **Change-feed history is a setting.** `feed_history_changes` (100 000) replaces the
   hard-coded cap; the hourly discard keeps the newest commits as before (#41).
 - **Compaction is a WAL checkpoint, not `VACUUM`.** In-place `VACUUM` is experimental in

@@ -453,8 +453,13 @@ fn print_database(database: &DatabaseStorageView, applied: bool) {
             "dry run: nothing retired; `torlek storage database prune` retires the selected payloads"
         );
     }
+    if database.wal_checkpoint_busy {
+        outln!(
+            "WAL checkpoint busy: a reader held the WAL, so it did not shrink; the hourly checkpoint finishes it"
+        );
+    }
     if database.truncated {
-        outln!("incomplete pass: further sessions were left out by its bound");
+        outln!("incomplete pass: its bound left sessions or run outputs for the next pass");
     }
 }
 

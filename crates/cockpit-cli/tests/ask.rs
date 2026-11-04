@@ -783,14 +783,15 @@ async fn no_wait_given_twice_is_a_usage_error() {
     assert!(text(&output.stderr).contains("--no-wait given twice"));
 }
 
+/// A run retention cleared: its output is gone, the counters that described it remain.
 fn retired(exit_code: i32) -> Outcome {
     run_reply(RunRequestView {
         result: Some(RunResultView {
             exit_code,
             output: String::new(),
-            omitted_lines: 0,
-            truncated_bytes: 0,
-            redacted: 0,
+            omitted_lines: 500,
+            truncated_bytes: 9,
+            redacted: 3,
             output_retired: true,
         }),
         ..request(RunStateView::Finished)
@@ -806,10 +807,9 @@ async fn waiting_on_a_run_whose_output_retention_removed_says_so_and_keeps_its_c
 
     assert_eq!(output.status.code(), Some(4), "{}", text(&output.stderr));
     assert_eq!(text(&output.stdout), "");
-    assert!(
-        text(&output.stderr).contains("database retention removed this run's output"),
-        "{}",
-        text(&output.stderr)
+    assert_eq!(
+        text(&output.stderr),
+        "torlek: database retention removed this run's output\n"
     );
 }
 
@@ -822,7 +822,8 @@ async fn the_owner_reads_that_retention_removed_a_runs_output() {
 
     let shown = text(&output.stdout);
     assert!(
-        shown.contains("output removed by database retention"),
+        shown.contains("exit 0 (output removed by database retention)"),
         "{shown}"
     );
+    assert!(!shown.contains("secrets redacted"), "{shown}");
 }

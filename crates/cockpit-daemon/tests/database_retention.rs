@@ -180,6 +180,10 @@ async fn pruning_retires_the_payloads_and_keeps_the_session_and_its_audit_rows()
             "approvals_runs WHERE output = '' AND output_retired_at IS NOT NULL",
             1,
         ),
+        (
+            "turso_cdc WHERE table_name LIKE 'session_delivery%' AND before IS NOT NULL",
+            0,
+        ),
     ] {
         let mut rows = read
             .query(&format!("SELECT count(*) FROM {table}"), ())

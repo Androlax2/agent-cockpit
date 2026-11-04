@@ -632,6 +632,7 @@ fn database_report(retired: u64, failures: &[&str]) -> Reply {
             }],
             backups_kept: 7,
             truncated: false,
+            wal_checkpoint_busy: false,
             failures: failures
                 .iter()
                 .map(|failure| (*failure).to_owned())

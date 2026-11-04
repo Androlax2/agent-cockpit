@@ -10,7 +10,7 @@ use cockpit_protocol::{
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// Sessions retired per write transaction, so a pass never holds the writer for long.
 const SESSION_PAGE: u32 = 64;
@@ -65,32 +65,28 @@ fn internal(error: impl std::fmt::Display) -> ProtocolError {
     ProtocolError::new(ErrorCode::Internal, error.to_string())
 }
 
-fn now_seconds() -> i64 {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("the clock is after 1970");
-    i64::try_from(elapsed.as_secs()).expect("seconds since 1970 fit in i64")
-}
-
 /// Reports, and with `apply` retires, what the owner's policy selects.
 pub(crate) async fn pass(context: &Context, apply: bool) -> Result<Reply, ProtocolError> {
     let policy = &context.retention;
-    let now = now_seconds();
+    let now = crate::approvals::now();
     let cutoff = policy.cutoff(now);
-    let (mut sessions, truncated) = selected_sessions(context, cutoff).await?;
+    let (mut sessions, mut truncated) = selected_sessions(context, cutoff).await?;
     let mut run_outputs = selected_run_outputs(context, cutoff).await?;
     let mut failures = Vec::new();
+    let mut wal_checkpoint_busy = false;
     if apply {
         let (retired, error) = retire_sessions(context, cutoff).await;
         sessions.retired = retired.retired;
         sessions.retired_bytes = retired.retired_bytes;
         failures.extend(error);
-        let (retired, error) = retire_run_outputs(context, cutoff, now).await;
+        let (retired, left_some, error) = retire_run_outputs(context, cutoff, now).await;
         run_outputs.retired = retired.retired;
         run_outputs.retired_bytes = retired.retired_bytes;
+        truncated |= left_some;
         failures.extend(error);
-        if let Err(error) = context.database.checkpoint().await {
-            failures.push(format!("WAL checkpoint: {error}"));
+        match context.database.checkpoint().await {
+            Ok(checkpoint) => wal_checkpoint_busy = checkpoint.is_busy,
+            Err(error) => failures.push(format!("WAL checkpoint: {error}")),
         }
     }
     let sizes = context.database.file_sizes().map_err(internal)?;
@@ -117,6 +113,7 @@ pub(crate) async fn pass(context: &Context, apply: bool) -> Result<Reply, Protoc
             backups,
             backups_kept: policy.backups_kept,
             truncated,
+            wal_checkpoint_busy,
             failures,
         }),
         applied: apply,
@@ -209,16 +206,19 @@ async fn retire_session_page(
     cutoff: i64,
     after: &str,
 ) -> Result<SessionPage, String> {
-    let write = context.database.write().await.map_err(|e| e.to_string())?;
-    let listed = cockpit_sessions::retirable_launch_payloads(&write, cutoff, after, SESSION_PAGE)
+    let write = context
+        .database
+        .write_without_images()
+        .await
+        .map_err(|e| e.to_string())?;
+    let listed = cockpit_sessions::retirable_sessions(&write, cutoff, after, SESSION_PAGE)
         .await
         .map_err(|e| e.to_string())?;
     let mut retired = Vec::new();
-    for retirable in &listed {
-        if let Some(payload) =
-            cockpit_sessions::retire_launch_payload(&write, &retirable.session, cutoff)
-                .await
-                .map_err(|e| e.to_string())?
+    for session in &listed {
+        if let Some(payload) = cockpit_sessions::retire_launch_payload(&write, session, cutoff)
+            .await
+            .map_err(|e| e.to_string())?
         {
             retired.push(payload);
         }
@@ -226,22 +226,27 @@ async fn retire_session_page(
     write.commit().await.map_err(|e| e.to_string())?;
     Ok(SessionPage {
         considered: listed.len() as u64,
-        last: listed.last().map(|retirable| retirable.session.clone()),
+        last: listed.last().cloned(),
         retired,
     })
 }
 
 /// Clears the selected runs' output a page per write transaction until none is left, or
-/// [`PASS_LIMIT`] are cleared.
+/// [`PASS_LIMIT`] are cleared. Returns what went, whether the bound left some, and why it
+/// stopped early if it did.
 async fn retire_run_outputs(
     context: &Context,
     cutoff: i64,
     now: i64,
-) -> (PayloadRetentionView, Option<String>) {
+) -> (PayloadRetentionView, bool, Option<String>) {
     let mut retired = PayloadRetentionView::default();
     while retired.retired < PASS_LIMIT {
         let page = async {
-            let write = context.database.write().await.map_err(|e| e.to_string())?;
+            let write = context
+                .database
+                .write_without_images()
+                .await
+                .map_err(|e| e.to_string())?;
             let page = cockpit_approvals::retire_run_outputs(&write, cutoff, now, RUN_PAGE)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -250,15 +255,15 @@ async fn retire_run_outputs(
         }
         .await;
         match page {
-            Ok(page) if page.runs == 0 => break,
+            Ok(page) if page.runs == 0 => return (retired, false, None),
             Ok(page) => {
                 retired.retired += page.runs;
                 retired.retired_bytes += page.bytes;
             }
-            Err(error) => return (retired, Some(format!("run outputs: {error}"))),
+            Err(error) => return (retired, false, Some(format!("run outputs: {error}"))),
         }
     }
-    (retired, None)
+    (retired, true, None)
 }
 
 /// Takes a backup when the newest one is older than the backup interval, then keeps the
@@ -292,56 +297,61 @@ async fn back_up_if_due(
     Ok(Some(backup))
 }
 
-/// At start and every `database_maintenance_interval_minutes`: checkpoints the WAL, takes a
-/// backup when one is due, and runs the owner's opt-in pass on the Bulk lane.
+/// At start and every `database_maintenance_interval_minutes`, one Bulk-lane job: checkpoints
+/// the WAL, takes a backup when one is due, and runs the owner's opt-in pass. A full Bulk lane
+/// defers it to the next period, so maintenance never takes the place of an owner request.
 pub(crate) async fn maintain_forever(context: Context, shared: Arc<crate::server::Shared>) {
     let mut ticks = tokio::time::interval(context.retention.interval);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticks.tick().await;
-        match context.database.checkpoint().await {
-            Ok(checkpoint) if checkpoint.is_busy => {
-                tracing::debug!(
-                    ?checkpoint,
-                    "the WAL checkpoint was busy; the next one finishes it"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "WAL checkpoint failed; retrying next period"),
-        }
-        match back_up_if_due(&context, now_seconds().unsigned_abs()).await {
-            Ok(Some(backup)) => tracing::info!(
-                backup = %backup.path.display(),
-                bytes = backup.bytes,
-                "backed up the state database"
-            ),
-            Ok(None) => {}
-            Err(error) => tracing::warn!(%error, "database backup failed; retrying next period"),
-        }
-        if context.retention.automatic {
-            prune_automatically(&context, &shared).await;
+        let worker = context.clone();
+        let work = Box::pin(async move {
+            maintain(&worker).await;
+            Outcome::Ok(Reply::Pong)
+        });
+        let outcome =
+            match shared
+                .lanes
+                .admit(WorkClass::Bulk, "storage-database-maintenance".into(), work)
+            {
+                Ok(work) => work.await,
+                Err(outcome) => outcome,
+            };
+        if let Outcome::Error(error) = outcome {
+            tracing::warn!(error = %error.message, "database maintenance deferred to the next period");
         }
     }
 }
 
-async fn prune_automatically(context: &Context, shared: &crate::server::Shared) {
-    let worker = context.clone();
-    let work = Box::pin(async move {
-        match pass(&worker, true).await {
-            Ok(reply) => Outcome::Ok(reply),
-            Err(error) => Outcome::Error(error),
+async fn maintain(context: &Context) {
+    match context.database.checkpoint().await {
+        Ok(checkpoint) if checkpoint.is_busy => {
+            tracing::debug!(
+                ?checkpoint,
+                "the WAL checkpoint was busy; the next one finishes it"
+            );
         }
-    });
-    let outcome =
-        match shared
-            .lanes
-            .admit(WorkClass::Bulk, "storage-database-automatic".into(), work)
-        {
-            Ok(work) => work.await,
-            Err(outcome) => outcome,
-        };
-    match outcome {
-        Outcome::Ok(Reply::StorageDatabase { database, .. }) => {
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "WAL checkpoint failed; retrying next period"),
+    }
+    match back_up_if_due(context, crate::approvals::now().unsigned_abs()).await {
+        Ok(Some(backup)) => tracing::info!(
+            backup = %backup.path.display(),
+            bytes = backup.bytes,
+            "backed up the state database"
+        ),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "database backup failed; retrying next period"),
+    }
+    if context.retention.automatic {
+        prune_automatically(context).await;
+    }
+}
+
+async fn prune_automatically(context: &Context) {
+    match pass(context, true).await {
+        Ok(Reply::StorageDatabase { database, .. }) => {
             if database.sessions.retired > 0 || database.run_outputs.retired > 0 {
                 tracing::info!(
                     sessions = database.sessions.retired,
@@ -355,9 +365,9 @@ async fn prune_automatically(context: &Context, shared: &crate::server::Shared) 
                 tracing::warn!(%failure, "automatic database retention stopped early");
             }
         }
-        Outcome::Ok(_) => {}
-        Outcome::Error(error) => {
-            tracing::warn!(error = %error.message, "automatic database retention deferred");
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(error = %error.message, "automatic database retention failed");
         }
     }
 }

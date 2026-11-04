@@ -16,7 +16,9 @@ what is kept.
 Maintenance (#406): `checkpoint` runs `PRAGMA wal_checkpoint(TRUNCATE)` under the writer,
 `file_sizes` reports the database and WAL files, `backup_into` writes a `VACUUM INTO` copy
 named `state-<secs>.db` into a private directory, `backups` lists them newest first and
-`remove_backups_beyond` keeps the newest N and removes partial copies. In-place `VACUUM` is
+`remove_backups_beyond` keeps the newest N and removes partial copies. `write_without_images` is a
+write transaction whose change capture records row ids but no before or after images, so
+retention does not copy what it removes into the change history. In-place `VACUUM` is
 not offered: it is experimental in Turso (report 04, `../../docs/decisions/2026-11-04-406-database-retention.md`).
 
 ## Dependency edges

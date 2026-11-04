@@ -97,7 +97,7 @@ fn a_database_report_names_each_rule_the_feed_and_the_backups() {
     let value = json!({"kind":"storage-database", "database":{"file_bytes":4096,"wal_bytes":0,
         "retention_days":30,"sessions":rule,"run_outputs":rule,"feed_changes":12,
         "feed_changes_kept":100000,"backups":[{"path":"/s/backups/state-9.db","taken_at":9,
-        "bytes":4096}],"backups_kept":7,"truncated":false,"failures":[]},"applied":false});
+        "bytes":4096}],"backups_kept":7,"truncated":false,"wal_checkpoint_busy":false,"failures":[]},"applied":false});
     let reply: Reply = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(serde_json::to_value(reply).unwrap(), value);
 }

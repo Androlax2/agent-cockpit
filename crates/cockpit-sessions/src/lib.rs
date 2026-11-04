@@ -31,6 +31,7 @@ pub use store::{MIGRATIONS, checkout_sessions, maintenance_sessions, session, se
 compile_error!("cockpit-sessions supports Linux (WSL2 included) and macOS (report 01)");
 
 pub use retention::{
-    LaunchPayload, RetirablePayload, retirable_launch_payloads, retire_launch_payload,
+    LaunchPayload, RetirablePayload, retirable_launch_payloads, retirable_sessions,
+    retire_launch_payload,
 };
 pub use store::protects_output;

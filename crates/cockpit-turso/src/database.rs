@@ -2,6 +2,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{Mutex, MutexGuard, watch};
@@ -14,6 +15,9 @@ const DATABASE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS cockpit_database (
     value TEXT NOT NULL
 )";
 
+const CAPTURE_FULL: &str = "PRAGMA capture_data_changes_conn('full')";
+const CAPTURE_IDS: &str = "PRAGMA capture_data_changes_conn('id')";
+
 /// The open state file. One per file across every process: a second `open` fails with
 /// [`Error::AlreadyOpen`] until this value is dropped.
 pub struct Database {
@@ -22,6 +26,9 @@ pub struct Database {
     /// Every write goes through this one connection, which has change capture on. The daemon
     /// is the only writer (report 04), so writers queue here instead of on SQLite's busy lock.
     writer: Mutex<turso::Connection>,
+    /// Set while the writer captures ids only, after [`Database::write_without_images`]; the
+    /// next [`Database::write`] turns full capture back on. Changed only by the mutex holder.
+    captures_ids_only: AtomicBool,
     /// Marked after every committed write transaction; see [`Database::watch_commits`].
     commits: watch::Sender<()>,
     turso: turso::Database,
@@ -39,9 +46,7 @@ impl Database {
         let writer = turso.connect()?;
         // Full mode keeps before and after images: the change feed can drop them later, but
         // images that were never captured cannot be recovered (docs/DECISIONS.md).
-        writer
-            .execute("PRAGMA capture_data_changes_conn('full')", ())
-            .await?;
+        writer.execute(CAPTURE_FULL, ()).await?;
         writer.execute(migrations::LEDGER_SCHEMA, ()).await?;
         writer.execute(DATABASE_SCHEMA, ()).await?;
         migrations::apply(&writer, migration_sets).await?;
@@ -50,6 +55,7 @@ impl Database {
             epoch,
             path: path.to_path_buf(),
             writer: Mutex::new(writer),
+            captures_ids_only: AtomicBool::new(false),
             commits: watch::Sender::new(()),
             turso,
             _opener_lock: opener_lock,
@@ -66,9 +72,27 @@ impl Database {
     /// Waits for the previous writer to finish. Dropping it without [`WriteTransaction::commit`]
     /// rolls it back before the next write starts.
     pub async fn write(&self) -> Result<WriteTransaction<'_>, Error> {
+        self.begin_write(CAPTURE_FULL).await
+    }
+
+    /// [`Database::write`], with change capture recording each changed row's id but not its
+    /// before and after images. Commits still record their revision and every changed row, so
+    /// the change feed is unaffected; retention (#406) uses it so a payload it removes is not
+    /// copied into the change history it is meant to leave.
+    pub async fn write_without_images(&self) -> Result<WriteTransaction<'_>, Error> {
+        self.begin_write(CAPTURE_IDS).await
+    }
+
+    async fn begin_write(&self, capture: &str) -> Result<WriteTransaction<'_>, Error> {
         let connection = self.writer.lock().await;
         if !connection.is_autocommit()? {
             connection.execute("ROLLBACK", ()).await?;
+        }
+        let wants_ids_only = capture == CAPTURE_IDS;
+        if self.captures_ids_only.load(Ordering::Acquire) != wants_ids_only {
+            connection.execute(capture, ()).await?;
+            self.captures_ids_only
+                .store(wants_ids_only, Ordering::Release);
         }
         connection.execute("BEGIN IMMEDIATE", ()).await?;
         Ok(WriteTransaction {

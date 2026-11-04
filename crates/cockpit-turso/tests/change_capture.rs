@@ -249,3 +249,55 @@ async fn the_retained_change_count_falls_to_what_a_discard_keeps() {
     assert!(before >= 6, "{before}");
     assert_eq!(after, 2);
 }
+
+/// How many captured changes to `tasks` carry a before or after image.
+async fn imaged_task_changes(database: &Database) -> i64 {
+    let read = database.read().await.unwrap();
+    let mut rows = read
+        .query(
+            "SELECT count(*) FROM turso_cdc
+             WHERE table_name = 'tasks' AND (before IS NOT NULL OR after IS NOT NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+    rows.next().await.unwrap().unwrap().get(0).unwrap()
+}
+
+#[tokio::test]
+async fn a_write_without_images_is_a_commit_in_the_feed_that_copies_no_row() {
+    let database = open("cdc-without-images").await;
+    insert_task(&database, "secret").await;
+    let imaged = imaged_task_changes(&database).await;
+    assert_eq!(imaged, 1, "the insert's after image");
+    let revision = database.read().await.unwrap().revision().await.unwrap();
+
+    let write = database.write_without_images().await.unwrap();
+    write
+        .execute("DELETE FROM tasks WHERE id = 1", ())
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+
+    let commits = database
+        .read()
+        .await
+        .unwrap()
+        .commits_after(revision, 10)
+        .await
+        .unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].changes, [change(ChangeKind::Delete, "tasks", 1)]);
+    assert_eq!(imaged_task_changes(&database).await, imaged);
+}
+
+#[tokio::test]
+async fn the_next_write_captures_images_again() {
+    let database = open("cdc-images-again").await;
+    let write = database.write_without_images().await.unwrap();
+    write.commit().await.unwrap();
+
+    insert_task(&database, "after").await;
+
+    assert_eq!(imaged_task_changes(&database).await, 1);
+}

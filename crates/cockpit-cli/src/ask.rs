@@ -325,6 +325,10 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
         RunStateView::Asking | RunStateView::Approved | RunStateView::Running => None,
         RunStateView::Finished => {
             let result = request.result.as_ref()?;
+            if result.output_retired {
+                eprintln!("torlek: database retention removed this run's output");
+                return Some(ExitCode::from(u8::try_from(result.exit_code).unwrap_or(1)));
+            }
             if result.truncated_bytes > 0 || result.omitted_lines > 0 {
                 outln!(
                     "[{} earlier lines and {} bytes not shown]",
@@ -332,11 +336,7 @@ fn run_answer(request: &RunRequestView) -> Option<ExitCode> {
                     result.truncated_bytes
                 );
             }
-            if result.output_retired {
-                eprintln!("torlek: database retention removed this run's output");
-            } else {
-                outln!("{}", result.output);
-            }
+            outln!("{}", result.output);
             if result.redacted > 0 {
                 eprintln!(
                     "torlek: {} secrets redacted from the output",

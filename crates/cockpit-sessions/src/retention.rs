@@ -40,6 +40,23 @@ pub async fn retirable_launch_payloads(
     after: &str,
     limit: u32,
 ) -> Result<Vec<RetirablePayload>, Error> {
+    let sessions = retirable_sessions(connection, cutoff, after, limit).await?;
+    let mut retirable = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let payload = measure(connection, &session).await?;
+        retirable.push(RetirablePayload { session, payload });
+    }
+    Ok(retirable)
+}
+
+/// The ids [`retirable_launch_payloads`] lists, unmeasured: for a writer that retires them and
+/// learns each payload from [`retire_launch_payload`].
+pub async fn retirable_sessions(
+    connection: &Connection,
+    cutoff: i64,
+    after: &str,
+    limit: u32,
+) -> Result<Vec<String>, Error> {
     let mut rows = connection
         .query(
             &format!(
@@ -53,13 +70,7 @@ pub async fn retirable_launch_payloads(
     while let Some(row) = rows.next().await? {
         sessions.push(row.get::<String>(0)?);
     }
-    drop(rows);
-    let mut retirable = Vec::with_capacity(sessions.len());
-    for session in sessions {
-        let payload = measure(connection, &session).await?;
-        retirable.push(RetirablePayload { session, payload });
-    }
-    Ok(retirable)
+    Ok(sessions)
 }
 
 /// Retires `session`'s launch payloads when it is still retirable under the writer, and

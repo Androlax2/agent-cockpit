@@ -150,8 +150,12 @@ pub struct DatabaseStorageView {
     /// Newest first.
     pub backups: Vec<BackupView>,
     pub backups_kept: u32,
-    /// The pass stopped at its bound; further sessions were neither counted nor retired.
+    /// The pass stopped at its bound: further sessions were neither counted nor retired, or
+    /// run outputs were left for the next pass.
     pub truncated: bool,
+    /// The pass's WAL checkpoint found a reader still on the WAL, so the WAL did not shrink;
+    /// the hourly checkpoint finishes it.
+    pub wal_checkpoint_busy: bool,
     /// What this report or pass could not do, each with why.
     pub failures: Vec<String>,
 }
