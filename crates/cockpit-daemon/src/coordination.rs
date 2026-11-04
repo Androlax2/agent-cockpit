@@ -1473,9 +1473,11 @@ fn collection_note(target: &str, report: Option<&SessionReport>, sent_at: i64, n
     if report.state == Some(AgentState::Working) {
         return format!("held until session {target}'s turn ends; its hook then hands it over");
     }
-    // The waited seconds are left out on purpose: the baseline moves with every report, so a
-    // count would change the note on each poll and `--watch` would reprint it every time (#769).
-    if now - sent_at.max(report.reported_at) > STUCK_AFTER_SECONDS {
+    // Counted from the send, not the latest report: an idle agent re-reports, and a moving
+    // baseline would flip the note between stuck and not stuck on each one, so `--watch`
+    // would reprint it (#769). The seconds are left out of the note for the same reason.
+    // A message sent during a turn reads stuck for the moments before its hook takes it.
+    if now - sent_at > STUCK_AFTER_SECONDS {
         return format!(
             "stuck: session {target} waits at its prompt, but its hook has not collected it \
              for over {STUCK_AFTER_SECONDS} s: its Claude Code may not run asyncRewake hooks, or it started \
@@ -1647,25 +1649,31 @@ mod tests {
     /// stuck message must read the same however long the wait has gone on and however often
     /// the target re-reports while idle.
     #[test]
-    fn a_stuck_note_reads_the_same_on_every_poll() {
-        let first = collection_note(
-            "s0123456789ab",
-            Some(&waiting_report(SENT_AT)),
-            SENT_AT,
-            SENT_AT + STUCK_AFTER_SECONDS + 1,
-        );
+    fn a_stuck_note_reads_the_same_across_polls_and_idle_re_reports() {
+        let note_at = |reported_at: i64, polled_at: i64| {
+            collection_note(
+                "s0123456789ab",
+                Some(&waiting_report(reported_at)),
+                SENT_AT,
+                polled_at,
+            )
+        };
+        let first = note_at(SENT_AT, SENT_AT + STUCK_AFTER_SECONDS + 1);
         assert!(first.starts_with("stuck: "), "{first}");
         assert!(first.contains("for over 60 s"), "{first}");
 
-        for poll_offset in [2, 30, 600] {
-            let later_report = waiting_report(SENT_AT + poll_offset);
-            let later = collection_note(
-                "s0123456789ab",
-                Some(&later_report),
-                SENT_AT,
-                later_report.reported_at + STUCK_AFTER_SECONDS + 1,
+        for (reported_at, polled_at) in [
+            (SENT_AT, SENT_AT + 90),
+            (SENT_AT + 70, SENT_AT + 71),
+            (SENT_AT + 300, SENT_AT + 302),
+        ] {
+            assert_eq!(
+                note_at(reported_at, polled_at),
+                first,
+                "reported at +{}, polled at +{}",
+                reported_at - SENT_AT,
+                polled_at - SENT_AT
             );
-            assert_eq!(later, first, "a re-report {poll_offset} s later");
         }
     }
 
