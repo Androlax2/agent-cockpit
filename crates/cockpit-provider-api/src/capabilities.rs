@@ -45,7 +45,7 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 13] = [
+    pub const ALL: [Capability; 14] = [
         Capability::Resume,
         Capability::Submit,
         Capability::Events,
