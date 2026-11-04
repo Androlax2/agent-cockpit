@@ -176,9 +176,10 @@ pub(crate) async fn flag_unreported_launch(
     reason: &str,
 ) -> Result<bool, Error> {
     let previous = latest_report(write, session).await?;
+    // A report moved from the agent channel names no launch; it is the running agent's.
     let has_reported = previous
         .as_ref()
-        .is_some_and(|previous| previous.launch == Some(launch));
+        .is_some_and(|previous| previous.launch.is_none() || previous.launch == Some(launch));
     if has_reported || latest_launch(write, session).await? != Some(launch) {
         return Ok(false);
     }

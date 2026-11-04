@@ -110,3 +110,13 @@ fn without_its_bridge_it_reports_no_events_outcomes_or_inbox() {
         );
     }
 }
+
+/// #702: its `SessionStart` hook reports as Claude Code starts, so a silent launch means a
+/// screen of the harness's own; without the bridge nothing reports at all.
+#[test]
+fn it_reports_at_launch_only_through_its_hook_bridge() {
+    let without_bridge = ClaudeCode::new(PathBuf::from("/usr/bin/claude"), None, None);
+
+    assert!(on_version(Some(CONFORMANCE_VERSION)).reports_at_launch());
+    assert!(!without_bridge.reports_at_launch());
+}

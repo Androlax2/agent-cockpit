@@ -39,6 +39,7 @@ pub struct FakeProvider {
     messages: Option<PathBuf>,
     /// The status its agent exits with at once, and the line it prints to stderr first.
     exits_with: Option<(u8, String)>,
+    reports_at_launch: bool,
     conversations: AtomicUsize,
 }
 
@@ -56,6 +57,7 @@ impl FakeProvider {
             agent_program: None,
             messages: None,
             exits_with: None,
+            reports_at_launch: false,
             conversations: AtomicUsize::new(logged),
         }
     }
@@ -76,6 +78,14 @@ impl FakeProvider {
     pub fn reporting(mut self, capability: Capability) -> FakeProvider {
         self.reported = self.reported.with(capability, Provenance::Discovered);
         self
+    }
+
+    /// Reports `events`, and says its bridge reports at launch
+    /// ([`Provider::reports_at_launch`]); its agent itself reports nothing unless a test
+    /// reports for it.
+    pub fn reporting_at_launch(mut self) -> FakeProvider {
+        self.reports_at_launch = true;
+        self.reporting(Capability::Events)
     }
 
     /// Its agent runs `program` (no arguments) after it logs its launch, then sleeps: a
@@ -137,6 +147,10 @@ impl Provider for FakeProvider {
         } else {
             self.reported.clone()
         }
+    }
+
+    fn reports_at_launch(&self) -> bool {
+        self.reports_at_launch
     }
 
     fn launch(&self, request: &LaunchRequest<'_>) -> Result<LaunchCommand, ProviderError> {

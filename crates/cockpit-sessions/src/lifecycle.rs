@@ -1027,7 +1027,8 @@ impl Sessions {
 
     /// Shows a running session whose agent has not reported for its launch within the
     /// deadline as waiting on the owner, with why (#702); `true` when it did. Only for a
-    /// provider whose bridge reports: without one, silence is all it ever sends.
+    /// provider whose bridge reports at launch: for any other, silence is the agent waiting
+    /// for its first prompt.
     async fn flag_if_unreported(
         &self,
         session: &Session,
@@ -1036,21 +1037,26 @@ impl Sessions {
         let Some(launch) = &session.launch else {
             return Ok(false);
         };
-        let has_reported =
-            agent_report.is_some_and(|agent_report| agent_report.launch == Some(launch.number));
+        // A report moved from the agent channel names no launch; it is the running agent's.
+        let has_reported = agent_report.is_some_and(|agent_report| {
+            agent_report.launch.is_none() || agent_report.launch == Some(launch.number)
+        });
         let deadline = i64::try_from(self.settings.report_deadline.as_secs()).unwrap_or(i64::MAX);
-        let is_overdue = store::now().saturating_sub(launch.launched_at) >= deadline;
+        // Whole seconds: strictly past, so a launch late in its second waits the full deadline.
+        let is_overdue = store::now().saturating_sub(launch.launched_at) > deadline;
         if has_reported || !is_overdue {
             return Ok(false);
         }
-        let provider = self.provider(Some(session.provider.as_str()))?;
-        if !provider.capabilities().supports(Capability::Events) {
+        // A provider no longer configured has no bridge that could report.
+        let reports_at_launch = self
+            .provider(Some(session.provider.as_str()))
+            .is_ok_and(|provider| provider.reports_at_launch());
+        if !reports_at_launch {
             return Ok(false);
         }
         let reason = format!(
             "{} has not reported {deadline} s after its launch: its terminal may wait on a \
-             screen of its own (folder trust, sign-in, update) or on a first prompt; attach \
-             to answer it",
+             screen of its own (folder trust, sign-in, update); attach to answer it",
             session.provider
         );
         let write = self.database.write().await?;
@@ -1061,7 +1067,11 @@ impl Sessions {
             &reason,
         )
         .await?;
-        write.commit().await?;
+        if is_flagged {
+            write.commit().await?;
+        } else {
+            write.rollback().await?;
+        }
         Ok(is_flagged)
     }
 

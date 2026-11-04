@@ -463,9 +463,10 @@ pub struct Settings {
     /// How long `start` and `resume` watch a new agent before they answer: one that exits
     /// within it is answered `failed` or `ended`, with its exit, rather than `running` (#632).
     pub early_exit_window: Duration,
-    /// How long a launch's agent may go without its first report before the periodic pass
-    /// shows the session as waiting on the owner (#702): a harness can stop on a screen of
-    /// its own (folder trust, sign-in, update) before any hook runs.
+    /// How long, in whole seconds, a launch's agent may go without its first report before
+    /// the periodic pass shows the session as waiting on the owner, for a provider whose
+    /// bridge reports at launch (#702): a harness can stop on a screen of its own (folder
+    /// trust, sign-in, update) before any hook runs.
     pub report_deadline: Duration,
 }
 

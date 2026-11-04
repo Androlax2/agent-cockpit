@@ -41,6 +41,8 @@ struct Variant {
     chooses: bool,
     /// Its bridge reports the agent's activity (the `events` capability).
     reports_events: bool,
+    /// Its bridge reports as soon as the harness starts, as Claude Code's `SessionStart`.
+    reports_at_launch: bool,
 }
 
 const BASELINE: Variant = Variant {
@@ -49,11 +51,19 @@ const BASELINE: Variant = Variant {
     exits_with: None,
     chooses: false,
     reports_events: false,
+    reports_at_launch: false,
 };
 
-/// A provider whose bridge reports, so an agent that stays silent after its launch is
-/// noticed (#702).
+/// A provider whose bridge reports at launch, so an agent that stays silent after its launch
+/// is noticed (#702).
 const REPORTING: Variant = Variant {
+    reports_events: true,
+    reports_at_launch: true,
+    ..BASELINE
+};
+
+/// A provider whose bridge reports only once a first prompt is submitted, as OpenCode's.
+const REPORTING_AFTER_PROMPT: Variant = Variant {
     reports_events: true,
     ..BASELINE
 };
@@ -142,7 +152,9 @@ impl Home {
                 .reporting(cockpit_provider_api::Capability::Model)
                 .reporting(cockpit_provider_api::Capability::Effort);
         }
-        if variant.reports_events {
+        if variant.reports_at_launch {
+            provider = provider.reporting_at_launch();
+        } else if variant.reports_events {
             provider = provider.reporting(Capability::Events);
         }
         let mut wiring = common::wiring_in(&self.path(), vec![Arc::new(provider)]);
@@ -1823,6 +1835,14 @@ fn short_report_deadline() -> cockpit_sessions::Settings {
     }
 }
 
+/// Every session's report, as the owner reads them.
+async fn agent_reports(client: &Connection) -> Vec<SessionReport> {
+    match client.request(Command::AgentReports, GENEROUS).await {
+        Ok(Reply::AgentReports { reports }) => reports,
+        other => panic!("expected the reports, got {other:?}"),
+    }
+}
+
 /// The owner's view of `session`'s report, once `is_expected` holds for it.
 async fn report_once(
     client: &Connection,
@@ -1831,11 +1851,10 @@ async fn report_once(
 ) -> SessionReport {
     let deadline = Instant::now() + GENEROUS;
     loop {
-        let reports = match client.request(Command::AgentReports, GENEROUS).await {
-            Ok(Reply::AgentReports { reports }) => reports,
-            other => panic!("expected the reports, got {other:?}"),
-        };
-        let report = reports.into_iter().find(|report| report.session == session);
+        let report = agent_reports(client)
+            .await
+            .into_iter()
+            .find(|report| report.session == session);
         match report {
             Some(report) if is_expected(&report) => return report,
             last if Instant::now() >= deadline => {
@@ -1862,7 +1881,7 @@ async fn a_launch_whose_agent_never_reports_waits_on_the_owner_with_why() {
         report.needs_input.as_deref(),
         Some(
             "fake has not reported 1 s after its launch: its terminal may wait on a screen of \
-             its own (folder trust, sign-in, update) or on a first prompt; attach to answer it"
+             its own (folder trust, sign-in, update); attach to answer it"
         )
     );
 }
@@ -1899,27 +1918,25 @@ async fn an_agent_that_reported_in_time_is_not_flagged() {
     home.report_as_agent(&launch, cockpit_sessions::AgentState::Waiting)
         .await;
     // Several passes after the deadline.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     let report = report_once(&client, &started.id, |_| true).await;
     assert_eq!(report.needs_input, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_provider_that_reports_nothing_is_never_flagged() {
+async fn a_provider_that_reports_only_after_a_first_prompt_is_never_flagged() {
     let home = Home::new();
-    let daemon = home.start(BASELINE, short_report_deadline()).await;
+    let daemon = home
+        .start(REPORTING_AFTER_PROMPT, short_report_deadline())
+        .await;
     let client = connect(&daemon).await;
     let root = home.project(&client).await;
     new_session(&client, &root, None).await;
     home.launches(1).await;
 
     // Several passes after the deadline.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
-    let reports = match client.request(Command::AgentReports, GENEROUS).await {
-        Ok(Reply::AgentReports { reports }) => reports,
-        other => panic!("expected the reports, got {other:?}"),
-    };
-    assert_eq!(reports, Vec::new());
+    assert_eq!(agent_reports(&client).await, Vec::new());
 }
