@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use cockpit_client::ClientError;
 use cockpit_config::{AgentSandbox, EffectiveConfig, Source};
 use cockpit_protocol::{
-    Command, ErrorCode, ProjectView, ReadinessStatusView, Reply, RequirementView, SessionView,
+    Command, ProjectView, ReadinessStatusView, Reply, RequirementView, SessionView,
 };
 
 use crate::daemon;
@@ -72,12 +72,22 @@ struct DaemonProblem {
 fn gather() -> Result<Facts, ExitCode> {
     let config = cockpit_config::load(&crate::profile::environment(), None, &[])
         .map_err(|error| error.to_string());
-    let daemon = match crate::agent::locate_socket_dir() {
-        Ok(_) => ask_daemon(&crate::agent::caller_socket()?)?,
-        Err(error) => Err(DaemonProblem {
-            detail: format!("cannot locate its socket: {error}"),
-            next: "fix what is named here so `torlek` finds the daemon's socket",
-        }),
+    // The daemon refuses every one of init's reads on the agent socket, and a session never
+    // uses the host-only one (#729), so a session is told where init runs instead.
+    let daemon = if crate::agent::is_in_a_session() {
+        Err(DaemonProblem {
+            detail: "not asked: this runs inside a Torlek session, and init is the owner's"
+                .to_owned(),
+            next: "run `torlek init` from your own terminal, outside any Torlek session",
+        })
+    } else {
+        match crate::agent::locate_socket_dir() {
+            Ok(dir) => ask_daemon(&dir.join(cockpit_config::DAEMON_SOCKET))?,
+            Err(error) => Err(DaemonProblem {
+                detail: format!("cannot locate its socket: {error}"),
+                next: "fix what is named here so `torlek` finds the daemon's socket",
+            }),
+        }
     };
     Ok(Facts { config, daemon })
 }
@@ -96,12 +106,6 @@ fn ask_daemon(socket: &Path) -> Result<Result<DaemonFacts, DaemonProblem>, ExitC
                 next: "`torlek daemon install` runs it as a user service (or run `torlek-daemon` \
                    in another terminal)",
             }),
-            Err(ClientError::Daemon(error)) if error.code == ErrorCode::NotAuthorized => {
-                Err(DaemonProblem {
-                    detail: format!("refused: {}", error.message),
-                    next: "run `torlek init` from your own terminal, outside any Torlek session",
-                })
-            }
             Err(error) => Err(failing_daemon(&error.to_string())),
         },
     )

@@ -1,6 +1,6 @@
 //! `cockpit workflow`: an item's workflow, its steps and the task packet (#39). A launched
-//! session (one with `TORLEK_LAUNCH_TOKEN`) works its step on the agent socket, where the
-//! daemon identifies it; everyone else is the owner, on the host-only socket. Beginning and
+//! session works its step on the agent socket, where the daemon identifies it; the owner's
+//! own shell uses the host-only socket. Beginning and
 //! checkpointing a step are a session's only, so they always go to the agent socket. The
 //! daemon decides what each may do.
 

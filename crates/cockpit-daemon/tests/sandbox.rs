@@ -449,7 +449,9 @@ async fn the_owners_off_setting_warns_that_an_agent_can_act_as_the_owner() {
     let risk = "an unsandboxed agent can reach the owner socket and act as the owner, so \
                 Torlek's grants only hold under the sandbox";
 
-    let log = log_once_it_contains(&home, "an agent launches UNSANDBOXED");
+    let log = home
+        .log_once_it_contains("an agent launches UNSANDBOXED")
+        .await;
 
     assert!(
         log.lines()
@@ -461,19 +463,6 @@ async fn the_owners_off_setting_warns_that_an_agent_can_act_as_the_owner() {
             .any(|line| line.contains("an agent launches UNSANDBOXED") && line.contains(risk)),
         "{log}"
     );
-}
-
-/// The daemon's log once it holds `needle`, or as it is after [`GENEROUS`].
-fn log_once_it_contains(home: &Home, needle: &str) -> String {
-    let file = home.state_dir().join("logs/daemon/cockpit.log");
-    let deadline = std::time::Instant::now() + GENEROUS;
-    loop {
-        let log = std::fs::read_to_string(&file).unwrap_or_default();
-        if log.contains(needle) || std::time::Instant::now() > deadline {
-            return log;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

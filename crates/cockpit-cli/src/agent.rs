@@ -10,7 +10,7 @@ use std::time::Duration;
 use cockpit_client::{ClientError, Connection};
 use cockpit_protocol::{
     AGENT_SOCKET_VARIABLE, AgentReport, AgentState, Command, LAUNCH_TOKEN_VARIABLE, QuestionSource,
-    Reply, SessionReport, TurnOutcome, UnblockedBy,
+    Reply, SessionReport, TurnOutcome, Unblock, UnblockedBy,
 };
 
 /// Long enough for a busy daemon, short enough that a hook never hangs its agent.
@@ -242,12 +242,8 @@ pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> Exit
     match outcome {
         Err(ClientError::Daemon(error)) => {
             eprintln!("torlek: refused: {}", error.message);
-            if let Some(unblock) = error.unblock {
-                eprintln!(
-                    "torlek: to unblock ({}): {}",
-                    unblocker(&unblock.by),
-                    unblock.action
-                );
+            if let Some(unblock) = &error.unblock {
+                print_unblock(unblock);
             }
         }
         Err(ClientError::Connect { source, .. }) => {
@@ -262,14 +258,15 @@ pub(crate) fn failed(socket: &Path, outcome: Result<Reply, ClientError>) -> Exit
     ExitCode::FAILURE
 }
 
-/// Who lifts a refusal, as the person reading it is told.
-pub(crate) fn unblocker(by: &UnblockedBy) -> &str {
-    match by {
+/// Says on stderr who lifts a refusal and how.
+pub(crate) fn print_unblock(unblock: &Unblock) {
+    let by = match &unblock.by {
         UnblockedBy::Owner => "the owner",
         UnblockedBy::Agent => "you",
         UnblockedBy::Cockpit => "Torlek",
         UnblockedBy::Unknown(party) => party.as_str(),
-    }
+    };
+    eprintln!("torlek: to unblock ({by}): {}", unblock.action);
 }
 
 /// `session state label="…" doing="…" needs-input="…" outcome=… outcome-reason="…"`, leaving

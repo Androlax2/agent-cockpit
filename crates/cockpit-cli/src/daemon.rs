@@ -87,11 +87,7 @@ pub(crate) fn failed(error: &ClientError) -> ExitCode {
         ClientError::Daemon(error) => {
             let code = fail(&format!("{}: {}", error.code.as_str(), error.message));
             if let Some(unblock) = &error.unblock {
-                eprintln!(
-                    "torlek: to unblock ({}): {}",
-                    crate::agent::unblocker(&unblock.by),
-                    unblock.action
-                );
+                crate::agent::print_unblock(unblock);
             }
             code
         }

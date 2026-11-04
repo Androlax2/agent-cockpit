@@ -75,8 +75,8 @@ pub struct RunSettings {
     pub leader: PathBuf,
     pub leader_arguments: Vec<OsString>,
     /// The run's whole environment, besides Git's: nothing else is inherited. Variables whose
-    /// name starts with `GIT_` are dropped, so none can point Git elsewhere, and so is the
-    /// launch token.
+    /// name starts with `GIT_` are dropped, so none can point Git elsewhere, and so are the
+    /// session's variables.
     pub environment: Vec<(OsString, OsString)>,
     /// The end of the output kept; what came before is counted, not kept.
     pub kept_bytes: usize,
@@ -543,7 +543,15 @@ pub fn present(kept: &[u8], total: u64, answer_lines: usize) -> Output {
     }
 }
 
-/// Whether `name` is one of the variables a run never inherits from the daemon.
+/// Whether `name` is one of the variables a run never inherits from the daemon. An approved
+/// run is the owner's: no session variable may make `torlek` in it act as a session (#729).
 fn is_withheld_variable(name: &OsStr) -> bool {
-    name.as_encoded_bytes().starts_with(b"GIT_") || name == "TORLEK_LAUNCH_TOKEN"
+    name.as_encoded_bytes().starts_with(b"GIT_")
+        || [
+            "TORLEK_LAUNCH_TOKEN",
+            "TORLEK_SESSION",
+            "TORLEK_AGENT_SOCKET",
+        ]
+        .iter()
+        .any(|withheld| name == *withheld)
 }

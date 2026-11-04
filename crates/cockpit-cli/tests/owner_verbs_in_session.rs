@@ -105,9 +105,28 @@ fn from_the_owners_shell_each_owner_verb_reaches_the_host_only_socket() {
             !stderr.contains("owner's alone"),
             "{verb:?} was refused as an agent's: {stderr}"
         );
+        assert!(
+            !stderr.contains("cannot reach"),
+            "{verb:?} reached no daemon: {stderr}"
+        );
     }
     assert!(
         home.cockpit_ok(&["project", "list"]).contains(project),
         "the owner's project add registered nothing"
+    );
+}
+
+#[test]
+fn init_inside_a_session_asks_nothing_and_says_where_it_runs() {
+    let home = TestHome::new();
+    let _daemon = home.start();
+
+    let output = torlek(&home, &["init"], &SESSION_ENVIRONMENT);
+
+    let checklist = text(&output.stdout);
+    assert!(
+        checklist.contains("run `torlek init` from your own terminal, outside any Torlek session"),
+        "{checklist}{}",
+        text(&output.stderr)
     );
 }
