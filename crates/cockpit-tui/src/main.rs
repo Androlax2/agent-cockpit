@@ -1,12 +1,15 @@
 //! `torlek-tui`: the two panes of the manager tmux session that `torlek tui` opens.
 //!
-//! - `--column --socket PATH --profile NAME --state-dir DIR`: the TUI itself, talking to the
-//!   daemon at `PATH`, naming its profile and logging under that profile's state directory.
+//! - `--column --socket PATH --profile NAME --state-dir DIR [--bell on|off]`: the TUI itself,
+//!   talking to the daemon at `PATH`, naming its profile and logging under that profile's state
+//!   directory. The daemon passes `--bell` from the owner's `tui.attention_bell` (#682); left
+//!   out, the bell rings.
 //! - `--viewer`: what the viewer pane shows until a session is opened in it.
 //!
 //! Input never waits on the daemon (report 05): keys are read on their own thread, every
 //! request runs in its own task, and answers come back to the loop as they arrive.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -28,7 +31,7 @@ const CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 const USAGE: &str =
-    "usage: torlek-tui --column --socket PATH --profile NAME --state-dir DIR | --viewer | --version
+    "usage: torlek-tui --column --socket PATH --profile NAME --state-dir DIR [--bell on|off] | --viewer | --version
 Start it with `torlek tui`, which opens the manager session.";
 
 fn main() -> ExitCode {
@@ -47,22 +50,39 @@ fn main() -> ExitCode {
             profile,
             "--state-dir",
             state_dir,
-        ] => match column(
-            PathBuf::from(socket),
-            (*profile).to_owned(),
-            Path::new(state_dir),
-        ) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(problem) => {
-                eprintln!("torlek-tui: {problem}");
-                ExitCode::FAILURE
+            bell_words @ ..,
+        ] => {
+            let Some(is_bell_on) = bell_choice(bell_words) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            match column(
+                PathBuf::from(socket),
+                (*profile).to_owned(),
+                Path::new(state_dir),
+                is_bell_on,
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(problem) => {
+                    eprintln!("torlek-tui: {problem}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         ["--viewer"] => viewer(),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Whether the bell rings: on unless `--bell off` says otherwise; `None` for any other words.
+fn bell_choice(words: &[&str]) -> Option<bool> {
+    match words {
+        [] | ["--bell", "on"] => Some(true),
+        ["--bell", "off"] => Some(false),
+        _ => None,
     }
 }
 
@@ -85,7 +105,12 @@ struct Sent {
     is_refresh: bool,
 }
 
-fn column(socket: PathBuf, profile: String, state_dir: &Path) -> Result<(), String> {
+fn column(
+    socket: PathBuf,
+    profile: String,
+    state_dir: &Path,
+    is_bell_on: bool,
+) -> Result<(), String> {
     let log_dir =
         cockpit_diagnostics::log_dir_in(state_dir, "tui").map_err(|error| error.to_string())?;
     let directives =
@@ -95,13 +120,13 @@ fn column(socket: PathBuf, profile: String, state_dir: &Path) -> Result<(), Stri
             .map_err(|error| error.to_string())?;
     tracing::dispatcher::set_global_default(diagnostics.dispatch().clone())
         .map_err(|error| error.to_string())?;
-    tracing::info!(socket = %socket.display(), %profile, "the TUI started");
+    tracing::info!(socket = %socket.display(), %profile, is_bell_on, "the TUI started");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start the runtime: {error}"))?;
     let mut terminal = ratatui::init();
-    let outcome = runtime.block_on(run(&mut terminal, socket, profile));
+    let outcome = runtime.block_on(run(&mut terminal, socket, profile, is_bell_on));
     ratatui::restore();
     if let Err(problem) = &outcome {
         tracing::error!(problem, "the TUI stopped");
@@ -113,6 +138,7 @@ async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     socket: PathBuf,
     profile: String,
+    is_bell_on: bool,
 ) -> Result<(), String> {
     let (inputs, mut received) = mpsc::channel::<Input>(256);
     let reader = inputs.clone();
@@ -121,7 +147,7 @@ async fn run(
     let (feed_events, mut feed) = mpsc::channel::<FeedEvent>(1);
     tokio::spawn(follow_feed(socket.clone(), feed_events));
     tokio::spawn(serve(socket, pending, inputs));
-    let mut app = App::for_profile(profile);
+    let mut app = App::for_profile(profile).with_attention_bell(is_bell_on);
     // A refresh is sent only once the last one is answered, so a slow daemon gets no pile.
     let mut unanswered_refreshes = 0_usize;
     let mut refresh = tokio::time::interval(REFRESH);
@@ -163,6 +189,19 @@ async fn run(
                 }
             },
         }
+        if app.take_bell() {
+            ring_bell();
+        }
+    }
+}
+
+/// The terminal bell: works over SSH and inside tmux, where `bell-action` decides what the
+/// owner's terminal does with it. A terminal that cannot ring loses nothing: every cue is on
+/// the screen too.
+fn ring_bell() {
+    let mut terminal = std::io::stdout();
+    if let Err(error) = terminal.write_all(b"\x07").and_then(|()| terminal.flush()) {
+        tracing::warn!(%error, "cannot ring the terminal bell");
     }
 }
 

@@ -41,6 +41,28 @@ detaching the terminal leaves everything running.
   `unbound`…) in `$XDG_STATE_HOME/torlek/logs/tui/cockpit.log`: the name only, never what
   was typed, so M6 prunes on data.
 
+## Attention bell (#682)
+
+The column rings the terminal bell (`BEL`, which works over SSH and inside tmux, where
+`bell-action` decides what the terminal does with it) when a session newly needs the owner:
+
+- it finished its work (the task list says so, or its turn completed);
+- it asks a question or waits for an approval, a guide or a line of input;
+- it failed, or its agent exited by itself.
+
+One bell per look at the daemon's state, however many sessions changed in it. A cue rings when
+it is raised, never while it stays, so the next refresh repeats nothing. What the owner does
+rings nothing: ending a session, or answering a question. What was already waiting when the
+TUI started rings nothing either. Every cue is on the screen too: the bell carries no
+information of its own, and a terminal without one loses nothing. Network and permission holds
+and usage alerts ring once the TUI sees them; the desktop client (#62) and the phone (#247)
+deliver their own sounds.
+
+The owner turns the bell off with `[tui] attention_bell = false` in `config.toml` (on by
+default; owner setting, a project file cannot set it). The daemon reads it when it builds the
+manager session and starts the column with `--bell on|off`, so a change counts the next time the
+manager is built (close it, then `torlek tui`).
+
 ## Tasks (#44)
 
 `T` lists open tasks across projects. `a` adds one, `e` edits the selected item;

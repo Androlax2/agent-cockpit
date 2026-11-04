@@ -8,8 +8,10 @@ use std::fmt;
 use cockpit_protocol::{
     AgentState, BugReportView, Change, ChangeBatch, CheckoutView, EntityKind, FeedPosition,
     GuideStateView, GuideView, ProjectView, QuestionSource, RunRequestView, RunStateView,
-    SessionReport, SessionStateView, SessionView,
+    SessionReport, SessionStateView, SessionView, TurnOutcome,
 };
+
+use crate::attention::{Cue, Source, Watch};
 
 /// The daemon's state as last applied.
 #[derive(Debug, Default, Clone)]
@@ -24,6 +26,8 @@ pub struct Board {
     pub(crate) guides: Vec<GuideView>,
     /// The bug report drafts waiting for the owner, by id (#471).
     pub(crate) bug_reports: BTreeMap<i64, BugReportView>,
+    /// Which sessions need the owner now, for the bell (#682).
+    watch: Watch,
 }
 
 /// A change the TUI cannot read: the batch is refused whole, never applied in part.
@@ -125,6 +129,7 @@ impl Board {
                 }
             }
         }
+        self.look_for_cues(Some(Source::Sessions));
         Ok(())
     }
 
@@ -145,6 +150,8 @@ impl Board {
             return;
         }
         self.sessions.insert(session.id.clone(), session);
+        // Not the start state: only the feed's snapshot says the sessions are loaded.
+        self.look_for_cues(None);
     }
 
     pub fn set_reports(&mut self, reports: Vec<SessionReport>) {
@@ -152,11 +159,52 @@ impl Board {
             .into_iter()
             .map(|report| (report.session.clone(), report))
             .collect();
+        self.look_for_cues(Some(Source::Reports));
     }
 
     pub fn set_queue(&mut self, runs: Vec<RunRequestView>, guides: Vec<GuideView>) {
         self.runs = runs;
         self.guides = guides;
+        self.look_for_cues(Some(Source::Queue));
+    }
+
+    /// Whether the bell should ring for what changed since the last call (#682): a session
+    /// raised a cue it did not raise before, all that landed together counting once.
+    pub(crate) fn take_ring(&mut self) -> bool {
+        self.watch.take_ring()
+    }
+
+    fn look_for_cues(&mut self, source: Option<Source>) {
+        let raised = self
+            .sessions
+            .values()
+            .flat_map(|session| {
+                self.cues_of(session)
+                    .into_iter()
+                    .map(|cue| (session.id.clone(), cue))
+            })
+            .collect();
+        self.watch.look(source, raised);
+    }
+
+    fn cues_of(&self, session: &SessionView) -> Vec<Cue> {
+        let outcome = self
+            .reports
+            .get(&session.id)
+            .and_then(|report| report.outcome.as_ref());
+        let mut cues = Vec::new();
+        if session.finished || outcome == Some(&TurnOutcome::Completed) {
+            cues.push(Cue::Finished);
+        }
+        if self.needs_you(&session.id) {
+            cues.push(Cue::NeedsYou);
+        }
+        let exited_by_itself = session.state.is_over() && session.exit.is_some();
+        let turn_failed = matches!(outcome, Some(TurnOutcome::Failed { .. }));
+        if session.state == SessionStateView::Failed || exited_by_itself || turn_failed {
+            cues.push(Cue::Failed);
+        }
+        cues
     }
 
     pub fn projects(&self) -> &[ProjectView] {

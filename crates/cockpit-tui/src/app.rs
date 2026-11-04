@@ -114,6 +114,9 @@ pub struct App {
     /// The daemon's profile (#196), in the list's title so a `dev` TUI never passes for the
     /// installed one's.
     pub(crate) profile: Option<String>,
+    /// The owner turned the attention bell off (`tui.attention_bell`, #682). An opt-out, so
+    /// an app built without a choice rings.
+    is_bell_muted: bool,
     taken_keys: TakenKeys,
 }
 
@@ -135,6 +138,21 @@ impl App {
             profile: Some(profile),
             ..App::default()
         }
+    }
+
+    /// Whether the terminal bell rings when a session needs the owner (#682).
+    pub fn with_attention_bell(mut self, is_enabled: bool) -> App {
+        self.is_bell_muted = !is_enabled;
+        self
+    }
+
+    /// Whether to ring the terminal bell now: a session newly finished, asks a question or
+    /// waits for an approval, or failed or ended on its own, since the last call. Once for
+    /// all that landed together, and never for the state the TUI started on. The cues are
+    /// taken even when the bell is off, so turning it on rings nothing old.
+    pub fn take_bell(&mut self) -> bool {
+        let is_news = self.board.take_ring();
+        is_news && !self.is_bell_muted
     }
 
     /// What the runtime asks the daemon on every refresh. Sessions and checkouts are not

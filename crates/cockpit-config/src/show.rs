@@ -137,6 +137,11 @@ pub fn render(config: &EffectiveConfig) -> String {
     for ((key, value), source) in session_settings.rendered().into_iter().zip(sources) {
         lines.push(line(key, &value, source));
     }
+    lines.push(line(
+        "tui.attention_bell",
+        &config.tui_attention_bell.value.to_string(),
+        &config.tui_attention_bell.source,
+    ));
     // Before the start files and checks, which list last as they grow.
     lines.push(line(
         "execution.environment",

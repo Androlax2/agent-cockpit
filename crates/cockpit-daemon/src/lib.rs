@@ -313,7 +313,7 @@ impl Instance {
                 }
             }))
             .collect();
-        let manager = Arc::new(Manager::new(tmux.clone()));
+        let manager = Arc::new(Manager::new(tmux.clone(), wiring.environment.clone()));
         let sign_in_providers = wiring.providers.clone();
         let sessions = Arc::new(cockpit_sessions::Sessions::new(
             Arc::clone(&database),
