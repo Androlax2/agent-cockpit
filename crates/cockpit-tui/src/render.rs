@@ -143,7 +143,7 @@ fn draw_list(app: &App, frame: &mut Frame<'_>, area: Rect) {
                 Style::default()
             };
             let first_row = lines.len();
-            for text in card(board, session, is_selected) {
+            for text in card(board, session, is_selected, width) {
                 push_wrapped(&mut lines, &text, width, CARD_INDENT, style);
             }
             if is_selected {
@@ -247,7 +247,7 @@ fn columns(text: &str) -> usize {
 /// on an indented line of their own. The mark after the selection marker lets the eye find the
 /// sessions that need you down the list's left edge: `!` blocked on you, `?` asked you and
 /// still works (#215).
-fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> {
+fn card(board: &Board, session: &SessionView, is_selected: bool, width: usize) -> Vec<String> {
     let marker = if is_selected { ">" } else { " " };
     let (mark, waiting) = if !board.needs_you(&session.id) {
         (" ", None)
@@ -276,8 +276,13 @@ fn card(board: &Board, session: &SessionView, is_selected: bool) -> Vec<String> 
     if let Some(exit) = exit_line(session) {
         card.push(format!("{CARD_INDENT}{exit}"));
     }
-    if let Some(coordination) = coordination_line(session) {
-        card.push(format!("{CARD_INDENT}{coordination}"));
+    if let Some(coordination) = coordination_line(session, is_selected) {
+        let line = format!("{CARD_INDENT}{coordination}");
+        card.push(if is_selected {
+            line
+        } else {
+            truncated(&line, width)
+        });
     }
     card
 }
@@ -304,9 +309,10 @@ fn exit_line(session: &SessionView) -> Option<String> {
 const EXIT_LINE_CHARACTERS: usize = 120;
 
 /// The coordinator grants a session holds and the latest message a coordinator queued to it,
-/// with its sender (#410): `grants observe,message · ✉ s1a2 (received): "text"`. A plain line
-/// until the card has a design for them.
-fn coordination_line(session: &SessionView) -> Option<String> {
+/// with its sender (#410): `grants observe,message · ✉ s1a2 (queued): "text"`. A plain line
+/// until the card has a design for them. A message the agent received needs nothing from the
+/// owner, so only the selected card, which shows it whole, keeps it (#728).
+fn coordination_line(session: &SessionView, is_selected: bool) -> Option<String> {
     let grants = (!session.coordinator_grants.is_empty()).then(|| {
         let names: Vec<&str> = session
             .coordinator_grants
@@ -315,15 +321,38 @@ fn coordination_line(session: &SessionView) -> Option<String> {
             .collect();
         format!("grants {}", names.join(","))
     });
-    let inbound = session.inbound_message.as_ref().map(|message| {
-        let delivery = match &message.note {
-            Some(note) => format!("{}: {note}", message.delivery),
-            None => message.delivery.clone(),
-        };
-        format!("✉ {} ({delivery}): {:?}", message.from, message.text)
-    });
+    let inbound = session
+        .inbound_message
+        .as_ref()
+        .filter(|message| is_selected || message.delivery != "received")
+        .map(|message| {
+            let delivery = match &message.note {
+                Some(note) => format!("{}: {note}", message.delivery),
+                None => message.delivery.clone(),
+            };
+            format!("✉ {} ({delivery}): {:?}", message.from, message.text)
+        });
     let parts: Vec<String> = grants.into_iter().chain(inbound).collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// `text` cut to one row of `width` columns, ending in `…` where it was cut.
+fn truncated(text: &str, width: usize) -> String {
+    if columns(text) <= width {
+        return text.to_owned();
+    }
+    let mut row = String::new();
+    let mut row_columns = columns("…");
+    for character in text.chars() {
+        let character_columns = columns(&character.to_string());
+        if row_columns + character_columns > width {
+            break;
+        }
+        row.push(character);
+        row_columns += character_columns;
+    }
+    row.push('…');
+    row
 }
 
 fn draw_form(form: &Form, frame: &mut Frame<'_>, area: Rect) {
