@@ -267,6 +267,13 @@ pub trait Provider: Send + Sync + 'static {
         Err(ProviderError::unsupported(Capability::Commands))
     }
 
+    /// Whether its bridge reports as soon as the harness starts, before any prompt (#702):
+    /// a launch that stays silent then waits on a screen of the harness's own (folder trust,
+    /// sign-in, update). `false` for a harness whose first event needs a first prompt.
+    fn reports_at_launch(&self) -> bool {
+        false
+    }
+
     /// The agent's activity read from the end of its terminal, for when no event says it
     /// ([`Capability::ScreenReading`]). Never proof that a task completed.
     fn read_screen(&self, screen: &str) -> Option<Observation> {

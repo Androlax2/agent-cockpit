@@ -403,6 +403,12 @@ impl Provider for ClaudeCode {
     fn read_screen(&self, screen: &str) -> Option<Observation> {
         screen::read(screen)
     }
+
+    /// Its `SessionStart` hook runs as Claude Code starts, before any prompt: within a few
+    /// seconds on 2.1.317, MCP servers included.
+    fn reports_at_launch(&self) -> bool {
+        self.bridge.is_some()
+    }
 }
 
 /// Claude Code's program could not be used.

@@ -70,6 +70,12 @@ stopped in the middle of one finishes or repairs it at its next start.
   nothing, and the idle window (60 minutes) has passed since that report. With no such
   report it is never put to sleep. The expiry counts from the move to asleep. A session asleep past the expiry (7 days) ends. Both values come from the current
   cockpit's sleep rules.
+- **A launch that never reports.** When a provider's bridge reports at launch
+  (`Provider::reports_at_launch`, Claude Code's `SessionStart`) and the current launch's
+  agent has not reported within `report_deadline` (30 s), the periodic
+  pass records an open dialog question saying so, which shows the session as waiting on the
+  owner (#702): a harness can stop on its own screen (folder trust, sign-in, update) before
+  any hook runs. The agent's first report of what it does answers it, as any dialog.
 - **Self grants.** Each launch grants the session `change-state` and `run-commands` over
   itself (`SELF_PERMISSIONS`), in the transaction that mints its launch token, so its
   agent's reports and asks are accepted; every move to `ended` or `failed` revokes both in

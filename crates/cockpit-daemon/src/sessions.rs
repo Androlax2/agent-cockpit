@@ -515,6 +515,9 @@ fn log_tick(report: &cockpit_sessions::TickReport) {
     for id in &report.restarted {
         tracing::info!(session = %id, "a deferred restart ran at the end of a turn");
     }
+    for id in &report.unreported {
+        tracing::warn!(session = %id, "a new agent never reported; it waits on the owner");
+    }
     for (id, reason) in &report.errors {
         tracing::warn!(session = %id, reason, "a session's periodic step failed");
     }

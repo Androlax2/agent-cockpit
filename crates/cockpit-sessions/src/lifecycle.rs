@@ -981,6 +981,17 @@ impl Sessions {
                         }
                         continue;
                     }
+                    match self.flag_if_unreported(&session, agent_report).await {
+                        Ok(true) => {
+                            report.unreported.push(id);
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            report.errors.push((id, error.to_string()));
+                            continue;
+                        }
+                    }
                     if self.idle_sleep_refusal(&session, agent_report).is_some() {
                         continue;
                     }
@@ -1012,6 +1023,56 @@ impl Sessions {
             }
         }
         Ok(report)
+    }
+
+    /// Shows a running session whose agent has not reported for its launch within the
+    /// deadline as waiting on the owner, with why (#702); `true` when it did. Only for a
+    /// provider whose bridge reports at launch: for any other, silence is the agent waiting
+    /// for its first prompt.
+    async fn flag_if_unreported(
+        &self,
+        session: &Session,
+        agent_report: Option<&SessionReport>,
+    ) -> Result<bool, Error> {
+        let Some(launch) = &session.launch else {
+            return Ok(false);
+        };
+        // A report moved from the agent channel names no launch; it is the running agent's.
+        let has_reported = agent_report.is_some_and(|agent_report| {
+            agent_report.launch.is_none() || agent_report.launch == Some(launch.number)
+        });
+        let deadline = i64::try_from(self.settings.report_deadline.as_secs()).unwrap_or(i64::MAX);
+        // Whole seconds: strictly past, so a launch late in its second waits the full deadline.
+        let is_overdue = store::now().saturating_sub(launch.launched_at) > deadline;
+        if has_reported || !is_overdue {
+            return Ok(false);
+        }
+        // A provider no longer configured has no bridge that could report.
+        let reports_at_launch = self
+            .provider(Some(session.provider.as_str()))
+            .is_ok_and(|provider| provider.reports_at_launch());
+        if !reports_at_launch {
+            return Ok(false);
+        }
+        let reason = format!(
+            "{} has not reported {deadline} s after its launch: its terminal may wait on a \
+             screen of its own (folder trust, sign-in, update); attach to answer it",
+            session.provider
+        );
+        let write = self.database.write().await?;
+        let is_flagged = crate::reports::flag_unreported_launch(
+            &write,
+            &authorization_session(&session.id)?,
+            launch.number,
+            &reason,
+        )
+        .await?;
+        if is_flagged {
+            write.commit().await?;
+        } else {
+            write.rollback().await?;
+        }
+        Ok(is_flagged)
     }
 
     /// The session, when it runs, with its agent's latest report.
