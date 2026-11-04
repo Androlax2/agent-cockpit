@@ -40,6 +40,20 @@ pub enum Kept {
     },
 }
 
+impl std::fmt::Display for Kept {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Occupied { holder } => write!(formatter, "occupied by {holder}"),
+            Self::UncommittedChanges => formatter.write_str("uncommitted changes"),
+            Self::UnpushedCommits => formatter.write_str(
+                "unpushed commits (on no remote branch, and not merged into origin/HEAD)",
+            ),
+            Self::Replaced { reason } => write!(formatter, "replaced: {reason}"),
+            Self::Unreadable { reason } => write!(formatter, "unreadable: {reason}"),
+        }
+    }
+}
+
 /// Deletes every parallel and review clone that is unoccupied, still the recorded
 /// incarnation, has no uncommitted change, no stash and no commit missing from its remotes.
 /// Age never counts, and ignored files do not either: they are mostly build output. With
@@ -318,13 +332,14 @@ pub(crate) fn has_unpushed_commits(git: &Git, clone: &Path) -> Result<bool, Erro
     Ok(!is_merged_into_default_branch(git, clone)?)
 }
 
-/// Whether every local branch and HEAD holding a commit no remote-tracking branch has changes
-/// nothing `origin/HEAD` lacks: merging it into `origin/HEAD` gives `origin/HEAD`'s own tree.
-/// That is a pull request squash-merged (or rebased) after which its remote branch was deleted
-/// and pruned by a fetch (#767). Only the commits' messages and history are lost, never a line
-/// of content. Without `origin/HEAD`, once that branch changed the same lines again, or when a
-/// tip changes nothing at all, the answer is `false`: kept on doubt. `merge-tree` writes the
-/// objects of the merge it tried into the clone, unreachable, as any merge would.
+/// Whether the content of every local branch and HEAD holding a commit no remote-tracking branch
+/// has is already in `origin/HEAD`: each path such a commit touched reads the same at the tip
+/// and in `origin/HEAD`. That is a pull request squash-merged (or rebased) after which its
+/// remote branch was deleted and pruned by a fetch (#767); only the commits' messages and their
+/// intermediate states are lost. The answer is `false`, kept on doubt, without `origin/HEAD`,
+/// when `origin/HEAD` changed such a path again, and when a tip changes nothing since its merge
+/// base (an empty commit, or one undoing the whole change). Git only reads: no object is
+/// written, so `torlek storage` stays read-only.
 fn is_merged_into_default_branch(git: &Git, clone: &Path) -> Result<bool, Error> {
     let default = git.output(
         clone,
@@ -339,14 +354,6 @@ fn is_merged_into_default_branch(git: &Git, clone: &Path) -> Result<bool, Error>
         return Ok(false);
     }
     let default = String::from_utf8_lossy(&default.stdout).trim().to_owned();
-    let default_tree = git.run(
-        clone,
-        &[
-            arg("rev-parse"),
-            arg("--verify"),
-            arg(&format!("{default}^{{tree}}")),
-        ],
-    )?;
     let branch_tips = git.run(
         clone,
         &[
@@ -376,26 +383,47 @@ fn is_merged_into_default_branch(git: &Git, clone: &Path) -> Result<bool, Error>
         if !changes_anything(git, clone, &default, tip)? {
             return Ok(false);
         }
-        let arguments = [
-            arg("merge-tree"),
-            arg("--write-tree"),
-            arg("--no-messages"),
-            arg(&default),
-            arg(tip),
-        ];
-        let merged = git.output(clone, &arguments)?;
-        match merged.status.code() {
-            Some(0) => {}
-            // A conflict: the branch changes lines the default branch changed otherwise.
-            Some(1) => return Ok(false),
-            _ => return Err(git_failure(&arguments, &merged)),
-        }
-        let merged_tree = String::from_utf8_lossy(&merged.stdout);
-        if merged_tree.lines().next() != Some(default_tree.trim()) {
+        // A merge commit counts with what it changed from its first parent, conflict
+        // resolutions included.
+        let touched = git.run(
+            clone,
+            &[
+                arg("log"),
+                arg("--format="),
+                arg("--name-only"),
+                arg("-z"),
+                arg("--no-renames"),
+                arg("--diff-merges=first-parent"),
+                arg(tip),
+                arg("--not"),
+                arg("--remotes"),
+            ],
+        )?;
+        let differing = git.run(
+            clone,
+            &[
+                arg("diff"),
+                arg("--name-only"),
+                arg("-z"),
+                arg("--no-renames"),
+                arg(&default),
+                arg(tip),
+            ],
+        )?;
+        let differing: std::collections::HashSet<&str> = paths(&differing).collect();
+        if paths(&touched).any(|path| differing.contains(path)) {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// The paths of Git's NUL-separated `--name-only -z` output.
+fn paths(output: &str) -> impl Iterator<Item = &str> {
+    output
+        .split('\0')
+        .map(|path| path.trim_start_matches('\n'))
+        .filter(|path| !path.is_empty())
 }
 
 /// Whether `tip` changes any content since its merge base with `default`. An empty commit, or

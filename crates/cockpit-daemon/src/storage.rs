@@ -668,12 +668,29 @@ async fn automatic_pass(
     Ok(())
 }
 
+/// What an automatic prune did to one clone's `target/`.
+pub(crate) enum AutomaticPrune {
+    Pruned { apparent_bytes: u64 },
+    Kept { reason: String },
+}
+
+impl std::fmt::Display for AutomaticPrune {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pruned { apparent_bytes } => {
+                write!(formatter, "pruned: {apparent_bytes} apparent bytes")
+            }
+            Self::Kept { reason } => write!(formatter, "kept: {reason}"),
+        }
+    }
+}
+
 /// Prunes `checkout`'s `target/` when the owner's policy allows it without a confirmation, and
 /// says what became of it.
 pub(crate) async fn automatic_one(
     context: &Context,
     checkout: CheckoutId,
-) -> Result<String, ProtocolError> {
+) -> Result<AutomaticPrune, ProtocolError> {
     if context.stopping.load(Ordering::Acquire) {
         return Err(ProtocolError::new(ErrorCode::Busy, "daemon is stopping"));
     }
@@ -695,15 +712,19 @@ pub(crate) async fn automatic_one(
     .map_err(project)?;
     if let Some(reason) = &preview.kept_reason {
         tracing::info!(checkout = checkout.0, %reason, "automatic target pruning kept the target");
-        return Ok(format!("kept: {reason}"));
+        return Ok(AutomaticPrune::Kept {
+            reason: reason.clone(),
+        });
     }
     if preview.confirmation_required {
         tracing::info!(checkout = checkout.0, size = ?preview.measurement,
             "target pruning needs exact-plan owner confirmation: torlek storage prune CHECKOUT");
-        return Ok(format!(
-            "kept: owner policy needs a confirmation: torlek storage prune {}",
-            checkout.0
-        ));
+        return Ok(AutomaticPrune::Kept {
+            reason: format!(
+                "owner policy needs a confirmation: torlek storage prune {}",
+                checkout.0
+            ),
+        });
     }
     let plan = {
         let write = context.database.write().await.map_err(internal)?;
@@ -727,8 +748,14 @@ pub(crate) async fn automatic_one(
     );
     let status = apply(context, plan.operation, plan.revision, &plan.epoch, true).await?;
     Ok(match (status.phase.as_str(), &status.reason) {
-        ("complete", _) => format!("pruned: {} apparent bytes", status.removed_apparent_bytes),
-        (phase, Some(reason)) => format!("kept: prune {} is {phase}: {reason}", status.operation),
-        (phase, None) => format!("kept: prune {} is {phase}", status.operation),
+        ("complete", _) => AutomaticPrune::Pruned {
+            apparent_bytes: status.removed_apparent_bytes,
+        },
+        (phase, Some(reason)) => AutomaticPrune::Kept {
+            reason: format!("prune {} is {phase}: {reason}", status.operation),
+        },
+        (phase, None) => AutomaticPrune::Kept {
+            reason: format!("prune {} is {phase}", status.operation),
+        },
     })
 }

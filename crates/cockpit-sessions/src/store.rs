@@ -290,6 +290,14 @@ pub async fn sessions(connection: &Connection, include_ended: bool) -> Result<Ve
     query_sessions(connection, filter, ()).await
 }
 
+/// Every session, ended ones included, that worked in the checkout `checkout`.
+pub async fn checkout_sessions(
+    connection: &Connection,
+    checkout: CheckoutId,
+) -> Result<Vec<Session>, Error> {
+    query_sessions(connection, "s.checkout_id = ?1", [checkout.0]).await
+}
+
 pub(crate) async fn sessions_in(
     connection: &Connection,
     states: &[&str],

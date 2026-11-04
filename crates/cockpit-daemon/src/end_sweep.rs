@@ -84,16 +84,6 @@ async fn pass(context: &Context, shared: &crate::server::Shared) -> Result<(), P
 /// exited, and that the end of the latest of them has not swept yet. A main checkout is
 /// shared and never swept.
 async fn ended_clones(read: &Connection) -> Result<Vec<EndedClone>, ProtocolError> {
-    let sessions = cockpit_sessions::maintenance_sessions(read)
-        .await
-        .map_err(internal)?;
-    // A full page omits sessions, which may still run in a clone.
-    if sessions.len() > 4096 {
-        return Err(ProtocolError::new(
-            ErrorCode::Busy,
-            "more sessions than one page; the session-end sweep waits",
-        ));
-    }
     let checkouts = cockpit_projects::checkouts(read, None)
         .await
         .map_err(internal)?;
@@ -102,10 +92,9 @@ async fn ended_clones(read: &Connection) -> Result<Vec<EndedClone>, ProtocolErro
         if checkout.kind == CheckoutKind::Main || checkout.occupancy.is_some() {
             continue;
         }
-        let worked_in: Vec<_> = sessions
-            .iter()
-            .filter(|session| session.checkout == checkout.id)
-            .collect();
+        let worked_in = cockpit_sessions::checkout_sessions(read, checkout.id)
+            .await
+            .map_err(internal)?;
         let has_ended = worked_in.iter().any(|session| session.holds_checkout)
             && worked_in
                 .iter()
@@ -154,11 +143,20 @@ async fn ended_clones(read: &Connection) -> Result<Vec<EndedClone>, ProtocolErro
 }
 
 /// Sweeps the clone, prunes the `target/` of one kept only for uncommitted changes, and
-/// records the outcome. A sweep that fails is recorded too, so it is not retried every pass;
-/// the owner's `torlek checkout sweep` can.
+/// records the outcome. A database failure records nothing, so a later pass sweeps again; any
+/// other failed sweep is recorded, so it is not retried every pass: the owner's
+/// `torlek checkout sweep` can.
 async fn sweep_and_record(context: &Context, clone: EndedClone) -> Result<(), ProtocolError> {
     let swept =
         cockpit_projects::sweep_clone(&context.database, &context.git, clone.checkout.id).await;
+    if let Err(
+        error @ (cockpit_projects::Error::Database(_)
+        | cockpit_projects::Error::Sql(_)
+        | cockpit_projects::Error::Blocking(_)),
+    ) = &swept
+    {
+        return Err(internal(error));
+    }
     let (checkout, kept, target) = match swept {
         Ok((checkout, None)) => {
             tracing::info!(
@@ -173,13 +171,16 @@ async fn sweep_and_record(context: &Context, clone: EndedClone) -> Result<(), Pr
             let target = match kept {
                 // The #758 rule: a clone with unpushed commits keeps its `target/` too.
                 Kept::UncommittedChanges => Some(
-                    crate::storage::automatic_one(context, checkout.id)
-                        .await
-                        .unwrap_or_else(|error| format!("kept: {}", error.message)),
+                    match crate::storage::automatic_one(context, checkout.id).await {
+                        Ok(prune) => prune.to_string(),
+                        // Busy, say: the periodic automatic prune or the owner's
+                        // `torlek storage prune` can still take it.
+                        Err(error) => format!("not pruned now: {}", error.message),
+                    },
                 ),
                 _ => None,
             };
-            let reason = kept_reason(&kept);
+            let reason = kept.to_string();
             tracing::info!(checkout = checkout.id.0, session = clone.session, %reason, ?target,
                 "a clone was kept at its session's end");
             (checkout, Some(reason), target)
@@ -211,18 +212,6 @@ async fn sweep_and_record(context: &Context, clone: EndedClone) -> Result<(), Pr
 
 fn launch_number(session: &cockpit_sessions::Session) -> i64 {
     session.launch.as_ref().map_or(0, |launch| launch.number)
-}
-
-fn kept_reason(kept: &Kept) -> String {
-    match kept {
-        Kept::Occupied { holder } => format!("occupied by {holder}"),
-        Kept::UncommittedChanges => "uncommitted changes".to_owned(),
-        Kept::UnpushedCommits => {
-            "unpushed commits (on no remote branch, and not merged into origin/HEAD)".to_owned()
-        }
-        Kept::Replaced { reason } => format!("replaced: {reason}"),
-        Kept::Unreadable { reason } => format!("unreadable: {reason}"),
-    }
 }
 
 fn internal(error: impl std::fmt::Display) -> ProtocolError {

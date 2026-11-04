@@ -24,7 +24,7 @@ pub use questions::{QUESTION_HOLD_SECONDS, answer_question, escalate_question, q
 pub use reports::{
     AgentState, QuestionSource, Report, SessionReport, latest_report, latest_reports, report,
 };
-pub use store::{MIGRATIONS, maintenance_sessions, session, sessions};
+pub use store::{MIGRATIONS, checkout_sessions, maintenance_sessions, session, sessions};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("cockpit-sessions supports Linux (WSL2 included) and macOS (report 01)");

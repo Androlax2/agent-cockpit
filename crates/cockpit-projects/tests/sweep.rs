@@ -109,6 +109,30 @@ async fn a_squash_merged_branch_with_a_later_commit_is_kept_as_unpushed() {
 }
 
 #[tokio::test]
+async fn a_squash_merged_branch_that_then_undid_part_of_its_change_is_kept_as_unpushed() {
+    let scratch = Scratch::new();
+    let (database, root, clone) = clone_with_local_commit(&scratch).await;
+    std::fs::write(clone.path.join("notes"), "more\n").unwrap();
+    git(&clone.path, &["add", "notes"]);
+    git(&clone.path, &["commit", "--quiet", "-m", "notes"]);
+    std::fs::write(root.join("notes"), "more\n").unwrap();
+    git(&root, &["add", "notes"]);
+    squash_merge(&root, &clone.path);
+    git(&clone.path, &["rm", "--quiet", "notes"]);
+    git(
+        &clone.path,
+        &["commit", "--quiet", "-m", "drop the notes again"],
+    );
+
+    let (_, kept) = sweep_clone(&database, &Git::from_path(), clone.id)
+        .await
+        .unwrap();
+
+    assert_eq!(kept, Some(Kept::UnpushedCommits));
+    assert!(clone.path.join("draft").exists());
+}
+
+#[tokio::test]
 async fn a_branch_whose_changes_the_default_branch_changed_again_is_kept_as_unpushed() {
     let scratch = Scratch::new();
     let (database, root, clone) = clone_with_local_commit(&scratch).await;
