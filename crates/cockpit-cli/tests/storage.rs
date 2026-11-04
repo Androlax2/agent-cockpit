@@ -272,3 +272,124 @@ fn storage_keeps_a_clone_with_unpushed_commits_and_counts_only_eligible_clones()
         b"12345678"
     );
 }
+
+fn output_row(retired: u64, failures: &[&str]) -> cockpit_protocol::OutputRetentionView {
+    cockpit_protocol::OutputRetentionView {
+        project: "app".to_owned(),
+        outputs: 3,
+        apparent_bytes: 1800,
+        unmeasured: 0,
+        protected: 1,
+        selected: 2,
+        selected_bytes: 1200,
+        retired,
+        retired_bytes: retired * 600,
+        failures: failures
+            .iter()
+            .map(|failure| (*failure).to_owned())
+            .collect(),
+    }
+}
+
+/// Runs `torlek ARGUMENTS` against a daemon that answers `reply`; the command it sent, its
+/// exit code and stdout.
+async fn against_scripted(
+    arguments: &'static [&'static str],
+    reply: Reply,
+) -> (Command, Option<i32>, String) {
+    let home = TestHome::new();
+    let socket = home.home().join("run/torlek-dev/daemon.sock");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(socket.parent().unwrap())
+        .unwrap();
+    let daemon = scripted::scripted_daemon(&socket, Outcome::Ok(reply));
+    let output = tokio::task::spawn_blocking(move || home.cockpit(arguments))
+        .await
+        .unwrap();
+    (
+        daemon.await.unwrap(),
+        output.status.code(),
+        scripted::text(&output.stdout),
+    )
+}
+
+#[tokio::test]
+async fn storage_outputs_reports_what_retention_selects_without_retiring_it() {
+    let (sent, code, stdout) = against_scripted(
+        &["storage", "outputs"],
+        Reply::StorageOutputs {
+            projects: vec![output_row(0, &[])],
+            applied: false,
+            truncated: false,
+        },
+    )
+    .await;
+
+    assert_eq!(sent, Command::StorageOutputs { apply: false });
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(
+        stdout.contains("app\t3\t1800\t0\t1\t2\t1200\t0\t0"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("torlek storage outputs prune"), "{stdout}");
+}
+
+#[tokio::test]
+async fn storage_outputs_prune_retires_and_reports_the_bytes_removed() {
+    let (sent, code, stdout) = against_scripted(
+        &["storage", "outputs", "prune"],
+        Reply::StorageOutputs {
+            projects: vec![output_row(2, &[])],
+            applied: true,
+            truncated: false,
+        },
+    )
+    .await;
+
+    assert_eq!(sent, Command::StorageOutputs { apply: true });
+    assert_eq!(code, Some(0), "{stdout}");
+    assert!(
+        stdout.contains("app\t3\t1800\t0\t1\t2\t1200\t2\t1200"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("retired 2 outputs, 1200 apparent bytes"),
+        "{stdout}"
+    );
+}
+
+#[tokio::test]
+async fn storage_outputs_prune_fails_when_it_kept_a_selected_output() {
+    let (_, code, stdout) = against_scripted(
+        &["storage", "outputs", "prune"],
+        Reply::StorageOutputs {
+            projects: vec![output_row(1, &["execution 9: kept: being read"])],
+            applied: true,
+            truncated: false,
+        },
+    )
+    .await;
+
+    assert_eq!(code, Some(1), "{stdout}");
+    assert!(
+        stdout.contains("app: execution 9: kept: being read"),
+        "{stdout}"
+    );
+}
+
+#[tokio::test]
+async fn storage_outputs_fails_when_the_pass_left_outputs_out() {
+    let (_, code, stdout) = against_scripted(
+        &["storage", "outputs"],
+        Reply::StorageOutputs {
+            projects: vec![output_row(0, &[])],
+            applied: false,
+            truncated: true,
+        },
+    )
+    .await;
+
+    assert_eq!(code, Some(1), "{stdout}");
+    assert!(stdout.contains("incomplete"), "{stdout}");
+}

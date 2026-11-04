@@ -42,6 +42,10 @@ pub const MIGRATIONS: MigrationSet = MigrationSet {
             version: 2,
             sql: crate::output_catalog::SCHEMA,
         },
+        Migration {
+            version: 3,
+            sql: crate::output_retirement::SCHEMA,
+        },
     ],
 };
 

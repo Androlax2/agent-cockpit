@@ -65,6 +65,11 @@ pub enum Command {
         revision: i64,
         epoch: String,
     },
+    /// Owner only: what check-output retention would retire per project, by the owner's age
+    /// and budget policy; `apply` retires it. Receipts and their output tails stay.
+    StorageOutputs {
+        apply: bool,
+    },
     /// Start the change feed at `from`.
     Subscribe {
         from: FeedPosition,
@@ -852,6 +857,14 @@ pub enum Reply {
     Storage {
         clones: Vec<CloneStorageView>,
         /// Further registered clones were omitted by the report's row limit.
+        truncated: bool,
+    },
+    StorageOutputs {
+        projects: Vec<crate::storage::OutputRetentionView>,
+        /// Whether this pass retired the selected outputs, or only reports them.
+        applied: bool,
+        /// Further outputs were left out by the pass's bound; they are neither counted nor
+        /// retired.
         truncated: bool,
     },
     Subscribed {

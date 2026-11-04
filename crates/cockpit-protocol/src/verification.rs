@@ -26,6 +26,9 @@ pub struct CheckReceiptView {
     pub output_bytes: u64,
     /// Where the full output is.
     pub output_references: Vec<String>,
+    /// Output retention removed the full output; the tail above is all that is kept (#406).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output_retired: bool,
     /// Seconds since the Unix epoch.
     pub started_at: i64,
     pub finished_at: i64,

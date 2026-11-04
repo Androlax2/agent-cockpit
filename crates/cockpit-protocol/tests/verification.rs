@@ -95,3 +95,30 @@ fn a_run_not_ended_yet_has_no_receipt() {
 
     assert_eq!(reply, Reply::CheckReceipt { receipt: None });
 }
+
+fn receipt_wire() -> serde_json::Value {
+    json!({"id":1,"project":"app","run":"execution-e-1","check":"test","command":"cargo test",
+        "working_directory":".","environment":"","head":"abc","dirty":null,"artifacts":[],
+        "outcome":"passed","exit_code":0,"output":"ok","output_bytes":9000,
+        "output_references":["/state/executions/e/1/stdout"],"started_at":1,"finished_at":2})
+}
+
+#[test]
+fn a_receipt_from_a_daemon_without_output_retention_reads_as_kept() {
+    let receipt: cockpit_protocol::CheckReceiptView =
+        serde_json::from_value(receipt_wire()).unwrap();
+
+    assert!(!receipt.output_retired);
+    assert_eq!(serde_json::to_value(receipt).unwrap(), receipt_wire());
+}
+
+#[test]
+fn a_receipt_says_when_its_full_output_was_retired() {
+    let mut wire = receipt_wire();
+    wire["output_retired"] = json!(true);
+
+    let receipt: cockpit_protocol::CheckReceiptView = serde_json::from_value(wire.clone()).unwrap();
+
+    assert!(receipt.output_retired);
+    assert_eq!(serde_json::to_value(receipt).unwrap(), wire);
+}

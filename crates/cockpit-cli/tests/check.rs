@@ -3,6 +3,7 @@
 //! gate's report for that check stale. A session's side (claims, the gate of its checkout) is
 //! proven through the sockets in `cockpit-daemon/tests/verification.rs`.
 mod common;
+mod scripted;
 
 use std::path::PathBuf;
 
@@ -221,4 +222,61 @@ fn pending_help_and_empty_owner_listing_do_not_invent_a_result() {
             .unwrap()
             .contains("--epoch")
     );
+}
+
+#[tokio::test]
+async fn a_receipt_whose_full_output_was_retired_says_so_instead_of_naming_its_file() {
+    use cockpit_protocol::{CheckOutcomeView, CheckReceiptView, Outcome, Reply};
+    use std::os::unix::fs::DirBuilderExt;
+    let home = TestHome::new();
+    let socket = home.home().join("run/torlek-dev/daemon.sock");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(socket.parent().unwrap())
+        .unwrap();
+    let receipt = CheckReceiptView {
+        id: 1,
+        project: "app".to_owned(),
+        run: "execution-e-1".to_owned(),
+        check: "test".to_owned(),
+        command: "cargo test".to_owned(),
+        working_directory: ".".to_owned(),
+        environment: String::new(),
+        head: "abc".to_owned(),
+        dirty: None,
+        artifacts: Vec::new(),
+        outcome: CheckOutcomeView::Passed,
+        exit_code: Some(0),
+        output: "tail\n".to_owned(),
+        output_bytes: 9000,
+        output_references: vec!["/state/executions/e/1/stdout".to_owned()],
+        output_retired: true,
+        started_at: 1,
+        finished_at: 2,
+    };
+    let daemon = scripted::scripted_conversation(
+        &socket,
+        vec![
+            Outcome::Ok(Reply::CheckRunStarted {
+                run: receipt.run.clone(),
+            }),
+            Outcome::Ok(Reply::CheckReceipt {
+                receipt: Some(Box::new(receipt)),
+            }),
+        ],
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        home.cockpit(&["check", "run", "test", "--project", "app"])
+    })
+    .await
+    .unwrap();
+    daemon.await.unwrap();
+
+    let stdout = scripted::text(&output.stdout);
+    assert!(
+        stdout.contains("output: the last 5 of 9000 bytes; output retention removed the rest"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("/state/executions"), "{stdout}");
 }

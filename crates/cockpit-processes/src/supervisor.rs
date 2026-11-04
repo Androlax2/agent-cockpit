@@ -142,6 +142,10 @@ impl Supervisor {
         self.launch_containment
     }
 
+    pub(crate) fn executions_dir(&self) -> &Path {
+        &self.executions_dir
+    }
+
     pub fn output_path(&self, database: &Database, id: ExecutionId, kind: OutputKind) -> PathBuf {
         self.execution_dir(database, id).join(kind.file_name())
     }

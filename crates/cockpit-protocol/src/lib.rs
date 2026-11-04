@@ -63,8 +63,8 @@ pub use sessions::{
     SandboxRuleView, SessionFailure, SessionStateView, SessionView, StopTargetView,
 };
 pub use storage::{
-    CloneStorageView, PruneVerdictView, StoragePrunePlanView, StoragePrunePreviewView,
-    StoragePruneStatusView, TargetSizeView,
+    CloneStorageView, OutputRetentionView, PruneVerdictView, StoragePrunePlanView,
+    StoragePrunePreviewView, StoragePruneStatusView, TargetSizeView,
 };
 pub use tasks::{
     HexBytes, TaskDraftTargetView, TaskDraftView, TaskImageView, TaskKindView, TaskNextView,

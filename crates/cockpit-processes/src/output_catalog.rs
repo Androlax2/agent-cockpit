@@ -44,6 +44,8 @@ pub struct OutputFacts {
     pub pending_result: bool,
     pub active: bool,
     pub revision: i64,
+    /// Set once a retention pass committed to removing its files (#406).
+    pub retirement: Option<crate::OutputRetirement>,
 }
 impl OutputFacts {
     /// Session/latest protections are supplied by sessions, in the same read/write snapshot.
@@ -88,7 +90,7 @@ pub async fn attribute_output(
 }
 
 pub async fn output_facts(read: &Connection, id: ExecutionId) -> Result<OutputFacts, Error> {
-    let mut rows = read.query("SELECT o.origin_epoch, o.mode, o.project, o.session, o.pending_result, p.phase, o.revision
+    let mut rows = read.query("SELECT o.origin_epoch, o.mode, o.project, o.session, o.pending_result, p.phase, o.revision, o.retirement
         FROM process_output_sets o JOIN process_executions p ON p.id = o.execution WHERE o.execution = ?1", [id.0]).await?;
     let row = rows
         .next()
@@ -110,6 +112,7 @@ pub async fn output_facts(read: &Connection, id: ExecutionId) -> Result<OutputFa
         pending_result: row.get::<i64>(4)? != 0,
         active: row.get::<String>(5)? != "ended",
         revision: row.get(6)?,
+        retirement: crate::OutputRetirement::parse(id, row.get::<Option<String>>(7)?.as_deref())?,
     })
 }
 

@@ -591,7 +591,7 @@ async fn record_when_ended(
                 .await?;
         cockpit_processes::seal_output_result(&write, execution, &pending.origin_epoch).await?;
         write.commit().await?;
-        Ok::<_, Box<dyn std::error::Error>>(receipt)
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(receipt)
     }
     .await;
     match recorded {
@@ -605,6 +605,15 @@ async fn record_when_ended(
         }
     }
     drop(collector);
+    // Output retention only considers ended runs; without this the run stays running until
+    // the next reservation sweep.
+    if let Err(error) = context
+        .processes
+        .observe(&context.database, execution)
+        .await
+    {
+        tracing::warn!(run = pending.receipt.run_id, %error, "check run not observed ended");
+    }
 }
 
 /// The last [`cockpit_verification::OUTPUT_MAX_BYTES`] of the file and its full size.
@@ -651,9 +660,29 @@ async fn receipt(context: &Context, project: &str, run: &str) -> Answer {
             ));
         }
     }
+    let output_retired = match &found {
+        Some(_) => output_retired(context, project, run).await?,
+        None => false,
+    };
     Ok(Reply::CheckReceipt {
-        receipt: found.map(|receipt| Box::new(receipt_view(&receipt))),
+        receipt: found.map(|receipt| Box::new(receipt_view(&receipt, output_retired))),
     })
+}
+
+/// Whether output retention removed this run's full output (#406). It only retires its own
+/// database epoch's outputs, so a run of an earlier epoch keeps its files.
+async fn output_retired(context: &Context, project: &str, run: &str) -> Result<bool, Failed> {
+    let read = context.database.read().await?;
+    let Some(identity) = cockpit_verification::pending_result(&read, project, run).await? else {
+        return Ok(false);
+    };
+    if identity.origin_epoch != context.database.epoch() {
+        return Ok(false);
+    }
+    let facts = cockpit_processes::output_facts(&read, ExecutionId(identity.execution))
+        .await
+        .map_err(|e| internal(&e))?;
+    Ok(facts.retirement.is_some())
 }
 
 /// The gate of every check the project declares on the checkout's current result; each check's
@@ -739,7 +768,7 @@ async fn authorize(connection: &Connection, session: &SessionId) -> Result<(), F
     }
 }
 
-fn receipt_view(receipt: &Receipt) -> CheckReceiptView {
+fn receipt_view(receipt: &Receipt, output_retired: bool) -> CheckReceiptView {
     let recorded = &receipt.recorded;
     CheckReceiptView {
         id: receipt.id.0,
@@ -764,6 +793,7 @@ fn receipt_view(receipt: &Receipt) -> CheckReceiptView {
         output: recorded.output.clone(),
         output_bytes: receipt.output_bytes,
         output_references: recorded.output_references.clone(),
+        output_retired,
         started_at: recorded.started_at,
         finished_at: recorded.finished_at,
     }
@@ -986,7 +1016,7 @@ async fn resolve_pending(
             .await?
             .ok_or_else(stale)?;
         return Ok(Reply::CheckReceipt {
-            receipt: Some(Box::new(receipt_view(&receipt))),
+            receipt: Some(Box::new(receipt_view(&receipt, false))),
         });
     }
     if current != pending || current.revision != revision {
@@ -1031,6 +1061,6 @@ async fn resolve_pending(
         .map_err(|e| internal(&e))?;
     write.commit().await?;
     Ok(Reply::CheckReceipt {
-        receipt: Some(Box::new(receipt_view(&receipt))),
+        receipt: Some(Box::new(receipt_view(&receipt, false))),
     })
 }
